@@ -229,14 +229,25 @@ fn candle_transcribe_long_with_segments(
     whisper::singleton::transcribe_with_segments(audio, sample_rate, language)
 }
 
-fn candle_transcribe_controlled(
+/// L1 tail window: phrase-grain transcript plus measured word pins when the
+/// checkpoint alignment heads produce them.
+fn candle_transcribe_tail_window(
     audio: &[f32],
     sample_rate: u32,
     language: Option<&str>,
     initial_prompt: Option<String>,
     control: &LocalExecutionControl,
-) -> anyhow::Result<RawTranscript> {
-    whisper::singleton::transcribe_controlled(audio, sample_rate, language, initial_prompt, control)
+) -> anyhow::Result<(
+    RawTranscript,
+    Option<Vec<crate::pipeline::contracts::TranscriptSegment>>,
+)> {
+    whisper::singleton::transcribe_tail_window(
+        audio,
+        sample_rate,
+        language,
+        initial_prompt,
+        control,
+    )
 }
 
 /// Non-blocking Candle long transcription: yields an error instead of waiting

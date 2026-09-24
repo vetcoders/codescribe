@@ -38,6 +38,8 @@ pub mod singleton;
 pub mod timestamps;
 /// Thread-local final-pass stage timing (latency truth).
 pub mod timing;
+/// Cross-attention word pins for the L1 tail path.
+mod word_pins;
 
 // Public API exports
 pub use engine::LocalWhisperEngine; // Kept for advanced usage if needed

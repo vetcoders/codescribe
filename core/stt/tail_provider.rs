@@ -218,6 +218,28 @@ pub struct TailProviderEvidence {
     pub timing_quality: TailTimingQuality,
     /// Raw engine confidence; never calibrated or promoted on this seam.
     pub avg_logprob: Option<f32>,
+    /// Word when every segment is a measured word pin. Phrase otherwise.
+    #[serde(default)]
+    pub segment_grain: TailSegmentGrain,
+}
+
+/// Grain of one tail segment. Phrase is a timestamp-token span. Word is a
+/// range the recognizer measured; it is never a uniform split of a phrase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TailSegmentGrain {
+    #[default]
+    Phrase,
+    Word,
+}
+
+impl TailSegmentGrain {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Phrase => "phrase",
+            Self::Word => "word",
+        }
+    }
 }
 
 /// One provider segment pinned to the canonical sample clock.
@@ -225,6 +247,9 @@ pub struct TailProviderEvidence {
 pub struct TimedTailSegment {
     pub text: String,
     pub range: TailSampleRange,
+    /// Phrase unless this pin was measured as a word.
+    #[serde(default)]
+    pub grain: TailSegmentGrain,
 }
 
 /// Bounded, typed result returned by every provider incarnation.
@@ -297,6 +322,23 @@ impl TailProviderPayload {
         }
         if self.avg_logprob != self.evidence.avg_logprob {
             bail!("tail provider confidence disagrees with typed evidence");
+        }
+        let word_pins = self
+            .segments
+            .iter()
+            .any(|segment| segment.grain == TailSegmentGrain::Word);
+        let phrase_spans = self
+            .segments
+            .iter()
+            .any(|segment| segment.grain == TailSegmentGrain::Phrase);
+        if word_pins && phrase_spans {
+            bail!("tail provider mixes word pins with phrase spans");
+        }
+        if word_pins && self.evidence.segment_grain != TailSegmentGrain::Word {
+            bail!("tail provider word pins require word-grain evidence");
+        }
+        if self.evidence.segment_grain == TailSegmentGrain::Word && !word_pins {
+            bail!("tail provider word-grain evidence has no word pins");
         }
         Ok(())
     }
@@ -400,10 +442,10 @@ impl InProcessTailProvider {
         let (speech, _, speech_index) =
             crate::vad::extract_speech_indexed(pcm, request.sample_rate);
         control.check()?;
-        let raw = if speech.is_empty() {
-            RawTranscript::default()
+        let (raw, word_segments) = if speech.is_empty() {
+            (RawTranscript::default(), None)
         } else {
-            super::candle_transcribe_controlled(
+            super::candle_transcribe_tail_window(
                 &speech,
                 request.sample_rate,
                 request.language.as_deref(),
@@ -419,30 +461,63 @@ impl InProcessTailProvider {
             }
             ((seconds as f64 * request.sample_rate as f64).round() as u64).min(max_compacted)
         };
-        let segments = raw
-            .segments
-            .into_iter()
-            .map(|segment| {
-                let compacted_start = to_sample(segment.start_ts);
-                let compacted_end = to_sample(segment.end_ts).max(compacted_start);
-                let (source_start, source_end) = crate::vad::map_compacted_sample_range(
-                    &speech_index,
-                    compacted_start,
-                    compacted_end,
-                )
-                .ok_or_else(|| anyhow!("Whisper segment has no source PCM mapping"))?;
-                Ok(TimedTailSegment {
-                    text: segment.text,
-                    range: TailSampleRange {
-                        session: request_range.session.clone(),
-                        capture_epoch: request_range.capture_epoch,
-                        sample_start: request.range_end_for(source_start),
-                        sample_end: request.range_end_for(source_end),
-                    },
+        let map_segments = |segments: Vec<crate::pipeline::contracts::TranscriptSegment>,
+                            grain: TailSegmentGrain|
+         -> Result<Vec<TimedTailSegment>> {
+            segments
+                .into_iter()
+                .map(|segment| {
+                    let compacted_start = to_sample(segment.start_ts);
+                    let compacted_end = to_sample(segment.end_ts).max(compacted_start);
+                    let (source_start, source_end) = crate::vad::map_compacted_sample_range(
+                        &speech_index,
+                        compacted_start,
+                        compacted_end,
+                    )
+                    .ok_or_else(|| anyhow!("Whisper segment has no source PCM mapping"))?;
+                    Ok(TimedTailSegment {
+                        text: segment.text,
+                        range: TailSampleRange {
+                            session: request_range.session.clone(),
+                            capture_epoch: request_range.capture_epoch,
+                            sample_start: request.range_end_for(source_start),
+                            sample_end: request.range_end_for(source_end),
+                        },
+                        grain,
+                    })
                 })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let segments = coarsen_invalid_in_process_segments(request_range, &raw.text, segments);
+                .collect()
+        };
+        let phrase_segments = coarsen_invalid_in_process_segments(
+            request_range,
+            &raw.text,
+            map_segments(raw.segments.clone(), TailSegmentGrain::Phrase)?,
+        );
+        let word_segments = match word_segments {
+            Some(segments) if !segments.is_empty() => {
+                let mapped = coarsen_invalid_in_process_segments(
+                    request_range,
+                    &raw.text,
+                    map_segments(segments, TailSegmentGrain::Word)?,
+                );
+                if mapped.is_empty() {
+                    None
+                } else {
+                    Some(mapped)
+                }
+            }
+            _ => None,
+        };
+        let (segments, segment_grain) = match word_segments {
+            Some(segments) => (segments, TailSegmentGrain::Word),
+            None => (phrase_segments, TailSegmentGrain::Phrase),
+        };
+        tracing::info!(
+            segment_count = segments.len(),
+            grain = segment_grain.as_str(),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "tail_provider_segment_grain"
+        );
         let payload = TailProviderPayload {
             identity: request.identity.clone(),
             text: raw.text,
@@ -457,6 +532,7 @@ impl InProcessTailProvider {
                 stability: TailEvidenceStability::Final,
                 timing_quality: TailTimingQuality::ExactSampleRange,
                 avg_logprob: raw.avg_logprob,
+                segment_grain,
             },
         };
         payload.validate()?;
@@ -1150,6 +1226,7 @@ impl TailProvider for RemoteTailProvider {
             .segments
             .into_iter()
             .map(|segment| TimedTailSegment {
+                grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 text: segment.text,
                 range: TailSampleRange {
                     session: request.identity.range.session.clone(),
@@ -1168,6 +1245,7 @@ impl TailProvider for RemoteTailProvider {
             provider_id: TailProviderId::Remote,
             elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
             evidence: TailProviderEvidence {
+                segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 source: TailEvidenceSource::Whisper,
                 revision: model,
                 stability: TailEvidenceStability::Final,
@@ -1348,6 +1426,7 @@ pub(crate) fn transcribe_selected_controlled(
         sample_start = payload.identity.range.sample_start,
         sample_end = payload.identity.range.sample_end,
         segment_count = payload.segments.len(),
+        segment_grain = payload.evidence.segment_grain.as_str(),
         evidence_source = payload.evidence.source.as_str(),
         timing_quality = payload.evidence.timing_quality.as_str(),
         avg_logprob = payload.evidence.avg_logprob,
@@ -1417,6 +1496,7 @@ mod tests {
         };
         let segments = vec![
             TimedTailSegment {
+                grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 text: "Iwo".into(),
                 range: TailSampleRange {
                     sample_end: 20_000,
@@ -1424,6 +1504,7 @@ mod tests {
                 },
             },
             TimedTailSegment {
+                grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 text: "Iwo".into(),
                 range: TailSampleRange {
                     sample_start: 16_000,
@@ -1448,6 +1529,7 @@ mod tests {
         };
         let segments = vec![
             TimedTailSegment {
+                grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 text: "pierwszy przebieg".into(),
                 range: TailSampleRange {
                     sample_start: 1_265_152,
@@ -1456,6 +1538,7 @@ mod tests {
                 },
             },
             TimedTailSegment {
+                grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 text: "poprawiony przebieg".into(),
                 range: TailSampleRange {
                     sample_start: 2_900_000,
@@ -1481,6 +1564,7 @@ mod tests {
             provider_id: TailProviderId::InProcess,
             elapsed_ms: 0,
             evidence: TailProviderEvidence {
+                segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 source: TailEvidenceSource::Whisper,
                 revision: None,
                 stability: TailEvidenceStability::Final,
@@ -1503,6 +1587,7 @@ mod tests {
         };
         let segments = vec![
             TimedTailSegment {
+                grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 text: "jeden".into(),
                 range: TailSampleRange {
                     sample_start: 120,
@@ -1511,6 +1596,7 @@ mod tests {
                 },
             },
             TimedTailSegment {
+                grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 text: "dwa".into(),
                 range: TailSampleRange {
                     sample_start: 260,
@@ -1541,6 +1627,7 @@ mod tests {
             identity: identity.clone(),
             text: "typed result".to_string(),
             segments: vec![TimedTailSegment {
+                grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 text: "typed".to_string(),
                 range: TailSampleRange {
                     session: "session-typed".to_string(),
@@ -1554,6 +1641,7 @@ mod tests {
             provider_id: TailProviderId::Fake,
             elapsed_ms: 7,
             evidence: TailProviderEvidence {
+                segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 source: TailEvidenceSource::Whisper,
                 revision: Some("fake-r1".to_string()),
                 stability: TailEvidenceStability::Final,
@@ -1614,6 +1702,7 @@ mod tests {
             text: "dwa jeden".into(),
             segments: vec![
                 TimedTailSegment {
+                    grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                     text: "dwa".into(),
                     range: TailSampleRange {
                         sample_start: 160,
@@ -1622,6 +1711,7 @@ mod tests {
                     },
                 },
                 TimedTailSegment {
+                    grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                     text: "jeden".into(),
                     range: TailSampleRange {
                         sample_start: 0,
@@ -1635,6 +1725,7 @@ mod tests {
             provider_id: TailProviderId::Fake,
             elapsed_ms: 0,
             evidence: TailProviderEvidence {
+                segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 source: TailEvidenceSource::Whisper,
                 revision: None,
                 stability: TailEvidenceStability::Final,
@@ -1649,5 +1740,58 @@ mod tests {
                 .to_string()
                 .contains("ordered and non-overlapping")
         );
+    }
+
+    /// Contract step 7: a payload with no grain is utterance grain. Word grain
+    /// is a claim that every segment is a measured pin, never a relabeling of
+    /// a phrase span.
+    #[test]
+    fn omitted_grain_stays_phrase_and_word_evidence_requires_word_pins() {
+        let segment: TimedTailSegment = serde_json::from_str(
+            r#"{"text":"raz","range":{"session":"s","capture_epoch":1,"sample_start":0,"sample_end":160}}"#,
+        )
+        .expect("segment json");
+        assert_eq!(segment.grain, TailSegmentGrain::Phrase);
+        let range = segment.range.clone();
+        let mut payload = TailProviderPayload {
+            identity: TailRequestIdentity {
+                request_id: 1,
+                range: range.clone(),
+            },
+            text: "raz".into(),
+            segments: vec![segment],
+            avg_logprob: None,
+            compression_ratio: None,
+            provider_id: TailProviderId::Fake,
+            elapsed_ms: 0,
+            evidence: TailProviderEvidence {
+                segment_grain: TailSegmentGrain::Phrase,
+                source: TailEvidenceSource::Whisper,
+                revision: None,
+                stability: TailEvidenceStability::Final,
+                timing_quality: TailTimingQuality::Synthetic,
+                avg_logprob: None,
+            },
+        };
+        payload.validate().expect("phrase grain");
+        payload.evidence.segment_grain = TailSegmentGrain::Word;
+        assert!(
+            payload
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("no word pins")
+        );
+        payload.segments[0].grain = TailSegmentGrain::Word;
+        payload.evidence.segment_grain = TailSegmentGrain::Phrase;
+        assert!(
+            payload
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("word pins require word-grain")
+        );
+        payload.evidence.segment_grain = TailSegmentGrain::Word;
+        payload.validate().expect("word grain");
     }
 }

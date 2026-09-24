@@ -2088,11 +2088,9 @@ impl AppleSealState {
                         });
                     }
                     OverlapPinClass::Replay => {
-                        for (member_index, member) in open_members.iter().enumerate() {
-                            if pin_intersects(&pin, member) {
-                                routes[member_index].blocked = true;
-                            }
-                        }
+                        // A replayed range is already covered and lies outside this
+                        // window's admit. Refuse that pin. It does not veto the
+                        // exclusive remainder: a straddle (unanchored) still does.
                         side.push((index, pin, text.to_string(), None));
                     }
                     OverlapPinClass::Unanchored(reason) => {
@@ -2962,6 +2960,7 @@ fn apple_segments_on_pcm_clock(
                 seconds_to_captured_sample(segment.end_ts, state.sample_rate, captured_end)
                     .max(sample_start);
             TimedTailSegment {
+                grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 text: segment.text.clone(),
                 range: TailSampleRange {
                     session: state.session_id.clone(),
@@ -5768,6 +5767,7 @@ mod c13a_lifecycle_tests {
                 .to_string(),
             segments: vec![
                 TimedTailSegment {
+                    grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                     text: "takie rzeczy są oczywiste w tym przypadku".to_string(),
                     range: TailSampleRange {
                         session: session.to_string(),
@@ -5777,6 +5777,7 @@ mod c13a_lifecycle_tests {
                     },
                 },
                 TimedTailSegment {
+                    grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                     text: "miały jakąś kanwę falsyfikacji".to_string(),
                     range: TailSampleRange {
                         session: session.to_string(),
@@ -5791,6 +5792,7 @@ mod c13a_lifecycle_tests {
             provider_id: TailProviderId::Fake,
             elapsed_ms: 1,
             evidence: TailProviderEvidence {
+                segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 source: TailEvidenceSource::Whisper,
                 revision: Some("walkaround-755".to_string()),
                 stability: TailEvidenceStability::Final,
@@ -6293,6 +6295,7 @@ mod c13a_lifecycle_tests {
         // inside the second member: the positive control owns 16 000..32 000.
         let identity = request.provider_request.identity.clone();
         let straddling = TimedTailSegment {
+            grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
             text: "przez granice".to_string(),
             range: TailSampleRange {
                 session: "straddle".to_string(),
@@ -6302,6 +6305,7 @@ mod c13a_lifecycle_tests {
             },
         };
         let pinned = TimedTailSegment {
+            grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
             text: "Iwo drugie".to_string(),
             range: TailSampleRange {
                 session: "straddle".to_string(),
@@ -6319,6 +6323,7 @@ mod c13a_lifecycle_tests {
             provider_id: TailProviderId::Fake,
             elapsed_ms: 1,
             evidence: TailProviderEvidence {
+                segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 source: TailEvidenceSource::Whisper,
                 revision: None,
                 stability: TailEvidenceStability::Final,
@@ -6582,6 +6587,7 @@ mod tests {
             provider_id: crate::stt::tail_provider::TailProviderId::Fake,
             elapsed_ms: 0,
             evidence: TailProviderEvidence {
+                segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 source: TailEvidenceSource::Whisper,
                 revision: Some("synthetic-test".to_string()),
                 stability: TailEvidenceStability::Final,
@@ -6604,6 +6610,7 @@ mod tests {
             },
             words: Vec::new(),
             apple_evidence: TailProviderEvidence {
+                segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 source: TailEvidenceSource::AppleSpeech,
                 revision: None,
                 stability: TailEvidenceStability::Final,
@@ -8621,6 +8628,7 @@ mod rc_w2_acoustic_tests {
             identity: request.identity.clone(),
             text: "Iwo".into(),
             segments: vec![TimedTailSegment {
+                grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 text: "Iwo".into(),
                 range: request.identity.range.clone(),
             }],
@@ -8629,6 +8637,7 @@ mod rc_w2_acoustic_tests {
             provider_id: TailProviderId::Fake,
             elapsed_ms: 0,
             evidence: TailProviderEvidence {
+                segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 source: TailEvidenceSource::Whisper,
                 revision: None,
                 stability: TailEvidenceStability::Final,
@@ -9697,6 +9706,7 @@ mod rc_w2_acoustic_tests {
             identity: identity.clone(),
             text: "odzysk".into(),
             segments: vec![TimedTailSegment {
+                grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 text: "odzysk".into(),
                 range: range.clone(),
             }],
@@ -9705,6 +9715,7 @@ mod rc_w2_acoustic_tests {
             provider_id: crate::stt::tail_provider::TailProviderId::Fake,
             elapsed_ms: 0,
             evidence: crate::stt::tail_provider::TailProviderEvidence {
+                segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 source: crate::stt::tail_provider::TailEvidenceSource::Whisper,
                 revision: Some("rc-w2".into()),
                 stability: crate::stt::tail_provider::TailEvidenceStability::Final,
@@ -11569,6 +11580,7 @@ mod live_refinement_admission_tests {
             identity: request.provider_request.identity.clone(),
             text: "hello".into(),
             segments: vec![TimedTailSegment {
+                grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 text: "hello".into(),
                 range: TailSampleRange {
                     session: occurrence.session.clone(),
@@ -11582,6 +11594,7 @@ mod live_refinement_admission_tests {
             provider_id: TailProviderId::Fake,
             elapsed_ms: 0,
             evidence: TailProviderEvidence {
+                segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 source: TailEvidenceSource::Whisper,
                 revision: Some("synthetic-live-admission".into()),
                 stability: TailEvidenceStability::Final,
@@ -12700,6 +12713,7 @@ mod relay_l1_overlap_admission_tests {
 
     fn segment(session: &str, text: &str, start: u64, end: u64) -> TimedTailSegment {
         TimedTailSegment {
+            grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
             text: text.to_string(),
             range: crate::stt::tail_provider::TailSampleRange {
                 session: session.to_string(),
@@ -12708,6 +12722,12 @@ mod relay_l1_overlap_admission_tests {
                 sample_end: end,
             },
         }
+    }
+
+    fn word_pin(session: &str, text: &str, start: u64, end: u64) -> TimedTailSegment {
+        let mut pin = segment(session, text, start, end);
+        pin.grain = crate::stt::tail_provider::TailSegmentGrain::Word;
+        pin
     }
 
     fn completion(
@@ -12720,6 +12740,15 @@ mod relay_l1_overlap_admission_tests {
             .filter(|text| !text.is_empty())
             .collect::<Vec<_>>()
             .join(" ");
+        let segment_grain = if !segments.is_empty()
+            && segments
+                .iter()
+                .all(|segment| segment.grain == crate::stt::tail_provider::TailSegmentGrain::Word)
+        {
+            crate::stt::tail_provider::TailSegmentGrain::Word
+        } else {
+            crate::stt::tail_provider::TailSegmentGrain::Phrase
+        };
         TailPatchCompletion {
             utterance_id: request.utterance_id,
             request_identity: Some(request.provider_request.identity.clone()),
@@ -12732,6 +12761,7 @@ mod relay_l1_overlap_admission_tests {
                 provider_id: TailProviderId::Fake,
                 elapsed_ms: 1,
                 evidence: TailProviderEvidence {
+                    segment_grain,
                     source: TailEvidenceSource::Whisper,
                     revision: Some("relay-l1-phrase-grain".into()),
                     stability: TailEvidenceStability::Final,
@@ -13187,6 +13217,99 @@ mod relay_l1_overlap_admission_tests {
         );
         assert_eq!(held_count(&lane), 1);
         assert_conserved(&lane, None);
+    }
+
+    /// Long occurrence, overlapping windows, word pins.
+    ///
+    /// Contract step 4: a word whose range lies wholly outside this window's
+    /// admit and inside an already admitted identity is `replayed_range_identity`.
+    /// Contract step 5: the decision is the range, so the replayed word's text
+    /// may differ from the word that owns that range in the later window.
+    /// Contract step 7: words wholly inside each exclusive remainder join the
+    /// occurrence once. The overlap must not mint a second token.
+    #[test]
+    fn exclusive_remainder_word_pins_join_once_and_prefix_words_are_replay() {
+        let mut lane = open("relay-word-join");
+        let (occurrence, requests) = launch_long(&mut lane, "cale zdanie");
+        let session = "relay-word-join";
+        let windows = [
+            vec![
+                word_pin(session, "raz", 8_000, 40_000),
+                word_pin(session, "stary", 50_000, 62_000),
+            ],
+            vec![
+                word_pin(session, "nowy", 50_000, 62_000),
+                word_pin(session, "dwa", 70_000, 90_000),
+                word_pin(session, "ogon", 100_000, 110_000),
+            ],
+            vec![word_pin(session, "trzy", 100_000, 150_000)],
+        ];
+        let mut events = Vec::new();
+        for (request, segments) in requests.iter().zip(windows) {
+            lane.state
+                .complete_whisper_window(&lane.tx, completion(request, segments), 8.0);
+            events.extend(drain(&mut lane.rx));
+        }
+        assert!(
+            replay_refusal(&events, "stary"),
+            "step 4: the earlier window's word in the shared second is replay, whatever its text"
+        );
+        assert!(
+            replay_refusal(&events, "ogon"),
+            "step 4: a word past this window's admit is replay, not a second token"
+        );
+        assert_eq!(
+            mutation_count(&events),
+            1,
+            "step 7: exclusive-remainder words join the whole span once"
+        );
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("raz nowy dwa trzy")
+        );
+        assert_eq!(
+            held_count(&lane),
+            1,
+            "replay must not mint a duplicate token"
+        );
+        assert_conserved(&lane, Some("replayed_range_identity"));
+    }
+
+    /// A word whose range crosses the prefix/remainder join stays one pin.
+    ///
+    /// Contract step 3 and step 7: the whole-span rule refuses it on the range
+    /// alone. The pin's text matching the canvas is irrelevant.
+    #[test]
+    fn word_pin_straddling_the_prefix_join_stays_refused_on_range() {
+        let mut lane = open("relay-word-straddle");
+        let (occurrence, requests) = launch_long(&mut lane, "krawedz");
+        let session = "relay-word-straddle";
+        let windows = [
+            vec![word_pin(session, "raz", 8_000, 40_000)],
+            vec![
+                word_pin(session, "krawedz", 40_000, 52_000),
+                word_pin(session, "dwa", 52_000, 90_000),
+            ],
+            vec![word_pin(session, "trzy", 100_000, 150_000)],
+        ];
+        let mut events = Vec::new();
+        for (request, segments) in requests.iter().zip(windows) {
+            lane.state
+                .complete_whisper_window(&lane.tx, completion(request, segments), 8.0);
+            events.extend(drain(&mut lane.rx));
+        }
+        assert!(
+            unanchored_label(&events, "krawedz"),
+            "a word across the admit join stays whole and visible"
+        );
+        assert!(
+            named_refusal(&events, "intersecting_pin_not_exclusive"),
+            "step 7: the straddle refuses the span on ranges, even when the text matches the canvas"
+        );
+        assert_eq!(mutation_count(&events), 0);
+        assert_eq!(held_text(&lane, &occurrence).as_deref(), Some("krawedz"));
+        assert_eq!(held_count(&lane), 1);
+        assert_conserved(&lane, Some("intersecting_pin_not_exclusive"));
     }
 
     /// (ii) Three windows, one pin straddles an admit boundary.

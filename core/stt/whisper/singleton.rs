@@ -493,6 +493,25 @@ pub(crate) fn transcribe_controlled(
     })
 }
 
+/// L1 tail window. Phrase segments stay on the transcript. Word segments are
+/// measured only when the checkpoint's alignment heads produce a DTW path.
+pub(crate) fn transcribe_tail_window(
+    samples: &[f32],
+    sample_rate: u32,
+    language: Option<&str>,
+    initial_prompt: Option<String>,
+    control: &LocalExecutionControl,
+) -> Result<(
+    RawTranscript,
+    Option<Vec<crate::pipeline::contracts::TranscriptSegment>>,
+)> {
+    with_engine_controlled(control, |engine| {
+        engine.with_request(initial_prompt, |engine| {
+            engine.transcribe_tail_window(samples, sample_rate, language, control)
+        })
+    })
+}
+
 /// Transcribe a file with full structured verdict (VAD stats, confidence, provenance).
 pub fn transcribe_file_verdict(
     path: &std::path::Path,

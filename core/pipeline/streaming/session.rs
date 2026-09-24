@@ -721,6 +721,7 @@ mod session_tests {
             range: range.clone(),
         };
         let evidence = crate::stt::tail_provider::TailProviderEvidence {
+            segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
             source: TailEvidenceSource::Whisper,
             revision: Some("fixture-r1".to_string()),
             stability: TailEvidenceStability::Final,
@@ -731,6 +732,7 @@ mod session_tests {
             identity: identity.clone(),
             text: "ala ma kota".to_string(),
             segments: vec![TimedTailSegment {
+                grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 text: "kota".to_string(),
                 range: TailSampleRange {
                     sample_start: 48_160,
@@ -994,6 +996,7 @@ mod local_execution_tests {
                     identity: request.identity.clone(),
                     text: "Iwo".into(),
                     segments: vec![TimedTailSegment {
+                        grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                         text: "Iwo".into(),
                         range: request.identity.range.clone(),
                     }],
@@ -1002,6 +1005,7 @@ mod local_execution_tests {
                     provider_id: TailProviderId::Fake,
                     elapsed_ms: 0,
                     evidence: crate::stt::tail_provider::TailProviderEvidence {
+                        segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                         source: TailEvidenceSource::Whisper,
                         revision: None,
                         stability: TailEvidenceStability::Final,

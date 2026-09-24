@@ -194,6 +194,7 @@ mod tests {
     #[test]
     fn speech_gap_when_silero_range_has_no_overlapping_words() {
         let words = [TimedTailSegment {
+            grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
             text: "hello".into(),
             range: range(0, 1_000),
         }];

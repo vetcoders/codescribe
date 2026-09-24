@@ -370,6 +370,16 @@ pub struct LocalWhisperEngine {
     ts_range: Option<TimestampRange>,
     engine_provenance: TranscriptionEngineVerdict,
     pub decoding_params: DecodingParams,
+    /// `(decoder_layer, head)` pairs from the checkpoint. Empty when the file
+    /// has no `alignment_heads` tensor — word pins are then not measured.
+    alignment_heads: Vec<(usize, usize)>,
+    /// L1 tail decode asks the sample decoder to retain tokens and the encoder
+    /// output. File transcription leaves this false, so that path does not
+    /// clone either.
+    capture_word_alignment: bool,
+    captured_tokens: Vec<u32>,
+    captured_encoder: Option<Tensor>,
+    captured_sample_len: usize,
 }
 
 struct EngineRequest<'a> {
@@ -453,6 +463,7 @@ impl LocalWhisperEngine {
         let read_secs;
         let plain_secs;
 
+        let mut alignment_heads = Vec::new();
         let vb = unsafe {
             let tensors = candle_core::safetensors::MmapedSafetensors::new(&weights_path)?;
             let mut raw_tensors: HashMap<String, Tensor> = HashMap::new();
@@ -461,6 +472,12 @@ impl LocalWhisperEngine {
             let read_started = std::time::Instant::now();
             for (name, view) in tensors.tensors() {
                 if name == "alignment_heads" {
+                    let loaded = view.load(&Device::Cpu)?;
+                    alignment_heads = parse_alignment_heads(
+                        &loaded,
+                        config.decoder_layers,
+                        config.decoder_attention_heads,
+                    )?;
                     continue;
                 }
                 let loaded = view.load(&Device::Cpu)?;
@@ -509,6 +526,11 @@ impl LocalWhisperEngine {
                 TranscriptionEngineMode::RuntimeFallback,
             ),
             decoding_params: DecodingParams::default(),
+            alignment_heads,
+            capture_word_alignment: false,
+            captured_tokens: Vec::new(),
+            captured_encoder: None,
+            captured_sample_len: 0,
         })
     }
 
@@ -532,8 +554,16 @@ impl LocalWhisperEngine {
         let config = candle_config(architecture);
 
         // Load weights directly from bytes - NO DISK I/O!
-        let raw_tensors = candle_core::safetensors::load_buffer(embedded.weights, &Device::Cpu)
+        let mut raw_tensors = candle_core::safetensors::load_buffer(embedded.weights, &Device::Cpu)
             .context("Failed to deserialize embedded weights")?;
+        let alignment_heads = match raw_tensors.remove("alignment_heads") {
+            Some(tensor) => parse_alignment_heads(
+                &tensor,
+                config.decoder_layers,
+                config.decoder_attention_heads,
+            )?,
+            None => Vec::new(),
+        };
 
         let vb = build_varbuilder_from_tensors(raw_tensors, &device)?;
         let model = Model::load(&vb, config.clone()).context("Failed to create Whisper Model")?;
@@ -561,6 +591,11 @@ impl LocalWhisperEngine {
                 TranscriptionEngineMode::EmbeddedDefault,
             ),
             decoding_params: DecodingParams::default(),
+            alignment_heads,
+            capture_word_alignment: false,
+            captured_tokens: Vec::new(),
+            captured_encoder: None,
+            captured_sample_len: 0,
         })
     }
 
@@ -1141,6 +1176,12 @@ impl LocalWhisperEngine {
         control.check()?;
         ensure!(!samples_16k.is_empty(), "audio is empty");
 
+        if self.capture_word_alignment {
+            self.captured_tokens.clear();
+            self.captured_encoder = None;
+            self.captured_sample_len = 0;
+        }
+
         self.model.reset_kv_cache();
 
         // Convert to mel
@@ -1423,6 +1464,12 @@ impl LocalWhisperEngine {
             });
         }
 
+        if self.capture_word_alignment {
+            self.captured_tokens = all_tokens;
+            self.captured_encoder = Some(encoder_output);
+            self.captured_sample_len = samples_16k.len();
+        }
+
         Ok(RawTranscript {
             text,
             segments,
@@ -1430,6 +1477,193 @@ impl LocalWhisperEngine {
             compression_ratio: Some(final_ratio),
             energy: None,
         })
+    }
+
+    /// One L1 window. The returned transcript is the ordinary phrase-grain
+    /// decode. `Some` word segments are measured cross-attention pins on that
+    /// same token sequence; `None` means the checkpoint or the path could not
+    /// measure them, and the caller keeps the phrase segments.
+    pub(crate) fn transcribe_tail_window(
+        &mut self,
+        audio: &[f32],
+        sample_rate: u32,
+        language: Option<&str>,
+        control: &crate::stt::LocalExecutionControl,
+    ) -> Result<(
+        RawTranscript,
+        Option<Vec<crate::pipeline::contracts::TranscriptSegment>>,
+    )> {
+        control.check()?;
+        let samples = audio_loader::resample_to_16k(audio, sample_rate);
+        if samples.is_empty() {
+            return Ok((RawTranscript::default(), None));
+        }
+        let detected_lang;
+        let language = match language {
+            Some(lang) => Some(lang),
+            None => {
+                detected_lang = self.detect_language_16k_controlled(&samples, control)?;
+                Some(detected_lang.as_str())
+            }
+        };
+        self.capture_word_alignment = true;
+        let decode_started = std::time::Instant::now();
+        let transcript = self.transcribe_samples_16k_raw(&samples, language, false, control);
+        let decode_ms = decode_started.elapsed().as_millis() as u64;
+        self.capture_word_alignment = false;
+        let transcript = transcript?;
+        let align_started = std::time::Instant::now();
+        let words = self.align_captured_words(language)?;
+        tracing::info!(
+            decode_ms,
+            align_ms = align_started.elapsed().as_millis() as u64,
+            word_pins = words.as_ref().map_or(0, Vec::len),
+            "tail_window_latency"
+        );
+        self.captured_tokens.clear();
+        self.captured_encoder = None;
+        self.captured_sample_len = 0;
+        Ok((transcript, words))
+    }
+
+    /// DTW word pins for the decode just captured. Failure keeps phrase grain.
+    fn align_captured_words(
+        &mut self,
+        language: Option<&str>,
+    ) -> Result<Option<Vec<crate::pipeline::contracts::TranscriptSegment>>> {
+        if self.alignment_heads.is_empty() || self.captured_tokens.is_empty() {
+            if self.alignment_heads.is_empty() {
+                tracing::info!("tail_word_pins_unavailable: checkpoint has no alignment_heads");
+            }
+            return Ok(None);
+        }
+        let Some(encoder) = self.captured_encoder.clone() else {
+            return Ok(None);
+        };
+        let started = std::time::Instant::now();
+        let eot = self
+            .tokenizer
+            .token_to_id("<|endoftext|>")
+            .context("tokenizer missing <|endoftext|>")?;
+        let text_tokens = self
+            .captured_tokens
+            .iter()
+            .copied()
+            .filter(|token| *token < eot)
+            .collect::<Vec<_>>();
+        if text_tokens.is_empty() {
+            return Ok(None);
+        }
+        let pieces = text_tokens
+            .iter()
+            .map(|id| self.tokenizer.id_to_token(*id).unwrap_or_default())
+            .collect::<Vec<_>>();
+        let spans = super::word_pins::word_token_spans(&pieces);
+        if spans.is_empty() {
+            return Ok(None);
+        }
+        let mut groups = Vec::with_capacity(spans.len());
+        for (start, len) in spans {
+            let end = start + len;
+            let text = self
+                .tokenizer
+                .decode(&text_tokens[start..end], true)
+                .unwrap_or_default();
+            let text = text.trim().to_string();
+            if text.is_empty() {
+                return Ok(None);
+            }
+            groups.push((text, len));
+        }
+        let mut prefix = Vec::new();
+        let sot = self
+            .tokenizer
+            .token_to_id("<|startoftranscript|>")
+            .context("tokenizer missing <|startoftranscript|>")?;
+        prefix.push(sot);
+        if let Some(lang) = language {
+            let lang_tok = format!("<|{}|>", lang.to_lowercase());
+            if let Some(id) = self.tokenizer.token_to_id(&lang_tok)
+                && (id as usize) < self.config.vocab_size
+            {
+                prefix.push(id);
+            }
+        }
+        if let Some(id) = self.tokenizer.token_to_id("<|transcribe|>")
+            && (id as usize) < self.config.vocab_size
+        {
+            prefix.push(id);
+        }
+        let sot_len = prefix.len();
+        let no_timestamps = self
+            .tokenizer
+            .token_to_id("<|notimestamps|>")
+            .context("tokenizer missing <|notimestamps|>")?;
+        prefix.push(no_timestamps);
+        prefix.extend(text_tokens);
+        prefix.push(eot);
+
+        let token_tensor = Tensor::new(prefix.as_slice(), &self.device)?.unsqueeze(0)?;
+        let heads = self
+            .model
+            .alignment_qk(&token_tensor, &encoder, &self.alignment_heads)
+            .context("alignment cross-attention")?;
+        let content_frames = self
+            .captured_sample_len
+            .div_euclid(whisper::HOP_LENGTH)
+            .div_euclid(2);
+        let counts = groups.iter().map(|(_, count)| *count).collect::<Vec<_>>();
+        let texts = groups
+            .iter()
+            .map(|(text, _)| text.as_str())
+            .collect::<Vec<_>>();
+        let Some(mut words) = super::word_pins::align_measured_words(
+            &heads,
+            sot_len,
+            &counts,
+            &texts,
+            content_frames,
+        ) else {
+            tracing::info!(
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "tail_word_pin_alignment_unmeasured"
+            );
+            return Ok(None);
+        };
+        super::word_pins::merge_word_punctuation(&mut words);
+        let duration = self.captured_sample_len as f32 / whisper::SAMPLE_RATE as f32;
+        let mut segments = Vec::with_capacity(words.len());
+        let mut previous_end = 0.0_f32;
+        for word in words {
+            if word.start_secs + 1.0e-3 < previous_end {
+                tracing::info!(
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "tail_word_pin_alignment_unmeasured"
+                );
+                return Ok(None);
+            }
+            let start = word.start_secs.clamp(0.0, duration);
+            let end = word.end_secs.min(duration);
+            if end <= start {
+                tracing::info!(
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "tail_word_pin_alignment_unmeasured"
+                );
+                return Ok(None);
+            }
+            previous_end = end;
+            segments.push(crate::pipeline::contracts::TranscriptSegment {
+                text: word.text,
+                start_ts: start,
+                end_ts: end,
+            });
+        }
+        tracing::info!(
+            words = segments.len(),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "tail_word_pin_alignment"
+        );
+        Ok(Some(segments))
     }
 }
 
@@ -1525,6 +1759,33 @@ fn compression_ratio(text: &str) -> f32 {
     let compressed = encoder.finish().unwrap_or_default();
 
     original_len as f32 / compressed.len() as f32
+}
+
+/// Read `(layer, head)` pairs from the checkpoint's `alignment_heads` tensor.
+fn parse_alignment_heads(
+    tensor: &Tensor,
+    n_layers: usize,
+    n_heads: usize,
+) -> Result<Vec<(usize, usize)>> {
+    let dims = tensor.dims();
+    ensure!(
+        dims.len() == 2 && dims[1] == 2 && dims[0] > 0,
+        "alignment_heads shape {dims:?}, expected [N, 2]"
+    );
+    let pairs = tensor
+        .to_vec2::<i64>()
+        .context("alignment_heads must be i64")?;
+    let mut heads = Vec::with_capacity(pairs.len());
+    for pair in pairs {
+        let layer = usize::try_from(pair[0]).context("alignment head layer is negative")?;
+        let head = usize::try_from(pair[1]).context("alignment head index is negative")?;
+        ensure!(
+            layer < n_layers && head < n_heads,
+            "alignment head ({layer}, {head}) is outside the decoder ({n_layers} layers × {n_heads} heads)"
+        );
+        heads.push((layer, head));
+    }
+    Ok(heads)
 }
 
 /// Build a VarBuilder from verified unquantized tensors.
@@ -2648,6 +2909,11 @@ mod local_execution_control_tests {
                 initial_prompt: Some("previous".into()),
                 ..DecodingParams::default()
             },
+            alignment_heads: Vec::new(),
+            capture_word_alignment: false,
+            captured_tokens: Vec::new(),
+            captured_encoder: None,
+            captured_sample_len: 0,
         }
     }
 

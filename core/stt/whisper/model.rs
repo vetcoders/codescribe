@@ -188,6 +188,52 @@ impl MultiHeadAttention {
         Ok(wv)
     }
 
+    /// Cross-attention output plus pre-softmax QK `(batch, heads, tokens, frames)`.
+    ///
+    /// Q, K, the folded scale, softmax and the output projection are the same
+    /// operations as [`Self::forward`] for `xa: Some`. File decoding does not
+    /// call this; word alignment does, on the tail path only.
+    fn forward_cross_qk(
+        &mut self,
+        x: &Tensor,
+        xa: &Tensor,
+        flush_cache: bool,
+    ) -> Result<(Tensor, Tensor)> {
+        let q = self.query.forward(x)?;
+        if flush_cache {
+            self.kv_cache = None;
+        }
+        let (k, v) = if let Some((k, v)) = &self.kv_cache {
+            (k.clone(), v.clone())
+        } else {
+            let k = self.key.forward(xa)?;
+            let v = self.value.forward(xa)?;
+            self.kv_cache = Some((k.clone(), v.clone()));
+            (k, v)
+        };
+        let (_, _n_ctx, n_state) = q.dims3()?;
+        let scale = ((n_state / self.n_head) as f64).powf(-0.25);
+        let q = (self.reshape_head(&q)? * scale)?;
+        let k = (self.reshape_head(&k)?.transpose(2, 3)? * scale)?;
+        let v = self.reshape_head(&v)?.contiguous()?;
+        let qk = {
+            let _enter = self.matmul_span.enter();
+            q.matmul(&k)?
+        };
+        let w = {
+            let _enter = self.softmax_span.enter();
+            candle_nn::ops::softmax_last_dim(&qk)?
+        };
+        let wv = {
+            let _enter = self.matmul_span.enter();
+            w.matmul(&v)?
+        }
+        .transpose(1, 2)?
+        .flatten_from(2)?;
+        let out = self.out.forward(&wv)?;
+        Ok((out, qk))
+    }
+
     /// Drop the cached cross-attention K/V.
     fn reset_kv_cache(&mut self) {
         self.kv_cache = None;
@@ -265,6 +311,39 @@ impl ResidualAttentionBlock {
                 .gelu()?,
         )?;
         x + mlp
+    }
+
+    /// Same block as [`Self::forward`], also returning pre-softmax cross-attention
+    /// for `heads` (indexes into this layer). `heads` empty still runs the block
+    /// so later layers see the real hidden state.
+    fn forward_capturing_heads(
+        &mut self,
+        x: &Tensor,
+        xa: &Tensor,
+        mask: Option<&Tensor>,
+        flush_kv_cache: bool,
+        heads: &[usize],
+    ) -> Result<(Tensor, Vec<Vec<Vec<f32>>>)> {
+        let _enter = self.span.enter();
+        let attn = self
+            .attn
+            .forward(&self.attn_ln.forward(x)?, None, mask, flush_kv_cache)?;
+        let mut x = (x + attn)?;
+        let mut captured = Vec::new();
+        if let Some((attn, ln)) = &mut self.cross_attn {
+            let (cross, qk) = attn.forward_cross_qk(&ln.forward(&x)?, xa, flush_kv_cache)?;
+            if !heads.is_empty() {
+                captured = cross_attention_heads(&qk, heads)?;
+            }
+            x = (&x + cross)?;
+        }
+        let mlp = self.mlp_linear2.forward(
+            &self
+                .mlp_linear1
+                .forward(&self.mlp_ln.forward(&x)?)?
+                .gelu()?,
+        )?;
+        Ok(((x + mlp)?, captured))
     }
 
     /// Clear both attention caches in this block.
@@ -455,6 +534,56 @@ impl TextDecoder {
         self.ln.forward(&x)
     }
 
+    /// One full-sequence decoder pass that records pre-softmax cross-attention
+    /// for `heads` `(layer, head)`.
+    ///
+    /// Layers that are not alignment heads use [`ResidualAttentionBlock::forward`]
+    /// unchanged. Alignment layers add the QK read and the same residual output.
+    fn alignment_qk(
+        &mut self,
+        tokens: &Tensor,
+        xa: &Tensor,
+        heads: &[(usize, usize)],
+    ) -> Result<Vec<Vec<Vec<f32>>>> {
+        let last = tokens.dim(D::Minus1)?;
+        let token_embedding = self.token_embedding.forward(tokens)?;
+        let positional_embedding = self.positional_embedding.narrow(0, 0, last)?;
+        let mut x = token_embedding.broadcast_add(&positional_embedding)?;
+        let mut found = vec![None; heads.len()];
+        for (layer, block) in self.blocks.iter_mut().enumerate() {
+            let selected = heads
+                .iter()
+                .enumerate()
+                .filter(|(_, (head_layer, _))| *head_layer == layer)
+                .map(|(slot, (_, head))| (slot, *head))
+                .collect::<Vec<_>>();
+            if selected.is_empty() {
+                x = block.forward(&x, Some(xa), Some(&self.mask), true)?;
+                continue;
+            }
+            let head_ids = selected.iter().map(|(_, head)| *head).collect::<Vec<_>>();
+            let (next, captured) =
+                block.forward_capturing_heads(&x, xa, Some(&self.mask), true, &head_ids)?;
+            x = next;
+            for ((slot, _), matrix) in selected.iter().zip(captured) {
+                found[*slot] = Some(matrix);
+            }
+        }
+        let _ = self.ln.forward(&x)?;
+        found
+            .into_iter()
+            .enumerate()
+            .map(|(index, matrix)| {
+                matrix.ok_or_else(|| {
+                    candle_core::Error::Msg(format!(
+                        "alignment head {} was not produced by the decoder",
+                        index
+                    ))
+                })
+            })
+            .collect()
+    }
+
     /// Project hidden states to vocabulary logits.
     ///
     /// Whisper ties the output projection to the token embedding matrix, so this
@@ -505,4 +634,27 @@ impl Whisper {
             .for_each(|b| b.reset_kv_cache());
         self.decoder.reset_kv_cache();
     }
+
+    /// Pre-softmax cross-attention for the checkpoint's alignment heads.
+    ///
+    /// `heads` entries are `(decoder_layer, head)`. Each returned matrix is
+    /// `[token, encoder_frame]` for one head, in the same order.
+    pub(crate) fn alignment_qk(
+        &mut self,
+        tokens: &Tensor,
+        xa: &Tensor,
+        heads: &[(usize, usize)],
+    ) -> Result<Vec<Vec<Vec<f32>>>> {
+        self.decoder.alignment_qk(tokens, xa, heads)
+    }
+}
+
+/// Slice pre-softmax QK `(batch, heads, tokens, frames)` down to requested heads.
+fn cross_attention_heads(qk: &Tensor, heads: &[usize]) -> Result<Vec<Vec<Vec<f32>>>> {
+    let mut captured = Vec::with_capacity(heads.len());
+    for head in heads {
+        let matrix = qk.i((0, *head, .., ..))?.contiguous()?.to_vec2::<f32>()?;
+        captured.push(matrix);
+    }
+    Ok(captured)
 }
