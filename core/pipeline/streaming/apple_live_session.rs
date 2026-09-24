@@ -14198,6 +14198,82 @@ mod relay_l1_overlap_admission_tests {
         assert_eq!(held_count(&lane), 1);
     }
 
+    /// The capture writer precedes the Apple worker, so an ordinarily late
+    /// energy writer is not a production explanation for `None`. An invalid
+    /// earlier PCM block is: the owner marks this epoch unmeasurable, while a
+    /// later finite occurrence still has its own window and qualification.
+    /// The pin is in that occurrence's measured-zero tail and must not borrow
+    /// speech authority from a poisoned, unavailable energy lookup.
+    #[test]
+    fn whisper_pin_after_invalid_capture_cannot_gain_speech_authority() {
+        let mut lane = open("relay-invalid-before-pin");
+        let session = "relay-invalid-before-pin";
+        let earlier_invalid_end = 160_u64;
+        let voiced_len = 24_000_u64;
+        let occurrence_end = earlier_invalid_end + 48_000;
+        record_energy(
+            &lane,
+            &[
+                vec![f32::NAN; earlier_invalid_end as usize],
+                vec![0.2; voiced_len as usize],
+                vec![0.0; voiced_len as usize],
+            ],
+        );
+        let occurrence = OccurrenceIdentity::new(
+            session,
+            1,
+            earlier_invalid_end,
+            occurrence_end,
+        );
+        stage(&mut lane, 1, occurrence.clone(), "mowa");
+        let mut l1_piece = piece(1, &occurrence, "mowa");
+        l1_piece.audio[voiced_len as usize..].fill(0.0);
+        assert!(lane.state.enqueue_layer1_piece(&lane.tx, l1_piece));
+        assert!(lane.state.flush_layer1_coalesce(&lane.tx));
+        close_lexicon(&mut lane, 1, &occurrence, "mowa");
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 1);
+        let pin_start = earlier_invalid_end + 26_000;
+        let pin_end = earlier_invalid_end + 46_000;
+        assert!(pin_start >= earlier_invalid_end + voiced_len);
+        assert!(pin_end <= occurrence_end);
+        assert_eq!(
+            lane.state
+                .capture_energy
+                .voiced_hops_in(session, 1, pin_start, pin_end),
+            None,
+            "invalid earlier PCM makes this owner unavailable, not speech-backed"
+        );
+
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![word_pin(session, "halucynacja", pin_start, pin_end)],
+            ),
+            3.0,
+        );
+        let events = drain(&mut lane.rx);
+        assert_eq!(
+            mutation_count(&events),
+            0,
+            "an invalid speech witness cannot authorize a silent pin"
+        );
+        assert!(!unanchored_label(&events, "halucynacja"));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            EngineEvent::LedgerMutation {
+                observation,
+                receipt: MutationReceipt::Refuse { .. },
+                ..
+            } if observation.occurrence.sample_start == pin_start
+                && observation.occurrence.sample_end == pin_end
+        )));
+        assert_eq!(held_text(&lane, &occurrence).as_deref(), Some("mowa"));
+        assert_eq!(held_count(&lane), 1);
+    }
+
     /// The same geometry, with the pin overlapping a voiced hop.
     ///
     /// Contract: a pin that contains voiced audio stays admissible. Hop
