@@ -700,6 +700,16 @@ final class OverlayState {
     isRevisionDraftDirty ? revisionDraft : formattedText
   }
 
+  /// Read-only words Rust keeps visible without mutation authority — for
+  /// example a Whisper alternative the ledger refused as a whole-span
+  /// replacement — in PCM order. They ride the capture-bound compact paint,
+  /// never `formattedText`, so no canvas, copy, or delivery path reads them.
+  /// Live only: a terminal take shows its sealed document alone.
+  var liveEvidence: [CsUnanchoredEvidence] {
+    guard !terminal, mode == .listening || mode == .finalizing else { return [] }
+    return compactProjection?.evidence ?? []
+  }
+
   /// Post-take review owns the floating panel. The formatted / no-speech
   /// surface must not yield to an Assistive tray tick — that path calls
   /// `hide()` and arms Agent auto-send.
@@ -2533,6 +2543,21 @@ final class OverlayState {
       )
     )
     s.vadActive = true
+    return s
+  }
+
+  /// Seeded view model for #Preview: a live take with a refused Whisper
+  /// alternative painted beside the canvas as read-only evidence.
+  static func previewListeningWithEvidence() -> OverlayState {
+    let s = previewListening()
+    s.compactProjection = CsCompactProjection(
+      sessionId: "preview", captureEpoch: 1, sequence: 1, text: "write a test for it",
+      degraded: false,
+      evidence: [
+        CsUnanchoredEvidence(
+          sampleStart: 16_000, sampleEnd: 48_000, text: "add a rate limit to the log-in route",
+          reason: "exclusive_tail_awaiting_whole_span")
+      ])
     return s
   }
 

@@ -177,21 +177,23 @@ final class OverlayStateTests: XCTestCase {
   func testCompactPaintCannotAdmitCaptureOrMutateDocument() {
     let state = OverlayState()
     let initial = CsCompactProjection(
-      sessionId: "A", captureEpoch: 7, sequence: 1, text: "", degraded: false)
+      sessionId: "A", captureEpoch: 7, sequence: 1, text: "", degraded: false, evidence: [])
     state.applyCompactProjection(initial)
     XCTAssertNil(state.compactProjection)
     state.handleRecordingPreparing()
     state.applyCompactProjection(initial)
     let warning = CsCompactProjection(
-      sessionId: "A", captureEpoch: 7, sequence: 2, text: "…", degraded: true)
+      sessionId: "A", captureEpoch: 7, sequence: 2, text: "…", degraded: true, evidence: [])
     state.applyCompactProjection(warning)
     XCTAssertEqual(state.compactProjection, warning)
     for stale in [
       initial,
       CsCompactProjection(
-        sessionId: "A", captureEpoch: 8, sequence: 9, text: "bad epoch", degraded: false),
+        sessionId: "A", captureEpoch: 8, sequence: 9, text: "bad epoch", degraded: false,
+        evidence: []),
       CsCompactProjection(
-        sessionId: "B", captureEpoch: 7, sequence: 9, text: "bad session", degraded: false),
+        sessionId: "B", captureEpoch: 7, sequence: 9, text: "bad session", degraded: false,
+        evidence: []),
     ] {
       state.applyCompactProjection(stale)
       XCTAssertEqual(state.compactProjection, warning)
@@ -205,7 +207,7 @@ final class OverlayStateTests: XCTestCase {
     state.applyCompactProjection(warning)
     XCTAssertNil(state.compactProjection)
     let successor = CsCompactProjection(
-      sessionId: "B", captureEpoch: 1, sequence: 1, text: "", degraded: false)
+      sessionId: "B", captureEpoch: 1, sequence: 1, text: "", degraded: false, evidence: [])
     state.applyCompactProjection(successor)
     XCTAssertEqual(state.compactProjection, successor)
     state.finishControllerRecording()
@@ -215,7 +217,7 @@ final class OverlayStateTests: XCTestCase {
     let channel = AsyncStream<OverlayListenerEvent>.makeStream()
     let listener = DictationListener(continuation: channel.continuation)
     let paint = CsCompactProjection(
-      sessionId: "A", captureEpoch: 7, sequence: 2, text: "…", degraded: true)
+      sessionId: "A", captureEpoch: 7, sequence: 2, text: "…", degraded: true, evidence: [])
     listener.onCompactProjection(event: paint)
     channel.continuation.finish()
     var iterator = channel.stream.makeAsyncIterator()
@@ -223,6 +225,29 @@ final class OverlayStateTests: XCTestCase {
       return XCTFail("Missing compact projection")
     }
     XCTAssertEqual(received, paint)
+  }
+
+  /// Counterexample A at the Swift boundary: a refused Whisper alternative
+  /// rides the compact paint as evidence. It is shown beside the canvas while
+  /// the take is live and never reaches the canvas or delivered text.
+  func testUnanchoredEvidenceIsLivePaintBesideTheCanvasOnly() {
+    let state = OverlayState()
+    state.handleRecordingPreparing()
+    projectText("Apple mówi tak", to: state, sessionId: "A")
+    let alternative = CsUnanchoredEvidence(
+      sampleStart: 16_000, sampleEnd: 32_000, text: "Whisper mówi inaczej",
+      reason: "exclusive_tail_awaiting_whole_span")
+    state.applyCompactProjection(
+      CsCompactProjection(
+        sessionId: "A", captureEpoch: 1, sequence: 1, text: "Apple mówi tak",
+        degraded: false, evidence: [alternative]))
+    XCTAssertEqual(state.liveEvidence, [alternative])
+    XCTAssertEqual(state.canvasText, "Apple mówi tak", "evidence never enters the canvas")
+    XCTAssertEqual(state.activeText, "Apple mówi tak", "nor the delivered text")
+
+    projectText("Apple mówi tak", to: state, terminal: true, sessionId: "A")
+    XCTAssertTrue(state.liveEvidence.isEmpty, "a terminal take shows its sealed document alone")
+    XCTAssertEqual(state.canvasText, "Apple mówi tak")
   }
 
   private var nextProjectionSequence: UInt64 = 0

@@ -7739,15 +7739,25 @@ public struct CsCompactProjection: Equatable, Hashable {
     public var sequence: UInt64
     public var text: String
     public var degraded: Bool
+    /**
+     * Read-only unanchored text beside the canvas, in PCM order. Swift paints
+     * it as secondary text; it is never canvas, Bus, or delivery bytes.
+     */
+    public var evidence: [CsUnanchoredEvidence]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(sessionId: String, captureEpoch: UInt64, sequence: UInt64, text: String, degraded: Bool) {
+    public init(sessionId: String, captureEpoch: UInt64, sequence: UInt64, text: String, degraded: Bool,
+        /**
+         * Read-only unanchored text beside the canvas, in PCM order. Swift paints
+         * it as secondary text; it is never canvas, Bus, or delivery bytes.
+         */evidence: [CsUnanchoredEvidence]) {
         self.sessionId = sessionId
         self.captureEpoch = captureEpoch
         self.sequence = sequence
         self.text = text
         self.degraded = degraded
+        self.evidence = evidence
     }
 
 
@@ -7768,7 +7778,8 @@ public struct FfiConverterTypeCsCompactProjection: FfiConverterRustBuffer {
                 captureEpoch: FfiConverterUInt64.read(from: &buf),
                 sequence: FfiConverterUInt64.read(from: &buf),
                 text: FfiConverterString.read(from: &buf),
-                degraded: FfiConverterBool.read(from: &buf)
+                degraded: FfiConverterBool.read(from: &buf),
+                evidence: FfiConverterSequenceTypeCsUnanchoredEvidence.read(from: &buf)
         )
     }
 
@@ -7778,6 +7789,7 @@ public struct FfiConverterTypeCsCompactProjection: FfiConverterRustBuffer {
         FfiConverterUInt64.write(value.sequence, into: &buf)
         FfiConverterString.write(value.text, into: &buf)
         FfiConverterBool.write(value.degraded, into: &buf)
+        FfiConverterSequenceTypeCsUnanchoredEvidence.write(value.evidence, into: &buf)
     }
 }
 
@@ -12491,6 +12503,70 @@ public func FfiConverterTypeCsTrayToggles_lower(_ value: CsTrayToggles) -> RustB
 
 
 /**
+ * One unanchored text and the capture range it belongs to. `reason` is the
+ * ledger's no-authority label; nothing here can mutate the document.
+ */
+public struct CsUnanchoredEvidence: Equatable, Hashable {
+    public var sampleStart: UInt64
+    public var sampleEnd: UInt64
+    public var text: String
+    public var reason: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(sampleStart: UInt64, sampleEnd: UInt64, text: String, reason: String) {
+        self.sampleStart = sampleStart
+        self.sampleEnd = sampleEnd
+        self.text = text
+        self.reason = reason
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsUnanchoredEvidence: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsUnanchoredEvidence: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsUnanchoredEvidence {
+        return
+            try CsUnanchoredEvidence(
+                sampleStart: FfiConverterUInt64.read(from: &buf),
+                sampleEnd: FfiConverterUInt64.read(from: &buf),
+                text: FfiConverterString.read(from: &buf),
+                reason: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsUnanchoredEvidence, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.sampleStart, into: &buf)
+        FfiConverterUInt64.write(value.sampleEnd, into: &buf)
+        FfiConverterString.write(value.text, into: &buf)
+        FfiConverterString.write(value.reason, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsUnanchoredEvidence_lift(_ buf: RustBuffer) throws -> CsUnanchoredEvidence {
+    return try FfiConverterTypeCsUnanchoredEvidence.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsUnanchoredEvidence_lower(_ value: CsUnanchoredEvidence) -> RustBuffer {
+    return FfiConverterTypeCsUnanchoredEvidence.lower(value)
+}
+
+
+/**
  * Receipt returned to Swift after Rust has committed a user revision and
  * synchronously emitted its projection callback.
  */
@@ -15512,6 +15588,31 @@ fileprivate struct FfiConverterSequenceTypeCsToolGrant: FfiConverterRustBuffer {
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeCsToolGrant.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCsUnanchoredEvidence: FfiConverterRustBuffer {
+    typealias SwiftType = [CsUnanchoredEvidence]
+
+    public static func write(_ value: [CsUnanchoredEvidence], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCsUnanchoredEvidence.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CsUnanchoredEvidence] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CsUnanchoredEvidence]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCsUnanchoredEvidence.read(from: &buf))
         }
         return seq
     }

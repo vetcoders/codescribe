@@ -333,7 +333,8 @@ struct DictationOverlayView: View {
       } else {
         switch state.mode {
         case .listening, .finalizing:
-          EmptyView()
+          // Beside the canvas, never in it: read-only words with no authority.
+          OverlayEvidenceList(state: state, palette: palette)
         case .formatted:
           revisionStatusRow
         case .coverageRefused:
@@ -627,6 +628,9 @@ private struct OverlayScrollEdgeEffects: ViewModifier {
       VStack(spacing: CSSpace.section) {
         dockPreviewRow("Listening", light: .previewListening(), dark: .previewListening())
         dockPreviewRow(
+          "Listening · evidence", light: .previewListeningWithEvidence(),
+          dark: .previewListeningWithEvidence())
+        dockPreviewRow(
           "Finalizing", light: .previewTranscribing(), dark: .previewTranscribing())
         dockPreviewRow("Formatted", light: .previewFormatted(), dark: .previewFormatted())
         dockPreviewRow("No speech", light: .previewNoSpeech(), dark: .previewNoSpeech())
@@ -647,6 +651,14 @@ private struct OverlayScrollEdgeEffects: ViewModifier {
         DictationOverlayView(state: .previewListening())
       }
       .preferredColorScheme(.dark)
+    }
+  }
+
+  #Preview("Listening · evidence") {
+    // A refused Whisper alternative sits beside the canvas as secondary,
+    // non-committed text; the canvas keeps the committed words only.
+    overlayPreviewCanvas(width: 360, height: 300) {
+      DictationOverlayView(state: .previewListeningWithEvidence())
     }
   }
 
