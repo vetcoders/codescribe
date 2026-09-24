@@ -802,6 +802,40 @@ pub fn bound_context_range(
     range
 }
 
+/// Left edge of a decode window that must cover `min_samples`, ending at the
+/// occurrence.
+///
+/// `existing` is the pad from [`bound_context_range`]. An occurrence already
+/// at least `min_samples` long keeps that pad, fences included. A shorter
+/// occurrence grows left past the previous occurrence and the long-silence
+/// fence, and stops at capture start or the retention edge. The right edge
+/// is the occurrence end. Ownership is not this range.
+pub fn decode_window_with_min_context(
+    utterance: &TailSampleRange,
+    existing: &TailSampleRange,
+    min_samples: u64,
+    capture_start: u64,
+    retention_start: u64,
+) -> TailSampleRange {
+    let owned = utterance.sample_end.saturating_sub(utterance.sample_start);
+    if min_samples == 0 || owned >= min_samples {
+        return existing.clone();
+    }
+    let floor = capture_start.max(retention_start);
+    let want = utterance.sample_end.saturating_sub(min_samples);
+    let start = existing
+        .sample_start
+        .min(want)
+        .max(floor)
+        .min(utterance.sample_end);
+    TailSampleRange {
+        session: utterance.session.clone(),
+        capture_epoch: utterance.capture_epoch,
+        sample_start: start,
+        sample_end: utterance.sample_end,
+    }
+}
+
 /// One word pinned to a PCM range for fusion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FusionWord {
@@ -1090,6 +1124,58 @@ mod tests {
         );
         assert_eq!(prompt.sample_start, 48_000);
         assert_eq!(prompt.sample_end, 64_000);
+    }
+
+    /// A 0.31 s tail after a long silence stays fenced for the small pad, then
+    /// the minimum window reaches back four seconds and still ends on the tail.
+    /// One second of capture leaves a shorter window that stops at capture start.
+    #[test]
+    fn short_tail_after_long_silence_hears_at_least_four_seconds() {
+        let rate = 48_000u64;
+        let occurrence_len = (0.31_f32 * rate as f32).round() as u64;
+        let occurrence_end = 609_280u64;
+        let occurrence_start = occurrence_end - occurrence_len;
+        let silence = (LONG_SILENCE_FENCE_SECS * rate as f32).round() as u64;
+        let previous_end = occurrence_start - silence;
+        let pad = (DEFAULT_SYMMETRIC_PAD_SECS * rate as f32).round() as u64;
+        let utterance = range(occurrence_start, occurrence_end);
+        let bounds = ContextBounds {
+            long_silence_fence: occurrence_start,
+            capture_end: occurrence_end,
+            previous_utterance_end: Some(previous_end),
+            next_utterance_start: None,
+        };
+        let fenced = bound_context_range(&utterance, FusionContextMode::SymmetricPad, pad, &bounds);
+        assert_eq!(
+            fenced.sample_end.saturating_sub(fenced.sample_start),
+            occurrence_len,
+            "the small pad still stops at the long-silence fence"
+        );
+
+        let window = decode_window_with_min_context(&utterance, &fenced, 4 * rate, 0, 0);
+        assert_eq!(window.sample_end, occurrence_end);
+        assert!(
+            window.sample_end.saturating_sub(window.sample_start) >= 4 * rate,
+            "window {}..{} is shorter than 4 s",
+            window.sample_start,
+            window.sample_end
+        );
+        assert!(
+            window.sample_start < previous_end && window.sample_start < occurrence_start,
+            "minimum context crosses the previous occurrence and the silence fence"
+        );
+
+        let capture_start = occurrence_end - rate;
+        let clamped = decode_window_with_min_context(
+            &utterance,
+            &fenced,
+            4 * rate,
+            capture_start,
+            capture_start,
+        );
+        assert_eq!(clamped.sample_start, capture_start);
+        assert_eq!(clamped.sample_end, occurrence_end);
+        assert!(clamped.sample_end.saturating_sub(clamped.sample_start) < 4 * rate);
     }
 
     /// The default cut reaches both ways. 400 ms at 16 kHz is 6 400 samples;

@@ -27,6 +27,28 @@ struct DictationHandsFreeTab: View {
         .accessibilityLabel("Hands-free silence duration")
         .accessibilityValue(
           Text("\(model.settings.toggleSilenceSec, format: Self.oneDecimal) seconds"))
+
+      HStack {
+        VStack(alignment: .leading, spacing: 4) {
+          Text("Whisper context")
+            .font(CSFont.ui(13, .semibold))
+            .foregroundStyle(CSColor.textBody)
+          Text(
+            "How many seconds of audio Whisper hears with each fragment. A shorter window is faster, but a short ending can be lost."
+          )
+          .font(CSFont.ui(11.5))
+          .foregroundStyle(CSColor.textMutedAlt)
+        }
+        Spacer(minLength: 12)
+        Text("\(model.settings.whisperContextWindowSec, format: Self.oneDecimal) s")
+          .font(CSFont.mono(11, .semibold))
+          .foregroundStyle(CSColor.textBody)
+      }
+      Slider(value: $model.whisperContextWindowSlider, in: 0.5...10, step: 0.5)
+        .tint(CSColor.chromeAccent)
+        .accessibilityLabel("Whisper context window")
+        .accessibilityValue(
+          Text("\(model.settings.whisperContextWindowSec, format: Self.oneDecimal) seconds"))
     }
     .csSettingsCard()
   }

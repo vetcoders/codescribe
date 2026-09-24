@@ -173,6 +173,11 @@ pub fn migrate_if_needed(
     {
         settings.toggle_silence_sec = Some(n);
     }
+    if let Some(v) = migrated_value(file_env, "WHISPER_CONTEXT_WINDOW_SEC")
+        && let Ok(n) = v.parse::<f32>()
+    {
+        settings.whisper_context_window_sec = Some(n);
+    }
     if let Some(v) = migrated_value(file_env, "DOUBLE_TAP_INTERVAL_MS")
         && let Ok(n) = v.parse::<u64>()
     {

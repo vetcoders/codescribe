@@ -1841,6 +1841,11 @@ final class SettingsViewModel: ObservableObject {
     persist("TOGGLE_SILENCE_SEC", String(format: "%.1f", seconds))
   }
 
+  func setWhisperContextWindowSeconds(_ seconds: Float) {
+    settings.whisperContextWindowSec = seconds
+    persist("WHISPER_CONTEXT_WINDOW_SEC", String(format: "%.1f", seconds))
+  }
+
   func setSoundFeedbackEnabled(_ enabled: Bool) {
     settings.beepOnStart = enabled
     persist("BEEP_ON_START", enabled ? "1" : "0")

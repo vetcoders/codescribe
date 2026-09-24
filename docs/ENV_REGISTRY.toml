@@ -449,6 +449,13 @@ reload = "hot"
 category = "stt"
 description = "Whisper transcription language hint. auto leaves detection to Whisper and applies on the next capture."
 
+[vars.WHISPER_CONTEXT_WINDOW_SEC]
+default = "4.0"
+type = "f32"
+reload = "hot"
+category = "stt"
+description = "Seconds of captured PCM each Layer 1 Whisper window must cover, ending at the occurrence. Shorter tails keep this much audio to their left, crossing a previous occurrence or a long silence, and stop at capture start or the retention edge. An occurrence already at least this long keeps its existing pad. Next recording session. Range 0.5-10, step 0.5."
+
 [vars.CODESCRIBE_WHISPER_INITIAL_PROMPT]
 default = ""
 type = "string"
