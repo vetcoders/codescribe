@@ -12660,9 +12660,17 @@ mod live_refinement_admission_tests {
         assert_eq!(first_range.session, "live-admission");
         assert_eq!(first_range.capture_epoch, 7);
         assert!(first_range.sample_start < first_range.sample_end);
+        assert!(first_range.sample_end >= 3_500);
         assert!(first_range.sample_end <= 5_000);
-        assert!(first_range.sample_end - first_range.sample_start <= 4_000);
+        assert!((3_000..=4_000).contains(
+            &(first_range.sample_end - first_range.sample_start)
+        ));
         first.provider_request.validate_pcm(&first.audio).unwrap();
+        assert!(seal_sliced_by_silero(&mut state, &events, &[]));
+        assert!(
+            requests.try_recv().is_err(),
+            "revisiting the same open PCM frontier must not resend its L1 window"
+        );
 
         // The same physical speech remains open. A second observation must
         // advance the PCM clock with about one second of read-only overlap;
@@ -12682,12 +12690,20 @@ mod live_refinement_admission_tests {
         assert_eq!(second_range.session, first_range.session);
         assert_eq!(second_range.capture_epoch, first_range.capture_epoch);
         assert!(second_range.sample_end > first_range.sample_end);
+        assert!(second_range.sample_end >= 6_500);
         assert!(second_range.sample_end <= 8_000);
-        assert!(second_range.sample_end - second_range.sample_start <= 4_000);
+        assert!((3_000..=4_000).contains(
+            &(second_range.sample_end - second_range.sample_start)
+        ));
         assert!((500..=1_500).contains(
             &first_range.sample_end.saturating_sub(second_range.sample_start)
         ));
         second.provider_request.validate_pcm(&second.audio).unwrap();
+        assert!(seal_sliced_by_silero(&mut state, &events, &[]));
+        assert!(
+            requests.try_recv().is_err(),
+            "revisiting the extended PCM frontier must not resend its L1 window"
+        );
     }
 
     #[test]
