@@ -610,7 +610,13 @@ to the resolved defects; this section is not a work queue.
   `infer_span_identity_from_text_similarity`,
   `deduplicate_intentional_repetition_by_content`, or
   `claim_layered_on_when_no_windows_reach_the_provider`, and carries
-  `small_inline_llm` which the prose list does not. Reconciled in this cut.
+  `small_inline_llm` which the prose list does not. Reconciled 2026-09-24:
+  the mirror dropped `small_inline_llm`, `final_bam_automatic_producer`, and
+  `session_finalised_content_mutation` — each rule was already prose ("Inline
+  … does not name a small model", "Final BAM is superseded and has no
+  automatic content producer", "SessionFinalised is lifecycle-only and may
+  not mutate text") — and the lock is now bidirectional, so prose ⇔ mirror
+  drift fails the gate in both directions.
 - **`LayerSummary` still names superseded producers.**
   `final_bam_replacements` and `inline_llm_replacements` remain live fields on
   the session receipt for a producer the ledger declares superseded and a layer

@@ -98,6 +98,15 @@ pub enum QualityIssueKind {
     AutoReplaceAfterTranscriptSealed,
     TreatCommittedAsDocument,
     TreatWholeTextMutableUntilSessionSeal,
+    TreatAppleTextAsImmutableFloor,
+    InferSpanIdentityFromTextSimilarity,
+    InferNamedSoundFromSilero,
+    DeduplicateIntentionalRepetitionByContent,
+    TreatMeanEnergyDbAsIdentity,
+    ClaimLayeredOnWhenNoWindowsReachTheProvider,
+    DropAcousticObservationWithoutReceipt,
+    DeclareAPcmRangeThePayloadDoesNotCarry,
+    PresentMeanEnergyAsSpanIdentity,
     // ── Clock / Seal Atlas ───────────────────────────────────────────────
     ClockLie,
     UtteranceGrainSilenceTail,
@@ -241,6 +250,15 @@ impl QualityIssueKind {
         Self::AutoReplaceAfterTranscriptSealed,
         Self::TreatCommittedAsDocument,
         Self::TreatWholeTextMutableUntilSessionSeal,
+        Self::TreatAppleTextAsImmutableFloor,
+        Self::InferSpanIdentityFromTextSimilarity,
+        Self::InferNamedSoundFromSilero,
+        Self::DeduplicateIntentionalRepetitionByContent,
+        Self::TreatMeanEnergyDbAsIdentity,
+        Self::ClaimLayeredOnWhenNoWindowsReachTheProvider,
+        Self::DropAcousticObservationWithoutReceipt,
+        Self::DeclareAPcmRangeThePayloadDoesNotCarry,
+        Self::PresentMeanEnergyAsSpanIdentity,
         Self::ClockLie,
         Self::UtteranceGrainSilenceTail,
         Self::LetterTimingAsMeasurement,
@@ -293,6 +311,23 @@ impl QualityIssueKind {
             Self::TreatWholeTextMutableUntilSessionSeal => {
                 "treat_whole_text_mutable_until_session_seal"
             }
+            Self::TreatAppleTextAsImmutableFloor => "treat_apple_text_as_immutable_floor",
+            Self::InferSpanIdentityFromTextSimilarity => "infer_span_identity_from_text_similarity",
+            Self::InferNamedSoundFromSilero => "infer_named_sound_from_silero",
+            Self::DeduplicateIntentionalRepetitionByContent => {
+                "deduplicate_intentional_repetition_by_content"
+            }
+            Self::TreatMeanEnergyDbAsIdentity => "treat_mean_energy_db_as_identity",
+            Self::ClaimLayeredOnWhenNoWindowsReachTheProvider => {
+                "claim_layered_on_when_no_windows_reach_the_provider"
+            }
+            Self::DropAcousticObservationWithoutReceipt => {
+                "drop_acoustic_observation_without_receipt"
+            }
+            Self::DeclareAPcmRangeThePayloadDoesNotCarry => {
+                "declare_a_pcm_range_the_payload_does_not_carry"
+            }
+            Self::PresentMeanEnergyAsSpanIdentity => "present_mean_energy_as_span_identity",
             Self::ClockLie => "clock_lie",
             Self::UtteranceGrainSilenceTail => "utterance_grain_silence_tail",
             Self::LetterTimingAsMeasurement => "letter_timing_as_measurement",
@@ -399,6 +434,87 @@ impl QualityIssueKind {
                 "Closed spans were mutated as if the whole buffer were still open.",
                 "Sealed [sample_start, sample_end) stayed append-only.",
                 "Restrict mutation to the open tail.",
+            ),
+            Self::TreatAppleTextAsImmutableFloor => spec(
+                self,
+                QualityIssueFamily::EngineContract,
+                FindingSeverity::P0,
+                FindingTarget::EngineCode,
+                "Apple live text was fenced as a protected word floor.",
+                "Whisper/Lexicon corrected the same PCM range through the ledger.",
+                "Rank producers by authority on the range; Apple is a hypothesis.",
+            ),
+            Self::InferSpanIdentityFromTextSimilarity => spec(
+                self,
+                QualityIssueFamily::EngineContract,
+                FindingSeverity::P0,
+                FindingTarget::EngineCode,
+                "Span identity was decided by text similarity instead of the PCM 4-tuple.",
+                "Admission keyed on session/capture_epoch/sample_start/sample_end.",
+                "Delete text-match identity. OccurrenceIdentity is the only key.",
+            ),
+            Self::InferNamedSoundFromSilero => spec(
+                self,
+                QualityIssueFamily::EngineContract,
+                FindingSeverity::P1,
+                FindingTarget::EngineCode,
+                "Plain Silero VAD was presented as a named-sound classifier.",
+                "Sideband claims stay speech_start/speech_end/pause unknown_non_speech.",
+                "Route named sounds to a measured provider; Silero is edges only.",
+            ),
+            Self::DeduplicateIntentionalRepetitionByContent => spec(
+                self,
+                QualityIssueFamily::EngineContract,
+                FindingSeverity::P0,
+                FindingTarget::EngineCode,
+                "Equal text on disjoint PCM ranges was collapsed into one token.",
+                "N distinct ranges delivered N observations (five Iwo corridor).",
+                "Repetition survives by identity; only hesitation rules may collapse.",
+            ),
+            Self::TreatMeanEnergyDbAsIdentity => spec(
+                self,
+                QualityIssueFamily::EngineContract,
+                FindingSeverity::P1,
+                FindingTarget::EngineCode,
+                "Mean energy_db was used as a collision-proof span identifier.",
+                "energy_db appears only as quality evidence, never in a key.",
+                "Keep mean dB out of every identity/equality decision.",
+            ),
+            Self::ClaimLayeredOnWhenNoWindowsReachTheProvider => spec(
+                self,
+                QualityIssueFamily::EngineContract,
+                FindingSeverity::P0,
+                FindingTarget::EngineCode,
+                "Layered reported ON while zero windows reached the provider.",
+                "armed_without_submissions is reported as a failed arming condition.",
+                "Refuse the ON claim without an armed-lane receipt and submissions.",
+            ),
+            Self::DropAcousticObservationWithoutReceipt => spec(
+                self,
+                QualityIssueFamily::EngineContract,
+                FindingSeverity::P0,
+                FindingTarget::EngineCode,
+                "An acoustic observation vanished with no receipt naming the outcome.",
+                "Every admit answers exactly one MutationReceipt, kept or refused.",
+                "No silent drop: unanchored evidence stays visible and receipted.",
+            ),
+            Self::DeclareAPcmRangeThePayloadDoesNotCarry => spec(
+                self,
+                QualityIssueFamily::EngineContract,
+                FindingSeverity::P0,
+                FindingTarget::EngineCode,
+                "A window declared [start, end) over PCM it did not carry.",
+                "declared range == carried samples; validate_pcm admits the window.",
+                "Split at gaps and epochs; never pad or truncate to fake the range.",
+            ),
+            Self::PresentMeanEnergyAsSpanIdentity => spec(
+                self,
+                QualityIssueFamily::EngineContract,
+                FindingSeverity::P1,
+                FindingTarget::EngineCode,
+                "A report presented mean energy as if it identified the span.",
+                "Identity renders as the PCM 4-tuple; energy is a separate column.",
+                "Label energy as evidence on the PCM axis, not as identity.",
             ),
             Self::ClockLie => spec(
                 self,
@@ -1126,6 +1242,30 @@ mod tests {
             assert!(!spec.what.is_empty(), "{kind:?} missing what");
             assert!(!spec.falsifier.is_empty(), "{kind:?} missing falsifier");
             assert!(!spec.action.is_empty(), "{kind:?} missing action");
+        }
+    }
+
+    /// Every `ENGINE_CONTRACT.forbidden` token has exactly one finding kind,
+    /// and no other kind wears a forbidden token as its wire id. Until this
+    /// map existed the supervisor could not even name 9 of the 16 forbiddens.
+    #[test]
+    fn every_mirror_forbidden_maps_to_exactly_one_finding_kind() {
+        use crate::quality::engine_contract::ENGINE_CONTRACT;
+        for token in ENGINE_CONTRACT.forbidden {
+            let matching: Vec<_> = QualityIssueKind::ALL
+                .iter()
+                .filter(|kind| kind.as_str() == *token)
+                .collect();
+            assert_eq!(
+                matching.len(),
+                1,
+                "mirror forbidden {token:?} must map to exactly one QualityIssueKind, found {matching:?}"
+            );
+            assert_eq!(
+                matching[0].spec().family,
+                QualityIssueFamily::EngineContract,
+                "{token:?} must sit in the engine_contract family"
+            );
         }
     }
 
