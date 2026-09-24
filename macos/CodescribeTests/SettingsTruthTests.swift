@@ -17,7 +17,8 @@ final class SettingsTruthTests: XCTestCase {
     settings.sttLiveEndpoint = "wss://secret.invalid/live?token=do-not-copy"
     settings.transcriptTagTemplate = "private template content"
     let text = codescribeDebugInfo(
-      build: AppBuildInfo(version: "1.2.3", build: "456", commit: "abc123", builtAt: "fixture-time"),
+      build: AppBuildInfo(
+        version: "1.2.3", build: "456", commit: "abc123", builtAt: "fixture-time"),
       osVersion: "fixture-os", recording: true, settings: settings,
       lastServing: CsLastServingVerdict(
         engine: "local_whisper", routingMode: "off", disposition: "changed", fallbackUsed: true),
@@ -42,7 +43,8 @@ final class SettingsTruthTests: XCTestCase {
     let text = codescribeDebugInfo(
       build: AppBuildInfo(version: "1", build: "1", commit: "unknown", builtAt: "unknown"),
       osVersion: "fixture-os", recording: false, settings: .sample, lastServing: nil,
-      settingsFile: "/fixture/settings.json", dataDirectory: "/fixture/data", notesDirectory: "/fixture/notes"
+      settingsFile: "/fixture/settings.json", dataDirectory: "/fixture/data",
+      notesDirectory: "/fixture/notes"
     )
     XCTAssertTrue(text.contains("last completed serving engine: not yet observed in this process"))
     XCTAssertFalse(text.contains("last serving disposition:"))
@@ -55,7 +57,8 @@ final class SettingsTruthTests: XCTestCase {
       osVersion: "fixture-os", recording: false, settings: nil,
       lastServing: CsLastServingVerdict(
         engine: "apple", routingMode: "off", disposition: "unchanged", fallbackUsed: false),
-      settingsFile: "/fixture/settings.json", dataDirectory: "/fixture/data", notesDirectory: "/fixture/notes"
+      settingsFile: "/fixture/settings.json", dataDirectory: "/fixture/data",
+      notesDirectory: "/fixture/notes"
     )
     XCTAssertTrue(text.contains("configuration: unavailable"))
     XCTAssertTrue(text.contains("source commit: source-sha"))

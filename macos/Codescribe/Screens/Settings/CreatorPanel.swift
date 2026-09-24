@@ -133,7 +133,9 @@ struct CreatorPanel: View {
       }
       Button("Cancel", role: .cancel) { manualSkillClient = nil }
     } message: { client in
-      Text("The Codescribe skill folder for \(client.displayName) will be moved to a retained backup beside it, then replaced with the copy bundled in this app. Your other skills and agent configuration are not changed. No listener will be started.")
+      Text(
+        "The Codescribe skill folder for \(client.displayName) will be moved to a retained backup beside it, then replaced with the copy bundled in this app. Your other skills and agent configuration are not changed. No listener will be started."
+      )
     }
     .task { await model.refreshMaxToolApprovals() }
   }
@@ -141,15 +143,20 @@ struct CreatorPanel: View {
   private var agentBridgeSection: some View {
     VStack(alignment: .leading, spacing: CSSpace.control) {
       SettingsSectionLabel("Connect your coding agent")
-      Text("Install the Codescribe skill and bus helper from this app. No repository clone or manual file copying is needed.")
-        .font(.callout)
-        .foregroundStyle(CSColor.textHigh)
+      Text(
+        "Install the Codescribe skill and bus helper from this app. No repository clone or manual file copying is needed."
+      )
+      .font(.callout)
+      .foregroundStyle(CSColor.textHigh)
       ForEach(AgentBridgeClient.allCases) { client in
         SettingsControlRow(
           title: client.displayName,
           subtitle: "Named voice messages to your existing conversation"
         ) {
-          Button(model.creatorAgentBridgeStatus.installedClients.contains(client) ? "Update skill" : "Install skill") {
+          Button(
+            model.creatorAgentBridgeStatus.installedClients.contains(client)
+              ? "Update skill" : "Install skill"
+          ) {
             model.installCreatorAgentBridge(for: client)
           }
           .disabled(!model.creatorAgentBridgeStatus.payloadAvailable)
