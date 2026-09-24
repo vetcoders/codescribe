@@ -12674,6 +12674,13 @@ mod live_refinement_admission_tests {
         use crate::audio::chunker::{VadBoundaryEvidence, VadBoundaryKind};
 
         let (mut state, events, _receiver, mut requests) = fixture(4);
+        // Distinct sample values make a range/PCM mismatch observable: a
+        // constant waveform would let a shifted slice pass this assertion.
+        let captured = (0..20_000)
+            .map(|sample| ((sample % 997) + 1) as f32 / 1_000.0)
+            .collect::<Vec<_>>();
+        state.audio = LiveAudioBuffer::new(RATE, DEFAULT_RETENTION_SECS);
+        state.audio.push(&captured);
         let mut fusion = SileroIngress::new(RATE, "live-admission", 7);
         fusion.note_observed_pcm(5_000, 5_000);
         fusion.observe_boundaries(&[VadBoundaryEvidence {
@@ -12685,6 +12692,11 @@ mod live_refinement_admission_tests {
             .ledger_mut()
             .open_or_extend("live-admission", 7, 0, 5_000);
         assert!(!fusion.ledger().utterances()[0].closed);
+        let speech = fusion.acoustic_speech_evidence();
+        assert!(speech.observed_speech(), "the first window needs measured speech");
+        assert_eq!(speech.ranges().len(), 1);
+        assert_eq!(speech.ranges()[0].sample_start, 0);
+        assert_eq!(speech.ranges()[0].sample_end, 5_000);
         state.fusion = Some(fusion);
 
         assert!(seal_sliced_by_silero(&mut state, &events, &[]));
@@ -12701,6 +12713,10 @@ mod live_refinement_admission_tests {
             &(first_range.sample_end - first_range.sample_start)
         ));
         first.provider_request.validate_pcm(&first.audio).unwrap();
+        assert_eq!(
+            first.audio.as_slice(),
+            &captured[first_range.sample_start as usize..first_range.sample_end as usize]
+        );
         assert!(seal_sliced_by_silero(&mut state, &events, &[]));
         assert!(
             requests.try_recv().is_err(),
@@ -12712,11 +12728,16 @@ mod live_refinement_admission_tests {
         // it must not wait for Apple final. Exact occurrence binding is a
         // separate test because the open Silero range's end still changes.
         let fusion = state.fusion.as_mut().unwrap();
-        fusion.note_observed_pcm(8_000, 8_000);
+        fusion.note_observed_pcm(3_000, 8_000);
         fusion
             .ledger_mut()
             .open_or_extend("live-admission", 7, 0, 8_000);
         assert!(!fusion.ledger().utterances()[0].closed);
+        let speech = fusion.acoustic_speech_evidence();
+        assert!(speech.observed_speech(), "the second window needs measured speech");
+        assert_eq!(speech.ranges().len(), 1);
+        assert_eq!(speech.ranges()[0].sample_start, 0);
+        assert_eq!(speech.ranges()[0].sample_end, 8_000);
         assert!(seal_sliced_by_silero(&mut state, &events, &[]));
         let second = requests.try_recv().expect(
             "eight seconds of still-open speech must offer a second L1 observation",
@@ -12734,6 +12755,10 @@ mod live_refinement_admission_tests {
             &first_range.sample_end.saturating_sub(second_range.sample_start)
         ));
         second.provider_request.validate_pcm(&second.audio).unwrap();
+        assert_eq!(
+            second.audio.as_slice(),
+            &captured[second_range.sample_start as usize..second_range.sample_end as usize]
+        );
         assert!(seal_sliced_by_silero(&mut state, &events, &[]));
         assert!(
             requests.try_recv().is_err(),
