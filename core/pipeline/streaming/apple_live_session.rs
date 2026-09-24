@@ -12866,6 +12866,57 @@ mod live_refinement_admission_tests {
     }
 
     #[test]
+    fn apple_empty_whisper_completion_emits_raw_l1_then_lexicon_l2() {
+        let (mut state, events, mut receiver, mut requests) = fixture(1);
+        let dir = tempfile::tempdir().unwrap();
+        state.lexicon_custom_path = dir.path().join("lexicon.custom.jsonl");
+        reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
+        let request = requests.try_recv().expect("speech submits L1 without Apple words");
+        let occurrence = request.member_occurrences[0].1.clone();
+        assert_eq!(state.acoustic_ledger.lock().unwrap().text_of(&occurrence), None);
+
+        let mut completion = labelled_completion(&request);
+        let payload = completion.payload.as_mut().expect("L1 payload");
+        payload.text = "accepromazyna".into();
+        payload.segments[0].text = payload.text.clone();
+        while receiver.try_recv().is_ok() {}
+        state.complete_whisper_window(&events, completion, 20.0);
+
+        let mutations = std::iter::from_fn(|| receiver.try_recv().ok())
+            .filter_map(|event| match event {
+                EngineEvent::LedgerMutation {
+                    observation,
+                    label,
+                    receipt,
+                } if receipt.grants_mutation() => {
+                    Some((observation.producer, label, observation.occurrence))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            mutations,
+            vec![
+                (
+                    LedgerObservationProducer::Whisper,
+                    "accepromazyna".to_string(),
+                    occurrence.clone(),
+                ),
+                (
+                    LedgerObservationProducer::Lexicon,
+                    "Acepromazyna".to_string(),
+                    occurrence.clone(),
+                ),
+            ],
+            "L2 may correct L1 only as a distinct ledger decision on the same PCM occurrence"
+        );
+        assert_eq!(
+            state.acoustic_ledger.lock().unwrap().text_of(&occurrence),
+            Some("Acepromazyna")
+        );
+    }
+
+    #[test]
     fn whisper_foreign_envelopes_preserve_the_submitted_job_until_exact_completion() {
         let (mut state, events, mut receiver, mut requests) = fixture(1);
         reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
