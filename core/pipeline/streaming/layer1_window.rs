@@ -52,8 +52,9 @@ pub struct Layer1Coalesce {
 impl Layer1Coalesce {
     /// Darek's live window: swap after about five Apple segments.
     pub const TARGET_SEGMENTS: usize = 5;
-    /// Hard cap so a long run-on still gets a decode.
-    pub const MAX_AUDIO_SECS: f32 = 16.0;
+    /// Target ceiling for coalescing distinct closed occurrences. A single
+    /// longer occurrence still needs its own PCM-bounded observation policy.
+    pub const MAX_AUDIO_SECS: f32 = 4.0;
     /// A pause this long is a sentence boundary — flush what we have.
     pub const PAUSE_SECS: f32 = 1.2;
 
@@ -87,6 +88,16 @@ impl Layer1Coalesce {
             if gap >= Self::PAUSE_SECS {
                 out.extend(self.take_flushes());
             }
+        }
+        let max_samples = (Self::MAX_AUDIO_SECS * sample_rate.max(1) as f32) as u64;
+        let held_samples = self.pieces.iter().fold(0_u64, |total, held| {
+            total.saturating_add(held.sample_end.saturating_sub(held.sample_start))
+        });
+        if !self.pieces.is_empty()
+            && held_samples.saturating_add(piece.sample_end.saturating_sub(piece.sample_start))
+                > max_samples
+        {
+            out.extend(self.take_flushes());
         }
         if self.pieces.is_empty() && self.neighbour_before.is_empty() {
             // Neighbour is set by the caller before the first push of a window.
@@ -370,6 +381,31 @@ mod tests {
         assert_eq!(flushes[0].member_occurrences.len(), 1);
         assert_eq!(flushes[0].committed_text, "raz");
         assert!(!buf.is_empty());
+    }
+
+    #[test]
+    fn coalescing_flushes_before_a_four_second_window_would_be_exceeded() {
+        let mut buf = Layer1Coalesce::default();
+        let now = Instant::now();
+        assert!(
+            buf.push_at(piece(1, "one", 0.0, 1.5, 1), 16_000, now)
+                .is_empty()
+        );
+        assert!(
+            buf.push_at(piece(2, "two", 1.5, 3.0, 1), 16_000, now)
+                .is_empty()
+        );
+        let flushes = buf.push_at(piece(3, "three", 3.0, 4.5, 1), 16_000, now);
+        assert_eq!(flushes.len(), 1);
+        assert_eq!(flushes[0].sample_start, 0);
+        assert_eq!(flushes[0].sample_end, 48_000);
+        assert_eq!(flushes[0].audio.len(), 48_000);
+        assert_eq!(flushes[0].member_occurrences.len(), 2);
+        let remaining = buf.force_flush();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].sample_start, 48_000);
+        assert_eq!(remaining[0].sample_end, 72_000);
+        assert_eq!(remaining[0].audio.len(), 24_000);
     }
 }
 
