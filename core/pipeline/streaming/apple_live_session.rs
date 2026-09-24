@@ -14134,6 +14134,70 @@ mod relay_l1_overlap_admission_tests {
         assert_conserved(&lane, Some("no_voiced_hop_in_pin"));
     }
 
+    /// A missing capture-energy observation is not evidence of speech. The
+    /// first half is measured, but the Whisper word pin is wholly in the
+    /// unobserved tail. Unlike measured silence, `voiced_hops_in` returns
+    /// `None` here; that must not become permission to relabel the occurrence.
+    #[test]
+    fn whisper_pin_in_unobserved_tail_cannot_gain_speech_authority() {
+        let mut lane = open("relay-unobserved-pin");
+        let session = "relay-unobserved-pin";
+        let observed_end = 24_000_u64;
+        let end = 48_000_u64;
+        record_energy(&lane, &[vec![0.2; observed_end as usize]]);
+        let occurrence = OccurrenceIdentity::new(session, 1, 0, end);
+        stage(&mut lane, 1, occurrence.clone(), "mowa");
+        assert!(
+            lane.state
+                .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, "mowa"))
+        );
+        assert!(lane.state.flush_layer1_coalesce(&lane.tx));
+        close_lexicon(&mut lane, 1, &occurrence, "mowa");
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 1);
+        let pin_start = 26_000;
+        let pin_end = 46_000;
+        assert!(pin_start >= observed_end && pin_end <= end);
+        assert_eq!(
+            lane.state
+                .capture_energy
+                .voiced_hops_in(session, 1, pin_start, pin_end),
+            None,
+            "the pin lies outside measured capture, not in measured silence"
+        );
+
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![word_pin(session, "halucynacja", pin_start, pin_end)],
+            ),
+            3.0,
+        );
+        let events = drain(&mut lane.rx);
+        assert_eq!(
+            mutation_count(&events),
+            0,
+            "unobserved PCM cannot authorize a Whisper word"
+        );
+        assert!(
+            !unanchored_label(&events, "halucynacja"),
+            "unknown support must not paint a word as if it were speech-backed"
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            EngineEvent::LedgerMutation {
+                observation,
+                receipt: MutationReceipt::Refuse { .. },
+                ..
+            } if observation.occurrence.sample_start == pin_start
+                && observation.occurrence.sample_end == pin_end
+        )));
+        assert_eq!(held_text(&lane, &occurrence).as_deref(), Some("mowa"));
+        assert_eq!(held_count(&lane), 1);
+    }
+
     /// The same geometry, with the pin overlapping a voiced hop.
     ///
     /// Contract: a pin that contains voiced audio stays admissible. Hop
