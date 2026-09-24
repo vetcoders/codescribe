@@ -237,25 +237,36 @@ fn should_suppress_decoder_control_tokens(generated_tokens: usize) -> bool {
     generated_tokens == 0
 }
 
-/// Blank suppression is an initial-step constraint, using this tokenizer's
-/// space encoding and end token. Later spaces must remain available to speech.
+/// How many opening sampled tokens still count as the blank window.
+///
+/// With native timestamps the first sampled token is a clock, so a mask that
+/// stops at token 0 never reaches speech. The next three samples are the first
+/// text tokens of the window — the same span Classic masked — and a bare space
+/// there changes the rest of the autoregressive pass. Spaces after that stay
+/// available. End-of-text stays masked only at token 0; blocking it later
+/// prevents a finished span from stopping.
+const INITIAL_BLANK_TOKEN_WINDOW: usize = 4;
+
+/// Blank suppression for the opening sampled tokens, using this tokenizer's
+/// space encoding. The end token is masked only before the first sample.
 fn apply_initial_blank_suppression(
     logits: &mut [f32],
     generated_tokens: usize,
     space_tokens: &[u32],
     eot_token: u32,
 ) {
-    if generated_tokens != 0 {
+    if generated_tokens >= INITIAL_BLANK_TOKEN_WINDOW {
         return;
     }
-    for token in space_tokens
-        .iter()
-        .copied()
-        .chain(std::iter::once(eot_token))
-    {
+    for &token in space_tokens {
         if let Some(logit) = logits.get_mut(token as usize) {
             *logit = f32::NEG_INFINITY;
         }
+    }
+    if generated_tokens == 0
+        && let Some(logit) = logits.get_mut(eot_token as usize)
+    {
+        *logit = f32::NEG_INFINITY;
     }
 }
 
@@ -1960,11 +1971,22 @@ mod dedup_tests {
     }
 
     #[test]
-    fn blank_suppression_uses_tokenizer_ids_only_at_initial_step() {
-        let mut logits = vec![1.0; 9];
-        apply_initial_blank_suppression(&mut logits, 0, &[2, 5], 7);
+    fn blank_suppression_covers_opening_timestamp_and_first_text_tokens() {
+        let masked_space = vec![
+            1.0,
+            1.0,
+            f32::NEG_INFINITY,
+            1.0,
+            1.0,
+            f32::NEG_INFINITY,
+            1.0,
+            1.0,
+            1.0,
+        ];
+        let mut opening = vec![1.0; 9];
+        apply_initial_blank_suppression(&mut opening, 0, &[2, 5], 7);
         assert_eq!(
-            logits,
+            opening,
             vec![
                 1.0,
                 1.0,
@@ -1977,7 +1999,15 @@ mod dedup_tests {
                 1.0
             ]
         );
-        for generated in [1, 2, 3, 4, 15] {
+        for generated in 1..INITIAL_BLANK_TOKEN_WINDOW {
+            let mut text_step = vec![1.0; 9];
+            apply_initial_blank_suppression(&mut text_step, generated, &[2, 5], 7);
+            assert_eq!(
+                text_step, masked_space,
+                "step {generated} still masks the space token and leaves end-of-text"
+            );
+        }
+        for generated in [INITIAL_BLANK_TOKEN_WINDOW, 15] {
             let mut later = vec![1.0; 9];
             apply_initial_blank_suppression(&mut later, generated, &[2, 5], 7);
             assert_eq!(later, vec![1.0; 9], "step {generated}");
