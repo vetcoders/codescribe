@@ -198,6 +198,22 @@ explicitly distinct routes.
 baseline. The Bus has no draft or arbitrary-text seal API, and there is no raw-
 event delta adapter.
 
+L0 `Preview` carries a `PreviewPin`: the PCM range it paints on the capture
+counter, at `word` grain from the partial's segments, or at `utterance` grain
+with receipt `partial_without_segments` when the partial has none. The emitter
+logs one `L0 preview painted` line per preview (rev, range, grain, receipt; the
+words are counted, never logged).
+
+Unanchored text (`KeepVisibleUnanchored`) is read-only evidence. The canvas
+paint keeps it only on ranges no committed token covers. The capture-bound
+`CompactProjection` / `CsCompactProjection` carries all of it as `evidence`
+(`sample_start`, `sample_end`, `text`, `reason`) in PCM order, and the overlay
+paints it beside the canvas as secondary, non-committed text. Its text is never
+compared with the canvas, so a differing Whisper alternative inside an Apple
+occurrence stays visible. It never enters `transcript_buffer`, Bus
+`publish_revision`, or delivery; the seal of the committed token over its range,
+or the lifecycle end, removes it.
+
 The Bus projects the Light+ revision as `apply_manual_edit` / `formatted` /
 `terminal` with a `light-plus-…` manual-edit receipt, between the
 `record_ledger_terminal_seal` row and `session_ended`; `session_ended` copies
