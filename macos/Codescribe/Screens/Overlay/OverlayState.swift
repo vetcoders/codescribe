@@ -2136,7 +2136,9 @@ final class OverlayState {
     // where the handover failed. Auto-sending words the composer never received
     // would be the loudest possible version of the bug this cut closes.
     if affectsCurrentCapture { agentAutoSendCancelled = true }
-    let text = projection.renderedText
+    // The terminal projection keeps reducer truth clean and carries the
+    // controller-rendered delivery envelope separately for this one sink.
+    let text = projection.deliveryText ?? projection.renderedText
     guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
     guard let onComposerTranscript else {
       retainComposerDelivery(
@@ -2595,7 +2597,7 @@ final class OverlayState {
       reducerRevision: 1, reducerAction: "preview_fixture",
       occurrenceSessionId: "preview",
       captureEpoch: 0, sampleStart: 0, sampleEnd: 0, documentIndex: 0, label: renderedText,
-      renderedText: renderedText, phase: phase.rawValue, canPaste: isFormatted,
+      renderedText: renderedText, deliveryText: nil, phase: phase.rawValue, canPaste: isFormatted,
       canInsert: isFormatted,
       canCopy: !renderedText.isEmpty, canRetranscribe: phase == .noSpeech || isFormatted,
       canFormat: isFormatted,

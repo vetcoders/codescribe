@@ -315,6 +315,10 @@ pub struct TranscriptBusEvidenceEvent {
     pub document_index: u64,
     pub label: String,
     pub rendered_text: String,
+    /// Optional sink-ready bytes. This is populated only on the lifecycle
+    /// terminal for a composer delivery; `rendered_text` remains reducer truth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_text: Option<String>,
     #[serde(default)]
     pub phase: TranscriptProjectionPhase,
     #[serde(default)]
@@ -707,6 +711,7 @@ impl TranscriptBus {
                 document_index: document_index as u64,
                 label: entry.label.clone(),
                 rendered_text: revision.rendered_text.clone(),
+                delivery_text: None,
                 phase,
                 can_paste: availability.can_paste,
                 can_insert: availability.can_insert,
@@ -867,6 +872,18 @@ impl TranscriptBus {
         session_wav_exists: bool,
         delivery: TranscriptDelivery,
     ) -> Option<TranscriptBusEvidenceEvent> {
+        self.publish_ended_with_delivery_text(reason, session_wav_exists, delivery, None)
+    }
+
+    /// End a session while keeping a delivery-only payload distinct from the
+    /// reducer-owned document. Only the controller's composer route uses it.
+    pub fn publish_ended_with_delivery_text(
+        &self,
+        reason: TranscriptSessionEndReason,
+        session_wav_exists: bool,
+        delivery: TranscriptDelivery,
+        delivery_text: Option<String>,
+    ) -> Option<TranscriptBusEvidenceEvent> {
         let mut writer = self
             .writer
             .lock()
@@ -949,6 +966,7 @@ impl TranscriptBus {
                     document_index: 0,
                     label: String::new(),
                     rendered_text: String::new(),
+                    delivery_text: None,
                     phase,
                     can_paste: availability.can_paste,
                     can_insert: availability.can_insert,
@@ -981,6 +999,7 @@ impl TranscriptBus {
         // The last committed evidence event carried `Unattempted`; the
         // lifecycle line is the one place a disposition is stated.
         terminal.delivery = delivery;
+        terminal.delivery_text = delivery_text;
         writer.last_projection = Some(terminal.clone());
         Some(terminal)
     }

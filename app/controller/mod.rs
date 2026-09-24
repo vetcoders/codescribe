@@ -36,6 +36,7 @@ mod hotkey_policy;
 pub mod production_replay;
 /// Public serving-status surface for tray/UI consumers.
 pub mod serving_status;
+mod transcript_delivery;
 /// Controller state, hotkey types, and recording truth metadata.
 mod types;
 
@@ -99,6 +100,7 @@ use hotkey_policy::{
     should_block_hotkey_during_agent_send, should_use_toggle_adjudicated_stop,
     toggle_final_pass_enabled,
 };
+use transcript_delivery::TranscriptDeliveryTagger;
 
 /// Live overlay: ms of audio held before the first interim emit.
 const LIVE_PROFILE_BUFFER_DELAY_MS: u64 = 280;
@@ -226,6 +228,8 @@ struct HoldStartSession {
     /// Ctrl-hold literal contract: the emitter must not shape (Light+) the
     /// terminal document for this take. Read at sink build time, not at stop.
     force_raw_mode: Arc<RwLock<bool>>,
+    delivery_tagger: Arc<TranscriptDeliveryTagger>,
+    composer_delivery_payload: Arc<RwLock<Option<(String, String)>>>,
 }
 
 /// The recorder-facing fanout plus the retained reducer authority behind it.
@@ -574,7 +578,9 @@ async fn stop_recorder_for_terminal(
                     "terminal transcript refused after a successful capture stop; retaining take audio"
                 );
                 match refusal.audio_path.as_deref() {
-                    Some(path) => retain_session_audio(session_id, path, refused_take_archive(&refusal)),
+                    Some(path) => {
+                        retain_session_audio(session_id, path, refused_take_archive(&refusal))
+                    }
                     None => warn!("refused take has no audio path to retain"),
                 }
                 Err(anyhow::Error::new(refusal))
@@ -860,6 +866,12 @@ pub struct RecordingController {
     /// label. It records what the controller *attempted*; only the receiving
     /// surface can turn `ComposerPending` into an admitted delivery.
     delivery_disposition: Arc<RwLock<TranscriptDelivery>>,
+    /// Clean reducer text is wrapped only after delivery routing. This passive
+    /// observer retains the active session's real engine quality metadata.
+    delivery_tagger: Arc<TranscriptDeliveryTagger>,
+    /// Delivery-only composer bytes, keyed by the take that produced them.
+    /// The terminal projection carries this separately from `rendered_text`.
+    composer_delivery_payload: Arc<RwLock<Option<(String, String)>>>,
 
     /// Flag set by VAD (silence detection) when recording should auto-stop
     vad_triggered: Arc<AtomicBool>,
@@ -1115,6 +1127,8 @@ impl RecordingController {
             #[cfg(test)]
             settlement_observer: std::sync::Mutex::new(None),
             delivery_disposition: Arc::new(RwLock::new(TranscriptDelivery::Unattempted)),
+            delivery_tagger: Arc::default(),
+            composer_delivery_payload: Arc::new(RwLock::new(None)),
             vad_triggered: Arc::new(AtomicBool::new(false)),
             assistive_loop_active: Arc::new(AtomicBool::new(false)),
             toggle_user_has_text: Arc::new(AtomicBool::new(false)),
@@ -1544,6 +1558,9 @@ impl RecordingController {
         let _ = self.pending_assistive_context.write().await.take();
         let _ = self.assistive_context.write().await.take();
         let config = self.get_config().await;
+        let delivery_text = self
+            .delivery_tagger
+            .render(&transcript, &config, Some("agent"));
         {
             let mut bucket = self.context_bucket.lock().await;
             match bucket.archive_and_reset("assistive-delivery") {
@@ -1553,7 +1570,7 @@ impl RecordingController {
             }
         }
         send(
-            transcript,
+            delivery_text,
             config.whisper_language,
             config.ai_assistive_max_tokens,
             true,
@@ -1892,13 +1909,15 @@ impl RecordingController {
                 deferred_insert_failure: None,
             });
         }
+        let config = self.get_config().await;
+        let payload = self.delivery_tagger.render(trimmed, &config, None);
         if decision.route == DeliveryRoute::DeferredInsert {
             return self
-                .arm_overlay_text(trimmed, target_app, Some("Codescribe".to_string()))
+                .arm_overlay_text(&payload, target_app, Some("Codescribe".to_string()))
                 .await;
         }
 
-        self.execute_clipboard_paste(trimmed.to_string(), target_app, "Overlay paste")
+        self.execute_clipboard_paste(payload, target_app, "Overlay paste")
             .await
     }
 
@@ -2068,6 +2087,11 @@ impl RecordingController {
             } else {
                 TranscriptDelivery::ComposerPending
             };
+            if disposition == TranscriptDelivery::ComposerPending {
+                let payload = self.delivery_tagger.render(trimmed, config, Some("agent"));
+                *self.composer_delivery_payload.write().await =
+                    Some((take_id.unwrap_or_default().to_string(), payload));
+            }
             self.record_delivery_disposition(disposition).await;
             info!(
                 seal_refused,
@@ -2106,7 +2130,15 @@ impl RecordingController {
                 .await;
             return Ok(TranscriptDelivery::Retained);
         }
-        let outcome = sink(decision.route, trimmed.to_string(), latched_target).await;
+        let mode = if assistive {
+            "assistive"
+        } else if force_ai {
+            "format"
+        } else {
+            "dictation"
+        };
+        let payload = self.delivery_tagger.render(trimmed, config, Some(mode));
+        let outcome = sink(decision.route, payload, latched_target).await;
         self.finish_stop_delivery(outcome, seal_refused).await
     }
 
@@ -2315,7 +2347,9 @@ impl RecordingController {
                 deferred_insert_failure: None,
             });
         }
-        self.arm_overlay_text(trimmed, target_app, Some("Codescribe".to_string()))
+        let config = self.get_config().await;
+        let payload = self.delivery_tagger.render(trimmed, &config, None);
+        self.arm_overlay_text(&payload, target_app, Some("Codescribe".to_string()))
             .await
     }
 
@@ -2327,7 +2361,9 @@ impl RecordingController {
         if trimmed.is_empty() {
             return Ok(());
         }
-        clipboard::set_clipboard(trimmed).context("Failed to copy overlay text")?;
+        let config = self.get_config().await;
+        let payload = self.delivery_tagger.render(trimmed, &config, None);
+        clipboard::set_clipboard(&payload).context("Failed to copy overlay text")?;
         Ok(())
     }
 
@@ -2424,11 +2460,21 @@ impl RecordingController {
         // Read the disposition before the reset clears it: the terminal
         // lifecycle line is the one place a destination is stated.
         let delivery = *self.delivery_disposition.read().await;
+        let delivery_text = self
+            .composer_delivery_payload
+            .write()
+            .await
+            .take()
+            .and_then(|(payload_take, payload)| {
+                let ended_take = retainable_session_id(session_id.as_deref()).unwrap_or_default();
+                (payload_take.is_empty() || payload_take == ended_take).then_some(payload)
+            });
         Self::end_transcript_bus(
             &self.active_transcript_bus,
             reason,
             session_wav_exists,
             delivery,
+            delivery_text,
             &self.event_broadcast,
         )
         .await;
@@ -2453,11 +2499,17 @@ impl RecordingController {
         reason: TranscriptSessionEndReason,
         session_wav_exists: bool,
         delivery: TranscriptDelivery,
+        delivery_text: Option<String>,
         event_broadcast: &broadcast::Sender<IpcEvent>,
     ) {
         let ended_bus = slot.write().await.take();
         if let Some(bus) = ended_bus
-            && let Some(event) = bus.publish_ended(reason, session_wav_exists, delivery)
+            && let Some(event) = bus.publish_ended_with_delivery_text(
+                reason,
+                session_wav_exists,
+                delivery,
+                delivery_text,
+            )
         {
             Self::broadcast_transcript_projection(event_broadcast, &event);
         }
@@ -2490,6 +2542,7 @@ impl RecordingController {
             abort.bus_reason(),
             false,
             TranscriptDelivery::Unattempted,
+            None,
             &session.event_broadcast,
         )
         .await;
@@ -2707,6 +2760,7 @@ impl RecordingController {
         acoustic_ledger: Option<
             Arc<std::sync::Mutex<codescribe_core::pipeline::acoustic_ledger::AcousticLedger>>,
         >,
+        delivery_tagger: Arc<TranscriptDeliveryTagger>,
     ) -> RecordingEventPipeline {
         let delta_sink = preview_deltas_enabled.then(|| {
             Arc::new(helpers::RoutingDeltaSink)
@@ -2751,8 +2805,10 @@ impl RecordingController {
             presentation.clone();
         let ipc_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
             Arc::new(helpers::IpcBroadcastSink::new(event_broadcast));
+        let delivery_tag_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
+            delivery_tagger;
         let event_sink = Arc::new(codescribe_core::pipeline::sinks::FanoutEventSink::new(
-            vec![presentation_sink, ipc_sink],
+            vec![presentation_sink, ipc_sink, delivery_tag_sink],
         ));
         RecordingEventPipeline {
             event_sink,
@@ -2820,6 +2876,7 @@ impl RecordingController {
         preview_deltas_enabled: bool,
         event_broadcast: broadcast::Sender<IpcEvent>,
         transcript_bus: Option<Arc<TranscriptBus>>,
+        delivery_tagger: Arc<TranscriptDeliveryTagger>,
     ) -> Arc<PresentationEmitter> {
         Self::configure_level_broadcast(recorder, event_broadcast.clone());
         let acoustic_ledger = recorder.acoustic_ledger_handle();
@@ -2829,6 +2886,7 @@ impl RecordingController {
             event_broadcast,
             transcript_bus,
             acoustic_ledger,
+            delivery_tagger,
         );
         recorder.set_event_sink(Some(pipeline.event_sink));
         pipeline.presentation
@@ -2842,6 +2900,7 @@ impl RecordingController {
         _flush_voice_chat_on_vad_end: bool,
         event_broadcast: broadcast::Sender<IpcEvent>,
         transcript_bus: Option<Arc<TranscriptBus>>,
+        delivery_tagger: Arc<TranscriptDeliveryTagger>,
     ) -> Arc<PresentationEmitter> {
         // Hands-off is ONE continuous recorder session (ADR 2026-05-28 Faza 1).
         // Normal hands-off uses cumulative SessionRendered deltas in the transcription overlay.
@@ -2858,6 +2917,7 @@ impl RecordingController {
             event_broadcast,
             transcript_bus,
             acoustic_ledger,
+            delivery_tagger,
         );
         recorder.set_event_sink(Some(pipeline.event_sink));
         pipeline.presentation
@@ -3627,6 +3687,8 @@ impl RecordingController {
             pre_overlay_frontmost_app: Arc::clone(&self.pre_overlay_frontmost_app),
             event_broadcast: event_broadcast.clone(),
             force_raw_mode: Arc::clone(&self.force_raw_mode),
+            delivery_tagger: Arc::clone(&self.delivery_tagger),
+            composer_delivery_payload: Arc::clone(&self.composer_delivery_payload),
         };
 
         let task = tokio::spawn(async move {
@@ -3807,6 +3869,15 @@ impl RecordingController {
             set_assistive_session(is_assistive);
             rec.bind_session_authority(new_session_id.clone(), Arc::clone(&runtime_settings));
             rec.set_live_formatting_agent(live_formatting_agent);
+            hold_session.delivery_tagger.begin(
+                if is_assistive {
+                    "assistive"
+                } else {
+                    "dictation"
+                },
+                config.whisper_language.as_str(),
+            );
+            *hold_session.composer_delivery_payload.write().await = None;
             let transcript_bus = TranscriptBus::open(TranscriptSession {
                 session_id: new_session_id,
                 mode: if is_assistive {
@@ -3833,6 +3904,7 @@ impl RecordingController {
                 is_assistive || overlay_enabled,
                 event_broadcast.clone(),
                 transcript_bus.clone(),
+                Arc::clone(&hold_session.delivery_tagger),
             );
             presentation.set_literal_delivery(*hold_session.force_raw_mode.read().await);
             *hold_session.active_presentation.write().await = Some(presentation);
@@ -3854,6 +3926,7 @@ impl RecordingController {
                             is_assistive || overlay_enabled,
                             event_broadcast.clone(),
                             transcript_bus.clone(),
+                            Arc::clone(&hold_session.delivery_tagger),
                         );
                         presentation
                             .set_literal_delivery(*hold_session.force_raw_mode.read().await);
@@ -4087,6 +4160,11 @@ impl RecordingController {
         // so the very first deltas route to the correct overlay.
         set_assistive_session(is_assistive);
         recorder.bind_session_authority(new_session_id.clone(), Arc::clone(&runtime_settings));
+        self.delivery_tagger.begin(
+            if is_assistive { "agent" } else { "dictation" },
+            config.whisper_language.as_str(),
+        );
+        *self.composer_delivery_payload.write().await = None;
         let live_formatting_agent = if !is_assistive
             && capture_turn.schedules_live_formatting()
             && !*self.force_raw_mode.read().await
@@ -4128,6 +4206,7 @@ impl RecordingController {
             is_assistive,
             self.event_broadcast.clone(),
             transcript_bus.clone(),
+            Arc::clone(&self.delivery_tagger),
         );
         presentation.set_literal_delivery(*self.force_raw_mode.read().await);
         *self.active_presentation.write().await = Some(presentation);
@@ -4150,6 +4229,7 @@ impl RecordingController {
                     is_assistive,
                     self.event_broadcast.clone(),
                     transcript_bus.clone(),
+                    Arc::clone(&self.delivery_tagger),
                 );
                 presentation.set_literal_delivery(*self.force_raw_mode.read().await);
                 *self.active_presentation.write().await = Some(presentation);
@@ -5070,6 +5150,93 @@ mod terminal_delivery_target_falsifiers {
         assert_eq!(
             *controller.delivery_disposition.read().await,
             TranscriptDelivery::ComposerPending
+        );
+    }
+
+    /// The wrapper is created after route selection and is handed to both OS
+    /// transports as one immutable payload. A deferred reuse must not wrap it
+    /// a second time.
+    #[tokio::test]
+    async fn stop_clipboard_and_deferred_routes_receive_one_tagged_payload() {
+        for (auto_paste_enabled, expected_route) in [
+            (true, DeliveryRoute::ClipboardPaste),
+            (false, DeliveryRoute::DeferredInsert),
+        ] {
+            let controller = RecordingController::new_without_keychain();
+            controller.delivery_tagger.begin("dictation", "pl");
+            let config = Config {
+                transcript_tagging_enabled: true,
+                transcript_tag_template: "<codescribe mode=\"{mode}\">{text}</codescribe>".into(),
+                auto_paste_enabled,
+                transcription_overlay_enabled: true,
+                quick_notes_enabled: false,
+                ..Config::default()
+            };
+
+            controller
+                .deliver_stop_transcript_with_sink(
+                    Some(if auto_paste_enabled {
+                        "tagged-clipboard"
+                    } else {
+                        "tagged-deferred"
+                    }),
+                    "working text",
+                    (false, false, CaptureTurnIntent::HandsFree, false),
+                    &config,
+                    |route, payload, _| async move {
+                        assert_eq!(route, expected_route);
+                        assert_eq!(
+                            payload,
+                            "<codescribe mode=\"dictation\">working text</codescribe>"
+                        );
+                        assert_eq!(payload.matches("<codescribe").count(), 1);
+                        Ok(OverlayPasteResult {
+                            delivery: if route == DeliveryRoute::ClipboardPaste {
+                                OverlayPasteDelivery::Pasted
+                            } else {
+                                OverlayPasteDelivery::DeferredInsertArmed
+                            },
+                            target_app_name: None,
+                            frontmost_app_name: None,
+                            deferred_insert_shortcut: None,
+                            deferred_insert_failure: None,
+                        })
+                    },
+                )
+                .await
+                .unwrap();
+        }
+    }
+
+    /// Composer delivery gets its own sink payload while the reducer document
+    /// remains the clean text passed into this boundary.
+    #[tokio::test]
+    async fn composer_route_retains_tagged_delivery_separate_from_working_text() {
+        let controller = RecordingController::new_without_keychain();
+        controller.delivery_tagger.begin("agent", "en");
+        let config = Config {
+            transcript_tagging_enabled: true,
+            transcript_tag_template: "[{mode}|{lang}|{conf}] {text}".into(),
+            ..Config::default()
+        };
+
+        controller
+            .deliver_stop_transcript_with_sink(
+                Some("composer-tagged"),
+                "editable draft",
+                (true, false, CaptureTurnIntent::SingleTurn, false),
+                &config,
+                |_, _, _| async { panic!("composer route must not call an OS sink") },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            controller.composer_delivery_payload.read().await.as_ref(),
+            Some(&(
+                "composer-tagged".to_string(),
+                "[agent|en|unknown] editable draft".to_string()
+            ))
         );
     }
 

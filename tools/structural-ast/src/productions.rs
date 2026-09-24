@@ -19,10 +19,12 @@ pub(super) fn overlay(g: &mut Grammar, body: &Block) {
                 target_app_name: None, frontmost_app_name: None,
                 deferred_insert_shortcut: None, deferred_insert_failure: None, });
         }), "only empty/archive early success is Noop"),
+        (parse_quote!(let config = self.get_config().await;), "read immutable delivery config"),
+        (parse_quote!(let payload = self.delivery_tagger.render(trimmed, &config, None);), "render delivery-only transcript tag"),
         (parse_quote!(if decision.route == DeliveryRoute::DeferredInsert {
-            return self.arm_overlay_text(trimmed, target_app, Some("Codescribe".to_string())).await;
+            return self.arm_overlay_text(&payload, target_app, Some("Codescribe".to_string())).await;
         }), "deferred route return"),
-        (Stmt::Expr(parse_quote!(self.execute_clipboard_paste(trimmed.to_string(), target_app, "Overlay paste").await), None), "await guarded helper tail"),
+        (Stmt::Expr(parse_quote!(self.execute_clipboard_paste(payload, target_app, "Overlay paste").await), None), "await guarded helper tail"),
     ]);
 }
 

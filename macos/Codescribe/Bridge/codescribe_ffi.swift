@@ -12059,6 +12059,11 @@ public struct CsTranscriptProjectionEvent: Equatable, Hashable {
     public var documentIndex: UInt64
     public var label: String
     public var renderedText: String
+    /**
+     * Sink-ready bytes for composer admission. `rendered_text` remains the
+     * clean reducer document shown and edited by the overlay.
+     */
+    public var deliveryText: String?
     public var phase: String
     public var canPaste: Bool
     public var canInsert: Bool
@@ -12085,7 +12090,11 @@ public struct CsTranscriptProjectionEvent: Equatable, Hashable {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(schema: String, sequence: UInt64, emittedAt: String, sessionId: String, mode: String, reducerRevision: UInt64, reducerAction: String, occurrenceSessionId: String, captureEpoch: UInt64, sampleStart: UInt64, sampleEnd: UInt64, documentIndex: UInt64, label: String, renderedText: String, phase: String, canPaste: Bool, canInsert: Bool, canCopy: Bool, canRetranscribe: Bool, canFormat: Bool, canSendToAgent: Bool, terminal: Bool,
+    public init(schema: String, sequence: UInt64, emittedAt: String, sessionId: String, mode: String, reducerRevision: UInt64, reducerAction: String, occurrenceSessionId: String, captureEpoch: UInt64, sampleStart: UInt64, sampleEnd: UInt64, documentIndex: UInt64, label: String, renderedText: String,
+        /**
+         * Sink-ready bytes for composer admission. `rendered_text` remains the
+         * clean reducer document shown and edited by the overlay.
+         */deliveryText: String?, phase: String, canPaste: Bool, canInsert: Bool, canCopy: Bool, canRetranscribe: Bool, canFormat: Bool, canSendToAgent: Bool, terminal: Bool,
         /**
          * True only for the session's lifecycle terminal. A terminal *revision* of
          * the document is not the end of the capture, and only this flag tells the
@@ -12110,6 +12119,7 @@ public struct CsTranscriptProjectionEvent: Equatable, Hashable {
         self.documentIndex = documentIndex
         self.label = label
         self.renderedText = renderedText
+        self.deliveryText = deliveryText
         self.phase = phase
         self.canPaste = canPaste
         self.canInsert = canInsert
@@ -12153,6 +12163,7 @@ public struct FfiConverterTypeCsTranscriptProjectionEvent: FfiConverterRustBuffe
                 documentIndex: FfiConverterUInt64.read(from: &buf),
                 label: FfiConverterString.read(from: &buf),
                 renderedText: FfiConverterString.read(from: &buf),
+                deliveryText: FfiConverterOptionString.read(from: &buf),
                 phase: FfiConverterString.read(from: &buf),
                 canPaste: FfiConverterBool.read(from: &buf),
                 canInsert: FfiConverterBool.read(from: &buf),
@@ -12184,6 +12195,7 @@ public struct FfiConverterTypeCsTranscriptProjectionEvent: FfiConverterRustBuffe
         FfiConverterUInt64.write(value.documentIndex, into: &buf)
         FfiConverterString.write(value.label, into: &buf)
         FfiConverterString.write(value.renderedText, into: &buf)
+        FfiConverterOptionString.write(value.deliveryText, into: &buf)
         FfiConverterString.write(value.phase, into: &buf)
         FfiConverterBool.write(value.canPaste, into: &buf)
         FfiConverterBool.write(value.canInsert, into: &buf)

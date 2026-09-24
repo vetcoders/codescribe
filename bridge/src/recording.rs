@@ -237,6 +237,9 @@ pub struct CsTranscriptProjectionEvent {
     pub document_index: u64,
     pub label: String,
     pub rendered_text: String,
+    /// Sink-ready bytes for composer admission. `rendered_text` remains the
+    /// clean reducer document shown and edited by the overlay.
+    pub delivery_text: Option<String>,
     pub phase: String,
     pub can_paste: bool,
     pub can_insert: bool,
@@ -401,6 +404,7 @@ impl CsTranscriptProjectionEvent {
             document_index: event.document_index,
             label: event.label.clone(),
             rendered_text: event.rendered_text.clone(),
+            delivery_text: event.delivery_text.clone(),
             phase: event.phase.as_str().to_string(),
             can_paste: event.can_paste,
             can_insert: event.can_insert,
@@ -1031,6 +1035,7 @@ mod tests {
             document_index: 29,
             label: "Iwo".to_string(),
             rendered_text: "Iwo".to_string(),
+            delivery_text: Some("<codescribe>Iwo</codescribe>".to_string()),
             phase: TranscriptProjectionPhase::Formatted,
             can_paste: true,
             can_insert: true,
@@ -1102,6 +1107,7 @@ mod tests {
                 document_index: 29,
                 label: "Iwo".to_string(),
                 rendered_text: "Iwo".to_string(),
+                delivery_text: Some("<codescribe>Iwo</codescribe>".to_string()),
                 phase: "formatted".to_string(),
                 can_paste: true,
                 can_insert: true,

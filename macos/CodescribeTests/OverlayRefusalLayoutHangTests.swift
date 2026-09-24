@@ -236,6 +236,7 @@ final class OverlayRefusalLayoutHangTests: XCTestCase {
       documentIndex: 0,
       label: "live",
       renderedText: text,
+      deliveryText: nil,
       phase: "listening",
       canPaste: false,
       canInsert: false,

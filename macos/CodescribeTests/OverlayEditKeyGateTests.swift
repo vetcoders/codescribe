@@ -132,6 +132,7 @@ final class OverlayEditKeyGateTests: XCTestCase {
         documentIndex: sequence - 1,
         label: terminal ? "terminal" : "live",
         renderedText: text,
+        deliveryText: nil,
         phase: phase,
         canPaste: isFormatted,
         canInsert: isFormatted,

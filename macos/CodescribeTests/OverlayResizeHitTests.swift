@@ -532,6 +532,7 @@ final class OverlayResizeHitTests: XCTestCase {
         documentIndex: sequence - 1,
         label: "live",
         renderedText: text,
+        deliveryText: nil,
         phase: "listening",
         canPaste: false,
         canInsert: false,

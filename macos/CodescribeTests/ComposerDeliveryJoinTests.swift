@@ -212,6 +212,7 @@ final class ComposerDeliveryJoinTests: XCTestCase {
     lifecycleTerminal: Bool,
     delivery: CsTranscriptDelivery,
     reducerAction: String,
+    deliveryText: String? = nil,
     manualEditReceipt: String? = nil,
     presentationReceipt: CsProjectedPresentationReceipt? = nil
   ) {
@@ -255,6 +256,7 @@ final class ComposerDeliveryJoinTests: XCTestCase {
         documentIndex: sequence - 1,
         label: terminal ? "terminal" : "live",
         renderedText: text,
+        deliveryText: deliveryText,
         phase: phase,
         canPaste: terminal,
         canInsert: terminal,
@@ -291,11 +293,30 @@ final class ComposerDeliveryJoinTests: XCTestCase {
 
   private func sessionEnded(
     _ text: String, to state: OverlayState, sessionId: String = "join-session",
-    delivery: CsTranscriptDelivery = .composerPending
+    delivery: CsTranscriptDelivery = .composerPending,
+    deliveryText: String? = nil
   ) {
     project(
       text, to: state, sessionId: sessionId, phase: "formatted", terminal: true,
-      lifecycleTerminal: true, delivery: delivery, reducerAction: "session_ended")
+      lifecycleTerminal: true, delivery: delivery, reducerAction: "session_ended",
+      deliveryText: deliveryText)
+  }
+
+  func testComposerReceivesDeliveryEnvelopeWhileOverlayKeepsCleanDocument() {
+    let f = makeFixture(recording: [false, true])
+    let state = OverlayState()
+    state.connectComposer(to: f.store)
+    admitCapture(f.store, threadID: f.threadA, id: "join-session")
+
+    sessionEnded(
+      "clean working text", to: state,
+      deliveryText: "<codescribe mode=\"agent\">clean working text</codescribe>")
+
+    XCTAssertEqual(state.activeText, "clean working text")
+    XCTAssertEqual(
+      f.store.draft,
+      "<codescribe mode=\"agent\">clean working text</codescribe>"
+    )
   }
 
   /// Synthetic receiver fixture. Rust's nonempty ledger/Bus mapping test proves
