@@ -14365,6 +14365,24 @@ mod relay_l1_overlap_admission_tests {
         let _ = drain(&mut lane.rx);
         let requests = take_requests(&mut lane.tail_rx);
         assert_eq!(requests.len(), 3);
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| {
+                    (
+                        request.provider_request.identity.range.sample_start,
+                        request.provider_request.identity.range.sample_end,
+                        request.admit_sample_start,
+                        request.admit_sample_end,
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                (0, 64_000, 0, 48_000),
+                (48_000, 112_000, 48_000, 96_000),
+                (96_000, 152_000, 96_000, 152_000),
+            ],
+        );
         lane.state.complete_whisper_window(
             &lane.tx,
             completion(
