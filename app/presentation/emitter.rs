@@ -2995,7 +2995,7 @@ mod tests {
         assert!(bus_text.contains(&paste.text));
     }
 
-    /// A late L1 decision can land after Stop reads its frozen canvas but
+    /// A late ledger decision can land after Stop reads its frozen canvas but
     /// before the Light+ compare-and-swap. That interleaving must not turn a
     /// nonempty, ledger-backed take into a failed paste.
     #[tokio::test]
@@ -3041,8 +3041,9 @@ mod tests {
             "the fixture must exercise the Light+ CAS path"
         );
 
-        // Deterministic stand-in for a Whisper completion arriving in the
-        // snapshot→shape gap. This is a new PCM occurrence, not a UI edit.
+        // The test helper admits Apple on a new PCM occurrence. It drives the
+        // same reducer-revision race a Whisper completion would drive, without
+        // claiming to test Whisper's provider or admission path.
         let late = admitted_mutation(
             &mut ledger.lock().unwrap(),
             OccurrenceIdentity::new("stop-shape-race", 7, 16_000, 32_000),
