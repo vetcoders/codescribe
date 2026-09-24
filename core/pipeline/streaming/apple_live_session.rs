@@ -11594,3 +11594,544 @@ mod live_refinement_admission_tests {
         }
     }
 }
+
+/// Relay L1 overlap admission. Phrase grain is one segment range, the shape
+/// real decodes return (`4.0–12.0`). A word pin is a segment the recognizer
+/// actually returned; this module does not split phrase text into words.
+///
+/// `TranscriptReducer::apply_ledger_mutation` drops every receipt that does
+/// not grant mutation, and `MutationReceipt::KeepVisibleUnanchored` stores
+/// neither the label nor the occurrence. These tests stop on that surface.
+#[cfg(test)]
+mod relay_l1_overlap_admission_tests {
+    use super::*;
+    use crate::pipeline::acoustic_ledger::{
+        AcousticEvidence, EnergyCalibration, MutationReceipt, ObservationIdentity,
+        ObservationProducer, OccurrenceIdentity,
+    };
+    use crate::stt::tail_provider::{
+        TailEvidenceSource, TailEvidenceStability, TailProviderEvidence, TailProviderId,
+        TailProviderPayload, TailTimingQuality,
+    };
+    use tokio::sync::mpsc;
+
+    const RATE: u32 = 16_000;
+
+    struct Lane {
+        state: AppleSealState,
+        tx: mpsc::UnboundedSender<EngineEvent>,
+        rx: mpsc::UnboundedReceiver<EngineEvent>,
+        tail_rx: mpsc::Receiver<TailPatchRequest>,
+    }
+
+    fn open(session: &str) -> Lane {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (tail_tx, tail_rx) = mpsc::channel(8);
+        let mut state = AppleSealState::new_for_session(RATE, session.to_string(), 1);
+        state.tail_patch = Some(tail_tx);
+        Lane {
+            state,
+            tx,
+            rx,
+            tail_rx,
+        }
+    }
+
+    fn stage(lane: &mut Lane, utterance_id: u64, occurrence: OccurrenceIdentity, label: &str) {
+        let calibration = EnergyCalibration {
+            version: "relay-l1-overlap".to_string(),
+            min_energy_integral: 1.0,
+            min_valley_samples: 1,
+        };
+        let evidence = AcousticEvidence {
+            occurrence: occurrence.clone(),
+            duration_ms: occurrence.sample_len() as f64 * 1_000.0 / f64::from(RATE),
+            energy_integral: 10.0,
+            mean_rms_dbfs: -12.0,
+            peak_dbfs: -3.0,
+            vad_open_sample: Some(occurrence.sample_start),
+            vad_close_sample: Some(occurrence.sample_end),
+            evidence_calibration_version: calibration.version.clone(),
+        };
+        lane.state
+            .acoustic_ledger
+            .lock()
+            .expect("ledger")
+            .qualify(&evidence, &calibration);
+        lane.state.energy_calibration = Some(calibration);
+        assert!(
+            admit_ledger_label(
+                &mut lane.state,
+                &lane.tx,
+                LabelAdmission {
+                    observation: ObservationIdentity::new(
+                        ObservationProducer::Apple,
+                        utterance_id,
+                        0,
+                        occurrence.clone(),
+                    ),
+                    label,
+                    energy: EnergyAdmission::RequireExistingQualification,
+                },
+            )
+            .is_some()
+        );
+        lane.state.pending_events.insert(
+            utterance_id,
+            PendingAppleSeal {
+                occurrence,
+                raw_text: label.to_string(),
+                layer1_baseline: label.to_string(),
+                start_ts: 0.0,
+                end_ts: 1.0,
+                segments: Vec::new(),
+            },
+        );
+    }
+
+    fn piece(utterance_id: u64, occurrence: &OccurrenceIdentity, text: &str) -> CoalescedPiece {
+        let start_ts = occurrence.sample_start as f32 / RATE as f32;
+        let end_ts = occurrence.sample_end as f32 / RATE as f32;
+        CoalescedPiece {
+            utterance_id,
+            occurrence: occurrence.clone(),
+            committed_text: text.to_string(),
+            audio: vec![0.2; occurrence.sample_len() as usize],
+            sample_start: occurrence.sample_start,
+            sample_end: occurrence.sample_end,
+            start_ts,
+            covered_through_secs: end_ts,
+            segment_count: 1,
+        }
+    }
+
+    fn close_lexicon(
+        lane: &mut Lane,
+        utterance_id: u64,
+        occurrence: &OccurrenceIdentity,
+        label: &str,
+    ) {
+        assert!(
+            admit_ledger_label(
+                &mut lane.state,
+                &lane.tx,
+                LabelAdmission {
+                    observation: ObservationIdentity::new(
+                        ObservationProducer::Lexicon,
+                        utterance_id,
+                        0,
+                        occurrence.clone(),
+                    ),
+                    label,
+                    energy: EnergyAdmission::RequireExistingQualification,
+                },
+            )
+            .is_some()
+        );
+    }
+
+    fn segment(session: &str, text: &str, start: u64, end: u64) -> TimedTailSegment {
+        TimedTailSegment {
+            text: text.to_string(),
+            range: crate::stt::tail_provider::TailSampleRange {
+                session: session.to_string(),
+                capture_epoch: 1,
+                sample_start: start,
+                sample_end: end,
+            },
+        }
+    }
+
+    fn completion(
+        request: &TailPatchRequest,
+        segments: Vec<TimedTailSegment>,
+    ) -> TailPatchCompletion {
+        let text = segments
+            .iter()
+            .map(|segment| segment.text.trim())
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        TailPatchCompletion {
+            utterance_id: request.utterance_id,
+            request_identity: Some(request.provider_request.identity.clone()),
+            payload: Some(TailProviderPayload {
+                identity: request.provider_request.identity.clone(),
+                text,
+                segments,
+                avg_logprob: Some(-0.2),
+                compression_ratio: Some(1.1),
+                provider_id: TailProviderId::Fake,
+                elapsed_ms: 1,
+                evidence: TailProviderEvidence {
+                    source: TailEvidenceSource::Whisper,
+                    revision: Some("relay-l1-phrase-grain".into()),
+                    stability: TailEvidenceStability::Final,
+                    timing_quality: TailTimingQuality::ExactSampleRange,
+                    avg_logprob: Some(-0.2),
+                },
+            }),
+            member_occurrences: request.member_occurrences.clone(),
+        }
+    }
+
+    fn drain(rx: &mut mpsc::UnboundedReceiver<EngineEvent>) -> Vec<EngineEvent> {
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    fn take_requests(rx: &mut mpsc::Receiver<TailPatchRequest>) -> Vec<TailPatchRequest> {
+        let mut requests = Vec::new();
+        while let Ok(request) = rx.try_recv() {
+            requests.push(request);
+        }
+        requests
+    }
+
+    fn whisper_mutations(events: &[EngineEvent]) -> Vec<(String, MutationReceipt)> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                EngineEvent::LedgerMutation {
+                    observation,
+                    label,
+                    receipt,
+                } if observation.producer == ObservationProducer::Whisper => {
+                    Some((label.clone(), receipt.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn unanchored_label(events: &[EngineEvent], text: &str) -> bool {
+        whisper_mutations(events)
+            .into_iter()
+            .any(|(label, receipt)| {
+                label == text
+                    && matches!(receipt, MutationReceipt::KeepVisibleUnanchored { .. })
+                    && !receipt.grants_mutation()
+            })
+    }
+
+    fn replay_refusal(events: &[EngineEvent], text: &str) -> bool {
+        whisper_mutations(events)
+            .into_iter()
+            .any(|(label, receipt)| {
+                label == text
+                    && matches!(
+                        receipt,
+                        MutationReceipt::Refuse { reason, .. }
+                            if reason.as_str() == "replayed_range_identity"
+                    )
+            })
+    }
+
+    fn held_count(lane: &Lane) -> usize {
+        lane.state
+            .acoustic_ledger
+            .lock()
+            .expect("ledger")
+            .occurrences()
+            .count()
+    }
+
+    fn held_text(lane: &Lane, occurrence: &OccurrenceIdentity) -> Option<String> {
+        lane.state
+            .acoustic_ledger
+            .lock()
+            .expect("ledger")
+            .text_of(occurrence)
+            .map(str::to_owned)
+    }
+
+    fn launch_long(lane: &mut Lane, text: &str) -> (OccurrenceIdentity, Vec<TailPatchRequest>) {
+        let occurrence = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, 160_000);
+        stage(lane, 1, occurrence.clone(), text);
+        assert!(
+            lane.state
+                .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, text))
+        );
+        close_lexicon(lane, 1, &occurrence, text);
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 3, "step 1: 10 s becomes three 4 s windows");
+        let windows = [(0, 64_000), (48_000, 112_000), (96_000, 160_000)];
+        let admit = [(0, 48_000), (48_000, 96_000), (96_000, 160_000)];
+        for (index, request) in requests.iter().enumerate() {
+            let range = &request.provider_request.identity.range;
+            assert_eq!(range.sample_start, windows[index].0);
+            assert_eq!(range.sample_end, windows[index].1);
+            assert_eq!(request.admit_sample_start, admit[index].0);
+            assert_eq!(request.admit_sample_end, admit[index].1);
+            assert_eq!(
+                request.audio.len() as u64,
+                range.sample_end - range.sample_start
+            );
+        }
+        (occurrence, requests)
+    }
+
+    fn launch_coalesced(lane: &mut Lane) -> (Vec<OccurrenceIdentity>, Vec<TailPatchRequest>) {
+        let session = lane.state.session_id.clone();
+        let spans = [
+            (0, 24_000, "alfa"),
+            (24_000, 48_000, "beta"),
+            (48_000, 72_000, "gamma"),
+        ];
+        let mut occurrences = Vec::new();
+        for (index, (start, end, text)) in spans.into_iter().enumerate() {
+            let occurrence = OccurrenceIdentity::new(session.clone(), 1, start, end);
+            let id = (index as u64) + 1;
+            stage(lane, id, occurrence.clone(), text);
+            assert!(
+                lane.state
+                    .enqueue_layer1_piece(&lane.tx, piece(id, &occurrence, text))
+            );
+            close_lexicon(lane, id, &occurrence, text);
+            occurrences.push(occurrence);
+        }
+        assert!(lane.state.flush_layer1_coalesce(&lane.tx));
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(
+            requests.len(),
+            2,
+            "two contiguous runs, second carries the prefix"
+        );
+        assert_eq!(requests[0].provider_request.identity.range.sample_start, 0);
+        assert_eq!(
+            requests[0].provider_request.identity.range.sample_end,
+            48_000
+        );
+        assert_eq!(requests[0].admit_sample_start, 0);
+        assert_eq!(requests[0].admit_sample_end, 48_000);
+        assert_eq!(requests[0].member_occurrences.len(), 2);
+        assert_eq!(
+            requests[1].provider_request.identity.range.sample_start,
+            32_000
+        );
+        assert_eq!(
+            requests[1].provider_request.identity.range.sample_end,
+            72_000
+        );
+        assert_eq!(requests[1].admit_sample_start, 48_000);
+        assert_eq!(requests[1].admit_sample_end, 72_000);
+        assert_eq!(requests[1].member_occurrences.len(), 1);
+        assert_eq!(
+            requests[1].audio.len() as u64,
+            requests[1].provider_request.identity.range.sample_end
+                - requests[1].provider_request.identity.range.sample_start
+        );
+        (occurrences, requests)
+    }
+
+    /// (a) One phrase pin across a long-occurrence slice boundary.
+    ///
+    /// Contract: step 3 (unanchored, never dropped), founding invariant
+    /// (no word pins → read-only evidence, no duplicate token), forbidden
+    /// `drop_acoustic_observation_without_receipt`, required receipt
+    /// "observations unanchored (kept, no mutation right)".
+    #[test]
+    fn phrase_grain_segment_straddling_a_long_occurrence_slice_stays_visible_unanchored() {
+        let mut lane = open("relay-long-phrase");
+        let (occurrence, requests) = launch_long(&mut lane, "cale zdanie");
+        let phrase = "od czwartej do siodmej";
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[1],
+                vec![segment("relay-long-phrase", phrase, 64_000, 112_000)],
+            ),
+            7.0,
+        );
+        let events = drain(&mut lane.rx);
+        assert!(
+            unanchored_label(&events, phrase),
+            "step 3: a phrase pin across the 6 s slice boundary must stay visible as unanchored evidence, not vanish"
+        );
+        assert_eq!(
+            held_count(&lane),
+            1,
+            "unanchored overlap must not mint a second token"
+        );
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("cale zdanie")
+        );
+    }
+
+    /// (b) One phrase pin across the coalesced prefix/admit boundary.
+    ///
+    /// Same contract lines as (a), plus Whisper truth: the overlap carries
+    /// context and must not duplicate canvas content.
+    #[test]
+    fn phrase_grain_segment_straddling_a_coalesced_prefix_stays_visible_unanchored() {
+        let mut lane = open("relay-coalesced-phrase");
+        let (occurrences, requests) = launch_coalesced(&mut lane);
+        let phrase = "przez granice";
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[1],
+                vec![segment("relay-coalesced-phrase", phrase, 40_000, 56_000)],
+            ),
+            4.5,
+        );
+        let events = drain(&mut lane.rx);
+        assert!(
+            unanchored_label(&events, phrase),
+            "a phrase across the prefix/admit boundary stays visible without mutation authority"
+        );
+        assert_eq!(
+            held_count(&lane),
+            3,
+            "the phrase must not become a fourth token"
+        );
+        assert_eq!(held_text(&lane, &occurrences[1]).as_deref(), Some("beta"));
+        assert_eq!(held_text(&lane, &occurrences[2]).as_deref(), Some("gamma"));
+    }
+
+    /// (c) Later-window range already covered by an earlier admitted identity.
+    ///
+    /// Contract: step 4 `replayed_range_identity`. The refusal must not depend
+    /// on the two strings matching. Required receipt: structural replays rejected.
+    #[test]
+    fn overlap_replay_covered_by_an_earlier_identity_is_refused() {
+        let mut lane = open("relay-replay");
+        let (occurrences, requests) = launch_coalesced(&mut lane);
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![segment("relay-replay", "beta raz", 24_000, 48_000)],
+            ),
+            3.0,
+        );
+        let _ = drain(&mut lane.rx);
+        assert_eq!(
+            held_text(&lane, &occurrences[1]).as_deref(),
+            Some("beta raz")
+        );
+
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[1],
+                vec![segment("relay-replay", "powtorka", 32_000, 48_000)],
+            ),
+            4.5,
+        );
+        let events = drain(&mut lane.rx);
+        assert!(
+            replay_refusal(&events, "powtorka"),
+            "step 4: a covered range is replayed_range_identity even when the text differs"
+        );
+        assert_eq!(
+            held_count(&lane),
+            3,
+            "replay must not mint a duplicate token"
+        );
+        assert_eq!(
+            held_text(&lane, &occurrences[1]).as_deref(),
+            Some("beta raz")
+        );
+        assert_eq!(held_text(&lane, &occurrences[2]).as_deref(), Some("gamma"));
+    }
+
+    /// (d) Word pins on the long-occurrence slice. Clip only the exclusive tail.
+    ///
+    /// Contract: founding invariant lines on word-pin clipping; step 7 (do not
+    /// invent per-word ranges); step 3 for a pin that still straddles.
+    #[test]
+    fn word_pins_clip_a_long_occurrence_slice_to_its_exclusive_tail() {
+        let mut lane = open("relay-long-words");
+        let (occurrence, requests) = launch_long(&mut lane, "cale zdanie");
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[1],
+                vec![
+                    segment("relay-long-words", "krawedz", 40_000, 52_000),
+                    segment("relay-long-words", "srodek", 52_000, 90_000),
+                    segment("relay-long-words", "dalej", 90_000, 110_000),
+                ],
+            ),
+            7.0,
+        );
+        let events = drain(&mut lane.rx);
+        let mutations = whisper_mutations(&events);
+        assert!(
+            mutations
+                .iter()
+                .any(|(label, receipt)| { label == "srodek" && receipt.grants_mutation() }),
+            "word pins wholly inside the exclusive tail [3 s, 6 s) are the clipped admission"
+        );
+        assert!(
+            unanchored_label(&events, "krawedz"),
+            "a word pin that straddles the earlier admit stays whole and unanchored"
+        );
+        assert!(
+            unanchored_label(&events, "dalej"),
+            "a word pin that straddles the next slice stays whole and unanchored"
+        );
+        assert!(
+            mutations
+                .iter()
+                .all(|(label, _)| { label == "srodek" || label == "krawedz" || label == "dalej" }),
+            "step 7: utterance or word text is never split into an invented fragment"
+        );
+        assert_eq!(held_count(&lane), 1);
+        assert_ne!(held_text(&lane, &occurrence).as_deref(), Some("krawedz"));
+    }
+
+    /// (d) Word pins on the coalesced prefix. Covered words are replay;
+    /// the exclusive tail is clipped; a straddling word is not split.
+    ///
+    /// Contract: step 4, step 7, founding invariant on exclusive-tail clipping.
+    #[test]
+    fn word_pins_clip_a_coalesced_prefix_to_its_exclusive_tail() {
+        let mut lane = open("relay-coalesced-words");
+        let (occurrences, requests) = launch_coalesced(&mut lane);
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![segment("relay-coalesced-words", "beta raz", 24_000, 48_000)],
+            ),
+            3.0,
+        );
+        let _ = drain(&mut lane.rx);
+
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[1],
+                vec![
+                    segment("relay-coalesced-words", "przez", 40_000, 48_000),
+                    segment("relay-coalesced-words", "krawedz", 46_000, 52_000),
+                    segment("relay-coalesced-words", "ogon", 48_000, 56_000),
+                ],
+            ),
+            4.5,
+        );
+        let events = drain(&mut lane.rx);
+        assert!(
+            replay_refusal(&events, "przez"),
+            "a word pin wholly inside the already admitted prefix is replayed_range_identity"
+        );
+        assert!(
+            unanchored_label(&events, "krawedz"),
+            "a word pin across the admit boundary is kept whole, without a duplicate token"
+        );
+        assert_eq!(
+            held_text(&lane, &occurrences[2]).as_deref(),
+            Some("ogon"),
+            "word pins clip the later member to the exclusive tail"
+        );
+        assert_eq!(
+            held_text(&lane, &occurrences[1]).as_deref(),
+            Some("beta raz")
+        );
+        assert_eq!(held_count(&lane), 3);
+    }
+}
