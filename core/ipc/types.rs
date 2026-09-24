@@ -588,6 +588,7 @@ mod tests {
                 inline_llm_replacements: 3,
                 final_bam_replacements: 4,
                 annotations_inserted: 5,
+                ..LayerSummary::default()
             },
         };
 

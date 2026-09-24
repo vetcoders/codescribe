@@ -68,7 +68,8 @@ use crate::pipeline::acoustic_ledger::{
     RefuseReason, SealCoverageReceipt, SealCoverageStatus, SealRefusal,
 };
 use crate::pipeline::contracts::{
-    EngineEvent, EventSink, SpeechIntegrity, SpeechIntegrityPhase, TranscriptSegment,
+    EngineEvent, EventSink, SessionConservationReceipt, SpeechIntegrity, SpeechIntegrityPhase,
+    TranscriptSegment,
 };
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
 use crate::stt::tail_patcher::{SkipReasonCode, TailPatchConfig, TailPatchOutcome};
@@ -798,6 +799,7 @@ fn tail_patch_receipt_after_stop(
     armed: bool,
     submitted: u64,
     worker_accounting: Option<TailPatchWorkerAccounting>,
+    conservation: SessionConservationReceipt,
 ) -> TailPatchSessionReceipt {
     // The worker increments its awaiting-completion counter before the async
     // owner accepts a request. On bounded closure expiry, that counter already
@@ -830,6 +832,7 @@ fn tail_patch_receipt_after_stop(
             TailPatchDrainDisposition::Completed
         },
     )
+    .with_conservation(conservation)
 }
 
 /// Drive one progressive Apple stream session until the audio channel closes.
@@ -1311,6 +1314,7 @@ pub(crate) async fn apple_stream_transcription_session(
 
     let mut accepted_tail_patch_replacements = 0u64;
     let mut tail_patch_worker_accounting = None;
+    let mut conservation = SessionConservationReceipt::default();
     match worker.join() {
         Ok(Ok(outcome)) => {
             info!(
@@ -1323,6 +1327,7 @@ pub(crate) async fn apple_stream_transcription_session(
                 "Apple progressive live session finished"
             );
             accepted_tail_patch_replacements = outcome.tail_patch_replacements;
+            conservation = outcome.conservation.clone();
             tail_patch_worker_accounting = Some(TailPatchWorkerAccounting {
                 applied_jobs: outcome.tail_patch_jobs_applied,
                 skipped_jobs: outcome.tail_patch_jobs_skipped,
@@ -1347,8 +1352,9 @@ pub(crate) async fn apple_stream_transcription_session(
         tail_patch_on,
         tail_patch_submitted,
         tail_patch_worker_accounting,
+        conservation.clone(),
     );
-    log_tail_patch_session_receipt(receipt);
+    log_tail_patch_session_receipt(&receipt);
     report_tail_patch_drain_degrade(
         event_sink.as_ref(),
         receipt.timed_out.saturating_add(receipt.abandoned),
@@ -1362,6 +1368,7 @@ pub(crate) async fn apple_stream_transcription_session(
         event_sink.as_ref(),
         session_id,
         accepted_tail_patch_replacements,
+        conservation,
     );
 }
 
@@ -1408,6 +1415,12 @@ struct AppleSealState {
     last_apple_segment_end: f32,
     /// Seals whose audio window could not be resolved (F3 falsification).
     unresolved_windows: u64,
+    /// Whisper windows accepted onto the provider queue.
+    windows_admitted: u64,
+    /// Accepted windows built from more than one occurrence.
+    windows_coalesced: u64,
+    /// Windows refused before a provider ever saw them, by reason code.
+    windows_refused_before_inference: BTreeMap<String, u64>,
     /// Seals where Layer 1 recovered speech it could not place on the canvas
     /// (W-C). A non-zero count means the stop path is owed a residual gap fill.
     under_commit_escalations: u64,
@@ -1609,7 +1622,7 @@ impl AppleSealState {
     fn new_for_session(sample_rate: u32, session_id: String, capture_epoch: u64) -> Self {
         let session_id_for_energy = session_id.clone();
         let speech_progress = SpeechProgress::new(session_id.clone(), capture_epoch, sample_rate);
-        Self {
+        let state = Self {
             session_id,
             capture_epoch,
             sample_rate,
@@ -1626,6 +1639,9 @@ impl AppleSealState {
             last_sealed_end: 0.0,
             last_apple_segment_end: 0.0,
             unresolved_windows: 0,
+            windows_admitted: 0,
+            windows_coalesced: 0,
+            windows_refused_before_inference: BTreeMap::new(),
             under_commit_escalations: 0,
             tail_patch: None,
             layer1_coalesce: Layer1Coalesce::default(),
@@ -1662,7 +1678,13 @@ impl AppleSealState {
             acoustic_ledger: Arc::new(Mutex::new(AcousticLedger::new())),
             energy_calibration: None,
             capture_energy: CaptureEnergyOwner::bind(session_id_for_energy, capture_epoch),
-        }
+        };
+        state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .bind_capture_rate(sample_rate);
+        state
     }
 
     /// Adopt the capture arm's energy-ladder owner.
@@ -1687,6 +1709,10 @@ impl AppleSealState {
         acoustic_ledger: Arc<Mutex<AcousticLedger>>,
         energy_calibration: Option<EnergyCalibration>,
     ) -> Self {
+        acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .bind_capture_rate(sample_rate);
         Self {
             acoustic_ledger,
             energy_calibration,
@@ -1804,6 +1830,7 @@ impl AppleSealState {
             && flush.sample_end > flush.sample_start
             && flush.audio.len() as u64 == flush.sample_end - flush.sample_start;
         if !valid {
+            self.note_window_refused_before_inference(RefinementFailure::InvalidIdentity);
             for (id, occurrence) in &flush.member_occurrences {
                 self.fail_refinement(ev_tx, *id, occurrence, RefinementFailure::InvalidIdentity);
             }
@@ -1843,14 +1870,40 @@ impl AppleSealState {
         {
             self.tail_patch_backpressure_drops =
                 self.tail_patch_backpressure_drops.saturating_add(1);
+            self.note_window_refused_before_inference(RefinementFailure::BacklogExhausted);
             for (id, occurrence) in &request.member_occurrences {
                 self.fail_refinement(ev_tx, *id, occurrence, RefinementFailure::BacklogExhausted);
             }
             return false;
         }
+        self.windows_admitted = self.windows_admitted.saturating_add(1);
+        if request.member_occurrences.len() > 1 {
+            self.windows_coalesced = self.windows_coalesced.saturating_add(1);
+        }
         self.refinement_pending.push_back(request);
         self.retry_refinements(ev_tx);
         true
+    }
+
+    fn note_window_refused_before_inference(&mut self, reason: RefinementFailure) {
+        *self
+            .windows_refused_before_inference
+            .entry(reason.code().to_string())
+            .or_default() += 1;
+    }
+
+    fn session_conservation(&self) -> SessionConservationReceipt {
+        let ledger = self
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        SessionConservationReceipt::from_ledger(
+            &ledger,
+            self.windows_admitted,
+            self.windows_coalesced,
+            self.unresolved_windows,
+            self.windows_refused_before_inference.clone(),
+        )
     }
 
     fn refinement_receipt(&self, occurrence: &OccurrenceIdentity, disposition: &'static str) {
@@ -2609,6 +2662,8 @@ struct AppleStreamOutcome {
     tail_patch_jobs_skipped: u64,
     /// Jobs still outstanding when the bounded closure wait expired.
     tail_patch_timeout_residue: u64,
+    /// Ledger and window census read at worker exit. Not derived from job buckets.
+    conservation: SessionConservationReceipt,
 }
 
 #[cfg(any())]
@@ -3638,6 +3693,16 @@ fn fusion_utterance_ranges(state: &AppleSealState) -> Vec<TailSampleRange> {
 /// When neither observer measured, the answer is the unavailable evidence the
 /// capture owner itself reports. Absence keeps its own name here instead of
 /// arriving at the ledger as an empty set.
+fn energy_lookup_without_voiced_hop(state: &AppleSealState) -> bool {
+    let energy = state.capture_energy.session_active_speech_ranges(
+        &state.session_id,
+        state.capture_epoch,
+        state.sample_rate,
+    );
+    matches!(energy.availability(), AcousticAvailability::Observed { .. })
+        && energy.ranges().is_empty()
+}
+
 fn coverage_speech_evidence(state: &AppleSealState) -> AcousticSpeechEvidence {
     let captured_samples = state.audio.session_sample_end();
     let capture_energy = state.capture_energy.session_active_speech_ranges(
@@ -3720,10 +3785,14 @@ fn publish_terminal_coverage(
         "seal_speech_set"
     );
 
+    let no_voiced_hop = energy_lookup_without_voiced_hop(state);
     let mut ledger = state
         .acoustic_ledger
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if no_voiced_hop {
+        ledger.note_energy_lookup_without_voiced_hop();
+    }
     let receipt = ledger.assess_seal_coverage(
         &state.session_id,
         state.capture_epoch,
@@ -4865,6 +4934,7 @@ fn apple_stream_worker(
             tail_patch_jobs_applied: state.tail_patch_jobs_applied,
             tail_patch_jobs_skipped: state.tail_patch_jobs_skipped,
             tail_patch_timeout_residue,
+            conservation: state.session_conservation(),
         });
     }
     let terminal = state
@@ -4889,6 +4959,7 @@ fn apple_stream_worker(
         tail_patch_jobs_applied: state.tail_patch_jobs_applied,
         tail_patch_jobs_skipped: state.tail_patch_jobs_skipped,
         tail_patch_timeout_residue,
+        conservation: state.session_conservation(),
     })
 }
 
@@ -6423,7 +6494,12 @@ mod tests {
         assert!(sink.events().is_empty());
 
         report_tail_patch_drain_degrade(&sink, 2);
-        emit_session_finalised(&sink, "test-session".to_string(), 0);
+        emit_session_finalised(
+            &sink,
+            "test-session".to_string(),
+            0,
+            SessionConservationReceipt::default(),
+        );
         let events = sink.events();
         assert_eq!(events.len(), 2);
         let EngineEvent::Warning { code, message } = &events[0] else {
@@ -6660,6 +6736,7 @@ mod tests {
                 skipped_jobs: 1,
                 timeout_residue: 1,
             }),
+            SessionConservationReceipt::default(),
         );
         assert_eq!(receipt.applied, 1);
         assert_eq!(receipt.skipped, 1);
@@ -6667,7 +6744,8 @@ mod tests {
         assert_eq!(receipt.abandoned, 0);
         assert!(receipt.is_reconciled());
 
-        let worker_failed = tail_patch_receipt_after_stop(true, 2, None);
+        let worker_failed =
+            tail_patch_receipt_after_stop(true, 2, None, SessionConservationReceipt::default());
         assert_eq!(worker_failed.abandoned, 2);
         assert_eq!(worker_failed.drain, TailPatchDrainDisposition::Abandoned);
         assert!(worker_failed.is_reconciled());
@@ -6683,6 +6761,7 @@ mod tests {
                 skipped_jobs: 0,
                 timeout_residue: 1,
             }),
+            SessionConservationReceipt::default(),
         );
         assert_eq!(receipt.timed_out, 1);
         assert_eq!(receipt.abandoned, 0);
@@ -6701,6 +6780,7 @@ mod tests {
                 skipped_jobs: 1,
                 timeout_residue: 0,
             }),
+            SessionConservationReceipt::default(),
         );
     }
 
