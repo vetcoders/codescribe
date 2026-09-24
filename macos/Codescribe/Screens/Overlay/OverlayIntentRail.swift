@@ -175,6 +175,7 @@ struct OverlayIntentRail: View {
       return recoveryIntents(for: state) + [.commitRevision, .discardRevision, .close]
     }
     return recoveryIntents(for: state)
+      + (state.canUndoRetranscribe ? [.undoRetranscribe] : [])
       + projectedIntents(
         phase: state.mode,
         canPaste: state.canPaste,
@@ -301,6 +302,7 @@ extension OverlayIntent {
     case .copy: "Copy transcript"
     case .insertPaste: "Insert transcript"
     case .retranscribe: "Retranscribe recording"
+    case .undoRetranscribe: "Undo retranscribe"
     case .format: "Format transcript"
     case .sendToAgent: "Send transcript to Agent"
     case .recoverSuperseded: "Recover previous transcript"
@@ -317,6 +319,7 @@ extension OverlayIntent {
     case .copy: "Copies the projected transcript"
     case .insertPaste: "Sends the projected transcript to the selected destination"
     case .retranscribe: "Requests another transcription of this recording"
+    case .undoRetranscribe: "Restores the transcript this retranscribe replaced, as a new revision"
     case .format: "Requests formatting between takes"
     case .sendToAgent: "Sends the accepted transcript to Agent"
     case .recoverSuperseded:
@@ -334,6 +337,7 @@ extension OverlayIntent {
     case .copy: "doc.on.doc"
     case .insertPaste: "arrow.down.doc"
     case .retranscribe: "arrow.clockwise"
+    case .undoRetranscribe: "arrow.uturn.backward"
     case .format: "textformat"
     case .sendToAgent: "paperplane"
     case .recoverSuperseded: "clock.arrow.circlepath"

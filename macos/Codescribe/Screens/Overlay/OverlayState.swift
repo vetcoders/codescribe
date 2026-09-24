@@ -178,6 +178,10 @@ enum OverlayIntent: String, Equatable, Hashable {
   case copy
   case insertPaste = "insert-paste"
   case retranscribe
+  /// Restore the exact rendered text the last Retranscribe replaced, committed
+  /// as a new user revision on the same session. Rail-projected only while the
+  /// replaced text is still recoverable (same session, no newer capture).
+  case undoRetranscribe = "undo-retranscribe"
   case format
   case sendToAgent = "send-to-agent"
   /// Hand one retained superseded take back to the user, or drop it on an
@@ -878,6 +882,8 @@ final class OverlayState {
     case .retranscribe:
       // Keyboard / AX path without a menu pick: the local paradigm.
       relayRetranscribeIntent(pass: .fullHq)
+    case .undoRetranscribe:
+      undoRetranscribeIntent()
     case .format:
       relayFormatIntent()
     case .sendToAgent:
@@ -976,24 +982,99 @@ final class OverlayState {
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         if !text.isEmpty {
           if let projection = self.latestTranscriptProjection {
-            _ = try? await engine.commitUserRevision(
+            // The commit replaces the rendered text irreversibly on the
+            // reducer's current tip. Retain the exact text it replaces, so the
+            // rail can offer a real Back — a worse retranscription must never
+            // be a one-way door (operator, 2026-09-24).
+            let replaced = projection.renderedText
+            if (try? await engine.commitUserRevision(
               sessionId: projection.sessionId,
               sourceRevision: projection.reducerRevision,
               renderedText: text
-            )
+            )) != nil,
+              replaced != text,
+              !replaced.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            {
+              self.retranscribeRollback = OverlayRetranscribeRollback(
+                sessionId: projection.sessionId, renderedText: replaced)
+            }
           } else {
+            let replaced = self.revisionDraft
             self.revisionDraft = text
+            if replaced != text,
+              !replaced.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            {
+              self.retranscribeRollback = OverlayRetranscribeRollback(
+                sessionId: nil, renderedText: replaced)
+            }
           }
           if self.mode == .noSpeech {
             self.mode = .formatted
           }
         }
-        self.showFooterNotice("retranscribed")
+        self.showFooterNotice(
+          self.retranscribeRollback == nil ? "retranscribed" : "retranscribed — Back keeps the old text")
         self.restartAutoHideCountdown()
       } catch {
         self.presentActionFailure(
           "Couldn't retranscribe recording: \(error)", notice: "retranscribe failed")
         self.restartAutoHideCountdown()
+      }
+    }
+  }
+
+  /// The text a Retranscribe replaced, recoverable while its take is current.
+  /// A `nil` session is the draft path (no live projection at commit time).
+  struct OverlayRetranscribeRollback: Equatable {
+    let sessionId: String?
+    let renderedText: String
+  }
+
+  private(set) var retranscribeRollback: OverlayRetranscribeRollback?
+
+  /// Back is honest only while the replaced text still belongs to the current
+  /// document: same session for the committed path, any time for the draft path.
+  var canUndoRetranscribe: Bool {
+    guard let rollback = retranscribeRollback else { return false }
+    guard let sessionId = rollback.sessionId else { return true }
+    return latestTranscriptProjection?.sessionId == sessionId
+  }
+
+  /// Restore the pre-retranscribe text as a NEW user revision on the same
+  /// session — no history rewrite, no forged seal; the reducer keeps both
+  /// texts in its revision chain. The rollback slot is consumed only when the
+  /// restore actually landed.
+  func undoRetranscribeIntent() {
+    guard let rollback = retranscribeRollback else { return }
+    guard let sessionId = rollback.sessionId else {
+      revisionDraft = rollback.renderedText
+      retranscribeRollback = nil
+      showFooterNotice("retranscribe undone")
+      return
+    }
+    guard let engine else {
+      presentActionFailure("Undo needs the recording engine", notice: "undo unavailable")
+      return
+    }
+    guard let projection = latestTranscriptProjection, projection.sessionId == sessionId else {
+      retranscribeRollback = nil
+      presentActionFailure(
+        "The retranscribed take is no longer current", notice: "nothing to undo")
+      return
+    }
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      do {
+        _ = try await engine.commitUserRevision(
+          sessionId: sessionId,
+          sourceRevision: projection.reducerRevision,
+          renderedText: rollback.renderedText
+        )
+        self.retranscribeRollback = nil
+        self.showFooterNotice("retranscribe undone")
+      } catch {
+        self.presentActionFailure(
+          "Couldn't undo retranscribe: \(error)", notice: "undo failed — kept")
       }
     }
   }
@@ -2364,6 +2445,10 @@ final class OverlayState {
   private func resetTranscript() {
     deliveredText = ""
     pendingNoSpeechMessage = nil
+    // A rollback belongs to the take whose Retranscribe created it. Unlike
+    // `supersededTakes` it repaints the canvas, so it must never survive into
+    // a new capture and restore words over a different take.
+    retranscribeRollback = nil
     noSpeechNotice = OverlayState.defaultNoSpeechNotice
     coverageRefusalNotice = nil
     // A persisting chip belongs to the take that raised it. Nothing else

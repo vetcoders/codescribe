@@ -160,8 +160,11 @@ private final class OverlayStateTestEngine: DictationEngine {
     if let assistiveSendHandler { return try await assistiveSendHandler() }
     return assistiveSendResult
   }
+  var lastSessionAudioPathValue: String?
+  var transcriptionText = ""
+  func lastSessionAudioPath() -> String? { lastSessionAudioPathValue }
   func transcribeFile(path _: String) async throws -> CsTranscription {
-    CsTranscription(text: "", language: "pl")
+    CsTranscription(text: transcriptionText, language: "pl")
   }
 }
 
@@ -2071,6 +2074,75 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertTrue(stopped, "stop parity must fire — no zombie Recording pill")
     XCTAssertEqual(state.activeText, "zdanie pierwsze")
     XCTAssertEqual(state.toast, "Dictation failed — transcript kept")
+  }
+
+  /// A worse retranscription must never be a one-way door (operator,
+  /// 2026-09-24: "nie można zrobić back po retranscribe"). The commit replaces
+  /// the rendered text on the reducer tip; the rail must retain the replaced
+  /// text and Back must restore it as a NEW revision on the same session.
+  func testRetranscribeRetainsReplacedTextAndBackRestoresIt() async {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    engine.lastSessionAudioPathValue = "/tmp/take-undo.wav"
+    engine.transcriptionText = "gorsza wersja"
+    state.engine = engine
+    projectText(
+      "dobra wersja", to: state, canRetranscribe: true, terminal: true,
+      sessionId: "take-undo", reducerRevision: 7)
+
+    let committed = expectation(description: "retranscribe committed")
+    engine.onRevision = { committed.fulfill() }
+    state.retranscribe(pass: .fullHq)
+    await fulfillment(of: [committed], timeout: 2)
+
+    XCTAssertEqual(engine.revisionRequests.first?.renderedText, "gorsza wersja")
+    XCTAssertTrue(state.canUndoRetranscribe)
+    XCTAssertEqual(
+      OverlayIntentRail.projectedIntents(for: state).first, .undoRetranscribe,
+      "Back must lead the rail while the replaced text is recoverable")
+
+    // The reducer echoes the committed retranscription as the current tip —
+    // an apply_manual_edit document revision, NOT a second lifecycle terminal
+    // (a replayed lifecycle line is dropped and would never repaint the tip).
+    projectText(
+      "gorsza wersja", to: state, canRetranscribe: true, terminal: true,
+      sessionId: "take-undo", reducerRevision: 8, reducerAction: "apply_manual_edit")
+    XCTAssertTrue(state.canUndoRetranscribe, "the same session keeps Back alive")
+
+    let restored = expectation(description: "undo committed")
+    engine.onRevision = { restored.fulfill() }
+    state.undoRetranscribeIntent()
+    await fulfillment(of: [restored], timeout: 2)
+
+    XCTAssertEqual(engine.revisionRequests.last?.renderedText, "dobra wersja")
+    XCTAssertEqual(
+      engine.revisionRequests.last?.sourceRevision, 8,
+      "the restore builds on the CURRENT tip, not the pre-retranscribe one")
+    XCTAssertFalse(state.canUndoRetranscribe, "the slot is consumed by a landed restore")
+  }
+
+  /// The rollback repaints the canvas, so it dies with its take: a new capture
+  /// must never restore words over a different session's document.
+  func testRetranscribeRollbackDoesNotSurviveANewCapture() async {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    engine.lastSessionAudioPathValue = "/tmp/take-undo.wav"
+    engine.transcriptionText = "nowy tekst"
+    state.engine = engine
+    projectText(
+      "stary tekst", to: state, canRetranscribe: true, terminal: true,
+      sessionId: "take-a", reducerRevision: 3)
+
+    let committed = expectation(description: "retranscribe committed")
+    engine.onRevision = { committed.fulfill() }
+    state.retranscribe(pass: .fullHq)
+    await fulfillment(of: [committed], timeout: 2)
+    XCTAssertTrue(state.canUndoRetranscribe)
+
+    state.handleRecordingStarted()
+    XCTAssertFalse(
+      state.canUndoRetranscribe,
+      "a new capture must clear the rollback with the rest of the transcript state")
   }
 
   /// Assistive hides the overlay, so "transcript kept" on a canvas the user

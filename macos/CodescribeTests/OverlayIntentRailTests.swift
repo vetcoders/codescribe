@@ -422,7 +422,7 @@ final class OverlayIntentRailTests: XCTestCase {
 
     await fulfillment(of: [reached], timeout: 0.2)
     XCTAssertEqual(engine.receivedTranscribePath, "hq:/tmp/overlay-intent-boundary.wav")
-    XCTAssertEqual(state.toast, "retranscribed")
+    XCTAssertEqual(state.toast, "retranscribed — Back keeps the old text")
   }
 
   func testMissingEngineSurfacesCopyAndInsertFailuresOnCanvas() {
