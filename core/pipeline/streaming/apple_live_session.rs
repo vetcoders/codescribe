@@ -14438,6 +14438,63 @@ mod relay_l1_overlap_admission_tests {
         assert_conserved(&lane, None);
     }
 
+    /// Whisper must fill a missed first speech island while preserving an
+    /// Apple word for the later island. Apple's broad phrase has no word-level
+    /// timing here, so this test proves coexistence, not a lexical replacement
+    /// of an individually pinned Apple word.
+    #[test]
+    fn local_l1_fills_apple_omission_without_erasing_neighbour() {
+        let session = "relay-local-apple-omission";
+        let mut lane = open(session);
+        record_voiced_spans(
+            &lane,
+            LONG_SAMPLES,
+            &[(8_000, 48_000), (100_000, 140_000)],
+        );
+        let occurrence = OccurrenceIdentity::new(session, 1, 0, LONG_SAMPLES);
+        let apple = "prawy";
+        stage(&mut lane, 1, occurrence.clone(), apple);
+        let mut input = piece(1, &occurrence, apple);
+        input.audio.fill(0.0);
+        input.audio[8_000..48_000].fill(0.2);
+        input.audio[100_000..140_000].fill(0.2);
+        assert!(lane.state.enqueue_layer1_piece(&lane.tx, input));
+        close_lexicon(&mut lane, 1, &occurrence, apple);
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 3);
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![word_pin(session, "dobry", 8_000, 48_000)],
+            ),
+            4.0,
+        );
+        let events = drain(&mut lane.rx);
+        assert!(
+            mutation_count(&events) > 0,
+            "the grounded local word must enter the ledger before the later island is decoded by L1"
+        );
+
+        let ledger = lane.state.acoustic_ledger.lock().expect("ledger");
+        let committed = ledger
+            .occurrences()
+            .filter_map(|identity| ledger.text_of(identity))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            committed.contains("dobry"),
+            "the missing first word must be committed: {committed}"
+        );
+        assert!(
+            committed.contains("prawy"),
+            "the first-island fill must not erase Apple's later word: {committed}"
+        );
+        drop(ledger);
+        assert_conserved(&lane, None);
+    }
+
     /// 9.5 s at 16 kHz. `emit_long_piece` cuts it into three step-1 windows,
     /// the same geometry as take d566fa17's late occurrences.
     const LONG_SAMPLES: u64 = 152_000;
