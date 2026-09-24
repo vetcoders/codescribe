@@ -172,6 +172,41 @@ mod retroactive_split_delivery_tests {
             "second Apple word must have a decision: {text}"
         );
         let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        let mut apple = events
+            .iter()
+            .filter_map(|event| match event {
+                EngineEvent::LedgerMutation {
+                    observation,
+                    label,
+                    receipt,
+                } if observation.producer == LedgerObservationProducer::Apple
+                    && receipt.grants_mutation() =>
+                {
+                    Some((label.clone(), observation.occurrence.clone()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        apple.sort_by_key(|(_, occurrence)| occurrence.sample_start);
+        assert_eq!(
+            apple,
+            vec![
+                (
+                    "before".to_string(),
+                    OccurrenceIdentity::new("retro-apple", 0, 0, sample(11.0)),
+                ),
+                (
+                    "after".to_string(),
+                    OccurrenceIdentity::new("retro-apple", 0, sample(11.0), sample(22.0)),
+                ),
+            ],
+            "both Apple labels must enter exactly one non-overlapping physical occurrence"
+        );
+        assert_eq!(
+            state.acoustic_ledger.lock().unwrap().occurrences().count(),
+            2,
+            "the split must not mint an additional overlapping occurrence"
+        );
         assert!(!events.iter().any(
             |event| matches!(event, EngineEvent::Warning { code, .. } if code.contains("overlap"))
         ));
