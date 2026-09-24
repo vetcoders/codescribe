@@ -1586,6 +1586,28 @@ fn pin_intersects(pin: &OccurrenceIdentity, member: &OccurrenceIdentity) -> bool
     pin.sample_end > member.sample_start && pin.sample_start < member.sample_end
 }
 
+/// A word pin already stored as an exclusive slice of this member.
+///
+/// The slice is an admitted identity. A later window's copy of that range is
+/// replay, including when the copy sits outside the later window's admit.
+fn earlier_exclusive_slice_covers(
+    slices: &std::collections::BTreeMap<OccurrenceIdentity, Vec<(u64, u64, String)>>,
+    members: &[OccurrenceIdentity],
+    pin: &OccurrenceIdentity,
+) -> bool {
+    members.iter().any(|member| {
+        pin.same_capture(member)
+            && pin.sample_end > pin.sample_start
+            && pin.sample_start >= member.sample_start
+            && pin.sample_end <= member.sample_end
+            && slices.get(member).is_some_and(|ranges| {
+                ranges.iter().any(|(start, end, _)| {
+                    *end > *start && pin.sample_start >= *start && pin.sample_end <= *end
+                })
+            })
+    })
+}
+
 impl AppleSealState {
     fn emit_speech_integrity(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
         let ledger = self
@@ -2083,6 +2105,10 @@ impl AppleSealState {
         members: &[(u64, OccurrenceIdentity)],
         segments: &[TimedTailSegment],
     ) -> Vec<MemberPinRoute> {
+        let word_grain = !segments.is_empty()
+            && segments
+                .iter()
+                .all(|segment| segment.grain == crate::stt::tail_provider::TailSegmentGrain::Word);
         let open_members = members
             .iter()
             .map(|(_, occurrence)| occurrence.clone())
@@ -2100,12 +2126,21 @@ impl AppleSealState {
                     continue;
                 }
                 let pin = OccurrenceIdentity::from(&segment.range);
-                let class = ledger.classify_overlap_pin(
+                let mut class = ledger.classify_overlap_pin(
                     &pin,
                     admit_sample_start,
                     admit_sample_end,
                     &open_members,
                 );
+                // Step 4: a word whose range is already an admitted exclusive
+                // slice is replay, one pin at a time. It does not veto the
+                // member. The committed occurrence is not that identity: it is
+                // the span these pins are still proving.
+                if word_grain
+                    && earlier_exclusive_slice_covers(&self.whisper_slices, &open_members, &pin)
+                {
+                    class = OverlapPinClass::Replay;
+                }
                 let silent = self
                     .capture_energy
                     .voiced_hops_in(
@@ -2130,15 +2165,17 @@ impl AppleSealState {
                         });
                     }
                     OverlapPinClass::Replay => {
-                        // A replayed range is already covered and lies outside this
-                        // window's admit. Refuse that pin. It does not veto the
-                        // exclusive remainder: a straddle (unanchored) still does.
                         side.push((index, pin, text.to_string(), SidePin::Replay));
                     }
                     OverlapPinClass::Unanchored(reason) => {
-                        for (member_index, member) in open_members.iter().enumerate() {
-                            if pin_intersects(&pin, member) {
-                                routes[member_index].blocked = true;
+                        // Utterance grain addresses the whole span or nothing.
+                        // Word grain keeps the straddle as read-only evidence
+                        // and still admits the exclusive remainder.
+                        if !word_grain {
+                            for (member_index, member) in open_members.iter().enumerate() {
+                                if pin_intersects(&pin, member) {
+                                    routes[member_index].blocked = true;
+                                }
                             }
                         }
                         side.push((index, pin, text.to_string(), SidePin::Unanchored(reason)));
@@ -2147,10 +2184,28 @@ impl AppleSealState {
             }
         }
         for (index, pin, text, disposition) in side {
+            let occurrence_ranges = open_members
+                .iter()
+                .filter(|member| pin_intersects(&pin, member))
+                .map(|member| format!("{}..{}", member.sample_start, member.sample_end))
+                .collect::<Vec<_>>()
+                .join(",");
+            let ledger_reason = match &disposition {
+                SidePin::Replay => "replayed_range_identity",
+                SidePin::Unanchored(reason) => reason.as_str(),
+                SidePin::NoVoicedHop => "no_voiced_hop_in_pin",
+            };
+            let _ = ev_tx.send(EngineEvent::Warning {
+                code: "overlap_pin_refused".into(),
+                message: format!(
+                    "segment {}..{} occurrence [{occurrence_ranges}] ledger={ledger_reason}",
+                    pin.sample_start, pin.sample_end
+                ),
+            });
             let observation = LedgerObservationIdentity::new(
                 LedgerObservationProducer::Whisper,
                 request_id,
-                1_000 + index as u64,
+                1_000 + admit_sample_start + index as u64,
                 pin,
             );
             let receipt = {
@@ -2352,6 +2407,10 @@ impl AppleSealState {
             .as_ref()
             .map(|payload| payload.segments.as_slice())
             .unwrap_or(&[]);
+        let word_grain = !segments.is_empty()
+            && segments
+                .iter()
+                .all(|segment| segment.grain == crate::stt::tail_provider::TailSegmentGrain::Word);
         let routes = self.route_overlap_pins(
             ev_tx,
             request_id,
@@ -2360,10 +2419,6 @@ impl AppleSealState {
             &exact_open_members,
             segments,
         );
-        let word_grain = !segments.is_empty()
-            && segments
-                .iter()
-                .all(|segment| segment.grain == crate::stt::tail_provider::TailSegmentGrain::Word);
         let mut mutation_admitted = false;
         for (generation, (member_id, occurrence)) in exact_open_members.iter().enumerate() {
             let had_debt = self
@@ -4090,8 +4145,98 @@ enum StopRangeAttempt {
 /// Offer one whole-span recovery of a debt occurrence.
 ///
 /// The observation identity is the occurrence, not a segment inside it.
-/// Every non-empty segment must sit wholly inside that span. A segment that
-/// escapes, or a payload whose clock does not, is a refusal: nothing is admitted.
+fn recovery_audit(occurrence: &OccurrenceIdentity, segments: &[&TimedTailSegment]) -> String {
+    let listed = if segments.is_empty() {
+        "none".to_string()
+    } else {
+        segments
+            .iter()
+            .map(|segment| {
+                format!(
+                    "{}..{}",
+                    segment.range.sample_start, segment.range.sample_end
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    format!(
+        "occurrence {}..{} segments [{listed}]",
+        occurrence.sample_start, occurrence.sample_end
+    )
+}
+
+fn ledger_decision_name(receipt: &MutationReceipt) -> String {
+    match receipt {
+        MutationReceipt::Preserve { held_by, .. } => {
+            format!("preserve held_by={}", held_by.as_str())
+        }
+        MutationReceipt::Refuse { reason, .. } => format!("refuse {}", reason.as_str()),
+        MutationReceipt::KeepVisibleUnanchored { reason, .. } => {
+            format!("keep_visible_unanchored {}", reason.as_str())
+        }
+        other => other.as_str().to_string(),
+    }
+}
+
+fn warn_recovery(ev_tx: &mpsc::UnboundedSender<EngineEvent>, message: String) {
+    let _ = ev_tx.send(EngineEvent::Warning {
+        code: "seal_coverage_text_recovery_refused".into(),
+        message,
+    });
+}
+
+fn keep_escaping_recovery_segments(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    occurrence: &OccurrenceIdentity,
+    request_id: u64,
+    escaping: &[&TimedTailSegment],
+) {
+    for (index, segment) in escaping.iter().enumerate() {
+        let pin = OccurrenceIdentity::from(&segment.range);
+        let observation = LedgerObservationIdentity::new(
+            LedgerObservationProducer::Whisper,
+            request_id,
+            2_000 + index as u64,
+            pin,
+        );
+        let receipt = {
+            let mut ledger = state
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            ledger.keep_visible_unanchored(
+                &observation,
+                segment.text.trim(),
+                NoAuthorityReason::OverlapWithoutWordPins,
+            )
+        };
+        let decision = ledger_decision_name(&receipt);
+        let _ = ev_tx.send(EngineEvent::LedgerMutation {
+            observation,
+            label: segment.text.trim().to_string(),
+            receipt,
+        });
+        warn_recovery(
+            ev_tx,
+            format!(
+                "segment {}..{} occurrence {}..{} ledger={decision}",
+                segment.range.sample_start,
+                segment.range.sample_end,
+                occurrence.sample_start,
+                occurrence.sample_end
+            ),
+        );
+    }
+}
+
+/// Segments wholly inside the debt occurrence may be admitted.
+///
+/// A word pin that escapes the occurrence is unanchored read-only evidence
+/// and does not block the contained pins. An utterance-grain payload still
+/// addresses the whole span or nothing. A refusal names the segment range,
+/// the occurrence range, and the ledger decision that kept the debt.
 fn admit_debt_occurrence_recovery(
     state: &mut AppleSealState,
     ev_tx: &mpsc::UnboundedSender<EngineEvent>,
@@ -4106,6 +4251,7 @@ fn admit_debt_occurrence_recovery(
     let inside = |segment: &&TimedTailSegment| {
         segment.range.session == occurrence.session
             && segment.range.capture_epoch == occurrence.capture_epoch
+            && segment.range.sample_end > segment.range.sample_start
             && segment.range.sample_start >= occurrence.sample_start
             && segment.range.sample_end <= occurrence.sample_end
     };
@@ -4114,25 +4260,80 @@ fn admit_debt_occurrence_recovery(
         .iter()
         .filter(|segment| !segment.text.trim().is_empty())
         .collect();
-    if !exact_timing
-        || payload.validate().is_err()
-        || substantive.is_empty()
-        || substantive.iter().any(|segment| !inside(segment))
-    {
-        let _ = ev_tx.send(EngineEvent::Warning {
-            code: "seal_coverage_text_recovery_refused".into(),
-            message:
-                "recovery evidence is not a source-mapped segment wholly inside the debt occurrence"
-                    .into(),
-        });
+    let word_grain = payload.evidence.segment_grain
+        == crate::stt::tail_provider::TailSegmentGrain::Word
+        && !substantive.is_empty()
+        && substantive
+            .iter()
+            .all(|segment| segment.grain == crate::stt::tail_provider::TailSegmentGrain::Word);
+    if !exact_timing || substantive.is_empty() {
+        let reason = if substantive.is_empty() {
+            "empty_label"
+        } else {
+            "untrusted_segment_clock"
+        };
+        warn_recovery(
+            ev_tx,
+            format!(
+                "recovery evidence is not a source-mapped segment wholly inside the debt occurrence {} ledger={reason}",
+                recovery_audit(occurrence, &substantive)
+            ),
+        );
         return false;
     }
-    let label = substantive
+    let (contained, escaping): (Vec<&TimedTailSegment>, Vec<&TimedTailSegment>) =
+        substantive.iter().copied().partition(inside);
+    if !word_grain && (!escaping.is_empty() || payload.validate().is_err()) {
+        let reason = if !escaping.is_empty() {
+            "segment_escapes_occurrence"
+        } else {
+            "payload_invalid"
+        };
+        warn_recovery(
+            ev_tx,
+            format!(
+                "recovery evidence is not a source-mapped segment wholly inside the debt occurrence {} ledger={reason}",
+                recovery_audit(occurrence, &substantive)
+            ),
+        );
+        return false;
+    }
+    if contained.is_empty() {
+        keep_escaping_recovery_segments(
+            state,
+            ev_tx,
+            occurrence,
+            payload.identity.request_id,
+            &escaping,
+        );
+        return false;
+    }
+    let mut contained_payload = payload.clone();
+    contained_payload.segments = contained.iter().map(|segment| (*segment).clone()).collect();
+    contained_payload.text = contained
         .iter()
         .map(|segment| segment.text.trim())
         .collect::<Vec<_>>()
         .join(" ");
-    let _ = admit_ledger_label(
+    if let Err(error) = contained_payload.validate() {
+        keep_escaping_recovery_segments(
+            state,
+            ev_tx,
+            occurrence,
+            payload.identity.request_id,
+            &escaping,
+        );
+        warn_recovery(
+            ev_tx,
+            format!(
+                "recovery evidence is not a source-mapped segment wholly inside the debt occurrence {} ledger=payload_invalid {error}",
+                recovery_audit(occurrence, &contained)
+            ),
+        );
+        return false;
+    }
+    let label = contained_payload.text.clone();
+    let receipt = admit_ledger_label(
         state,
         ev_tx,
         LabelAdmission {
@@ -4146,16 +4347,33 @@ fn admit_debt_occurrence_recovery(
             energy: EnergyAdmission::RequireExistingQualification,
         },
     );
+    // Record escapes after the occurrence admission. A short pin can be a
+    // clock-lie on its own range; recording it first would block the
+    // replacement it does not own.
+    keep_escaping_recovery_segments(
+        state,
+        ev_tx,
+        occurrence,
+        payload.identity.request_id,
+        &escaping,
+    );
     let pending = state
         .acoustic_ledger
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .text_recovery_pending(occurrence);
     if pending {
-        let _ = ev_tx.send(EngineEvent::Warning {
-            code: "seal_coverage_text_recovery_refused".into(),
-            message: "recovery observation did not clear the debt occurrence".into(),
-        });
+        let decision = receipt
+            .as_ref()
+            .map(ledger_decision_name)
+            .unwrap_or_else(|| "not_qualified".to_string());
+        warn_recovery(
+            ev_tx,
+            format!(
+                "recovery observation did not clear the debt occurrence {} ledger={decision}",
+                recovery_audit(occurrence, &contained)
+            ),
+        );
     }
     !pending
 }
@@ -13666,10 +13884,12 @@ mod relay_l1_overlap_admission_tests {
 
     /// A word whose range crosses the prefix/remainder join stays one pin.
     ///
-    /// Contract step 3 and step 7: the whole-span rule refuses it on the range
-    /// alone. The pin's text matching the canvas is irrelevant.
+    /// Contract step 3: the straddle is unanchored and names its range.
+    /// Step 7 for word grain: it does not veto the exclusive pins, which join
+    /// the occurrence in PCM order. Utterance grain still addresses the whole
+    /// span or nothing.
     #[test]
-    fn word_pin_straddling_the_prefix_join_stays_refused_on_range() {
+    fn word_pin_straddling_the_prefix_join_stays_visible_and_does_not_block() {
         let mut lane = open("relay-word-straddle");
         let (occurrence, requests) = launch_long(&mut lane, "krawedz");
         let session = "relay-word-straddle";
@@ -13687,18 +13907,28 @@ mod relay_l1_overlap_admission_tests {
                 .complete_whisper_window(&lane.tx, completion(request, segments), 8.0);
             events.extend(drain(&mut lane.rx));
         }
+        let warnings = warning_lines(&events);
         assert!(
             unanchored_label(&events, "krawedz"),
-            "a word across the admit join stays whole and visible"
+            "a word across the admit join stays whole and visible\n{warnings}"
         );
         assert!(
-            named_refusal(&events, "intersecting_pin_not_exclusive"),
-            "step 7: the straddle refuses the span on ranges, even when the text matches the canvas"
+            warnings.contains("segment 40000..52000")
+                && warnings.contains("occurrence [0..160000]")
+                && warnings.contains("ledger=overlap_without_word_pins"),
+            "the straddle names segment, occurrence, and ledger reason\n{warnings}"
         );
-        assert_eq!(mutation_count(&events), 0);
-        assert_eq!(held_text(&lane, &occurrence).as_deref(), Some("krawedz"));
+        assert!(
+            !named_refusal(&events, "intersecting_pin_not_exclusive"),
+            "word grain: the straddle does not refuse the span"
+        );
+        assert_eq!(mutation_count(&events), 1);
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("raz dwa trzy")
+        );
         assert_eq!(held_count(&lane), 1);
-        assert_conserved(&lane, Some("intersecting_pin_not_exclusive"));
+        assert_conserved(&lane, None);
     }
 
     /// (ii) Three windows, one pin straddles an admit boundary.
@@ -14083,5 +14313,435 @@ mod relay_l1_overlap_admission_tests {
         assert_eq!(held_text(&lane, &occurrence).as_deref(), Some("cale"));
         assert_eq!(held_count(&lane), 1);
         assert_conserved(&lane, None);
+    }
+
+    /// 9.5 s at 16 kHz. `emit_long_piece` cuts it into three step-1 windows,
+    /// the same geometry as take d566fa17's late occurrences.
+    const LONG_SAMPLES: u64 = 152_000;
+
+    fn warning_lines(events: &[EngineEvent]) -> String {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                EngineEvent::Warning { code, message } => Some(format!("{code}: {message}")),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn record_voiced_spans(lane: &Lane, total: u64, voiced: &[(u64, u64)]) {
+        let mut samples = vec![0.0_f32; total as usize];
+        for &(start, end) in voiced {
+            for sample in &mut samples[start as usize..end as usize] {
+                *sample = 0.2;
+            }
+        }
+        let blocks = samples
+            .chunks(1_000)
+            .map(<[f32]>::to_vec)
+            .collect::<Vec<_>>();
+        record_energy(lane, &blocks);
+    }
+
+    fn qualify_unlabelled(lane: &mut Lane, occurrence: &OccurrenceIdentity) {
+        let calibration = EnergyCalibration {
+            version: "relay-l1-overlap".to_string(),
+            min_energy_integral: 1.0,
+            min_valley_samples: 1,
+        };
+        let evidence = AcousticEvidence {
+            occurrence: occurrence.clone(),
+            duration_ms: occurrence.sample_len() as f64 * 1_000.0 / f64::from(RATE),
+            energy_integral: 10.0,
+            mean_rms_dbfs: -12.0,
+            peak_dbfs: -3.0,
+            vad_open_sample: Some(occurrence.sample_start),
+            vad_close_sample: Some(occurrence.sample_end),
+            evidence_calibration_version: calibration.version.clone(),
+        };
+        lane.state
+            .acoustic_ledger
+            .lock()
+            .expect("ledger")
+            .qualify(&evidence, &calibration);
+        lane.state.energy_calibration = Some(calibration);
+        assert!(
+            lane.state
+                .acoustic_ledger
+                .lock()
+                .expect("ledger")
+                .require_text_recovery(occurrence)
+        );
+        lane.state.pending_events.insert(
+            1,
+            PendingAppleSeal {
+                occurrence: occurrence.clone(),
+                raw_text: String::new(),
+                layer1_baseline: String::new(),
+                start_ts: 0.0,
+                end_ts: occurrence.sample_len() as f32 / RATE as f32,
+                segments: Vec::new(),
+            },
+        );
+    }
+
+    fn launch_long_span(
+        lane: &mut Lane,
+        apple_text: Option<&str>,
+    ) -> (OccurrenceIdentity, Vec<TailPatchRequest>) {
+        let occurrence = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, LONG_SAMPLES);
+        if let Some(text) = apple_text {
+            stage(lane, 1, occurrence.clone(), text);
+        } else {
+            qualify_unlabelled(lane, &occurrence);
+        }
+        assert!(
+            lane.state
+                .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, apple_text.unwrap_or("")),),
+            "whisper must be scheduled while the frontier is still open"
+        );
+        if let Some(text) = apple_text {
+            close_lexicon(lane, 1, &occurrence, text);
+        }
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(
+            requests.len(),
+            3,
+            "9.5 s becomes three step-1 windows: {:?}",
+            requests
+                .iter()
+                .map(|request| (
+                    request.provider_request.identity.range.sample_start,
+                    request.provider_request.identity.range.sample_end,
+                    request.admit_sample_start,
+                    request.admit_sample_end,
+                ))
+                .collect::<Vec<_>>()
+        );
+        (occurrence, requests)
+    }
+
+    fn long_word_windows(session: &str) -> [Vec<TimedTailSegment>; 3] {
+        [
+            vec![
+                word_pin(session, "raz", 8_000, 48_000),
+                word_pin(session, "krawedz", 47_000, 52_000),
+                word_pin(session, "echo", 52_000, 64_000),
+            ],
+            vec![
+                word_pin(session, "raz", 8_000, 48_000),
+                word_pin(session, "krawedz", 47_000, 52_000),
+                word_pin(session, "dwa", 52_000, 64_000),
+                word_pin(session, "trzy", 70_000, 88_000),
+            ],
+            vec![word_pin(session, "cztery", 100_000, 140_000)],
+        ]
+    }
+
+    fn play_long_words(
+        lane: &mut Lane,
+        requests: &[TailPatchRequest],
+        session: &str,
+    ) -> Vec<EngineEvent> {
+        let mut events = Vec::new();
+        for (request, segments) in requests.iter().zip(long_word_windows(session)) {
+            lane.state
+                .complete_whisper_window(&lane.tx, completion(request, segments), 9.5);
+            events.extend(drain(&mut lane.rx));
+        }
+        events
+    }
+
+    /// (a) Apple text debt, three step-1 windows, overlap duplicates, one
+    /// word across a window edge.
+    ///
+    /// Contract step 3: the straddling word is unanchored and names its range.
+    /// Step 4: a later pin wholly inside an earlier exclusive pin is
+    /// `replayed_range_identity` and does not block the member. Step 7: the
+    /// exclusive remainder joins once its pins cover the voiced hops.
+    #[test]
+    fn debt_long_occurrence_joins_exclusive_word_pins_around_a_straddle() {
+        let session = "relay-debt-long";
+        let mut lane = open(session);
+        record_voiced_spans(
+            &lane,
+            LONG_SAMPLES,
+            &[
+                (8_000, 48_000),
+                (52_000, 64_000),
+                (70_000, 88_000),
+                (100_000, 140_000),
+            ],
+        );
+        let (occurrence, requests) = launch_long_span(&mut lane, None);
+        let events = play_long_words(&mut lane, &requests, session);
+        let warnings = warning_lines(&events);
+        assert!(
+            replay_refusal(&events, "raz"),
+            "step 4: the later copy of an already admitted pin is replay\n{warnings}"
+        );
+        assert!(
+            unanchored_label(&events, "krawedz"),
+            "step 3: a word across the window edge stays unanchored\n{warnings}"
+        );
+        assert!(
+            warnings.contains("segment 47000..52000")
+                && warnings.contains(&format!(
+                    "occurrence [{}..{}]",
+                    occurrence.sample_start, occurrence.sample_end
+                ))
+                && warnings.contains("ledger=overlap_without_word_pins"),
+            "the straddle warning names segment, occurrence, and ledger reason\n{warnings}"
+        );
+        assert_eq!(
+            (
+                lane.state.tail_patch_jobs_applied,
+                lane.state.tail_patch_jobs_skipped
+            ),
+            (1, 2),
+            "one completing window, two sliced; held={:?}\n{warnings}",
+            held_text(&lane, &occurrence)
+        );
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("raz dwa trzy cztery")
+        );
+        assert!(
+            !lane
+                .state
+                .acoustic_ledger
+                .lock()
+                .expect("ledger")
+                .text_recovery_pending(&occurrence),
+            "the joined whisper label clears the text debt"
+        );
+        assert_eq!(held_count(&lane), 1);
+        assert_conserved(&lane, Some("replayed_range_identity"));
+    }
+
+    /// (b) The same windows with Apple text already on the occurrence.
+    #[test]
+    fn labelled_long_occurrence_joins_exclusive_word_pins_around_a_straddle() {
+        let session = "relay-labelled-long";
+        let mut lane = open(session);
+        record_voiced_spans(
+            &lane,
+            LONG_SAMPLES,
+            &[
+                (8_000, 48_000),
+                (52_000, 64_000),
+                (70_000, 88_000),
+                (100_000, 140_000),
+            ],
+        );
+        let (occurrence, requests) = launch_long_span(&mut lane, Some("cale zdanie"));
+        let events = play_long_words(&mut lane, &requests, session);
+        let warnings = warning_lines(&events);
+        assert!(
+            replay_refusal(&events, "echo"),
+            "the first window's overlap pin is replay against the committed occurrence\n{warnings}"
+        );
+        assert!(
+            replay_refusal(&events, "raz"),
+            "the later copy of raz is replayed_range_identity\n{warnings}"
+        );
+        assert!(unanchored_label(&events, "krawedz"), "{warnings}");
+        assert_eq!(
+            (
+                lane.state.tail_patch_jobs_applied,
+                lane.state.tail_patch_jobs_skipped
+            ),
+            (1, 2),
+            "held={:?}\n{warnings}",
+            held_text(&lane, &occurrence)
+        );
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("raz dwa trzy cztery")
+        );
+        assert_eq!(held_count(&lane), 1);
+        assert_conserved(&lane, Some("replayed_range_identity"));
+    }
+
+    fn recovery_payload(
+        occurrence: &OccurrenceIdentity,
+        segments: Vec<TimedTailSegment>,
+    ) -> TailProviderPayload {
+        let text = segments
+            .iter()
+            .map(|segment| segment.text.trim())
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let segment_grain = if segments
+            .iter()
+            .all(|segment| segment.grain == crate::stt::tail_provider::TailSegmentGrain::Word)
+        {
+            crate::stt::tail_provider::TailSegmentGrain::Word
+        } else {
+            crate::stt::tail_provider::TailSegmentGrain::Phrase
+        };
+        TailProviderPayload {
+            identity: crate::stt::tail_provider::TailRequestIdentity {
+                request_id: 9,
+                range: crate::stt::tail_provider::TailSampleRange {
+                    session: occurrence.session.clone(),
+                    capture_epoch: occurrence.capture_epoch,
+                    sample_start: occurrence.sample_start,
+                    sample_end: occurrence.sample_end,
+                },
+            },
+            text,
+            segments,
+            avg_logprob: Some(-0.2),
+            compression_ratio: Some(1.1),
+            provider_id: crate::stt::tail_provider::TailProviderId::Fake,
+            elapsed_ms: 1,
+            evidence: crate::stt::tail_provider::TailProviderEvidence {
+                segment_grain,
+                source: crate::stt::tail_provider::TailEvidenceSource::Whisper,
+                revision: Some("relay-recovery".into()),
+                stability: crate::stt::tail_provider::TailEvidenceStability::Final,
+                timing_quality: crate::stt::tail_provider::TailTimingQuality::ExactSampleRange,
+                avg_logprob: Some(-0.2),
+            },
+        }
+    }
+
+    /// (c) Stop recovery: every word pin is inside the debt occurrence except
+    /// one that runs past the end by a few samples.
+    ///
+    /// Contract step 3: the escape is unanchored and does not block the
+    /// contained pins. The contained label is the occurrence's whisper text.
+    #[test]
+    fn escaping_word_pin_does_not_refuse_the_contained_recovery() {
+        let mut lane = open("relay-recovery-escape");
+        let occurrence = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, 32_000);
+        stage(&mut lane, 1, occurrence.clone(), "apple");
+        assert!(
+            lane.state
+                .acoustic_ledger
+                .lock()
+                .expect("ledger")
+                .require_text_recovery(&occurrence),
+            "debt is recorded before lexicon closes the frontier"
+        );
+        let payload = recovery_payload(
+            &occurrence,
+            vec![
+                word_pin(&occurrence.session, "nowy", 4_000, 12_000),
+                word_pin(&occurrence.session, "ucieka", 30_000, 32_008),
+            ],
+        );
+        let cleared =
+            admit_debt_occurrence_recovery(&mut lane.state, &lane.tx, &occurrence, &payload);
+        let events = drain(&mut lane.rx);
+        let warnings = warning_lines(&events);
+        assert!(
+            cleared,
+            "contained pins must clear the debt; held={:?}\n{warnings}",
+            held_text(&lane, &occurrence)
+        );
+        assert!(
+            unanchored_label(&events, "ucieka"),
+            "the pin that escapes by 8 samples stays unanchored\n{warnings}"
+        );
+        assert!(
+            warnings.contains("segment 30000..32008")
+                && warnings.contains("occurrence 0..32000")
+                && warnings.contains("ledger="),
+            "the escape names segment, occurrence, and ledger reason\n{warnings}"
+        );
+        assert_eq!(held_text(&lane, &occurrence).as_deref(), Some("nowy"));
+        assert!(
+            !lane
+                .state
+                .acoustic_ledger
+                .lock()
+                .expect("ledger")
+                .text_recovery_pending(&occurrence)
+        );
+        assert_conserved(&lane, None);
+    }
+
+    /// (d) Lexicon already holds a different label. Whisper recovery is inside
+    /// the occurrence and the ledger refuses it as `sealed_replay`.
+    ///
+    /// That refusal is why the debt stays. The warning has to name it, the
+    /// segment range, and the occurrence range.
+    #[test]
+    fn recovery_that_loses_to_lexicon_names_sealed_replay() {
+        let mut lane = open("relay-recovery-lexicon");
+        let occurrence = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, 32_000);
+        stage(&mut lane, 1, occurrence.clone(), "apple tekst");
+        assert!(
+            lane.state
+                .acoustic_ledger
+                .lock()
+                .expect("ledger")
+                .require_text_recovery(&occurrence),
+            "debt is recorded before lexicon closes the frontier"
+        );
+        assert!(
+            admit_ledger_label(
+                &mut lane.state,
+                &lane.tx,
+                LabelAdmission {
+                    observation: ObservationIdentity::new(
+                        ObservationProducer::Lexicon,
+                        1,
+                        0,
+                        occurrence.clone(),
+                    ),
+                    label: "lexikon trzyma",
+                    energy: EnergyAdmission::RequireExistingQualification,
+                },
+            )
+            .is_some_and(|receipt| receipt.grants_mutation())
+        );
+        assert!(
+            lane.state
+                .acoustic_ledger
+                .lock()
+                .expect("ledger")
+                .require_text_recovery(&occurrence)
+        );
+        let _ = drain(&mut lane.rx);
+        let payload = recovery_payload(
+            &occurrence,
+            vec![word_pin(&occurrence.session, "whisper inny", 4_000, 12_000)],
+        );
+        assert!(!admit_debt_occurrence_recovery(
+            &mut lane.state,
+            &lane.tx,
+            &occurrence,
+            &payload,
+        ));
+        let events = drain(&mut lane.rx);
+        let warnings = warning_lines(&events);
+        assert!(
+            named_refusal(&events, "sealed_replay"),
+            "the ledger decision is sealed_replay\n{warnings}"
+        );
+        assert!(
+            warnings.contains("refuse sealed_replay")
+                && warnings.contains("4000..12000")
+                && warnings.contains("occurrence 0..32000"),
+            "the warning names the ledger reason and both ranges\n{warnings}"
+        );
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("lexikon trzyma")
+        );
+        assert!(
+            lane.state
+                .acoustic_ledger
+                .lock()
+                .expect("ledger")
+                .text_recovery_pending(&occurrence)
+        );
+        assert_conserved(&lane, Some("sealed_replay"));
     }
 }
