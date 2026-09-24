@@ -7721,6 +7721,10 @@ mod ledger_conservation_falsifiers {
 mod seal_coverage_tests;
 
 #[cfg(test)]
+#[path = "live_speech_edge_tests.rs"]
+mod live_speech_edge_tests;
+
+#[cfg(test)]
 mod storm_tests {
     use super::*;
     const TEST_SAMPLE_RATE: u32 = 16_000;

@@ -19,7 +19,7 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 use tokio::time::Instant;
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::vad;
 
@@ -244,6 +244,11 @@ pub(crate) struct SpeechSession {
     /// After a max-utterance force seal, re-open the segment so continuous speech
     /// is not lost waiting for a fresh Silero Start.
     force_reopen_after_seal: bool,
+    /// Test-only probability script. When non-empty, [`Self::predict_speech_prob`]
+    /// consumes these instead of the ONNX model so a unit test can hold a
+    /// segment open past the max-duration split without depending on weights.
+    #[cfg(test)]
+    scripted_speech_probs: VecDeque<f32>,
 }
 
 impl SpeechSession {
@@ -343,6 +348,8 @@ impl SpeechSession {
             vad_unavailable_frames_pending: 0,
             vad_unavailable_logged: false,
             force_reopen_after_seal: false,
+            #[cfg(test)]
+            scripted_speech_probs: VecDeque::new(),
         }
     }
 
@@ -472,7 +479,16 @@ impl SpeechSession {
             vad_unavailable_frames_pending: 0,
             vad_unavailable_logged: false,
             force_reopen_after_seal: false,
+            #[cfg(test)]
+            scripted_speech_probs: VecDeque::new(),
         }
+    }
+
+    /// Queue one Silero probability the next VAD frame will read instead of
+    /// running the model. One value per 512-sample (16 kHz) frame.
+    #[cfg(test)]
+    pub(crate) fn push_scripted_speech_prob_for_test(&mut self, prob: f32) {
+        self.scripted_speech_probs.push_back(prob);
     }
 
     /// Push one capture callback's worth of audio and collect whatever events it
@@ -588,6 +604,7 @@ impl SpeechSession {
 
             let mut start_event: Option<usize> = None;
             let mut end_event: Option<usize> = None;
+            let mut speech_continues = false;
 
             debug_assert!(
                 self.iter_state.is_some(),
@@ -599,8 +616,12 @@ impl SpeechSession {
                     VadIterEvent::Start { start_sample } => {
                         start_event = Some(start_sample);
                     }
-                    VadIterEvent::End { end_sample } => {
+                    VadIterEvent::End {
+                        end_sample,
+                        speech_continues: continues,
+                    } => {
                         end_event = Some(end_sample);
+                        speech_continues = continues;
                     }
                     VadIterEvent::None => {}
                 }
@@ -632,6 +653,15 @@ impl SpeechSession {
                 });
                 self.pending_end = Some(raw_boundary.saturating_add(self.speech_pad_raw));
                 self.last_boundary_prob = speech_prob;
+                if speech_continues {
+                    self.force_reopen_after_seal = true;
+                    info!(
+                        end_raw = raw_boundary,
+                        speech_probability = speech_prob,
+                        cursor = self.raw_cursor,
+                        "silero forced boundary: max-duration split while speech continues"
+                    );
+                }
             }
 
             // Speech-time integrity: count Silero-positive VAD frames while a
@@ -710,15 +740,15 @@ impl SpeechSession {
                 && self.pending_end.is_none()
                 && self.raw_cursor.saturating_sub(start) >= max_utterance_samples
             {
-                debug!(
-                    "Utterance max-duration force seal at {}s (start={}, cursor={})",
-                    max_utterance_samples as f32 / self.output_sample_rate as f32,
-                    start,
-                    self.raw_cursor
-                );
                 self.pending_end = Some(self.raw_cursor);
                 self.last_boundary_prob = speech_prob;
                 self.force_reopen_after_seal = true;
+                info!(
+                    segment_start = start,
+                    end_raw = self.raw_cursor,
+                    speech_probability = speech_prob,
+                    "silero forced boundary: max-duration split while speech continues"
+                );
             }
         }
 
@@ -946,6 +976,10 @@ impl SpeechSession {
     /// Assuming speech would be the dangerous default: it opens segments on
     /// silence and feeds STT audio nobody spoke. `gate` only labels the warning.
     fn predict_speech_prob(&mut self, frame: &[f32], gate: &str) -> f32 {
+        #[cfg(test)]
+        if let Some(prob) = self.scripted_speech_probs.pop_front() {
+            return prob;
+        }
         match self.vad.as_mut() {
             Some(vad) => match vad.predict(frame) {
                 Ok(prob) => prob,
@@ -1108,7 +1142,7 @@ impl SpeechSession {
             self.pending_samples.extend_from_slice(audio);
         }
 
-        if let VadIterEvent::End { end_sample } = event {
+        if let VadIterEvent::End { end_sample, .. } = event {
             if let Some(start_sample) = self.iter_speech_start.take() {
                 let speech_len = end_sample.saturating_sub(start_sample);
                 let mut target_len = self
@@ -1507,7 +1541,14 @@ enum VadIterEvent {
     /// A segment opened at this VAD-domain sample.
     Start { start_sample: usize },
     /// A segment closed at this VAD-domain sample.
-    End { end_sample: usize },
+    ///
+    /// `speech_continues` is a max-duration split while speech is still open.
+    /// The iterator stays triggered, so the caller must reopen its segment:
+    /// `Start` only fires on the false→true edge and will not arrive on its own.
+    End {
+        end_sample: usize,
+        speech_continues: bool,
+    },
 }
 
 impl VadIterState {
@@ -1572,12 +1613,11 @@ impl VadIterState {
 
     /// Advance one frame and report any boundary it produced.
     ///
-    /// Three exits, in priority order: speech above `threshold` (opens a segment
-    /// or cancels a pending end); an open segment past `max_speech_samples`
-    /// (forced split, preferring a previously confirmed end over an arbitrary
-    /// cut); and speech below the hysteresis floor for `min_silence_samples`
-    /// (confirmed end, ignored when the speech run was shorter than
-    /// `min_speech_samples`).
+    /// Three exits, in priority order: speech above `threshold` opens a segment
+    /// or cancels a pending end; an open segment past `max_speech_samples` is
+    /// split even while the frame is still speech; speech below the hysteresis
+    /// floor for `min_silence_samples` confirms an end, ignored when the run
+    /// was shorter than `min_speech_samples`.
     fn update(&mut self, speech_prob: f32) -> VadIterEvent {
         self.current_sample = self
             .current_sample
@@ -1600,32 +1640,17 @@ impl VadIterState {
                     start_sample: frame_start,
                 };
             }
-            return VadIterEvent::None;
         }
 
         if self.triggered
             && (self.current_sample.saturating_sub(self.speech_start) as f32)
                 > self.params.max_speech_samples
         {
-            if self.prev_end > 0 {
-                let end = self.prev_end;
-                if self.next_start < self.prev_end {
-                    self.triggered = false;
-                } else {
-                    self.speech_start = self.next_start;
-                }
-                self.prev_end = 0;
-                self.next_start = 0;
-                self.temp_end = 0;
-                return VadIterEvent::End { end_sample: end };
-            }
+            return self.split_at_max(speech_prob);
+        }
 
-            let end = self.current_sample;
-            self.triggered = false;
-            self.prev_end = 0;
-            self.next_start = 0;
-            self.temp_end = 0;
-            return VadIterEvent::End { end_sample: end };
+        if speech_prob > self.params.threshold {
+            return VadIterEvent::None;
         }
 
         let neg_threshold = (self.params.threshold - 0.15).max(0.05);
@@ -1646,12 +1671,84 @@ impl VadIterState {
                     self.prev_end = 0;
                     self.next_start = 0;
                     self.temp_end = 0;
-                    return VadIterEvent::End { end_sample: end };
+                    return VadIterEvent::End {
+                        end_sample: end,
+                        speech_continues: false,
+                    };
                 }
             }
         }
 
         VadIterEvent::None
+    }
+
+    /// Cut an over-long segment. Speech that is still open keeps the iterator
+    /// triggered and restarts the duration clock at the cut, so the next frame
+    /// is not another split and does not wait for a silence edge.
+    fn split_at_max(&mut self, speech_prob: f32) -> VadIterEvent {
+        let neg_threshold = (self.params.threshold - 0.15).max(0.05);
+        // The open segment's hold band, not a new onset. A frame that would
+        // have kept the segment open must not become silence just because the
+        // length ceiling cut it.
+        let holds = speech_prob >= neg_threshold;
+        if self.prev_end > 0 {
+            let end = self.prev_end;
+            let resumed = self.next_start >= self.prev_end || holds;
+            if resumed {
+                let candidate = if self.next_start >= end {
+                    self.next_start
+                } else {
+                    self.current_sample
+                        .saturating_sub(self.params.frame_size_samples)
+                };
+                self.arm_continued_segment(candidate);
+                return VadIterEvent::End {
+                    end_sample: end,
+                    speech_continues: true,
+                };
+            }
+            self.triggered = false;
+            self.prev_end = 0;
+            self.next_start = 0;
+            self.temp_end = 0;
+            return VadIterEvent::End {
+                end_sample: end,
+                speech_continues: false,
+            };
+        }
+
+        let end = self.current_sample;
+        if holds {
+            self.arm_continued_segment(self.current_sample);
+            return VadIterEvent::End {
+                end_sample: end,
+                speech_continues: true,
+            };
+        }
+        self.triggered = false;
+        self.prev_end = 0;
+        self.next_start = 0;
+        self.temp_end = 0;
+        VadIterEvent::End {
+            end_sample: end,
+            speech_continues: false,
+        }
+    }
+
+    /// Keep the iterator in speech and start the max-duration clock over.
+    /// A candidate that is already past the ceiling snaps to the cursor so the
+    /// following frame is not immediately another forced split.
+    fn arm_continued_segment(&mut self, candidate_start: usize) {
+        let elapsed = self.current_sample.saturating_sub(candidate_start) as f32;
+        self.speech_start = if elapsed > self.params.max_speech_samples {
+            self.current_sample
+        } else {
+            candidate_start
+        };
+        self.triggered = true;
+        self.prev_end = 0;
+        self.next_start = 0;
+        self.temp_end = 0;
     }
 }
 

@@ -526,6 +526,13 @@ impl SileroIngress {
         self.vad.vad_available()
     }
 
+    /// Queue one Silero probability for the next live frame.
+    /// See [`crate::audio::chunker::SpeechSession::push_scripted_speech_prob_for_test`].
+    #[cfg(test)]
+    pub fn push_scripted_speech_prob_for_test(&mut self, prob: f32) {
+        self.vad.push_scripted_speech_prob_for_test(prob);
+    }
+
     /// Feed one capture chunk. `samples_seen` is the session cursor *after*
     /// this chunk (same counter `apple_stream_worker` already owns).
     pub fn ingest(&mut self, samples: &[f32], samples_seen: u64) -> SileroIngest {
