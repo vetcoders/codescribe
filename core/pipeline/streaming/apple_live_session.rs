@@ -14085,10 +14085,11 @@ mod relay_l1_overlap_admission_tests {
         assert_conserved(&lane, None);
     }
 
-    /// Loud PCM is not itself Silero speech. This models a padded ownership
-    /// span with one genuine early speech island and a later noisy, non-speech
-    /// stretch. The pin in that later stretch must not borrow the capture
-    /// energy hop as permission to write a word into Silero-verified silence.
+    /// Capture energy and Silero disagree on this pin. This models a padded
+    /// ownership span with one genuine early speech island and a later loud
+    /// stretch for which the VAD reports no speech. Neither witness alone
+    /// proves a word belongs there: hold the pin read-only until its acoustic
+    /// authority is adjudicated, rather than treating Silero as a sole veto.
     #[test]
     fn silero_speech_absent_pin_cannot_borrow_capture_energy() {
         let mut lane = open("relay-silero-versus-energy");
@@ -14149,7 +14150,7 @@ mod relay_l1_overlap_admission_tests {
         assert_eq!(
             mutation_count(&events),
             0,
-            "capture energy cannot overrule Silero's measured non-speech"
+            "conflicting acoustic witnesses cannot grant a word mutation"
         );
         assert_eq!(held_text(&lane, &occurrence).as_deref(), Some("mowa"));
         assert_conserved(&lane, None);
