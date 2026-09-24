@@ -9361,6 +9361,70 @@ mod rc_w2_acoustic_tests {
         assert_eq!(ledger.qualified_occurrences().count(), 0);
     }
 
+    /// Relay step 10: Stop may drain already-admitted Layer 1 windows, but
+    /// uncovered speech is not permission to start a fresh inference job.
+    /// Keep the incomplete acoustic receipt so the missing verdict remains
+    /// visible instead of manufacturing a post-Stop label.
+    #[test]
+    fn stop_does_not_start_a_new_decode_for_uncovered_speech() {
+        let mut state = one_burst_in_a_ten_second_take("relay-stop-no-new-decode");
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let provider_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls = std::sync::Arc::clone(&provider_calls);
+
+        let receipt = repair_terminal_seal_coverage_with(
+            &mut state,
+            &tx,
+            Some("pl"),
+            &LocalExecutionOwner::default(),
+            move |_request, _pcm, _control| {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(anyhow::anyhow!("Stop may not start a new Layer 1 decode"))
+            },
+        );
+
+        assert_eq!(
+            provider_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "Stop must not call a provider for uncovered speech"
+        );
+        assert_eq!(receipt.status, SealCoverageStatus::Incomplete);
+        assert_eq!(receipt.covered_samples, 0);
+        assert!(state.acoustic_ledger.lock().unwrap().rendered_text().is_empty());
+    }
+
+    /// A speech occurrence whose live observers returned no text remains an
+    /// explicit debt at Stop. It cannot be submitted a second time under a
+    /// new request id just to make the terminal coverage number greener.
+    #[test]
+    fn stop_does_not_redecode_live_text_debt() {
+        let (mut state, debt) = five_debt_occurrences("relay-stop-debt-no-redecode");
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let provider_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls = std::sync::Arc::clone(&provider_calls);
+
+        let _receipt = repair_terminal_seal_coverage_with(
+            &mut state,
+            &tx,
+            Some("pl"),
+            &LocalExecutionOwner::default(),
+            move |_request, _pcm, _control| {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(anyhow::anyhow!("Stop may not re-decode live text debt"))
+            },
+        );
+
+        assert_eq!(
+            provider_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "Stop must only drain windows submitted while recording"
+        );
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        for occurrence in &debt {
+            assert!(ledger.text_recovery_pending(occurrence));
+        }
+    }
+
     /// The capture energy fallback measures the hops the capture path actually
     /// recorded — not a flag, and not the whole take.
     #[test]
