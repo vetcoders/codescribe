@@ -1520,6 +1520,14 @@ fn inflight_key(identity: &TailRequestIdentity) -> (u64, u64, u64) {
     )
 }
 
+/// What a pin that does not join an exclusive tail becomes.
+enum SidePin {
+    Replay,
+    Unanchored(NoAuthorityReason),
+    /// Measured range, no voiced hop. Refusal, not paint.
+    NoVoicedHop,
+}
+
 /// One timed pin routed to a single open member.
 #[derive(Clone)]
 struct RoutedPin {
@@ -1546,8 +1554,23 @@ fn exclusive_label(pins: &[RoutedPin]) -> String {
         .join(" ")
 }
 
-/// Exclusive windows cover the occurrence when they abut from its start to its end.
-fn exclusive_slices_cover(occurrence: &OccurrenceIdentity, slices: &[(u64, u64, String)]) -> bool {
+/// Exclusive windows cover the occurrence.
+///
+/// Without hop evidence the windows must abut from the member's start to its
+/// end. With hop evidence, a pause between pins that contains no voiced hop is
+/// not uncovered speech. A voiced hop that no pin overlaps still is.
+fn exclusive_slices_cover(
+    occurrence: &OccurrenceIdentity,
+    slices: &[(u64, u64, String)],
+    voiced_hops: Option<&[(u64, u64)]>,
+) -> bool {
+    if let Some(hops) = voiced_hops {
+        return hops.iter().all(|(start, end)| {
+            slices
+                .iter()
+                .any(|(slice_start, slice_end, _)| *end > *slice_start && *start < *slice_end)
+        });
+    }
     let mut cursor = occurrence.sample_start;
     for (start, end, _) in slices {
         if *start != cursor || *end <= *start {
@@ -1779,17 +1802,19 @@ impl AppleSealState {
         if !scheduled {
             return false;
         }
-        self.refinement_receipt(&occurrence, "admitted");
-        let limit = self.sample_rate.max(1) as usize * LIVE_REFINEMENT_PCM_SECS;
-        if piece.audio.len() > limit || self.tail_patch.is_none() {
-            let reason = if self.tail_patch.is_none() {
-                RefinementFailure::LaneGone
-            } else {
-                RefinementFailure::BacklogExhausted
-            };
-            self.fail_refinement(ev_tx, utterance_id, &occurrence, reason);
+        if self.tail_patch.is_none() {
+            self.fail_refinement(
+                ev_tx,
+                utterance_id,
+                &occurrence,
+                RefinementFailure::LaneGone,
+            );
             return false;
         }
+        // Split before any length refusal. `push_at` turns one long fragment
+        // into step-1 windows. A window that still cannot be queued is
+        // `BacklogExhausted` on that window, not on the whole fragment.
+        self.refinement_receipt(&occurrence, "admitted");
         if self.layer1_coalesce.is_empty() {
             self.layer1_coalesce
                 .set_neighbour(self.sealed_prefix.clone());
@@ -2074,12 +2099,28 @@ impl AppleSealState {
                     continue;
                 }
                 let pin = OccurrenceIdentity::from(&segment.range);
-                match ledger.classify_overlap_pin(
+                let class = ledger.classify_overlap_pin(
                     &pin,
                     admit_sample_start,
                     admit_sample_end,
                     &open_members,
-                ) {
+                );
+                let silent = self
+                    .capture_energy
+                    .voiced_hops_in(
+                        &pin.session,
+                        pin.capture_epoch,
+                        pin.sample_start,
+                        pin.sample_end,
+                    )
+                    .is_some_and(|hops| hops.is_empty());
+                // Replay is already a refusal. A silent pin that would relabel,
+                // clip, or stay painted is `no_voiced_hop_in_pin` instead.
+                if silent && !matches!(class, OverlapPinClass::Replay) {
+                    side.push((index, pin, text.to_string(), SidePin::NoVoicedHop));
+                    continue;
+                }
+                match class {
                     OverlapPinClass::ExclusiveTail { member_index } => {
                         routes[member_index].exclusive.push(RoutedPin {
                             index,
@@ -2091,7 +2132,7 @@ impl AppleSealState {
                         // A replayed range is already covered and lies outside this
                         // window's admit. Refuse that pin. It does not veto the
                         // exclusive remainder: a straddle (unanchored) still does.
-                        side.push((index, pin, text.to_string(), None));
+                        side.push((index, pin, text.to_string(), SidePin::Replay));
                     }
                     OverlapPinClass::Unanchored(reason) => {
                         for (member_index, member) in open_members.iter().enumerate() {
@@ -2099,12 +2140,12 @@ impl AppleSealState {
                                 routes[member_index].blocked = true;
                             }
                         }
-                        side.push((index, pin, text.to_string(), Some(reason)));
+                        side.push((index, pin, text.to_string(), SidePin::Unanchored(reason)));
                     }
                 }
             }
         }
-        for (index, pin, text, unanchored) in side {
+        for (index, pin, text, disposition) in side {
             let observation = LedgerObservationIdentity::new(
                 LedgerObservationProducer::Whisper,
                 request_id,
@@ -2116,9 +2157,19 @@ impl AppleSealState {
                     .acoustic_ledger
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                match unanchored {
-                    None => ledger.refuse_replayed_range(&observation, &text),
-                    Some(reason) => ledger.keep_visible_unanchored(&observation, &text, reason),
+                match disposition {
+                    SidePin::Replay => ledger.refuse_replayed_range(&observation, &text),
+                    SidePin::Unanchored(reason) => {
+                        ledger.keep_visible_unanchored(&observation, &text, reason)
+                    }
+                    SidePin::NoVoicedHop => {
+                        ledger.note_energy_lookup_without_voiced_hop();
+                        ledger.refuse_replacement(
+                            &observation,
+                            &text,
+                            RefuseReason::NoVoicedHopInPin,
+                        )
+                    }
                 }
             };
             let _ = ev_tx.send(EngineEvent::LedgerMutation {
@@ -2300,6 +2351,10 @@ impl AppleSealState {
             &exact_open_members,
             segments,
         );
+        let word_grain = !segments.is_empty()
+            && segments
+                .iter()
+                .all(|segment| segment.grain == crate::stt::tail_provider::TailSegmentGrain::Word);
         let mut mutation_admitted = false;
         for (generation, (member_id, occurrence)) in exact_open_members.iter().enumerate() {
             let had_debt = self
@@ -2352,22 +2407,42 @@ impl AppleSealState {
             } else {
                 None
             };
+            let voiced_hops = word_grain
+                .then(|| {
+                    self.capture_energy.voiced_hops_in(
+                        &occurrence.session,
+                        occurrence.capture_epoch,
+                        occurrence.sample_start,
+                        occurrence.sample_end,
+                    )
+                })
+                .flatten();
             if sliced {
+                let pin_ranges = voiced_hops.is_some();
                 if let Some(text) = label.clone() {
-                    let start = admit_sample_start.max(occurrence.sample_start);
-                    let end = admit_sample_end.min(occurrence.sample_end);
-                    if end > start {
-                        let slices = self.whisper_slices.entry(occurrence.clone()).or_default();
-                        slices.push((start, end, text));
-                        slices.sort_by_key(|(start, _, _)| *start);
-                        slices.dedup_by_key(|(start, end, _)| (*start, *end));
+                    let slices = self.whisper_slices.entry(occurrence.clone()).or_default();
+                    if pin_ranges {
+                        for pin in &route.exclusive {
+                            let start = pin.pin.sample_start.max(occurrence.sample_start);
+                            let end = pin.pin.sample_end.min(occurrence.sample_end);
+                            if end > start {
+                                slices.push((start, end, pin.text.clone()));
+                            }
+                        }
+                    } else {
+                        let start = admit_sample_start.max(occurrence.sample_start);
+                        let end = admit_sample_end.min(occurrence.sample_end);
+                        if end > start {
+                            slices.push((start, end, text));
+                        }
                     }
+                    slices.sort_by_key(|(start, _, _)| *start);
+                    slices.dedup_by_key(|(start, end, _)| (*start, *end));
                 }
                 self.keep_routed_visible(ev_tx, request_id, &route.exclusive);
-                let covered = self
-                    .whisper_slices
-                    .get(occurrence)
-                    .is_some_and(|slices| exclusive_slices_cover(occurrence, slices));
+                let covered = self.whisper_slices.get(occurrence).is_some_and(|slices| {
+                    exclusive_slices_cover(occurrence, slices, voiced_hops.as_deref())
+                });
                 if !covered {
                     self.refinement_receipt(occurrence, "sliced");
                     continue;
@@ -3775,6 +3850,31 @@ fn admit_full_pass_gap_segments(
             generation as u64,
             OccurrenceIdentity::from(&segment.range),
         );
+        if state
+            .capture_energy
+            .voiced_hops_in(
+                &segment.range.session,
+                segment.range.capture_epoch,
+                segment.range.sample_start,
+                segment.range.sample_end,
+            )
+            .is_some_and(|hops| hops.is_empty())
+        {
+            let receipt = {
+                let mut ledger = state
+                    .acoustic_ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                ledger.note_energy_lookup_without_voiced_hop();
+                ledger.refuse_replacement(&observation, label, RefuseReason::NoVoicedHopInPin)
+            };
+            let _ = ev_tx.send(EngineEvent::LedgerMutation {
+                observation,
+                label: label.to_string(),
+                receipt,
+            });
+            continue;
+        }
         if admit_ledger_label(
             state,
             ev_tx,
@@ -12441,20 +12541,27 @@ mod live_refinement_admission_tests {
     }
 
     #[test]
-    fn oversized_owned_pcm_is_classified_without_an_unbounded_backlog() {
+    fn oversized_owned_pcm_is_split_before_the_pending_cap() {
         let (mut state, events, mut receiver, mut requests) = fixture(1);
         state.audio.push(&vec![0.25; 20_000]);
         let mut ledger = UtteranceLedger::new();
         ledger.open_or_extend("live-admission", 7, 0, 40_000);
         ledger.close_open(40_000);
         reconcile_silero_ledger(&mut state, &events, &ledger, &[]);
-        assert_eq!(
-            warnings(&mut receiver, RefinementFailure::BacklogExhausted.code()),
-            1
-        );
-        assert!(state.refinement_pending.is_empty());
         assert!(state.layer1_coalesce.is_empty());
-        assert!(requests.try_recv().is_err());
+        assert!(
+            state.windows_admitted >= 2,
+            "40 s at 1 kHz is split into step-1 windows, admitted {}",
+            state.windows_admitted
+        );
+        assert!(state.refinement_pending.len() <= LIVE_REFINEMENT_PENDING_CAP);
+        let request = requests.try_recv().expect("one window fits the channel");
+        assert!(request.audio.len() <= 4 * RATE as usize);
+        let backlog = warnings(&mut receiver, RefinementFailure::BacklogExhausted.code());
+        assert!(
+            !(state.windows_admitted == 0 && backlog == 1),
+            "the fragment is not one whole-fragment backlog refusal"
+        );
         assert_eq!(state.audio.session_sample_end(), 40_000);
     }
 
@@ -13515,5 +13622,295 @@ mod relay_l1_overlap_admission_tests {
         assert_eq!(held_text(&lane, &occurrences[2]).as_deref(), Some("gamma"));
         assert_eq!(held_count(&lane), 3);
         assert_conserved(&lane, Some("intersecting_pin_not_exclusive"));
+    }
+
+    fn record_energy(lane: &Lane, blocks: &[Vec<f32>]) {
+        let mut writer = CaptureLevelAccumulator::bound_to(&lane.state.capture_energy);
+        for block in blocks {
+            writer.push_samples(block);
+        }
+    }
+
+    fn energy_lookups(lane: &Lane) -> u64 {
+        lane.state
+            .acoustic_ledger
+            .lock()
+            .expect("ledger")
+            .energy_lookups_without_voiced_hop()
+    }
+
+    /// Qualified occurrence, last 1.5 s measured silence. A Whisper pin that
+    /// lies wholly in that silence is offered as an exclusive tail.
+    ///
+    /// Contract: "Whisper may not write into verified silence." The pin's own
+    /// `[sample_start, sample_end)` is the lookup, not the occurrence mean and
+    /// not the pin text. No voiced hop → `no_voiced_hop_in_pin`, the receipt
+    /// counter moves, and nothing is relabelled, appended, or painted.
+    #[test]
+    fn whisper_pin_wholly_inside_measured_silence_cannot_relabel_or_append() {
+        let mut lane = open("relay-silent-pin");
+        let session = "relay-silent-pin";
+        let silence_at = 24_000_u64;
+        let end = 48_000_u64;
+        record_energy(
+            &lane,
+            &[
+                vec![0.2; silence_at as usize],
+                vec![0.0; (end - silence_at) as usize],
+            ],
+        );
+        let occurrence = OccurrenceIdentity::new(session, 1, 0, end);
+        stage(&mut lane, 1, occurrence.clone(), "mowa");
+        assert!(
+            lane.state
+                .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, "mowa"))
+        );
+        assert!(
+            lane.state.flush_layer1_coalesce(&lane.tx),
+            "3 s is under the 4 s ceiling, so the held window has to be flushed"
+        );
+        close_lexicon(&mut lane, 1, &occurrence, "mowa");
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 1, "3 s fits one step-1 window");
+        let pin_start = 26_000;
+        let pin_end = 46_000;
+        assert!(pin_start >= silence_at && pin_end <= end);
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![word_pin(session, "halucynacja", pin_start, pin_end)],
+            ),
+            3.0,
+        );
+        let events = drain(&mut lane.rx);
+        assert_eq!(
+            mutation_count(&events),
+            0,
+            "a pin wholly inside measured silence must not relabel or append"
+        );
+        assert!(
+            !unanchored_label(&events, "halucynacja"),
+            "no voiced hop is a refusal, not paint"
+        );
+        assert!(
+            named_refusal(&events, "no_voiced_hop_in_pin"),
+            "the refusal is named no_voiced_hop_in_pin"
+        );
+        assert_eq!(held_text(&lane, &occurrence).as_deref(), Some("mowa"));
+        assert_eq!(held_count(&lane), 1);
+        assert!(
+            energy_lookups(&lane) >= 1,
+            "the lookup that found no voiced hop is on the conservation receipt"
+        );
+        assert_conserved(&lane, Some("no_voiced_hop_in_pin"));
+    }
+
+    /// The same geometry, with the pin overlapping a voiced hop.
+    ///
+    /// Contract: a pin that contains voiced audio stays admissible. Hop
+    /// evidence is the gate; mean loudness of the occurrence is not.
+    #[test]
+    fn whisper_pin_partly_over_voiced_hops_stays_admissible() {
+        let mut lane = open("relay-voiced-pin");
+        let session = "relay-voiced-pin";
+        let silence_at = 24_000_u64;
+        let end = 48_000_u64;
+        record_energy(
+            &lane,
+            &[
+                vec![0.2; silence_at as usize],
+                vec![0.0; (end - silence_at) as usize],
+            ],
+        );
+        let occurrence = OccurrenceIdentity::new(session, 1, 0, end);
+        stage(&mut lane, 1, occurrence.clone(), "mowa");
+        assert!(
+            lane.state
+                .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, "mowa"))
+        );
+        assert!(lane.state.flush_layer1_coalesce(&lane.tx));
+        close_lexicon(&mut lane, 1, &occurrence, "mowa");
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 1);
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![word_pin(session, "koniec", 20_000, 30_000)],
+            ),
+            3.0,
+        );
+        let events = drain(&mut lane.rx);
+        assert_eq!(
+            mutation_count(&events),
+            1,
+            "a pin that overlaps a voiced hop stays admissible"
+        );
+        assert!(
+            !named_refusal(&events, "no_voiced_hop_in_pin"),
+            "partial voiced overlap is not a silence refusal"
+        );
+        assert_eq!(held_text(&lane, &occurrence).as_deref(), Some("koniec"));
+        assert_eq!(held_count(&lane), 1);
+        assert_eq!(energy_lookups(&lane), 0);
+        assert_conserved(&lane, None);
+    }
+
+    /// VAD override can hand Layer 1 one fragment longer than 32 s.
+    ///
+    /// Contract step 1: a window is `[cursor, cursor + 4 s)` clipped to
+    /// admitted speech. The fragment is split into those windows before any
+    /// length refusal. The default 12 s force-seal never reaches this path.
+    #[test]
+    fn fragment_longer_than_32s_reaches_l1_as_step1_windows() {
+        let mut lane = open("relay-over-32");
+        let samples = 33 * u64::from(RATE);
+        assert!(samples > u64::from(RATE) * LIVE_REFINEMENT_PCM_SECS as u64);
+        let occurrence = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, samples);
+        stage(&mut lane, 1, occurrence.clone(), "dlugo");
+        let accepted = lane
+            .state
+            .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, "dlugo"));
+        assert!(
+            accepted,
+            "a fragment above 32 s is split into step-1 windows before any length refusal"
+        );
+        let sent = take_requests(&mut lane.tail_rx);
+        let pending = lane.state.refinement_pending.len();
+        let windows = sent.len() + pending;
+        assert!(
+            windows >= 2,
+            "expected step-1 windows, sent {} pending {}",
+            sent.len(),
+            pending
+        );
+        assert!(
+            lane.state.windows_admitted >= 2,
+            "windows_admitted={}, refusals={:?}",
+            lane.state.windows_admitted,
+            lane.state.windows_refused_before_inference
+        );
+        let backlog = lane
+            .state
+            .windows_refused_before_inference
+            .get("live_refinement_backlog_exhausted")
+            .copied()
+            .unwrap_or(0);
+        assert!(
+            !(lane.state.windows_admitted == 0 && backlog == 1),
+            "the whole fragment must not be one backlog refusal"
+        );
+        for request in sent.iter().chain(lane.state.refinement_pending.iter()) {
+            let span = request.provider_request.identity.range.sample_end
+                - request.provider_request.identity.range.sample_start;
+            assert!(
+                span <= 4 * u64::from(RATE),
+                "step 1 window is at most 4 s, got {span} samples"
+            );
+            assert_eq!(request.audio.len() as u64, span);
+        }
+    }
+
+    fn launch_six_second(
+        lane: &mut Lane,
+        text: &str,
+    ) -> (OccurrenceIdentity, Vec<TailPatchRequest>) {
+        let samples = 96_000_u64;
+        let occurrence = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, samples);
+        stage(lane, 1, occurrence.clone(), text);
+        assert!(
+            lane.state
+                .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, text))
+        );
+        close_lexicon(lane, 1, &occurrence, text);
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 2, "6 s becomes two step-1 windows");
+        (occurrence, requests)
+    }
+
+    /// A pause between two admitted word pins that is silence on the energy
+    /// clock is not uncovered speech. The member is still replaced once.
+    #[test]
+    fn silent_pause_between_word_pins_still_joins_the_member() {
+        let mut lane = open("relay-silent-gap");
+        let session = "relay-silent-gap";
+        record_energy(
+            &lane,
+            &[
+                vec![0.0; 8_000],
+                vec![0.2; 12_000],
+                vec![0.0; 50_000],
+                vec![0.2; 18_000],
+                vec![0.0; 8_000],
+            ],
+        );
+        let (occurrence, requests) = launch_six_second(&mut lane, "cale");
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(&requests[0], vec![word_pin(session, "raz", 8_000, 20_000)]),
+            4.0,
+        );
+        let _ = drain(&mut lane.rx);
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(&requests[1], vec![word_pin(session, "dwa", 70_000, 88_000)]),
+            6.0,
+        );
+        let events = drain(&mut lane.rx);
+        assert_eq!(
+            mutation_count(&events),
+            1,
+            "a measured-silent pause between word pins is not uncovered speech"
+        );
+        assert_eq!(held_text(&lane, &occurrence).as_deref(), Some("raz dwa"));
+        assert_eq!(held_count(&lane), 1);
+        assert_eq!(energy_lookups(&lane), 0);
+        assert_conserved(&lane, None);
+    }
+
+    /// A gap between two admitted word pins that still contains a voiced hop
+    /// is uncovered speech. The member stays unreplaced.
+    #[test]
+    fn voiced_gap_between_word_pins_keeps_the_member_unreplaced() {
+        let mut lane = open("relay-voiced-gap");
+        let session = "relay-voiced-gap";
+        record_energy(
+            &lane,
+            &[
+                vec![0.0; 8_000],
+                vec![0.2; 12_000],
+                vec![0.0; 20_000],
+                vec![0.2; 4_000],
+                vec![0.0; 26_000],
+                vec![0.2; 18_000],
+                vec![0.0; 8_000],
+            ],
+        );
+        let (occurrence, requests) = launch_six_second(&mut lane, "cale");
+        let mut events = Vec::new();
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(&requests[0], vec![word_pin(session, "raz", 8_000, 20_000)]),
+            4.0,
+        );
+        events.extend(drain(&mut lane.rx));
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(&requests[1], vec![word_pin(session, "dwa", 70_000, 88_000)]),
+            6.0,
+        );
+        events.extend(drain(&mut lane.rx));
+        assert_eq!(
+            mutation_count(&events),
+            0,
+            "a voiced hop between word pins is uncovered speech"
+        );
+        assert_eq!(held_text(&lane, &occurrence).as_deref(), Some("cale"));
+        assert_eq!(held_count(&lane), 1);
+        assert_conserved(&lane, None);
     }
 }

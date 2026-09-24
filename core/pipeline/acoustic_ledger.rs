@@ -322,6 +322,9 @@ pub enum RefuseReason {
     /// Stop asked for this uncovered PCM and no wholly contained segment was
     /// admitted. The range stays speech the document does not own.
     UnrecoveredSpeech,
+    /// The pin's own PCM range was measured, and no hop inside it was voiced.
+    /// Mean loudness of a wider span is not this fact.
+    NoVoicedHopInPin,
 }
 
 impl RefuseReason {
@@ -336,6 +339,7 @@ impl RefuseReason {
             Self::IncompleteExclusiveCoverage => "incomplete_exclusive_coverage",
             Self::ClockLie => "clock_lie",
             Self::UnrecoveredSpeech => "unrecovered_speech",
+            Self::NoVoicedHopInPin => "no_voiced_hop_in_pin",
         }
     }
 }

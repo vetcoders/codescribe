@@ -380,6 +380,53 @@ impl CaptureEnergyOwner {
                 .collect(),
         )
     }
+
+    /// Voiced hops that overlap `[sample_start, sample_end)`.
+    ///
+    /// A hop is voiced when its own RMS is at or above
+    /// [`ACTIVE_SPEECH_LINEAR_FLOOR`]. The mean dB of the query is not read.
+    /// `None` means this owner cannot speak for the range: wrong identity, no
+    /// PCM, non-finite PCM, or a hole. `Some` empty is measured silence.
+    pub fn voiced_hops_in(
+        &self,
+        session: &str,
+        capture_epoch: u64,
+        sample_start: u64,
+        sample_end: u64,
+    ) -> Option<Vec<(u64, u64)>> {
+        if sample_end <= sample_start || !self.identity.matches(session, capture_epoch) {
+            return None;
+        }
+        let clock = self.clock.lock().unwrap_or_else(|error| error.into_inner());
+        if clock.observed_samples == 0
+            || clock.first_invalid_sample.is_some()
+            || sample_end > clock.observed_samples
+        {
+            return None;
+        }
+        let mut cursor = sample_start;
+        let mut voiced = Vec::new();
+        for hop in &clock.hops {
+            if hop.sample_end <= sample_start {
+                continue;
+            }
+            if hop.sample_start >= sample_end {
+                break;
+            }
+            let overlap_start = hop.sample_start.max(sample_start);
+            if overlap_start > cursor {
+                return None;
+            }
+            if hop.rms >= ACTIVE_SPEECH_LINEAR_FLOOR {
+                let end = hop.sample_end.min(sample_end);
+                if end > overlap_start {
+                    voiced.push((overlap_start, end));
+                }
+            }
+            cursor = cursor.max(hop.sample_end.min(sample_end));
+        }
+        (cursor >= sample_end).then_some(voiced)
+    }
 }
 
 fn last_receipt_slot() -> &'static Mutex<Option<CaptureLevelReceipt>> {
@@ -919,6 +966,36 @@ mod tests {
             successor.session_energy_db(160, 320).is_none(),
             "a successor epoch opens its own ladder"
         );
+    }
+
+    /// Hop evidence is positional. A silent subrange stays silent even when
+    /// the mean of a wider span that includes speech is finite.
+    #[test]
+    fn voiced_hop_lookup_is_not_mean_energy_db() {
+        let owner = CaptureEnergyOwner::bind("hops", 3);
+        let mut acc = CaptureLevelAccumulator::bound_to(&owner);
+        acc.push_samples(&vec![0.0; 160]);
+        acc.push_samples(&vec![0.1; 160]);
+        acc.push_samples(&vec![0.0; 160]);
+        assert_eq!(owner.voiced_hops_in("hops", 3, 0, 160), Some(Vec::new()));
+        assert_eq!(
+            owner.voiced_hops_in("hops", 3, 160, 320),
+            Some(vec![(160, 320)])
+        );
+        let wide = owner.session_energy_db(0, 480);
+        assert!(
+            wide.is_some_and(|db| db.is_finite()),
+            "the mean of silence plus speech is a finite dB and is not the gate"
+        );
+        assert_eq!(
+            owner.voiced_hops_in("hops", 3, 320, 480),
+            Some(Vec::new()),
+            "the silent hop stays silent beside that mean"
+        );
+        assert!(owner.voiced_hops_in("hops", 3, 0, 640).is_none());
+        assert!(owner.voiced_hops_in("other", 3, 160, 320).is_none());
+        let absent = CaptureEnergyOwner::bind("hops", 4);
+        assert!(absent.voiced_hops_in("hops", 4, 0, 160).is_none());
     }
 
     /// Captured zeros and no samples at all are different facts. The first is a
