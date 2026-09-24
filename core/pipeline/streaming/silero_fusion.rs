@@ -155,7 +155,17 @@ impl UtteranceLedger {
     /// Close the open utterance so the next speech edge mints a new identity.
     pub fn close_open(&mut self, sample_end: u64) -> Option<u64> {
         let open = self.utterances.iter_mut().rev().find(|u| !u.closed)?;
-        open.range.sample_end = sample_end.max(open.range.sample_start);
+        open.range.sample_end = sample_end.max(open.range.sample_end);
+        open.closed = true;
+        Some(open.id)
+    }
+
+    /// Close the open utterance at a retroactive split boundary. The chunker
+    /// already reopened the continuing segment there, so the extent observed
+    /// past it belongs to the new utterance and this one may shrink to it.
+    fn close_open_at_split(&mut self, boundary: u64) -> Option<u64> {
+        let open = self.utterances.iter_mut().rev().find(|u| !u.closed)?;
+        open.range.sample_end = boundary.max(open.range.sample_start);
         open.closed = true;
         Some(open.id)
     }
@@ -584,6 +594,8 @@ impl SileroIngress {
             ..SileroIngest::default()
         };
         let end = closed_end.unwrap_or(samples_seen);
+        // A split reopens the continuing segment exactly at the closed end; a
+        // fresh onset after a pause starts later and must not shrink the close.
         let reopens = closed_here
             && open_range.is_some_and(|(start, _)| {
                 self.ledger
@@ -591,9 +603,9 @@ impl SileroIngress {
                     .iter()
                     .rev()
                     .find(|utterance| !utterance.closed)
-                    .is_some_and(|old| start > old.range.sample_start && start >= end)
+                    .is_some_and(|old| start > old.range.sample_start && start == end)
             });
-        if reopens && let Some(id) = self.ledger.close_open(end) {
+        if reopens && let Some(id) = self.ledger.close_open_at_split(end) {
             out.closed.push(id);
         }
         if let Some((start, end)) = open_range {
@@ -605,7 +617,7 @@ impl SileroIngress {
         }
         if closed_here
             && !reopens
-            && let Some(id) = self.ledger.close_open(end)
+            && let Some(id) = self.ledger.close_open(samples_seen)
         {
             out.closed.push(id);
             if out.open == Some(id) {
@@ -924,6 +936,34 @@ mod tests {
             sample_start: start,
             sample_end: end,
         }
+    }
+
+    /// A pause close is not a retroactive split: the chunker's padded end sits
+    /// ~64 ms past the last voiced frame, while the close is only observed after
+    /// the closing silence. The utterance keeps that trailing extent, so an
+    /// Apple word whose midpoint lands just past the padded end still has an
+    /// owner instead of becoming a `no_time_overlap` leftover.
+    #[test]
+    fn a_pause_close_keeps_the_trailing_extent_for_late_apple_words() {
+        let mut ingress = SileroIngress::new(16_000, "s", 0);
+        ingress.observe_with_closed_end(Some((0, 16_000)), false, None, 16_000);
+        let chunker_end = 17_024;
+        let close = ingress.observe_with_closed_end(None, true, Some(chunker_end), 24_000);
+        assert_eq!(close.closed, vec![1]);
+        let closed = &ingress.ledger().utterances()[0];
+        assert_eq!(
+            closed.range.sample_end, 24_000,
+            "a pause close must not shrink to the chunker's padded end"
+        );
+        let late_word_midpoint = 19_000;
+        assert_eq!(
+            ingress
+                .ledger()
+                .utterance_covering(late_word_midpoint)
+                .map(|utterance| utterance.id),
+            Some(1),
+            "a trailing Apple word past the padded end keeps its owner"
+        );
     }
 
     /// The unification claim, stated as a test: **one** observation of the
