@@ -64,8 +64,8 @@ use crate::llm::inline_format::{LabelProposalDisposition, OccurrenceLabelProposa
 use crate::pipeline::acoustic_ledger::{
     AcousticEvidence, AcousticLedger, EnergyCalibration, MutationReceipt,
     ObservationIdentity as LedgerObservationIdentity,
-    ObservationProducer as LedgerObservationProducer, OccurrenceIdentity, SealCoverageReceipt,
-    SealCoverageStatus, SealRefusal,
+    ObservationProducer as LedgerObservationProducer, OccurrenceIdentity, OverlapPinClass,
+    SealCoverageReceipt, SealCoverageStatus, SealRefusal,
 };
 use crate::pipeline::contracts::{
     EngineEvent, EventSink, SpeechIntegrity, SpeechIntegrityPhase, TranscriptSegment,
@@ -1417,9 +1417,6 @@ struct AppleSealState {
     layer1_coalesce: Layer1Coalesce,
     refinement_pending: VecDeque<TailPatchRequest>,
     refinement_submitted: BTreeMap<(u64, u64, u64), TailPatchInFlight>,
-    /// Exclusive Whisper text for an occurrence sliced across windows.
-    /// Admitted once, when those slices partition the occurrence.
-    whisper_slices: BTreeMap<OccurrenceIdentity, Vec<(u64, u64, String)>>,
     refinement_clock: Instant,
     refinement_lane_lost: bool,
     refinement_started: Instant,
@@ -1488,18 +1485,6 @@ fn inflight_key(identity: &TailRequestIdentity) -> (u64, u64, u64) {
         identity.range.sample_start,
         identity.range.sample_end,
     )
-}
-
-/// Exclusive windows cover the occurrence when they abut from its start to its end.
-fn exclusive_slices_cover(occurrence: &OccurrenceIdentity, slices: &[(u64, u64, String)]) -> bool {
-    let mut cursor = occurrence.sample_start;
-    for (start, end, _) in slices {
-        if *start != cursor || *end <= *start {
-            return false;
-        }
-        cursor = *end;
-    }
-    cursor == occurrence.sample_end
 }
 
 impl AppleSealState {
@@ -1598,7 +1583,6 @@ impl AppleSealState {
             layer1_coalesce: Layer1Coalesce::default(),
             refinement_pending: VecDeque::new(),
             refinement_submitted: BTreeMap::new(),
-            whisper_slices: BTreeMap::new(),
             refinement_clock: Instant::now(),
             refinement_lane_lost: false,
             refinement_started: Instant::now(),
@@ -1838,7 +1822,6 @@ impl AppleSealState {
         occurrence: &OccurrenceIdentity,
         reason: RefinementFailure,
     ) {
-        self.whisper_slices.remove(occurrence);
         self.refinement_receipt(occurrence, reason.code());
         let _ = ev_tx.send(EngineEvent::Warning {
             code: reason.code().into(),
@@ -1943,6 +1926,77 @@ impl AppleSealState {
         }
     }
 
+    /// Send every pin the admit filter used to drop. Exclusive-tail pins stay
+    /// with their member; covered overlap is a named refusal; the rest stays
+    /// visible at its own PCM range and does not enter the committed map.
+    fn route_overlap_pins(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        request_id: u64,
+        admit_sample_start: u64,
+        admit_sample_end: u64,
+        members: &[(u64, OccurrenceIdentity)],
+        segments: &[TimedTailSegment],
+    ) -> Vec<Vec<String>> {
+        let open_members = members
+            .iter()
+            .map(|(_, occurrence)| occurrence.clone())
+            .collect::<Vec<_>>();
+        let mut exclusive = vec![Vec::new(); members.len()];
+        let mut side = Vec::new();
+        {
+            let ledger = self
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for (index, segment) in segments.iter().enumerate() {
+                let text = segment.text.trim();
+                if text.is_empty() {
+                    continue;
+                }
+                let pin = OccurrenceIdentity::from(&segment.range);
+                match ledger.classify_overlap_pin(
+                    &pin,
+                    admit_sample_start,
+                    admit_sample_end,
+                    &open_members,
+                ) {
+                    OverlapPinClass::ExclusiveTail { member_index } => {
+                        exclusive[member_index].push(text.to_string());
+                    }
+                    OverlapPinClass::Replay => side.push((index, pin, text.to_string(), None)),
+                    OverlapPinClass::Unanchored(reason) => {
+                        side.push((index, pin, text.to_string(), Some(reason)));
+                    }
+                }
+            }
+        }
+        for (index, pin, text, unanchored) in side {
+            let observation = LedgerObservationIdentity::new(
+                LedgerObservationProducer::Whisper,
+                request_id,
+                1_000 + index as u64,
+                pin,
+            );
+            let receipt = {
+                let mut ledger = self
+                    .acoustic_ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                match unanchored {
+                    None => ledger.refuse_replayed_range(&observation, &text),
+                    Some(reason) => ledger.keep_visible_unanchored(&observation, &text, reason),
+                }
+            };
+            let _ = ev_tx.send(EngineEvent::LedgerMutation {
+                observation,
+                label: text,
+                receipt,
+            });
+        }
+        exclusive
+    }
+
     /// Admit a returned Whisper candidate through the same occurrence ledger
     /// as Apple. The legacy char-patch outcome is evidence only; it never owns
     /// a post-seal mutation path.
@@ -2017,6 +2071,18 @@ impl AppleSealState {
             .as_ref()
             .map_or(utterance_id, |identity| identity.request_id);
         let single_member = exact_open_members.len() == 1;
+        let segments = payload
+            .as_ref()
+            .map(|payload| payload.segments.as_slice())
+            .unwrap_or(&[]);
+        let exclusive = self.route_overlap_pins(
+            ev_tx,
+            request_id,
+            admit_sample_start,
+            admit_sample_end,
+            &exact_open_members,
+            segments,
+        );
         let mut mutation_admitted = false;
         for (generation, (member_id, occurrence)) in exact_open_members.iter().enumerate() {
             let had_debt = self
@@ -2024,65 +2090,28 @@ impl AppleSealState {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .text_recovery_pending(occurrence);
-            let label = payload.as_ref().and_then(|payload| {
-                let pinned = payload
-                    .segments
-                    .iter()
-                    .filter(|segment| {
-                        let pin = OccurrenceIdentity::from(&segment.range);
-                        pin.same_capture(occurrence)
-                            && pin.sample_end > pin.sample_start
-                            && pin.sample_start >= occurrence.sample_start
-                            && pin.sample_end <= occurrence.sample_end
-                            && pin.sample_start >= admit_sample_start
-                            && pin.sample_end <= admit_sample_end
-                    })
-                    .map(|segment| segment.text.trim())
-                    .filter(|text| !text.is_empty())
-                    .collect::<Vec<_>>();
-                // A rejected pin cannot be laundered through whole-window text.
-                if !pinned.is_empty() {
-                    Some(pinned.join(" "))
-                } else if payload.segments.is_empty()
+            let pinned = exclusive.get(generation).cloned().unwrap_or_default();
+            // A rejected pin cannot be laundered through whole-window text.
+            let label = if !pinned.is_empty() {
+                Some(pinned.join(" "))
+            } else if payload.as_ref().is_some_and(|payload| {
+                payload.segments.is_empty()
                     && single_member
                     && &OccurrenceIdentity::from(&payload.identity.range) == occurrence
                     && !payload.text.trim().is_empty()
-                {
-                    Some(payload.text.trim().to_string())
-                } else {
-                    None
-                }
-            });
+            }) {
+                payload
+                    .as_ref()
+                    .map(|payload| payload.text.trim().to_string())
+            } else {
+                None
+            };
             let sliced = occurrence.sample_start < admit_sample_start
                 || occurrence.sample_end > admit_sample_end;
-            let label = if sliced {
-                let slices = self.whisper_slices.entry(occurrence.clone()).or_default();
-                slices.push((
-                    admit_sample_start,
-                    admit_sample_end,
-                    label.unwrap_or_default(),
-                ));
-                slices.sort_by_key(|(start, _, _)| *start);
-                slices.dedup_by_key(|(start, end, _)| (*start, *end));
-                if !exclusive_slices_cover(occurrence, slices) {
-                    self.refinement_receipt(occurrence, "sliced");
-                    continue;
-                }
-                let joined = slices
-                    .iter()
-                    .map(|(_, _, text)| text.trim())
-                    .filter(|text| !text.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                self.whisper_slices.remove(occurrence);
-                if joined.is_empty() {
-                    None
-                } else {
-                    Some(joined)
-                }
-            } else {
-                label
-            };
+            if sliced && label.as_ref().is_none_or(|text| text.trim().is_empty()) {
+                self.refinement_receipt(occurrence, "sliced");
+                continue;
+            }
             let no_label = label.is_none();
             match admit_ledger_label(
                 self,
@@ -11599,9 +11628,10 @@ mod live_refinement_admission_tests {
 /// real decodes return (`4.0–12.0`). A word pin is a segment the recognizer
 /// actually returned; this module does not split phrase text into words.
 ///
-/// `TranscriptReducer::apply_ledger_mutation` drops every receipt that does
-/// not grant mutation, and `MutationReceipt::KeepVisibleUnanchored` stores
-/// neither the label nor the occurrence. These tests stop on that surface.
+/// Phrase grain is one segment. A pin wholly inside the exclusive tail may
+/// relabel that member. A pin wholly inside an already admitted range is
+/// `replayed_range_identity`. A pin that still straddles stays whole,
+/// visible, and without a second token.
 #[cfg(test)]
 mod relay_l1_overlap_admission_tests {
     use super::*;

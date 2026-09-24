@@ -469,6 +469,9 @@ pub struct TranscriptReducer {
     terminal: bool,
     observed_seals: std::collections::BTreeSet<String>,
     applied_observations: Vec<ObservationIdentity>,
+    /// Read-only overlap evidence, keyed by the pin's PCM range. It is painted
+    /// beside committed occurrences and never becomes a document token.
+    unanchored_evidence: BTreeMap<OccurrenceIdentity, String>,
 }
 
 fn group_matches_entries<'a>(
@@ -569,12 +572,65 @@ impl TranscriptReducer {
     /// Apply only the mutation authority granted by the shared ledger. An
     /// unsigned or unqualified occurrence fails closed and creates no document
     /// entry, even when an engine supplied visible text.
+    /// PCM-ordered canvas: committed tokens, plus unanchored evidence whose
+    /// range is not already occupied by one of those tokens.
+    pub fn visible_projection(&self) -> String {
+        let extras = self
+            .unanchored_evidence
+            .iter()
+            .filter(|(occurrence, _)| {
+                !self.document_by_occurrence.keys().any(|committed| {
+                    occurrence.same_capture(committed)
+                        && occurrence.sample_start >= committed.sample_start
+                        && occurrence.sample_end <= committed.sample_end
+                })
+            })
+            .map(|(occurrence, label)| (occurrence.sample_start, label.as_str()))
+            .collect::<Vec<_>>();
+        if extras.is_empty() {
+            return self.committed_rendered_text();
+        }
+        let mut extras = extras.into_iter().peekable();
+        let mut rendered = String::new();
+        for (occurrence, entry) in &self.document_by_occurrence {
+            while extras
+                .peek()
+                .is_some_and(|(start, _)| *start <= occurrence.sample_start)
+            {
+                let (_, label) = extras.next().expect("peeked extra");
+                append_exact_fragment(&mut rendered, label);
+            }
+            append_exact_fragment(&mut rendered, self.presentation_of(occurrence, entry));
+        }
+        for (_, label) in extras {
+            append_exact_fragment(&mut rendered, label);
+        }
+        rendered
+    }
+
+    fn project_unanchored(&mut self, receipt: &MutationReceipt) {
+        if let MutationReceipt::KeepVisibleUnanchored {
+            occurrence, label, ..
+        } = receipt
+        {
+            let label = label.trim();
+            if !label.is_empty() {
+                self.unanchored_evidence
+                    .insert(occurrence.clone(), label.to_string());
+            }
+        }
+    }
+
     pub fn apply_ledger_mutation(
         &mut self,
         ledger: &AcousticLedger,
         observation: &ObservationIdentity,
         receipt: &MutationReceipt,
     ) -> Option<TranscriptRevision> {
+        if matches!(receipt, MutationReceipt::KeepVisibleUnanchored { .. }) {
+            self.project_unanchored(receipt);
+            return None;
+        }
         if !receipt.grants_mutation()
             || !ledger.is_qualified(&observation.occurrence)
             || self
@@ -1889,11 +1945,21 @@ impl EventSink for PresentationEmitter {
                     return;
                 };
                 let ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
-                let revision = self
+                let unanchored = matches!(receipt, MutationReceipt::KeepVisibleUnanchored { .. });
+                let mut state = self
                     .session_state
                     .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .apply_ledger_mutation(&ledger, observation, receipt);
+                    .unwrap_or_else(|error| error.into_inner());
+                let revision = state.apply_ledger_mutation(&ledger, observation, receipt);
+                let visible = unanchored.then(|| state.visible_projection());
+                drop(state);
+                if let Some(visible) = visible {
+                    drop(ledger);
+                    if !visible.trim().is_empty() {
+                        self.send_cmd(EmitterCmd::PaintEphemeralPreview(visible));
+                    }
+                    return;
+                }
                 if let Some(revision) = revision {
                     if !self.authenticates_revision(&revision, &ledger) {
                         return;
@@ -2187,7 +2253,7 @@ mod tests {
     use codescribe_core::llm::inline_format::{LabelProposalDisposition, OccurrenceLabelProposal};
     use codescribe_core::pipeline::acoustic_ledger::{
         AcousticEvidence, AcousticLedger, ConsultationPresentationInput,
-        DocumentRevisionProvenance, EnergyCalibration, IncrementalShapingReceipt,
+        DocumentRevisionProvenance, EnergyCalibration, IncrementalShapingReceipt, MutationReceipt,
         ObservationIdentity, ObservationProducer, OccurrenceIdentity,
     };
     use codescribe_core::pipeline::contracts::{
@@ -4650,5 +4716,88 @@ mod tests {
         take.emitter.finish().await;
         assert_eq!(take.projected.lock().unwrap().len(), callbacks);
         assert_eq!(take.delivery.lock().await.as_str(), "Real words.");
+    }
+
+    /// Unanchored overlap stays on the visible projection at its PCM position,
+    /// leaves the neighbour's committed label alone, and does not become a
+    /// second document token. A pin wholly inside an admitted range is counted
+    /// and is not painted a second time.
+    #[test]
+    fn unanchored_overlap_is_visible_without_replacing_or_duplicating_a_neighbour() {
+        let mut ledger = AcousticLedger::new();
+        let mut reducer = TranscriptReducer::default();
+        let beta = OccurrenceIdentity::new("overlap-visible", 1, 24_000, 48_000);
+        let gamma = OccurrenceIdentity::new("overlap-visible", 1, 48_000, 72_000);
+        for (request, occurrence, label) in [(1, beta.clone(), "beta"), (2, gamma.clone(), "gamma")]
+        {
+            let EngineEvent::LedgerMutation {
+                observation,
+                receipt,
+                ..
+            } = admitted_mutation(&mut ledger, occurrence, request, label)
+            else {
+                unreachable!()
+            };
+            assert!(
+                reducer
+                    .apply_ledger_mutation(&ledger, &observation, &receipt)
+                    .is_some()
+            );
+        }
+        let straddling = OccurrenceIdentity::new("overlap-visible", 1, 40_000, 56_000);
+        let straddle_observation =
+            ObservationIdentity::new(ObservationProducer::Whisper, 3, 0, straddling.clone());
+        let straddle = ledger.admit(&straddle_observation, "przez granice");
+        assert!(matches!(
+            &straddle,
+            MutationReceipt::KeepVisibleUnanchored { label, occurrence, .. }
+                if label == "przez granice" && occurrence == &straddling
+        ));
+        assert!(!straddle.grants_mutation());
+        assert!(
+            reducer
+                .apply_ledger_mutation(&ledger, &straddle_observation, &straddle)
+                .is_none()
+        );
+        assert_eq!(reducer.document_by_occurrence.len(), 2);
+        assert_eq!(
+            reducer.document_by_occurrence.get(&beta).unwrap().label,
+            "beta"
+        );
+        assert_eq!(
+            reducer.document_by_occurrence.get(&gamma).unwrap().label,
+            "gamma"
+        );
+        assert_eq!(
+            reducer.visible_projection(),
+            "beta przez granice gamma",
+            "the straddling phrase stays visible between its neighbours"
+        );
+        assert_eq!(ledger.text_of(&beta), Some("beta"));
+        assert_eq!(ledger.text_of(&gamma), Some("gamma"));
+
+        let covered = OccurrenceIdentity::new("overlap-visible", 1, 32_000, 40_000);
+        let covered_observation =
+            ObservationIdentity::new(ObservationProducer::Whisper, 4, 0, covered);
+        let duplicate = ledger.admit(&covered_observation, "beta");
+        assert!(matches!(
+            duplicate,
+            MutationReceipt::KeepVisibleUnanchored { .. }
+        ));
+        assert!(
+            reducer
+                .apply_ledger_mutation(&ledger, &covered_observation, &duplicate)
+                .is_none()
+        );
+        assert_eq!(reducer.document_by_occurrence.len(), 2);
+        assert_eq!(
+            reducer.visible_projection(),
+            "beta przez granice gamma",
+            "a word already admitted on the overlapping range is not painted twice"
+        );
+        let tally = ledger.conservation();
+        assert_eq!(tally.observations_in, tally.receipts_out);
+        assert_eq!(tally.kept_visible_unanchored, 2);
+        assert_eq!(tally.occurrences_held, 2);
     }
 }

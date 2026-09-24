@@ -2316,4 +2316,75 @@ mod tests {
         }));
         assert_eq!(ledger.incremental_shapings().len(), count);
     }
+
+    /// A covered overlap receipt is conserved and visible to the reducer, and
+    /// the bus still publishes one committed occurrence.
+    #[test]
+    fn unanchored_overlap_does_not_publish_a_second_bus_token() {
+        use codescribe_core::pipeline::acoustic_ledger::MutationReceipt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let bus =
+            TranscriptBus::open_with_path(session("unanchored-bus"), temp.path().join("bus.jsonl"));
+        bus.publish_started();
+        let mut ledger = AcousticLedger::new();
+        let mut reducer = TranscriptReducer::default();
+        let admitted = OccurrenceIdentity::new("unanchored-bus", 7, 24_000, 48_000);
+        let calibration = EnergyCalibration::new("bus-unanchored", 1.0, 1);
+        let evidence = AcousticEvidence {
+            occurrence: admitted.clone(),
+            duration_ms: 1_000.0,
+            energy_integral: 10.0,
+            mean_rms_dbfs: -12.0,
+            peak_dbfs: -3.0,
+            vad_open_sample: Some(admitted.sample_start),
+            vad_close_sample: Some(admitted.sample_end),
+            evidence_calibration_version: calibration.version.clone(),
+        };
+        assert!(ledger.qualify(&evidence, &calibration).is_qualified());
+        let observation =
+            ObservationIdentity::new(ObservationProducer::Apple, 1, 0, admitted.clone());
+        let receipt = ledger.admit(&observation, "beta");
+        let revision = reducer
+            .apply_ledger_mutation(&ledger, &observation, &receipt)
+            .expect("committed neighbour");
+        let events = bus.publish_revision(&revision, &ledger);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].sample_start, 24_000);
+        assert_eq!(events[0].sample_end, 48_000);
+        assert_eq!(events[0].rendered_text, "beta");
+
+        let covered = OccurrenceIdentity::new("unanchored-bus", 7, 32_000, 40_000);
+        let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 2, 0, covered);
+        let unanchored = ledger.admit(&whisper, "beta");
+        assert!(matches!(
+            &unanchored,
+            MutationReceipt::KeepVisibleUnanchored { label, .. } if label == "beta"
+        ));
+        assert!(
+            reducer
+                .apply_ledger_mutation(&ledger, &whisper, &unanchored)
+                .is_none()
+        );
+        assert_eq!(reducer.visible_projection(), "beta");
+        assert_eq!(revision.entries.len(), 1);
+        assert_eq!(ledger.conservation().kept_visible_unanchored, 1);
+        assert_eq!(ledger.text_of(&admitted), Some("beta"));
+        let writer = bus.writer.lock().unwrap();
+        assert_eq!(writer.sequence, events[0].sequence);
+        assert_eq!(
+            writer
+                .last_projection
+                .as_ref()
+                .map(|event| event.rendered_text.as_str()),
+            Some("beta")
+        );
+        assert_eq!(
+            writer
+                .last_projection
+                .as_ref()
+                .map(|event| event.sample_end),
+            Some(48_000)
+        );
+    }
 }

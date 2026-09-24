@@ -295,6 +295,9 @@ pub enum RefuseReason {
     BatchDuplicate,
     /// A machine observation returned no lexical evidence.
     EmptyLabel,
+    /// The range is already covered by an admitted identity. The overlap
+    /// resolver names the range; it does not compare the two strings.
+    ReplayedRangeIdentity,
 }
 
 impl RefuseReason {
@@ -304,8 +307,28 @@ impl RefuseReason {
             Self::SealedReplay => "sealed_replay",
             Self::BatchDuplicate => "batch_duplicate",
             Self::EmptyLabel => "empty_label",
+            Self::ReplayedRangeIdentity => "replayed_range_identity",
         }
     }
+}
+
+/// Where one timed pin sits relative to a window's exclusive admit range.
+///
+/// The admit bounds are the window's non-overlapping remainder. A pin wholly
+/// inside that remainder and wholly inside one open member is the exclusive
+/// tail. A pin wholly outside it and already covered by a committed identity
+/// is replay. Anything else stays visible and gains no mutation right.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlapPinClass {
+    /// The pin's whole text belongs to this open member.
+    ExclusiveTail {
+        /// Index into the open-member slice passed to the classifier.
+        member_index: usize,
+    },
+    /// Covered overlap. Refuse the pin; do not read its text.
+    Replay,
+    /// Read-only evidence. The reason says why it cannot mutate a neighbour.
+    Unanchored(NoAuthorityReason),
 }
 
 /// The one-to-one answer the ledger owes for every observation offered to it.
@@ -337,10 +360,14 @@ pub enum MutationReceipt {
         /// The physical event.
         occurrence: OccurrenceIdentity,
     },
-    /// No usable acoustic anchor. The text is delivered so the operator sees
-    /// what was said, but it may not overwrite, clip, or delete any anchored
-    /// occurrence, and it does not enter the ledger.
+    /// No usable acoustic anchor. The text stays visible at its PCM position
+    /// so the reader can see what was said, but it may not overwrite, clip, or
+    /// delete any anchored occurrence, and it does not enter the ledger.
     KeepVisibleUnanchored {
+        /// PCM position of the evidence. Not a committed token.
+        occurrence: OccurrenceIdentity,
+        /// The text that stays visible. Absent authority never deletes it.
+        label: String,
         /// Why authority is absent.
         reason: NoAuthorityReason,
     },
@@ -829,6 +856,8 @@ impl AcousticLedger {
             self.kept_visible += 1;
             self.answered.push(observation.clone());
             return MutationReceipt::KeepVisibleUnanchored {
+                occurrence: observation.occurrence.clone(),
+                label: text.to_string(),
                 reason: NoAuthorityReason::ZeroWidth,
             };
         }
@@ -956,6 +985,8 @@ impl AcousticLedger {
             // to show it and grant it nothing.
             self.kept_visible += 1;
             return MutationReceipt::KeepVisibleUnanchored {
+                occurrence: observation.occurrence.clone(),
+                label: text.to_string(),
                 reason: NoAuthorityReason::OverlapWithoutWordPins,
             };
         }
@@ -990,6 +1021,98 @@ impl AcousticLedger {
             kept_visible_unanchored: self.kept_visible,
         };
         (receipts, tally)
+    }
+
+    /// Conservation over every receipt the ledger has issued.
+    ///
+    /// `observations_in` counts offered observations, one per trail entry.
+    /// `kept_visible_unanchored` is the named residue for text that stayed
+    /// visible without a mutation right.
+    pub fn conservation(&self) -> ConservationTally {
+        ConservationTally {
+            observations_in: self.trail.len(),
+            receipts_out: self.trail.len(),
+            occurrences_held: self.committed.len(),
+            kept_visible_unanchored: self.kept_visible,
+        }
+    }
+
+    /// Classify one timed pin against the window's exclusive admit range.
+    ///
+    /// Text is not an argument. Coverage is containment on the PCM axis.
+    pub fn classify_overlap_pin(
+        &self,
+        pin: &OccurrenceIdentity,
+        admit_start: u64,
+        admit_end: u64,
+        open_members: &[OccurrenceIdentity],
+    ) -> OverlapPinClass {
+        if !pin.is_anchored() {
+            return OverlapPinClass::Unanchored(NoAuthorityReason::ZeroWidth);
+        }
+        if !open_members.iter().any(|member| pin.same_capture(member)) {
+            return OverlapPinClass::Unanchored(NoAuthorityReason::NoRange);
+        }
+        let inside_admit = pin.sample_start >= admit_start && pin.sample_end <= admit_end;
+        if inside_admit {
+            let mut owners = open_members.iter().enumerate().filter(|(_, member)| {
+                pin.sample_start >= member.sample_start && pin.sample_end <= member.sample_end
+            });
+            let first = owners.next();
+            let another = owners.next();
+            if let (Some((member_index, _)), None) = (first, another) {
+                return OverlapPinClass::ExclusiveTail { member_index };
+            }
+            return OverlapPinClass::Unanchored(NoAuthorityReason::OverlapWithoutWordPins);
+        }
+        let overlaps_admit = pin.sample_end > admit_start && pin.sample_start < admit_end;
+        if !overlaps_admit {
+            let covered = self.committed.keys().any(|held| {
+                pin.same_capture(held)
+                    && held.is_anchored()
+                    && pin.sample_start >= held.sample_start
+                    && pin.sample_end <= held.sample_end
+            });
+            if covered {
+                return OverlapPinClass::Replay;
+            }
+        }
+        OverlapPinClass::Unanchored(NoAuthorityReason::OverlapWithoutWordPins)
+    }
+
+    /// Keep one observation visible and record the receipt. The committed map
+    /// does not gain an occurrence.
+    pub fn keep_visible_unanchored(
+        &mut self,
+        observation: &ObservationIdentity,
+        text: &str,
+        reason: NoAuthorityReason,
+    ) -> MutationReceipt {
+        self.kept_visible += 1;
+        self.answered.push(observation.clone());
+        let decision = MutationReceipt::KeepVisibleUnanchored {
+            occurrence: observation.occurrence.clone(),
+            label: text.to_string(),
+            reason,
+        };
+        self.record_layer_decision(observation, text, &decision);
+        decision
+    }
+
+    /// Refuse a covered overlap by range identity. The committed label stands,
+    /// whatever string the later window carried.
+    pub fn refuse_replayed_range(
+        &mut self,
+        observation: &ObservationIdentity,
+        text: &str,
+    ) -> MutationReceipt {
+        self.answered.push(observation.clone());
+        let decision = MutationReceipt::Refuse {
+            occurrence: observation.occurrence.clone(),
+            reason: RefuseReason::ReplayedRangeIdentity,
+        };
+        self.record_layer_decision(observation, text, &decision);
+        decision
     }
 
     // -- admission: does this region physically exist? ----------------------
@@ -3788,6 +3911,8 @@ mod tests {
         assert_eq!(
             overlapping,
             MutationReceipt::KeepVisibleUnanchored {
+                occurrence: occ(8_000, 24_000),
+                label: "Iwo later".to_string(),
                 reason: NoAuthorityReason::OverlapWithoutWordPins,
             },
             "clipping a range without pins invents a sub-range the payload does not carry"
@@ -3808,6 +3933,8 @@ mod tests {
         assert_eq!(
             degenerate,
             MutationReceipt::KeepVisibleUnanchored {
+                occurrence: occ(12_000, 12_000),
+                label: "hm".to_string(),
                 reason: NoAuthorityReason::ZeroWidth,
             }
         );
@@ -3876,6 +4003,8 @@ mod tests {
         assert_eq!(
             floating,
             MutationReceipt::KeepVisibleUnanchored {
+                occurrence: occ(99_000, 99_000),
+                label: "coś jeszcze".to_string(),
                 reason: NoAuthorityReason::ZeroWidth,
             }
         );
@@ -3925,13 +4054,53 @@ mod tests {
             "zdanie dalej",
         );
         match &straddling {
-            MutationReceipt::KeepVisibleUnanchored { reason } => {
+            MutationReceipt::KeepVisibleUnanchored {
+                reason,
+                occurrence,
+                label,
+            } => {
                 assert_eq!(*reason, NoAuthorityReason::OverlapWithoutWordPins);
+                assert_eq!(occurrence, &occ(20_000, 60_000));
+                assert_eq!(label, "zdanie dalej");
             }
             other => panic!("utterance grain must not be clipped, got {other:?}"),
         }
         let held: Vec<&OccurrenceIdentity> = ledger.occurrences().collect();
         assert_eq!(held, vec![&occ(0, 40_000)], "no invented sub-range entered");
+    }
+
+    /// A covered overlap is refused by range. The later string is not consulted,
+    /// and the admitted word stays the only token.
+    #[test]
+    fn covered_overlap_is_replayed_range_identity_without_reading_the_string() {
+        let mut ledger = AcousticLedger::new();
+        let admitted = occ(24_000, 48_000);
+        ledger.admit(
+            &obs(ObservationProducer::Apple, 0, admitted.clone()),
+            "beta",
+        );
+        let covered = occ(32_000, 48_000);
+        assert_eq!(
+            ledger.classify_overlap_pin(&covered, 48_000, 72_000, std::slice::from_ref(&admitted),),
+            OverlapPinClass::Replay
+        );
+        let different = ledger.refuse_replayed_range(
+            &obs(ObservationProducer::Whisper, 2, covered.clone()),
+            "powtorka",
+        );
+        assert_eq!(
+            different,
+            MutationReceipt::Refuse {
+                occurrence: covered,
+                reason: RefuseReason::ReplayedRangeIdentity,
+            }
+        );
+        assert!(!different.grants_mutation());
+        assert_eq!(ledger.text_of(&admitted), Some("beta"));
+        assert_eq!(ledger.len(), 1);
+        let tally = ledger.conservation();
+        assert_eq!(tally.observations_in, tally.receipts_out);
+        assert_eq!(tally.occurrences_held, 1);
     }
 
     /// Same-lane revision: Apple correcting its own final on its own range at a
