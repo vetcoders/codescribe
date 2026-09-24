@@ -339,7 +339,8 @@ final class ComposerDeliveryJoinTests: XCTestCase {
     let proof = CsProjectedPresentationReceipt(
       receiptId: "fixture-light-plus-1", provenance: "light-plus", sessionId: "join-session",
       sourceRevision: 0, revision: 1, captureEpoch: 1, sampleStart: 0, sampleEnd: 16_000,
-      sourceSealReceipt: "fixture-occurrence-seal-1", sourceLabel: "pierwsze zdanie",
+      sourceSealReceipt: "fixture-occurrence-seal-1", sentenceBreakBefore: false,
+      sourceLabel: "pierwsze zdanie",
       leftContext: "", leftContextSha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       shapedText: "Pierwsze zdanie.")
     project("Pierwsze zdanie.", to: state, phase: "listening", terminal: false,

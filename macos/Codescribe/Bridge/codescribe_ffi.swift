@@ -10052,7 +10052,8 @@ public struct CsProjectedPresentationReceipt: Equatable, Hashable {
     public var captureEpoch: UInt64
     public var sampleStart: UInt64
     public var sampleEnd: UInt64
-    public var sourceSealReceipt: String
+    public var sourceSealReceipt: String?
+    public var sentenceBreakBefore: Bool
     public var sourceLabel: String
     public var leftContext: String
     public var leftContextSha256: String
@@ -10060,7 +10061,7 @@ public struct CsProjectedPresentationReceipt: Equatable, Hashable {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(receiptId: String, provenance: String, sessionId: String, sourceRevision: UInt64, revision: UInt64, captureEpoch: UInt64, sampleStart: UInt64, sampleEnd: UInt64, sourceSealReceipt: String, sourceLabel: String, leftContext: String, leftContextSha256: String, shapedText: String) {
+    public init(receiptId: String, provenance: String, sessionId: String, sourceRevision: UInt64, revision: UInt64, captureEpoch: UInt64, sampleStart: UInt64, sampleEnd: UInt64, sourceSealReceipt: String?, sentenceBreakBefore: Bool, sourceLabel: String, leftContext: String, leftContextSha256: String, shapedText: String) {
         self.receiptId = receiptId
         self.provenance = provenance
         self.sessionId = sessionId
@@ -10070,6 +10071,7 @@ public struct CsProjectedPresentationReceipt: Equatable, Hashable {
         self.sampleStart = sampleStart
         self.sampleEnd = sampleEnd
         self.sourceSealReceipt = sourceSealReceipt
+        self.sentenceBreakBefore = sentenceBreakBefore
         self.sourceLabel = sourceLabel
         self.leftContext = leftContext
         self.leftContextSha256 = leftContextSha256
@@ -10098,7 +10100,8 @@ public struct FfiConverterTypeCsProjectedPresentationReceipt: FfiConverterRustBu
                 captureEpoch: FfiConverterUInt64.read(from: &buf),
                 sampleStart: FfiConverterUInt64.read(from: &buf),
                 sampleEnd: FfiConverterUInt64.read(from: &buf),
-                sourceSealReceipt: FfiConverterString.read(from: &buf),
+                sourceSealReceipt: FfiConverterOptionString.read(from: &buf),
+                sentenceBreakBefore: FfiConverterBool.read(from: &buf),
                 sourceLabel: FfiConverterString.read(from: &buf),
                 leftContext: FfiConverterString.read(from: &buf),
                 leftContextSha256: FfiConverterString.read(from: &buf),
@@ -10115,7 +10118,8 @@ public struct FfiConverterTypeCsProjectedPresentationReceipt: FfiConverterRustBu
         FfiConverterUInt64.write(value.captureEpoch, into: &buf)
         FfiConverterUInt64.write(value.sampleStart, into: &buf)
         FfiConverterUInt64.write(value.sampleEnd, into: &buf)
-        FfiConverterString.write(value.sourceSealReceipt, into: &buf)
+        FfiConverterOptionString.write(value.sourceSealReceipt, into: &buf)
+        FfiConverterBool.write(value.sentenceBreakBefore, into: &buf)
         FfiConverterString.write(value.sourceLabel, into: &buf)
         FfiConverterString.write(value.leftContext, into: &buf)
         FfiConverterString.write(value.leftContextSha256, into: &buf)
@@ -10805,6 +10809,7 @@ public struct CsSettings: Equatable, Hashable {
      * `WHISPER_CONTEXT_WINDOW_SEC`. Seconds of PCM each Layer 1 window covers.
      */
     public var whisperContextWindowSec: Float
+    public var lightPlusSentencePauseSec: Float
     /**
      * Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
      * from the canonical merged config snapshot. `"disabled"` is the
@@ -10915,7 +10920,7 @@ public struct CsSettings: Equatable, Hashable {
          */holdArmModifier: String, holdStartDelayMs: UInt64, doubleTapIntervalMs: UInt64, toggleSilenceSec: Float,
         /**
          * `WHISPER_CONTEXT_WINDOW_SEC`. Seconds of PCM each Layer 1 window covers.
-         */whisperContextWindowSec: Float,
+         */whisperContextWindowSec: Float, lightPlusSentencePauseSec: Float,
         /**
          * Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
          * from the canonical merged config snapshot. `"disabled"` is the
@@ -10971,6 +10976,7 @@ public struct CsSettings: Equatable, Hashable {
         self.doubleTapIntervalMs = doubleTapIntervalMs
         self.toggleSilenceSec = toggleSilenceSec
         self.whisperContextWindowSec = whisperContextWindowSec
+        self.lightPlusSentencePauseSec = lightPlusSentencePauseSec
         self.deferredInsertShortcut = deferredInsertShortcut
         self.whisperLanguage = whisperLanguage
         self.aiFormattingEnabled = aiFormattingEnabled
@@ -11045,6 +11051,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 doubleTapIntervalMs: FfiConverterUInt64.read(from: &buf),
                 toggleSilenceSec: FfiConverterFloat.read(from: &buf),
                 whisperContextWindowSec: FfiConverterFloat.read(from: &buf),
+                lightPlusSentencePauseSec: FfiConverterFloat.read(from: &buf),
                 deferredInsertShortcut: FfiConverterString.read(from: &buf),
                 whisperLanguage: FfiConverterTypeCsLanguage.read(from: &buf),
                 aiFormattingEnabled: FfiConverterBool.read(from: &buf),
@@ -11107,6 +11114,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterUInt64.write(value.doubleTapIntervalMs, into: &buf)
         FfiConverterFloat.write(value.toggleSilenceSec, into: &buf)
         FfiConverterFloat.write(value.whisperContextWindowSec, into: &buf)
+        FfiConverterFloat.write(value.lightPlusSentencePauseSec, into: &buf)
         FfiConverterString.write(value.deferredInsertShortcut, into: &buf)
         FfiConverterTypeCsLanguage.write(value.whisperLanguage, into: &buf)
         FfiConverterBool.write(value.aiFormattingEnabled, into: &buf)
