@@ -230,14 +230,33 @@ fn consultation_directory(store: &ThreadStore) -> Result<PathBuf> {
     canonical_existing_child(&store.threads_dir, &directory)
 }
 
-fn exclusive_owner(path: &Path) -> Result<File> {
+struct HeldExclusiveLock {
+    file: File,
+}
+
+impl AsRawFd for HeldExclusiveLock {
+    fn as_raw_fd(&self) -> std::os::fd::RawFd {
+        self.file.as_raw_fd()
+    }
+}
+
+impl Drop for HeldExclusiveLock {
+    fn drop(&mut self) {
+        // close() drops one flock reference. A duplicated descriptor, including
+        // one inherited across fork before exec, keeps the lock. LOCK_UN
+        // releases it at drop. O_CLOEXEC does not cover that window.
+        let _ = unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+fn exclusive_owner(path: &Path) -> Result<HeldExclusiveLock> {
     let owner = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
         .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
         .open(path)?;
     // SAFETY: owner holds a live file descriptor for the full lease lifetime.
     let acquired = unsafe { libc::flock(owner.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
@@ -246,7 +265,7 @@ fn exclusive_owner(path: &Path) -> Result<File> {
         "consultation already owned or lock unavailable: {}",
         std::io::Error::last_os_error()
     );
-    Ok(owner)
+    Ok(HeldExclusiveLock { file: owner })
 }
 
 fn persist_json(path: &Path, value: &impl Serialize) -> Result<()> {
@@ -270,7 +289,7 @@ pub(crate) struct ConsultationJournal {
     state: AdmissionState,
     recovery_reason: Option<String>,
     // Kernel ownership dies with the process; the lock file must not be unlinked.
-    _owner: File,
+    _owner: HeldExclusiveLock,
 }
 
 impl ConsultationJournal {
@@ -448,6 +467,19 @@ mod tests {
                 group: None,
             })
             .unwrap();
+    }
+
+    #[test]
+    fn dropped_owner_releases_lock_while_a_duplicate_fd_stays_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ThreadStore::new_in(dir.path()).unwrap();
+        let journal = ConsultationJournal::open(&store, "release-dup").unwrap();
+        let duplicated = unsafe { libc::dup(journal._owner.as_raw_fd()) };
+        assert!(duplicated >= 0, "dup: {}", std::io::Error::last_os_error());
+        drop(journal);
+        let reopened = ConsultationJournal::open(&store, "release-dup");
+        unsafe { libc::close(duplicated) };
+        reopened.expect("drop must release the consultation lock while a duplicated fd is open");
     }
 
     #[test]

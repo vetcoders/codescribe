@@ -25,14 +25,13 @@ pub const INSTALL_INTERLOCK_FILE_NAME: &str = "install-runtime.lock";
 /// Lease file held shared for the duration of one agent turn.
 pub const AGENT_TURN_LEASE_FILE_NAME: &str = "agent-turn.lock";
 
-/// A process-lifetime shared lease. Closing the file releases the kernel lock.
+/// A process-lifetime shared lease. Drop unlocks the file before closing it.
 pub struct AppRuntimeInstallLease {
     _file: File,
 }
 
-/// A turn-lifetime shared lease. Dropping it (normal end, error, Stop, or
-/// process death) releases the kernel lock, so the installer can never be
-/// wedged by a turn that is no longer running.
+/// A turn-lifetime shared lease. Drop unlocks the file before closing it, so
+/// the installer is not left blocked after the turn ends.
 pub struct AgentTurnLease {
     _file: File,
 }
@@ -64,6 +63,30 @@ fn lock(file: &File, operation: libc::c_int) -> io::Result<()> {
         Ok(())
     } else {
         Err(io::Error::last_os_error())
+    }
+}
+
+/// Release the lock held on `file`.
+///
+/// `close` drops one descriptor reference. On macOS that reference is shared
+/// with every `dup` and with a child that has not reached `exec` yet, so the
+/// installer still observes `EWOULDBLOCK` / `EAGAIN` (errno 35) after the owner
+/// is gone. `LOCK_UN` releases that shared lock. `O_CLOEXEC` (set by
+/// `OpenOptions`) already stops the descriptor from surviving `exec`; it does
+/// not cover the window before `exec`.
+fn release_flock(file: &File) {
+    let _ = lock(file, libc::LOCK_UN);
+}
+
+impl Drop for AppRuntimeInstallLease {
+    fn drop(&mut self) {
+        release_flock(&self._file);
+    }
+}
+
+impl Drop for AgentTurnLease {
+    fn drop(&mut self) {
+        release_flock(&self._file);
     }
 }
 
@@ -122,6 +145,7 @@ fn open_shared_lease(path: &Path, what: &str) -> Result<File> {
         .create(true)
         .truncate(false)
         .mode(0o600)
+        .custom_flags(libc::O_CLOEXEC)
         .open(path)
         .with_context(|| format!("open {what} {}", path.display()))
 }
@@ -148,9 +172,10 @@ mod tests {
             Some(code) if code == libc::EWOULDBLOCK || code == libc::EAGAIN
         ));
 
+        assert_cloexec(&lease._file);
+        let duplicated = duplicate_lease_fd(&lease._file);
         drop(lease);
-        lock(&installer, libc::LOCK_EX | libc::LOCK_NB).unwrap();
-        lock(&installer, libc::LOCK_UN).unwrap();
+        probe_exclusive_while_duplicate_open(duplicated, &installer);
     }
 
     #[test]
@@ -170,9 +195,31 @@ mod tests {
             Some(code) if code == libc::EWOULDBLOCK || code == libc::EAGAIN
         ));
 
+        assert_cloexec(&lease._file);
+        let duplicated = duplicate_lease_fd(&lease._file);
         drop(lease);
-        lock(&installer, libc::LOCK_EX | libc::LOCK_NB).unwrap();
-        lock(&installer, libc::LOCK_UN).unwrap();
+        probe_exclusive_while_duplicate_open(duplicated, &installer);
+    }
+
+    fn assert_cloexec(lease: &File) {
+        let flags = unsafe { libc::fcntl(lease.as_raw_fd(), libc::F_GETFD) };
+        assert!(flags >= 0, "fcntl F_GETFD: {}", io::Error::last_os_error());
+        assert_ne!(flags & libc::FD_CLOEXEC, 0, "lease fd must be CLOEXEC");
+    }
+
+    fn duplicate_lease_fd(lease: &File) -> libc::c_int {
+        let duplicated = unsafe { libc::dup(lease.as_raw_fd()) };
+        assert!(duplicated >= 0, "dup: {}", io::Error::last_os_error());
+        duplicated
+    }
+
+    /// `dup(2)` is the same extra flock reference `fork(2)` adds. The exclusive
+    /// probe runs before the duplicate is closed.
+    fn probe_exclusive_while_duplicate_open(duplicated: libc::c_int, installer: &File) {
+        let released = lock(installer, libc::LOCK_EX | libc::LOCK_NB);
+        unsafe { libc::close(duplicated) };
+        released.expect("drop must release the install lock while a duplicated fd is open");
+        lock(installer, libc::LOCK_UN).unwrap();
     }
 
     #[test]
