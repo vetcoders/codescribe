@@ -1379,6 +1379,17 @@ fn render_context_markers(text: &str, markers: &[DocumentContextMarker]) -> Stri
 /// that copy reads this same Bus book and never re-enters the reducer.
 pub type ProjectionObserver = Arc<dyn Fn(&TranscriptBusEvidenceEvent) + Send + Sync>;
 
+/// The reducer document at one capture-stop instant. Preview paint is excluded:
+/// it has no occurrence-backed delivery authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VisibleCanvasSnapshot {
+    pub session_id: String,
+    pub capture_epoch: u64,
+    pub revision: u64,
+    pub text: String,
+    pub preview_only_words: usize,
+}
+
 /// All target mutations are serialized through one mpsc worker, guaranteeing
 /// that overlay deltas and the shared transcript snapshot see identical order.
 pub struct PresentationEmitter {
@@ -1404,6 +1415,24 @@ pub struct PresentationEmitter {
 }
 
 impl PresentationEmitter {
+    /// Freeze the revision that owns delivery for this take, without waiting for
+    /// the ordered paint worker or any pending transcription producer.
+    pub fn visible_canvas_snapshot(&self) -> Option<VisibleCanvasSnapshot> {
+        let (session_id, capture_epoch) = self.cursor_capture.get()?;
+        let reducer = self
+            .session_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let text = reducer.committed_rendered_text();
+        Some(VisibleCanvasSnapshot {
+            session_id: session_id.clone(),
+            capture_epoch: *capture_epoch,
+            revision: reducer.revision,
+            text,
+            preview_only_words: reducer.ephemeral_preview.split_whitespace().count(),
+        })
+    }
+
     /// Build the reducer and start its single FIFO delivery worker.
     pub fn new(
         transcript_buffer: Arc<Mutex<String>>,
@@ -2788,6 +2817,60 @@ mod tests {
                 .unwrap_or_else(|error| error.into_inner())
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn stop_canvas_counts_preview_only_words_without_delivering_them() {
+        let delivery = Arc::new(Mutex::new(String::new()));
+        let mut emitter = PresentationEmitter::new(Arc::clone(&delivery), None, None);
+        emitter.on_capture_opened("take", 7);
+        emitter.on_event(&preview(1, "one two three four five"));
+        let frozen = emitter.visible_canvas_snapshot().expect("opened take");
+        assert_eq!(frozen.session_id, "take");
+        assert_eq!(frozen.capture_epoch, 7);
+        assert_eq!(frozen.revision, 0);
+        assert_eq!(frozen.text, "");
+        assert_eq!(frozen.preview_only_words, 5);
+        emitter.finish().await;
+        assert!(delivery.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn frozen_stop_canvas_remains_a_prefix_of_five_occurrence_revision() {
+        let delivery = Arc::new(Mutex::new(String::new()));
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let mut emitter = PresentationEmitter::new_with_authority(
+            Arc::clone(&delivery),
+            None,
+            None,
+            None,
+            Some(Arc::clone(&ledger)),
+            None,
+        );
+        emitter.on_capture_opened("take", 7);
+        for index in 0..5 {
+            let mutation = {
+                let mut ledger = ledger.lock().unwrap();
+                admitted_mutation(
+                    &mut ledger,
+                    OccurrenceIdentity::new("take", 7, index * 16_000, (index + 1) * 16_000),
+                    index + 1,
+                    "Iwo",
+                )
+            };
+            emitter.on_event(&mutation);
+            if index == 0 {
+                let frozen = emitter.visible_canvas_snapshot().unwrap();
+                assert_eq!(frozen.revision, 1);
+                assert_eq!(frozen.text, "Iwo");
+            }
+        }
+        let revised = emitter.visible_canvas_snapshot().unwrap();
+        emitter.finish().await;
+        assert_eq!(revised.text, "Iwo Iwo Iwo Iwo Iwo");
+        assert_eq!(revised.revision, 5);
+        assert_eq!(delivery.lock().await.as_str(), revised.text);
+        assert_eq!(ledger.lock().unwrap().len(), 5);
     }
 
     #[tokio::test]

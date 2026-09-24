@@ -719,10 +719,17 @@ impl Recorder {
     /// Returns the absolute path to the saved .wav file, or None if no audio
     /// was recorded or an error occurred.
     pub async fn stop(&mut self) -> Result<Option<PathBuf>> {
+        let was_active = self.close_capture().await;
+        self.finalize_closed_capture(was_active)
+    }
+
+    /// Close the microphone before any archive or transcription work begins.
+    /// The returned flag belongs to this stop and must be passed to finalization.
+    pub async fn close_capture(&mut self) -> bool {
         if !self.is_recording.load(Ordering::SeqCst) && self.stream.is_none() {
             warn!("Stop called but no active stream");
             self.last_duration = 0.0;
-            return Ok(None);
+            return false;
         }
 
         info!("Stopping recording...");
@@ -742,7 +749,15 @@ impl Recorder {
         self.recorder_vad = None;
         self.device = None;
         self.is_recording.store(false, Ordering::SeqCst);
+        true
+    }
 
+    /// Finalize the already closed take. Spill joining and WAV serialization
+    /// happen here, after the stop path has settled its initial delivery.
+    pub fn finalize_closed_capture(&mut self, was_active: bool) -> Result<Option<PathBuf>> {
+        if !was_active {
+            return Ok(None);
+        }
         // The stream is gone, so every callback-held spill sender is dropped —
         // finalize returns the COMPLETE take (immune to the ring cap).
         let spill_take = self.spill.take().and_then(SpillSink::finalize);

@@ -564,10 +564,15 @@ fn refused_take_archive(
 async fn stop_recorder_for_terminal(
     recorder: &mut StreamingRecorder,
     session_id: Option<&str>,
+    capture_closed: Option<bool>,
 ) -> Result<(String, Option<std::path::PathBuf>)> {
     let (capture_session, capture_epoch) = recorder.capture_identity();
     let capture_session = capture_session.map(str::to_owned);
-    match recorder.stop().await {
+    let stopped = match capture_closed {
+        Some(was_active) => recorder.finish_closed_capture(was_active).await,
+        None => recorder.stop().await,
+    };
+    match stopped {
         Ok(stopped) => Ok(stopped),
         Err(err) => match err.downcast::<TerminalSealRefused>() {
             Ok(refusal) => {
@@ -2050,6 +2055,49 @@ impl RecordingController {
             },
         )
         .await
+    }
+
+    /// Settle the reducer document at microphone close. The later drain may
+    /// revise overlay/history, but cannot paste a second document into this app.
+    async fn deliver_frozen_canvas_at_stop(
+        &self,
+        take_id: Option<&str>,
+        assistive: bool,
+        force_ai: bool,
+        capture_turn: CaptureTurnIntent,
+        stop_start: std::time::Instant,
+    ) -> Result<Option<String>> {
+        if take_delivers_to_composer(capture_turn) {
+            return Ok(None);
+        }
+        let Some(take_id) = take_id else {
+            return Ok(None);
+        };
+        let presentation = self.active_presentation.read().await.clone();
+        let Some(snapshot) = presentation.and_then(|emitter| emitter.visible_canvas_snapshot())
+        else {
+            return Ok(None);
+        };
+        if snapshot.session_id != take_id {
+            return Ok(None);
+        }
+        self.deliver_stop_transcript(
+            Some(take_id),
+            &snapshot.text,
+            assistive,
+            force_ai,
+            capture_turn,
+            false,
+        )
+        .await?;
+        info!(
+            stop_to_delivery_ms = stop_start.elapsed().as_millis(),
+            capture_epoch = snapshot.capture_epoch,
+            reducer_revision = snapshot.revision,
+            preview_only_words = snapshot.preview_only_words,
+            "stop canvas delivery settled"
+        );
+        Ok(Some(snapshot.text))
     }
 
     async fn deliver_stop_transcript_with_sink<F, Fut>(
@@ -4364,18 +4412,28 @@ impl RecordingController {
 
             let recorder = Self::recorder_from_guard_mut(&mut recorder_guard, "Toggle-adjudicate")?;
             let serving_engine = recorder.streaming_engine_label();
+            let capture_turn = recorder.capture_turn_intent();
 
             let phase2 = std::time::Instant::now();
-            info!("stop_toggle_inner: PHASE 2 — calling recorder.stop() (cpal drain + WAV save)");
+            info!("stop_toggle_inner: PHASE 2 — closing capture before delivery");
             // The live slot is `{uuid}:stopping` here. File-lane identity is
             // the Bus uuid snapped before that rewrite.
+            let was_active = recorder.close_capture().await;
+            let initial_delivery = self
+                .deliver_frozen_canvas_at_stop(
+                    session_id_snapshot.as_deref(),
+                    assistive,
+                    force_ai,
+                    capture_turn,
+                    stop_start,
+                )
+                .await;
             let stopped =
-                stop_recorder_for_terminal(recorder, session_id_snapshot.as_deref()).await;
+                stop_recorder_for_terminal(recorder, session_id_snapshot.as_deref(), Some(was_active)).await;
             rec_stop_secs = phase2.elapsed().as_secs_f64();
             // Read the take's own intent before the per-take state is cleared.
             // The recorder is the single owner of this fact; the stop path must
             // not re-derive it from the assistive flag or the active screen.
-            let capture_turn = recorder.capture_turn_intent();
             Self::clear_recorder_callbacks(recorder);
             drop(recorder_guard);
             // The session is over whichever way `stop()` went; the engine that
@@ -4384,6 +4442,18 @@ impl RecordingController {
             let (streaming_text, raw_audio_path_opt) = match stopped {
                 Ok(stopped) => stopped,
                 Err(err) => {
+                    if initial_delivery.as_ref().ok().is_some_and(Option::is_some) {
+                        return self
+                            .process_terminal_stop_error(err, |_| async {
+                                Ok(TranscriptDelivery::SinkAccepted)
+                            })
+                            .await;
+                    }
+                    if let Err(delivery_error) = &initial_delivery {
+                        warn!(%delivery_error, "initial delivery failed before terminal stop refusal");
+                        return Err(err);
+                    }
+                    initial_delivery?;
                     return self.process_terminal_stop_error(err, |text| async move {
                         self.deliver_stop_transcript(
                             session_id_snapshot.as_deref(),
@@ -4397,6 +4467,7 @@ impl RecordingController {
                     }).await;
                 }
             };
+            let initial_text = initial_delivery?;
             info!(
                 "stop_toggle_inner: PHASE 2 — recorder.stop() returned in {:?} (streaming_text={} chars, has_wav={})",
                 phase2.elapsed(),
@@ -4421,15 +4492,17 @@ impl RecordingController {
                     ),
                 );
             }
-            self.deliver_stop_transcript(
-                session_id_snapshot.as_deref(),
-                &streaming_text,
-                assistive,
-                force_ai,
-                capture_turn,
-                false,
-            )
-            .await?;
+            if initial_text.is_none() {
+                self.deliver_stop_transcript(
+                    session_id_snapshot.as_deref(),
+                    &streaming_text,
+                    assistive,
+                    force_ai,
+                    capture_turn,
+                    false,
+                )
+                .await?;
+            }
             phase3_secs = phase3.elapsed().as_secs_f64();
             info!(
                 "stop_toggle_inner: PHASE 3 — reducer handoff completed in {:?}",
@@ -4912,13 +4985,37 @@ impl RecordingController {
         let mut recorder_guard = self.recorder.lock().await;
         let recorder = Self::recorder_from_guard_mut(&mut recorder_guard, "Process-recording")?;
         let serving_engine = recorder.streaming_engine_label();
-        let stopped = stop_recorder_for_terminal(recorder, take_id.as_deref()).await;
+        let stop_start = std::time::Instant::now();
+        let was_active = recorder.close_capture().await;
+        let initial_delivery = self
+            .deliver_frozen_canvas_at_stop(
+                take_id.as_deref(),
+                assistive,
+                force_ai,
+                CaptureTurnIntent::HandsFree,
+                stop_start,
+            )
+            .await;
+        let stopped =
+            stop_recorder_for_terminal(recorder, take_id.as_deref(), Some(was_active)).await;
         Self::clear_recorder_callbacks(recorder);
         drop(recorder_guard); // Release lock
         Self::publish_live_serving_verdict(serving_engine);
         let (streaming_text, raw_audio_path_opt) = match stopped {
             Ok(stopped) => stopped,
             Err(err) => {
+                if initial_delivery.as_ref().ok().is_some_and(Option::is_some) {
+                    return self
+                        .process_terminal_stop_error(err, |_| async {
+                            Ok(TranscriptDelivery::SinkAccepted)
+                        })
+                        .await;
+                }
+                if let Err(delivery_error) = &initial_delivery {
+                    warn!(%delivery_error, "initial delivery failed before terminal stop refusal");
+                    return Err(err);
+                }
+                initial_delivery?;
                 return self
                     .process_terminal_stop_error(err, |text| async move {
                         self.deliver_stop_transcript(
@@ -4936,6 +5033,7 @@ impl RecordingController {
                     .await;
             }
         };
+        let initial_text = initial_delivery?;
 
         if let Some(path) = raw_audio_path_opt.as_deref() {
             retain_session_audio(
@@ -4950,15 +5048,17 @@ impl RecordingController {
         // facts already consumed when the emitter was built; delivery reads
         // only the frozen intent.
         let _ = (hold_mode, force_raw);
-        self.deliver_stop_transcript(
-            take_id.as_deref(),
-            &streaming_text,
-            assistive,
-            force_ai,
-            CaptureTurnIntent::HandsFree,
-            false,
-        )
-        .await?;
+        if initial_text.is_none() {
+            self.deliver_stop_transcript(
+                take_id.as_deref(),
+                &streaming_text,
+                assistive,
+                force_ai,
+                CaptureTurnIntent::HandsFree,
+                false,
+            )
+            .await?;
+        }
         Ok(ProcessRecordingOutcome {
             transcript_present: !streaming_text.trim().is_empty(),
             ..ProcessRecordingOutcome::default()

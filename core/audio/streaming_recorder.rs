@@ -640,8 +640,23 @@ impl StreamingRecorder {
             );
         }
 
-        // 1. Stop recording (drops callback and sender)
+        // The all-at-once API remains for callers outside the stop delivery
+        // path; the controller uses close_capture/finish_closed_capture.
         let stopped = self.recorder.stop().await;
+        self.complete_stop(stopped).await
+    }
+
+    /// Close capture independently of the session drain and WAV finalization.
+    pub async fn close_capture(&mut self) -> bool {
+        self.recorder.close_capture().await
+    }
+
+    /// Continue the owned stop tail after the microphone has closed.
+    pub async fn finish_closed_capture(
+        &mut self,
+        was_active: bool,
+    ) -> Result<(String, Option<std::path::PathBuf>)> {
+        let stopped = self.recorder.finalize_closed_capture(was_active);
         self.complete_stop(stopped).await
     }
 

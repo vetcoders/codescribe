@@ -38,7 +38,7 @@ This is a band, not a queue of correctors. Ban is **per layer, per span**. The l
 - **Whisper** enters the buffer on **~4 s observations with ~1 s overlap**, bounded by available speech evidence. Never full audio in the automatic pipeline (`full_file_pass = button_only_proposal`). It may fill omissions or replace weaker Apple wording inside the same proven span. It must not hallucinate into silence or rebuild the session from zero.
 - **Lexicon / Light+** are L2 and tune deterministically after Whisper settles. Light+ is currently wired on progressive seals and as the delivery floor.
 - **Responses formatter** is L3 (`previous_response_id`). It has a trash bucket: it may throw away approved verbal debris, but it may not rearrange the plate.
-- **Human** is last, after seal.
+- **Human** may edit the delivered canvas immediately; after seal, the human remains the last revision authority.
 
 ### Exactly four machine layers
 
@@ -142,7 +142,7 @@ remain correctable. Key = PCM sample counter, not token position.
 | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `utterance_final` / observer-final                    | This observer finished its current raw hypothesis for the fragment. **Not the document, Bus, delivery, or an immutable token floor.** A later authorized observer may relabel the same proven span through the ledger. |
 | `utterance_sealed`                                    | The span identity and `[sample_start, sample_end)` placement are frozen. Its text is stable for presentation but remains correctable by an admitted downstream observation before session seal.                        |
-| terminal ledger seal / `transcript_sealed` projection | A terminal ledger seal receipt closes the committed Bus writer. Arbitrary text cannot seal it. Full HQ / Cloud may only propose a variant.                                                                             |
+| terminal ledger seal / `transcript_sealed` projection | A terminal ledger seal receipt closes the committed Bus writer after refinement; delivery does not wait for it. Arbitrary text cannot seal it. Full HQ / Cloud may only propose a variant.                             |
 
 `committed` does **not** mean "this is already the document". It means: **this layer finished its work here; the next layer takes the same time slice.**
 
@@ -155,7 +155,7 @@ Before `transcript_sealed` the whole document is **not** mutable.
 - The current tail may still evolve.
 - Whisper may fill holes and replace weaker evidence inside the same authorized span before session seal.
 - The formatter works in parallel on closed fragments and keeps their order.
-- Stop closes only the tail and assembles ready fragments.
+- Stop closes capture and delivers the frozen reducer canvas before the open tail is drained into a later revision.
 
 A first-wins final string is not enough. The real document is the ordered span ledger with provenance. Session seal closes the assembled result — it does not replace the architecture with one frozen variable.
 
@@ -388,9 +388,9 @@ the capture PCM axis**, never a concatenation of non-adjacent fragments.
    identity and the target identity share `session` and `capture_epoch` and
    their ranges intersect. Change ratio and LCS may rank candidates inside that
    one authorized identity. They may not be the gate.
-10. **Drain on stop.** Stop closes the open window, drains admitted work, and
-    assembles the ordered ledger. It starts no new decode and re-decodes
-    nothing already covered.
+10. **Deliver, then drain on stop.** Stop delivers the frozen reducer canvas,
+    then closes the open window, drains admitted work, and assembles the ordered
+    ledger as a revision; it starts no new decode and re-decodes nothing covered.
 
 ### Safety truth
 
