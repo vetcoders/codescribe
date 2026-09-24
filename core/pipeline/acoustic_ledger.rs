@@ -5222,6 +5222,36 @@ mod tests {
         assert!(ledger.incremental_shapings().is_empty());
     }
 
+    /// A text-only ledger admission cites its physical occurrence, but does not
+    /// carry individual word pins. The serial is valid evidence for the label;
+    /// copying the occurrence bounds into each token would falsely claim that
+    /// both words have the same measured word-level PCM timing.
+    #[test]
+    fn text_only_admission_does_not_invent_word_sample_ranges() {
+        let (mut ledger, occurrence) = whisper_only_qualified_ledger();
+        let decision = ledger.admit(
+            &obs(ObservationProducer::Whisper, 0, occurrence.clone()),
+            "dobry wieczór",
+        );
+        assert!(decision.is_insert());
+
+        let composition = ledger
+            .compose(&occurrence)
+            .expect("qualified text-only admission has occurrence evidence");
+        assert_eq!(composition.tokens.len(), 2);
+        for token in &composition.tokens {
+            assert!(token.cited_occurrences().any(|cited| cited == &occurrence));
+            assert_eq!(
+                token.token_sample_start, None,
+                "an occurrence boundary is not the first sample of each word"
+            );
+            assert_eq!(
+                token.token_sample_end, None,
+                "an occurrence boundary is not the end sample of each word"
+            );
+        }
+    }
+
     #[test]
     fn clock_lie_span_keeps_its_text_and_cannot_replace_a_neighbour() {
         use crate::quality::supervisor::{
