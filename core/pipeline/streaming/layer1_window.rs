@@ -68,8 +68,9 @@ struct OverlapTail {
 impl Layer1Coalesce {
     /// Darek's live window: swap after about five Apple segments.
     pub const TARGET_SEGMENTS: usize = 5;
-    /// Target ceiling for coalescing distinct closed occurrences. A single
-    /// longer occurrence still needs its own PCM-bounded observation policy.
+    /// Ceiling for one observation, including a retained overlap prefix.
+    /// A piece that would push the request past this ceiling is split on the
+    /// capture PCM axis; the member occurrence identity stays whole.
     pub const MAX_AUDIO_SECS: f32 = 4.0;
     /// Speech-proven PCM repeated at the start of the next observation.
     pub const OVERLAP_SECS: f32 = 1.0;
@@ -110,16 +111,25 @@ impl Layer1Coalesce {
         }
         let max_samples = window_samples(self.sample_rate);
         let piece_samples = piece.sample_end.saturating_sub(piece.sample_start);
-        if piece_samples > max_samples {
-            out.extend(self.take_flushes());
+        if !self.pieces.is_empty() {
+            let pending = self
+                .prefix_samples_for_held()
+                .saturating_add(self.held_samples())
+                .saturating_add(piece_samples);
+            if pending > max_samples {
+                out.extend(self.take_flushes());
+            }
+        }
+        // The prefix is prepended at flush. Count it before accepting the piece,
+        // and split on the PCM axis when the piece itself cannot fit.
+        let prefix_samples = if self.pieces.is_empty() {
+            self.prefix_samples_continuing(&piece)
+        } else {
+            0
+        };
+        if piece_samples > max_samples.saturating_sub(prefix_samples) {
             out.extend(self.emit_long_piece(piece));
             return out;
-        }
-        let held_samples = self.pieces.iter().fold(0_u64, |total, held| {
-            total.saturating_add(held.sample_end.saturating_sub(held.sample_start))
-        });
-        if !self.pieces.is_empty() && held_samples.saturating_add(piece_samples) > max_samples {
-            out.extend(self.take_flushes());
         }
         if self.pieces.is_empty() && self.neighbour_before.is_empty() {
             // Neighbour is set by the caller before the first push of a window.
@@ -160,13 +170,32 @@ impl Layer1Coalesce {
         if self.segments >= Self::TARGET_SEGMENTS {
             return true;
         }
-        let samples: u64 = self
-            .pieces
-            .iter()
-            .map(|p| p.sample_end.saturating_sub(p.sample_start))
-            .sum();
+        let samples = self
+            .held_samples()
+            .saturating_add(self.prefix_samples_for_held());
         let rate = sample_rate.max(1) as f32;
         (samples as f32 / rate) >= Self::MAX_AUDIO_SECS
+    }
+
+    fn held_samples(&self) -> u64 {
+        self.pieces.iter().fold(0_u64, |total, held| {
+            total.saturating_add(held.sample_end.saturating_sub(held.sample_start))
+        })
+    }
+
+    fn prefix_samples_for_held(&self) -> u64 {
+        self.pieces
+            .first()
+            .map(|piece| self.prefix_samples_continuing(piece))
+            .unwrap_or(0)
+    }
+
+    fn prefix_samples_continuing(&self, piece: &CoalescedPiece) -> u64 {
+        self.overlap_tail
+            .as_ref()
+            .filter(|tail| tail.continues(piece))
+            .map(|tail| tail.audio.len() as u64)
+            .unwrap_or(0)
     }
 
     fn take_flushes(&mut self) -> Vec<CoalesceFlush> {
@@ -183,13 +212,13 @@ impl Layer1Coalesce {
         flushes
     }
 
-    /// One occurrence longer than the observation budget becomes several
-    /// 4 s windows stepped by 3 s. Exclusive admit ranges partition the
-    /// occurrence; the shared second is PCM context, not a second member.
+    /// One occurrence that does not fit in the observation budget becomes
+    /// several 4 s windows stepped by 3 s. A retained prefix consumes part of
+    /// the first window. Exclusive admit ranges partition the occurrence; the
+    /// shared second is PCM context, not a second member.
     fn emit_long_piece(&mut self, piece: CoalescedPiece) -> Vec<CoalesceFlush> {
         let max_samples = window_samples(self.sample_rate);
         let overlap = overlap_samples(self.sample_rate).min(max_samples.saturating_sub(1));
-        let step = max_samples.saturating_sub(overlap).max(1);
         let mut cursor = piece.sample_start;
         let mut flushes = Vec::new();
         let mut prefix = self
@@ -197,12 +226,28 @@ impl Layer1Coalesce {
             .take()
             .filter(|tail| tail.continues(&piece));
         while cursor < piece.sample_end {
-            let window_end = cursor.saturating_add(max_samples).min(piece.sample_end);
+            let prefix_len = prefix
+                .as_ref()
+                .filter(|tail| tail.sample_end == cursor && !tail.audio.is_empty())
+                .map(|tail| tail.audio.len() as u64)
+                .unwrap_or(0);
+            let new_budget = max_samples.saturating_sub(prefix_len);
+            if new_budget == 0 {
+                // The retained prefix already fills the window, so it cannot
+                // be prepended without exceeding the budget.
+                prefix = None;
+                continue;
+            }
+            let window_end = cursor.saturating_add(new_budget).min(piece.sample_end);
+            if window_end <= cursor {
+                break;
+            }
             let last = window_end == piece.sample_end;
-            let admit_end = if last {
+            let stepped = window_end.saturating_sub(overlap);
+            let admit_end = if last || stepped <= cursor {
                 window_end
             } else {
-                cursor.saturating_add(step).min(window_end)
+                stepped
             };
             let local_start = cursor.saturating_sub(piece.sample_start) as usize;
             let local_end = window_end.saturating_sub(piece.sample_start) as usize;
@@ -651,6 +696,140 @@ mod tests {
         assert_eq!(flushes[0].member_occurrences[0].0, 7);
         assert_eq!(flushes[0].admit_sample_start, flushes[0].sample_start);
         assert_eq!(flushes[0].admit_sample_end, flushes[0].sample_end);
+    }
+
+    fn drive(pieces: Vec<CoalescedPiece>) -> Vec<CoalesceFlush> {
+        let mut buf = Layer1Coalesce::default();
+        let now = Instant::now();
+        let mut flushes = Vec::new();
+        for piece in pieces {
+            flushes.extend(buf.push_at(piece, 16_000, now));
+        }
+        flushes.extend(buf.force_flush());
+        flushes
+    }
+
+    /// Contract step 1–2: a window is at most 4 s of contiguous PCM, the next
+    /// window shares ~1 s with it, and exclusive admits partition the speech.
+    fn assert_four_second_cadence(flushes: &[CoalesceFlush], end: u64) {
+        let max = window_samples(16_000);
+        let overlap = overlap_samples(16_000);
+        assert!(!flushes.is_empty(), "the pieces must produce requests");
+        for flush in flushes {
+            let declared = flush.sample_end.saturating_sub(flush.sample_start);
+            assert_eq!(
+                flush.audio.len() as u64,
+                declared,
+                "a request must carry the PCM range it declares"
+            );
+            assert!(
+                declared <= max,
+                "request [{}, {}) carries {declared} samples; the budget is {max}",
+                flush.sample_start,
+                flush.sample_end
+            );
+            assert!(flush.admit_sample_start >= flush.sample_start);
+            assert!(flush.admit_sample_end <= flush.sample_end);
+            assert!(flush.admit_sample_end > flush.admit_sample_start);
+        }
+        for pair in flushes.windows(2) {
+            let start = pair[0].sample_start.max(pair[1].sample_start);
+            let shared = pair[0]
+                .sample_end
+                .min(pair[1].sample_end)
+                .saturating_sub(start);
+            assert_eq!(
+                shared, overlap,
+                "consecutive windows [{}, {}) and [{}, {}) must share ~1 s",
+                pair[0].sample_start, pair[0].sample_end, pair[1].sample_start, pair[1].sample_end
+            );
+        }
+        let mut cursor = 0_u64;
+        for flush in flushes {
+            assert_eq!(
+                flush.admit_sample_start, cursor,
+                "exclusive admit ranges abut"
+            );
+            cursor = flush.admit_sample_end;
+        }
+        assert_eq!(cursor, end, "exclusive admit ranges partition the speech");
+    }
+
+    fn assert_member_occurrences_are_unsplit(
+        flushes: &[CoalesceFlush],
+        originals: &[OccurrenceIdentity],
+    ) {
+        for original in originals {
+            let mut spans = Vec::new();
+            for flush in flushes {
+                let Some((_, member)) = flush
+                    .member_occurrences
+                    .iter()
+                    .find(|(_, occurrence)| occurrence == original)
+                else {
+                    continue;
+                };
+                assert_eq!(member.sample_start, original.sample_start);
+                assert_eq!(member.sample_end, original.sample_end);
+                assert_eq!(member.capture_epoch, original.capture_epoch);
+                assert_eq!(member.session, original.session);
+                let start = flush.admit_sample_start.max(original.sample_start);
+                let end = flush.admit_sample_end.min(original.sample_end);
+                if end > start {
+                    spans.push((start, end));
+                }
+            }
+            assert!(
+                !spans.is_empty(),
+                "occurrence [{}, {}) was never admitted",
+                original.sample_start,
+                original.sample_end
+            );
+            spans.sort_unstable();
+            assert_eq!(spans[0].0, original.sample_start);
+            let mut cursor = original.sample_start;
+            for (start, end) in spans {
+                assert_eq!(
+                    start, cursor,
+                    "admits inside [{}, {}) must abut",
+                    original.sample_start, original.sample_end
+                );
+                cursor = end;
+            }
+            assert_eq!(
+                cursor, original.sample_end,
+                "admits must partition occurrence [{}, {})",
+                original.sample_start, original.sample_end
+            );
+        }
+    }
+
+    #[test]
+    fn abutting_four_second_pieces_count_the_overlap_prefix_inside_the_budget() {
+        let pieces = vec![piece(1, "one", 0.0, 4.0, 1), piece(2, "two", 4.0, 8.0, 1)];
+        let originals: Vec<_> = pieces
+            .iter()
+            .map(|piece| piece.occurrence.clone())
+            .collect();
+        let flushes = drive(pieces);
+        assert_four_second_cadence(&flushes, 128_000);
+        assert_member_occurrences_are_unsplit(&flushes, &originals);
+    }
+
+    #[test]
+    fn abutting_mixed_pieces_count_the_overlap_prefix_inside_the_budget() {
+        let pieces = vec![
+            piece(1, "one", 0.0, 1.5, 1),
+            piece(2, "two", 1.5, 4.5, 1),
+            piece(3, "three", 4.5, 8.0, 1),
+        ];
+        let originals: Vec<_> = pieces
+            .iter()
+            .map(|piece| piece.occurrence.clone())
+            .collect();
+        let flushes = drive(pieces);
+        assert_four_second_cadence(&flushes, 128_000);
+        assert_member_occurrences_are_unsplit(&flushes, &originals);
     }
 }
 
