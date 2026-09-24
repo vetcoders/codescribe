@@ -11260,6 +11260,46 @@ mod rc_w2_acoustic_tests {
             }
         }
     }
+
+    /// Retained PCM is not an acoustic witness. Without a measured speech
+    /// range, the live path may offer its owned tail but may not invent a
+    /// four-second L1 observation by replaying earlier, unproven samples.
+    #[test]
+    fn live_flush_context_requires_speech_evidence_before_backfill() {
+        let session = "unobserved-context";
+        let mut state = AppleSealState::new_for_session(RATE, session.into(), 0);
+        state.whisper_context_window_sec = 4.0;
+        let tail_start = at(4.69);
+        let tail_end = at(5.0);
+        let mut pcm = vec![0.0_f32; tail_end as usize];
+        pcm[at(1.0) as usize..at(2.0) as usize].fill(0.25);
+        pcm[tail_start as usize..tail_end as usize].fill(0.25);
+        state.audio.push(&pcm);
+        assert!(
+            !coverage_speech_evidence(&state).is_observed(),
+            "this fixture must have no authenticated acoustic observer"
+        );
+        let tail = state
+            .window_by_samples(tail_start, tail_end)
+            .expect("retained tail PCM");
+        let occurrence = OccurrenceIdentity::new(session, 0, tail_start, tail_end);
+        let mut flush = CoalesceFlush {
+            audio: tail.samples,
+            committed_text: String::new(),
+            member_ids: vec![(1, 5.0)],
+            member_occurrences: vec![(1, occurrence)],
+            neighbour_context: String::new(),
+            sample_start: tail_start,
+            sample_end: tail_end,
+            admit_sample_start: tail_start,
+            admit_sample_end: tail_end,
+            primary_utterance_id: 1,
+        };
+        state.extend_flush_context(&mut flush);
+        assert_eq!(flush.sample_start, tail_start);
+        assert_eq!(flush.sample_end, tail_end);
+        assert_eq!(flush.audio.len(), (tail_end - tail_start) as usize);
+    }
 }
 
 /// rc-w2-test-rehab: current-owner replacements for the 26 parked contracts.
