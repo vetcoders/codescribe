@@ -270,6 +270,9 @@ pub enum NoAuthorityReason {
     /// The range shares audio with a committed occurrence but the payload
     /// carries no word pins, so no token can be attributed to the shared part.
     OverlapWithoutWordPins,
+    /// The pin is an exclusive tail, but the occurrence's whole span is not
+    /// proven, so the text stays visible and does not replace the span.
+    ExclusiveTailAwaitingWholeSpan,
 }
 
 impl NoAuthorityReason {
@@ -279,6 +282,7 @@ impl NoAuthorityReason {
             Self::ZeroWidth => "zero_width",
             Self::NoRange => "no_range",
             Self::OverlapWithoutWordPins => "overlap_without_word_pins",
+            Self::ExclusiveTailAwaitingWholeSpan => "exclusive_tail_awaiting_whole_span",
         }
     }
 }
@@ -298,6 +302,12 @@ pub enum RefuseReason {
     /// The range is already covered by an admitted identity. The overlap
     /// resolver names the range; it does not compare the two strings.
     ReplayedRangeIdentity,
+    /// A pin intersects the occurrence and is not an exclusive tail, so the
+    /// whole span stays as it is.
+    IntersectingPinNotExclusive,
+    /// Stop drained the accumulator before exclusive admit ranges covered the
+    /// occurrence. No partial label is written.
+    IncompleteExclusiveCoverage,
 }
 
 impl RefuseReason {
@@ -308,6 +318,8 @@ impl RefuseReason {
             Self::BatchDuplicate => "batch_duplicate",
             Self::EmptyLabel => "empty_label",
             Self::ReplayedRangeIdentity => "replayed_range_identity",
+            Self::IntersectingPinNotExclusive => "intersecting_pin_not_exclusive",
+            Self::IncompleteExclusiveCoverage => "incomplete_exclusive_coverage",
         }
     }
 }
@@ -422,16 +434,19 @@ struct CommittedObservation {
 /// Counted over *physical occurrences*, never over hypotheses: a cumulative
 /// engine that restates the same five occurrences twelve times still yields
 /// five.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConservationTally {
-    /// Observations offered.
+    /// Observations offered. Counted at the admission API, not from the trail.
     pub observations_in: usize,
-    /// Receipts issued. Always equal to `observations_in`.
+    /// Receipts issued. Counted when a receipt is stored, not from the trail.
     pub receipts_out: usize,
     /// Distinct physical occurrences the ledger now holds.
     pub occurrences_held: usize,
     /// Observations admitted without mutation authority.
     pub kept_visible_unanchored: usize,
+    /// Refuse and no-authority receipts, keyed by their stable reason name.
+    /// Incremented as each receipt is issued.
+    pub refusals_by_reason: BTreeMap<&'static str, usize>,
 }
 
 /// Ledger of committed acoustic occurrences.
@@ -454,6 +469,12 @@ pub struct AcousticLedger {
     derivations: Vec<OccurrenceDerivation>,
     latest_seal_coverage: Option<SealCoverageReceipt>,
     pending_text_recovery: BTreeSet<OccurrenceIdentity>,
+    /// Observations handed to an admission API. Independent of [`Self::trail`].
+    offered_observations: usize,
+    /// Receipts actually stored. Independent of [`Self::offered_observations`].
+    issued_receipts: usize,
+    /// Named refuse and no-authority reasons, counted at issue time.
+    named_refusals: BTreeMap<&'static str, usize>,
 }
 
 impl AcousticLedger {
@@ -819,6 +840,7 @@ impl AcousticLedger {
     /// Every call also appends exactly one [`LayerDecisionReceipt`], so the
     /// per-layer history can never fall behind the decisions it describes.
     pub fn admit(&mut self, observation: &ObservationIdentity, text: &str) -> MutationReceipt {
+        self.offered_observations += 1;
         let authorized_recovery = !text.trim().is_empty()
             && matches!(
                 observation.producer,
@@ -1014,26 +1036,21 @@ impl AcousticLedger {
             .iter()
             .map(|(observation, text)| self.admit(observation, text))
             .collect();
-        let tally = ConservationTally {
-            observations_in: items.len(),
-            receipts_out: receipts.len(),
-            occurrences_held: self.committed.len(),
-            kept_visible_unanchored: self.kept_visible,
-        };
-        (receipts, tally)
+        (receipts, self.conservation())
     }
 
     /// Conservation over every receipt the ledger has issued.
     ///
-    /// `observations_in` counts offered observations, one per trail entry.
-    /// `kept_visible_unanchored` is the named residue for text that stayed
-    /// visible without a mutation right.
+    /// `observations_in` is the number of admission calls. `receipts_out` is
+    /// the number of receipts stored. They are separate counters; the law is
+    /// that they match. `refusals_by_reason` is counted at issue time.
     pub fn conservation(&self) -> ConservationTally {
         ConservationTally {
-            observations_in: self.trail.len(),
-            receipts_out: self.trail.len(),
+            observations_in: self.offered_observations,
+            receipts_out: self.issued_receipts,
             occurrences_held: self.committed.len(),
             kept_visible_unanchored: self.kept_visible,
+            refusals_by_reason: self.named_refusals.clone(),
         }
     }
 
@@ -1088,6 +1105,7 @@ impl AcousticLedger {
         text: &str,
         reason: NoAuthorityReason,
     ) -> MutationReceipt {
+        self.offered_observations += 1;
         self.kept_visible += 1;
         self.answered.push(observation.clone());
         let decision = MutationReceipt::KeepVisibleUnanchored {
@@ -1106,10 +1124,22 @@ impl AcousticLedger {
         observation: &ObservationIdentity,
         text: &str,
     ) -> MutationReceipt {
+        self.refuse_replacement(observation, text, RefuseReason::ReplayedRangeIdentity)
+    }
+
+    /// Refuse one replacement of an occurrence. The committed label stands.
+    /// The reason is the receipt; there is no generic bucket.
+    pub fn refuse_replacement(
+        &mut self,
+        observation: &ObservationIdentity,
+        text: &str,
+        reason: RefuseReason,
+    ) -> MutationReceipt {
+        self.offered_observations += 1;
         self.answered.push(observation.clone());
         let decision = MutationReceipt::Refuse {
             occurrence: observation.occurrence.clone(),
-            reason: RefuseReason::ReplayedRangeIdentity,
+            reason,
         };
         self.record_layer_decision(observation, text, &decision);
         decision
@@ -1812,6 +1842,17 @@ impl AcousticLedger {
             decision: decision.clone(),
             predecessor_ordinal,
         });
+        self.issued_receipts += 1;
+        let reason = match decision {
+            MutationReceipt::Refuse { reason, .. } => Some(reason.as_str()),
+            MutationReceipt::KeepVisibleUnanchored { reason, .. } => Some(reason.as_str()),
+            MutationReceipt::Preserve { .. }
+            | MutationReceipt::Correct { .. }
+            | MutationReceipt::Insert { .. } => None,
+        };
+        if let Some(reason) = reason {
+            *self.named_refusals.entry(reason).or_default() += 1;
+        }
     }
 
     // -- derivation ---------------------------------------------------------

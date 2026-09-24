@@ -43,8 +43,11 @@ pub struct CompactProjection {
 
 /// Commands sent through the ordered channel to the emitter worker.
 enum EmitterCmd {
-    /// Publish ledger-authenticated text to both overlay paint and delivery.
-    PublishCommittedRevision(String),
+    /// Paint the session-visible projection. Delivery stays the committed text.
+    PublishCommittedRevision {
+        paint: String,
+        delivery: String,
+    },
     /// Paint volatile text without touching delivery or any committed sink.
     PaintEphemeralPreview(String),
     Finish,
@@ -1268,7 +1271,7 @@ impl TranscriptReducer {
     }
 
     fn ephemeral_visual_text(&self) -> String {
-        let mut rendered = self.committed_rendered_text();
+        let mut rendered = self.visible_projection();
         append_rendered_fragment(&mut rendered, &self.ephemeral_preview);
         rendered
     }
@@ -1388,12 +1391,14 @@ impl PresentationEmitter {
         let cmd_handle = Some(tokio::spawn(async move {
             let mut painted_text = String::new();
             while let Some(cmd) = rx.recv().await {
-                let (target, commits_delivery) = match cmd {
-                    EmitterCmd::PublishCommittedRevision(target) => (target, true),
-                    EmitterCmd::PaintEphemeralPreview(target) => (target, false),
+                let (paint, delivery) = match cmd {
+                    EmitterCmd::PublishCommittedRevision { paint, delivery } => {
+                        (paint, Some(delivery))
+                    }
+                    EmitterCmd::PaintEphemeralPreview(paint) => (paint, None),
                     EmitterCmd::Finish => break,
                 };
-                if let Some(delta) = TranscriptDelta::from_diff(&painted_text, &target) {
+                if let Some(delta) = TranscriptDelta::from_diff(&painted_text, &paint) {
                     if let Some(sink) = &delta_callback {
                         sink.apply(&delta);
                     }
@@ -1403,9 +1408,9 @@ impl PresentationEmitter {
                         tracing::warn!(%error, path = %path.display(), "stream delta log append failed");
                     }
                 }
-                painted_text.clone_from(&target);
-                if commits_delivery {
-                    *transcript_buffer.lock().await = target;
+                painted_text.clone_from(&paint);
+                if let Some(delivery) = delivery {
+                    *transcript_buffer.lock().await = delivery;
                 }
             }
         }));
@@ -1524,8 +1529,8 @@ impl PresentationEmitter {
     /// Send a command to the emitter worker (non-blocking, ordered).
     fn send_cmd(&self, cmd: EmitterCmd) {
         match &cmd {
-            EmitterCmd::PublishCommittedRevision(text)
-            | EmitterCmd::PaintEphemeralPreview(text) => self.paint_cursor(text),
+            EmitterCmd::PublishCommittedRevision { paint, .. } => self.paint_cursor(paint),
+            EmitterCmd::PaintEphemeralPreview(text) => self.paint_cursor(text),
             EmitterCmd::Finish => {}
         }
         if let Ok(guard) = self.cmd_tx.lock()
@@ -1572,7 +1577,17 @@ impl PresentationEmitter {
         } else {
             return;
         }
-        self.send_cmd(EmitterCmd::PublishCommittedRevision(revision.rendered_text));
+        self.send_committed_paint(revision.rendered_text);
+    }
+
+    /// Paint the visible projection. Delivery receives only the committed text.
+    fn send_committed_paint(&self, delivery: String) {
+        let paint = self
+            .session_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .visible_projection();
+        self.send_cmd(EmitterCmd::PublishCommittedRevision { paint, delivery });
     }
 
     /// Accept one explicit overlay revision intent against the retained terminal
@@ -1651,9 +1666,7 @@ impl PresentationEmitter {
                 }
             }
         }
-        self.send_cmd(EmitterCmd::PublishCommittedRevision(
-            revision.rendered_text.clone(),
-        ));
+        self.send_committed_paint(revision.rendered_text.clone());
         let ReducerAction::ApplyConsultationPresentation { receipt } = &revision.action else {
             unreachable!("group admission must mint a group action")
         };
@@ -1698,9 +1711,7 @@ impl PresentationEmitter {
                 }
             }
         }
-        self.send_cmd(EmitterCmd::PublishCommittedRevision(
-            revision.rendered_text.clone(),
-        ));
+        self.send_committed_paint(revision.rendered_text.clone());
         let ReducerAction::ApplyUserRevision { receipt } = &revision.action else {
             unreachable!("apply_user_revision must mint an ApplyUserRevision action")
         };
@@ -1799,7 +1810,7 @@ impl PresentationEmitter {
                             }
                         }
                     }
-                    self.send_cmd(EmitterCmd::PublishCommittedRevision(revision.rendered_text));
+                    self.send_committed_paint(revision.rendered_text);
                 }
                 // A repeated seal observation and a shape that changes nothing
                 // are both healthy no-ops, not failures.
@@ -1951,9 +1962,9 @@ impl EventSink for PresentationEmitter {
                     .lock()
                     .unwrap_or_else(|error| error.into_inner());
                 let revision = state.apply_ledger_mutation(&ledger, observation, receipt);
-                let visible = unanchored.then(|| state.visible_projection());
+                let visible = state.visible_projection();
                 drop(state);
-                if let Some(visible) = visible {
+                if unanchored {
                     drop(ledger);
                     if !visible.trim().is_empty() {
                         self.send_cmd(EmitterCmd::PaintEphemeralPreview(visible));
@@ -1975,7 +1986,10 @@ impl EventSink for PresentationEmitter {
                             }
                         }
                     }
-                    self.send_cmd(EmitterCmd::PublishCommittedRevision(revision.rendered_text));
+                    self.send_cmd(EmitterCmd::PublishCommittedRevision {
+                        paint: visible,
+                        delivery: revision.rendered_text,
+                    });
                 }
             }
             EngineEvent::ContextMarker { position, label } => {
@@ -2109,7 +2123,7 @@ impl EventSink for PresentationEmitter {
                         }
                     }
                     if is_label_revision {
-                        self.send_cmd(EmitterCmd::PublishCommittedRevision(revision.rendered_text));
+                        self.send_committed_paint(revision.rendered_text);
                     }
                 }
                 // The proposal corridor is the second place an occurrence can
@@ -2158,7 +2172,7 @@ impl EventSink for PresentationEmitter {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.mark_terminal_lifecycle();
                     state.clear_ephemeral_preview();
-                    state.committed_rendered_text()
+                    state.visible_projection()
                 };
                 self.send_cmd(EmitterCmd::PaintEphemeralPreview(canonical_text));
                 info!("Engine reported no speech: {}", reason);
@@ -2203,7 +2217,7 @@ impl EventSink for PresentationEmitter {
                 let canonical_text = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.clear_ephemeral_preview();
-                    state.committed_rendered_text()
+                    state.visible_projection()
                 };
                 self.send_cmd(EmitterCmd::PaintEphemeralPreview(canonical_text));
                 // Capture is over, but terminal presentation authority stays
@@ -2219,7 +2233,7 @@ impl EventSink for PresentationEmitter {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.mark_terminal_lifecycle();
                     state.clear_ephemeral_preview();
-                    state.committed_rendered_text()
+                    state.visible_projection()
                 };
                 self.send_cmd(EmitterCmd::PaintEphemeralPreview(canonical_text));
                 // Lifecycle end is the second Light+ gate: a one-occurrence
@@ -4799,5 +4813,83 @@ mod tests {
         assert_eq!(tally.observations_in, tally.receipts_out);
         assert_eq!(tally.kept_visible_unanchored, 2);
         assert_eq!(tally.occurrences_held, 2);
+    }
+
+    /// A later committed paint keeps unanchored evidence that no committed
+    /// token covers. Delivery stays the committed words.
+    #[tokio::test]
+    async fn later_committed_paint_keeps_uncovered_unanchored_evidence() {
+        let paints = Arc::new(StdMutex::new(Vec::new()));
+        let observed = Arc::clone(&paints);
+        let delivery = Arc::new(Mutex::new(String::new()));
+        let temp = tempfile::tempdir().unwrap();
+        let session = "overlap-paint";
+        let bus = Arc::new(
+            TranscriptBus::open_at(
+                TranscriptSession {
+                    session_id: session.to_string(),
+                    mode: TranscriptMode::Dictation,
+                    has_latched_target: true,
+                    latched_target_is_self: false,
+                },
+                temp.path().join("paint.jsonl"),
+                None,
+            )
+            .unwrap(),
+        );
+        bus.publish_started();
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let mut emitter = super::PresentationEmitter::new_with_authority(
+            Arc::clone(&delivery),
+            None,
+            None,
+            Some(bus),
+            Some(Arc::clone(&ledger)),
+            None,
+        )
+        .with_cursor_observer(Arc::new(move |projection| {
+            observed.lock().unwrap().push(projection.text.clone());
+        }));
+        emitter.on_capture_opened(session, 1);
+        let beta = OccurrenceIdentity::new(session, 1, 24_000, 48_000);
+        let gamma = OccurrenceIdentity::new(session, 1, 48_000, 72_000);
+        let delta = OccurrenceIdentity::new(session, 1, 80_000, 96_000);
+        for (request, occurrence, label) in [(1, beta.clone(), "beta"), (2, gamma.clone(), "gamma")]
+        {
+            let event = {
+                let mut ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
+                admitted_mutation(&mut ledger, occurrence, request, label)
+            };
+            emitter.on_event(&event);
+        }
+        let straddling = OccurrenceIdentity::new(session, 1, 40_000, 56_000);
+        let straddle_observation =
+            ObservationIdentity::new(ObservationProducer::Whisper, 3, 0, straddling);
+        let straddle = {
+            let mut ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
+            ledger.admit(&straddle_observation, "przez granice")
+        };
+        emitter.on_event(&EngineEvent::LedgerMutation {
+            observation: straddle_observation,
+            label: "przez granice".into(),
+            receipt: straddle,
+        });
+        let later = {
+            let mut ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
+            admitted_mutation(&mut ledger, delta, 4, "delta")
+        };
+        emitter.on_event(&later);
+        let painted = paints.lock().unwrap().last().cloned().unwrap_or_default();
+        assert!(
+            painted.split_whitespace().any(|word| word == "przez"),
+            "later paint dropped uncovered evidence: {painted}"
+        );
+        emitter.finish().await;
+        let delivered = delivery.lock().await.clone();
+        assert!(
+            !delivered.split_whitespace().any(|word| word == "przez"),
+            "delivery must stay committed-only, got {delivered}"
+        );
+        assert!(delivered.split_whitespace().any(|word| word == "delta"));
     }
 }

@@ -62,10 +62,10 @@ use crate::llm::ai_formatting::{
 };
 use crate::llm::inline_format::{LabelProposalDisposition, OccurrenceLabelProposal};
 use crate::pipeline::acoustic_ledger::{
-    AcousticEvidence, AcousticLedger, EnergyCalibration, MutationReceipt,
+    AcousticEvidence, AcousticLedger, EnergyCalibration, MutationReceipt, NoAuthorityReason,
     ObservationIdentity as LedgerObservationIdentity,
     ObservationProducer as LedgerObservationProducer, OccurrenceIdentity, OverlapPinClass,
-    SealCoverageReceipt, SealCoverageStatus, SealRefusal,
+    RefuseReason, SealCoverageReceipt, SealCoverageStatus, SealRefusal,
 };
 use crate::pipeline::contracts::{
     EngineEvent, EventSink, SpeechIntegrity, SpeechIntegrityPhase, TranscriptSegment,
@@ -1417,6 +1417,12 @@ struct AppleSealState {
     layer1_coalesce: Layer1Coalesce,
     refinement_pending: VecDeque<TailPatchRequest>,
     refinement_submitted: BTreeMap<(u64, u64, u64), TailPatchInFlight>,
+    /// Exclusive Whisper text for an occurrence sliced across windows.
+    /// Admitted once, when those slices partition the occurrence and every
+    /// intersecting pin was an exclusive tail.
+    whisper_slices: BTreeMap<OccurrenceIdentity, Vec<(u64, u64, String)>>,
+    /// Occurrences whose whole-span replacement was already refused.
+    whisper_span_refused: BTreeSet<OccurrenceIdentity>,
     refinement_clock: Instant,
     refinement_lane_lost: bool,
     refinement_started: Instant,
@@ -1485,6 +1491,48 @@ fn inflight_key(identity: &TailRequestIdentity) -> (u64, u64, u64) {
         identity.range.sample_start,
         identity.range.sample_end,
     )
+}
+
+/// One timed pin routed to a single open member.
+#[derive(Clone)]
+struct RoutedPin {
+    index: usize,
+    pin: OccurrenceIdentity,
+    text: String,
+}
+
+/// Exclusive pins for one member, plus whether any other pin blocks the span.
+#[derive(Clone, Default)]
+struct MemberPinRoute {
+    exclusive: Vec<RoutedPin>,
+    blocked: bool,
+}
+
+fn exclusive_label(pins: &[RoutedPin]) -> String {
+    let mut ordered = pins.to_vec();
+    ordered.sort_by_key(|pin| pin.pin.sample_start);
+    ordered
+        .iter()
+        .map(|pin| pin.text.as_str())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Exclusive windows cover the occurrence when they abut from its start to its end.
+fn exclusive_slices_cover(occurrence: &OccurrenceIdentity, slices: &[(u64, u64, String)]) -> bool {
+    let mut cursor = occurrence.sample_start;
+    for (start, end, _) in slices {
+        if *start != cursor || *end <= *start {
+            return false;
+        }
+        cursor = *end;
+    }
+    cursor == occurrence.sample_end
+}
+
+fn pin_intersects(pin: &OccurrenceIdentity, member: &OccurrenceIdentity) -> bool {
+    pin.sample_end > member.sample_start && pin.sample_start < member.sample_end
 }
 
 impl AppleSealState {
@@ -1583,6 +1631,8 @@ impl AppleSealState {
             layer1_coalesce: Layer1Coalesce::default(),
             refinement_pending: VecDeque::new(),
             refinement_submitted: BTreeMap::new(),
+            whisper_slices: BTreeMap::new(),
+            whisper_span_refused: BTreeSet::new(),
             refinement_clock: Instant::now(),
             refinement_lane_lost: false,
             refinement_started: Instant::now(),
@@ -1929,6 +1979,8 @@ impl AppleSealState {
     /// Send every pin the admit filter used to drop. Exclusive-tail pins stay
     /// with their member; covered overlap is a named refusal; the rest stays
     /// visible at its own PCM range and does not enter the committed map.
+    /// A pin that intersects a member without being its exclusive tail blocks
+    /// replacement of that whole member.
     fn route_overlap_pins(
         &mut self,
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
@@ -1937,12 +1989,12 @@ impl AppleSealState {
         admit_sample_end: u64,
         members: &[(u64, OccurrenceIdentity)],
         segments: &[TimedTailSegment],
-    ) -> Vec<Vec<String>> {
+    ) -> Vec<MemberPinRoute> {
         let open_members = members
             .iter()
             .map(|(_, occurrence)| occurrence.clone())
             .collect::<Vec<_>>();
-        let mut exclusive = vec![Vec::new(); members.len()];
+        let mut routes = vec![MemberPinRoute::default(); members.len()];
         let mut side = Vec::new();
         {
             let ledger = self
@@ -1962,10 +2014,26 @@ impl AppleSealState {
                     &open_members,
                 ) {
                     OverlapPinClass::ExclusiveTail { member_index } => {
-                        exclusive[member_index].push(text.to_string());
+                        routes[member_index].exclusive.push(RoutedPin {
+                            index,
+                            pin,
+                            text: text.to_string(),
+                        });
                     }
-                    OverlapPinClass::Replay => side.push((index, pin, text.to_string(), None)),
+                    OverlapPinClass::Replay => {
+                        for (member_index, member) in open_members.iter().enumerate() {
+                            if pin_intersects(&pin, member) {
+                                routes[member_index].blocked = true;
+                            }
+                        }
+                        side.push((index, pin, text.to_string(), None));
+                    }
                     OverlapPinClass::Unanchored(reason) => {
+                        for (member_index, member) in open_members.iter().enumerate() {
+                            if pin_intersects(&pin, member) {
+                                routes[member_index].blocked = true;
+                            }
+                        }
                         side.push((index, pin, text.to_string(), Some(reason)));
                     }
                 }
@@ -1994,7 +2062,91 @@ impl AppleSealState {
                 receipt,
             });
         }
-        exclusive
+        routes
+    }
+
+    fn keep_routed_visible(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        request_id: u64,
+        pins: &[RoutedPin],
+    ) {
+        for pin in pins {
+            let observation = LedgerObservationIdentity::new(
+                LedgerObservationProducer::Whisper,
+                request_id,
+                1_000 + pin.index as u64,
+                pin.pin.clone(),
+            );
+            let receipt = {
+                let mut ledger = self
+                    .acoustic_ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                ledger.keep_visible_unanchored(
+                    &observation,
+                    &pin.text,
+                    NoAuthorityReason::ExclusiveTailAwaitingWholeSpan,
+                )
+            };
+            let _ = ev_tx.send(EngineEvent::LedgerMutation {
+                observation,
+                label: pin.text.clone(),
+                receipt,
+            });
+        }
+    }
+
+    fn emit_span_refusal(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        request_id: u64,
+        occurrence: &OccurrenceIdentity,
+        label: &str,
+        reason: RefuseReason,
+    ) {
+        let observation = LedgerObservationIdentity::new(
+            LedgerObservationProducer::Whisper,
+            request_id,
+            10_000,
+            occurrence.clone(),
+        );
+        let receipt = {
+            let mut ledger = self
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            ledger.refuse_replacement(&observation, label, reason)
+        };
+        let _ = ev_tx.send(EngineEvent::LedgerMutation {
+            observation,
+            label: label.to_string(),
+            receipt,
+        });
+    }
+
+    /// Stop with an open slice accumulator writes no partial label. One named
+    /// receipt per pending occurrence; the slice texts are already visible.
+    fn refuse_incomplete_whisper_spans(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
+        let pending = std::mem::take(&mut self.whisper_slices);
+        for (occurrence, slices) in pending {
+            if !self.whisper_span_refused.insert(occurrence.clone()) {
+                continue;
+            }
+            let label = slices
+                .iter()
+                .map(|(_, _, text)| text.trim())
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            self.emit_span_refusal(
+                ev_tx,
+                0,
+                &occurrence,
+                &label,
+                RefuseReason::IncompleteExclusiveCoverage,
+            );
+        }
     }
 
     /// Admit a returned Whisper candidate through the same occurrence ledger
@@ -2075,7 +2227,7 @@ impl AppleSealState {
             .as_ref()
             .map(|payload| payload.segments.as_slice())
             .unwrap_or(&[]);
-        let exclusive = self.route_overlap_pins(
+        let routes = self.route_overlap_pins(
             ev_tx,
             request_id,
             admit_sample_start,
@@ -2090,10 +2242,39 @@ impl AppleSealState {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .text_recovery_pending(occurrence);
-            let pinned = exclusive.get(generation).cloned().unwrap_or_default();
+            let route = routes.get(generation).cloned().unwrap_or_default();
+            let exclusive_text = exclusive_label(&route.exclusive);
+            let sliced = occurrence.sample_start < admit_sample_start
+                || occurrence.sample_end > admit_sample_end;
+            if self.whisper_span_refused.contains(occurrence) {
+                self.keep_routed_visible(ev_tx, request_id, &route.exclusive);
+                self.refinement_receipt(occurrence, "sliced");
+                continue;
+            }
+            if route.blocked {
+                self.whisper_span_refused.insert(occurrence.clone());
+                self.whisper_slices.remove(occurrence);
+                self.keep_routed_visible(ev_tx, request_id, &route.exclusive);
+                self.emit_span_refusal(
+                    ev_tx,
+                    request_id,
+                    occurrence,
+                    &exclusive_text,
+                    RefuseReason::IntersectingPinNotExclusive,
+                );
+                if sliced {
+                    self.refinement_receipt(occurrence, "sliced");
+                    continue;
+                }
+            }
             // A rejected pin cannot be laundered through whole-window text.
-            let label = if !pinned.is_empty() {
-                Some(pinned.join(" "))
+            // A blocked member that this window already covers wholly closes
+            // with no new label: the straddle veto stands, and the observer
+            // still returns.
+            let mut label = if route.blocked {
+                None
+            } else if !exclusive_text.is_empty() {
+                Some(exclusive_text)
             } else if payload.as_ref().is_some_and(|payload| {
                 payload.segments.is_empty()
                     && single_member
@@ -2106,13 +2287,45 @@ impl AppleSealState {
             } else {
                 None
             };
-            let sliced = occurrence.sample_start < admit_sample_start
-                || occurrence.sample_end > admit_sample_end;
-            if sliced && label.as_ref().is_none_or(|text| text.trim().is_empty()) {
-                self.refinement_receipt(occurrence, "sliced");
-                continue;
+            if sliced {
+                if let Some(text) = label.clone() {
+                    let start = admit_sample_start.max(occurrence.sample_start);
+                    let end = admit_sample_end.min(occurrence.sample_end);
+                    if end > start {
+                        let slices = self.whisper_slices.entry(occurrence.clone()).or_default();
+                        slices.push((start, end, text));
+                        slices.sort_by_key(|(start, _, _)| *start);
+                        slices.dedup_by_key(|(start, end, _)| (*start, *end));
+                    }
+                }
+                self.keep_routed_visible(ev_tx, request_id, &route.exclusive);
+                let covered = self
+                    .whisper_slices
+                    .get(occurrence)
+                    .is_some_and(|slices| exclusive_slices_cover(occurrence, slices));
+                if !covered {
+                    self.refinement_receipt(occurrence, "sliced");
+                    continue;
+                }
+                let joined = self
+                    .whisper_slices
+                    .remove(occurrence)
+                    .map(|slices| {
+                        slices
+                            .iter()
+                            .map(|(_, _, text)| text.trim())
+                            .filter(|text| !text.is_empty())
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    })
+                    .unwrap_or_default();
+                if joined.is_empty() {
+                    self.refinement_receipt(occurrence, "sliced");
+                    continue;
+                }
+                label = Some(joined);
             }
-            let no_label = label.is_none();
+            let no_label = label.as_ref().is_none_or(|text| text.trim().is_empty());
             match admit_ledger_label(
                 self,
                 ev_tx,
@@ -2288,6 +2501,7 @@ impl AppleSealState {
         &mut self,
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
     ) {
+        self.refuse_incomplete_whisper_spans(ev_tx);
         let occurrences = {
             let ledger = self
                 .acoustic_ledger
@@ -5674,9 +5888,10 @@ mod c13a_lifecycle_tests {
     /// occurrence, and the whole-window text fallback is reachable for a
     /// single-member window only.
     ///
-    /// A straddling segment must therefore reach neither member, while a
-    /// segment pinned inside one member still becomes that member's label —
-    /// the positive control that keeps this test falsifiable.
+    /// A straddling segment intersects both members, so neither member is
+    /// relabelled. The pin that sits wholly inside the second member stays
+    /// visible and does not replace that member: one non-exclusive pin blocks
+    /// the whole span.
     #[test]
     fn a_candidate_straddling_two_member_occurrences_labels_neither() {
         use crate::stt::tail_provider::{
@@ -5768,8 +5983,8 @@ mod c13a_lifecycle_tests {
             .collect::<Vec<_>>();
         assert_eq!(
             whisper_labels,
-            vec![(second.clone(), "Iwo drugie".to_string())],
-            "only the member that wholly owns a segment may be relabelled"
+            Vec::<(OccurrenceIdentity, String)>::new(),
+            "a straddling pin blocks replacement of every member it intersects"
         );
         assert!(
             !whisper_labels
@@ -5807,7 +6022,11 @@ mod c13a_lifecycle_tests {
             Some("Iwo"),
             "the Apple floor survives a candidate that named no exact occurrence"
         );
-        assert_eq!(ledger.text_of(&second), Some("Iwo drugie"));
+        assert_eq!(
+            ledger.text_of(&second),
+            Some("Iwo"),
+            "the wholly owned pin stays visible and does not replace the member"
+        );
         drop(ledger);
 
         // Post-seal immutability: the same completion replayed after the seal
@@ -5819,7 +6038,7 @@ mod c13a_lifecycle_tests {
         );
         let ledger = state.acoustic_ledger.lock().expect("ledger");
         assert_eq!(ledger.text_of(&first), Some("Iwo"));
-        assert_eq!(ledger.text_of(&second), Some("Iwo drugie"));
+        assert_eq!(ledger.text_of(&second), Some("Iwo"));
     }
 
     #[test]
@@ -11856,6 +12075,43 @@ mod relay_l1_overlap_admission_tests {
             })
     }
 
+    fn named_refusal(events: &[EngineEvent], reason: &str) -> bool {
+        whisper_mutations(events).into_iter().any(|(_, receipt)| {
+            matches!(
+                receipt,
+                MutationReceipt::Refuse { reason: got, .. } if got.as_str() == reason
+            )
+        })
+    }
+
+    fn mutation_count(events: &[EngineEvent]) -> usize {
+        whisper_mutations(events)
+            .into_iter()
+            .filter(|(_, receipt)| receipt.grants_mutation())
+            .count()
+    }
+
+    fn assert_conserved(lane: &Lane, reason: Option<&str>) {
+        let tally = lane
+            .state
+            .acoustic_ledger
+            .lock()
+            .expect("ledger")
+            .conservation();
+        assert_eq!(
+            tally.observations_in, tally.receipts_out,
+            "conservation counts offered observations and issued receipts apart"
+        );
+        assert!(tally.receipts_out > 0);
+        if let Some(reason) = reason {
+            assert!(
+                tally.refusals_by_reason.get(reason).copied().unwrap_or(0) >= 1,
+                "named refusal {reason} missing from {:?}",
+                tally.refusals_by_reason
+            );
+        }
+    }
+
     fn held_count(lane: &Lane) -> usize {
         lane.state
             .acoustic_ledger
@@ -12068,12 +12324,14 @@ mod relay_l1_overlap_admission_tests {
         assert_eq!(held_text(&lane, &occurrences[2]).as_deref(), Some("gamma"));
     }
 
-    /// (d) Word pins on the long-occurrence slice. Clip only the exclusive tail.
+    /// One window of word pins does not relabel a longer occurrence.
     ///
-    /// Contract: founding invariant lines on word-pin clipping; step 7 (do not
-    /// invent per-word ranges); step 3 for a pin that still straddles.
+    /// Contract step 7: bounded replacement addresses the whole span or nothing.
+    /// A single exclusive slice, beside pins that straddle the admit bounds,
+    /// is not that span. The Apple label stands and the straddling text stays
+    /// unanchored.
     #[test]
-    fn word_pins_clip_a_long_occurrence_slice_to_its_exclusive_tail() {
+    fn word_pins_on_one_window_do_not_relabel_the_long_occurrence() {
         let mut lane = open("relay-long-words");
         let (occurrence, requests) = launch_long(&mut lane, "cale zdanie");
         lane.state.complete_whisper_window(
@@ -12089,13 +12347,6 @@ mod relay_l1_overlap_admission_tests {
             7.0,
         );
         let events = drain(&mut lane.rx);
-        let mutations = whisper_mutations(&events);
-        assert!(
-            mutations
-                .iter()
-                .any(|(label, receipt)| { label == "srodek" && receipt.grants_mutation() }),
-            "word pins wholly inside the exclusive tail [3 s, 6 s) are the clipped admission"
-        );
         assert!(
             unanchored_label(&events, "krawedz"),
             "a word pin that straddles the earlier admit stays whole and unanchored"
@@ -12105,21 +12356,33 @@ mod relay_l1_overlap_admission_tests {
             "a word pin that straddles the next slice stays whole and unanchored"
         );
         assert!(
-            mutations
-                .iter()
-                .all(|(label, _)| { label == "srodek" || label == "krawedz" || label == "dalej" }),
-            "step 7: utterance or word text is never split into an invented fragment"
+            unanchored_label(&events, "srodek"),
+            "the exclusive slice stays visible and does not become the span label"
+        );
+        assert_eq!(
+            mutation_count(&events),
+            0,
+            "step 7: one window must not replace the whole occurrence"
+        );
+        assert!(
+            named_refusal(&events, "intersecting_pin_not_exclusive"),
+            "a straddling pin refuses the replacement by name"
         );
         assert_eq!(held_count(&lane), 1);
-        assert_ne!(held_text(&lane, &occurrence).as_deref(), Some("krawedz"));
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("cale zdanie")
+        );
+        assert_conserved(&lane, Some("intersecting_pin_not_exclusive"));
     }
 
-    /// (d) Word pins on the coalesced prefix. Covered words are replay;
-    /// the exclusive tail is clipped; a straddling word is not split.
+    /// Coalesced prefix. A wholly covered word is replay. A pin that straddles
+    /// into the later member blocks replacement of that member. The earlier
+    /// member, wholly inside its own exclusive admit, may still be relabelled.
     ///
-    /// Contract: step 4, step 7, founding invariant on exclusive-tail clipping.
+    /// Contract: step 4, step 7.
     #[test]
-    fn word_pins_clip_a_coalesced_prefix_to_its_exclusive_tail() {
+    fn word_pins_do_not_relabel_a_coalesced_member_across_a_straddle() {
         let mut lane = open("relay-coalesced-words");
         let (occurrences, requests) = launch_coalesced(&mut lane);
         lane.state.complete_whisper_window(
@@ -12153,15 +12416,151 @@ mod relay_l1_overlap_admission_tests {
             unanchored_label(&events, "krawedz"),
             "a word pin across the admit boundary is kept whole, without a duplicate token"
         );
+        assert!(
+            unanchored_label(&events, "ogon"),
+            "the exclusive tail stays visible when the member is not wholly proven"
+        );
+        assert!(
+            named_refusal(&events, "intersecting_pin_not_exclusive"),
+            "a pin straddling into the member refuses that member's replacement"
+        );
         assert_eq!(
             held_text(&lane, &occurrences[2]).as_deref(),
-            Some("ogon"),
-            "word pins clip the later member to the exclusive tail"
+            Some("gamma"),
+            "step 7: the later member keeps its label"
         );
         assert_eq!(
             held_text(&lane, &occurrences[1]).as_deref(),
             Some("beta raz")
         );
         assert_eq!(held_count(&lane), 3);
+        assert_conserved(&lane, Some("intersecting_pin_not_exclusive"));
+    }
+
+    /// (i) Three windows, every intersecting pin an exclusive tail.
+    ///
+    /// Contract step 7: the held text is the exclusive slices joined in PCM
+    /// order, admitted once.
+    #[test]
+    fn three_exclusive_windows_join_the_whole_span_once() {
+        let mut lane = open("relay-three-exclusive");
+        let (occurrence, requests) = launch_long(&mut lane, "cale zdanie");
+        let session = "relay-three-exclusive";
+        let windows = [
+            vec![segment(session, "raz", 8_000, 40_000)],
+            vec![segment(session, "dwa", 52_000, 90_000)],
+            vec![segment(session, "trzy", 100_000, 150_000)],
+        ];
+        let mut events = Vec::new();
+        for (request, segments) in requests.iter().zip(windows) {
+            lane.state
+                .complete_whisper_window(&lane.tx, completion(request, segments), 8.0);
+            events.extend(drain(&mut lane.rx));
+        }
+        assert_eq!(
+            mutation_count(&events),
+            1,
+            "the three slices are one admission"
+        );
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("raz dwa trzy")
+        );
+        assert_eq!(held_count(&lane), 1);
+        assert_conserved(&lane, None);
+    }
+
+    /// (ii) Three windows, one pin straddles an admit boundary.
+    ///
+    /// Contract step 7 and step 3: the held label is unchanged, the replacement
+    /// is a named refusal, and the straddling text stays unanchored.
+    #[test]
+    fn one_straddling_pin_among_three_windows_refuses_the_span() {
+        let mut lane = open("relay-three-straddle");
+        let (occurrence, requests) = launch_long(&mut lane, "cale zdanie");
+        let session = "relay-three-straddle";
+        let windows = [
+            vec![segment(session, "raz", 8_000, 40_000)],
+            vec![
+                segment(session, "krawedz", 40_000, 52_000),
+                segment(session, "dwa", 52_000, 90_000),
+            ],
+            vec![segment(session, "trzy", 100_000, 150_000)],
+        ];
+        let mut events = Vec::new();
+        for (request, segments) in requests.iter().zip(windows) {
+            lane.state
+                .complete_whisper_window(&lane.tx, completion(request, segments), 8.0);
+            events.extend(drain(&mut lane.rx));
+        }
+        assert_eq!(mutation_count(&events), 0);
+        assert!(unanchored_label(&events, "krawedz"));
+        assert!(named_refusal(&events, "intersecting_pin_not_exclusive"));
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("cale zdanie")
+        );
+        assert_conserved(&lane, Some("intersecting_pin_not_exclusive"));
+    }
+
+    /// (iii) Two of three windows return, then stop drains the accumulator.
+    ///
+    /// Contract step 10: no partial label. One named receipt. The returned
+    /// texts stay visible.
+    #[test]
+    fn stop_with_two_of_three_windows_keeps_the_label() {
+        let mut lane = open("relay-stop-partial");
+        let (occurrence, requests) = launch_long(&mut lane, "cale zdanie");
+        let session = "relay-stop-partial";
+        let mut events = Vec::new();
+        for (request, segments) in requests.iter().take(2).zip([
+            vec![segment(session, "raz", 8_000, 40_000)],
+            vec![segment(session, "dwa", 52_000, 90_000)],
+        ]) {
+            lane.state
+                .complete_whisper_window(&lane.tx, completion(request, segments), 8.0);
+            events.extend(drain(&mut lane.rx));
+        }
+        lane.state
+            .return_outstanding_whisper_without_label(&lane.tx);
+        events.extend(drain(&mut lane.rx));
+        assert_eq!(mutation_count(&events), 0);
+        assert!(unanchored_label(&events, "raz"));
+        assert!(unanchored_label(&events, "dwa"));
+        assert!(named_refusal(&events, "incomplete_exclusive_coverage"));
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("cale zdanie")
+        );
+        assert_conserved(&lane, Some("incomplete_exclusive_coverage"));
+    }
+
+    /// (iv) A coalesced member keeps its label when a pin straddles into it.
+    ///
+    /// Contract step 7: the exclusive word in that member is not a licence to
+    /// replace the member.
+    #[test]
+    fn coalesced_member_with_a_straddling_pin_keeps_its_label() {
+        let mut lane = open("relay-member-straddle");
+        let (occurrences, requests) = launch_coalesced(&mut lane);
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[1],
+                vec![
+                    segment("relay-member-straddle", "krawedz", 46_000, 52_000),
+                    segment("relay-member-straddle", "ogon", 48_000, 56_000),
+                ],
+            ),
+            4.5,
+        );
+        let events = drain(&mut lane.rx);
+        assert!(unanchored_label(&events, "krawedz"));
+        assert!(unanchored_label(&events, "ogon"));
+        assert!(named_refusal(&events, "intersecting_pin_not_exclusive"));
+        assert_eq!(mutation_count(&events), 0);
+        assert_eq!(held_text(&lane, &occurrences[2]).as_deref(), Some("gamma"));
+        assert_eq!(held_count(&lane), 3);
+        assert_conserved(&lane, Some("intersecting_pin_not_exclusive"));
     }
 }
