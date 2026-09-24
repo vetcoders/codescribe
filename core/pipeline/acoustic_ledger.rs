@@ -52,10 +52,19 @@
 //! projected into.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+fn unix_epoch_millis() -> Option<u64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+}
 
 use sha2::{Digest, Sha256};
 
 use crate::audio::capture_receipt::{AcousticAvailability, AcousticSpeechEvidence};
+use crate::quality::engine_contract::is_clock_lie;
 use crate::stt::tail_provider::TailSampleRange;
 
 /// A physical acoustic occurrence: a PCM range in one capture epoch.
@@ -308,6 +317,8 @@ pub enum RefuseReason {
     /// Stop drained the accumulator before exclusive admit ranges covered the
     /// occurrence. No partial label is written.
     IncompleteExclusiveCoverage,
+    /// A clock-lie span kept its own text and was asked to replace a neighbour.
+    ClockLie,
 }
 
 impl RefuseReason {
@@ -320,6 +331,7 @@ impl RefuseReason {
             Self::ReplayedRangeIdentity => "replayed_range_identity",
             Self::IntersectingPinNotExclusive => "intersecting_pin_not_exclusive",
             Self::IncompleteExclusiveCoverage => "incomplete_exclusive_coverage",
+            Self::ClockLie => "clock_lie",
         }
     }
 }
@@ -442,11 +454,22 @@ pub struct ConservationTally {
     pub receipts_out: usize,
     /// Distinct physical occurrences the ledger now holds.
     pub occurrences_held: usize,
+    /// Observations whose receipt bound them to an occurrence.
+    /// Counted when the receipt is stored, not derived from `observations_in`.
+    pub observations_delivered: usize,
     /// Observations admitted without mutation authority.
     pub kept_visible_unanchored: usize,
     /// Refuse and no-authority receipts, keyed by their stable reason name.
     /// Incremented as each receipt is issued.
     pub refusals_by_reason: BTreeMap<&'static str, usize>,
+}
+
+impl ConservationTally {
+    /// Admitted minus delivered minus the named observation refusals.
+    pub fn residue(&self) -> i64 {
+        let named: usize = self.refusals_by_reason.values().copied().sum();
+        self.observations_in as i64 - self.observations_delivered as i64 - named as i64
+    }
 }
 
 /// Ledger of committed acoustic occurrences.
@@ -473,8 +496,22 @@ pub struct AcousticLedger {
     offered_observations: usize,
     /// Receipts actually stored. Independent of [`Self::offered_observations`].
     issued_receipts: usize,
+    /// Insert, correct, and preserve receipts. Independent of the offer counter.
+    delivered_observations: usize,
     /// Named refuse and no-authority reasons, counted at issue time.
     named_refusals: BTreeMap<&'static str, usize>,
+    /// Capture rate that turns a declared sample range into a duration.
+    capture_rate_hz: Option<u32>,
+    /// Occurrences whose character rate over the declared range is a clock-lie.
+    clock_lie_occurrences: BTreeSet<OccurrenceIdentity>,
+    /// Lowest committed sample on this ledger, once any anchored text lands.
+    first_covered_sample: Option<u64>,
+    /// Highest committed sample end on this ledger.
+    last_covered_sample: Option<u64>,
+    /// Wall time of the first successful terminal seal, milliseconds since epoch.
+    transcript_seal_timestamp_ms: Option<u64>,
+    /// Energy-ladder lookups whose observed clock held no voiced hop.
+    energy_lookups_without_voiced_hop: u64,
 }
 
 impl AcousticLedger {
@@ -918,6 +955,7 @@ impl AcousticLedger {
                     previous.producer
                 });
             let manual_ordinal = self.manual_edits.len();
+            self.note_covered_span(&observation.occurrence);
             self.committed.insert(
                 observation.occurrence.clone(),
                 CommittedObservation {
@@ -970,6 +1008,13 @@ impl AcousticLedger {
                 };
             }
             if outranks || same_lane_revision {
+                if self.clock_lie_blocks_neighbour_replacement(&observation.occurrence) {
+                    return MutationReceipt::Refuse {
+                        occurrence: observation.occurrence.clone(),
+                        reason: RefuseReason::ClockLie,
+                    };
+                }
+                self.note_covered_span(&observation.occurrence);
                 self.committed.insert(
                     observation.occurrence.clone(),
                     CommittedObservation {
@@ -1013,6 +1058,7 @@ impl AcousticLedger {
             };
         }
 
+        self.note_covered_span(&observation.occurrence);
         self.committed.insert(
             observation.occurrence.clone(),
             CommittedObservation {
@@ -1048,10 +1094,133 @@ impl AcousticLedger {
         ConservationTally {
             observations_in: self.offered_observations,
             receipts_out: self.issued_receipts,
+            observations_delivered: self.delivered_observations,
             occurrences_held: self.committed.len(),
             kept_visible_unanchored: self.kept_visible,
             refusals_by_reason: self.named_refusals.clone(),
         }
+    }
+
+    /// Capture rate used to judge clock-lie over a declared sample range.
+    pub fn bind_capture_rate(&mut self, sample_rate_hz: u32) {
+        if sample_rate_hz > 0 {
+            self.capture_rate_hz = Some(sample_rate_hz);
+        }
+    }
+
+    /// Spans whose character rate over the declared range is a clock-lie.
+    pub fn clock_lie_count(&self) -> usize {
+        self.clock_lie_occurrences.len()
+    }
+
+    /// Whether this occurrence was flagged at admission.
+    pub fn is_clock_lie_span(&self, occurrence: &OccurrenceIdentity) -> bool {
+        self.clock_lie_occurrences.contains(occurrence)
+    }
+
+    /// The latest stored receipt named a clock-lie on the span it kept.
+    pub fn latest_receipt_names_clock_lie(&self) -> bool {
+        self.trail.last().is_some_and(|entry| entry.clock_lie)
+    }
+
+    /// Lowest committed sample, if any anchored text has landed.
+    pub fn first_covered_sample(&self) -> Option<u64> {
+        self.first_covered_sample
+    }
+
+    /// One past the highest committed sample.
+    pub fn last_covered_sample(&self) -> Option<u64> {
+        self.last_covered_sample
+    }
+
+    /// Milliseconds since the unix epoch of the first terminal seal.
+    pub fn transcript_seal_timestamp_ms(&self) -> Option<u64> {
+        self.transcript_seal_timestamp_ms
+    }
+
+    /// Energy lookups that observed the clock and found no voiced hop.
+    pub fn energy_lookups_without_voiced_hop(&self) -> u64 {
+        self.energy_lookups_without_voiced_hop
+    }
+
+    /// Record one energy-ladder lookup that returned no voiced hop.
+    pub fn note_energy_lookup_without_voiced_hop(&mut self) {
+        self.energy_lookups_without_voiced_hop =
+            self.energy_lookups_without_voiced_hop.saturating_add(1);
+    }
+
+    /// A flagged span keeps its own text. It cannot authorize a replacement
+    /// of any other occurrence on the same capture.
+    pub fn replace_neighbour(
+        &mut self,
+        authorizer: &OccurrenceIdentity,
+        observation: &ObservationIdentity,
+        text: &str,
+    ) -> MutationReceipt {
+        let neighbour = &observation.occurrence;
+        let blocked = self.clock_lie_occurrences.contains(authorizer)
+            && authorizer != neighbour
+            && authorizer.same_capture(neighbour);
+        if blocked {
+            return self.refuse_replacement(observation, text, RefuseReason::ClockLie);
+        }
+        self.admit(observation, text)
+    }
+
+    fn clock_lie_blocks_neighbour_replacement(&self, target: &OccurrenceIdentity) -> bool {
+        self.clock_lie_occurrences.iter().any(|flagged| {
+            flagged != target
+                && matches!(
+                    target.relate(flagged),
+                    OccurrenceRelation::Overlapping { .. }
+                )
+        })
+    }
+
+    fn note_covered_span(&mut self, occurrence: &OccurrenceIdentity) {
+        if !occurrence.is_anchored() {
+            return;
+        }
+        self.first_covered_sample = Some(match self.first_covered_sample {
+            Some(current) => current.min(occurrence.sample_start),
+            None => occurrence.sample_start,
+        });
+        self.last_covered_sample = Some(match self.last_covered_sample {
+            Some(current) => current.max(occurrence.sample_end),
+            None => occurrence.sample_end,
+        });
+    }
+
+    fn note_clock_lie(
+        &mut self,
+        observation: &ObservationIdentity,
+        text: &str,
+        decision: &MutationReceipt,
+    ) -> bool {
+        let keeps_text = matches!(
+            decision,
+            MutationReceipt::Insert { .. }
+                | MutationReceipt::Correct { .. }
+                | MutationReceipt::Preserve { .. }
+                | MutationReceipt::KeepVisibleUnanchored { .. }
+        );
+        if !keeps_text {
+            return false;
+        }
+        let Some(rate) = self.capture_rate_hz.filter(|rate| *rate > 0) else {
+            return false;
+        };
+        let samples = observation.occurrence.sample_len();
+        if samples == 0 {
+            return false;
+        }
+        let duration_secs = samples as f32 / rate as f32;
+        if !is_clock_lie(text.chars().count(), duration_secs) {
+            return false;
+        }
+        self.clock_lie_occurrences
+            .insert(observation.occurrence.clone());
+        true
     }
 
     /// Classify one timed pin against the window's exclusive admit range.
@@ -1441,6 +1610,9 @@ impl AcousticLedger {
         };
         if !self.terminal_seals.contains(&receipt) {
             self.terminal_seals.push(receipt.clone());
+            if self.transcript_seal_timestamp_ms.is_none() {
+                self.transcript_seal_timestamp_ms = unix_epoch_millis();
+            }
         }
         Ok(receipt)
     }
@@ -1826,6 +1998,7 @@ impl AcousticLedger {
             .cloned()
             .into_iter()
             .collect();
+        let clock_lie = self.note_clock_lie(observation, text, decision);
         self.trail.push(LayerDecisionReceipt {
             ordinal,
             receipt_id: format!(
@@ -1841,6 +2014,7 @@ impl AcousticLedger {
             serials,
             decision: decision.clone(),
             predecessor_ordinal,
+            clock_lie,
         });
         self.issued_receipts += 1;
         let reason = match decision {
@@ -1848,7 +2022,10 @@ impl AcousticLedger {
             MutationReceipt::KeepVisibleUnanchored { reason, .. } => Some(reason.as_str()),
             MutationReceipt::Preserve { .. }
             | MutationReceipt::Correct { .. }
-            | MutationReceipt::Insert { .. } => None,
+            | MutationReceipt::Insert { .. } => {
+                self.delivered_observations += 1;
+                None
+            }
         };
         if let Some(reason) = reason {
             *self.named_refusals.entry(reason).or_default() += 1;
@@ -2514,6 +2691,9 @@ pub struct LayerDecisionReceipt {
     pub decision: MutationReceipt,
     /// Ordinal of the previous decision on the same occurrence, if any.
     pub predecessor_ordinal: Option<usize>,
+    /// The span's character rate over its declared range exceeded the clock-lie
+    /// bar. The text in `decision` is kept. This receipt is the flag.
+    pub clock_lie: bool,
 }
 
 impl LayerDecisionReceipt {
@@ -4940,5 +5120,62 @@ mod tests {
             Err("incremental_shaping_not_deterministic")
         );
         assert!(ledger.incremental_shapings().is_empty());
+    }
+
+    #[test]
+    fn clock_lie_span_keeps_its_text_and_cannot_replace_a_neighbour() {
+        use crate::quality::supervisor::{
+            QualityIssueKind, TakeQualityEvidence, classify_take_findings,
+        };
+
+        let mut ledger = AcousticLedger::new();
+        ledger.bind_capture_rate(16_000);
+        let lie = occ(0, 1_600);
+        let lie_text = "x".repeat(41);
+        let admitted = ledger.admit(&obs(ObservationProducer::Apple, 0, lie.clone()), &lie_text);
+        assert!(admitted.is_insert(), "clock-lie keeps the span's own text");
+        assert_eq!(ledger.text_of(&lie), Some(lie_text.as_str()));
+        assert!(ledger.is_clock_lie_span(&lie));
+        assert!(ledger.latest_receipt_names_clock_lie());
+        assert_eq!(ledger.conservation().receipts_out, 1);
+        assert_eq!(ledger.clock_lie_count(), 1);
+
+        let neighbour = occ(1_600, 16_000);
+        let neighbour_text = "good neighbour";
+        assert!(
+            ledger
+                .admit(
+                    &obs(ObservationProducer::Apple, 0, neighbour.clone()),
+                    neighbour_text
+                )
+                .is_insert()
+        );
+        let stolen = ledger.replace_neighbour(
+            &lie,
+            &obs(ObservationProducer::Whisper, 1, neighbour.clone()),
+            "stolen",
+        );
+        assert!(matches!(
+            stolen,
+            MutationReceipt::Refuse {
+                reason: RefuseReason::ClockLie,
+                ..
+            }
+        ));
+        assert_eq!(ledger.text_of(&neighbour), Some(neighbour_text));
+        assert_eq!(ledger.clock_lie_count(), 1);
+        assert_eq!(ledger.conservation().residue(), 0);
+
+        let mut evidence = TakeQualityEvidence::default();
+        evidence.observe_clock_lie_count(ledger.clock_lie_count());
+        evidence.daily_text = lie_text;
+        let report = classify_take_findings(&evidence);
+        assert_eq!(evidence.clock_lie_count, 1);
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|row| row.kind == QualityIssueKind::ClockLie)
+        );
     }
 }

@@ -223,6 +223,14 @@ pub struct TakeQualityEvidence {
     pub confidence_flags: Vec<String>,
 }
 
+impl TakeQualityEvidence {
+    /// Copy an admission census. The count is `AcousticLedger::clock_lie_count`;
+    /// this method does not measure the spans again.
+    pub fn observe_clock_lie_count(&mut self, clock_lie_count: usize) {
+        self.clock_lie_count = clock_lie_count;
+    }
+}
+
 impl QualityIssueKind {
     /// Exhaustive catalog order. Coverage test walks this slice.
     pub const ALL: &'static [Self] = &[

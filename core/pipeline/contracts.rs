@@ -5,11 +5,13 @@
 //!
 //! Vibecrafted with AI Agents by Vetcoders (c)2026 Vetcoders
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::llm::inline_format::OccurrenceLabelProposal;
 use crate::pipeline::acoustic_ledger::{
-    LedgerSealReceipt, MutationReceipt, ObservationIdentity, SealCoverageReceipt,
+    AcousticLedger, LedgerSealReceipt, MutationReceipt, ObservationIdentity, SealCoverageReceipt,
     TranscriptComparisonReceipt,
 };
 use crate::stt::tail_provider::TailSampleRange;
@@ -875,6 +877,185 @@ pub enum AnnotationKind {
     Paralingual { label: String },
 }
 
+/// Schema id for [`SessionConservationReceipt`].
+pub const SESSION_CONSERVATION_SCHEMA: &str = "codescribe-session-conservation/v1";
+
+/// The required session receipt fields that close the conservation loop.
+///
+/// `observations_admitted` is copied from the ledger's offer counter.
+/// `observations_delivered` is copied from the ledger's delivery counter.
+/// Neither side is computed from the other. Named observation refusals,
+/// including unanchored keeps, are the map incremented when each receipt
+/// is issued.
+///
+/// A window refused before inference and an energy lookup that returned no
+/// voiced hop are their own classes. They are not observation admissions, so
+/// they are not folded into provider job buckets and they are not added into
+/// [`Self::residue`].
+///
+/// `delivery_timestamp_ms` stays `None` here. The only RFC3339 instant on the
+/// controller side of this cut is `IpcEvent.timestamp`, written by
+/// `RecordingController::set_state_with_broadcast` in `app/controller/mod.rs`.
+/// `CsLayerSummary` in `bridge/src/recording.rs` does not carry this receipt.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionConservationReceipt {
+    /// False until a ledger actually supplied the counters.
+    pub emitted: bool,
+    pub windows_admitted: u64,
+    pub windows_coalesced: u64,
+    pub windows_unresolved: u64,
+    pub first_covered_sample: Option<u64>,
+    pub last_covered_sample: Option<u64>,
+    pub transcript_seal_timestamp_ms: Option<u64>,
+    pub delivery_timestamp_ms: Option<u64>,
+    pub observations_admitted: u64,
+    pub observations_delivered: u64,
+    pub observations_unanchored: u64,
+    pub observations_refused_by_reason: BTreeMap<String, u64>,
+    pub windows_refused_before_inference: BTreeMap<String, u64>,
+    pub energy_lookups_without_voiced_hop: u64,
+}
+
+impl SessionConservationReceipt {
+    /// Read the ledger's own counters and the session's window census.
+    pub fn from_ledger(
+        ledger: &AcousticLedger,
+        windows_admitted: u64,
+        windows_coalesced: u64,
+        windows_unresolved: u64,
+        windows_refused_before_inference: BTreeMap<String, u64>,
+    ) -> Self {
+        let tally = ledger.conservation();
+        Self {
+            emitted: true,
+            windows_admitted,
+            windows_coalesced,
+            windows_unresolved,
+            first_covered_sample: ledger.first_covered_sample(),
+            last_covered_sample: ledger.last_covered_sample(),
+            transcript_seal_timestamp_ms: ledger.transcript_seal_timestamp_ms(),
+            delivery_timestamp_ms: None,
+            observations_admitted: tally.observations_in as u64,
+            observations_delivered: tally.observations_delivered as u64,
+            observations_unanchored: tally.kept_visible_unanchored as u64,
+            observations_refused_by_reason: tally
+                .refusals_by_reason
+                .iter()
+                .map(|(reason, count)| ((*reason).to_string(), *count as u64))
+                .collect(),
+            windows_refused_before_inference,
+            energy_lookups_without_voiced_hop: ledger.energy_lookups_without_voiced_hop(),
+        }
+    }
+
+    /// `admitted − delivered − Σ(named observation refusals)`.
+    ///
+    /// A receipt-less drop increments admitted and leaves this non-zero.
+    pub fn residue(&self) -> i64 {
+        let named: u64 = self.observations_refused_by_reason.values().copied().sum();
+        self.observations_admitted as i64 - self.observations_delivered as i64 - named as i64
+    }
+
+    /// One observation vanished with no receipt. Test double for the residue.
+    pub fn with_receiptless_drop(mut self) -> Self {
+        self.emitted = true;
+        self.observations_admitted = self.observations_admitted.saturating_add(1);
+        self
+    }
+
+    pub(crate) fn encode_fields(&self) -> String {
+        format!(
+            "windows_admitted={} windows_coalesced={} windows_unresolved={} first_covered_sample={} last_covered_sample={} transcript_seal_timestamp_ms={} delivery_timestamp_ms={} observations_admitted={} observations_delivered={} observations_unanchored={} observations_refused_by_reason={} windows_refused_before_inference={} energy_lookups_without_voiced_hop={}",
+            self.windows_admitted,
+            self.windows_coalesced,
+            self.windows_unresolved,
+            encode_optional_u64(self.first_covered_sample),
+            encode_optional_u64(self.last_covered_sample),
+            encode_optional_u64(self.transcript_seal_timestamp_ms),
+            encode_optional_u64(self.delivery_timestamp_ms),
+            self.observations_admitted,
+            self.observations_delivered,
+            self.observations_unanchored,
+            encode_reason_map(&self.observations_refused_by_reason),
+            encode_reason_map(&self.windows_refused_before_inference),
+            self.energy_lookups_without_voiced_hop,
+        )
+    }
+
+    pub(crate) fn decode_fields(fields: &BTreeMap<&str, &str>) -> Self {
+        if !fields.contains_key("observations_admitted") {
+            return Self::default();
+        }
+        Self {
+            emitted: true,
+            windows_admitted: parse_u64(fields.get("windows_admitted").copied()),
+            windows_coalesced: parse_u64(fields.get("windows_coalesced").copied()),
+            windows_unresolved: parse_u64(fields.get("windows_unresolved").copied()),
+            first_covered_sample: parse_optional_u64(fields.get("first_covered_sample").copied()),
+            last_covered_sample: parse_optional_u64(fields.get("last_covered_sample").copied()),
+            transcript_seal_timestamp_ms: parse_optional_u64(
+                fields.get("transcript_seal_timestamp_ms").copied(),
+            ),
+            delivery_timestamp_ms: parse_optional_u64(fields.get("delivery_timestamp_ms").copied()),
+            observations_admitted: parse_u64(fields.get("observations_admitted").copied()),
+            observations_delivered: parse_u64(fields.get("observations_delivered").copied()),
+            observations_unanchored: parse_u64(fields.get("observations_unanchored").copied()),
+            observations_refused_by_reason: decode_reason_map(
+                fields.get("observations_refused_by_reason").copied(),
+            ),
+            windows_refused_before_inference: decode_reason_map(
+                fields.get("windows_refused_before_inference").copied(),
+            ),
+            energy_lookups_without_voiced_hop: parse_u64(
+                fields.get("energy_lookups_without_voiced_hop").copied(),
+            ),
+        }
+    }
+}
+
+fn encode_optional_u64(value: Option<u64>) -> String {
+    match value {
+        Some(value) => value.to_string(),
+        None => "-".to_string(),
+    }
+}
+
+fn parse_u64(value: Option<&str>) -> u64 {
+    value.and_then(|raw| raw.parse().ok()).unwrap_or(0)
+}
+
+fn parse_optional_u64(value: Option<&str>) -> Option<u64> {
+    match value {
+        Some("-") | None => None,
+        Some(raw) => raw.parse().ok(),
+    }
+}
+
+fn encode_reason_map(map: &BTreeMap<String, u64>) -> String {
+    if map.is_empty() {
+        return "-".to_string();
+    }
+    map.iter()
+        .map(|(reason, count)| format!("{reason}:{count}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn decode_reason_map(raw: Option<&str>) -> BTreeMap<String, u64> {
+    let Some(raw) = raw else {
+        return BTreeMap::new();
+    };
+    if raw == "-" || raw.is_empty() {
+        return BTreeMap::new();
+    }
+    raw.split(',')
+        .filter_map(|pair| {
+            let (reason, count) = pair.split_once(':')?;
+            Some((reason.to_string(), count.parse().ok()?))
+        })
+        .collect()
+}
+
 /// Session-end summary for layered transcript mutation telemetry.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LayerSummary {
@@ -883,6 +1064,8 @@ pub struct LayerSummary {
     pub inline_llm_replacements: u64,
     pub final_bam_replacements: u64,
     pub annotations_inserted: u64,
+    #[serde(default)]
+    pub conservation: SessionConservationReceipt,
 }
 
 /// Why a bounded mutation could not be applied to a committed buffer.
@@ -1399,6 +1582,7 @@ mod tests {
                 inline_llm_replacements: 3,
                 final_bam_replacements: 4,
                 annotations_inserted: 5,
+                ..LayerSummary::default()
             },
         };
 

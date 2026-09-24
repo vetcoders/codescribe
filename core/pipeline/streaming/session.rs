@@ -13,7 +13,9 @@ use crate::asr_session::recorder::{Layer1Decision, RecorderLifecycleEvents};
 use crate::audio::streaming_recorder::CaptureTurnIntent;
 use crate::config::{Config, RuntimeSettingsSnapshot};
 use crate::pipeline::acoustic_ledger::AcousticLedger;
-use crate::pipeline::contracts::{EngineEvent, EventSink, LayerSummary};
+use crate::pipeline::contracts::{
+    EngineEvent, EventSink, LayerSummary, SessionConservationReceipt,
+};
 use crate::stt::tail_patcher::{
     TailPatchConfig, TailPatchOutcome, compute_tail_patch_with_context,
 };
@@ -210,7 +212,7 @@ impl TailPatchDrainDisposition {
 
 /// Content-free proof of local Whisper arming, work admission, application,
 /// and bounded stop drainage for one recording.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TailPatchSessionReceipt {
     pub armed: bool,
     pub submitted: u64,
@@ -221,6 +223,8 @@ pub struct TailPatchSessionReceipt {
     /// Jobs discarded for a non-timeout reason after admission.
     pub abandoned: u64,
     pub drain: TailPatchDrainDisposition,
+    /// Conservation loop for this session. Absent until a ledger supplies it.
+    pub conservation: SessionConservationReceipt,
 }
 
 impl TailPatchSessionReceipt {
@@ -243,6 +247,7 @@ impl TailPatchSessionReceipt {
             timed_out,
             abandoned,
             drain,
+            conservation: SessionConservationReceipt::default(),
         };
         assert!(
             receipt.is_reconciled(),
@@ -278,14 +283,20 @@ impl TailPatchSessionReceipt {
         )
     }
 
+    /// Attach the ledger's conservation receipt. Job buckets stay as they are.
+    pub fn with_conservation(mut self, conservation: SessionConservationReceipt) -> Self {
+        self.conservation = conservation;
+        self
+    }
+
     /// An armed lane that submitted no work is a failed runtime witness, not
     /// proof that Layered worked.
-    pub fn armed_without_submissions(self) -> bool {
+    pub fn armed_without_submissions(&self) -> bool {
         self.armed && self.submitted == 0
     }
 
     /// Whether every submitted job has exactly one terminal bucket.
-    pub fn is_reconciled(self) -> bool {
+    pub fn is_reconciled(&self) -> bool {
         self.applied
             .saturating_add(self.skipped)
             .saturating_add(self.timed_out)
@@ -293,19 +304,24 @@ impl TailPatchSessionReceipt {
             == self.submitted
     }
 
-    pub(crate) fn as_event(self) -> EngineEvent {
+    pub(crate) fn as_event(&self) -> EngineEvent {
+        let mut message = format!(
+            "armed={} submitted={} applied={} skipped={} timed_out={} abandoned={} drain={}",
+            self.armed,
+            self.submitted,
+            self.applied,
+            self.skipped,
+            self.timed_out,
+            self.abandoned,
+            self.drain.as_token(),
+        );
+        if self.conservation.emitted {
+            message.push(' ');
+            message.push_str(&self.conservation.encode_fields());
+        }
         EngineEvent::Warning {
             code: TAIL_PATCH_SESSION_RECEIPT_WARNING_CODE.to_string(),
-            message: format!(
-                "armed={} submitted={} applied={} skipped={} timed_out={} abandoned={} drain={}",
-                self.armed,
-                self.submitted,
-                self.applied,
-                self.skipped,
-                self.timed_out,
-                self.abandoned,
-                self.drain.as_token(),
-            ),
+            message,
         }
     }
 
@@ -331,6 +347,7 @@ impl TailPatchSessionReceipt {
             timed_out: fields.get("timed_out")?.parse().ok()?,
             abandoned: fields.get("abandoned")?.parse().ok()?,
             drain: TailPatchDrainDisposition::from_token(fields.get("drain")?)?,
+            conservation: SessionConservationReceipt::decode_fields(&fields),
         };
         receipt.is_reconciled().then_some(receipt)
     }
@@ -434,11 +451,13 @@ pub(super) fn emit_session_finalised(
     event_sink: &dyn EventSink,
     session_id: String,
     tail_patch_replacements: u64,
+    conservation: SessionConservationReceipt,
 ) {
     event_sink.on_event(&EngineEvent::SessionFinalised {
         session_id,
         layer_summary: LayerSummary {
             tail_patch_replacements,
+            conservation,
             ..LayerSummary::default()
         },
     });
@@ -465,7 +484,7 @@ pub(super) fn tail_patch_lane_starved(applied: u64, skipped: u64) -> bool {
 /// diagnoses the lane. A starved session — Whisper burned inference on every
 /// sealed utterance and the canvas received none of it — is a WARN, because
 /// that is the lane not doing its one job, silently.
-pub(super) fn log_tail_patch_session_receipt(receipt: TailPatchSessionReceipt) {
+pub(super) fn log_tail_patch_session_receipt(receipt: &TailPatchSessionReceipt) {
     if receipt.timed_out > 0 || receipt.abandoned > 0 {
         warn!(
             armed = receipt.armed,
@@ -652,11 +671,11 @@ mod session_tests {
     fn tail_patch_session_receipt_round_trips_through_production_event_shape() {
         let receipt =
             TailPatchSessionReceipt::new(true, 4, 2, 1, 1, 0, TailPatchDrainDisposition::TimedOut);
+        assert!(!receipt.armed_without_submissions());
         assert_eq!(
             TailPatchSessionReceipt::from_events(&[receipt.as_event()]),
             Some(receipt)
         );
-        assert!(!receipt.armed_without_submissions());
 
         let unexercised =
             TailPatchSessionReceipt::new(true, 0, 0, 0, 0, 0, TailPatchDrainDisposition::Completed);
@@ -788,7 +807,12 @@ mod session_tests {
     /// Session end emits `SessionFinalised` carrying the layer replacement summary.
     fn session_finalised_emits_layer_summary() {
         let collector = SessionEventCollector::new();
-        emit_session_finalised(&collector, "session-test".to_string(), 3);
+        emit_session_finalised(
+            &collector,
+            "session-test".to_string(),
+            3,
+            SessionConservationReceipt::default(),
+        );
 
         assert!(matches!(
             collector.events().as_slice(),
@@ -1041,5 +1065,193 @@ mod local_execution_tests {
         let first = owner.begin_drain(Duration::ZERO);
         assert_eq!(owner.begin_drain(Duration::from_secs(5)), first);
         assert!(owner.spawn(|_| Ok(())).is_err());
+    }
+
+    #[test]
+    fn five_iwo_fixture_session_closes_the_conservation_loop() {
+        use crate::pipeline::acoustic_ledger::{
+            AcousticEvidence, EnergyCalibration, ObservationIdentity, ObservationProducer,
+            OccurrenceIdentity,
+        };
+        use serde::Deserialize;
+
+        #[derive(Deserialize)]
+        struct Burst {
+            ordinal: usize,
+            label: String,
+            sample_start: u64,
+            sample_end: u64,
+            duration_ms: f64,
+            energy_integral: f64,
+            mean_rms_dbfs: f64,
+            peak_dbfs: f64,
+            vad_open_sample: u64,
+            vad_close_sample: u64,
+            evidence_calibration_version: String,
+        }
+        #[derive(Deserialize)]
+        struct Manifest {
+            sample_rate: u32,
+            minimum_energy_integral: f64,
+            minimum_valley_samples: u64,
+            expected_occurrences: usize,
+            bursts: Vec<Burst>,
+        }
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/fixtures/p0_b_five_iwo_manifest.json");
+        let manifest: Manifest = serde_json::from_slice(&std::fs::read(&path).expect("fixture"))
+            .expect("five-iwo manifest");
+        assert_eq!(manifest.bursts.len(), manifest.expected_occurrences);
+        let calibration = EnergyCalibration::new(
+            manifest.bursts[0].evidence_calibration_version.clone(),
+            manifest.minimum_energy_integral,
+            manifest.minimum_valley_samples,
+        );
+        let mut ledger = AcousticLedger::new();
+        ledger.bind_capture_rate(manifest.sample_rate);
+        for burst in &manifest.bursts {
+            let occurrence =
+                OccurrenceIdentity::new("p0-b-five-iwo", 1, burst.sample_start, burst.sample_end);
+            let evidence = AcousticEvidence {
+                occurrence: occurrence.clone(),
+                duration_ms: burst.duration_ms,
+                energy_integral: burst.energy_integral,
+                mean_rms_dbfs: burst.mean_rms_dbfs,
+                peak_dbfs: burst.peak_dbfs,
+                vad_open_sample: Some(burst.vad_open_sample),
+                vad_close_sample: Some(burst.vad_close_sample),
+                evidence_calibration_version: burst.evidence_calibration_version.clone(),
+            };
+            assert!(ledger.qualify(&evidence, &calibration).is_qualified());
+            ledger.schedule_frontier(
+                occurrence.clone(),
+                vec![ObservationProducer::Apple, ObservationProducer::Whisper],
+            );
+            let apple = ObservationIdentity::new(
+                ObservationProducer::Apple,
+                burst.ordinal as u64,
+                0,
+                occurrence.clone(),
+            );
+            assert!(ledger.admit(&apple, &burst.label).is_insert());
+            assert!(!ledger.note_frontier_return(&occurrence, ObservationProducer::Apple));
+            let whisper = ObservationIdentity::new(
+                ObservationProducer::Whisper,
+                100 + burst.ordinal as u64,
+                0,
+                occurrence.clone(),
+            );
+            assert!(matches!(
+                ledger.admit(&whisper, &burst.label),
+                crate::pipeline::acoustic_ledger::MutationReceipt::Preserve { .. }
+            ));
+            assert!(ledger.note_frontier_return(&occurrence, ObservationProducer::Whisper));
+            ledger.seal(&occurrence).expect("burst seals");
+        }
+        ledger
+            .seal_terminal("p0-b-five-iwo", 1)
+            .expect("fixture epoch seals");
+
+        let conservation = SessionConservationReceipt::from_ledger(
+            &ledger,
+            0,
+            0,
+            0,
+            std::collections::BTreeMap::new(),
+        );
+        let receipt =
+            TailPatchSessionReceipt::from_stop(false, 0, 0, 0, 0).with_conservation(conservation);
+        assert!(receipt.conservation.emitted);
+        assert_eq!(receipt.conservation.windows_admitted, 0);
+        assert_eq!(receipt.conservation.windows_coalesced, 0);
+        assert_eq!(receipt.conservation.windows_unresolved, 0);
+        assert!(
+            receipt
+                .conservation
+                .windows_refused_before_inference
+                .is_empty()
+        );
+        assert_eq!(
+            receipt.conservation.first_covered_sample,
+            Some(manifest.bursts[0].sample_start)
+        );
+        assert_eq!(
+            receipt.conservation.last_covered_sample,
+            manifest.bursts.last().map(|burst| burst.sample_end)
+        );
+        assert!(receipt.conservation.transcript_seal_timestamp_ms.is_some());
+        assert_eq!(receipt.conservation.delivery_timestamp_ms, None);
+        assert_eq!(receipt.conservation.observations_admitted, 10);
+        assert_eq!(receipt.conservation.observations_delivered, 10);
+        assert_eq!(receipt.conservation.observations_unanchored, 0);
+        assert!(
+            receipt
+                .conservation
+                .observations_refused_by_reason
+                .is_empty()
+        );
+        assert_eq!(receipt.conservation.energy_lookups_without_voiced_hop, 0);
+        assert_eq!(receipt.conservation.residue(), 0);
+        assert_eq!(ledger.conservation().residue(), 0);
+        assert_eq!(
+            ledger.conservation().observations_in,
+            ledger.conservation().receipts_out
+        );
+
+        let restored = TailPatchSessionReceipt::from_events(&[receipt.as_event()])
+            .expect("conservation fields survive the session event");
+        assert_eq!(restored.conservation, receipt.conservation);
+
+        let dropped = receipt.conservation.clone().with_receiptless_drop();
+        assert_eq!(dropped.residue(), 1);
+
+        let schema = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../tests/fixtures/session_conservation_receipt.schema.json"),
+        )
+        .expect("conservation schema");
+        assert!(schema.contains(crate::pipeline::contracts::SESSION_CONSERVATION_SCHEMA));
+        let value = serde_json::to_value(&receipt.conservation).expect("serialize conservation");
+        let object = value.as_object().expect("object");
+        for key in [
+            "windows_admitted",
+            "windows_coalesced",
+            "windows_unresolved",
+            "first_covered_sample",
+            "last_covered_sample",
+            "transcript_seal_timestamp_ms",
+            "delivery_timestamp_ms",
+            "observations_admitted",
+            "observations_delivered",
+            "observations_unanchored",
+            "observations_refused_by_reason",
+            "windows_refused_before_inference",
+            "energy_lookups_without_voiced_hop",
+        ] {
+            assert!(object.contains_key(key), "receipt missing {key}");
+            assert!(schema.contains(key), "schema missing {key}");
+        }
+    }
+
+    #[test]
+    fn window_refused_before_inference_is_not_a_provider_skip() {
+        let mut refused = std::collections::BTreeMap::new();
+        refused.insert("live_refinement_invalid_identity".to_string(), 1);
+        let conservation = SessionConservationReceipt {
+            emitted: true,
+            windows_refused_before_inference: refused,
+            ..SessionConservationReceipt::default()
+        };
+        let receipt =
+            TailPatchSessionReceipt::new(true, 2, 2, 0, 0, 0, TailPatchDrainDisposition::Completed)
+                .with_conservation(conservation);
+        assert_eq!(receipt.skipped, 0);
+        assert!(receipt.is_reconciled());
+        assert_eq!(
+            receipt.conservation.windows_refused_before_inference["live_refinement_invalid_identity"],
+            1
+        );
+        assert_eq!(receipt.conservation.residue(), 0);
     }
 }
