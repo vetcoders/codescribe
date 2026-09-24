@@ -11398,7 +11398,7 @@ mod rc_w2_test_rehab {
     }
 
     #[test]
-    fn whisper_label_is_rewritten_before_ledger_admission() {
+    fn whisper_observation_keeps_raw_label_until_lexicon_decision() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let dir = tempfile::tempdir().unwrap();
         let mut state = state("whisper-lexicon", 2.0);
@@ -11408,8 +11408,14 @@ mod rc_w2_test_rehab {
             .acoustic_ledger
             .lock()
             .unwrap()
-            .schedule_frontier(occurrence.clone(), [LedgerObservationProducer::Whisper]);
-        let receipt = admit_ledger_label(
+            .schedule_frontier(
+                occurrence.clone(),
+                [
+                    LedgerObservationProducer::Whisper,
+                    LedgerObservationProducer::Lexicon,
+                ],
+            );
+        let whisper_receipt = admit_ledger_label(
             &mut state,
             &tx,
             LabelAdmission {
@@ -11417,18 +11423,48 @@ mod rc_w2_test_rehab {
                     LedgerObservationProducer::Whisper,
                     1,
                     0,
-                    occurrence,
+                    occurrence.clone(),
                 ),
                 label: "accepromazyna",
                 energy: EnergyAdmission::RequireExistingQualification,
             },
         );
-        assert!(receipt.is_some_and(|receipt| receipt.grants_mutation()));
-        assert_eq!(document(&state), "Acepromazyna");
-        assert!(drain(&mut rx).iter().any(|event| matches!(event,
+        assert!(whisper_receipt.is_some_and(|receipt| receipt.grants_mutation()));
+        assert_eq!(document(&state), "accepromazyna");
+        let whisper_events = drain(&mut rx);
+        assert!(whisper_events.iter().any(|event| matches!(event,
             EngineEvent::LedgerMutation { observation, label, .. }
             if observation.producer == LedgerObservationProducer::Whisper
+                && observation.occurrence == occurrence
+                && label == "accepromazyna"
+        )));
+        assert!(!whisper_events.iter().any(|event| matches!(event,
+            EngineEvent::LedgerMutation { observation, .. }
+            if observation.producer == LedgerObservationProducer::Lexicon
+        )));
+
+        let lexicon_receipt = admit_ledger_label(
+            &mut state,
+            &tx,
+            LabelAdmission {
+                observation: LedgerObservationIdentity::new(
+                    LedgerObservationProducer::Lexicon,
+                    1,
+                    0,
+                    occurrence.clone(),
+                ),
+                label: "accepromazyna",
+                energy: EnergyAdmission::RequireExistingQualification,
+            },
+        );
+        assert!(lexicon_receipt.is_some_and(|receipt| receipt.grants_mutation()));
+        assert_eq!(document(&state), "Acepromazyna");
+        assert!(drain(&mut rx).iter().any(|event| matches!(event,
+            EngineEvent::LedgerMutation { observation, label, receipt }
+            if observation.producer == LedgerObservationProducer::Lexicon
+                && observation.occurrence == occurrence
                 && label == "Acepromazyna"
+                && receipt.grants_mutation()
         )));
     }
 
