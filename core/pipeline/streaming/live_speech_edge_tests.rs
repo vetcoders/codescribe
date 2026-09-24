@@ -2,7 +2,13 @@
 //!
 //! The product hands-free threshold stays 5.0 s.
 
-use super::{EpochDecision, EpochGate, SileroIngress};
+use super::{
+    AcousticLedger, AppleSealState, EnergyCalibration, EpochDecision, EpochGate, EngineEvent,
+    SileroIngress, TailPatchRequest, seal_sliced_by_silero,
+};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+use tokio::sync::mpsc;
 
 const RATE: u32 = 16_000;
 const FRAME: usize = 512;
@@ -94,5 +100,89 @@ fn continuous_voiced_pcm_past_the_max_split_stays_live_and_the_epoch_stays_open(
     assert!(
         driver.sleeps[0] > voiced_end,
         "sleep must land in the silence tail, not in the voiced span"
+    );
+}
+
+/// L1 observes the PCM clock while a long utterance is still open. Apple may
+/// have produced no words at all; neither an Apple final nor a Silero close is
+/// a prerequisite for the first two overlapping Whisper requests.
+///
+/// This drives the PCM side of the production worker in its actual order. It
+/// is a synthetic scheduling contract, not proof of recognition on real audio.
+#[test]
+fn layer1_observes_open_speech_before_silero_close() {
+    let (events, _event_rx) = mpsc::unbounded_channel::<EngineEvent>();
+    let (tail_tx, mut tail_rx) = mpsc::channel::<TailPatchRequest>(8);
+    let mut state = AppleSealState::new_with_tail_patch_for_session(
+        RATE,
+        "live-l1-cadence".into(),
+        1,
+        tail_tx,
+        Arc::new(Mutex::new(AcousticLedger::new())),
+        Some(EnergyCalibration {
+            version: "live-cadence-fixture".into(),
+            min_energy_integral: 1.0,
+            min_valley_samples: 1,
+        }),
+    );
+    state.fusion = Some(SileroIngress::new(RATE, "live-l1-cadence", 1));
+    state.fusion_seal_armed = true;
+
+    let mut sample_end = 0_u64;
+    let mut launched = Vec::new();
+    // 250 x 512 samples = eight seconds, below Silero's max-duration split.
+    // The scripted VAD is an explicit speech witness; no Apple callback is
+    // submitted, so any L1 job is independent of an Apple text buffer.
+    for _ in 0..250 {
+        let pcm = [0.2_f32; FRAME];
+        sample_end += FRAME as u64;
+        state.audio.push(&pcm);
+        let (speech_live, speech_evidence) = {
+            let fusion = state.fusion.as_mut().expect("speech witness");
+            fusion.push_scripted_speech_prob_for_test(0.90);
+            let ingress = fusion.ingest(&pcm, sample_end);
+            (ingress.speech_live, fusion.acoustic_speech_evidence())
+        };
+        state
+            .speech_progress
+            .observe_speech(&speech_evidence, speech_live, RATE);
+        seal_sliced_by_silero(&mut state, &events, &[]);
+        state.tick_refinements(&events, Instant::now());
+        while let Ok(request) = tail_rx.try_recv() {
+            request
+                .provider_request
+                .validate_pcm(&request.audio)
+                .expect("L1 request names the exact captured PCM it carries");
+            launched.push(request);
+        }
+    }
+
+    let utterances = state
+        .fusion
+        .as_ref()
+        .expect("speech witness")
+        .ledger()
+        .utterances();
+    assert!(!utterances.is_empty(), "scripted Silero never opened speech");
+    assert!(
+        utterances.iter().all(|utterance| !utterance.closed),
+        "the fixture must keep speech open; a closed utterance would hide the scheduler coupling"
+    );
+    assert!(
+        launched.len() >= 2,
+        "L1 must launch overlapping PCM observations at about 4 s and 7 s, before Silero closes; launched {}",
+        launched.len()
+    );
+    let first = &launched[0].provider_request.identity.range;
+    let second = &launched[1].provider_request.identity.range;
+    let first_len = first.sample_end.saturating_sub(first.sample_start);
+    let overlap = first.sample_end.saturating_sub(second.sample_start);
+    assert!(
+        (3 * RATE as u64..=5 * RATE as u64).contains(&first_len),
+        "first L1 window is not about four seconds: {first_len} samples"
+    );
+    assert!(
+        (RATE as u64 / 2..=RATE as u64 * 3 / 2).contains(&overlap),
+        "adjacent L1 windows should share about one second: {overlap} samples"
     );
 }
