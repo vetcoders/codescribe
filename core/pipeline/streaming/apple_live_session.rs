@@ -12541,6 +12541,55 @@ mod live_refinement_admission_tests {
     }
 
     #[test]
+    fn overlapping_close_cannot_remint_an_in_flight_occurrence() {
+        let (mut state, events, _receiver, mut requests) = fixture(8);
+        let mut physical = UtteranceLedger::new();
+        let first_id = physical.open_or_extend("live-admission", 7, 0, 4_000);
+        physical.close_open(4_000);
+
+        reconcile_silero_ledger(&mut state, &events, &physical, &[]);
+        let first_request = requests
+            .try_recv()
+            .expect("the first closed occurrence submits its owned PCM");
+        let submitted = OccurrenceIdentity::new("live-admission", 7, 0, 4_000);
+        assert_eq!(
+            first_request.member_occurrences,
+            vec![(first_id, submitted.clone())]
+        );
+        assert_eq!(
+            state.pending_events.get(&first_id).map(|pending| &pending.occurrence),
+            Some(&submitted)
+        );
+
+        // A later, tighter Silero range overlaps the final second of the
+        // already-submitted one. Its ownership calculation must not silently
+        // change the identity under which the first L1 job will complete.
+        let second_id = physical.open_or_extend("live-admission", 7, 3_000, 4_500);
+        physical.close_open(4_500);
+        assert_ne!(first_id, second_id);
+        assert_eq!(
+            exclusive_closed_spans(physical.utterances()).get(&first_id),
+            Some(&(0, 3_000))
+        );
+        reconcile_silero_ledger(&mut state, &events, &physical, &[]);
+
+        assert_eq!(
+            state.pending_events.get(&first_id).map(|pending| &pending.occurrence),
+            Some(&submitted),
+            "a later boundary cannot silently remint an occurrence with L1 in flight"
+        );
+        for request in std::iter::from_fn(|| requests.try_recv().ok()) {
+            assert!(
+                request
+                    .member_occurrences
+                    .iter()
+                    .all(|(id, occurrence)| *id != first_id || *occurrence == submitted),
+                "the same Silero id cannot submit a second PCM identity without cancellation"
+            );
+        }
+    }
+
+    #[test]
     fn blank_then_nonblank_apple_evidence_keeps_one_refinement_owner() {
         let (mut state, events, mut receiver, mut requests) = fixture(2);
         let ledger = closed(1);
