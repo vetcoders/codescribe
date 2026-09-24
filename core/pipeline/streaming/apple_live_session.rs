@@ -14666,6 +14666,52 @@ mod relay_l1_overlap_admission_tests {
         assert_conserved(&lane, None);
     }
 
+    /// A word can be inside the debt occurrence and still be wholly inside
+    /// measured silence. Its occurrence identity alone does not authorize it.
+    /// The voiced neighbour must remain usable without sealing the silent pin.
+    #[test]
+    fn recovery_word_pin_inside_measured_silence_cannot_enter_the_label() {
+        let mut lane = open("relay-recovery-silent-word");
+        let occurrence = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, 32_000);
+        record_voiced_spans(&lane, 32_000, &[(0, 12_000), (17_000, 32_000)]);
+        assert_eq!(
+            lane.state
+                .capture_energy
+                .voiced_hops_in(&occurrence.session, 1, 13_000, 16_000),
+            Some(Vec::new()),
+            "the second word pin is fully inside a measured silent island"
+        );
+        stage(&mut lane, 1, occurrence.clone(), "apple");
+        assert!(
+            lane.state
+                .acoustic_ledger
+                .lock()
+                .expect("ledger")
+                .require_text_recovery(&occurrence)
+        );
+        let _ = drain(&mut lane.rx);
+        let payload = recovery_payload(
+            &occurrence,
+            vec![
+                word_pin(&occurrence.session, "mowa", 2_000, 8_000),
+                word_pin(&occurrence.session, "halucynacja", 13_000, 16_000),
+            ],
+        );
+
+        let _ = admit_debt_occurrence_recovery(&mut lane.state, &lane.tx, &occurrence, &payload);
+        let events = drain(&mut lane.rx);
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("mowa"),
+            "the silent word must not be included in a ledger label"
+        );
+        assert!(
+            named_refusal(&events, "no_voiced_hop_in_pin"),
+            "the rejected word needs a named, auditable refusal"
+        );
+        assert_eq!(held_count(&lane), 1);
+    }
+
     /// (d) Lexicon already holds a different label. Whisper recovery is inside
     /// the occurrence and the ledger refuses it as `sealed_replay`.
     ///
