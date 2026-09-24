@@ -319,6 +319,9 @@ pub enum RefuseReason {
     IncompleteExclusiveCoverage,
     /// A clock-lie span kept its own text and was asked to replace a neighbour.
     ClockLie,
+    /// Stop asked for this uncovered PCM and no wholly contained segment was
+    /// admitted. The range stays speech the document does not own.
+    UnrecoveredSpeech,
 }
 
 impl RefuseReason {
@@ -332,6 +335,7 @@ impl RefuseReason {
             Self::IntersectingPinNotExclusive => "intersecting_pin_not_exclusive",
             Self::IncompleteExclusiveCoverage => "incomplete_exclusive_coverage",
             Self::ClockLie => "clock_lie",
+            Self::UnrecoveredSpeech => "unrecovered_speech",
         }
     }
 }
@@ -778,9 +782,15 @@ impl AcousticLedger {
             return refuse(AcousticEvidenceGap::PartialObservation);
         }
 
-        // Subtract debt from the union, not individual labels: another label
-        // overlapping the same PCM must not make unresolved speech disappear.
-        let debt = self.pending_text_recoveries(session, capture_epoch);
+        // Subtract only debt that was never committed. A committed occurrence
+        // already owns its PCM, so pending recovery must not report that speech
+        // as uncovered. An uncommitted debt range still punches out of a wider
+        // neighbour: another label must not make unresolved speech disappear.
+        let debt = self
+            .pending_text_recoveries(session, capture_epoch)
+            .into_iter()
+            .filter(|occurrence| !self.committed.contains_key(occurrence))
+            .collect::<Vec<_>>();
         let committed: Vec<(u64, u64)> = committed
             .into_iter()
             .flat_map(|range| {
@@ -849,7 +859,7 @@ impl AcousticLedger {
             .map(|range| range.sample_end.saturating_sub(range.sample_start))
             .max()
             .unwrap_or(0);
-        let status = if !debt.is_empty() || max_uncovered_samples > incomplete_threshold_samples {
+        let status = if max_uncovered_samples > incomplete_threshold_samples {
             SealCoverageStatus::Incomplete
         } else {
             SealCoverageStatus::Complete
@@ -1294,6 +1304,27 @@ impl AcousticLedger {
         text: &str,
     ) -> MutationReceipt {
         self.refuse_replacement(observation, text, RefuseReason::ReplayedRangeIdentity)
+    }
+
+    /// One material uncovered range the stop path could not recover.
+    ///
+    /// Idempotent on the same PCM: a second settlement of the same gap does not
+    /// mint a second observation. The refusal is the conservation row; nothing
+    /// is inserted into the committed document.
+    pub fn note_unrecovered_speech(&mut self, occurrence: &OccurrenceIdentity) -> MutationReceipt {
+        let observation = ObservationIdentity::new(
+            ObservationProducer::Whisper,
+            occurrence.sample_start,
+            occurrence.sample_end,
+            occurrence.clone(),
+        );
+        if self.answered.contains(&observation) {
+            return MutationReceipt::Refuse {
+                occurrence: occurrence.clone(),
+                reason: RefuseReason::UnrecoveredSpeech,
+            };
+        }
+        self.refuse_replacement(&observation, "", RefuseReason::UnrecoveredSpeech)
     }
 
     /// Refuse one replacement of an occurrence. The committed label stands.
@@ -3680,9 +3711,75 @@ mod tests {
             vec![occurrence.clone()]
         );
         let after = ledger.assess_seal_coverage("s1", 1, &debt_speech(), 32_000);
-        assert_eq!(after.status, SealCoverageStatus::Incomplete);
-        assert_eq!(after.coverage_ratio(), Some(0.0));
-        assert_eq!(after.max_uncovered_samples, 16_000);
+        assert_eq!(after.status, SealCoverageStatus::Complete);
+        assert_eq!(after.coverage_ratio(), Some(1.0));
+        assert_eq!(after.max_uncovered_samples, 0);
+        // Take 9608b50e: five committed windows sat on top of the speech set
+        // and coverage still reported covered=0. A committed occurrence has
+        // to count, including while text recovery is still pending.
+        let mut take = AcousticLedger::new();
+        take.bind_capture_rate(48_000);
+        let committed = [
+            (972_288, 1_548_288, "bramki"),
+            (1_548_288, 2_875_904, "brief"),
+            (2_878_464, 3_454_464, "evidence"),
+            (3_454_464, 3_926_016, "zero"),
+            (4_217_856, 4_627_968, "wiadomosc"),
+        ];
+        let calibration = EnergyCalibration::new("take-9608", 1.0, 1);
+        for (index, (start, end, label)) in committed.iter().copied().enumerate() {
+            let occurrence = OccurrenceIdentity::new("9608b50e", 1, start, end);
+            let evidence = AcousticEvidence {
+                occurrence: occurrence.clone(),
+                duration_ms: 1_000.0,
+                energy_integral: 100.0,
+                mean_rms_dbfs: -20.0,
+                peak_dbfs: -10.0,
+                vad_open_sample: Some(start),
+                vad_close_sample: Some(end),
+                evidence_calibration_version: calibration.version.clone(),
+            };
+            assert!(take.qualify(&evidence, &calibration).is_qualified());
+            take.schedule_frontier(occurrence.clone(), [ObservationProducer::Apple]);
+            assert!(
+                take.admit(
+                    &obs(ObservationProducer::Apple, index as u64, occurrence.clone()),
+                    label,
+                )
+                .grants_mutation()
+            );
+            assert!(take.require_text_recovery(&occurrence));
+        }
+        let speech = measured_speech(
+            "9608b50e",
+            1,
+            5_363_200,
+            vec![
+                (972_288, 1_423_872),
+                (2_549_760, 2_840_064),
+                (2_878_464, 3_428_352),
+                (3_495_936, 3_886_080),
+                (3_912_192, 4_194_816),
+                (4_217_856, 4_584_960),
+            ]
+            .into_iter()
+            .map(|(sample_start, sample_end)| TailSampleRange {
+                session: "9608b50e".into(),
+                capture_epoch: 1,
+                sample_start,
+                sample_end,
+            })
+            .collect(),
+        );
+        let coverage = take.assess_seal_coverage("9608b50e", 1, &speech, 12_000);
+        assert!(
+            coverage.covered_samples > 0,
+            "committed speech was reported uncovered: {coverage:?}"
+        );
+        assert!(
+            coverage.covered_samples >= 1_423_872 - 972_288,
+            "the first committed window did not cover its speech: {coverage:?}"
+        );
         assert_eq!(ledger.text_of(&occurrence), Some("partial"));
         ledger.admit(
             &obs(ObservationProducer::Whisper, 0, occurrence.clone()),

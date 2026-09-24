@@ -138,6 +138,75 @@ fn recovery_equal_words_on_disjoint_pcm_stay_distinct() {
     );
 }
 
+/// Take 9608b50e, 48 kHz. Three closed Silero windows overlap by the live
+/// pads (13 824 and 18 432 samples). Each carries its own Apple word on PCM
+/// that only that window owns. The middle word has to reach the committed
+/// projection; an overlap must not erase it without a conservation refusal.
+#[test]
+fn overlapping_pad_occurrences_project_each_apple_word() {
+    const RATE: u32 = 48_000;
+    const END: usize = 4_627_968;
+    let mut state = AppleSealState::new_for_session(RATE, "take-9608".into(), 1);
+    state.energy_calibration = Some(EnergyCalibration::new("synthetic", 1.0, 1));
+    state.audio.push(&vec![0.2; END]);
+    let mut fusion = SileroIngress::new(RATE, state.session_id.clone(), 1);
+    let session = state.session_id.clone();
+    {
+        let ledger = fusion.ledger_mut();
+        ledger.open_or_extend(&session, 1, 3_454_464, 3_926_016);
+        ledger.close_open(3_926_016);
+        ledger.open_or_extend(&session, 1, 3_912_192, 4_236_288);
+        ledger.close_open(4_236_288);
+        ledger.open_or_extend(&session, 1, 4_217_856, 4_627_968);
+        ledger.close_open(4_627_968);
+    }
+    state.fusion = Some(fusion);
+    let (tx, _) = mpsc::unbounded_channel();
+    let words = [
+        TranscriptSegment {
+            text: "Leftside".into(),
+            start_ts: 3_600_000.0 / RATE as f32,
+            end_ts: 3_700_000.0 / RATE as f32,
+        },
+        TranscriptSegment {
+            text: "Middlephrase".into(),
+            start_ts: 4_000_000.0 / RATE as f32,
+            end_ts: 4_100_000.0 / RATE as f32,
+        },
+        TranscriptSegment {
+            text: "Rightside".into(),
+            start_ts: 4_400_000.0 / RATE as f32,
+            end_ts: 4_500_000.0 / RATE as f32,
+        },
+    ];
+    assert!(seal_sliced_by_silero(&mut state, &tx, &words));
+    let ledger = state.acoustic_ledger.lock().unwrap();
+    let rendered = ledger.rendered_text();
+    assert!(
+        rendered.contains("Middlephrase"),
+        "middle Apple word never reached the committed projection: {rendered}"
+    );
+    assert!(rendered.contains("Leftside"), "{rendered}");
+    assert!(rendered.contains("Rightside"), "{rendered}");
+    let ranges = ledger
+        .occurrences()
+        .map(|occurrence| (occurrence.sample_start, occurrence.sample_end))
+        .collect::<Vec<_>>();
+    assert_eq!(ranges.len(), 3, "{ranges:?}");
+    for pair in ranges.windows(2) {
+        assert!(
+            pair[0].1 <= pair[1].0,
+            "committed occurrences still share PCM: {ranges:?}"
+        );
+    }
+    let conservation = SessionConservationReceipt::from_ledger(&ledger, 0, 0, 0, BTreeMap::new());
+    assert_eq!(
+        conservation.residue(),
+        0,
+        "admitted minus delivered must equal named refusals: {conservation:?}"
+    );
+}
+
 #[test]
 fn recovery_new_gap_formatter_work_prevents_terminal_seal() {
     let mut state = state();

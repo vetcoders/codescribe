@@ -3087,6 +3087,75 @@ fn seal_sliced_by_silero(
     reconcile_silero_ledger(state, ev_tx, &ledger, disjoint)
 }
 
+/// PCM each closed utterance owns once boundary overlaps are given to the
+/// tightest window. Context pads stay on the Silero range; they are not a
+/// second physical identity over the same samples.
+fn exclusive_closed_spans(
+    utterances: &[super::silero_fusion::SileroUtterance],
+) -> BTreeMap<u64, (u64, u64)> {
+    let closed: Vec<_> = utterances
+        .iter()
+        .filter(|utterance| utterance.closed)
+        .collect();
+    let mut points = Vec::with_capacity(closed.len().saturating_mul(2));
+    for utterance in &closed {
+        points.push(utterance.range.sample_start);
+        points.push(utterance.range.sample_end);
+    }
+    points.sort_unstable();
+    points.dedup();
+    let mut pieces: BTreeMap<u64, Vec<(u64, u64)>> = BTreeMap::new();
+    for pair in points.windows(2) {
+        let (start, end) = (pair[0], pair[1]);
+        if end <= start {
+            continue;
+        }
+        let owner = closed
+            .iter()
+            .filter(|utterance| {
+                utterance.range.sample_start <= start && end <= utterance.range.sample_end
+            })
+            .min_by_key(|utterance| {
+                (
+                    utterance
+                        .range
+                        .sample_end
+                        .saturating_sub(utterance.range.sample_start),
+                    utterance.range.sample_start,
+                    utterance.id,
+                )
+            });
+        if let Some(owner) = owner {
+            pieces.entry(owner.id).or_default().push((start, end));
+        }
+    }
+    let mut spans = BTreeMap::new();
+    for utterance in &closed {
+        let Some(parts) = pieces.get(&utterance.id) else {
+            continue;
+        };
+        let start = parts[0].0;
+        let mut end = parts[0].1;
+        let mut contiguous = true;
+        for (part_start, part_end) in parts.iter().skip(1) {
+            if *part_start != end {
+                contiguous = false;
+                break;
+            }
+            end = *part_end;
+        }
+        if contiguous && end > start {
+            spans.insert(utterance.id, (start, end));
+        } else {
+            spans.insert(
+                utterance.id,
+                (utterance.range.sample_start, utterance.range.sample_end),
+            );
+        }
+    }
+    spans
+}
+
 /// Production reconciliation seam; tests supply physical edges without a model.
 fn reconcile_silero_ledger(
     state: &mut AppleSealState,
@@ -3152,6 +3221,37 @@ fn reconcile_silero_ledger(
                 .extend(words);
         }
     }
+    // Overlapping Silero windows are one physical claim per sample. Words move
+    // with their midpoint onto the tightest closed span before any occurrence
+    // is minted, so a pad shared with a neighbour cannot erase the word.
+    let exclusive = exclusive_closed_spans(ledger.utterances());
+    if !exclusive.is_empty() {
+        let mut held = Vec::new();
+        let closed_ids: Vec<u64> = ledger
+            .utterances()
+            .iter()
+            .filter(|utterance| utterance.closed)
+            .map(|utterance| utterance.id)
+            .collect();
+        for id in closed_ids {
+            if let Some(words) = state.pending_silero_words.remove(&id) {
+                held.extend(words);
+            }
+        }
+        for word in held {
+            let mid = word.sample_start + word.sample_end.saturating_sub(word.sample_start) / 2;
+            let owner = exclusive
+                .iter()
+                .find_map(|(&id, &(start, end))| (start <= mid && mid < end).then_some(id));
+            match owner {
+                Some(id) if !state.reconciled_silero.contains(&id) => {
+                    state.pending_silero_words.entry(id).or_default().push(word);
+                }
+                Some(_) => {}
+                None => state.unmatched_silero_words.push(word),
+            }
+        }
+    }
     for silero in ledger
         .utterances()
         .iter()
@@ -3212,12 +3312,33 @@ fn reconcile_silero_ledger(
             })
             .collect::<Vec<_>>();
 
-        // Silero has already selected the physical occurrence. Admit the
+        // Silero has already selected the physical occurrence. The identity is
+        // the exclusive PCM, not the pad it shares with a neighbour. Admit the
         // slice-local Apple label before the raw final can escape as telemetry.
         // There is no independent slice-local Lexicon rewrite on this path, so
         // Lexicon reports a no-change observation for the same exact label and
         // range. Callback-wide text is never copied across sliced occurrences.
-        let occurrence = OccurrenceIdentity::from(&silero.range);
+        let (owned_start, owned_end) = match exclusive.get(&utterance_id) {
+            Some(&(start, end)) if end > start => (start, end),
+            _ => {
+                let swallowed = exclusive.iter().any(|(&id, &(start, end))| {
+                    id != utterance_id
+                        && start <= silero.range.sample_start
+                        && silero.range.sample_end <= end
+                });
+                if swallowed {
+                    state.reconciled_silero.insert(utterance_id);
+                    continue;
+                }
+                (silero.range.sample_start, silero.range.sample_end)
+            }
+        };
+        let occurrence = OccurrenceIdentity::new(
+            state.session_id.clone(),
+            state.capture_epoch,
+            owned_start,
+            owned_end,
+        );
         let first_attempt = state
             .acoustic_ledger
             .lock()
@@ -3611,6 +3732,7 @@ fn admit_full_pass_gap_segments(
         .filter(|range| range.sample_end.saturating_sub(range.sample_start) > threshold_samples)
         .collect::<Vec<_>>();
     let mut admitted = 0usize;
+    let mut contained = 0usize;
 
     for (generation, segment) in full_pass.segments.iter().enumerate() {
         let label = segment.text.trim();
@@ -3632,6 +3754,7 @@ fn admit_full_pass_gap_segments(
             }
             continue;
         };
+        contained = contained.saturating_add(1);
 
         let observation = LedgerObservationIdentity::new(
             LedgerObservationProducer::Whisper,
@@ -3654,11 +3777,10 @@ fn admit_full_pass_gap_segments(
         }
     }
 
-    if admitted == 0 && !material_gaps.is_empty() {
+    if admitted == 0 && contained == 0 && !material_gaps.is_empty() {
         let _ = ev_tx.send(EngineEvent::Warning {
             code: "seal_coverage_full_pass_gap_unresolved".to_string(),
-            message: "whole-session final pass had no segment wholly contained in a material gap"
-                .to_string(),
+            message: "material gap had no source-mapped segment wholly contained in it".to_string(),
         });
     }
     admitted
@@ -3986,6 +4108,18 @@ where
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .record_seal_coverage(final_receipt.clone());
+    {
+        let mut ledger = state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for range in &final_receipt.uncovered_speech_ranges {
+            if range.sample_end.saturating_sub(range.sample_start) <= threshold_samples {
+                continue;
+            }
+            ledger.note_unrecovered_speech(&OccurrenceIdentity::from(range));
+        }
+    }
     let _ = ev_tx.send(EngineEvent::SealCoverage {
         receipt: final_receipt.clone(),
         comparison: None,
@@ -8337,6 +8471,55 @@ mod rc_w2_acoustic_tests {
         }
     }
 
+    /// A provider segment that starts before the uncovered gap is not speech
+    /// this gap owns. The stop path must leave that gap as one named refusal
+    /// the conservation receipt counts, and must not commit the straddling text.
+    #[test]
+    fn straddling_gap_segment_stays_a_named_unrecovered_refusal() {
+        let mut state = two_bursts("straddle-gap");
+        let expected = coverage_speech_evidence(&state).ranges().to_vec();
+        assert!(!expected.is_empty());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let execution = LocalExecutionOwner::default();
+        let receipt = repair_terminal_seal_coverage_with(
+            &mut state,
+            &tx,
+            None,
+            &execution,
+            move |request, pcm, control| {
+                control.check()?;
+                request.validate_pcm(pcm)?;
+                let mut payload = gap_payload(request);
+                let start = payload.segments[0].range.sample_start;
+                payload.segments[0].range.sample_start = start.saturating_sub(500);
+                payload.segments[0].text = "Straddle".into();
+                payload.text = "Straddle".into();
+                Ok(payload)
+            },
+        );
+        assert_eq!(receipt.status, SealCoverageStatus::Incomplete);
+        assert!(
+            !state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .rendered_text()
+                .contains("Straddle"),
+            "a segment that starts before the gap must not become committed text"
+        );
+        let _ = warning_codes(&mut rx);
+        let conservation = state.session_conservation();
+        assert_eq!(
+            conservation
+                .observations_refused_by_reason
+                .get("unrecovered_speech")
+                .copied(),
+            Some(expected.len() as u64),
+            "each material gap the stop path could not recover needs one named refusal: {conservation:?}"
+        );
+        assert_eq!(conservation.residue(), 0, "{conservation:?}");
+    }
+
     #[test]
     fn owned_terminal_repair_still_admits_both_exact_gaps() {
         let mut state = two_bursts("owned-repair");
@@ -11030,7 +11213,8 @@ mod live_refinement_admission_tests {
                     ledger
                         .assess_seal_coverage("live-admission", 7, &speech, 250)
                         .coverage_ratio(),
-                    Some(0.0)
+                    Some(1.0),
+                    "a committed occurrence counts as covered while recovery is still pending"
                 );
             }
             while receiver.try_recv().is_ok() {}
@@ -11058,7 +11242,8 @@ mod live_refinement_admission_tests {
             let coverage = ledger.assess_seal_coverage("live-admission", 7, &speech, 250);
             assert_eq!(
                 coverage.coverage_ratio(),
-                Some(if succeeds { 1.0 } else { 0.0 })
+                Some(1.0),
+                "failed recovery keeps the committed label's PCM covered"
             );
             assert!(ledger.record_seal_coverage(coverage));
             if succeeds {
