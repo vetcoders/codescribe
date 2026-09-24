@@ -2597,6 +2597,14 @@ class CurrentChainMutantTests(unittest.TestCase):
         alone, because a positive that cannot go red proves only that it ran.
         """
         apple = "core/pipeline/streaming/apple_live_session.rs"
+        exclusive_mint = (
+            "        let occurrence = OccurrenceIdentity::new(\n"
+            "            state.session_id.clone(),\n"
+            "            state.capture_epoch,\n"
+            "            owned_start,\n"
+            "            owned_end,\n"
+            "        );"
+        )
         cases = [
             # The armed branch stops routing into the physical lane at all.
             ("armed_routing_removed", "seal_utterance_final",
@@ -2630,10 +2638,15 @@ class CurrentChainMutantTests(unittest.TestCase):
              [("        });\n        return false;\n    }\n    let apple_words",
                "        });\n    }\n    let apple_words")]),
             # Ownership is minted from the padded recognition context instead of
-            # the physical Silero range.
+            # the exclusive closed span.
             ("ownership_minted_from_padded_range", "reconcile_silero_ledger",
-             [("let occurrence = OccurrenceIdentity::from(&silero.range);",
-               "let occurrence = OccurrenceIdentity::from(&bound_context_range(&silero.range, context, pad_samples, &bounds));")]),
+             [(exclusive_mint,
+               "        let occurrence = OccurrenceIdentity::from(&bound_context_range(&silero.range, context, pad_samples, &bounds));")]),
+            # The shared Silero window, pad included, is minted as the physical
+            # identity. Exclusive spans are what closed that defect.
+            ("ownership_minted_from_silero_range", "reconcile_silero_ledger",
+             [(exclusive_mint,
+               "        let occurrence = OccurrenceIdentity::from(&silero.range);")]),
             # The qualifier is still called but its refusal cannot fire.
             ("qualification_refusal_ignored", "reconcile_silero_ledger",
              [("if !qualify_owned_occurrence(state, &occurrence) {",
