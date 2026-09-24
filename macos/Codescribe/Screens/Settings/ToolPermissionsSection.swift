@@ -7,9 +7,10 @@ import SwiftUI
 
 struct ToolPermissionsSection: View {
   @ObservedObject var model: SettingsViewModel
-  @State private var toolsExpanded = false
   @State private var searchText = ""
-  @State private var expandedServers: Set<String> = []
+  /// Server whose tools are listed. View state; when the search filters it
+  /// away the browser shows the first server with hits instead.
+  @State private var selectedServer: String?
 
   private var grouped: [(server: String, items: [ToolPermissionItem])] {
     ToolPermissionGrouping.groups(
@@ -37,110 +38,20 @@ struct ToolPermissionsSection: View {
         emptyCapabilities
           .padding(.top, 12)
       } else {
-        DisclosureGroup(
-          "Tool overrides · \(model.toolCapabilities.count)",
-          isExpanded: $toolsExpanded
-        ) {
-          hierarchyChrome
-            .padding(.top, 8)
-
-          ScrollView {
-            LazyVStack(alignment: .leading, spacing: 8) {
-              ForEach(grouped, id: \.server) { group in
-                ServerPermissionGroup(
-                  server: group.server,
-                  items: group.items,
-                  isExpanded: Binding(
-                    get: {
-                      // When searching, force open so hits are visible.
-                      if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        return true
-                      }
-                      return expandedServers.contains(group.server)
-                    },
-                    set: { open in
-                      if open {
-                        expandedServers.insert(group.server)
-                      } else {
-                        expandedServers.remove(group.server)
-                      }
-                    }
-                  ),
-                  onLevel: { identity, level in
-                    model.setToolPermission(identity: identity, level: level)
-                  }
-                )
-              }
-            }
+        SettingsSectionLabel("Tool overrides · \(model.toolCapabilities.count)")
+          .padding(.top, CSSpace.section)
+        ToolOverridesBrowser(
+          groups: grouped,
+          searchText: $searchText,
+          selectedServer: $selectedServer,
+          onLevel: { identity, level in
+            model.setToolPermission(identity: identity, level: level)
           }
-          .frame(maxHeight: 360)
-          .padding(.top, 8)
-        }
-        .padding(.top, 12)
-        .font(CSFont.ui(12.5, .semibold))
-        .foregroundStyle(CSColor.textBody)
+        )
+        .padding(.top, CSSpace.control)
       }
     }
-    .onAppear {
-      model.reloadToolPermissions()
-      seedExpandedServersIfNeeded()
-    }
-    .onChange(of: model.toolCapabilities.map(\.identity)) { _, _ in
-      seedExpandedServersIfNeeded()
-    }
-  }
-
-  private var hierarchyChrome: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      HStack(spacing: 8) {
-        Image(systemName: "magnifyingglass")
-          .font(.system(size: 11, weight: .medium))
-          .foregroundStyle(CSColor.textFaint)
-        TextField("Search server or tool", text: $searchText)
-          .textFieldStyle(.plain)
-          .font(CSFont.mono(11.5, .medium))
-          .foregroundStyle(CSColor.textBody)
-      }
-      .padding(.horizontal, 10)
-      .padding(.vertical, 7)
-      .background(
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-          .fill(CSColor.surfaceRaised(0.03))
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-          .strokeBorder(CSColor.hairline(0.06), lineWidth: 1)
-      )
-
-      HStack(spacing: 12) {
-        Button("Expand all") {
-          expandedServers = Set(grouped.map(\.server))
-        }
-        .csFocusRing()
-        .font(CSFont.mono(10.5, .semibold))
-        .foregroundStyle(CSColor.oliveLight)
-
-        Button("Collapse all") {
-          expandedServers.removeAll()
-        }
-        .csFocusRing()
-        .font(CSFont.mono(10.5, .semibold))
-        .foregroundStyle(CSColor.textFaint)
-
-        Spacer(minLength: 0)
-
-        Text("\(grouped.count) server\(grouped.count == 1 ? "" : "s")")
-          .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textFaint)
-      }
-    }
-  }
-
-  private func seedExpandedServersIfNeeded() {
-    // First open: expand the first server so the hierarchy is discoverable
-    // without dumping every tool. Preserve operator choices after that.
-    guard expandedServers.isEmpty, let first = grouped.first?.server else { return }
-    expandedServers = [first]
+    .onAppear { model.reloadToolPermissions() }
   }
 
   private var defaultsCard: some View {
@@ -301,50 +212,11 @@ enum ToolPermissionGrouping {
   }
 }
 
-// MARK: - Server group + capability row
+// MARK: - Capability row
 
-private struct ServerPermissionGroup: View {
-  let server: String
-  let items: [ToolPermissionItem]
-  @Binding var isExpanded: Bool
-  let onLevel: (String, String) -> Void
-
-  var body: some View {
-    DisclosureGroup(isExpanded: $isExpanded) {
-      VStack(spacing: 6) {
-        ForEach(items) { item in
-          ToolCapabilityRow(
-            item: item,
-            onLevel: { onLevel(item.identity, $0) }
-          )
-        }
-      }
-      .padding(.top, 6)
-    } label: {
-      HStack(spacing: 8) {
-        Text(server)
-          .font(CSFont.ui(12, .semibold))
-          .foregroundStyle(CSColor.textBody)
-        Text("\(items.count)")
-          .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textFaint)
-          .padding(.horizontal, 6)
-          .padding(.vertical, 2)
-          .background(
-            Capsule(style: .continuous)
-              .fill(CSColor.surfaceRaised(0.05))
-          )
-        Spacer(minLength: 0)
-      }
-    }
-    .font(CSFont.ui(12, .semibold))
-    .foregroundStyle(CSColor.textBody)
-  }
-}
-
-private struct ToolCapabilityRow: View {
+struct ToolCapabilityRow: View {
   let item: ToolPermissionItem
-  let onLevel: (String) -> Void
+  let onLevel: @MainActor (String) -> Void
 
   var body: some View {
     HStack(alignment: .center, spacing: 12) {

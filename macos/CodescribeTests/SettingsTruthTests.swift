@@ -243,7 +243,7 @@ final class SettingsTruthTests: XCTestCase {
   /// which group a section sits in, its symbol, and what the search matches.
   func testEverySectionDeclaresItsGroupAndASymbolForTheNativeSidebar() {
     let visible = SettingsSection.allCases.filter { $0.availability != .hidden }
-    XCTAssertEqual(visible.count, 10)
+    XCTAssertEqual(visible.count, 9)
 
     for section in visible {
       XCTAssertFalse(section.symbol.isEmpty, "\(section.rawValue) needs an SF Symbol")
@@ -285,61 +285,119 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertTrue(SettingsSection.matching(query: "zzzz").isEmpty)
   }
 
-  /// Pagination must not lose a subsystem or strand a page: every page belongs
-  /// to a real section, selecting a section lands on its first page, and a
-  /// section without pages keeps rendering whole.
-  func testPaginatedSectionsRouteToPagesWithoutLosingSubsystems() {
+  /// Tabs must not lose a subsystem or strand a tab: every tab belongs to a
+  /// real section, selecting a section lands on its first tab, and a section
+  /// without tabs keeps rendering whole.
+  func testTabbedSectionsRouteToTabsWithoutLosingSubsystems() {
     let model = SettingsViewModel(engine: MockSettingsEngine())
 
     XCTAssertEqual(
-      SettingsPage.pages(in: .agent),
-      [.agentLanes, .agentWorkspace, .agentStatus, .agentTools, .agentMcp],
-      "the Agent panel's five subsystems each need their own page"
+      SettingsTab.tabs(in: .agent),
+      [.agentLanes, .agentPrompts, .agentWorkspace, .agentStatus, .agentTools, .agentMcp],
+      "the Agent panel's six subsystems each need their own tab"
     )
-    for page in SettingsPage.allCases {
-      XCTAssertFalse(page.title.isEmpty)
-      XCTAssertFalse(page.symbol.isEmpty)
-      XCTAssertTrue(SettingsPage.pages(in: page.section).contains(page))
+    XCTAssertEqual(
+      SettingsTab.tabs(in: .engine),
+      [
+        .dictationEngine, .dictationWhisper, .dictationPreview, .dictationHandsFree,
+        .dictationPrivacy, .dictationPermissions,
+      ],
+      "every former Dictation collapsible is a tab"
+    )
+    for tab in SettingsTab.allCases {
+      XCTAssertFalse(tab.title.isEmpty)
+      XCTAssertFalse(tab.headline.isEmpty)
+      XCTAssertFalse(tab.blurb.isEmpty)
+      XCTAssertFalse(tab.searchKeywords.isEmpty)
+      XCTAssertTrue(SettingsTab.tabs(in: tab.section).contains(tab))
     }
 
-    // Landing on a paginated section opens its first page.
+    // Landing on a tabbed section opens its first tab.
     model.select(SettingsSection.agent)
-    XCTAssertEqual(model.page, .agentLanes)
-    XCTAssertEqual(model.route, .page(.agentLanes))
+    XCTAssertEqual(model.tab, .agentLanes)
+    XCTAssertEqual(model.currentTab, .agentLanes)
 
-    // Selecting a page keeps the parent section consistent.
-    model.select(SettingsPage.agentMcp)
+    // Selecting a tab keeps the parent section consistent.
+    model.select(SettingsTab.agentMcp)
     XCTAssertEqual(model.section, .agent)
-    XCTAssertEqual(model.route, .page(.agentMcp))
+    XCTAssertEqual(model.currentTab, .agentMcp)
 
-    // Leaving for an unpaginated section clears the page.
+    // The tab bar writes through the same path; a nil write is dropped.
+    model.currentTab = .agentTools
+    XCTAssertEqual(model.currentTab, .agentTools)
+    model.currentTab = nil
+    XCTAssertEqual(model.currentTab, .agentTools)
+
+    // Leaving for a section without tabs clears the tab.
     model.select(SettingsSection.audio)
-    XCTAssertNil(model.page)
-    XCTAssertEqual(model.route, .section(.audio))
+    XCTAssertNil(model.tab)
+    XCTAssertNil(model.currentTab)
 
-    // Route selection round-trips through the rail's binding type.
-    model.select(SettingsRoute.page(.agentTools))
-    XCTAssertEqual(model.route, .page(.agentTools))
-    model.select(SettingsRoute.section(.license))
-    XCTAssertEqual(model.route, .section(.license))
+    // A raw section write (quick start, previews) shows that section's first
+    // tab — never a stale tab from the previous section.
+    model.select(SettingsTab.agentMcp)
+    model.section = .engine
+    XCTAssertEqual(model.currentTab, .dictationEngine)
+
+    // Sidebar selection round-trips through the rail's binding; nil is dropped.
+    model.sidebarSelection = .license
+    XCTAssertEqual(model.section, .license)
+    model.sidebarSelection = nil
+    XCTAssertEqual(model.section, .license)
   }
 
-  func testSettingsSearchReachesInsideLongSections() {
-    // A page keyword surfaces its parent section…
-    XCTAssertTrue(SettingsPage.matching(query: "mcp").contains(.agentMcp))
-    XCTAssertEqual(SettingsPage.matching(query: "mcp").first?.section, .agent)
-    // …even though the section's own title and keywords do not mention it.
+  func testSettingsSearchReachesInsideTabs() {
+    // A tab keyword reveals its parent section…
+    XCTAssertTrue(SettingsTab.matching(query: "mcp").contains(.agentMcp))
+    XCTAssertEqual(SettingsTab.matching(query: "mcp").first?.section, .agent)
+    XCTAssertTrue(SettingsSection.revealed(by: "mcp").contains(.agent))
     XCTAssertFalse(SettingsSection.agent.title.lowercased().contains("mcp"))
 
-    XCTAssertTrue(SettingsPage.matching(query: "permission").contains(.agentTools))
-    XCTAssertTrue(SettingsPage.matching(query: "roots").contains(.agentWorkspace))
-    XCTAssertTrue(SettingsPage.matching(query: "zzzz").isEmpty)
-    XCTAssertEqual(SettingsPage.matching(query: "  ").count, SettingsPage.allCases.count)
+    // …and opening that section from the search lands on the tab it named.
+    XCTAssertEqual(SettingsTab.searchLanding(in: .agent, query: "mcp"), .agentMcp)
+    XCTAssertEqual(SettingsTab.searchLanding(in: .agent, query: "permission"), .agentTools)
+    XCTAssertEqual(
+      SettingsTab.searchLanding(in: .engine, query: "permission"), .dictationPermissions)
+    XCTAssertNil(SettingsTab.searchLanding(in: .agent, query: "  "))
+    XCTAssertNil(
+      SettingsTab.searchLanding(in: .agent, query: "agent"),
+      "a section-name query opens the section on its first tab"
+    )
+
+    // Prompts have one home: every prompt term reveals Agent and lands on Prompts.
+    for query in ["system prompt", "persona", "formatting.txt", "assistive.txt"] {
+      XCTAssertEqual(SettingsSection.revealed(by: query), [.agent], query)
+      XCTAssertEqual(SettingsTab.searchLanding(in: .agent, query: query), .agentPrompts, query)
+    }
+
+    XCTAssertTrue(SettingsTab.matching(query: "roots").contains(.agentWorkspace))
+    XCTAssertTrue(SettingsTab.matching(query: "zzzz").isEmpty)
+    XCTAssertTrue(SettingsSection.revealed(by: "zzzz").isEmpty)
+    XCTAssertEqual(SettingsTab.matching(query: "  ").count, SettingsTab.allCases.count)
+    XCTAssertEqual(
+      SettingsSection.revealed(by: "  "),
+      SettingsSection.matching(query: ""),
+      "an empty query keeps the whole rail"
+    )
+  }
+
+  /// The prompt picker moved; prompt identity did not. Each segment still maps
+  /// to the same storage level and names the same base file.
+  func testPromptFilesKeepTheirStorageIdentity() {
+    XCTAssertEqual(PromptFile.allCases.map(\.formattingLevel), [.correction, .smart, .max, nil])
+    XCTAssertEqual(
+      PromptFile.allCases.compactMap(\.formattingLevel),
+      FormattingPolicyOption.editablePrompts
+    )
+    XCTAssertTrue(PromptFile.correction.editorSubtitle.hasSuffix("(formatting.txt)"))
+    XCTAssertTrue(PromptFile.smart.editorSubtitle.hasSuffix("(formatting-smart.txt)"))
+    XCTAssertTrue(PromptFile.max.editorSubtitle.hasSuffix("(formatting-max.txt)"))
+    XCTAssertTrue(PromptFile.assistive.editorSubtitle.hasSuffix("(assistive.txt)"))
   }
 
   func testSectionAvailabilityKeepsPromisesHonest() {
     for section in [
-      SettingsSection.creator, .shortcuts, .keys, .agent, .prompts, .engine, .audio, .voiceLab,
+      SettingsSection.creator, .shortcuts, .keys, .agent, .engine, .audio, .voiceLab,
       .license, .user,
     ] {
       XCTAssertEqual(section.availability, .available)
@@ -348,16 +406,16 @@ final class SettingsTruthTests: XCTestCase {
   }
 
   /// The full route map: stable id, one visible title owner, and the explicit
-  /// panel destination SettingsView's detail switch consumes. All ten rail
-  /// sections, including engine→Dictation, voiceLab→Dictionary,
-  /// keys→Providers, and the dedicated Agent destination.
+  /// panel destination SettingsView's detail switch consumes. Every rail
+  /// section, including engine→Dictation, voiceLab→Dictionary,
+  /// keys→Providers, and the dedicated Agent destination (which also owns the
+  /// prompts — there is no separate Prompts row).
   func testSettingsSectionRoutesTitlesAndDestinationsOwnTheRail() {
     let expectations: [(SettingsSection, String, String, SettingsPanelDestination)] = [
       (.creator, "creator", "Creator", .creator),
       (.shortcuts, "shortcuts", "Hotkeys", .shortcuts),
       (.keys, "keys", "Providers", .providers),
       (.agent, "agent", "Agent", .agent),
-      (.prompts, "prompts", "Prompts", .prompts),
       (.engine, "engine", "Dictation", .dictation),
       (.audio, "audio", "Audio", .audio),
       (.voiceLab, "voiceLab", "Dictionary", .dictionary),
@@ -388,7 +446,7 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(ProvidersPanel.ownedCapabilities, [.providers])
     XCTAssertEqual(
       AgentPanel.ownedCapabilities,
-      [.llmLanes, .workspaceRoots, .agentStatus, .mcpServers, .toolPermissions]
+      [.llmLanes, .prompts, .workspaceRoots, .agentStatus, .mcpServers, .toolPermissions]
     )
     XCTAssertTrue(ProvidersPanel.ownedCapabilities.isDisjoint(with: AgentPanel.ownedCapabilities))
   }

@@ -10,10 +10,6 @@ import SwiftUI
 struct AgentStatusSection: View {
   @ObservedObject var model: SettingsViewModel
 
-  /// Collapsed by default: the per-server health probe is an informational
-  /// drill-down, not a readiness input, so it stays out of the way until asked.
-  @State private var probesExpanded = false
-
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       header
@@ -42,17 +38,26 @@ struct AgentStatusSection: View {
       statusCard(rows: model.mcpStatus.rows)
         .padding(.top, 8)
 
-      // Collapsible per-server health probe. Reflects the cached Test /
-      // handshake result from the management section below; purely
-      // informational and never flips the readiness verdict above.
+      // Per-server health probe. Reflects the cached Test / handshake result
+      // from the MCP servers tab; purely informational and never flips the
+      // readiness verdict above. Shown whole — the Capabilities tab has room.
       if !model.mcpServers.isEmpty {
-        probeDisclosure
-          .padding(.top, 13)
+        HStack(spacing: 10) {
+          SettingsSectionLabel("Per-server probe")
+          Spacer(minLength: 0)
+          Text("\(model.mcpServers.count) configured")
+            .font(CSFont.mono(10, .medium))
+            .foregroundStyle(CSColor.textFaint)
+        }
+        .padding(.top, CSSpace.section)
+        .help("Cached initialize + tools/list result per configured server")
+        statusCard(rows: probeRows)
+          .padding(.top, 8)
       }
     }
   }
 
-  // MARK: Per-server probe (collapsible)
+  // MARK: Per-server probe
 
   /// One row per configured server: the cached probe status (ok / fail /
   /// testing / not tested) mapped to a tone the shared status card renders.
@@ -70,35 +75,6 @@ struct AgentStatusSection: View {
         return CsMcpStatusRow(label: server.name, value: value, tone: .good)
       }
       return CsMcpStatusRow(label: server.name, value: "fail: \(result.error)", tone: .bad)
-    }
-  }
-
-  private var probeDisclosure: some View {
-    VStack(alignment: .leading, spacing: 0) {
-      Button {
-        withAnimation(.easeOut(duration: 0.18)) { probesExpanded.toggle() }
-      } label: {
-        HStack(spacing: 7) {
-          CSIconView(
-            icon: probesExpanded ? .chevronDown : .chevronRight,
-            size: 10, weight: .semibold, color: CSColor.textMuted
-          )
-          Text("Per-server probe")
-            .font(CSFont.mono(11, .semibold))
-            .foregroundStyle(CSColor.textMutedAlt)
-          Spacer(minLength: 0)
-          Text("\(model.mcpServers.count) configured")
-            .font(CSFont.mono(10, .medium))
-            .foregroundStyle(CSColor.textFaint)
-        }
-      }
-      .csFocusRing()
-      .help("Cached initialize + tools/list result per configured server")
-
-      if probesExpanded {
-        statusCard(rows: probeRows)
-          .padding(.top, 8)
-      }
     }
   }
 

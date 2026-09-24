@@ -7,175 +7,98 @@ import SwiftUI
 //
 // NOTE: these edit only the BASE files; the core still appends its `*_tuning.txt`
 // at runtime (not shown here).
+//
+// Lives on Agent › Prompts — the one home for every prompt file. The four files
+// used to be four sidebar rows; now a segmented picker switches the editor.
 
 struct PromptPanel: View {
   @ObservedObject var model: SettingsViewModel
 
-  @State private var formatting: String = ""
-  @State private var formattingSmart: String = ""
-  @State private var formattingMax: String = ""
-  @State private var assistive: String = ""
-  @State private var formattingSnapshot: CsPromptSnapshot?
-  @State private var formattingSmartSnapshot: CsPromptSnapshot?
-  @State private var formattingMaxSnapshot: CsPromptSnapshot?
-  @State private var assistiveSnapshot: CsPromptSnapshot?
+  /// Which prompt file the editor shows. View state: the Agent tab bar owns
+  /// the Prompts tab, this picks one of its four files.
+  @State private var file: PromptFile = .correction
+  @State private var drafts: [PromptFile: String] = [:]
+  @State private var snapshots: [PromptFile: CsPromptSnapshot] = [:]
 
-  /// One prompt per page, mirroring AgentPanel. Four stacked TextEditors in
-  /// a single scroll meant every visit wheeled past prompts you did not come
-  /// for; the rail tree addresses each file directly.
+  /// One prompt at a time. Four stacked TextEditors in a single scroll meant
+  /// every visit wheeled past prompts you did not come for.
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      EyebrowLabel(text: "Settings · Prompts · \(current.title)")
-      Text(headline)
-        .font(CSFont.ui(26, .bold))
-        .tracking(-0.5)
-        .foregroundStyle(CSColor.textHigh)
-        .padding(.top, 6)
+      Picker("Prompt file", selection: $file) {
+        ForEach(PromptFile.allCases) { file in
+          Text(file.title).tag(file)
+        }
+      }
+      .pickerStyle(.segmented)
+      .labelsHidden()
+      .fixedSize()
+      .accessibilityIdentifier("settings-prompt-file")
 
-      Text("Edits the BASE prompt file. The core still appends its tuning prompt at runtime.")
-        .font(CSFont.ui(12.5))
-        .lineSpacing(2)
-        .foregroundStyle(CSColor.textMutedAlt)
-        .padding(.top, 8)
-
-      editor
-        .padding(.top, CSSpace.section)
+      // `.id(file)` gives each file its own editor identity, so EDIT mode and
+      // a pending restore confirmation never carry over to another file.
+      PromptEditor(
+        title: file.editorTitle,
+        subtitle: file.editorSubtitle,
+        text: $drafts[draftOf: file],
+        snapshot: snapshots[file],
+        onSave: save,
+        onRestore: restore
+      )
+      .id(file)
+      .padding(.top, CSSpace.lg)
     }
-    .padding(.horizontal, CSSpace.xl)
-    .padding(.vertical, CSSpace.section)
-    .onAppear {
-      guard formattingSnapshot == nil, formattingSmartSnapshot == nil,
-        formattingMaxSnapshot == nil, assistiveSnapshot == nil
-      else { return }
-      loadAllSnapshots()
-    }
+    .onAppear(perform: loadAllSnapshotsIfNeeded)
   }
 
-  /// The nil route (section clicked, no page) lands on the correction
-  /// prompt — the file most edits target.
-  private var current: SettingsPage {
-    switch model.page {
-    case .promptSmart, .promptMax, .promptAssistive:
-      return model.page ?? .promptCorrection
-    default:
-      return .promptCorrection
+  private func save() -> Bool {
+    let content = drafts[draftOf: file]
+    if let level = file.formattingLevel {
+      return apply(model.saveFormattingPrompt(level, content: content))
     }
+    return apply(model.saveAssistivePrompt(content))
   }
 
-  private var headline: String {
-    switch current {
-    case .promptSmart: return "Smart prompt."
-    case .promptMax: return "Max prompt."
-    case .promptAssistive: return "Assistive prompt."
-    default: return "Correction prompt."
+  private func restore() -> Bool {
+    if let level = file.formattingLevel {
+      return apply(model.restoreFormattingPromptToDefault(level))
     }
+    return apply(model.restoreAssistivePromptToDefault())
   }
 
-  @ViewBuilder
-  private var editor: some View {
-    switch current {
-    case .promptSmart:
-      PromptEditor(
-        title: "Smart prompt",
-        subtitle: "Balanced transcript editing (formatting-smart.txt)",
-        text: $formattingSmart,
-        snapshot: formattingSmartSnapshot,
-        onSave: {
-          guard let updated = model.saveFormattingPrompt(.smart, content: formattingSmart) else {
-            return false
-          }
-          formattingSmart = updated.content
-          formattingSmartSnapshot = updated
-          return true
-        },
-        onRestore: {
-          guard let updated = model.restoreFormattingPromptToDefault(.smart) else { return false }
-          formattingSmart = updated.content
-          formattingSmartSnapshot = updated
-          return true
-        }
-      )
-    case .promptMax:
-      PromptEditor(
-        title: "Max prompt",
-        subtitle: "Maximum supported prose polish (formatting-max.txt)",
-        text: $formattingMax,
-        snapshot: formattingMaxSnapshot,
-        onSave: {
-          guard let updated = model.saveFormattingPrompt(.max, content: formattingMax) else {
-            return false
-          }
-          formattingMax = updated.content
-          formattingMaxSnapshot = updated
-          return true
-        },
-        onRestore: {
-          guard let updated = model.restoreFormattingPromptToDefault(.max) else { return false }
-          formattingMax = updated.content
-          formattingMaxSnapshot = updated
-          return true
-        }
-      )
-    case .promptAssistive:
-      PromptEditor(
-        title: "Assistive prompt",
-        subtitle: "Base system prompt for the voice assistant (assistive.txt)",
-        text: $assistive,
-        snapshot: assistiveSnapshot,
-        onSave: {
-          guard let updated = model.saveAssistivePrompt(assistive) else { return false }
-          assistive = updated.content
-          assistiveSnapshot = updated
-          return true
-        },
-        onRestore: {
-          guard let updated = model.restoreAssistivePromptToDefault() else { return false }
-          assistive = updated.content
-          assistiveSnapshot = updated
-          return true
-        }
-      )
-    default:
-      PromptEditor(
-        title: "Correction prompt",
-        subtitle: "Correction only AI formatting (formatting.txt)",
-        text: $formatting,
-        snapshot: formattingSnapshot,
-        onSave: {
-          guard let updated = model.saveFormattingPrompt(.correction, content: formatting) else {
-            return false
-          }
-          formatting = updated.content
-          formattingSnapshot = updated
-          return true
-        },
-        onRestore: {
-          guard let updated = model.restoreFormattingPromptToDefault(.correction) else {
-            return false
-          }
-          formatting = updated.content
-          formattingSnapshot = updated
-          return true
-        }
-      )
-    }
+  /// A failed save/restore returns nil and must not claim a refreshed snapshot.
+  private func apply(_ updated: CsPromptSnapshot?) -> Bool {
+    guard let updated else { return false }
+    drafts[file] = updated.content
+    snapshots[file] = updated
+    return true
   }
 
-  private func loadAllSnapshots() {
+  private func loadAllSnapshotsIfNeeded() {
+    guard snapshots.isEmpty else { return }
     let formattingLoaded =
       model.formattingPromptSnapshot(level: .correction)
       ?? model.formattingPromptSnapshot()
     let smartLoaded = model.formattingPromptSnapshot(level: .smart)
     let maxLoaded = model.formattingPromptSnapshot(level: .max)
     let assistiveLoaded = model.assistivePromptSnapshot()
-    formatting = formattingLoaded.content
-    formattingSmart = smartLoaded?.content ?? ""
-    formattingMax = maxLoaded?.content ?? ""
-    assistive = assistiveLoaded.content
-    formattingSnapshot = formattingLoaded
-    formattingSmartSnapshot = smartLoaded
-    formattingMaxSnapshot = maxLoaded
-    assistiveSnapshot = assistiveLoaded
+    drafts = [
+      .correction: formattingLoaded.content,
+      .smart: smartLoaded?.content ?? "",
+      .max: maxLoaded?.content ?? "",
+      .assistive: assistiveLoaded.content,
+    ]
+    snapshots = [.correction: formattingLoaded, .assistive: assistiveLoaded]
+    snapshots[.smart] = smartLoaded
+    snapshots[.max] = maxLoaded
+  }
+}
+
+/// Unsaved text per prompt file; a file never loaded reads as empty. A named
+/// subscript (not `[key, default:]`) so the editor can bind to it by key path.
+extension Dictionary where Key == PromptFile, Value == String {
+  fileprivate subscript(draftOf file: PromptFile) -> String {
+    get { self[file] ?? "" }
+    set { self[file] = newValue }
   }
 }
 
@@ -327,7 +250,7 @@ func promptSourceLabel(_ source: String?) -> String {
 
 #if DEBUG
   #Preview("Prompt panel") {
-    ScrollView { PromptPanel(model: .preview(.prompts)) }
+    ScrollView { PromptPanel(model: .preview(.agent)) }
       .frame(width: 720, height: 620)
       .background(CSColor.windowWash)
       .preferredColorScheme(.dark)
