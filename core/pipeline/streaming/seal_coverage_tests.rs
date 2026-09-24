@@ -509,6 +509,7 @@ async fn private_archive_live_producer_bench() {
             layer1,
             lifecycle_events: None,
             terminal_audio: Some(terminal_audio),
+            last_window_closed: None,
         },
     )
     .await

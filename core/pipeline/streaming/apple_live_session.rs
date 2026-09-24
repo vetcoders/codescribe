@@ -871,6 +871,7 @@ pub(crate) async fn apple_stream_transcription_session(
         layer1,
         mut lifecycle_events,
         terminal_audio,
+        mut last_window_closed,
     } = config;
     // One owner for this capture epoch's acoustic evidence. This async arm is
     // the writer and the blocking Apple worker below is the reader; both hold
@@ -920,6 +921,7 @@ pub(crate) async fn apple_stream_transcription_session(
     let (pcm_tx, pcm_rx) = std_mpsc::channel::<Option<Vec<f32>>>();
     // Worker → async events.
     let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<EngineEvent>();
+    let (worker_close_tx, mut worker_close_rx) = tokio::sync::oneshot::channel();
 
     // The local Whisper decision is resolved once from product mode + the
     // compatibility phase token before capture starts. Never re-read env here:
@@ -1043,6 +1045,7 @@ pub(crate) async fn apple_stream_transcription_session(
                 settings_digest,
                 utterance_silence_sec,
                 terminal_audio,
+                last_window_closed: worker_close_tx,
                 consultation: worker_consultation,
             },
         )
@@ -1056,8 +1059,24 @@ pub(crate) async fn apple_stream_transcription_session(
     // until the session ended. Product truth: presentation was missing, not STT.
     let mut audio_eof = false;
     let mut worker_finished = false;
+    let mut close_ack_pending = true;
     loop {
         tokio::select! {
+            close = &mut worker_close_rx, if close_ack_pending => {
+                close_ack_pending = false;
+                if close.is_ok() {
+                    // The worker sent every L0 event before its close receipt.
+                    // Admit them through the normal sink before waking stop.
+                    while let Ok(event) = ev_rx.try_recv() {
+                        deliver_event(&event, event_sink.as_ref(), stream_log_path.as_deref());
+                    }
+                    if let Some(sender) = last_window_closed.take() {
+                        let _ = sender.send(());
+                    }
+                } else {
+                    drop(last_window_closed.take());
+                }
+            }
             event = ev_rx.recv(), if !worker_finished => {
                 match event {
                     // Same diagnostic artifact the VAD path writes: one line
@@ -5149,6 +5168,7 @@ struct AppleWorkerConfig<'a> {
     utterance_silence_sec: Option<f32>,
     terminal_audio:
         Option<std_mpsc::Receiver<Result<super::live_audio_buffer::FinalizedPcmArchive, String>>>,
+    last_window_closed: tokio::sync::oneshot::Sender<()>,
 }
 
 /// Blocking worker: owns the SFSpeech stream(s) for the session's full lifetime.
@@ -5175,6 +5195,7 @@ fn apple_stream_worker(
         settings_digest,
         utterance_silence_sec,
         terminal_audio,
+        last_window_closed,
     } = config;
     debug_assert_eq!(settings_digest, runtime_settings.digest().as_str());
     // The one read of calibration truth for this session: the measured profile
@@ -5422,6 +5443,31 @@ fn apple_stream_worker(
         state.emit_speech_integrity(&ev_tx);
     }
 
+    let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
+    if let Some(fusion) = state.fusion.as_mut() {
+        fusion.flush(samples_seen);
+    }
+    if let Some(session) = stream.take() {
+        let trailing = shift_events(
+            session.finish()?,
+            epoch_base_secs(epoch_base_samples, sample_rate),
+        );
+        emit_stream_events(trailing, &ev_tx, &mut state, audio_secs);
+    }
+
+    if state.fusion_seal_armed {
+        seal_sliced_by_silero(&mut state, &ev_tx, &[]);
+    }
+
+    // Seal open partial that never got a phrase final (stop mid-phrase).
+    // Same seal-time correction as the phrase path — a stop mid-utterance must
+    // not be the one route that commits uncorrected text.
+    seal_open_partial(&mut state, &ev_tx, audio_secs);
+    // Every event above is L0 admission for the final capture window. The
+    // async arm drains those events into the reducer before acknowledging the
+    // controller; no archive, Whisper drain or debt recovery is on this path.
+    let _ = last_window_closed.send(());
+
     if let Some(receiver) = terminal_audio {
         let archive = receiver
             .recv_timeout(Duration::from_secs(30))
@@ -5446,26 +5492,6 @@ fn apple_stream_worker(
             }
         }
     }
-    let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
-    if let Some(fusion) = state.fusion.as_mut() {
-        fusion.flush(samples_seen);
-    }
-    if let Some(session) = stream.take() {
-        let trailing = shift_events(
-            session.finish()?,
-            epoch_base_secs(epoch_base_samples, sample_rate),
-        );
-        emit_stream_events(trailing, &ev_tx, &mut state, audio_secs);
-    }
-
-    if state.fusion_seal_armed {
-        seal_sliced_by_silero(&mut state, &ev_tx, &[]);
-    }
-
-    // Seal open partial that never got a phrase final (stop mid-phrase).
-    // Same seal-time correction as the phrase path — a stop mid-utterance must
-    // not be the one route that commits uncorrected text.
-    seal_open_partial(&mut state, &ev_tx, audio_secs);
     let _ = state.flush_layer1_coalesce(&ev_tx);
 
     // Every accepted Layer 1 request must close (success, no-change, or)

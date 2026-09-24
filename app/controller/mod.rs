@@ -561,6 +561,29 @@ fn refused_take_archive(
 /// stop propagated the refusal with `?` past its own state reset, the
 /// controller stayed `Busy` for good, the Bus session never ended and every
 /// later Finish press was ignored until the app was restarted.
+// One Apple observation window is at most four seconds by the engine contract.
+// Expiry chooses terminal delivery so a slow final never pastes a short prefix.
+const LAST_WINDOW_CLOSE_BOUND: std::time::Duration = std::time::Duration::from_secs(4);
+
+async fn await_last_window_close_for_delivery(
+    recorder: &mut StreamingRecorder,
+    stop_start: std::time::Instant,
+) -> Option<u128> {
+    let closed = recorder
+        .wait_last_window_closed(LAST_WINDOW_CLOSE_BOUND)
+        .await;
+    let elapsed_ms = stop_start.elapsed().as_millis();
+    if !closed {
+        warn!(
+            elapsed_ms,
+            bound_ms = LAST_WINDOW_CLOSE_BOUND.as_millis(),
+            "last_window_close_timeout"
+        );
+        return None;
+    }
+    Some(elapsed_ms)
+}
+
 async fn stop_recorder_for_terminal(
     recorder: &mut StreamingRecorder,
     session_id: Option<&str>,
@@ -2066,6 +2089,7 @@ impl RecordingController {
         force_ai: bool,
         capture_turn: CaptureTurnIntent,
         stop_start: std::time::Instant,
+        last_window_close_ms: u128,
     ) -> Result<Option<String>> {
         if take_delivers_to_composer(capture_turn) {
             return Ok(None);
@@ -2081,6 +2105,9 @@ impl RecordingController {
         if snapshot.session_id != take_id {
             return Ok(None);
         }
+        if snapshot.text.trim().is_empty() {
+            return Ok(None);
+        }
         self.deliver_stop_transcript(
             Some(take_id),
             &snapshot.text,
@@ -2092,6 +2119,7 @@ impl RecordingController {
         .await?;
         info!(
             stop_to_delivery_ms = stop_start.elapsed().as_millis(),
+            last_window_close_ms,
             capture_epoch = snapshot.capture_epoch,
             reducer_revision = snapshot.revision,
             preview_only_words = snapshot.preview_only_words,
@@ -2114,6 +2142,11 @@ impl RecordingController {
     {
         let (assistive, force_ai, capture_turn, seal_refused) = intent;
         let trimmed = text.trim();
+        if trimmed.is_empty() {
+            self.record_delivery_disposition(TranscriptDelivery::Retained)
+                .await;
+            return Ok(TranscriptDelivery::Retained);
+        }
         {
             let mut delivered = self.delivered_take.lock().await;
             if !claim_take_delivery(&mut delivered, take_id) {
@@ -4419,15 +4452,21 @@ impl RecordingController {
             // The live slot is `{uuid}:stopping` here. File-lane identity is
             // the Bus uuid snapped before that rewrite.
             let was_active = recorder.close_capture().await;
-            let initial_delivery = self
-                .deliver_frozen_canvas_at_stop(
+            let last_window_close_ms =
+                await_last_window_close_for_delivery(recorder, stop_start).await;
+            let initial_delivery = if let Some(last_window_close_ms) = last_window_close_ms {
+                self.deliver_frozen_canvas_at_stop(
                     session_id_snapshot.as_deref(),
                     assistive,
                     force_ai,
                     capture_turn,
                     stop_start,
+                    last_window_close_ms,
                 )
-                .await;
+                .await
+            } else {
+                Ok(None)
+            };
             let stopped =
                 stop_recorder_for_terminal(recorder, session_id_snapshot.as_deref(), Some(was_active)).await;
             rec_stop_secs = phase2.elapsed().as_secs_f64();
@@ -4987,15 +5026,20 @@ impl RecordingController {
         let serving_engine = recorder.streaming_engine_label();
         let stop_start = std::time::Instant::now();
         let was_active = recorder.close_capture().await;
-        let initial_delivery = self
-            .deliver_frozen_canvas_at_stop(
+        let last_window_close_ms = await_last_window_close_for_delivery(recorder, stop_start).await;
+        let initial_delivery = if let Some(last_window_close_ms) = last_window_close_ms {
+            self.deliver_frozen_canvas_at_stop(
                 take_id.as_deref(),
                 assistive,
                 force_ai,
                 CaptureTurnIntent::HandsFree,
                 stop_start,
+                last_window_close_ms,
             )
-            .await;
+            .await
+        } else {
+            Ok(None)
+        };
         let stopped =
             stop_recorder_for_terminal(recorder, take_id.as_deref(), Some(was_active)).await;
         Self::clear_recorder_callbacks(recorder);
@@ -5362,6 +5406,85 @@ mod terminal_delivery_target_falsifiers {
             *controller.delivery_disposition.read().await,
             TranscriptDelivery::Retained
         );
+    }
+
+    #[tokio::test]
+    async fn empty_stop_canvas_cannot_claim_the_take_before_terminal_words_arrive() {
+        let controller = RecordingController::new_without_keychain();
+        let config = Config::default();
+        let first = controller
+            .deliver_stop_transcript_with_sink(
+                Some("open-last-window"),
+                "",
+                (false, false, CaptureTurnIntent::HandsFree, false),
+                &config,
+                |_, _, _| async { panic!("empty canvas has no sink payload") },
+            )
+            .await;
+        assert!(first.is_ok());
+        let terminal = controller
+            .deliver_stop_transcript_with_sink(
+                Some("open-last-window"),
+                "last words",
+                (false, false, CaptureTurnIntent::HandsFree, false),
+                &config,
+                |_, text, _| async move {
+                    assert_eq!(text, "last words");
+                    Ok(OverlayPasteResult {
+                        delivery: OverlayPasteDelivery::Pasted,
+                        target_app_name: None,
+                        frontmost_app_name: None,
+                        deferred_insert_shortcut: None,
+                        deferred_insert_failure: None,
+                    })
+                },
+            )
+            .await;
+        assert!(
+            terminal.is_ok(),
+            "terminal words were suppressed: {terminal:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sink_admission_after_last_window_ignores_slow_tail_work() {
+        let controller = RecordingController::new_without_keychain();
+        let config = Config {
+            auto_paste_enabled: true,
+            ..Config::default()
+        };
+        let l1 = tokio::spawn(async { tokio::time::sleep(Duration::from_millis(650)).await });
+        let recovery = tokio::spawn(async { tokio::time::sleep(Duration::from_millis(700)).await });
+        let stop_start = std::time::Instant::now();
+        tokio::time::sleep(Duration::from_millis(55)).await;
+        let last_window_close_ms = stop_start.elapsed().as_millis();
+        controller
+            .deliver_stop_transcript_with_sink(
+                Some("timed-take"),
+                "all committed words",
+                (false, false, CaptureTurnIntent::HandsFree, false),
+                &config,
+                |route, text, _| async move {
+                    assert_eq!(route, DeliveryRoute::ClipboardPaste);
+                    assert_eq!(text, "all committed words");
+                    Ok(OverlayPasteResult {
+                        delivery: OverlayPasteDelivery::Pasted,
+                        target_app_name: None,
+                        frontmost_app_name: None,
+                        deferred_insert_shortcut: None,
+                        deferred_insert_failure: None,
+                    })
+                },
+            )
+            .await
+            .unwrap();
+        let stop_to_sink_ms = stop_start.elapsed().as_millis();
+        eprintln!("last_window_close_ms={last_window_close_ms} stop_to_sink_ms={stop_to_sink_ms}");
+        assert!(stop_to_sink_ms < last_window_close_ms + 300);
+        assert!(!l1.is_finished());
+        assert!(!recovery.is_finished());
+        l1.await.unwrap();
+        recovery.await.unwrap();
     }
 
     /// A refused seal degrades the coverage claim, not the route. The committed

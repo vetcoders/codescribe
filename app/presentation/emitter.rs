@@ -2874,6 +2874,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stop_canvas_includes_the_third_occurrence_open_at_release() {
+        let delivery = Arc::new(Mutex::new(String::new()));
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let mut emitter = PresentationEmitter::new_with_authority(
+            Arc::clone(&delivery),
+            None,
+            None,
+            None,
+            Some(Arc::clone(&ledger)),
+            None,
+        );
+        emitter.on_capture_opened("take", 7);
+        for index in 0..2 {
+            let mutation = {
+                let mut ledger = ledger.lock().unwrap();
+                admitted_mutation(
+                    &mut ledger,
+                    OccurrenceIdentity::new("take", 7, index * 16_000, (index + 1) * 16_000),
+                    index + 1,
+                    "Iwo",
+                )
+            };
+            emitter.on_event(&mutation);
+        }
+        emitter.on_event(&preview(3, "Iwo"));
+        assert_eq!(emitter.visible_canvas_snapshot().unwrap().text, "Iwo Iwo");
+        let last = {
+            let mut ledger = ledger.lock().unwrap();
+            admitted_mutation(
+                &mut ledger,
+                OccurrenceIdentity::new("take", 7, 32_000, 48_000),
+                3,
+                "Iwo",
+            )
+        };
+        emitter.on_event(&last);
+        let frozen = emitter.visible_canvas_snapshot().unwrap();
+        assert_eq!(
+            frozen.text, "Iwo Iwo Iwo",
+            "last occurrence missing at stop"
+        );
+        assert_eq!(frozen.revision, 3);
+        emitter.finish().await;
+    }
+
+    #[tokio::test]
+    async fn single_occurrence_closed_at_release_is_the_first_deliverable_canvas() {
+        let delivery = Arc::new(Mutex::new(String::new()));
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let mut emitter = PresentationEmitter::new_with_authority(
+            Arc::clone(&delivery),
+            None,
+            None,
+            None,
+            Some(Arc::clone(&ledger)),
+            None,
+        );
+        emitter.on_capture_opened("take", 7);
+        emitter.on_event(&preview(1, "last words"));
+        assert!(emitter.visible_canvas_snapshot().unwrap().text.is_empty());
+        let last = {
+            let mut ledger = ledger.lock().unwrap();
+            admitted_mutation(
+                &mut ledger,
+                OccurrenceIdentity::new("take", 7, 0, 16_000),
+                1,
+                "last words",
+            )
+        };
+        emitter.on_event(&last);
+        let frozen = emitter.visible_canvas_snapshot().unwrap();
+        assert_eq!(frozen.text, "last words");
+        assert_eq!(frozen.revision, 1);
+        emitter.finish().await;
+    }
+
+    #[tokio::test]
     async fn ledger_mutation_paints_overlay_and_writes_exact_revision_to_delivery() {
         let delivery = Arc::new(Mutex::new(String::new()));
         let deltas = Arc::new(RecordingDeltaSink::default());

@@ -105,6 +105,7 @@ async fn main() -> Result<()> {
             layer1,
             lifecycle_events: None,
             terminal_audio: None,
+            last_window_closed: None,
         },
     )
     .await?;

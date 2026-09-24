@@ -27,7 +27,7 @@ use anyhow::{Context, Result, anyhow};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
@@ -264,6 +264,7 @@ pub async fn replay_production_session(
         layer1,
         lifecycle_events: None,
         terminal_audio: None,
+        last_window_closed: None,
     };
     let events = collect_buffered_engine_events_with_config(samples, config).await?;
     let tail_patch_receipt = TailPatchSessionReceipt::from_events(&events);
@@ -319,6 +320,7 @@ pub struct StreamingRecorder {
             Result<crate::pipeline::streaming::live_audio_buffer::FinalizedPcmArchive, String>,
         >,
     >,
+    last_window_closed: Option<oneshot::Receiver<()>>,
 }
 
 impl StreamingRecorder {
@@ -349,6 +351,7 @@ impl StreamingRecorder {
             capture_epoch: 0,
             captured_samples: Arc::new(AtomicU64::new(0)),
             terminal_audio_sender: None,
+            last_window_closed: None,
         })
     }
 
@@ -379,6 +382,7 @@ impl StreamingRecorder {
             capture_epoch: 0,
             captured_samples: Arc::new(AtomicU64::new(0)),
             terminal_audio_sender: None,
+            last_window_closed: None,
         })
     }
 
@@ -595,6 +599,8 @@ impl StreamingRecorder {
         self.lifecycle_handle = Some(lifecycle_handle);
         let (terminal_tx, terminal_rx) = std::sync::mpsc::channel();
         self.terminal_audio_sender = Some(terminal_tx);
+        let (last_window_tx, last_window_rx) = oneshot::channel();
+        self.last_window_closed = Some(last_window_rx);
         self.transcription_handle = Some(tokio::spawn(async move {
             transcription_session(
                 rx,
@@ -614,6 +620,7 @@ impl StreamingRecorder {
                     layer1,
                     lifecycle_events: Some(lifecycle_events),
                     terminal_audio: Some(terminal_rx),
+                    last_window_closed: Some(last_window_tx),
                 },
             )
             .await;
@@ -649,6 +656,15 @@ impl StreamingRecorder {
     /// Close capture independently of the session drain and WAV finalization.
     pub async fn close_capture(&mut self) -> bool {
         self.recorder.close_capture().await
+    }
+
+    /// Wait only for Apple final admission and reducer delivery, never L1 or
+    /// terminal archive work. A failed worker closes the channel without an ack.
+    pub async fn wait_last_window_closed(&mut self, bound: std::time::Duration) -> bool {
+        let Some(mut receiver) = self.last_window_closed.take() else {
+            return false;
+        };
+        matches!(tokio::time::timeout(bound, &mut receiver).await, Ok(Ok(())))
     }
 
     /// Continue the owned stop tail after the microphone has closed.
@@ -1569,6 +1585,50 @@ mod capture_stop_failure_tests {
         recorder.captured_samples.store(4, Ordering::Relaxed);
         recorder.lifecycle_handle = Some(recorder_lifecycle_channel().0);
         recorder
+    }
+
+    #[tokio::test]
+    async fn last_window_ack_does_not_wait_for_slow_refinement_or_recovery() {
+        let mut recorder = recorder();
+        let (closed_tx, closed_rx) = oneshot::channel();
+        recorder.last_window_closed = Some(closed_rx);
+        let l1 =
+            tokio::spawn(async { tokio::time::sleep(std::time::Duration::from_millis(650)).await });
+        let recovery =
+            tokio::spawn(async { tokio::time::sleep(std::time::Duration::from_millis(700)).await });
+        let close_start = std::time::Instant::now();
+        let (elapsed_tx, elapsed_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(55)).await;
+            elapsed_tx.send(close_start.elapsed().as_millis()).unwrap();
+            closed_tx.send(()).unwrap();
+        });
+        assert!(
+            recorder
+                .wait_last_window_closed(std::time::Duration::from_secs(4))
+                .await
+        );
+        let last_window_close_ms = elapsed_rx.await.unwrap();
+        let stop_to_ack_ms = close_start.elapsed().as_millis();
+        eprintln!("last_window_close_ms={last_window_close_ms} stop_to_ack_ms={stop_to_ack_ms}");
+        assert!(stop_to_ack_ms < last_window_close_ms + 300);
+        assert!(!l1.is_finished());
+        assert!(!recovery.is_finished());
+        l1.await.unwrap();
+        recovery.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn last_window_timeout_keeps_terminal_delivery_available() {
+        let mut recorder = recorder();
+        let (_closed_tx, closed_rx) = oneshot::channel();
+        recorder.last_window_closed = Some(closed_rx);
+        assert!(
+            !recorder
+                .wait_last_window_closed(std::time::Duration::from_millis(10))
+                .await
+        );
+        assert!(recorder.last_window_closed.is_none());
     }
 
     fn write_wav(path: &std::path::Path) -> Vec<u8> {

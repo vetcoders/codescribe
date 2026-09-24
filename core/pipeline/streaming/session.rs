@@ -179,6 +179,8 @@ pub struct SessionConfig {
     pub terminal_audio: Option<
         std::sync::mpsc::Receiver<Result<super::live_audio_buffer::FinalizedPcmArchive, String>>,
     >,
+    /// Acknowledged only after the stop window's L0 events reached the reducer.
+    pub last_window_closed: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 /// Stable event code carrying the typed local tail-patch session receipt.
@@ -669,6 +671,7 @@ pub async fn collect_buffered_engine_events(
             layer1: Layer1Decision::Disarmed,
             lifecycle_events: None,
             terminal_audio: None,
+            last_window_closed: None,
         },
     )
     .await
