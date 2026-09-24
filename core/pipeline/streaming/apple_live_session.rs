@@ -8779,17 +8779,31 @@ mod storm_tests {
             assert!(seal_sliced_by_silero(&mut state, &tx, &words));
             let occurrence = OccurrenceIdentity::new(session, 0, 0, at(1.5));
             let ledger = state.acoustic_ledger.lock().unwrap();
-            (ledger.text_of(&occurrence).map(str::to_owned), ledger.is_sealed(&occurrence))
+            let sealed_texts = ledger
+                .occurrences()
+                .filter(|identity| ledger.is_sealed(identity))
+                .filter_map(|identity| ledger.text_of(identity).map(str::to_owned))
+                .collect::<Vec<_>>();
+            (
+                ledger.text_of(&occurrence).map(str::to_owned),
+                ledger.is_sealed(&occurrence),
+                sealed_texts,
+            )
         };
 
-        let (control_text, control_sealed) = run(false);
+        let (control_text, control_sealed, control_sealed_texts) = run(false);
         assert_eq!(control_text.as_deref(), Some("real"));
         assert!(control_sealed, "the audible control must reach a terminal seal");
+        assert_eq!(control_sealed_texts, vec!["real".to_owned()]);
 
-        let (text, sealed) = run(true);
+        let (text, sealed, sealed_texts) = run(true);
         assert!(
             !sealed || text.as_deref() == Some("real"),
             "measured silence must not seal the Apple word: {text:?}"
+        );
+        assert!(
+            sealed_texts.iter().all(|label| !label.contains("ghost")),
+            "no physical occurrence may seal the silent word: {sealed_texts:?}"
         );
     }
 
