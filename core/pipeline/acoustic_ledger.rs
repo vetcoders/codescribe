@@ -5180,7 +5180,7 @@ mod tests {
     }
 
     #[test]
-    fn read_only_clock_lie_cannot_veto_independent_correction_of_its_host_span() {
+    fn read_only_overlap_cannot_register_clock_lie_veto() {
         let mut ledger = AcousticLedger::new();
         ledger.bind_capture_rate(16_000);
         let host = occ(0, 16_000);
@@ -5199,15 +5199,13 @@ mod tests {
                 ..
             }
         ));
-        assert!(ledger.is_clock_lie_span(&short_overlap));
-
-        // The short read-only hypothesis has no authority over the host's
-        // exact-identity Whisper observation, including veto authority.
-        assert!(matches!(
-            ledger.admit(&obs(ObservationProducer::Whisper, 2, host.clone()), "pies"),
-            MutationReceipt::Correct { .. }
-        ));
-        assert_eq!(ledger.text_of(&host), Some("pies"));
+        // This observation was not admitted as document text. It may be
+        // diagnosed as implausible, but cannot acquire persistent veto
+        // authority over the committed host. Local Word-pin admission is a
+        // separate contract; this test must not demand whole-host replacement.
+        assert!(!ledger.clock_lie_blocks_neighbour_replacement(&host));
+        assert_eq!(ledger.text_of(&short_overlap), None);
+        assert_eq!(ledger.text_of(&host), Some("kot"));
         assert_eq!(ledger.conservation().residue(), 0);
     }
 }
