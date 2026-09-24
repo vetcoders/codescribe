@@ -547,22 +547,10 @@ fn refused_take_archive(
     }
 }
 
-/// Stop the recorder for a finished take and classify the outcome.
-///
-/// A ledger refusal of the terminal transcript ([`TerminalSealRefused`]) is a
-/// legitimate take outcome, not a recorder failure: the capture stopped and the
-/// take WAV is already on disk. That audio is retained under the Bus uuid here,
-/// before the refusal is returned, so the take survives for Retranscribe and the
-/// error the user sees names the refused seal rather than the mic. Any other
-/// processing error carries producer-owned recovery evidence when available.
-///
-/// Incident 2026-09-02 02:17 UTC (`~/.codescribe/logs/codescribe.log`): a quiet
-/// take (-57.9 dB) ended with `terminal_seal_coverage_incomplete`; the toggle
-/// stop propagated the refusal with `?` past its own state reset, the
-/// controller stayed `Busy` for good, the Bus session never ended and every
-/// later Finish press was ignored until the app was restarted.
-// One Apple observation window is at most four seconds by the engine contract.
-// Expiry chooses terminal delivery so a slow final never pastes a short prefix.
+// Provisional budget for the last Apple final (codex/integrator choice, not
+// measured and not a contract value: the contract's 4 s is the Layer 1 Whisper
+// window). Calibrate from live `last_window_close_ms` p50/p99. Expiry chooses
+// terminal delivery so a slow final never pastes a short prefix.
 const LAST_WINDOW_CLOSE_BOUND: std::time::Duration = std::time::Duration::from_secs(4);
 
 async fn await_last_window_close_for_delivery(
@@ -584,6 +572,20 @@ async fn await_last_window_close_for_delivery(
     Some(elapsed_ms)
 }
 
+/// Stop the recorder for a finished take and classify the outcome.
+///
+/// A ledger refusal of the terminal transcript ([`TerminalSealRefused`]) is a
+/// legitimate take outcome, not a recorder failure: the capture stopped and the
+/// take WAV is already on disk. That audio is retained under the Bus uuid here,
+/// before the refusal is returned, so the take survives for Retranscribe and the
+/// error the user sees names the refused seal rather than the mic. Any other
+/// processing error carries producer-owned recovery evidence when available.
+///
+/// Incident 2026-09-02 02:17 UTC (`~/.codescribe/logs/codescribe.log`): a quiet
+/// take (-57.9 dB) ended with `terminal_seal_coverage_incomplete`; the toggle
+/// stop propagated the refusal with `?` past its own state reset, the
+/// controller stayed `Busy` for good, the Bus session never ended and every
+/// later Finish press was ignored until the app was restarted.
 async fn stop_recorder_for_terminal(
     recorder: &mut StreamingRecorder,
     session_id: Option<&str>,
