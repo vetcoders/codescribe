@@ -12581,6 +12581,28 @@ mod relay_l1_overlap_admission_tests {
             Some("cale zdanie")
         );
         assert_conserved(&lane, Some("intersecting_pin_not_exclusive"));
+        assert_eq!(
+            lane.state.tail_patch_awaiting_completion, 0,
+            "every launched window returned before terminal drain"
+        );
+        // The production Stop path skips its outstanding-job loop at zero,
+        // then attempts this exact terminal seal operation.
+        lane.state.seal_remaining_at_session_end(&lane.tx);
+        let whisper_still_open = lane
+            .state
+            .acoustic_ledger
+            .lock()
+            .expect("ledger")
+            .frontier_of(&occurrence)
+            .is_some_and(|frontier| {
+                frontier
+                    .open_producers()
+                    .contains(&ObservationProducer::Whisper)
+            });
+        assert!(
+            !whisper_still_open,
+            "a read-only straddling pin must not strand Whisper's observer after all windows return"
+        );
     }
 
     /// (iii) Two of three windows return, then stop drains the accumulator.
