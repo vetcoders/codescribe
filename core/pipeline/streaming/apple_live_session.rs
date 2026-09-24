@@ -14355,8 +14355,9 @@ mod relay_l1_overlap_admission_tests {
 
     /// Provider completion order cannot become document order. This is a
     /// closed-occurrence control for the still-missing open-window binding:
-    /// every observation retains its request clock, and the single final
-    /// mutation must address the physical occurrence, not the arrival slot.
+    /// every phrase observation retains its request clock, and the single
+    /// final mutation must address the physical occurrence, not the arrival
+    /// slot. Word-grain acoustic support is a separate gate.
     #[test]
     fn out_of_order_l1_completion_keeps_pcm_order() {
         for order in [[0usize, 1, 2], [2usize, 0, 1]] {
@@ -14368,9 +14369,9 @@ mod relay_l1_overlap_admission_tests {
             let mut lane = open(session);
             let (occurrence, requests) = launch_long(&mut lane, "cale zdanie");
             let windows = [
-                vec![word_pin(session, "raz", 8_000, 40_000)],
-                vec![word_pin(session, "dwa", 52_000, 90_000)],
-                vec![word_pin(session, "trzy", 100_000, 150_000)],
+                vec![segment(session, "raz", 8_000, 40_000)],
+                vec![segment(session, "dwa", 52_000, 90_000)],
+                vec![segment(session, "trzy", 100_000, 150_000)],
             ];
             let mut events = Vec::new();
             for index in order {
