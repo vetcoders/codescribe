@@ -45,6 +45,15 @@ impl LocalExecutionOwner {
         self.control.limit_until(deadline)
     }
 
+    /// Stop-path text recovery budget. Unlike [`Self::begin_drain`], this
+    /// replaces the deadline: recovery runs after the live tail-patch drain
+    /// and must not inherit a clock that drain already spent. Cancellation
+    /// stays in force.
+    pub(super) fn begin_text_recovery(&self, budget: std::time::Duration) -> std::time::Instant {
+        self.control
+            .replace_deadline(std::time::Instant::now() + budget)
+    }
+
     pub(crate) fn spawn<T, F>(&self, work: F) -> Result<tokio::sync::oneshot::Receiver<Result<T>>>
     where
         T: Send + 'static,
@@ -1065,6 +1074,24 @@ mod local_execution_tests {
         let first = owner.begin_drain(Duration::ZERO);
         assert_eq!(owner.begin_drain(Duration::from_secs(5)), first);
         assert!(owner.spawn(|_| Ok(())).is_err());
+    }
+
+    #[test]
+    fn text_recovery_budget_replaces_an_expired_live_drain() {
+        let owner = LocalExecutionOwner::default();
+        let expired = owner.begin_drain(Duration::ZERO);
+        assert!(owner.spawn(|_| Ok(())).is_err());
+        let recovery = owner.begin_text_recovery(Duration::from_secs(20));
+        assert!(recovery > expired);
+        let receiver = owner
+            .spawn(|_| Ok(7u8))
+            .expect("a fresh recovery budget admits work the live drain already refused");
+        assert_eq!(receiver.blocking_recv().unwrap().unwrap(), 7);
+        assert_eq!(
+            owner.begin_drain(Duration::from_secs(60)),
+            recovery,
+            "begin_drain still cannot move the recovery deadline later"
+        );
     }
 
     #[test]

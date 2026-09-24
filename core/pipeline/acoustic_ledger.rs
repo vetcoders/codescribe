@@ -782,15 +782,11 @@ impl AcousticLedger {
             return refuse(AcousticEvidenceGap::PartialObservation);
         }
 
-        // Subtract only debt that was never committed. A committed occurrence
-        // already owns its PCM, so pending recovery must not report that speech
-        // as uncovered. An uncommitted debt range still punches out of a wider
-        // neighbour: another label must not make unresolved speech disappear.
-        let debt = self
-            .pending_text_recoveries(session, capture_epoch)
-            .into_iter()
-            .filter(|occurrence| !self.committed.contains_key(occurrence))
-            .collect::<Vec<_>>();
+        // A debt label stays visible and cannot certify the PCM it names.
+        // Subtract every pending recovery, committed or not. An uncommitted
+        // debt range still punches out of a wider neighbour: another label
+        // must not make unresolved speech disappear.
+        let debt = self.pending_text_recoveries(session, capture_epoch);
         let committed: Vec<(u64, u64)> = committed
             .into_iter()
             .flat_map(|range| {
@@ -859,7 +855,7 @@ impl AcousticLedger {
             .map(|range| range.sample_end.saturating_sub(range.sample_start))
             .max()
             .unwrap_or(0);
-        let status = if max_uncovered_samples > incomplete_threshold_samples {
+        let status = if !debt.is_empty() || max_uncovered_samples > incomplete_threshold_samples {
             SealCoverageStatus::Incomplete
         } else {
             SealCoverageStatus::Complete
@@ -3711,12 +3707,12 @@ mod tests {
             vec![occurrence.clone()]
         );
         let after = ledger.assess_seal_coverage("s1", 1, &debt_speech(), 32_000);
-        assert_eq!(after.status, SealCoverageStatus::Complete);
-        assert_eq!(after.coverage_ratio(), Some(1.0));
-        assert_eq!(after.max_uncovered_samples, 0);
-        // Take 9608b50e: five committed windows sat on top of the speech set
-        // and coverage still reported covered=0. A committed occurrence has
-        // to count, including while text recovery is still pending.
+        assert_eq!(after.status, SealCoverageStatus::Incomplete);
+        assert_eq!(after.coverage_ratio(), Some(0.0));
+        assert_eq!(after.max_uncovered_samples, 16_000);
+        // Take 9608b50e: five committed windows, each owing text recovery.
+        // covered=0 is the truthful receipt. The defect is that the stop path
+        // never recovers those occurrences.
         let mut take = AcousticLedger::new();
         take.bind_capture_rate(48_000);
         let committed = [
@@ -3772,14 +3768,17 @@ mod tests {
             .collect(),
         );
         let coverage = take.assess_seal_coverage("9608b50e", 1, &speech, 12_000);
-        assert!(
-            coverage.covered_samples > 0,
-            "committed speech was reported uncovered: {coverage:?}"
+        assert_eq!(
+            take.pending_text_recoveries("9608b50e", 1).len(),
+            5,
+            "the fixture is five debt occurrences: {coverage:?}"
         );
-        assert!(
-            coverage.covered_samples >= 1_423_872 - 972_288,
-            "the first committed window did not cover its speech: {coverage:?}"
+        assert_eq!(coverage.status, SealCoverageStatus::Incomplete);
+        assert_eq!(
+            coverage.covered_samples, 0,
+            "debt must not certify coverage: {coverage:?}"
         );
+        assert_eq!(coverage.speech_samples, 2_331_648);
         assert_eq!(ledger.text_of(&occurrence), Some("partial"));
         ledger.admit(
             &obs(ObservationProducer::Whisper, 0, occurrence.clone()),

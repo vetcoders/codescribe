@@ -360,6 +360,20 @@ fn deliver_consultation_result(
 /// because the loop was waiting on the wrong condition.
 const TAIL_PATCH_CLOSURE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Budget for stop-path text recovery after the live tail-patch drain.
+///
+/// The live drain is [`TAIL_PATCH_CLOSURE_TIMEOUT`] and `begin_drain` cannot
+/// extend it. On take 9608b50e that drain completed (`timed_out=0`, 25 live
+/// jobs already skipped) and the same 5s clock then ran the coverage requests:
+/// three windows finished between 11:26:21.720Z and 11:26:24.611Z, and the
+/// other three died at 11:26:25.327Z as `local execution cancelled or drain
+/// deadline expired`. Five debt occurrences on that take cover about 77s of
+/// PCM (3_685_376 utterance samples at 48 kHz). At the observed rate, roughly
+/// 27s of PCM in 4.2s, five windows are about 12s of sequential work on a
+/// model that is already warm. This cap is that phase only. It returns when
+/// the jobs finish; a take with nothing to recover does not wait it out.
+const SEAL_TEXT_RECOVERY_BUDGET: Duration = Duration::from_secs(20);
+
 /// A 200 ms VAD/energy edge is ordinary quantisation; an uncovered span over
 /// 250 ms is not allowed to become terminal transcript truth.
 pub const SEAL_COVERAGE_INCOMPLETE_MS: u64 = 250;
@@ -3957,11 +3971,103 @@ fn drain_formatter_observers(
     Ok(())
 }
 
+/// One provider attempt for a single requested PCM range.
+enum StopRangeAttempt {
+    Ready(TailProviderPayload),
+    MissingPcm,
+    ForeignIdentity,
+    Failed(anyhow::Error),
+}
+
+/// Offer one whole-span recovery of a debt occurrence.
+///
+/// The observation identity is the occurrence, not a segment inside it.
+/// Every non-empty segment must sit wholly inside that span. A segment that
+/// escapes, or a payload whose clock does not, is a refusal: nothing is admitted.
+fn admit_debt_occurrence_recovery(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    occurrence: &OccurrenceIdentity,
+    payload: &TailProviderPayload,
+) -> bool {
+    let exact_timing = payload.evidence.timing_quality
+        == crate::stt::tail_provider::TailTimingQuality::ExactSampleRange
+        || (cfg!(test)
+            && payload.evidence.timing_quality
+                == crate::stt::tail_provider::TailTimingQuality::Synthetic);
+    let inside = |segment: &&TimedTailSegment| {
+        segment.range.session == occurrence.session
+            && segment.range.capture_epoch == occurrence.capture_epoch
+            && segment.range.sample_start >= occurrence.sample_start
+            && segment.range.sample_end <= occurrence.sample_end
+    };
+    let substantive: Vec<&TimedTailSegment> = payload
+        .segments
+        .iter()
+        .filter(|segment| !segment.text.trim().is_empty())
+        .collect();
+    if !exact_timing
+        || payload.validate().is_err()
+        || substantive.is_empty()
+        || substantive.iter().any(|segment| !inside(segment))
+    {
+        let _ = ev_tx.send(EngineEvent::Warning {
+            code: "seal_coverage_text_recovery_refused".into(),
+            message:
+                "recovery evidence is not a source-mapped segment wholly inside the debt occurrence"
+                    .into(),
+        });
+        return false;
+    }
+    let label = substantive
+        .iter()
+        .map(|segment| segment.text.trim())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let _ = admit_ledger_label(
+        state,
+        ev_tx,
+        LabelAdmission {
+            observation: LedgerObservationIdentity::new(
+                LedgerObservationProducer::Whisper,
+                payload.identity.request_id,
+                1,
+                occurrence.clone(),
+            ),
+            label: &label,
+            energy: EnergyAdmission::RequireExistingQualification,
+        },
+    );
+    let pending = state
+        .acoustic_ledger
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .text_recovery_pending(occurrence);
+    if pending {
+        let _ = ev_tx.send(EngineEvent::Warning {
+            code: "seal_coverage_text_recovery_refused".into(),
+            message: "recovery observation did not clear the debt occurrence".into(),
+        });
+    }
+    !pending
+}
+
+fn range_overlaps_occurrence(range: &TailSampleRange, occurrence: &OccurrenceIdentity) -> bool {
+    range.session == occurrence.session
+        && range.capture_epoch == occurrence.capture_epoch
+        && range.sample_start < occurrence.sample_end
+        && occurrence.sample_start < range.sample_end
+}
+
 /// Compare committed occurrence coverage with the existing Silero speech
-/// ledger (or the capture energy ladder when Silero produced no spans), then
-/// request local Whisper evidence from each material uncovered PCM range.
-/// Only mapped segments enter the ledger. Unscoped text, uncertain timing and
-/// ranges crossing existing coverage cannot manufacture occurrence evidence.
+/// ledger (or the capture energy ladder when Silero produced no spans).
+///
+/// An occurrence that owes text recovery is requested on its own
+/// `[sample_start, sample_end)`. The provider result is one whole-span
+/// observation of that identity. A material uncovered range that no pending
+/// debt occurrence owns keeps the gap path. Only mapped segments enter the
+/// ledger. Unscoped text, uncertain timing and a segment that escapes the
+/// requested span cannot manufacture occurrence evidence.
 fn repair_terminal_seal_coverage(
     state: &mut AppleSealState,
     ev_tx: &mpsc::UnboundedSender<EngineEvent>,
@@ -3994,9 +4100,6 @@ where
         + Send
         + 'static,
 {
-    // Idempotent: this cannot extend the live drain deadline. All gaps share
-    // its remaining budget, including time spent waiting for a foreign holder.
-    execution.begin_drain(TAIL_PATCH_CLOSURE_TIMEOUT);
     let threshold_samples =
         u64::from(state.sample_rate).saturating_mul(SEAL_COVERAGE_INCOMPLETE_MS) / 1_000;
     // One speech set for the whole terminal path. Repairing against a wider set
@@ -4020,18 +4123,24 @@ where
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .record_seal_coverage(initial.clone());
-    if initial.status == SealCoverageStatus::Complete {
+    let mut debt = {
+        let ledger = state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ledger.pending_text_recoveries(&state.session_id, state.capture_epoch)
+    };
+    debt.sort_by_key(|occurrence| (occurrence.sample_start, occurrence.sample_end));
+    if initial.status == SealCoverageStatus::Complete && debt.is_empty() {
         return initial;
     }
+    // The live tail-patch drain already spent its own deadline. Recovery does
+    // not lengthen that wait; it installs this phase's cap.
+    execution.begin_text_recovery(SEAL_TEXT_RECOVERY_BUDGET);
 
-    // Decode only authenticated uncovered speech PCM. A gap request's rendered
-    // text is never itself a witness: each original mapped segment must pass
-    // the same containment, qualification and ledger corridor as before.
+    let mut ordinal = 0u64;
     let mut initial_published = false;
-    for (ordinal, range) in initial.uncovered_speech_ranges.iter().enumerate() {
-        if range.sample_end.saturating_sub(range.sample_start) <= threshold_samples {
-            continue;
-        }
+    let mut attempt = |state: &mut AppleSealState, range: TailSampleRange| -> StopRangeAttempt {
         let Some(window) = state.window_by_samples(range.sample_start, range.sample_end) else {
             let _ = ev_tx.send(EngineEvent::Warning {
                 code: "seal_coverage_gap_pcm_unavailable".into(),
@@ -4040,16 +4149,17 @@ where
                     range.sample_start, range.sample_end
                 ),
             });
-            continue;
+            return StopRangeAttempt::MissingPcm;
         };
         let request = TailProviderRequest {
             identity: TailRequestIdentity {
-                request_id: u64::MAX - ordinal as u64,
+                request_id: u64::MAX - ordinal,
                 range: range.clone(),
             },
             sample_rate: state.sample_rate,
             language: language.map(str::to_owned),
         };
+        ordinal = ordinal.saturating_add(1);
         let job_request = request.clone();
         let transcribe = transcribe.clone();
         let result = execution
@@ -4068,28 +4178,85 @@ where
             initial_published = true;
         }
         match result {
-            Ok(payload) if payload.identity == request.identity => {
-                admit_full_pass_gap_segments(
-                    state,
-                    ev_tx,
-                    &payload,
-                    std::slice::from_ref(range),
-                    threshold_samples,
-                    EnergyAdmission::QualifyFinalPassGap,
-                );
-            }
+            Ok(payload) if payload.identity == request.identity => StopRangeAttempt::Ready(payload),
             Ok(_) => {
                 let _ = ev_tx.send(EngineEvent::Warning {
                     code: "seal_coverage_gap_identity_mismatch".into(),
                     message: "provider returned another PCM request".into(),
                 });
+                StopRangeAttempt::ForeignIdentity
             }
-            Err(error) => {
-                let _ = ev_tx.send(EngineEvent::Warning {
-                    code: "seal_coverage_gap_inference_failed".into(),
-                    message: error.to_string(),
-                });
+            Err(error) => StopRangeAttempt::Failed(error),
+        }
+    };
+    let warn_failed = |ev_tx: &mpsc::UnboundedSender<EngineEvent>, error: anyhow::Error| {
+        let _ = ev_tx.send(EngineEvent::Warning {
+            code: "seal_coverage_gap_inference_failed".into(),
+            message: error.to_string(),
+        });
+    };
+
+    for occurrence in debt {
+        if occurrence.sample_end <= occurrence.sample_start {
+            continue;
+        }
+        let range = TailSampleRange {
+            session: occurrence.session.clone(),
+            capture_epoch: occurrence.capture_epoch,
+            sample_start: occurrence.sample_start,
+            sample_end: occurrence.sample_end,
+        };
+        match attempt(state, range) {
+            StopRangeAttempt::Ready(payload) => {
+                admit_debt_occurrence_recovery(state, ev_tx, &occurrence, &payload);
             }
+            StopRangeAttempt::Failed(error) => warn_failed(ev_tx, error),
+            StopRangeAttempt::MissingPcm | StopRangeAttempt::ForeignIdentity => {}
+        }
+    }
+
+    let (after_debt, still_pending) = {
+        let ledger = state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (
+            ledger.assess_seal_coverage(
+                &state.session_id,
+                state.capture_epoch,
+                &speech_evidence,
+                threshold_samples,
+            ),
+            ledger.pending_text_recoveries(&state.session_id, state.capture_epoch),
+        )
+    };
+    // A range that still intersects pending debt was already requested as that
+    // occurrence. Asking for its speech sub-range admits an overlap the
+    // occurrence does not own.
+    for range in after_debt.uncovered_speech_ranges {
+        if range.sample_end.saturating_sub(range.sample_start) <= threshold_samples {
+            continue;
+        }
+        if still_pending
+            .iter()
+            .any(|occurrence| range_overlaps_occurrence(&range, occurrence))
+        {
+            continue;
+        }
+        let requested = range.clone();
+        match attempt(state, requested.clone()) {
+            StopRangeAttempt::Ready(payload) => {
+                admit_full_pass_gap_segments(
+                    state,
+                    ev_tx,
+                    &payload,
+                    std::slice::from_ref(&requested),
+                    threshold_samples,
+                    EnergyAdmission::QualifyFinalPassGap,
+                );
+            }
+            StopRangeAttempt::Failed(error) => warn_failed(ev_tx, error),
+            StopRangeAttempt::MissingPcm | StopRangeAttempt::ForeignIdentity => {}
         }
     }
 
@@ -8520,6 +8687,291 @@ mod rc_w2_acoustic_tests {
         assert_eq!(conservation.residue(), 0, "{conservation:?}");
     }
 
+    /// Five committed debt occurrences, each wider than the Silero speech
+    /// inside it, plus one speech burst that has no occurrence. The shape is
+    /// take 9608b50e: the label is committed, the speech inside it is still
+    /// debt, and a provider that answers with a segment wholly inside the
+    /// requested range must recover the occurrence itself.
+    fn commit_debt_occurrence(
+        state: &mut AppleSealState,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        sample_start: u64,
+        sample_end: u64,
+        label: &str,
+    ) -> OccurrenceIdentity {
+        let occurrence = OccurrenceIdentity::new(
+            state.session_id.clone(),
+            state.capture_epoch,
+            sample_start,
+            sample_end,
+        );
+        assert!(
+            qualify_owned_occurrence(state, &occurrence),
+            "the fixture occurrence must qualify before it can owe recovery"
+        );
+        {
+            let mut ledger = state.acoustic_ledger.lock().unwrap();
+            ledger.schedule_frontier(
+                occurrence.clone(),
+                [
+                    LedgerObservationProducer::Apple,
+                    LedgerObservationProducer::Lexicon,
+                ],
+            );
+            assert!(ledger.require_text_recovery(&occurrence));
+        }
+        let apple = admit_ledger_label(
+            state,
+            ev_tx,
+            LabelAdmission {
+                observation: LedgerObservationIdentity::new(
+                    LedgerObservationProducer::Apple,
+                    sample_start,
+                    0,
+                    occurrence.clone(),
+                ),
+                label,
+                energy: EnergyAdmission::RequireExistingQualification,
+            },
+        );
+        assert!(
+            apple.is_some_and(|receipt| receipt.grants_mutation()),
+            "Apple must commit the provisional label"
+        );
+        let lexicon = admit_ledger_label(
+            state,
+            ev_tx,
+            LabelAdmission {
+                observation: LedgerObservationIdentity::new(
+                    LedgerObservationProducer::Lexicon,
+                    sample_start,
+                    0,
+                    occurrence.clone(),
+                ),
+                label,
+                energy: EnergyAdmission::RequireExistingQualification,
+            },
+        );
+        assert!(lexicon.is_some(), "Lexicon closes the scheduled frontier");
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert!(ledger.text_recovery_pending(&occurrence));
+        assert!(!ledger.is_sealed(&occurrence));
+        occurrence
+    }
+
+    fn five_debt_occurrences(session: &str) -> (AppleSealState, Vec<OccurrenceIdentity>) {
+        let stride = at(3.5);
+        let gap_start = 5 * stride + at(0.5);
+        let gap_end = gap_start + at(1.0);
+        let capture_end = gap_end + at(0.5);
+        let mut state = state_for(session, 0.0);
+        state.audio.push(&vec![0.25f32; capture_end as usize]);
+        let mut ingress = SileroIngress::new(RATE, state.session_id.clone(), state.capture_epoch);
+        ingress.note_observed_pcm(capture_end, capture_end);
+        let mut boundaries = Vec::new();
+        for index in 0..5 {
+            let speech_start = index * stride + at(0.6);
+            let speech_end = index * stride + at(1.2);
+            boundaries.push(crossing(VadBoundaryKind::SpeechStart, speech_start));
+            boundaries.push(crossing(VadBoundaryKind::SpeechEnd, speech_end));
+        }
+        boundaries.push(crossing(VadBoundaryKind::SpeechStart, gap_start));
+        boundaries.push(crossing(VadBoundaryKind::SpeechEnd, gap_end));
+        ingress.observe_boundaries(&boundaries);
+        state.fusion = Some(ingress);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut occurrences = Vec::new();
+        for index in 0..5 {
+            let start = index * stride;
+            occurrences.push(commit_debt_occurrence(
+                &mut state,
+                &tx,
+                start,
+                start + at(2.0),
+                &format!("apple {index}"),
+            ));
+        }
+        (state, occurrences)
+    }
+
+    fn event_trace(rx: &mut mpsc::UnboundedReceiver<EngineEvent>) -> String {
+        let mut lines = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                EngineEvent::LedgerMutation {
+                    observation,
+                    receipt,
+                    label,
+                } => lines.push(format!(
+                    "mutation {} {}..{} {} {label}",
+                    observation.producer.as_str(),
+                    observation.occurrence.sample_start,
+                    observation.occurrence.sample_end,
+                    receipt.as_str()
+                )),
+                EngineEvent::Warning { code, message } => {
+                    lines.push(format!("warn {code}: {message}"))
+                }
+                _ => {}
+            }
+        }
+        lines.join("\n")
+    }
+
+    #[test]
+    fn debt_stop_path_recovers_each_occurrence_span_not_its_speech_subrange() {
+        let (mut state, occurrences) = five_debt_occurrences("debt-span");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&calls);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let execution = LocalExecutionOwner::default();
+        let receipt = repair_terminal_seal_coverage_with(
+            &mut state,
+            &tx,
+            Some("pl"),
+            &execution,
+            move |request, pcm, control| {
+                control.check()?;
+                request.validate_pcm(pcm)?;
+                observed
+                    .lock()
+                    .unwrap()
+                    .push(request.identity.range.clone());
+                Ok(gap_payload(request))
+            },
+        );
+        let calls = calls.lock().unwrap();
+        let trace = event_trace(&mut rx);
+        assert!(
+            calls.len() >= occurrences.len(),
+            "stop path made no occurrence request: {calls:?}\n{trace}"
+        );
+        for (call, occurrence) in calls.iter().take(occurrences.len()).zip(&occurrences) {
+            assert_eq!(
+                (call.sample_start, call.sample_end),
+                (occurrence.sample_start, occurrence.sample_end),
+                "debt recovery requested {call:?}, not the occurrence span\ncalls={calls:?}\n{trace}"
+            );
+        }
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        let pending = ledger.pending_text_recoveries(&state.session_id, state.capture_epoch);
+        assert!(
+            pending.is_empty(),
+            "debt stayed pending after wholly contained segments\ncalls={calls:?}\npending={pending:?}\n{trace}"
+        );
+        assert_eq!(receipt.status, SealCoverageStatus::Complete, "{receipt:?}");
+        assert!(receipt.covered_samples > 0, "{receipt:?}");
+        for occurrence in &occurrences {
+            assert_eq!(ledger.text_of(occurrence), Some("Iwo"));
+            assert!(!ledger.text_recovery_pending(occurrence));
+        }
+        drop(ledger);
+        {
+            let mut ledger = state.acoustic_ledger.lock().unwrap();
+            assert!(
+                ledger
+                    .seal_terminal(&state.session_id, state.capture_epoch)
+                    .is_ok(),
+                "cleared debt and complete coverage must allow the terminal seal"
+            );
+        }
+        assert_eq!(state.session_conservation().residue(), 0);
+    }
+
+    /// The live tail-patch drain and text recovery share one execution owner.
+    /// An expired live deadline must not cancel the recovery phase.
+    #[test]
+    fn debt_recovery_runs_after_the_live_drain_deadline_expired() {
+        let (mut state, occurrences) = five_debt_occurrences("debt-after-drain");
+        let execution = LocalExecutionOwner::default();
+        execution.begin_drain(Duration::ZERO);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let receipt = repair_terminal_seal_coverage_with(
+            &mut state,
+            &tx,
+            None,
+            &execution,
+            |request, pcm, control| {
+                control.check()?;
+                request.validate_pcm(pcm)?;
+                Ok(gap_payload(request))
+            },
+        );
+        assert_eq!(receipt.status, SealCoverageStatus::Complete, "{receipt:?}");
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert!(
+            ledger
+                .pending_text_recoveries(&state.session_id, state.capture_epoch)
+                .is_empty(),
+            "an expired live drain cancelled recovery of {} occurrences",
+            occurrences.len()
+        );
+    }
+
+    #[test]
+    fn recovery_segment_that_escapes_the_occurrence_stays_a_refusal() {
+        let (mut state, occurrences) = five_debt_occurrences("debt-escape");
+        let occurrence = occurrences[0].clone();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&calls);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let execution = LocalExecutionOwner::default();
+        let _receipt = repair_terminal_seal_coverage_with(
+            &mut state,
+            &tx,
+            None,
+            &execution,
+            move |request, pcm, control| {
+                control.check()?;
+                request.validate_pcm(pcm)?;
+                observed
+                    .lock()
+                    .unwrap()
+                    .push(request.identity.range.clone());
+                let mut payload = gap_payload(request);
+                let end = payload.segments[0].range.sample_end;
+                payload.segments[0].range.sample_end = end.saturating_add(500);
+                payload.segments[0].text = "Escaped".into();
+                payload.text = "Escaped".into();
+                Ok(payload)
+            },
+        );
+        let calls = calls.lock().unwrap();
+        let trace = event_trace(&mut rx);
+        assert!(
+            calls.iter().any(|call| {
+                call.sample_start == occurrence.sample_start
+                    && call.sample_end == occurrence.sample_end
+            }),
+            "escape was not judged against the occurrence span\ncalls={calls:?}\n{trace}"
+        );
+        {
+            let mut ledger = state.acoustic_ledger.lock().unwrap();
+            assert!(
+                ledger.text_recovery_pending(&occurrence),
+                "an escaping segment cleared debt\n{trace}"
+            );
+            assert_ne!(ledger.text_of(&occurrence), Some("Escaped"));
+            assert!(
+                !ledger.rendered_text().contains("Escaped"),
+                "escaped text entered the document"
+            );
+            assert_eq!(
+                ledger.seal_terminal(&state.session_id, state.capture_epoch),
+                Err(SealRefusal::TextRecoveryPending)
+            );
+        }
+        assert_eq!(
+            state
+                .session_conservation()
+                .observations_refused_by_reason
+                .get("unrecovered_speech")
+                .copied(),
+            Some(calls.len() as u64),
+            "each unrecovered range is one named refusal\ncalls={calls:?}\n{trace}"
+        );
+    }
+
     #[test]
     fn owned_terminal_repair_still_admits_both_exact_gaps() {
         let mut state = two_bursts("owned-repair");
@@ -11213,8 +11665,7 @@ mod live_refinement_admission_tests {
                     ledger
                         .assess_seal_coverage("live-admission", 7, &speech, 250)
                         .coverage_ratio(),
-                    Some(1.0),
-                    "a committed occurrence counts as covered while recovery is still pending"
+                    Some(0.0)
                 );
             }
             while receiver.try_recv().is_ok() {}
@@ -11242,8 +11693,7 @@ mod live_refinement_admission_tests {
             let coverage = ledger.assess_seal_coverage("live-admission", 7, &speech, 250);
             assert_eq!(
                 coverage.coverage_ratio(),
-                Some(1.0),
-                "failed recovery keeps the committed label's PCM covered"
+                Some(if succeeds { 1.0 } else { 0.0 })
             );
             assert!(ledger.record_seal_coverage(coverage));
             if succeeds {

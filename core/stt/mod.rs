@@ -69,6 +69,20 @@ impl LocalExecutionControl {
         deadline
     }
 
+    /// Replace the deadline. Cancellation is left untouched.
+    ///
+    /// [`Self::limit_until`] only moves the deadline earlier. A later phase
+    /// that has its own named budget uses this after the earlier phase has
+    /// already closed.
+    pub(crate) fn replace_deadline(&self, deadline: std::time::Instant) -> std::time::Instant {
+        let mut current = self
+            .deadline
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *current = Some(deadline);
+        deadline
+    }
+
     pub(crate) fn checkpoint(&self, _boundary: LocalExecutionBoundary) -> anyhow::Result<()> {
         #[cfg(test)]
         if self.cancel_at == Some(_boundary) {
