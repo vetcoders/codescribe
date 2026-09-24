@@ -5178,4 +5178,36 @@ mod tests {
                 .any(|row| row.kind == QualityIssueKind::ClockLie)
         );
     }
+
+    #[test]
+    fn read_only_clock_lie_cannot_veto_independent_correction_of_its_host_span() {
+        let mut ledger = AcousticLedger::new();
+        ledger.bind_capture_rate(16_000);
+        let host = occ(0, 16_000);
+        let short_overlap = occ(0, 1_600);
+
+        assert!(ledger
+            .admit(&obs(ObservationProducer::Apple, 0, host.clone()), "kot")
+            .is_insert());
+        assert!(matches!(
+            ledger.admit(
+                &obs(ObservationProducer::Apple, 1, short_overlap.clone()),
+                &"x".repeat(41),
+            ),
+            MutationReceipt::KeepVisibleUnanchored {
+                reason: NoAuthorityReason::OverlapWithoutWordPins,
+                ..
+            }
+        ));
+        assert!(ledger.is_clock_lie_span(&short_overlap));
+
+        // The short read-only hypothesis has no authority over the host's
+        // exact-identity Whisper observation, including veto authority.
+        assert!(matches!(
+            ledger.admit(&obs(ObservationProducer::Whisper, 2, host.clone()), "pies"),
+            MutationReceipt::Correct { .. }
+        ));
+        assert_eq!(ledger.text_of(&host), Some("pies"));
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
 }
