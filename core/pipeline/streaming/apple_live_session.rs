@@ -14353,6 +14353,57 @@ mod relay_l1_overlap_admission_tests {
         assert_conserved(&lane, None);
     }
 
+    /// Provider completion order cannot become document order. This is a
+    /// closed-occurrence control for the still-missing open-window binding:
+    /// every observation retains its request clock, and the single final
+    /// mutation must address the physical occurrence, not the arrival slot.
+    #[test]
+    fn out_of_order_l1_completion_keeps_pcm_order() {
+        for order in [[0usize, 1, 2], [2usize, 0, 1]] {
+            let session = if order[0] == 0 {
+                "relay-ordered-completions"
+            } else {
+                "relay-reordered-completions"
+            };
+            let mut lane = open(session);
+            let (occurrence, requests) = launch_long(&mut lane, "cale zdanie");
+            let windows = [
+                vec![word_pin(session, "raz", 8_000, 40_000)],
+                vec![word_pin(session, "dwa", 52_000, 90_000)],
+                vec![word_pin(session, "trzy", 100_000, 150_000)],
+            ];
+            let mut events = Vec::new();
+            for index in order {
+                lane.state.complete_whisper_window(
+                    &lane.tx,
+                    completion(&requests[index], windows[index].clone()),
+                    8.0,
+                );
+                events.extend(drain(&mut lane.rx));
+            }
+            let grants = events
+                .iter()
+                .filter_map(|event| match event {
+                    EngineEvent::LedgerMutation {
+                        observation,
+                        receipt,
+                        ..
+                    } if observation.producer == ObservationProducer::Whisper
+                        && receipt.grants_mutation() => Some(observation.occurrence.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(grants, vec![occurrence.clone()], "completion order: {order:?}");
+            assert_eq!(held_count(&lane), 1, "completion order: {order:?}");
+            assert_eq!(
+                held_text(&lane, &occurrence).as_deref(),
+                Some("raz dwa trzy"),
+                "completion order: {order:?}"
+            );
+            assert_conserved(&lane, None);
+        }
+    }
+
     /// Long occurrence, overlapping windows, word pins.
     ///
     /// Contract step 4: a word whose range lies wholly outside this window's
