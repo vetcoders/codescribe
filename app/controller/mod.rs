@@ -7189,7 +7189,7 @@ mod hold_start_terminal_lifecycle_falsifiers {
     #[test]
     fn controller_has_one_terminal_bus_publisher() {
         let source = include_str!("mod.rs");
-        let publish_ended = [".publish_", "ended("].concat();
+        let publish_ended = [".publish_", "ended"].concat();
         assert_eq!(source.matches(&publish_ended).count(), 1);
 
         let hold_signature = ["async fn schedule_hold_", "start"].concat();
