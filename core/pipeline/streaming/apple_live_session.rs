@@ -12630,6 +12630,41 @@ mod live_refinement_admission_tests {
         }
     }
 
+    /// The L1 clock follows measured speech PCM, not Apple's phrase final or
+    /// Silero's eventual speech-end edge. A five-second open speech run must
+    /// have offered at least one live-sized observation before either closes.
+    #[test]
+    fn open_speech_without_apple_final_offers_live_l1_window() {
+        use super::super::silero_fusion::SileroIngress;
+        use crate::audio::chunker::{VadBoundaryEvidence, VadBoundaryKind};
+
+        let (mut state, events, _receiver, mut requests) = fixture(4);
+        let mut fusion = SileroIngress::new(RATE, "live-admission", 7);
+        fusion.note_observed_pcm(5_000, 5_000);
+        fusion.observe_boundaries(&[VadBoundaryEvidence {
+            kind: VadBoundaryKind::SpeechStart,
+            sample: 0,
+            speech_probability: 0.95,
+        }]);
+        fusion
+            .ledger_mut()
+            .open_or_extend("live-admission", 7, 0, 5_000);
+        assert!(!fusion.ledger().utterances()[0].closed);
+        state.fusion = Some(fusion);
+
+        assert!(seal_sliced_by_silero(&mut state, &events, &[]));
+        let request = requests.try_recv().expect(
+            "five seconds of measured speech must reach L1 before Apple or Silero closes it",
+        );
+        let range = &request.provider_request.identity.range;
+        assert_eq!(range.session, "live-admission");
+        assert_eq!(range.capture_epoch, 7);
+        assert!(range.sample_start < range.sample_end);
+        assert!(range.sample_end <= 5_000);
+        assert!(range.sample_end - range.sample_start <= 4_000);
+        request.provider_request.validate_pcm(&request.audio).unwrap();
+    }
+
     #[test]
     fn whisper_segmentless_text_requires_exact_window_and_rejected_pins_never_fallback() {
         for context in [
