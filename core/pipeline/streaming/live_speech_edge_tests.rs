@@ -134,6 +134,9 @@ fn layer1_observes_open_speech_before_silero_close() {
     // The scripted VAD is an explicit speech witness; no Apple callback is
     // submitted, so any L1 job is independent of an Apple text buffer.
     for _ in 0..250 {
+        // The production worker ticks pending refinements before receiving
+        // the next PCM chunk, then retains and ingests that chunk.
+        state.tick_refinements(&events, Instant::now());
         let pcm = [0.2_f32; FRAME];
         sample_end += FRAME as u64;
         state.audio.push(&pcm);
@@ -147,7 +150,6 @@ fn layer1_observes_open_speech_before_silero_close() {
             .speech_progress
             .observe_speech(&speech_evidence, speech_live, RATE);
         seal_sliced_by_silero(&mut state, &events, &[]);
-        state.tick_refinements(&events, Instant::now());
         while let Ok(request) = tail_rx.try_recv() {
             request
                 .provider_request
@@ -155,6 +157,14 @@ fn layer1_observes_open_speech_before_silero_close() {
                 .expect("L1 request names the exact captured PCM it carries");
             launched.push(request);
         }
+    }
+    state.tick_refinements(&events, Instant::now());
+    while let Ok(request) = tail_rx.try_recv() {
+        request
+            .provider_request
+            .validate_pcm(&request.audio)
+            .expect("L1 request names the exact captured PCM it carries");
+        launched.push(request);
     }
 
     let utterances = state
