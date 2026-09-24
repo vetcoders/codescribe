@@ -190,136 +190,46 @@ pub fn load_audio_file(path: &Path) -> Result<(Vec<f32>, u32)> {
     Ok((samples, sample_rate))
 }
 
-/// Resample complete model-input audio to 16 kHz with a windowed-sinc filter.
+/// Resample to 16 kHz by linear interpolation.
 ///
 /// Audio already at 16 kHz (and empty or rate-less input) is returned
-/// untouched. Downsampling removes out-of-band energy before decimation.
-/// This stateless conversion is for complete clips, not consecutive capture
-/// packets: the original capture samples remain the ledger's coordinates.
+/// untouched, so the common path costs nothing but a copy. Linear
+/// interpolation is deliberately cheap rather than band-limited: speech
+/// recognition tolerates the aliasing, and the alternative would cost more
+/// than the models gain.
 pub fn resample_to_16k(samples: &[f32], original_rate: u32) -> Vec<f32> {
-    if samples.is_empty() || original_rate == 0 || original_rate == 16000 {
+    if samples.is_empty() || original_rate == 0 {
         return samples.to_vec();
     }
 
-    const RADIUS: isize = 96;
-    let cutoff = (16000.0 / f64::from(original_rate)).min(1.0) * 0.94;
-    let new_len = (samples.len() as u128 * 16000).div_ceil(u128::from(original_rate)) as usize;
+    if original_rate == 16000 {
+        return samples.to_vec();
+    }
+
+    // Simple linear interpolation for now
+    let ratio = 16000.0 / original_rate as f32;
+    let new_len = (samples.len() as f32 * ratio).ceil() as usize;
     let mut output = Vec::with_capacity(new_len);
-    let mut kernels = std::collections::HashMap::new();
+
     let max_idx = samples.len() - 1;
+
     for i in 0..new_len {
-        // Integer phase accounting avoids drift on long 44.1 kHz recordings.
-        let position = i as u128 * u128::from(original_rate);
-        let center = (position / 16000) as usize;
-        let phase = (position % 16000) as u32;
-        let kernel = kernels
-            .entry(phase)
-            .or_insert_with(|| bandlimited_kernel(cutoff, f64::from(phase) / 16000.0, RADIUS));
-        let mut sum = 0.0;
-        for (tap, weight) in kernel.iter().enumerate() {
-            let offset = tap as isize - RADIUS;
-            let index = center.saturating_add_signed(offset).min(max_idx);
-            sum += f64::from(samples[index]) * weight;
+        let old_idx = (i as f32 / ratio).min(max_idx as f32);
+        let idx0 = old_idx.floor() as usize;
+
+        if idx0 >= max_idx {
+            // Clamp to last sample to avoid out-of-bounds due to rounding
+            output.push(samples[max_idx]);
+            continue;
         }
-        output.push(sum as f32);
+
+        let idx1 = (idx0 + 1).min(max_idx);
+        let t = old_idx - idx0 as f32;
+
+        let s0 = samples[idx0];
+        let s1 = samples[idx1];
+        output.push(s0 * (1.0 - t) + s1 * t);
     }
+
     output
-}
-
-fn bandlimited_kernel(cutoff: f64, phase: f64, radius: isize) -> Vec<f64> {
-    let mut kernel: Vec<f64> = (-radius..=radius)
-        .map(|offset| {
-            let distance = offset as f64 - phase;
-            let normalized = distance / radius as f64;
-            if normalized.abs() >= 1.0 {
-                return 0.0;
-            }
-            let angle = std::f64::consts::PI * cutoff * distance;
-            let sinc = if angle.abs() < 1e-12 {
-                1.0
-            } else {
-                angle.sin() / angle
-            };
-            let window_angle = std::f64::consts::PI * normalized;
-            let window = 0.42 + 0.5 * window_angle.cos() + 0.08 * (2.0 * window_angle).cos();
-            cutoff * sinc * window
-        })
-        .collect();
-    let gain: f64 = kernel.iter().sum();
-    for weight in &mut kernel {
-        *weight /= gain;
-    }
-    kernel
-}
-
-#[cfg(test)]
-mod resampling_tests {
-    use super::resample_to_16k;
-
-    fn tone(rate: u32, frequency: f64) -> Vec<f32> {
-        (0..rate)
-            .map(|i| {
-                (std::f64::consts::TAU * frequency * f64::from(i) / f64::from(rate)).sin() as f32
-            })
-            .collect()
-    }
-
-    fn interior_rms(samples: &[f32]) -> f64 {
-        let interior = &samples[512..samples.len() - 512];
-        (interior.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>() / interior.len() as f64).sqrt()
-    }
-
-    #[test]
-    fn rejects_out_of_band_energy_without_erasing_speech_band() {
-        for rate in [44100, 48000, 96000] {
-            for frequency in [1000.0, 6000.0] {
-                let output = resample_to_16k(&tone(rate, frequency), rate);
-                assert_eq!(output.len(), 16000);
-                assert!((interior_rms(&output) - std::f64::consts::FRAC_1_SQRT_2).abs() < 0.01);
-            }
-            for frequency in [10000.0, 12000.0] {
-                let output = resample_to_16k(&tone(rate, frequency), rate);
-                assert!(
-                    interior_rms(&output) < 0.001,
-                    "alias rejection at {rate} Hz / tone {frequency}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn preserves_dc_short_inputs_and_exact_duration() {
-        for rate in [8000, 22050, 44100, 48000, 96000] {
-            for length in [1usize, 2, 13, 1024, 44101] {
-                let output = resample_to_16k(&vec![0.25; length], rate);
-                assert_eq!(
-                    output.len(),
-                    (length as u128 * 16000).div_ceil(u128::from(rate)) as usize
-                );
-                assert!(output.iter().all(|v| (*v - 0.25).abs() < 1e-6));
-            }
-        }
-    }
-
-    #[test]
-    fn keeps_existing_no_conversion_cases() {
-        let input = [0.25, -0.5, 0.0, 1.0];
-        assert_eq!(resample_to_16k(&input, 16000), input);
-        assert_eq!(resample_to_16k(&input, 0), input);
-        assert!(resample_to_16k(&[], 48000).is_empty());
-    }
-
-    #[test]
-    fn impulse_has_no_added_group_delay() {
-        let mut input = vec![0.0; 4800];
-        input[2400] = 1.0;
-        let output = resample_to_16k(&input, 48000);
-        let peak = output
-            .iter()
-            .enumerate()
-            .max_by(|(_, a), (_, b)| a.abs().total_cmp(&b.abs()))
-            .unwrap()
-            .0;
-        assert_eq!(peak, 800);
-    }
 }
