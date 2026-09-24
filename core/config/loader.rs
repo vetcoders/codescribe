@@ -1047,6 +1047,11 @@ impl Config {
         {
             self.whisper_context_window_sec = sec;
         }
+        if let Ok(val) = Self::config_runtime_env_var("LIGHT_PLUS_SENTENCE_PAUSE_SEC")
+            && let Ok(sec) = val.parse::<f32>()
+        {
+            self.light_plus_sentence_pause_sec = sec;
+        }
         if let Ok(val) = Self::config_runtime_env_var("CODESCRIBE_DEFERRED_INSERT_SHORTCUT")
             && let Ok(shortcut) = val.parse::<DeferredInsertShortcut>()
         {
@@ -1309,6 +1314,11 @@ impl Config {
             && let Some(v) = settings.whisper_context_window_sec
         {
             self.whisper_context_window_sec = v;
+        }
+        if Self::config_runtime_env_var("LIGHT_PLUS_SENTENCE_PAUSE_SEC").is_err()
+            && let Some(v) = settings.light_plus_sentence_pause_sec
+        {
+            self.light_plus_sentence_pause_sec = v;
         }
         if Self::config_runtime_env_var("HOLD_EXCLUSIVE").is_err()
             && let Some(v) = settings.hold_exclusive
@@ -1622,6 +1632,7 @@ impl Config {
                 "SOUND_VOLUME"
                 | "TOGGLE_SILENCE_SEC"
                 | "WHISPER_CONTEXT_WINDOW_SEC"
+                | "LIGHT_PLUS_SENTENCE_PAUSE_SEC"
                 | "CODESCRIBE_TYPING_CPS"
                 | "CODESCRIBE_BUFFERED_INTERIM_SEC" => {
                     if let Ok(v) = value.parse::<f32>() {
@@ -1863,6 +1874,12 @@ impl Config {
                         if let Ok(v) = value.parse::<f32>() {
                             settings_ref.whisper_context_window_sec =
                                 Some(super::normalize_whisper_context_window_sec(v));
+                        }
+                    }
+                    "LIGHT_PLUS_SENTENCE_PAUSE_SEC" => {
+                        if let Ok(v) = value.parse::<f32>() {
+                            settings_ref.light_plus_sentence_pause_sec =
+                                Some(super::normalize_light_plus_sentence_pause_sec(v));
                         }
                     }
                     "CODESCRIBE_TYPING_CPS" => {
@@ -3613,6 +3630,25 @@ mod tests {
         );
 
         restore_env_for_test("WHISPER_CONTEXT_WINDOW_SEC", previous);
+    }
+
+    #[test]
+    #[serial]
+    fn light_plus_sentence_pause_round_trips_and_env_wins() {
+        let _tmp = setup_isolated_data_dir();
+        let previous = std::env::var("LIGHT_PLUS_SENTENCE_PAUSE_SEC").ok();
+        remove_env_for_test("LIGHT_PLUS_SENTENCE_PAUSE_SEC");
+
+        Config::default()
+            .save_to_env("LIGHT_PLUS_SENTENCE_PAUSE_SEC", "1.2")
+            .expect("persist Light+ sentence pause");
+        let stored = super::super::settings::UserSettings::load();
+        assert_eq!(stored.light_plus_sentence_pause_sec, Some(1.2));
+        assert!((Config::load().light_plus_sentence_pause_sec - 1.2).abs() < f32::EPSILON);
+
+        unsafe { std::env::set_var("LIGHT_PLUS_SENTENCE_PAUSE_SEC", "0.5") };
+        assert!((Config::load().light_plus_sentence_pause_sec - 0.5).abs() < f32::EPSILON);
+        restore_env_for_test("LIGHT_PLUS_SENTENCE_PAUSE_SEC", previous);
     }
 
     /// settings.json can disable local STT; load must honor that flag.

@@ -68,8 +68,10 @@ Light+ (`core/pipeline/light_plus.rs`, restored 2026-09-08) is the L2 floor
 under the formatter: deterministic, idempotent sentence shape — capital at
 sentence starts, a closing period, hesitation sounds (`yyy`, `eee`, `hmm`)
 dropped, punctuation seams collapsed — with no network and no model. It never
-deletes a word and never touches an occurrence label. In live it runs once,
-in Rust, on the terminal document: `TranscriptReducer::light_plus_intent`
+deletes a lexical word or touches an occurrence label. During capture it shapes
+committed occurrences without claiming a seal; a PCM gap controlled by
+`LIGHT_PLUS_SENTENCE_PAUSE_SEC` decides inter-span sentence breaks. At Stop,
+the frozen canvas is shaped before paste. `TranscriptReducer::light_plus_intent`
 (`app/presentation/emitter.rs`) computes the shaped bytes, and
 `PresentationEmitter::mint_light_plus_revision` commits them through the same
 ledger + reducer corridor as a user edit, with
@@ -77,7 +79,8 @@ ledger + reducer corridor as a user edit, with
 twice — at the terminal `LedgerSeal` and again at `SessionFinalised` (a
 one-occurrence session's whole-session seal is indistinguishable from its
 sole occurrence seal, so the reducer becomes terminal only at lifecycle end);
-the second gate is a no-op when the first already shaped the document. The
+the lifecycle gate also runs when acoustic terminal coverage is refused.
+The second gate is a no-op when the first already shaped the document. The
 only lane without it is the literal contract
 (`PresentationEmitter::set_literal_delivery(true)`, the Ctrl-hold `force_raw`
 promise); auto-format "off" still gets it. The Responses formatter reads the

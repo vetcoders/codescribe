@@ -1846,6 +1846,12 @@ final class SettingsViewModel: ObservableObject {
     persist("WHISPER_CONTEXT_WINDOW_SEC", String(format: "%.1f", seconds))
   }
 
+  func setLightPlusSentencePauseSeconds(_ seconds: Float) {
+    let bounded = min(2.0, max(0.3, seconds))
+    settings.lightPlusSentencePauseSec = bounded
+    persist("LIGHT_PLUS_SENTENCE_PAUSE_SEC", String(format: "%.1f", bounded))
+  }
+
   func setSoundFeedbackEnabled(_ enabled: Bool) {
     settings.beepOnStart = enabled
     persist("BEEP_ON_START", enabled ? "1" : "0")

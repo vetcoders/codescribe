@@ -506,31 +506,30 @@ even for one occurrence. Tests remain UNRUN under the compile embargo; generated
 bindings, executable validation and installed runtime proof belong to W3/W4.
 This source description is not a structural-close or runtime attestation.
 
-A closed utterance must become readable text while the take is still running,
-not at Stop. The Light+ floor therefore has two gates, and they state different
-things:
+Committed utterances become readable while the take is running. Light+ has
+separate presentation and acoustic finality gates:
 
-| Gate                                                 | Scope               | Receipt                                                  | Lifecycle  |
-| ---------------------------------------------------- | ------------------- | -------------------------------------------------------- | ---------- |
-| Occurrence seal (`LedgerSeal`, `is_occurrence_seal`) | exactly those words | `IncrementalShapingReceipt`                              | stays open |
-| Terminal ledger seal                                 | the sealed document | explicit terminal seal; optional document Light+ receipt | finalizing |
-| Controller `session_ended`                           | capture lifecycle   | no new shaping or acoustic authority                     | ended      |
+| Gate                               | Scope               | Receipt                                                   | Lifecycle  |
+| ---------------------------------- | ------------------- | --------------------------------------------------------- | ---------- |
+| Committed label (`LedgerMutation`) | exactly those words | `IncrementalShapingReceipt`; seal reference if one exists | stays open |
+| Terminal ledger seal               | the sealed document | explicit terminal seal; optional document Light+ receipt  | finalizing |
+| Controller `session_ended`         | capture lifecycle   | no new shaping or acoustic authority                      | ended      |
 
 The live gate is `TranscriptReducer::apply_incremental_shaping`, driven by
 `PresentationEmitter::mint_incremental_light_plus`:
 
-- It shapes **one** sealed occurrence with
-  `light_plus::apply_with_left_context`, using the committed text to its left as
-  casing context. A known open predecessor defers the later shape; each closure
-  revisits the sealed prefix in occurrence order. The unsealed suffix never
-  enters a shaping receipt and preserves its exact edge/interior whitespace.
-  Joining adds a space only when neither adjoining edge already has whitespace.
+- It shapes each committed occurrence with `light_plus::apply_live_span`, using
+  the committed text to its left as casing context. An open predecessor does
+  not block later words. A gap on the same PCM clock starts a sentence when it
+  reaches `LIGHT_PLUS_SENTENCE_PAUSE_SEC`; shorter gaps join the words without
+  a period. The final period is added when the document is frozen or finalized.
 - The acoustic label stays immutable. The shape lives beside it, keyed by the
   same occurrence, so later speech appends instead of replacing the document —
   a single whole-document override discarded on the next insert is not
   incremental delivery.
-- The receipt names the occurrence, its seal, the exact source label and a
-  exact left-context bytes and their SHA-256, so a shape can be reproduced and a
+- The receipt names the occurrence, its seal when present, the exact source
+  label, the sentence-break decision and exact left-context bytes with their
+  SHA-256, so a shape can be reproduced and a
   stale one detected. A relabel or earlier insertion invalidates affected shapes,
   including dependent suffix shapes. Earlier receipts remain immutable history;
   a later valid shape receives its own source revision and context provenance.
@@ -545,10 +544,11 @@ The live gate is `TranscriptReducer::apply_incremental_shaping`, driven by
   callback, delivery buffer — and never through the lifecycle one. It sets no
   terminal flag, no `lifecycle_terminal`, and no delivery disposition.
 
-Because Light+ is idempotent, a document the live gate already settled yields no
-terminal intent: Stop delivers those exact bytes once, and the terminal CAS
-source the paid formatter and a user edit compare against is the same document
-Swift already holds. Per-entry Bus and bridge `presentation_receipt` fields carry
+Stop applies Light+ to the frozen canvas before paste and publishes the exact
+paste bytes as a document revision. Finalization closes an unfinished last
+sentence even when acoustic terminal coverage is refused. The terminal CAS
+source for the paid formatter and a user edit is that same document.
+Per-entry Bus and bridge `presentation_receipt` fields carry
 both new and retained Light+ provenance; they never use `manual_edit_receipt` or
 invent word-to-PCM mapping. A terminal user/formatter document receipt retains
 its separate whole-document authority. Duplicate seal delivery produces no

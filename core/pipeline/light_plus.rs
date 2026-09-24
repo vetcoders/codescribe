@@ -40,9 +40,9 @@ pub fn apply(text: &str) -> String {
     apply_with_left_context("", text)
 }
 
-/// Shape a sealed span while honouring the left context already committed.
+/// Shape a complete span while honouring the left context already committed.
 ///
-/// Progressive seals run Light+ **per span**, not over the whole transcript.
+/// Progressive presentation runs Light+ **per span** during capture.
 /// Casing at the span's first word must see whether the preceding sealed text
 /// ended mid-sentence or on a terminal — otherwise a lexicon-corrected word
 /// at a true sentence start stays lowercase, and a continuation after a
@@ -51,6 +51,16 @@ pub fn apply(text: &str) -> String {
 /// Returns only the shaped span (not the left context concatenated). When
 /// `left_context` is empty this is identical to [`apply`].
 pub fn apply_with_left_context(left_context: &str, span: &str) -> String {
+    let mut shaped = apply_live_span(left_context, span, false);
+    if !shaped.is_empty() && !ends_with_terminal_punctuation(&shaped) {
+        shaped.push('.');
+    }
+    shaped
+}
+
+/// Shape a live occurrence. A period belongs to the following PCM boundary,
+/// so an open last occurrence never invents a sentence end during capture.
+pub fn apply_live_span(left_context: &str, span: &str, sentence_break_before: bool) -> String {
     let trimmed = span.trim();
     if trimmed.is_empty() {
         return String::new();
@@ -62,17 +72,18 @@ pub fn apply_with_left_context(left_context: &str, span: &str) -> String {
     }
 
     let tightened = tighten_punctuation(&joined);
-    let tightened = tightened.trim();
+    let punctuated = place_polish_commas(&tightened);
+    let tightened = punctuated.trim();
     if tightened.is_empty() {
         return String::new();
     }
 
     // Open-sentence detection from the left neighbour: a terminal (or empty
     // left) means this span starts a sentence and must capitalise.
-    let at_sentence_start = left_ends_sentence(left_context);
+    let at_sentence_start = sentence_break_before || left_ends_sentence(left_context);
     let mut shaped = capitalize_span(tightened, at_sentence_start);
-    if !ends_with_terminal_punctuation(&shaped) {
-        shaped.push('.');
+    if sentence_break_before && !left_context.is_empty() && !left_ends_sentence(left_context) {
+        shaped.insert_str(0, ". ");
     }
     shaped
 }
@@ -193,6 +204,98 @@ fn tighten_punctuation(text: &str) -> String {
     out
 }
 
+/// Place conservative Polish clause commas. This only inserts punctuation;
+/// occurrence labels and their word order remain untouched.
+fn place_polish_commas(text: &str) -> String {
+    const CLAUSE_WORDS: &[&str] = &[
+        "że",
+        "iż",
+        "żeby",
+        "aby",
+        "bo",
+        "ponieważ",
+        "gdyż",
+        "który",
+        "która",
+        "które",
+        "którego",
+        "której",
+        "którym",
+        "którą",
+        "których",
+        "którymi",
+        "ale",
+        "lecz",
+        "więc",
+        "czyli",
+        "gdy",
+        "kiedy",
+        "jeśli",
+        "jeżeli",
+        "chociaż",
+        "choć",
+        "zanim",
+        "dopóki",
+        "gdyby",
+        "jakby",
+    ];
+    const COMPOUNDS: &[&[&str]] = &[
+        &["mimo", "że"],
+        &["chyba", "że"],
+        &["zwłaszcza", "że"],
+        &["tak", "że"],
+        &["tylko", "że"],
+        &["podczas", "gdy"],
+        &["dlatego", "że"],
+        &["po", "to", "żeby"],
+        &["po", "to", "aby"],
+    ];
+    const NO_COMMA_AFTER: &[&str] = &["i", "oraz", "lub", "albo", "ani", "czy", "a", "no"];
+
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let words: Vec<String> = tokens
+        .iter()
+        .map(|token| {
+            token
+                .trim_matches(|ch: char| !ch.is_alphabetic())
+                .to_lowercase()
+        })
+        .collect();
+    let mut insert = vec![false; tokens.len()];
+    let mut inner = vec![false; tokens.len()];
+    for index in 0..tokens.len() {
+        if let Some(compound) = COMPOUNDS.iter().find(|compound| {
+            words[index..].starts_with(
+                &compound
+                    .iter()
+                    .map(|word| (*word).to_string())
+                    .collect::<Vec<_>>(),
+            )
+        }) {
+            insert[index] = true;
+            for offset in 1..compound.len() {
+                inner[index + offset] = true;
+            }
+        } else if CLAUSE_WORDS.contains(&words[index].as_str()) && !inner[index] {
+            insert[index] = true;
+        }
+    }
+    let mut out = String::with_capacity(text.len() + tokens.len());
+    for (index, token) in tokens.iter().enumerate() {
+        if index > 0 {
+            if insert[index]
+                && !NO_COMMA_AFTER.contains(&words[index - 1].as_str())
+                && !tokens[index - 1].ends_with([',', ';', ':', '.', '!', '?'])
+            {
+                out.push(',');
+            }
+            out.push(' ');
+        }
+        out.push_str(token);
+    }
+    out
+}
+
 /// Does the text already close on a mark that makes a trailing period wrong?
 ///
 /// `:` counts — a list header (`Lista:`) is finished, not a fragment.
@@ -206,6 +309,54 @@ fn ends_with_terminal_punctuation(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn polish_clauses_gain_commas_without_losing_words() {
+        let source = "to jest fajne bo VNC jak stosuję to zazwyczaj nie potrzebuję wiedzieć że program który działa jest otwarty";
+        let shaped = apply(source);
+        assert_eq!(
+            shaped,
+            "To jest fajne, bo VNC jak stosuję to zazwyczaj nie potrzebuję wiedzieć, że program, który działa jest otwarty."
+        );
+        assert_eq!(apply(&shaped), shaped);
+        let words = |text: &str| {
+            text.split_whitespace()
+                .map(|word| {
+                    word.trim_matches(|ch: char| ch.is_ascii_punctuation())
+                        .to_lowercase()
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(words(source), words(&shaped));
+    }
+
+    #[test]
+    fn compound_conjunctions_are_not_split() {
+        assert_eq!(
+            apply("robię to mimo że pada i że wieje"),
+            "Robię to, mimo że pada i że wieje."
+        );
+        assert_eq!(
+            apply("czekam podczas gdy działa"),
+            "Czekam, podczas gdy działa."
+        );
+    }
+
+    #[test]
+    fn live_span_waits_for_pcm_boundary_before_adding_a_period() {
+        assert_eq!(
+            apply_live_span("", "pierwsze słowa", false),
+            "Pierwsze słowa"
+        );
+        assert_eq!(
+            apply_live_span("Pierwsze słowa", "drugie słowa", false),
+            "drugie słowa"
+        );
+        assert_eq!(
+            apply_live_span("Pierwsze słowa drugie słowa", "trzecie słowa", true),
+            ". Trzecie słowa"
+        );
+    }
 
     /// Unpunctuated stream gains a capital start and a closing period.
     #[test]

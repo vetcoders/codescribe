@@ -440,6 +440,9 @@ pub struct Config {
     #[serde(default = "default_whisper_context_window_sec")]
     pub whisper_context_window_sec: f32,
 
+    #[serde(default = "default_light_plus_sentence_pause_sec")]
+    pub light_plus_sentence_pause_sec: f32,
+
     /// Global one-shot command for inserting the in-memory deferred transcript.
     #[serde(default)]
     pub deferred_insert_shortcut: DeferredInsertShortcut,
@@ -625,6 +628,7 @@ impl Default for Config {
             double_tap_interval_ms: default_double_tap_interval_ms(),
             toggle_silence_sec: default_toggle_silence_sec(),
             whisper_context_window_sec: default_whisper_context_window_sec(),
+            light_plus_sentence_pause_sec: default_light_plus_sentence_pause_sec(),
             deferred_insert_shortcut: DeferredInsertShortcut::default(),
             whisper_language: Language::default(),
             ai_formatting_enabled: false,
@@ -681,6 +685,8 @@ impl Config {
         self.toggle_silence_sec = self.toggle_silence_sec.clamp(0.5, 30.0);
         self.whisper_context_window_sec =
             normalize_whisper_context_window_sec(self.whisper_context_window_sec);
+        self.light_plus_sentence_pause_sec =
+            normalize_light_plus_sentence_pause_sec(self.light_plus_sentence_pause_sec);
 
         // Clamp double-tap interval to safe bounds
         self.double_tap_interval_ms = self.double_tap_interval_ms.clamp(100, 450);

@@ -97,6 +97,7 @@ pub struct CsSettings {
     pub toggle_silence_sec: f32,
     /// `WHISPER_CONTEXT_WINDOW_SEC`. Seconds of PCM each Layer 1 window covers.
     pub whisper_context_window_sec: f32,
+    pub light_plus_sentence_pause_sec: f32,
     /// Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
     /// from the canonical merged config snapshot. `"disabled"` is the
     /// product default when no persisted choice exists.
@@ -212,6 +213,7 @@ impl CsSettings {
             double_tap_interval_ms: config.double_tap_interval_ms,
             toggle_silence_sec: config.toggle_silence_sec,
             whisper_context_window_sec: config.whisper_context_window_sec,
+            light_plus_sentence_pause_sec: config.light_plus_sentence_pause_sec,
             deferred_insert_shortcut: config.deferred_insert_shortcut.wire_id().to_string(),
             whisper_language: CsLanguage::from(config.whisper_language),
             ai_formatting_enabled: config.ai_formatting_enabled,

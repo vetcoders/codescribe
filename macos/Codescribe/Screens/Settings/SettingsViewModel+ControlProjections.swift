@@ -44,6 +44,11 @@ extension SettingsViewModel {
     set { setWhisperContextWindowSeconds(Float(newValue)) }
   }
 
+  var lightPlusSentencePauseSlider: Double {
+    get { Double(settings.lightPlusSentencePauseSec) }
+    set { setLightPlusSentencePauseSeconds(Float(newValue)) }
+  }
+
   var readOnlyDefaultPicker: String {
     get { permissionPolicy.readOnlyDefault }
     set { setPermissionDefault(kind: .readOnly, level: newValue) }

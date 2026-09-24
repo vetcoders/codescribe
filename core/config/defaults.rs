@@ -19,6 +19,19 @@ pub fn default_toggle_silence_sec() -> f32 {
     5.0
 }
 
+/// Minimum PCM gap between occurrences that opens a new Light+ sentence.
+pub fn default_light_plus_sentence_pause_sec() -> f32 {
+    0.7
+}
+
+pub fn normalize_light_plus_sentence_pause_sec(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(0.3, 2.0)
+    } else {
+        default_light_plus_sentence_pause_sec()
+    }
+}
+
 /// Seconds of captured PCM a Layer 1 Whisper window must cover, ending at
 /// the occurrence. Shorter than the occurrence, the existing pad stands.
 pub fn default_whisper_context_window_sec() -> f32 {

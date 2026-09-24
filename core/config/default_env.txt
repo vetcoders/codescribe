@@ -17,6 +17,7 @@ HOLD_START_DELAY_MS=800
 DOUBLE_TAP_INTERVAL_MS=200
 TOGGLE_SILENCE_SEC=5.0              # Apple epoch rest; not CODESCRIBE_VAD_*
 WHISPER_CONTEXT_WINDOW_SEC=4.0      # Layer 1 decode context ending at each occurrence; next take
+LIGHT_PLUS_SENTENCE_PAUSE_SEC=0.7    # PCM gap for a Light+ sentence break; next take
 # Mode bindings are canonical and persisted in settings.json:
 # - dictation: hold_fn
 # - formatting: double_left_option

@@ -61,7 +61,8 @@ pub struct CsProjectedPresentationReceipt {
     pub capture_epoch: u64,
     pub sample_start: u64,
     pub sample_end: u64,
-    pub source_seal_receipt: String,
+    pub source_seal_receipt: Option<String>,
+    pub sentence_break_before: bool,
     pub source_label: String,
     pub left_context: String,
     pub left_context_sha256: String,
@@ -80,6 +81,7 @@ impl CsProjectedPresentationReceipt {
             sample_start: receipt.sample_start,
             sample_end: receipt.sample_end,
             source_seal_receipt: receipt.source_seal_receipt.clone(),
+            sentence_break_before: receipt.sentence_break_before,
             source_label: receipt.source_label.clone(),
             left_context: receipt.left_context.clone(),
             left_context_sha256: receipt.left_context_sha256.clone(),
@@ -1365,11 +1367,12 @@ mod tests {
                 capture_epoch: 3,
                 sample_start: 32_000,
                 sample_end: 48_000,
-                source_seal_receipt: seal.receipt_id,
+                source_seal_receipt: Some(seal.receipt_id),
+                sentence_break_before: false,
                 source_label: "zażółć gęślą".to_string(),
                 left_context: String::new(),
                 left_context_sha256: minted.left_context_sha256.clone(),
-                shaped_text: "Zażółć gęślą.".to_string(),
+                shaped_text: "Zażółć gęślą".to_string(),
             }
         );
         assert_eq!(projected.rendered_text, actual.shaped_text);

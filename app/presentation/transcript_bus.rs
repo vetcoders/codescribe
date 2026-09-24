@@ -166,7 +166,10 @@ pub struct ProjectedPresentationReceipt {
     pub capture_epoch: u64,
     pub sample_start: u64,
     pub sample_end: u64,
-    pub source_seal_receipt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_seal_receipt: Option<String>,
+    #[serde(default)]
+    pub sentence_break_before: bool,
     pub source_label: String,
     pub left_context: String,
     pub left_context_sha256: String,
@@ -185,6 +188,7 @@ impl From<&IncrementalShapingReceipt> for ProjectedPresentationReceipt {
             sample_start: receipt.occurrence.sample_start,
             sample_end: receipt.occurrence.sample_end,
             source_seal_receipt: receipt.source_seal_receipt.clone(),
+            sentence_break_before: receipt.sentence_break_before,
             source_label: receipt.source_label.clone(),
             left_context: receipt.left_context.clone(),
             left_context_sha256: receipt.left_context_sha256.clone(),
@@ -1471,11 +1475,18 @@ mod tests {
     }
 
     fn committed_fixture(id: &str) -> (AcousticLedger, TranscriptReducer, TranscriptRevision) {
+        committed_fixture_with_first_label(id, "Zażółć")
+    }
+
+    fn committed_fixture_with_first_label(
+        id: &str,
+        first_label: &str,
+    ) -> (AcousticLedger, TranscriptReducer, TranscriptRevision) {
         let mut ledger = AcousticLedger::new();
         let mut reducer = TranscriptReducer::default();
         let calibration = EnergyCalibration::new("bus-fault-fixture", 1.0, 1);
         let mut revision = None;
-        for (index, label) in ["Zażółć", "gęślą\n jaźń."].into_iter().enumerate() {
+        for (index, label) in [first_label, "gęślą\n jaźń."].into_iter().enumerate() {
             let start = index as u64 * 16_000;
             let occurrence = OccurrenceIdentity::new(id, 7, start, start + 16_000);
             let evidence = AcousticEvidence {
@@ -2055,7 +2066,8 @@ mod tests {
     // Preserve predecessor negative controls across the publication recovery.
     #[test]
     fn incremental_bus_refuses_rendered_bytes_not_bound_to_the_shaping_receipt() {
-        let (mut ledger, mut reducer, _) = committed_fixture("shaping-bytes");
+        let (mut ledger, mut reducer, _) =
+            committed_fixture_with_first_label("shaping-bytes", "zażółć");
         let occurrence = OccurrenceIdentity::new("shaping-bytes", 7, 0, 16_000);
         ledger.schedule_frontier(occurrence.clone(), [ObservationProducer::Apple]);
         assert!(ledger.note_frontier_return(&occurrence, ObservationProducer::Apple));
@@ -2078,7 +2090,8 @@ mod tests {
 
     #[test]
     fn incremental_bus_refuses_a_shaping_receipt_absent_from_the_ledger() {
-        let (mut ledger, mut reducer, _) = committed_fixture("shaping-forgery");
+        let (mut ledger, mut reducer, _) =
+            committed_fixture_with_first_label("shaping-forgery", "zażółć");
         let occurrence = OccurrenceIdentity::new("shaping-forgery", 7, 0, 16_000);
         ledger.schedule_frontier(occurrence.clone(), [ObservationProducer::Apple]);
         assert!(ledger.note_frontier_return(&occurrence, ObservationProducer::Apple));
@@ -2111,7 +2124,8 @@ mod tests {
     /// stays `listening`.
     #[test]
     fn an_incremental_shaping_publishes_a_listening_revision_without_closing_the_book() {
-        let (mut ledger, mut reducer, committed) = committed_fixture("shaping-bus");
+        let (mut ledger, mut reducer, committed) =
+            committed_fixture_with_first_label("shaping-bus", "zażółć");
         let occurrence = OccurrenceIdentity::new("shaping-bus", 7, 0, 16_000);
         ledger.schedule_frontier(occurrence.clone(), [ObservationProducer::Apple]);
         assert!(ledger.note_frontier_return(&occurrence, ObservationProducer::Apple));
@@ -2153,9 +2167,9 @@ mod tests {
             );
         }
         // Only the shaped occurrence changed; the open one is byte-exact.
-        assert_eq!(committed.rendered_text, "Zażółć gęślą\n jaźń.");
-        assert_eq!(shaping.rendered_text, "Zażółć. gęślą\n jaźń.");
-        assert_eq!(events[0].label, "Zażółć", "the spoken label is unchanged");
+        assert_eq!(committed.rendered_text, "zażółć gęślą\n jaźń.");
+        assert_eq!(shaping.rendered_text, "Zażółć gęślą\n jaźń.");
+        assert_eq!(events[0].label, "zażółć", "the spoken label is unchanged");
 
         assert!(
             !bus.writer.lock().unwrap().sealed,
@@ -2164,7 +2178,8 @@ mod tests {
     }
     #[test]
     fn retained_shaping_authenticates_the_complete_ordered_snapshot_or_emits_nothing() {
-        let (mut ledger, mut reducer, _) = committed_fixture("retained-proof");
+        let (mut ledger, mut reducer, _) =
+            committed_fixture_with_first_label("retained-proof", "zażółć");
         let first = OccurrenceIdentity::new("retained-proof", 7, 0, 16_000);
         let second = OccurrenceIdentity::new("retained-proof", 7, 16_000, 32_000);
         for occurrence in [&first, &second] {
@@ -2220,7 +2235,8 @@ mod tests {
         }
         // Same acoustic labels/geometry/seal IDs, but no minted shaping:
         // a valid private snapshot still needs the exact live ledger receipt.
-        let (mut without_shaping, _, _) = committed_fixture("retained-proof");
+        let (mut without_shaping, _, _) =
+            committed_fixture_with_first_label("retained-proof", "zażółć");
         for occurrence in [&first, &second] {
             without_shaping.schedule_frontier(occurrence.clone(), [ObservationProducer::Apple]);
             assert!(without_shaping.note_frontier_return(occurrence, ObservationProducer::Apple));
@@ -2256,7 +2272,8 @@ mod tests {
 
     #[test]
     fn serialized_projection_absence_and_malformed_proof_never_mint_authority() {
-        let (mut ledger, mut reducer, plain) = committed_fixture("serialized-shape");
+        let (mut ledger, mut reducer, plain) =
+            committed_fixture_with_first_label("serialized-shape", "zażółć");
         let temp = tempfile::tempdir().unwrap();
         let bus =
             TranscriptBus::open_at(session("serialized-shape"), temp.path().join("bus"), None)
@@ -2287,7 +2304,6 @@ mod tests {
         );
         for field in [
             "source_revision",
-            "source_seal_receipt",
             "left_context",
             "left_context_sha256",
             "shaped_text",

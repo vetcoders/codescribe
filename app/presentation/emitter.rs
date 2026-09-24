@@ -260,9 +260,11 @@ impl TranscriptRevision {
                     || receipt.left_context_sha256
                         != format!("{:x}", Sha256::digest(left_context.as_bytes()))
                     || !ledger.incremental_shapings().contains(receipt)
-                    || ledger
-                        .seal_of(&entry.occurrence)
-                        .is_none_or(|seal| seal.receipt_id != receipt.source_seal_receipt)
+                    || receipt.source_seal_receipt.as_ref().is_some_and(|id| {
+                        ledger
+                            .seal_of(&entry.occurrence)
+                            .is_none_or(|seal| &seal.receipt_id != id)
+                    })
                 {
                     return false;
                 }
@@ -528,6 +530,7 @@ fn append_exact_fragment(rendered: &mut String, fragment: &str) {
         && !fragment.is_empty()
         && !rendered.ends_with(char::is_whitespace)
         && !fragment.starts_with(char::is_whitespace)
+        && !fragment.starts_with(". ")
     {
         rendered.push(' ');
     }
@@ -830,8 +833,11 @@ impl TranscriptReducer {
         if intent.rendered_text.trim().is_empty() {
             return Err(UserRevisionRefusal::EmptyText);
         }
-        let source_occurrences =
-            self.authenticated_revision_occurrences(&intent.session_id, intent.source_revision)?;
+        let source_occurrences = if intent.provenance == DocumentRevisionProvenance::LightPlus {
+            self.authenticated_presentation_occurrences(&intent.session_id, intent.source_revision)?
+        } else {
+            self.authenticated_revision_occurrences(&intent.session_id, intent.source_revision)?
+        };
         if self.committed_rendered_text() == intent.rendered_text {
             return Err(UserRevisionRefusal::Unchanged);
         }
@@ -919,11 +925,19 @@ impl TranscriptReducer {
         session_id: &str,
         source_revision: u64,
     ) -> Result<Vec<OccurrenceIdentity>, UserRevisionRefusal> {
-        if self.document_by_occurrence.is_empty() {
-            return Err(UserRevisionRefusal::NoCommittedDocument);
-        }
         if !self.terminal {
             return Err(UserRevisionRefusal::NotTerminal);
+        }
+        self.authenticated_presentation_occurrences(session_id, source_revision)
+    }
+
+    fn authenticated_presentation_occurrences(
+        &self,
+        session_id: &str,
+        source_revision: u64,
+    ) -> Result<Vec<OccurrenceIdentity>, UserRevisionRefusal> {
+        if self.document_by_occurrence.is_empty() {
+            return Err(UserRevisionRefusal::NoCommittedDocument);
         }
         if source_revision != self.revision {
             return Err(UserRevisionRefusal::StaleRevision {
@@ -945,23 +959,28 @@ impl TranscriptReducer {
         Ok(source_occurrences)
     }
 
-    /// Shape one closed occurrence's presentation while the session lifecycle
+    /// Shape one committed occurrence's presentation while the session lifecycle
     /// is still open.
     ///
     /// This is the live half of the Light+ floor and it is deliberately narrow.
-    /// It shapes exactly the occurrence a seal just closed, using the committed
+    /// It shapes exactly one occurrence with committed text, using the committed
     /// text to its left as casing context, and it authenticates that single
     /// occurrence through the ledger. It does not touch the ledger label, does
     /// not claim the document, does not read the ephemeral preview, and cannot
-    /// make the reducer terminal — an occurrence seal is not a lifecycle end.
-    ///
-    /// An open suffix is therefore never shaped and never appears in a sealed
-    /// source receipt; it keeps rendering the spoken words until its own seal
-    /// arrives.
+    /// make the reducer terminal. Acoustic finality remains independent.
     pub fn apply_incremental_shaping(
         &mut self,
         ledger: &mut AcousticLedger,
         occurrence: &OccurrenceIdentity,
+    ) -> Result<TranscriptRevision, IncrementalShapingRefusal> {
+        self.apply_incremental_shaping_with_pause(ledger, occurrence, 0.7)
+    }
+
+    pub fn apply_incremental_shaping_with_pause(
+        &mut self,
+        ledger: &mut AcousticLedger,
+        occurrence: &OccurrenceIdentity,
+        sentence_pause_sec: f32,
     ) -> Result<TranscriptRevision, IncrementalShapingRefusal> {
         // A whole-document revision (user edit, formatter, terminal Light+)
         // already owns every visible byte. A per-occurrence shape must not
@@ -1004,22 +1023,27 @@ impl TranscriptReducer {
         {
             return Err(IncrementalShapingRefusal::AlreadyShaped);
         }
-        // Do not shape against a known open predecessor: it can still change.
-        // On every closure the emitter revisits the complete sealed prefix.
-        if self
+        let sentence_break_before = self
             .document_by_occurrence
             .keys()
             .take_while(|key| *key < occurrence)
-            .any(|key| !ledger.is_sealed(key))
-        {
-            return Err(IncrementalShapingRefusal::LedgerRefusal(
-                "incremental_shaping_left_context_open",
-            ));
-        }
+            .last()
+            .filter(|previous| previous.capture_epoch == occurrence.capture_epoch)
+            .and_then(|previous| {
+                let serial = ledger.serial_of(previous)?;
+                let samples = previous.sample_end.checked_sub(previous.sample_start)?;
+                let gap = occurrence.sample_start.checked_sub(previous.sample_end)?;
+                (samples > 0).then_some(
+                    gap as f64 * serial.duration_ms / samples as f64
+                        >= f64::from(sentence_pause_sec) * 1000.0,
+                )
+            })
+            .unwrap_or(false);
         let left_context = self.rendered_occurrence_span(Some(occurrence));
-        let shaped = codescribe_core::pipeline::light_plus::apply_with_left_context(
+        let shaped = codescribe_core::pipeline::light_plus::apply_live_span(
             &left_context,
             &source_label,
+            sentence_break_before,
         );
         // Shaping that consumed every word (a hesitation-only utterance) must
         // never be committed: an empty presentation would delete spoken audio
@@ -1043,6 +1067,7 @@ impl TranscriptReducer {
                 source_label: &source_label,
                 left_context: &left_context,
                 shaped_text: &shaped,
+                sentence_break_before,
             })
             .map_err(IncrementalShapingRefusal::LedgerRefusal)?;
         self.shaped_by_occurrence
@@ -1096,15 +1121,12 @@ impl TranscriptReducer {
         })
     }
 
-    /// The Light+ revision this terminal document is owed, or `None` when
-    /// there is nothing to shape: no committed document, not yet terminal, or
+    /// The Light+ revision this document is owed, or `None` when
+    /// there is nothing to shape: no committed document, or
     /// the shaped text is byte-identical (Light+ is idempotent, so a second
     /// pass — or a document a formatter already shaped — mints nothing).
     /// Read-only: the intent enters the same corridor as a user edit.
     pub fn light_plus_intent(&self) -> Option<UserRevisionIntent> {
-        if !self.terminal {
-            return None;
-        }
         let session_id = self.document_by_occurrence.keys().next()?.session.clone();
         let source = self.committed_rendered_text();
         if source.trim().is_empty() {
@@ -1414,6 +1436,7 @@ pub struct PresentationEmitter {
     /// Every other lane — including auto-format "off" — gets the Light+
     /// floor, exactly as the pre-ledger controller gated it.
     literal_delivery: std::sync::atomic::AtomicBool,
+    sentence_pause_sec: f32,
 }
 
 impl PresentationEmitter {
@@ -1432,6 +1455,32 @@ impl PresentationEmitter {
             revision: reducer.revision,
             text,
             preview_only_words: reducer.ephemeral_preview.split_whitespace().count(),
+        })
+    }
+
+    /// Publish the Light+ revision that owns stop delivery before handing its
+    /// exact bytes to the destination. Capture is already closed at this point.
+    pub fn shape_frozen_canvas_at_stop(
+        &self,
+        frozen: VisibleCanvasSnapshot,
+    ) -> Result<VisibleCanvasSnapshot, UserRevisionRefusal> {
+        if self.literal_delivery() || frozen.text.trim().is_empty() {
+            return Ok(frozen);
+        }
+        let shaped = codescribe_core::pipeline::light_plus::apply(&frozen.text);
+        if shaped.is_empty() || shaped == frozen.text {
+            return Ok(frozen);
+        }
+        let commit = self.apply_user_revision(UserRevisionIntent {
+            session_id: frozen.session_id.clone(),
+            source_revision: frozen.revision,
+            rendered_text: shaped,
+            provenance: DocumentRevisionProvenance::LightPlus,
+        })?;
+        Ok(VisibleCanvasSnapshot {
+            revision: commit.revision,
+            text: commit.rendered_text,
+            ..frozen
         })
     }
 
@@ -1511,6 +1560,7 @@ impl PresentationEmitter {
             acoustic_ledger,
             projection_callback,
             literal_delivery: std::sync::atomic::AtomicBool::new(false),
+            sentence_pause_sec: 0.7,
             cursor_observer: None,
             cursor_capture: std::sync::OnceLock::new(),
             cursor_sequence: std::sync::Mutex::new(0),
@@ -1526,6 +1576,12 @@ impl PresentationEmitter {
     pub fn set_literal_delivery(&self, literal: bool) {
         self.literal_delivery
             .store(literal, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Set from the immutable settings generation held by this capture.
+    pub fn with_sentence_pause_sec(mut self, seconds: f32) -> Self {
+        self.sentence_pause_sec = seconds.clamp(0.3, 2.0);
+        self
     }
 
     /// Observe ephemeral paint without granting document or delivery authority.
@@ -1829,8 +1885,8 @@ impl PresentationEmitter {
         })
     }
 
-    /// Light+ floor at the terminal seal. Deterministic sentence shape for the
-    /// sealed document — capital at sentence starts, a closing period,
+    /// Light+ document shape at terminal or after a frozen Stop revision gains
+    /// late words — capital at sentence starts, a closing period,
     /// hesitation sounds dropped, punctuation seams collapsed — minted as one
     /// ledger-stamped document revision with provenance `light-plus`, so the
     /// Bus, the delivery buffer, and the formatter CAS all see the same bytes.
@@ -1859,8 +1915,8 @@ impl PresentationEmitter {
         }
     }
 
-    /// The live half of the Light+ floor. Every occurrence an arriving seal
-    /// just closed gains its deterministic presentation immediately, so a long
+    /// The live half of the Light+ floor. Every occurrence with admitted text
+    /// gains its deterministic presentation immediately, so a long
     /// take reads as sentences while it is still being spoken instead of
     /// waiting for Stop.
     ///
@@ -1889,15 +1945,16 @@ impl PresentationEmitter {
             .cloned()
             .collect::<Vec<_>>();
         for occurrence in &occurrences {
-            if !ledger.is_sealed(occurrence) {
-                break;
-            }
             let shaped = {
                 let mut reducer = self
                     .session_state
                     .lock()
                     .unwrap_or_else(|error| error.into_inner());
-                reducer.apply_incremental_shaping(ledger, occurrence)
+                reducer.apply_incremental_shaping_with_pause(
+                    ledger,
+                    occurrence,
+                    self.sentence_pause_sec,
+                )
             };
             match shaped {
                 Ok(revision) => {
@@ -2060,12 +2117,17 @@ impl EventSink for PresentationEmitter {
                 let Some(ledger) = &self.acoustic_ledger else {
                     return;
                 };
-                let ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
+                let mut ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
                 let unanchored = matches!(receipt, MutationReceipt::KeepVisibleUnanchored { .. });
                 let mut state = self
                     .session_state
                     .lock()
                     .unwrap_or_else(|error| error.into_inner());
+                let was_stop_revision = !state.terminal
+                    && state
+                        .manual_document_revision_receipt
+                        .as_deref()
+                        .is_some_and(|id| id.starts_with("light-plus-"));
                 let revision = state.apply_ledger_mutation(&ledger, observation, receipt);
                 let visible = state.visible_projection();
                 drop(state);
@@ -2095,6 +2157,11 @@ impl EventSink for PresentationEmitter {
                         paint: visible,
                         delivery: revision.rendered_text,
                     });
+                    if was_stop_revision {
+                        self.mint_light_plus_revision(&mut ledger);
+                    } else {
+                        self.mint_incremental_light_plus(&mut ledger, &[]);
+                    }
                 }
             }
             EngineEvent::ContextMarker { position, label } => {
@@ -2151,16 +2218,15 @@ impl EventSink for PresentationEmitter {
                     }
                 }
                 // The terminal seal closes the ledger's word authority; the
-                // Light+ floor follows immediately, before the controller
+                // Light+ document revision follows immediately, before the controller
                 // publishes `session_ended`, so the terminal projection Swift
                 // holds already carries the shaped bytes and revision number.
                 if terminal {
                     self.mint_light_plus_revision(&mut ledger);
                 } else {
                     // An occurrence seal closes exactly those words and nothing
-                    // else. Shape them now: the closed part of the take becomes
-                    // readable during capture, the open suffix keeps its spoken
-                    // form, and the lifecycle stays open.
+                    // else. Retry presentation for any committed span that was
+                    // not shaped at admission; the lifecycle stays open.
                     self.mint_incremental_light_plus(&mut ledger, &receipt.sealed_occurrences);
                 }
             }
@@ -2245,16 +2311,10 @@ impl EventSink for PresentationEmitter {
                         self.send_committed_paint(revision.rendered_text);
                     }
                 }
-                // The proposal corridor is the second place an occurrence can
-                // close. One law for both: a sealed occurrence is shaped. The
-                // reducer refuses a still-open or already-shaped one, so this
-                // cannot mint a second presentation for the same words.
-                if ledger.is_sealed(&occurrence) {
-                    self.mint_incremental_light_plus(
-                        &mut ledger,
-                        std::slice::from_ref(&occurrence),
-                    );
-                }
+                // The proposal corridor can admit a new committed label.
+                // Retry presentation; the reducer refuses an already-shaped
+                // occurrence, so the same words mint at most one revision.
+                self.mint_incremental_light_plus(&mut ledger, std::slice::from_ref(&occurrence));
             }
             EngineEvent::VadStart { .. } | EngineEvent::VadEnd { .. } => {}
             EngineEvent::SidebandEvidence { evidence } => {
@@ -2442,7 +2502,6 @@ mod tests {
         TranscriptDelta,
     };
     use codescribe_core::stt::tail_provider::TailSampleRange;
-    use sha2::{Digest, Sha256};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::sync::Mutex;
@@ -2882,6 +2941,118 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn frozen_stop_canvas_publishes_the_exact_light_plus_paste() {
+        let temp = tempfile::tempdir().unwrap();
+        let bus_path = temp.path().join("paste.jsonl");
+        let bus = Arc::new(
+            TranscriptBus::open_at(
+                TranscriptSession {
+                    session_id: "paste-take".to_string(),
+                    mode: TranscriptMode::Dictation,
+                    has_latched_target: true,
+                    latched_target_is_self: false,
+                },
+                bus_path.clone(),
+                None,
+            )
+            .unwrap(),
+        );
+        let delivery = Arc::new(Mutex::new(String::new()));
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let occurrence = OccurrenceIdentity::new("paste-take", 7, 0, 16_000);
+        let mutation = admitted_mutation(
+            &mut ledger.lock().unwrap(),
+            occurrence,
+            1,
+            "to działa bo jest proste",
+        );
+        bus.publish_started();
+        let mut emitter = PresentationEmitter::new_with_authority(
+            Arc::clone(&delivery),
+            None,
+            None,
+            Some(Arc::clone(&bus)),
+            Some(Arc::clone(&ledger)),
+            None,
+        );
+        emitter.on_capture_opened("paste-take", 7);
+        emitter.on_event(&mutation);
+        let frozen = emitter.visible_canvas_snapshot().unwrap();
+        let paste = emitter.shape_frozen_canvas_at_stop(frozen.clone()).unwrap();
+        assert_eq!(
+            paste.text,
+            codescribe_core::pipeline::light_plus::apply(&frozen.text)
+        );
+        assert!(paste.revision > frozen.revision);
+        assert_eq!(
+            ledger.lock().unwrap().manual_document_revisions()[0].provenance,
+            "light-plus"
+        );
+        emitter.finish().await;
+        assert_eq!(delivery.lock().await.as_str(), paste.text);
+        let bus_text = std::fs::read_to_string(bus_path).unwrap();
+        assert!(bus_text.contains("light-plus"));
+        assert!(bus_text.contains(&paste.text));
+    }
+
+    #[tokio::test]
+    async fn late_mutation_after_frozen_paste_remains_a_bus_revision() {
+        let temp = tempfile::tempdir().unwrap();
+        let bus_path = temp.path().join("late.jsonl");
+        let bus = Arc::new(
+            TranscriptBus::open_at(
+                TranscriptSession {
+                    session_id: "late-paste".to_string(),
+                    mode: TranscriptMode::Dictation,
+                    has_latched_target: true,
+                    latched_target_is_self: false,
+                },
+                bus_path.clone(),
+                None,
+            )
+            .unwrap(),
+        );
+        let delivery = Arc::new(Mutex::new(String::new()));
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        bus.publish_started();
+        let mut emitter = PresentationEmitter::new_with_authority(
+            Arc::clone(&delivery),
+            None,
+            None,
+            Some(Arc::clone(&bus)),
+            Some(Arc::clone(&ledger)),
+            None,
+        );
+        emitter.on_capture_opened("late-paste", 7);
+        let first = admitted_mutation(
+            &mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("late-paste", 7, 0, 16_000),
+            1,
+            "pierwsze słowa",
+        );
+        emitter.on_event(&first);
+        let frozen = emitter.visible_canvas_snapshot().unwrap();
+        let paste = emitter.shape_frozen_canvas_at_stop(frozen).unwrap();
+        assert_eq!(paste.text, "Pierwsze słowa.");
+
+        let late = admitted_mutation(
+            &mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("late-paste", 7, 16_000, 32_000),
+            2,
+            "drugie słowa",
+        );
+        emitter.on_event(&late);
+        let revised = emitter.visible_canvas_snapshot().unwrap();
+        assert!(revised.revision > paste.revision);
+        assert_eq!(revised.text, "Pierwsze słowa drugie słowa.");
+        emitter.finish().await;
+        assert_eq!(delivery.lock().await.as_str(), revised.text);
+        let bus_text = std::fs::read_to_string(bus_path).unwrap();
+        assert!(bus_text.contains(&paste.text));
+        assert!(bus_text.contains(&revised.text));
+    }
+
+    #[tokio::test]
     async fn frozen_stop_canvas_remains_a_prefix_of_five_occurrence_revision() {
         let delivery = Arc::new(Mutex::new(String::new()));
         let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
@@ -2991,8 +3162,8 @@ mod tests {
         };
         emitter.on_event(&last);
         let frozen = emitter.visible_canvas_snapshot().unwrap();
-        assert_eq!(frozen.text, "last words");
-        assert_eq!(frozen.revision, 1);
+        assert_eq!(frozen.text, "Last words");
+        assert_eq!(frozen.revision, 2);
         emitter.finish().await;
     }
 
@@ -3194,6 +3365,11 @@ mod tests {
             session_id: "refused-take".to_string(),
             layer_summary: LayerSummary::default(),
         });
+        assert_eq!(
+            ledger.lock().unwrap().manual_document_revisions()[0].provenance,
+            "light-plus",
+            "a refused acoustic terminal still permits a presentation revision"
+        );
         let terminal = bus
             .publish_ended(
                 TranscriptSessionEndReason::CoverageRefused,
@@ -3626,9 +3802,8 @@ mod tests {
             receipt.source_occurrences,
             vec![occurrence.clone(), tail_occurrence.clone()]
         );
-        // No occurrence seal reached the emitter, so nothing was shaped live:
-        // this document really was shaped once, at the terminal boundary.
-        assert!(ledger.incremental_shapings().is_empty());
+        // Presentation can precede any acoustic seal; terminal Light+ closes it.
+        assert!(!ledger.incremental_shapings().is_empty());
         drop(ledger);
 
         // `session_ended` copies the Light+ revision: Swift's terminal CAS
@@ -4226,6 +4401,35 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn pcm_gap_sets_live_sentence_boundary_without_sealing_occurrences() {
+        let mut take = live_take("pause-session");
+        let first = OccurrenceIdentity::new("pause-session", 21, 0, 16_000);
+        let short_gap = OccurrenceIdentity::new("pause-session", 21, 19_200, 35_200);
+        let long_gap = OccurrenceIdentity::new("pause-session", 21, 48_000, 64_000);
+        take.admit(&first, 1, "pierwsze slowa");
+        take.admit(&short_gap, 2, "drugie slowa");
+        take.admit(&long_gap, 3, "trzecie slowa");
+        take.emitter.finish().await;
+
+        assert_eq!(
+            take.delivery.lock().await.as_str(),
+            "Pierwsze slowa drugie slowa. Trzecie slowa"
+        );
+        let ledger = take.ledger.lock().unwrap();
+        assert!(ledger.seal_of(&first).is_none());
+        assert!(ledger.seal_of(&short_gap).is_none());
+        assert!(ledger.seal_of(&long_gap).is_none());
+        assert_eq!(ledger.incremental_shapings().len(), 2);
+        assert!(!ledger.incremental_shapings()[0].sentence_break_before);
+        assert!(ledger.incremental_shapings()[1].sentence_break_before);
+        assert!(
+            ledger.incremental_shapings()[1]
+                .source_seal_receipt
+                .is_none()
+        );
+    }
+
     /// Acceptance: an actual occurrence seal, arriving long before any
     /// lifecycle end, shapes exactly those words and publishes the shaped
     /// bytes to the Bus, the projection callback and the delivery buffer —
@@ -4250,7 +4454,7 @@ mod tests {
 
         assert_eq!(
             take.delivery.lock().await.as_str(),
-            "To jest pierwsze zdanie.",
+            "To jest pierwsze zdanie",
             "the closed occurrence reaches delivery shaped, during capture"
         );
 
@@ -4260,8 +4464,8 @@ mod tests {
         assert_eq!(shaping.provenance, "light-plus");
         assert_eq!(shaping.occurrence, occurrence);
         assert_eq!(shaping.source_label, spoken);
-        assert_eq!(shaping.shaped_text, "To jest pierwsze zdanie.");
-        assert_eq!(shaping.source_seal_receipt, seal_receipt_id);
+        assert_eq!(shaping.shaped_text, "To jest pierwsze zdanie");
+        assert!(shaping.source_seal_receipt.is_none());
         assert_eq!(shaping.revision, shaping.source_revision + 1);
 
         // The acoustic label is untouched: shaping is presentation, not words.
@@ -4279,7 +4483,7 @@ mod tests {
         let projections = take.shaping_projections();
         assert_eq!(projections.len(), 1);
         let projection = &projections[0];
-        assert_eq!(projection.rendered_text, "To jest pierwsze zdanie.");
+        assert_eq!(projection.rendered_text, "To jest pierwsze zdanie");
         assert_eq!(projection.label, spoken, "the projected label stays spoken");
         assert_eq!(projection.phase, TranscriptProjectionPhase::Listening);
         assert!(!projection.terminal, "a shape is not a terminal revision");
@@ -4296,7 +4500,15 @@ mod tests {
         );
         assert_eq!(
             projection.acoustic_receipts[0].seal_receipt.as_deref(),
-            Some(seal_receipt_id.as_str())
+            None
+        );
+        assert_eq!(
+            take.ledger
+                .lock()
+                .unwrap()
+                .seal_of(&occurrence)
+                .map(|seal| seal.receipt_id.as_str().to_owned()),
+            Some(seal_receipt_id)
         );
 
         let bus_bytes = std::fs::read(&take.bus_path).unwrap();
@@ -4332,7 +4544,7 @@ mod tests {
             .cloned()
             .expect("the insert publishes a revision");
         assert_eq!(
-            open_projection.rendered_text, "To jest pierwsze zdanie. a to jest drugie",
+            open_projection.rendered_text, "To jest pierwsze zdanie a to jest drugie",
             "shaped prefix preserved, open suffix byte-exact"
         );
 
@@ -4364,29 +4576,26 @@ mod tests {
 
         assert_eq!(
             take.delivery.lock().await.as_str(),
-            "To jest pierwsze zdanie. A to jest drugie.",
+            "To jest pierwsze zdanie a to jest drugie",
             "the second span capitalises because its left context closed"
         );
 
         let shapings = take.shapings();
-        assert_eq!(shapings.len(), 2);
+        assert_eq!(shapings.len(), 1);
         assert_eq!(
             shapings[0], after_first[0],
             "the first shaping receipt is never rewritten"
         );
-        assert_eq!(shapings[1].occurrence, second);
-        assert_eq!(shapings[1].shaped_text, "A to jest drugie.");
-        assert_ne!(shapings[0].receipt_id, shapings[1].receipt_id);
-        assert_ne!(
-            shapings[0].left_context_sha256, shapings[1].left_context_sha256,
-            "the second shape saw a different left neighbourhood"
+        assert_eq!(
+            take.ledger.lock().unwrap().text_of(&second),
+            Some("a to jest drugie")
         );
     }
 
     /// Acceptance: an unsealed suffix is never shaped and never appears in a
     /// sealed source receipt. Closed geometry and seal history stay immutable.
     #[tokio::test]
-    async fn an_open_suffix_is_never_shaped_nor_claimed_as_a_sealed_source() {
+    async fn an_open_suffix_is_shaped_without_claiming_a_seal() {
         let mut take = live_take("open-suffix-session");
         let closed = OccurrenceIdentity::new("open-suffix-session", 13, 0, 16_000);
         let open = OccurrenceIdentity::new("open-suffix-session", 13, 16_000, 32_000);
@@ -4398,36 +4607,35 @@ mod tests {
         take.emitter.finish().await;
 
         let shapings = take.shapings();
-        assert_eq!(shapings.len(), 1, "only the sealed occurrence was shaped");
+        assert_eq!(shapings.len(), 2, "both committed occurrences were shaped");
         assert_eq!(shapings[0].occurrence, closed);
         assert!(
-            !shapings.iter().any(|shaping| shaping.occurrence == open),
-            "an open occurrence must never enter a shaping receipt"
+            shapings.iter().any(|shaping| shaping.occurrence == open),
+            "an open committed occurrence has presentation authority"
         );
 
         let rendered = take.delivery.lock().await.clone();
         assert!(
-            rendered.ends_with(open_words),
-            "the open suffix is delivered word-for-word: {rendered}"
+            rendered.ends_with("jeszcze mowie i nie skonczylem"),
+            "the open suffix keeps its words: {rendered}"
         );
-        assert!(rendered.starts_with("Pierwsza czesc juz zamknieta."));
+        assert!(rendered.starts_with("Pierwsza czesc juz zamknieta"));
 
         // The seal the shaping cites is still the one the ledger holds.
         let ledger = take
             .ledger
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        assert_eq!(
-            ledger.seal_of(&closed).map(|seal| seal.receipt_id.as_str()),
-            Some(shapings[0].source_seal_receipt.as_str())
-        );
+        assert!(ledger.seal_of(&closed).is_some());
+        assert!(shapings[0].source_seal_receipt.is_none());
+        assert!(shapings[1].source_seal_receipt.is_none());
         assert!(ledger.seal_of(&open).is_none());
     }
 
     /// Acceptance: equal words in distinct occurrences remain intentional
     /// repetition. Shaping is per-occurrence, so nothing can collapse them.
     #[tokio::test]
-    async fn equal_words_in_distinct_occurrences_stay_two_shaped_entries() {
+    async fn equal_words_in_distinct_occurrences_stay_two_document_entries() {
         let mut take = live_take("iwo-session");
         let first = OccurrenceIdentity::new("iwo-session", 14, 0, 16_000);
         let second = OccurrenceIdentity::new("iwo-session", 14, 16_000, 32_000);
@@ -4438,25 +4646,16 @@ mod tests {
         take.seal(&second);
         take.emitter.finish().await;
 
-        assert_eq!(take.delivery.lock().await.as_str(), "Iwo. Iwo.");
+        assert_eq!(take.delivery.lock().await.as_str(), "Iwo Iwo");
         let shapings = take.shapings();
-        assert_eq!(shapings.len(), 2, "same text, two physical events");
-        assert_eq!(shapings[0].occurrence, first);
-        assert_eq!(shapings[1].occurrence, second);
-        assert_ne!(shapings[0].receipt_id, shapings[1].receipt_id);
-        let rows = take.shaping_projections();
-        assert_eq!(
-            rows.len(),
-            3,
-            "one first-entry row, then two document-entry rows"
+        assert!(
+            shapings.is_empty(),
+            "unchanged text needs no shaping receipt"
         );
-        assert_eq!(
-            rows.iter()
-                .map(|row| row.reducer_revision)
-                .collect::<std::collections::BTreeSet<_>>()
-                .len(),
-            2
-        );
+        let ledger = take.ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&first), Some("Iwo"));
+        assert_eq!(ledger.text_of(&second), Some("Iwo"));
+        assert!(take.shaping_projections().is_empty());
     }
 
     /// Acceptance: a duplicate seal observation mints no second revision and no
@@ -4490,7 +4689,7 @@ mod tests {
         );
         assert_eq!(
             take.delivery.lock().await.as_str(),
-            "Raz powiedziane zdanie."
+            "Raz powiedziane zdanie"
         );
     }
 
@@ -4546,7 +4745,7 @@ mod tests {
         let mut take = live_take("relabel-session");
         let occurrence = OccurrenceIdentity::new("relabel-session", 18, 0, 16_000);
 
-        take.admit(&occurrence, 1, "Iwo");
+        take.admit(&occurrence, 1, "iwo");
         take.seal(&occurrence);
         assert_eq!(take.shapings().len(), 1);
 
@@ -4655,7 +4854,7 @@ mod tests {
     /// whole-document Light+ revision, and the terminal CAS source is the same
     /// bytes Swift already holds.
     #[tokio::test]
-    async fn stop_delivers_the_live_shaped_document_without_a_duplicate_revision() {
+    async fn stop_closes_live_presentation_with_one_light_plus_revision() {
         let mut take = live_take("stop-session");
         let first = OccurrenceIdentity::new("stop-session", 19, 0, 16_000);
         let second = OccurrenceIdentity::new("stop-session", 19, 16_000, 32_000);
@@ -4689,21 +4888,22 @@ mod tests {
             .expect("terminal projection");
         take.emitter.finish().await;
 
-        let shaped = "Pierwsze zdanie tutaj. A potem drugie.";
+        let shaped = "Pierwsze zdanie tutaj a potem drugie.";
         assert_eq!(take.delivery.lock().await.as_str(), shaped);
         assert_eq!(terminal.rendered_text, shaped);
         assert!(terminal.terminal);
         assert_eq!(
             take.shapings().len(),
-            2,
-            "two occurrence seals, two shapings"
+            1,
+            "only changed presentation mints a live receipt"
         );
         assert!(
             take.ledger
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .manual_document_revisions()
-                .is_empty(),
+                .len()
+                == 1,
             "an already-shaped document mints no duplicate terminal revision"
         );
         assert_eq!(
@@ -4742,7 +4942,7 @@ mod tests {
     /// whole-document revision keeps ownership of presentation once it exists.
     /// Exercised against the real reducer and ledger, one refusal at a time.
     #[test]
-    fn foreign_unsealed_and_owned_documents_refuse_incremental_shaping() {
+    fn foreign_and_owned_documents_refuse_incremental_shaping() {
         let mut reducer = TranscriptReducer::default();
         let mut ledger = AcousticLedger::new();
         let occurrence = OccurrenceIdentity::new("refusal-session", 20, 0, 16_000);
@@ -4769,13 +4969,11 @@ mod tests {
                 .is_some()
         );
 
-        // Committed but not sealed: the ledger, not the reducer, says no.
-        assert_eq!(
-            reducer.apply_incremental_shaping(&mut ledger, &occurrence),
-            Err(IncrementalShapingRefusal::LedgerRefusal(
-                "incremental_shaping_occurrence_not_sealed"
-            ))
-        );
+        // A committed label can be presented before acoustic finality.
+        let live = reducer
+            .apply_incremental_shaping(&mut ledger, &occurrence)
+            .expect("committed words can be shaped before a seal");
+        assert_eq!(live.rendered_text, "Jakies slowa");
 
         // A foreign occurrence never reaches the ledger at all.
         assert_eq!(
@@ -4786,10 +4984,10 @@ mod tests {
         ledger.schedule_frontier(occurrence.clone(), [ObservationProducer::Apple]);
         assert!(ledger.note_frontier_return(&occurrence, ObservationProducer::Apple));
         ledger.seal(&occurrence).expect("closed occurrence seals");
-        let revision = reducer
-            .apply_incremental_shaping(&mut ledger, &occurrence)
-            .expect("a sealed committed occurrence shapes");
-        assert_eq!(revision.rendered_text, "Jakies slowa.");
+        assert_eq!(
+            reducer.apply_incremental_shaping(&mut ledger, &occurrence),
+            Err(IncrementalShapingRefusal::AlreadyShaped)
+        );
         assert!(
             reducer
                 .shaping_receipt_of(&occurrence)
@@ -4964,23 +5162,21 @@ mod tests {
         take.admit(&second, 2, "drugie zdanie");
         take.seal(&second);
         assert!(
-            take.shapings().is_empty(),
-            "known open left context cannot authorize casing"
+            take.shapings().len() == 1,
+            "an open predecessor does not veto committed presentation"
         );
         take.seal(&first);
         take.emitter.finish().await;
         let receipts = take.shapings();
-        assert_eq!(receipts.len(), 2);
+        assert_eq!(receipts.len(), 1);
         assert_eq!(receipts[0].occurrence, first);
-        assert_eq!(receipts[1].occurrence, second);
-        assert_eq!(receipts[1].left_context, "Pierwsze zdanie.");
         assert_eq!(
-            receipts[1].left_context_sha256,
-            format!("{:x}", Sha256::digest(b"Pierwsze zdanie."))
+            take.ledger.lock().unwrap().text_of(&second),
+            Some("drugie zdanie")
         );
         assert_eq!(
             take.delivery.lock().await.as_str(),
-            "Pierwsze zdanie. Drugie zdanie."
+            "Pierwsze zdanie drugie zdanie"
         );
     }
 
@@ -4994,7 +5190,7 @@ mod tests {
         let original = take.shapings()[0].clone();
         take.admit(&first, 1, "pierwsze zdanie");
         let revision = take.projected.lock().unwrap().last().unwrap().clone();
-        assert_eq!(revision.rendered_text, "pierwsze zdanie drugie zdanie");
+        assert_eq!(revision.rendered_text, "Pierwsze zdanie drugie zdanie");
         assert!(revision.acoustic_receipts[0].presentation_receipt.is_none());
         take.seal(&first);
         take.emitter.finish().await;
@@ -5005,12 +5201,12 @@ mod tests {
         );
         let receipts = take.shapings();
         let current = receipts.last().unwrap();
-        assert_eq!(current.occurrence, second);
+        assert_eq!(current.occurrence, first);
         assert_ne!(current.receipt_id, original.receipt_id);
-        assert_eq!(current.left_context, "Pierwsze zdanie.");
+        assert!(current.left_context.is_empty());
         assert_eq!(
             take.delivery.lock().await.as_str(),
-            "Pierwsze zdanie. Drugie zdanie."
+            "Pierwsze zdanie drugie zdanie"
         );
     }
 
@@ -5063,7 +5259,7 @@ mod tests {
         take.emitter.publish_revision(revision);
         take.emitter.finish().await;
         assert_eq!(take.projected.lock().unwrap().len(), rows);
-        assert_eq!(take.delivery.lock().await.as_str(), "Real words.");
+        assert_eq!(take.delivery.lock().await.as_str(), "Real words");
     }
 
     #[tokio::test]
@@ -5090,7 +5286,7 @@ mod tests {
         take.emitter.publish_revision(revision);
         take.emitter.finish().await;
         assert_eq!(take.projected.lock().unwrap().len(), callbacks);
-        assert_eq!(take.delivery.lock().await.as_str(), "Real words.");
+        assert_eq!(take.delivery.lock().await.as_str(), "Real words");
     }
 
     /// Unanchored overlap stays on the visible projection at its PCM position,

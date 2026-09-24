@@ -21,6 +21,9 @@
 pub mod cloud_asr;
 /// Serde default helpers and default model/endpoint constants.
 mod defaults;
+pub use defaults::{
+    default_light_plus_sentence_pause_sec, normalize_light_plus_sentence_pause_sec,
+};
 pub use defaults::{default_whisper_context_window_sec, normalize_whisper_context_window_sec};
 /// Measured, versioned acoustic calibration artifact (the `EnergyCalibration`
 /// source of the runtime settings throne).

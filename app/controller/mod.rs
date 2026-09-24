@@ -240,6 +240,11 @@ struct RecordingEventPipeline {
     presentation: Arc<PresentationEmitter>,
 }
 
+struct RecordingEventSinkOptions {
+    preview_deltas_enabled: bool,
+    sentence_pause_sec: f32,
+}
+
 /// Safe filename fragment for a controller session id. Rejects path
 /// traversal; UUIDs and the bus-demux lease alphabet pass.
 fn valid_session_audio_id(session_id: &str) -> Option<&str> {
@@ -2216,8 +2221,10 @@ impl RecordingController {
             return Ok(None);
         };
         let presentation = self.active_presentation.read().await.clone();
-        let Some(snapshot) = presentation.and_then(|emitter| emitter.visible_canvas_snapshot())
-        else {
+        let Some(presentation) = presentation else {
+            return Ok(None);
+        };
+        let Some(snapshot) = presentation.visible_canvas_snapshot() else {
             return Ok(None);
         };
         if snapshot.session_id != take_id {
@@ -2226,6 +2233,9 @@ impl RecordingController {
         if snapshot.text.trim().is_empty() {
             return Ok(None);
         }
+        let snapshot = presentation
+            .shape_frozen_canvas_at_stop(snapshot)
+            .map_err(|error| anyhow::anyhow!("Light+ stop revision refused: {error}"))?;
         self.deliver_stop_transcript(
             Some(take_id),
             &snapshot.text,
@@ -2241,6 +2251,14 @@ impl RecordingController {
             capture_epoch = snapshot.capture_epoch,
             reducer_revision = snapshot.revision,
             preview_only_words = snapshot.preview_only_words,
+            paste_words = snapshot.text.split_whitespace().count(),
+            paste_periods = snapshot.text.chars().filter(|ch| *ch == '.').count(),
+            paste_commas = snapshot.text.chars().filter(|ch| *ch == ',').count(),
+            paste_qe = snapshot
+                .text
+                .chars()
+                .filter(|ch| matches!(ch, '?' | '!'))
+                .count(),
             "stop canvas delivery settled"
         );
         Ok(Some(snapshot.text))
@@ -2953,7 +2971,7 @@ impl RecordingController {
     /// otherwise the delta sink is absent rather than emitting into the void.
     fn build_recording_event_sink(
         transcript_buffer: Arc<tokio::sync::Mutex<String>>,
-        preview_deltas_enabled: bool,
+        options: RecordingEventSinkOptions,
         event_broadcast: broadcast::Sender<IpcEvent>,
         transcript_bus: Option<Arc<TranscriptBus>>,
         acoustic_ledger: Option<
@@ -2961,7 +2979,7 @@ impl RecordingController {
         >,
         delivery_tagger: Arc<TranscriptDeliveryTagger>,
     ) -> RecordingEventPipeline {
-        let delta_sink = preview_deltas_enabled.then(|| {
+        let delta_sink = options.preview_deltas_enabled.then(|| {
             Arc::new(helpers::RoutingDeltaSink)
                 as Arc<dyn codescribe_core::pipeline::contracts::DeltaSink>
         });
@@ -2998,7 +3016,8 @@ impl RecordingController {
                     }
                     Err(error) => tracing::warn!(%error, "compact projection serialization failed"),
                 }
-            })),
+            }))
+            .with_sentence_pause_sec(options.sentence_pause_sec),
         );
         let presentation_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
             presentation.clone();
@@ -3081,7 +3100,10 @@ impl RecordingController {
         let acoustic_ledger = recorder.acoustic_ledger_handle();
         let pipeline = Self::build_recording_event_sink(
             recorder.transcript_buffer_handle(),
-            preview_deltas_enabled,
+            RecordingEventSinkOptions {
+                preview_deltas_enabled,
+                sentence_pause_sec: recorder.light_plus_sentence_pause_sec(),
+            },
             event_broadcast,
             transcript_bus,
             acoustic_ledger,
@@ -3112,7 +3134,10 @@ impl RecordingController {
         let acoustic_ledger = recorder.acoustic_ledger_handle();
         let pipeline = Self::build_recording_event_sink(
             recorder.transcript_buffer_handle(),
-            preview_deltas_enabled,
+            RecordingEventSinkOptions {
+                preview_deltas_enabled,
+                sentence_pause_sec: recorder.light_plus_sentence_pause_sec(),
+            },
             event_broadcast,
             transcript_bus,
             acoustic_ledger,

@@ -49,6 +49,26 @@ struct DictationHandsFreeTab: View {
         .accessibilityLabel("Whisper context window")
         .accessibilityValue(
           Text("\(model.settings.whisperContextWindowSec, format: Self.oneDecimal) seconds"))
+
+      HStack {
+        VStack(alignment: .leading, spacing: 4) {
+          Text("Light+ sentence pause")
+            .font(CSFont.ui(13, .semibold))
+            .foregroundStyle(CSColor.textBody)
+          Text("A longer gap in speech opens a new sentence in pasted dictation.")
+            .font(CSFont.ui(11.5))
+            .foregroundStyle(CSColor.textMutedAlt)
+        }
+        Spacer(minLength: 12)
+        Text("\(model.settings.lightPlusSentencePauseSec, format: Self.oneDecimal) s")
+          .font(CSFont.mono(11, .semibold))
+          .foregroundStyle(CSColor.textBody)
+      }
+      Slider(value: $model.lightPlusSentencePauseSlider, in: 0.3...2.0, step: 0.1)
+        .tint(CSColor.chromeAccent)
+        .accessibilityLabel("Light+ sentence pause")
+        .accessibilityValue(
+          Text("\(model.settings.lightPlusSentencePauseSec, format: Self.oneDecimal) seconds"))
     }
     .csSettingsCard()
   }

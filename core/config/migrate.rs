@@ -178,6 +178,11 @@ pub fn migrate_if_needed(
     {
         settings.whisper_context_window_sec = Some(n);
     }
+    if let Some(v) = migrated_value(file_env, "LIGHT_PLUS_SENTENCE_PAUSE_SEC")
+        && let Ok(n) = v.parse::<f32>()
+    {
+        settings.light_plus_sentence_pause_sec = Some(n);
+    }
     if let Some(v) = migrated_value(file_env, "DOUBLE_TAP_INTERVAL_MS")
         && let Ok(n) = v.parse::<u64>()
     {

@@ -201,6 +201,8 @@ pub struct UserSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub whisper_context_window_sec: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub light_plus_sentence_pause_sec: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_formatting_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_paste_enabled: Option<bool>,
@@ -1388,6 +1390,8 @@ struct SpeechEngineV2 {
     /// Seconds of captured PCM each Layer 1 window must cover.
     #[serde(skip_serializing_if = "Option::is_none")]
     whisper_context_window_sec: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    light_plus_sentence_pause_sec: Option<f32>,
     // F1 layered transcription: engine selector + phase flag (string, 1:1 env).
     #[serde(skip_serializing_if = "Option::is_none")]
     stt_engine: Option<String>,
@@ -1579,6 +1583,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "DOUBLE_TAP_INTERVAL_MS",
     "TOGGLE_SILENCE_SEC",
     "WHISPER_CONTEXT_WINDOW_SEC",
+    "LIGHT_PLUS_SENTENCE_PAUSE_SEC",
     "HOLD_EXCLUSIVE",
     "HOLD_ARM_MODIFIER",
     // AI / Formatting
@@ -1699,6 +1704,7 @@ impl UserSettings {
                     cloud_max_upload_mb: self.backend_max_upload_mb,
                     whisper_model: self.whisper_model.clone(),
                     whisper_context_window_sec: self.whisper_context_window_sec,
+                    light_plus_sentence_pause_sec: self.light_plus_sentence_pause_sec,
                     stt_engine: self.stt_engine.clone(),
                     final_pass_mode: self.final_pass_mode.clone(),
                     layered_transcription: self.layered_transcription.clone(),
@@ -2009,6 +2015,11 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.engine.as_ref())
                 .and_then(|e| e.whisper_context_window_sec),
+            light_plus_sentence_pause_sec: v2
+                .speech
+                .as_ref()
+                .and_then(|s| s.engine.as_ref())
+                .and_then(|e| e.light_plus_sentence_pause_sec),
             backend_max_upload_mb: v2
                 .speech
                 .as_ref()
@@ -2927,6 +2938,10 @@ impl UserSettings {
             "WHISPER_CONTEXT_WINDOW_SEC" => {
                 self.whisper_context_window_sec =
                     Some(super::normalize_whisper_context_window_sec(value));
+            }
+            "LIGHT_PLUS_SENTENCE_PAUSE_SEC" => {
+                self.light_plus_sentence_pause_sec =
+                    Some(super::normalize_light_plus_sentence_pause_sec(value));
             }
             "CODESCRIBE_TYPING_CPS" => self.typing_cps = Some(value),
             "CODESCRIBE_BUFFERED_INTERIM_SEC" => self.buffered_interim_sec = Some(value),

@@ -755,6 +755,7 @@ extension CsSettings {
     doubleTapIntervalMs: 320,
     toggleSilenceSec: 1.5,
     whisperContextWindowSec: 4,
+    lightPlusSentencePauseSec: 0.7,
     deferredInsertShortcut: "disabled",
     whisperLanguage: .polish,
     aiFormattingEnabled: true,
