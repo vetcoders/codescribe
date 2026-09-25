@@ -456,10 +456,10 @@ impl AgentSession {
                             message
                         );
                         // Fatal agent failures use the Result channel only.
-                        // Swift already turns the thrown bridge error into the
-                        // visible failed assistant bubble; also emitting
-                        // AgentUiEvent::Error would double-signal the same
-                        // failure through listener.on_error + throw.
+                        // Composer callers turn the bridge throw into a failed
+                        // bubble. Voice callers must publish their own terminal
+                        // delivery error because they have no bridge throw.
+                        // Emitting here would double-signal composer failures.
                         return Err(anyhow::anyhow!("Provider stream error: {message}"));
                     }
                 }

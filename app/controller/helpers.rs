@@ -17,8 +17,9 @@ use anyhow::{Context, Result};
 #[cfg(test)]
 use codescribe_core::agent::ToolRegistry;
 use codescribe_core::agent::{
-    AgentSession, AgentUiEvent, ImageAttachment, Message, StreamOptions, ThreadDeliveryGateway,
-    ThreadDeliveryInput, ThreadDeliveryReceipt, ThreadDeliverySource, ThreadMessage, ThreadStore,
+    AgentSession, AgentUiEvent, ContentBlock, ImageAttachment, Message, StreamOptions,
+    ThreadDeliveryGateway, ThreadDeliveryInput, ThreadDeliveryReceipt, ThreadDeliverySource,
+    ThreadMessage, ThreadStore,
 };
 use codescribe_core::config::{
     Config, RuntimeLlmLane, RuntimeSettingsSnapshot, SettingsSnapshotDigest,
@@ -719,7 +720,7 @@ async fn apply_agent_ui_event(event: AgentUiEvent) {
 
 /// Production persist hook: stamp the runtime's history with live assistive
 /// provider/model identity and upsert it through the delivery gateway. Called
-/// after a completed turn only — cancelled turns never reach here.
+/// after a successful or failed send — cancelled turns never reach here.
 fn deliver_runtime_thread(
     runtime: &AgentRuntime,
     assistive_lane: &RuntimeLlmLane,
@@ -764,14 +765,6 @@ fn runtime_delivery_input(
         tags: vec!["agent".to_string(), "overlay".to_string()],
         timestamp: now,
     }
-}
-
-/// Whether the provider stream has already emitted the terminal UI error.
-/// Initialization failures happen before the stream owns a UI turn and need one
-/// explicit terminal event at the controller boundary.
-fn agent_send_error_was_published(error: &anyhow::Error) -> bool {
-    let message = error.to_string();
-    message.starts_with("Provider stream error:")
 }
 
 /// P1.7: classify a send-path failure as transient (the provider blipped but
@@ -905,8 +898,9 @@ async fn run_agent_send_path(
 /// drained so no terminal leaks out after the `Cancelled` one, and persistence is
 /// skipped entirely.
 ///
-/// On failure the error is classified before degrading: transient blips keep the
-/// runtime and only reset the chain, hard failures drop it.
+/// On failure, persist the user payload before classifying and degrading the
+/// runtime. This voice boundary owns terminal errors; composer errors still
+/// travel through the bridge Result channel.
 async fn run_agent_send_path_with_persist<Init, P, Delivery>(
     runtime_state: &mut AgentRuntimeState,
     text: String,
@@ -926,8 +920,12 @@ where
     ) {
         Ok(state) => state,
         Err(error) => {
+            let error = error.context("Agent runtime unavailable");
+            crate::agent_delivery::publish_agent_delivery_event(AgentDeliveryEvent::Error(
+                format!("{error:#}"),
+            ));
             runtime_state.mark_runtime_degraded("runtime_init_failed");
-            return Err(error).context("Agent runtime unavailable");
+            return Err(error);
         }
     };
     let _ = recovered_from_degraded;
@@ -937,6 +935,9 @@ where
         runtime.reset_chain_on_next_send = false;
     }
 
+    // A terminal belongs to this invocation, never to an error's wording.
+    let mut terminal_published = false;
+    let user_message_index = runtime.session.messages().len();
     let send_result = {
         // Correlation id for the SwiftUI store (disjoint from its per-thread
         // UUID). Captured before the mutable session/ui_rx split so the borrow of
@@ -1028,6 +1029,7 @@ where
                         match maybe_event {
                             Some(event) => {
                                 if matches!(event, AgentUiEvent::Done | AgentUiEvent::Error(_)) {
+                                    terminal_published = true;
                                     let _ = cancellation.finish();
                                 }
                                 apply_agent_ui_event(event).await;
@@ -1083,6 +1085,7 @@ where
                 }
                 while let Ok(event) = ui_rx.try_recv() {
                     if matches!(event, AgentUiEvent::Done | AgentUiEvent::Error(_)) {
+                        terminal_published = true;
                         let _ = cancellation.finish();
                     }
                     apply_agent_ui_event(event).await;
@@ -1101,8 +1104,23 @@ where
             Ok(AgentSendOutcome::Completed)
         }
         Err(error) => {
-            if agent_send_error_was_published(&error) {
-                return Ok(AgentSendOutcome::Completed);
+            // Vision conversion strips the attachment marker for the provider.
+            // Retain the original failed payload for a retry, including selections
+            // and unreadable image paths. Successful history stays unchanged.
+            let mut messages = runtime.session.messages().to_vec();
+            if let Some(message) = messages.get_mut(user_message_index)
+                && let Some(ContentBlock::Text(user_text)) = message.content.first_mut()
+            {
+                *user_text = text;
+            }
+            runtime.session.restore_messages(messages);
+            if let Err(persist_error) = persist_runtime(runtime) {
+                warn!("Failed to persist failed agent turn: {persist_error:#}");
+            }
+            if !terminal_published {
+                crate::agent_delivery::publish_agent_delivery_event(AgentDeliveryEvent::Error(
+                    format!("{error:#}"),
+                ));
             }
             // P1.7: distinguish a transient provider blip (conversation still
             // valid -> keep messages, reset chain) from a hard failure (drop the
@@ -1162,11 +1180,6 @@ async fn run_agent_send(
         }
         Err(error) => {
             warn!("Agent runtime turn failed without alternate route: {error:#}");
-            if !agent_send_error_was_published(&error) {
-                crate::agent_delivery::publish_agent_delivery_event(AgentDeliveryEvent::Error(
-                    error.to_string(),
-                ));
-            }
         }
     }
 }
@@ -1618,17 +1631,6 @@ mod tests {
         assert!(!runtime_state.runtime_degraded);
     }
 
-    /// A mid-stream provider failure already owns and publishes the terminal UI
-    /// event, so the controller must not publish a duplicate terminal.
-    #[test]
-    fn test_provider_stream_errors_are_already_published() {
-        let error = anyhow::anyhow!(
-            "Provider stream error: Agent SSE error internal_error: 'list' object has no attribute 'uid'"
-        );
-
-        assert!(agent_send_error_was_published(&error));
-    }
-
     /// Provider that completes one clean turn so the seeded session ends up with
     /// both conversation history AND a provider thread id (chain) set.
     struct CompletingTestProvider;
@@ -1829,15 +1831,6 @@ mod tests {
         assert!(!is_agent_send_in_flight());
     }
 
-    /// A runtime that never reached the provider still needs one explicit
-    /// terminal UI event from the controller boundary.
-    #[test]
-    fn test_runtime_unavailable_errors_need_terminal_publication() {
-        let error = anyhow::anyhow!("Agent runtime unavailable");
-
-        assert!(!agent_send_error_was_published(&error));
-    }
-
     /// Text with no attachment marker must come through byte-identical — the
     /// splitter must not rewrite ordinary messages on its way past them.
     #[test]
@@ -1969,6 +1962,7 @@ mod tests {
 
         // Unique payload so a concurrent test on the shared global broadcast can
         // never satisfy this matcher.
+        let _broadcast_guard = SEND_PATH_BROADCAST_LOCK.lock().await;
         let marker = "apply_agent_ui_event_publishes_to_delivery_broadcast";
         let mut rx = subscribe_agent_delivery();
         apply_agent_ui_event(AgentUiEvent::TextDone(marker.into())).await;
@@ -2454,6 +2448,211 @@ mod tests {
             thread_target.display(),
             index_target.display()
         );
+    }
+
+    /// Replaces the false prefix-based premise: session errors return through
+    /// Result, so the voice boundary must persist and publish their terminal.
+    #[tokio::test]
+    async fn provider_404_persists_original_voice_payload_and_publishes_one_error() {
+        use crate::agent_delivery::subscribe_agent_delivery;
+
+        let _broadcast_guard = SEND_PATH_BROADCAST_LOCK.lock().await;
+        let tmp = tempfile::TempDir::new().expect("temp dir");
+        let threads_dir = tmp.path().join("threads");
+        let gateway = ThreadDeliveryGateway::new_in(&threads_dir).expect("gateway");
+        let store = ThreadStore::new_in(&threads_dir).expect("store");
+        let payload = format!(
+            "Compare {{selection_2}} with {{selection_3}}.\n\n{{selection_2}}\nfirst\n{{selection_3}}\nsecond\n\n---\nATTACHMENTS (image paths)\n- {}\n",
+            tmp.path().join("unreadable-selection.png").display()
+        );
+        let provider_reason = "Agent SSE HTTP 404 Not Found: The model gpt-6-sol does not exist or your team does not have access (model_not_found)";
+        let reason = crate::agent::openai_provider::account_model_error("gpt-6-sol", provider_reason);
+        let scripts = Arc::new(StdMutex::new(VecDeque::from([
+            vec![AgentEvent::Error(reason.clone())],
+            completed_turn_script("recovered", "response-recovered"),
+        ])));
+        let seen_inputs = Arc::new(StdMutex::new(Vec::new()));
+        let thread_id = "t_voice_model_404";
+        let digest = test_settings_snapshot_digest(1);
+        let mut state = AgentRuntimeState {
+            runtime: Some(scripted_runtime(thread_id, Arc::clone(&scripts), Arc::clone(&seen_inputs))),
+            thread_store_id: Some(thread_id.to_string()),
+            runtime_degraded: false,
+        };
+        let mut delivery = subscribe_agent_delivery();
+        let error = run_agent_send_path_with_persist(
+            &mut state,
+            payload.clone(),
+            test_stream_options(),
+            &digest,
+            unexpected_runtime_initialization,
+            |runtime| gateway.deliver(runtime_delivery_input(
+                runtime, "openai".to_string(), "gpt-6-sol".to_string(), Utc::now(),
+            )),
+        ).await.expect_err("404 must remain a failed send");
+        assert!(format!("{error:#}").contains(provider_reason));
+        assert!(state.runtime.is_none(), "hard degrade follows persistence");
+        assert!(state.runtime_degraded);
+        assert_eq!(delivery.try_recv().expect("turn opener"), AgentDeliveryEvent::TurnStarted {
+            thread_id: thread_id.to_string(),
+            user_text: build_image_attachments_from_text(&payload).0,
+        });
+        assert_eq!(delivery.try_recv().expect("one error"), AgentDeliveryEvent::Error(
+            format!("Provider stream error: {reason}"),
+        ));
+        assert!(delivery.try_recv().is_err(), "no Done or duplicate Error");
+
+        let persisted = store.load_thread(thread_id).expect("failed user turn must exist on disk");
+        assert_eq!(persisted.messages.len(), 1, "never invent assistant error content");
+        let restored = persisted.messages[0].to_message();
+        assert_eq!(restored.role, Role::User);
+        assert_eq!(restored.content, vec![ContentBlock::Text(payload.clone())],
+            "attachment block and selection tags must survive byte for byte");
+        assert_single_controller_thread_artifact(&threads_dir);
+
+        state.ensure_runtime_generation_with(
+            &digest,
+            || Ok(scripted_runtime("provisional", Arc::clone(&scripts), Arc::clone(&seen_inputs))),
+            |id| Ok(Some(store.load_thread(id)?.messages.iter().map(ThreadMessage::to_message).collect())),
+        ).expect("rejoin persisted failed turn");
+        run_agent_send_path_with_persist(
+            &mut state, "try again".to_string(), test_stream_options(), &digest,
+            unexpected_runtime_initialization,
+            |runtime| gateway.deliver(runtime_delivery_input(
+                runtime, "openai".to_string(), "gpt-6-sol".to_string(), Utc::now(),
+            )),
+        ).await.expect("next turn succeeds");
+        let inputs = seen_inputs.lock().unwrap_or_else(|error| error.into_inner());
+        assert_eq!(inputs.len(), 2);
+        assert_eq!(inputs[0][0].content,
+            vec![ContentBlock::Text(build_image_attachments_from_text(&payload).0)],
+            "the provider still sees the existing attachment projection");
+        assert_eq!(inputs[1][0].content, vec![ContentBlock::Text(payload)]);
+        assert!(inputs[1].iter().all(|message| message.role == Role::User),
+            "provider receives user history, never a synthetic assistant failure");
+    }
+
+    /// Failure before the provider has an event stream still has one terminal.
+    #[tokio::test]
+    async fn runtime_unavailable_publishes_one_error_without_persisting() {
+        use crate::agent_delivery::subscribe_agent_delivery;
+
+        let _broadcast_guard = SEND_PATH_BROADCAST_LOCK.lock().await;
+        let mut state = AgentRuntimeState::default();
+        let mut delivery = subscribe_agent_delivery();
+        let result = run_agent_send_path_with_persist(
+            &mut state, "retain the reason".to_string(), test_stream_options(),
+            &test_settings_snapshot_digest(1),
+            || Err(anyhow::anyhow!("account unavailable")),
+            |_| -> Result<()> { panic!("no session exists to persist") },
+        ).await;
+        assert!(result.is_err());
+        assert_eq!(delivery.try_recv().expect("initialization error"),
+            AgentDeliveryEvent::Error("Agent runtime unavailable: account unavailable".to_string()));
+        assert!(delivery.try_recv().is_err(), "exactly one error");
+    }
+
+    /// A terminal actually drained from this turn suppresses a second error,
+    /// regardless of the text returned by send; failed history still persists.
+    #[tokio::test]
+    async fn observed_terminal_prevents_duplicate_error_without_skipping_persistence() {
+        use crate::agent_delivery::subscribe_agent_delivery;
+
+        let _broadcast_guard = SEND_PATH_BROADCAST_LOCK.lock().await;
+        let (ui_tx, ui_rx) = mpsc::channel(8);
+        ui_tx.send(AgentUiEvent::Error("already delivered".to_string())).await.expect("queue");
+        let mut state = AgentRuntimeState {
+            runtime: Some(AgentRuntime {
+                session: AgentSession::new(Box::new(NoopTestProvider), Arc::new(ToolRegistry::new()), ui_tx),
+                ui_rx,
+                thread_store_id: "t_observed_terminal".to_string(),
+                settings_snapshot_digest: test_settings_snapshot_digest(1),
+                reset_chain_on_next_send: false,
+            }),
+            thread_store_id: Some("t_observed_terminal".to_string()),
+            runtime_degraded: false,
+        };
+        let mut persisted = false;
+        let mut delivery = subscribe_agent_delivery();
+        let result = run_agent_send_path_with_persist(
+            &mut state, "preserve me".to_string(), test_stream_options(),
+            &test_settings_snapshot_digest(1), unexpected_runtime_initialization,
+            |_| { persisted = true; Ok(()) },
+        ).await;
+        assert!(result.is_err());
+        assert!(persisted);
+        assert!(matches!(delivery.try_recv().expect("opener"), AgentDeliveryEvent::TurnStarted { .. }));
+        assert_eq!(delivery.try_recv().expect("existing terminal"),
+            AgentDeliveryEvent::Error("already delivered".to_string()));
+        assert!(delivery.try_recv().is_err());
+    }
+
+    /// The session seam used by the composer returns one failure and emits no
+    /// Error/Done callback or voice broadcast. The bridge owns converting Err.
+    #[tokio::test]
+    async fn composer_session_404_returns_error_without_delivery_terminal() {
+        use crate::agent_delivery::subscribe_agent_delivery;
+
+        let _broadcast_guard = SEND_PATH_BROADCAST_LOCK.lock().await;
+        let reason = "Agent SSE HTTP 404 Not Found: The model gpt-6-sol does not exist";
+        let mut runtime = scripted_runtime(
+            "t_composer_404",
+            Arc::new(StdMutex::new(VecDeque::from([vec![AgentEvent::Error(reason.to_string())]]))),
+            Arc::new(StdMutex::new(Vec::new())),
+        );
+        let mut delivery = subscribe_agent_delivery();
+        let error = runtime.session.send("composer".to_string(), Vec::new(), &test_stream_options())
+            .await.expect_err("bridge must receive this Result error");
+        assert_eq!(error.to_string(), format!("Provider stream error: {reason}"));
+        assert!(runtime.ui_rx.try_recv().is_err(), "no listener error or Done");
+        assert!(delivery.try_recv().is_err(), "composer never publishes to the voice bus");
+    }
+
+    /// Successful voice events and storage retain the existing shape exactly.
+    #[tokio::test]
+    async fn successful_voice_turn_keeps_event_sequence_and_persisted_history() {
+        use crate::agent_delivery::subscribe_agent_delivery;
+
+        let _broadcast_guard = SEND_PATH_BROADCAST_LOCK.lock().await;
+        let tmp = tempfile::TempDir::new().expect("temp dir");
+        let threads_dir = tmp.path().join("threads");
+        let gateway = ThreadDeliveryGateway::new_in(&threads_dir).expect("gateway");
+        let store = ThreadStore::new_in(&threads_dir).expect("store");
+        let thread_id = "t_voice_success";
+        let mut state = AgentRuntimeState {
+            runtime: Some(scripted_runtime(
+                thread_id,
+                Arc::new(StdMutex::new(VecDeque::from([completed_turn_script("answer", "response")]))),
+                Arc::new(StdMutex::new(Vec::new())),
+            )),
+            thread_store_id: Some(thread_id.to_string()),
+            runtime_degraded: false,
+        };
+        let mut delivery = subscribe_agent_delivery();
+        let outcome = run_agent_send_path_with_persist(
+            &mut state, "question".to_string(), test_stream_options(),
+            &test_settings_snapshot_digest(1), unexpected_runtime_initialization,
+            |runtime| gateway.deliver(runtime_delivery_input(
+                runtime, "test-provider".to_string(), "test-model".to_string(), Utc::now(),
+            )),
+        ).await.expect("successful send");
+        assert_eq!(outcome, AgentSendOutcome::Completed);
+        let mut events = Vec::new();
+        while let Ok(event) = delivery.try_recv() { events.push(event); }
+        assert_eq!(events, vec![
+            AgentDeliveryEvent::TurnStarted { thread_id: thread_id.to_string(), user_text: "question".to_string() },
+            AgentDeliveryEvent::TextDone("answer".to_string()),
+            AgentDeliveryEvent::Done,
+        ]);
+        let runtime = state.runtime.as_ref().expect("runtime remains installed");
+        let expected = runtime_delivery_input(runtime, "test-provider".to_string(), "test-model".to_string(), Utc::now());
+        let persisted = store.load_thread(thread_id).expect("persisted successful thread");
+        assert_eq!(persisted.messages, expected.messages);
+        assert_eq!(persisted.provider, expected.provider);
+        assert_eq!(persisted.model, expected.model);
+        assert_eq!(persisted.messages.len(), 2);
+        assert_eq!(runtime.session.thread_id(), Some("response"));
+        assert!(!state.runtime_degraded);
     }
 
     /// Two ordinary successful turns share one backend thread: same id, one

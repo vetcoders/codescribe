@@ -319,17 +319,19 @@ impl AgentProvider for OpenAiProvider {
 
         let provider_rx = manager.stream_agent(&request).await?;
 
-        if !chain_enabled {
+        let account_model = (route == AuthRoute::Account).then(|| request.model.clone());
+        if !chain_enabled && account_model.is_none() {
             return Ok(provider_rx);
         }
 
         let (tx, rx) = mpsc::channel(256);
-        let previous_response_id = Arc::clone(&self.previous_response_id);
+        let previous_response_id = chain_enabled.then(|| Arc::clone(&self.previous_response_id));
 
         tokio::spawn(forward_events_and_track_chain(
             provider_rx,
             tx,
             previous_response_id,
+            account_model,
         ));
 
         Ok(rx)
@@ -447,9 +449,13 @@ enum ChainEffect {
 async fn forward_events_and_track_chain(
     mut provider_rx: mpsc::Receiver<AgentEvent>,
     tx: mpsc::Sender<AgentEvent>,
-    previous_response_id: Arc<Mutex<Option<String>>>,
+    previous_response_id: Option<Arc<Mutex<Option<String>>>>,
+    account_model: Option<String>,
 ) {
-    while let Some(event) = provider_rx.recv().await {
+    while let Some(mut event) = provider_rx.recv().await {
+        if let (Some(model), AgentEvent::Error(message)) = (&account_model, &mut event) {
+            *message = account_model_error(model, message);
+        }
         let chain_effect = match &event {
             AgentEvent::ResponseDone {
                 response_id: Some(response_id),
@@ -463,6 +469,9 @@ async fn forward_events_and_track_chain(
             break;
         }
 
+        let Some(previous_response_id) = &previous_response_id else {
+            continue;
+        };
         match chain_effect {
             ChainEffect::Advance(response_id) => {
                 let mut lock = previous_response_id.lock().await;
@@ -479,6 +488,23 @@ async fn forward_events_and_track_chain(
             }
             ChainEffect::None => {}
         }
+    }
+}
+
+/// Explain a model rejection using the route selected for this request. The
+/// transport currently exposes HTTP status and provider detail as text; this
+/// recognition affects presentation only, never terminal ownership or routing.
+pub(crate) fn account_model_error(model: &str, message: &str) -> String {
+    let lower = message.to_ascii_lowercase();
+    let missing_model = lower.contains("model_not_found")
+        || (lower.contains("model")
+            && (lower.contains("does not exist") || lower.contains("do not have access")));
+    if message.starts_with("Agent SSE HTTP 404 ") && missing_model {
+        format!(
+            "Model {model} is not available on the signed-in account route (HTTP 404). {message}"
+        )
+    } else {
+        message.to_string()
     }
 }
 
@@ -1973,6 +1999,36 @@ mod tests {
         );
     }
 
+    /// Route-specific presentation must retain provider detail; unrelated 404s,
+    /// other statuses and API-key errors must not acquire an account diagnosis.
+    #[tokio::test]
+    async fn forwarder_explains_account_model_404_and_preserves_other_events() {
+        let missing = "Agent SSE HTTP 404 Not Found: The model gpt-6-sol does not exist or your team does not have access";
+        for account_model in [Some("gpt-6-sol".to_string()), None] {
+            let (provider_tx, provider_rx) = mpsc::channel(8);
+            let (consumer_tx, mut consumer_rx) = mpsc::channel(8);
+            let events = vec![
+                AgentEvent::TextDone("unchanged".to_string()),
+                AgentEvent::ResponseDone { response_id: Some("response".to_string()), clean: true },
+                AgentEvent::Error("Agent SSE HTTP 404 Not Found: endpoint missing".to_string()),
+                AgentEvent::Error("Agent SSE HTTP 403 Forbidden: model access denied".to_string()),
+                AgentEvent::Error(missing.to_string()),
+            ];
+            for event in &events { provider_tx.send(event.clone()).await.expect("queue"); }
+            drop(provider_tx);
+            forward_events_and_track_chain(provider_rx, consumer_tx, None, account_model.clone()).await;
+            for event in events {
+                let expected = if event == AgentEvent::Error(missing.to_string()) && account_model.is_some() {
+                    AgentEvent::Error(format!(
+                        "Model gpt-6-sol is not available on the signed-in account route (HTTP 404). {missing}"
+                    ))
+                } else { event };
+                assert_eq!(consumer_rx.recv().await, Some(expected));
+            }
+            assert!(consumer_rx.recv().await.is_none());
+        }
+    }
+
     /// P3.7: the detached forwarder must not advance `previous_response_id` once
     /// the consumer has dropped its receiver. Otherwise a chain id from a turn
     /// nobody received outlives the session and poisons the next request.
@@ -1989,7 +2045,8 @@ mod tests {
         let forwarder = tokio::spawn(forward_events_and_track_chain(
             provider_rx,
             consumer_tx,
-            Arc::clone(&stored_chain),
+            Some(Arc::clone(&stored_chain)),
+            None,
         ));
 
         // Emit a clean ResponseDone with a real id — under a live consumer this
@@ -2023,7 +2080,8 @@ mod tests {
         let forwarder = tokio::spawn(forward_events_and_track_chain(
             provider_rx,
             consumer_tx,
-            Arc::clone(&stored_chain),
+            Some(Arc::clone(&stored_chain)),
+            None,
         ));
 
         provider_tx
@@ -2063,7 +2121,8 @@ mod tests {
         let forwarder = tokio::spawn(forward_events_and_track_chain(
             provider_rx,
             consumer_tx,
-            Arc::clone(&stored_chain),
+            Some(Arc::clone(&stored_chain)),
+            None,
         ));
 
         // Synthetic dirty terminal: an id may still be present, but clean=false.
@@ -2185,7 +2244,8 @@ mod tests {
         let forwarder = tokio::spawn(forward_events_and_track_chain(
             provider_rx,
             consumer_tx,
-            Arc::clone(&stored_chain),
+            Some(Arc::clone(&stored_chain)),
+            None,
         ));
 
         provider_tx

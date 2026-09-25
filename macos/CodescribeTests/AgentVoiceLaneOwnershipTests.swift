@@ -136,6 +136,34 @@ final class AgentVoiceLaneOwnershipTests: XCTestCase {
     XCTAssertNil(f.store.dictationThreadID, "a failed session still owns nothing")
   }
 
+  func testVoiceListenerErrorSettlesThinkingAndShowsProviderReason() async throws {
+    let f = makeFixture()
+    let listener = VoiceDeliveryListener(store: f.store, revealChat: {})
+    defer { listener.invalidate() }
+    let reason =
+      "Model gpt-6-sol is not available on the signed-in account route (HTTP 404). "
+      + "The model gpt-6-sol does not exist or your team does not have access."
+
+    listener.onTurnStarted(threadId: "t_capture", userText: "Compare {selection_2}")
+    for _ in 0..<200 {
+      if f.store.currentThread?.messages.last?.isThinking == true { break }
+      try await Task.sleep(for: .milliseconds(5))
+    }
+    let pending = try XCTUnwrap(f.store.currentThread?.messages.last)
+    XCTAssertTrue(pending.isThinking, "the voice opener creates a thinking placeholder")
+
+    listener.onError(message: reason)
+    for _ in 0..<200 {
+      if f.store.currentThread?.messages.last?.isThinking == false { break }
+      try await Task.sleep(for: .milliseconds(5))
+    }
+    let failed = try XCTUnwrap(f.store.currentThread?.messages.last)
+    XCTAssertEqual(failed.id, pending.id, "the same placeholder must settle")
+    XCTAssertFalse(failed.isThinking)
+    XCTAssertFalse(failed.isStreaming)
+    XCTAssertEqual(failed.text, "[error] " + reason)
+  }
+
   // MARK: Thread-switch ghost
 
   func testBrowsingAnotherThreadMidCaptureNeverStealsTheRoutingTarget() {
