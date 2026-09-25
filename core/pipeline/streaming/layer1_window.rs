@@ -11,6 +11,8 @@ use crate::audio::capture_receipt::{AcousticSpeechEvidence, CaptureEvidenceIdent
 use crate::pipeline::acoustic_ledger::OccurrenceIdentity;
 use crate::stt::tail_provider::TailSampleRange;
 
+use super::silero_fusion::SILERO_BOUNDARIES_PRODUCER;
+
 /// An immutable L1 request offered while its Silero speech range is still open.
 ///
 /// The request may repeat PCM for decoder context, but only the exclusive admit
@@ -56,7 +58,9 @@ impl OpenSpeechWindowClock {
         sample_rate: u32,
         capture_closed: bool,
     ) -> Option<OpenSpeechWindow> {
-        if evidence.identity() != &self.capture {
+        if evidence.identity() != &self.capture
+            || evidence.producer() != SILERO_BOUNDARIES_PRODUCER
+        {
             self.pending = None;
             return None;
         }
@@ -584,7 +588,7 @@ mod tests {
     ) -> AcousticSpeechEvidence {
         AcousticSpeechEvidence::measured(
             CaptureEvidenceIdentity::new(session, capture_epoch),
-            "silero_vad",
+            SILERO_BOUNDARIES_PRODUCER,
             AcousticAvailability::Observed { observed_samples },
             ranges
                 .iter()
@@ -676,11 +680,30 @@ mod tests {
         assert!(!clock.ack_queued(&offered));
         let unavailable = AcousticSpeechEvidence::unavailable(
             CaptureEvidenceIdentity::new("take", 7),
-            "silero_vad",
+            SILERO_BOUNDARIES_PRODUCER,
             AcousticAvailability::Discontinuous { observed_samples: 5_000 },
         );
         assert!(clock.next(&unavailable, 1_000, false).is_none());
         assert_eq!(clock.next(&speech, 1_000, false), Some(offered));
+    }
+
+    #[test]
+    fn capture_energy_is_not_a_silero_boundary_observer() {
+        let mut clock = OpenSpeechWindowClock::new(CaptureEvidenceIdentity::new("take", 7));
+        let energy = AcousticSpeechEvidence::measured(
+            CaptureEvidenceIdentity::new("take", 7),
+            crate::audio::capture_receipt::CAPTURE_ENERGY_PRODUCER,
+            AcousticAvailability::Observed {
+                observed_samples: 5_000,
+            },
+            vec![TailSampleRange {
+                session: "take".into(),
+                capture_epoch: 7,
+                sample_start: 0,
+                sample_end: 5_000,
+            }],
+        );
+        assert!(clock.next(&energy, 1_000, false).is_none());
     }
 
     #[test]
