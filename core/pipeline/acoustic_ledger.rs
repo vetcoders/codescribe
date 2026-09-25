@@ -504,7 +504,6 @@ fn compose_label(slots: &[WordSlot]) -> String {
 #[derive(Debug, Clone)]
 struct CommittedObservation {
     producer: ObservationProducer,
-    request: u64,
     generation: u64,
     slots: Vec<WordSlot>,
     /// Read memo. Only `recompose` writes it, always from the slots.
@@ -515,7 +514,6 @@ impl CommittedObservation {
     fn from_label(observation: &ObservationIdentity, text: &str) -> Self {
         let mut held = Self {
             producer: observation.producer,
-            request: observation.request,
             generation: observation.generation,
             slots: vec![WordSlot {
                 sample_start: observation.occurrence.sample_start,
