@@ -191,6 +191,119 @@ impl fmt::Display for AsrErrorKind {
     }
 }
 
+/// How a final was bound to one client commit.
+///
+/// The order is fixed: vendor echo, then the server's sample range, then the
+/// oldest pending commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommitMatchPath {
+    /// (a) The final echoed `commit_id`, `id`, or `item_id`.
+    Echo,
+    /// (b) `start_ms`/`end_ms` fell inside one pending commit.
+    Range,
+    /// (c) Oldest pending commit.
+    Fifo,
+}
+
+impl CommitMatchPath {
+    /// Contract label `a`, `b`, or `c`.
+    pub fn as_label(self) -> char {
+        match self {
+            Self::Echo => 'a',
+            Self::Range => 'b',
+            Self::Fifo => 'c',
+        }
+    }
+}
+
+/// Whether a stamped final carries word spans or one phrase span.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinalGrain {
+    /// One capture range per word.
+    Word,
+    /// The commit range plus the final's text.
+    Phrase,
+}
+
+/// One word placed on the integer capture clock.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CaptureWord {
+    /// The word as the vendor sent it.
+    pub word: String,
+    /// Inclusive start, in samples at [`FinalCommit::capture_rate_hz`].
+    pub sample_start: u64,
+    /// Exclusive end, in samples at [`FinalCommit::capture_rate_hz`].
+    pub sample_end: u64,
+    /// Vendor confidence, when it was finite.
+    pub probability: Option<f32>,
+}
+
+/// Both sides of a commit-range disagreement, in capture samples.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitRangeMismatch {
+    /// Client commit the final was bound to.
+    pub commit_id: String,
+    /// Inclusive start of the commit that was kept.
+    pub commit_sample_start: u64,
+    /// Exclusive end of the commit that was kept.
+    pub commit_sample_end: u64,
+    /// Server `start_ms` converted on the capture clock.
+    pub server_sample_start: u64,
+    /// Server `end_ms` converted on the capture clock.
+    pub server_sample_end: u64,
+    /// Rate used for the conversion, in Hz.
+    pub capture_rate_hz: u32,
+}
+
+/// A named protocol notice that does not fault the session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Layer1ProtocolNotice {
+    /// Server span and the kept commit span disagree past one frame or 1 ms.
+    CommitRangeMismatch(CommitRangeMismatch),
+    /// A sample was dropped before the server. Emitted once per session.
+    StreamClockUnreliable,
+}
+
+impl Layer1ProtocolNotice {
+    /// Stable name CL-W2 and the tests match on.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::CommitRangeMismatch(_) => "commit_range_mismatch",
+            Self::StreamClockUnreliable => "stream_clock_unreliable",
+        }
+    }
+}
+
+/// Integer capture-clock stamp on one final.
+///
+/// [`AudioRange`] on the same event is only the derived seconds view. These
+/// fields are the sample identity CL-W2 matches against the ledger.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FinalCommit {
+    /// Client commit id sent on `flush` or `end`.
+    pub commit_id: String,
+    /// Inclusive start on the offered capture clock.
+    pub sample_start: u64,
+    /// Exclusive end on the offered capture clock.
+    pub sample_end: u64,
+    /// Native rate of those samples, in Hz.
+    pub capture_rate_hz: u32,
+    /// Word grain, or the whole commit as one phrase.
+    pub grain: FinalGrain,
+    /// Words on the capture clock. Empty when the grain is phrase.
+    pub words: Vec<CaptureWord>,
+    /// Words clamped into the commit because they hung partly outside it.
+    pub word_time_clamped: u64,
+    /// A word fell entirely outside the commit, so the whole final is phrase grain.
+    pub phrase_fallback: bool,
+    /// Which of echo, range, or FIFO bound this final.
+    pub match_path: CommitMatchPath,
+    /// Set when the server span was not the commit span. The commit span was kept.
+    pub range_mismatch: Option<CommitRangeMismatch>,
+    /// The stream clock was already unreliable when this final was stamped.
+    pub clock_unreliable: bool,
+}
+
 /// Recognized text for one utterance, partial or final.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TranscriptEvent {
@@ -204,8 +317,13 @@ pub struct TranscriptEvent {
     /// The recognized text. Layer 1 output is a *candidate*; committing it is
     /// the caller's decision and is bounded by the append-only doctrine.
     pub text: String,
-    /// Session-time span this text came from, when the provider reports one.
+    /// Derived seconds view of the span, when it fits in [`AudioRange`].
+    ///
+    /// Not sample identity. A long capture loses samples in `f32` seconds;
+    /// the `commit` stamp keeps the integer bounds.
     pub range: Option<AudioRange>,
+    /// Commit stamp. Present on cloud finals, absent on partials.
+    pub commit: Option<FinalCommit>,
 }
 
 /// A typed session failure.

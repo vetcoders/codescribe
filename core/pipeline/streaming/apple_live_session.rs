@@ -11776,6 +11776,7 @@ mod rc_w2_test_rehab {
                             sequence_id: id,
                             text: "private transcript".to_string(),
                             range: None,
+                            commit: None,
                         })
                     })
                     .collect();
@@ -11846,6 +11847,7 @@ mod rc_w2_test_rehab {
                 sequence_id: 1,
                 text: "private partial".to_string(),
                 range: None,
+                commit: None,
             })],
         );
         let mut lane = RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(provider)), &input);

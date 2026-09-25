@@ -49,6 +49,7 @@ fn fleet_red_asr_session_events_are_typed_and_monotonic() {
         sequence_id,
         text: text.to_string(),
         range: None,
+        commit: None,
     };
 
     let inputs = vec![

@@ -227,6 +227,7 @@ mod tests {
                 sequence_id: 1,
                 text: "halo".to_string(),
                 range: None,
+                commit: None,
             },
         )];
         let mut provider = FakeAsrSessionProvider::with_script(RefinerMode::CloudSession, script);

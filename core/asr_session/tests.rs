@@ -26,6 +26,7 @@ fn partial(utterance: u64, sequence: u64, text: &str) -> AsrSessionEvent {
         sequence_id: sequence,
         text: text.to_string(),
         range: None,
+        commit: None,
     })
 }
 
@@ -37,6 +38,7 @@ fn final_event(utterance: u64, sequence: u64, text: &str) -> AsrSessionEvent {
         sequence_id: sequence,
         text: text.to_string(),
         range: None,
+        commit: None,
     })
 }
 
@@ -175,6 +177,7 @@ fn foreign_session_events_are_refused() {
         sequence_id: 1,
         text: "z innej sesji".to_string(),
         range: None,
+        commit: None,
     });
 
     assert_eq!(ingest.ingest(event), IngestVerdict::RejectedForeignSession);
