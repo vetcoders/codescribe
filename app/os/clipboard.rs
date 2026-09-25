@@ -284,6 +284,7 @@ fn compare_stop_targets<E>(
 
 #[cfg(target_os = "macos")]
 mod stop_target_identity {
+    use crate::os::ax_ffi::AXUIElementCopyAttributeValue;
     use core_foundation::base::TCFType;
     use core_foundation::string::CFString;
     use objc::runtime::Class;
@@ -294,11 +295,6 @@ mod stop_target_identity {
     #[link(name = "ApplicationServices", kind = "framework")]
     unsafe extern "C" {
         fn AXUIElementCreateApplication(pid: i32) -> *mut c_void;
-        fn AXUIElementCopyAttributeValue(
-            element: *mut c_void,
-            attribute: *const c_void,
-            value: *mut *mut c_void,
-        ) -> i32;
         fn AXUIElementGetPid(element: *mut c_void, pid: *mut i32) -> i32;
         fn AXUIElementSetMessagingTimeout(element: *mut c_void, seconds: f32) -> i32;
         fn CFRelease(value: *const c_void);
@@ -359,7 +355,7 @@ mod stop_target_identity {
                 let mut element = std::ptr::null_mut();
                 let result = AXUIElementCopyAttributeValue(
                     application.as_ptr(),
-                    attribute.as_concrete_TypeRef().cast(),
+                    attribute.as_concrete_TypeRef().cast_mut().cast(),
                     &mut element,
                 );
                 CFRelease(application.as_ptr());

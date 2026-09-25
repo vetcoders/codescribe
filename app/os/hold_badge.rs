@@ -245,6 +245,7 @@ mod imp {
     use tracing::{debug, warn};
 
     use crate::os::Id;
+    use crate::os::ax_ffi::AXUIElementCopyAttributeValue;
 
     // Accessibility API bindings (use raw pointers compatible with C FFI)
     /// Opaque `AXUIElementRef` / `AXValueRef` handle.
@@ -256,9 +257,6 @@ mod imp {
 
     #[link(name = "ApplicationServices", kind = "framework")]
     unsafe extern "C" {
-        /// Read one attribute off an AX element. Returns [`AX_ERROR_SUCCESS`]
-        /// and writes a `+1` handle to `value` on success.
-        fn AXUIElementCopyAttributeValue(element: AXId, attribute: AXId, value: *mut AXId) -> i32;
         fn AXUIElementCopyParameterizedAttributeValue(
             element: AXId,
             attribute: AXId,

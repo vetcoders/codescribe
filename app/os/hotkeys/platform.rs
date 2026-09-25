@@ -949,7 +949,9 @@ mod stop_preemption_tests {
                 action: HoldAction::Up,
                 mode: HoldMode::Raw,
             },
-            HotkeyEvent::HoldUpdate { mode: HoldMode::Raw },
+            HotkeyEvent::HoldUpdate {
+                mode: HoldMode::Raw,
+            },
             HotkeyEvent::AttachSelection,
             HotkeyEvent::ShowAgent,
             HotkeyEvent::InsertHere,

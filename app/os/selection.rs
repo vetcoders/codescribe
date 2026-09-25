@@ -815,14 +815,13 @@ fn capture_copied_payload_and_restore(
 /// Opaque handle to an `AXUIElement` / `AXValue` / `CFString`, kept as a raw
 /// pointer for C FFI compatibility.
 #[cfg(target_os = "macos")]
+use crate::os::ax_ffi::AXUIElementCopyAttributeValue;
+#[cfg(target_os = "macos")]
 type AXId = *mut std::ffi::c_void;
 
 #[cfg(target_os = "macos")]
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
-    /// Copy one attribute off an AX element. Returns an `AXError` (0 = success)
-    /// and writes an owned value the caller must `CFRelease`.
-    fn AXUIElementCopyAttributeValue(element: AXId, attribute: AXId, value: *mut AXId) -> i32;
     /// Create the system-wide AX element — the entry point for querying
     /// whatever currently holds focus. Owned; requires `CFRelease`.
     fn AXUIElementCreateSystemWide() -> AXId;
