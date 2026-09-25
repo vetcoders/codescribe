@@ -3541,6 +3541,43 @@ mod tests {
         )
     }
 
+    /// An open L1 subspan may already have published a signed word when the
+    /// larger Silero speech region finally closes. Calling `qualify` again
+    /// must not quietly replace the serial that the earlier composition cited.
+    /// A real-close transition needs its own explicit, auditable receipt.
+    #[test]
+    fn open_l1_close_cannot_silently_replace_cited_acoustic_serial() {
+        let occurrence = occ(0, 16_000);
+        let calibration = EnergyCalibration::new("open-l1", 1.0, 1);
+        let open_evidence = AcousticEvidence {
+            occurrence: occurrence.clone(),
+            duration_ms: 1_000.0,
+            energy_integral: 100.0,
+            mean_rms_dbfs: -20.0,
+            peak_dbfs: -10.0,
+            vad_open_sample: Some(0),
+            vad_close_sample: None,
+            evidence_calibration_version: calibration.version.clone(),
+        };
+        let mut ledger = AcousticLedger::new();
+        assert!(ledger.qualify(&open_evidence, &calibration).is_qualified());
+        ledger.schedule_frontier(occurrence.clone(), [ObservationProducer::Whisper]);
+        assert!(ledger
+            .admit(&obs(ObservationProducer::Whisper, 0, occurrence.clone()), "Iwo")
+            .grants_mutation());
+        let before = ledger.compose(&occurrence).expect("the live word is signed");
+        let serial_before = ledger.serial_of(&occurrence).unwrap().clone();
+        assert!(!serial_before.vad_closed());
+
+        let closing_evidence = AcousticEvidence {
+            vad_close_sample: Some(20_000),
+            ..open_evidence
+        };
+        let _ = ledger.qualify(&closing_evidence, &calibration);
+        assert_eq!(ledger.serial_of(&occurrence), Some(&serial_before));
+        assert_eq!(ledger.compose(&occurrence), Ok(before));
+    }
+
     #[test]
     fn terminal_finality_observes_issued_receipts_without_minting_them() {
         let (mut ledger, occurrence) = whisper_only_qualified_ledger();
