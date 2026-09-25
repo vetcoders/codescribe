@@ -4660,6 +4660,12 @@ fn reconcile_silero_ledger(
     let apple_words = apple_segments_on_pcm_clock(state, disjoint);
     let mut fusion_words = std::mem::take(&mut state.unmatched_silero_words);
     fusion_words.extend(apple_words.iter().map(FusionWord::from_timed));
+    // Re-delivery of one timed word is one entry. Preserve arrival order and
+    // every distinct pin or text, including equal text on different PCM.
+    let mut seen_fusion_words = BTreeSet::new();
+    fusion_words.retain(|word| {
+        seen_fusion_words.insert((word.sample_start, word.sample_end, word.text.clone()))
+    });
     let (sliced, leftover) = slice_apple_words(ledger, &fusion_words);
     let mut newly_unmatched = 0;
     for word in &leftover {
@@ -10845,6 +10851,99 @@ mod storm_tests {
     }
 
     #[test]
+    fn unmatched_word_three_deliveries_keep_one_store_and_mirror_entry() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new_for_session(TEST_SAMPLE_RATE, "storm-test".into(), 0);
+        arm_fusion_slice_admission(&mut state);
+        let words = vec![segment("leftover", 9.0, 9.125)];
+
+        for delivery in 0..3 {
+            assert!(seal_sliced_by_silero(&mut state, &tx, &words));
+            assert_eq!(state.unmatched_silero_words.len(), 1);
+            let retained = &state.unmatched_silero_words[0];
+            assert_eq!(
+                (
+                    retained.sample_start,
+                    retained.sample_end,
+                    retained.text.as_str()
+                ),
+                (at(9.0), at(9.125), "leftover")
+            );
+            assert_eq!(state.unadmitted_revision, 1);
+            let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+            if delivery == 0 {
+                let mirrors = events
+                    .iter()
+                    .filter_map(|event| match event {
+                        EngineEvent::UnadmittedAppleWords { revision, words, .. } => {
+                            Some((revision, words))
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(mirrors.len(), 1);
+                assert_eq!(*mirrors[0].0, 1);
+                assert_eq!(mirrors[0].1.len(), 1);
+                assert_eq!(mirrors[0].1[0].text, "leftover");
+                assert_eq!(mirrors[0].1[0].sample_start, at(9.0));
+                assert_eq!(mirrors[0].1[0].sample_end, at(9.125));
+                assert_eq!(mirrors[0].1[0].source, UnadmittedAppleWordSource::Unmatched);
+            } else {
+                assert!(events.is_empty(), "identical re-delivery must be silent");
+            }
+        }
+    }
+
+    #[test]
+    fn unmatched_words_keep_distinct_pins_and_text() {
+        for second in [
+            segment("leftover", 9.25, 9.375),
+            segment("leftover", 9.0, 9.25),
+            segment("leftover", 9.0625, 9.125),
+            segment("revised", 9.0, 9.125),
+        ] {
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let mut state = AppleSealState::new_for_session(TEST_SAMPLE_RATE, "storm-test".into(), 0);
+            arm_fusion_slice_admission(&mut state);
+            let first = segment("leftover", 9.0, 9.125);
+            // An exact copy separated by a distinct word is still a re-delivery.
+            let words = vec![first.clone(), second.clone(), first];
+            assert!(seal_sliced_by_silero(&mut state, &tx, &words));
+            assert_eq!(state.unmatched_silero_words.len(), 2);
+            let expected = vec![
+                (at(9.0), at(9.125), "leftover"),
+                (
+                    at(second.start_ts),
+                    at(second.end_ts),
+                    second.text.as_str(),
+                ),
+            ];
+            assert_eq!(
+                state
+                    .unmatched_silero_words
+                    .iter()
+                    .map(|word| (word.sample_start, word.sample_end, word.text.as_str()))
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            let mirrors = std::iter::from_fn(|| rx.try_recv().ok())
+                .filter_map(|event| match event {
+                    EngineEvent::UnadmittedAppleWords { words, .. } => Some(words),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(mirrors.len(), 1);
+            assert_eq!(
+                mirrors[0]
+                    .iter()
+                    .map(|word| (word.sample_start, word.sample_end, word.text.as_str()))
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn no_time_overlap_retries_on_silero_extension_and_close() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut state = AppleSealState::new_for_session(TEST_SAMPLE_RATE, "storm-test".into(), 0);
@@ -14173,7 +14272,17 @@ mod rc_w2_test_rehab {
             .lock()
             .unwrap()
             .admit_word_slots(&whisper, &[(sample(1.5), sample(1.75), "revised".into())]);
-        assert_eq!(document(&state), "alpha beta revised");
+        // Whisper windows coexist at the same pin: WD-2 (doubles) input,
+        // recorded 2026-09-25. This documents the current rule, not an endorsement.
+        let retained_document = document(&state);
+        assert_eq!(retained_document, "alpha beta other revised");
+        assert_eq!(
+            retained_document
+                .split_whitespace()
+                .take(2)
+                .collect::<Vec<_>>(),
+            vec!["alpha", "beta"]
+        );
         assert_eq!(retention_receipts(&drain(&mut rx)).len(), 1);
     }
 
