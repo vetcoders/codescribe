@@ -15164,6 +15164,8 @@ mod relay_l1_overlap_admission_tests {
         assert_conserved(&lane, Some("replayed_range_identity"));
     }
 
+    /// The replayed copy deliberately extends over unvoiced samples.
+    /// Coverage by its extent is out of scope for T-C.
     #[test]
     fn seam_word_with_case_and_punctuation_change_is_admitted_once() {
         let session = "seam-normalized-word";
@@ -15171,7 +15173,7 @@ mod relay_l1_overlap_admission_tests {
         record_voiced_spans(
             &lane,
             LONG_SAMPLES,
-            &[(44_000, 53_000), (70_000, 88_000), (100_000, 140_000)],
+            &[(44_000, 51_000), (70_000, 88_000), (100_000, 140_000)],
         );
         let (occurrence, requests) = launch_long_span(&mut lane, Some("apple"));
         let windows = [
