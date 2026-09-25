@@ -1628,6 +1628,9 @@ struct AppleSealState {
     /// lifecycle needs the VAD even when an operator has pinned the seal path
     /// back to Apple's own segment boundaries.
     fusion_seal_armed: bool,
+    /// Summary admission window opened only by the armed EOF early seal.
+    /// Hands-free epoch close never opens it; finish and residue close consume it.
+    stop_trailing_finish: bool,
     fusion_context: FusionContextMode,
     /// Seconds of captured PCM each Layer 1 window must cover. Read once,
     /// from the sealed snapshot, when the take's session is built.
@@ -1840,6 +1843,7 @@ impl AppleSealState {
             tail_patch_refusals: 0,
             fusion: None,
             fusion_seal_armed: false,
+            stop_trailing_finish: false,
             // One source of truth for the default cut. Without a Silero
             // ingress nothing reads this field; when one arms, `from_env`
             // resolves the same default unless an operator overrode it.
@@ -5765,8 +5769,16 @@ fn finish_capture_after_seal(
     if ack_before_finish {
         let _ = acknowledgement.take().expect("stop acknowledgement").send(());
     }
-    emit_stream_events(finish()?, ev_tx, state, audio_secs);
+    let trailing = match finish() {
+        Ok(events) => events,
+        Err(error) => {
+            state.stop_trailing_finish = false;
+            return Err(error);
+        }
+    };
+    emit_stream_events(trailing, ev_tx, state, audio_secs);
     close_residue(state);
+    state.stop_trailing_finish = false;
     if let Some(acknowledgement) = acknowledgement {
         let _ = acknowledgement.send(());
     }
@@ -6085,6 +6097,7 @@ fn apple_stream_worker(
         let has_text = state.has_stop_canvas_text();
         seal_sliced_by_silero(&mut state, &ev_tx, &[]);
         seal_open_partial(&mut state, &ev_tx, audio_secs);
+        state.stop_trailing_finish = true;
         has_text
     } else {
         false
@@ -6319,8 +6332,10 @@ fn phrase_retention_reason(prev: &str, next: &str) -> Option<&'static str> {
 /// `Partial` forwards verbatim, `PhraseFinal` goes through
 /// [`seal_utterance_final`] (lexicon + cleanup). `audio_secs` is the session
 /// clock and only acts as a fallback `end_ts` when the engine hands over no
-/// segments. On the unarmed lane, `Summary` commits only when no phrase final
-/// arrived. Armed summaries use physical admission and its replay receipts.
+/// segments. `Summary` reaches [`seal_utterance_final`] only at `utterance_id == 0`
+/// or during the stop's trailing finish after the armed early seal. Hands-free
+/// epoch close does not open that window; arming alone never admits a summary.
+/// Admitted summaries use the existing physical admission and replay receipts.
 ///
 /// On `Partial`, a collapsed post-stressor restart freezes the open hypothesis
 /// first ([`phrase_restart_should_freeze_prior`]) so a shared-opener rewrite
@@ -6455,9 +6470,9 @@ fn emit_stream_events(
                     });
                     continue;
                 }
-                // Armed timed observations use the same physical owner/slot
-                // admission after a stop seal. The unarmed gate stays intact.
-                if state.fusion_seal_armed || state.utterance_id == 0 {
+                // Only the stop's trailing finish may add a summary after an
+                // earlier seal. Epoch summaries retain the original gate.
+                if state.stop_trailing_finish || state.utterance_id == 0 {
                     if seal_utterance_final(state, ev_tx, &text, segments, audio_secs) {
                         state.open_partial.clear();
                         state.open_partial_segments.clear();
@@ -11974,6 +11989,80 @@ mod rc_w2_test_rehab {
     }
 
     #[test]
+    fn armed_epoch_close_summary_does_not_readmit_retimed_words() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tail_tx, _tail_rx) = mpsc::channel(1);
+        let mut state = physical_state("epoch-summary", 3.0, &[(0.0, 2.0)]);
+        state.tail_patch = Some(tail_tx);
+        let owner = OccurrenceIdentity::new("epoch-summary", 7, 0, sample(2.0));
+        emit(
+            &mut state,
+            &tx,
+            vec![segment("alpha", 0.0, 0.5), segment("beta", 1.0, 1.5)],
+        );
+        assert!(state.utterance_id > 0);
+        assert!(!state.stop_trailing_finish);
+        {
+            let ledger = state.acoustic_ledger.lock().unwrap();
+            assert!(!ledger.is_sealed(&owner));
+            assert_eq!(ledger.slots_of(&owner).unwrap().len(), 2);
+        }
+        drain(&mut rx);
+
+        let mut epoch = EpochGate::armed(RATE, 1.0);
+        assert!(matches!(
+            epoch.feed_pcm(&[0.25; 480], sample(2.0), true),
+            EpochDecision::Wake { .. }
+        ));
+        assert!(matches!(
+            epoch.feed_pcm(&vec![0.0; RATE as usize], sample(3.0), false),
+            EpochDecision::Sleep { .. }
+        ));
+        // The Sleep arm delivers finish events before sealing its residue.
+        // Retiming alpha off its slot would create a duplicate on this open
+        // owner if arming alone admitted the restating summary.
+        emit_stream_events(
+            vec![LiveStreamEvent::Summary {
+                text: "alpha beta".into(),
+                segments: vec![segment("alpha", 0.6, 0.9), segment("beta", 1.0, 1.5)],
+                ok: true,
+                error: None,
+            }],
+            &tx,
+            &mut state,
+            3.0,
+        );
+        assert!(drain(&mut rx).is_empty(), "summary must emit no mutation");
+        assert!(!state.stop_trailing_finish);
+        seal_open_partial(&mut state, &tx, 3.0);
+        let _ = state.flush_layer1_coalesce(&tx);
+        state.close_admission_horizon(&tx, sample(3.0));
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.rendered_text(), "alpha beta");
+        assert_eq!(ledger.slots_of(&owner).unwrap().len(), 2);
+        ledger.assert_slot_labels();
+    }
+
+    #[test]
+    fn stop_finish_error_clears_summary_window() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (ack_tx, _ack_rx) = tokio::sync::oneshot::channel();
+        let mut state = physical_state("stop-error", 1.0, &[(0.0, 1.0)]);
+        state.stop_trailing_finish = true;
+        let result = finish_capture_after_seal(
+            &mut state,
+            &tx,
+            1.0,
+            ack_tx,
+            false,
+            || Err(anyhow::anyhow!("finish failed")),
+            |_| panic!("finish failure must not close residue"),
+        );
+        assert!(result.is_err());
+        assert!(!state.stop_trailing_finish);
+    }
+
+    #[test]
     fn unarmed_stop_ack_follows_finish_and_partial_seal() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let (ack_tx, mut ack_rx) = tokio::sync::oneshot::channel();
@@ -12031,6 +12120,7 @@ mod rc_w2_test_rehab {
         let ack_before_finish = state.has_stop_canvas_text();
         seal_sliced_by_silero(&mut state, &tx, &[]);
         seal_open_partial(&mut state, &tx, 1.0);
+        state.stop_trailing_finish = true;
         finish_capture_after_seal(
             &mut state,
             &tx,
@@ -12084,6 +12174,7 @@ mod rc_w2_test_rehab {
         assert!(!ack_before_finish);
         seal_sliced_by_silero(&mut state, &tx, &[]);
         seal_open_partial(&mut state, &tx, 1.0);
+        state.stop_trailing_finish = true;
         finish_capture_after_seal(
             &mut state,
             &tx,
@@ -12129,6 +12220,7 @@ mod rc_w2_test_rehab {
         }
         seal_sliced_by_silero(&mut state, &tx, &[]);
         seal_open_partial(&mut state, &tx, 2.0);
+        state.stop_trailing_finish = true;
         assert!(state.has_stop_canvas_text());
         let ledger = Arc::clone(&state.acoustic_ledger);
         let mut finish_called = false;
@@ -12187,6 +12279,8 @@ mod rc_w2_test_rehab {
                     );
                     seal_sliced_by_silero(&mut state, &tx, &[]);
                     seal_open_partial(&mut state, &tx, 2.0);
+                    assert!(state.utterance_id > 0);
+                    state.stop_trailing_finish = true;
                     assert_eq!(document(&state), "alpha beta");
                     assert_eq!(
                         state.acoustic_ledger.lock().unwrap().is_sealed(&owner),
@@ -12229,6 +12323,7 @@ mod rc_w2_test_rehab {
                         |state| close_stop_residue(state, &tx, 2.0),
                     )
                     .unwrap();
+                    assert!(!state.stop_trailing_finish);
                     seal_sliced_by_silero(&mut state, &tx, &[]);
                     let events = drain(&mut rx);
                     match case {
@@ -12265,6 +12360,16 @@ mod rc_w2_test_rehab {
                             }
                             if observer_open {
                                 assert_eq!(document(&state), "alpha beta gamma");
+                                assert_eq!(
+                                    state
+                                        .acoustic_ledger
+                                        .lock()
+                                        .unwrap()
+                                        .slots_of(&owner)
+                                        .unwrap()
+                                        .len(),
+                                    3
+                                );
                                 assert!(events.iter().any(|event| matches!(
                                     event,
                                     EngineEvent::LedgerMutation { label, receipt, .. }
