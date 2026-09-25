@@ -12790,6 +12790,12 @@ mod live_refinement_admission_tests {
             .ledger_mut()
             .open_or_extend("live-admission", 7, 0, 5_000);
         state.fusion = Some(fusion);
+        let mut energy = CaptureLevelAccumulator::bound_to(&state.capture_energy);
+        energy.push_samples(&vec![0.25; 5_000]);
+        assert!(state
+            .capture_energy
+            .voiced_hops_in("live-admission", 7, 500, 1_000)
+            .is_some_and(|hops| !hops.is_empty()));
 
         assert!(seal_sliced_by_silero(&mut state, &events, &[]));
         let request = requests
@@ -12849,17 +12855,18 @@ mod live_refinement_admission_tests {
             assert!(owner.sample_end <= 5_000, "an open label needs fixed observed PCM");
         }
 
+        energy.push_samples(&vec![0.25; 1_080]);
         let fusion = state.fusion.as_mut().unwrap();
-        fusion.note_observed_pcm(1_000, 6_000);
+        fusion.note_observed_pcm(1_080, 6_080);
         fusion.observe_boundaries(&[VadBoundaryEvidence {
             kind: VadBoundaryKind::SpeechEnd,
-            sample: 6_000,
+            sample: 6_080,
             speech_probability: 0.05,
         }]);
         fusion
             .ledger_mut()
-            .open_or_extend("live-admission", 7, 0, 6_000);
-        fusion.ledger_mut().close_open(6_000);
+            .open_or_extend("live-admission", 7, 0, 6_080);
+        fusion.ledger_mut().close_open(6_080);
         assert!(seal_sliced_by_silero(&mut state, &events, &[]));
 
         let late = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
@@ -12881,7 +12888,7 @@ mod live_refinement_admission_tests {
         let owner = &grants[0];
         assert_eq!((&*owner.session, owner.capture_epoch), ("live-admission", 7));
         assert!(owner.sample_start <= 500 && owner.sample_end >= 1_000);
-        assert!(owner.sample_end <= 6_000);
+        assert!(owner.sample_end <= 6_080);
         let ledger = state.acoustic_ledger.lock().unwrap();
         let mut occurrences = ledger.occurrences().cloned().collect::<Vec<_>>();
         occurrences.sort_by_key(|identity| (identity.sample_start, identity.sample_end));
