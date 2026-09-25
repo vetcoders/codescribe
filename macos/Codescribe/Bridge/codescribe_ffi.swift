@@ -1338,6 +1338,11 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
      */
     func overlayExpandedByDefault()  -> Bool
 
+    /**
+     * Read the user-visible pin from the canonical settings snapshot.
+     */
+    func overlayKeepVisibleBetweenTakes()  -> Bool
+
     func removeCustomProvider(id: String) throws  -> CsCustomProviderRemoval
 
     /**
@@ -1464,6 +1469,11 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
      * Persist only the preferred presentation; never change live capture.
      */
     func setOverlayExpandedByDefault(enabled: Bool)  -> Bool
+
+    /**
+     * Persist the pin only on a changed user choice.
+     */
+    func setOverlayKeepVisibleBetweenTakes(enabled: Bool)  -> Bool
 
     /**
      * Settings JSON belongs to the settings loader, not the app-data directory.
@@ -1854,6 +1864,17 @@ open func overlayExpandedByDefault() -> Bool  {
 })
 }
 
+    /**
+     * Read the user-visible pin from the canonical settings snapshot.
+     */
+open func overlayKeepVisibleBetweenTakes() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribeconfig_overlay_keep_visible_between_takes(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
 open func removeCustomProvider(id: String)throws  -> CsCustomProviderRemoval  {
     return try  FfiConverterTypeCsCustomProviderRemoval_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_method_codescribeconfig_remove_custom_provider(
@@ -2110,6 +2131,18 @@ open func setOnboardingMode(mode: String)throws   {try rustCallWithError(FfiConv
 open func setOverlayExpandedByDefault(enabled: Bool) -> Bool  {
     return try!  FfiConverterBool.lift(try! rustCall() {
     uniffi_codescribe_ffi_fn_method_codescribeconfig_set_overlay_expanded_by_default(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(enabled),$0
+    )
+})
+}
+
+    /**
+     * Persist the pin only on a changed user choice.
+     */
+open func setOverlayKeepVisibleBetweenTakes(enabled: Bool) -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribeconfig_set_overlay_keep_visible_between_takes(
             self.uniffiCloneHandle(),
         FfiConverterBool.lower(enabled),$0
     )
@@ -16476,6 +16509,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_overlay_expanded_by_default() != 62379) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_overlay_keep_visible_between_takes() != 3434) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_remove_custom_provider() != 11187) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -16540,6 +16576,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_overlay_expanded_by_default() != 25199) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_overlay_keep_visible_between_takes() != 23903) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_settings_file_path() != 60048) {
