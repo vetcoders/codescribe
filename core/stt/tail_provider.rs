@@ -1214,6 +1214,7 @@ impl TailProvider for RemoteTailProvider {
             provider = TailProviderId::Remote.as_str(),
             segment_count = segments.len(),
             grain = segment_grain.as_str(),
+            word_bound = remote_word_time_bound(response.duration, request).1,
             elapsed_ms = started.elapsed().as_millis() as u64,
             "tail_provider_segment_grain"
         );
@@ -1323,10 +1324,18 @@ fn remote_phrase_segments(
         .collect()
 }
 
-fn remote_word_times_admissible(words: &[RemoteTailWord], duration: Option<f64>) -> bool {
-    let Some(duration) = duration else {
-        return false;
-    };
+fn remote_word_time_bound(duration: Option<f64>, request: &TailProviderRequest) -> (f64, &'static str) {
+    // validate_pcm establishes the range length and non-zero sample rate before upload.
+    let range = &request.identity.range;
+    let sent_window = (range.sample_end - range.sample_start) as f64 / request.sample_rate as f64;
+    match duration.filter(|duration| duration.is_finite()) {
+        Some(duration) if duration <= sent_window => (duration, "response_duration"),
+        Some(duration) => (duration.min(sent_window), "min"),
+        None => (sent_window, "sent_window"),
+    }
+}
+
+fn remote_word_times_admissible(words: &[RemoteTailWord], duration: f64) -> bool {
     if !duration.is_finite() || duration < 0.0 || words.is_empty() {
         return false;
     }
@@ -1394,7 +1403,7 @@ fn remote_tail_segments(
     request: &TailProviderRequest,
 ) -> (Vec<TimedTailSegment>, TailSegmentGrain) {
     if let Some(words) = response.words.as_deref()
-        && remote_word_times_admissible(words, response.duration)
+        && remote_word_times_admissible(words, remote_word_time_bound(response.duration, request).0)
     {
         let word_segments = remote_word_segments(words, request);
         // A collapsed or overlapping pin cannot pass payload validation, so
@@ -2006,7 +2015,7 @@ mod tests {
             "words": [
                 {"word": "raz", "start": 0.0, "end": 0.25, "probability": 0.5},
                 {"word": "dwa", "start": 0.25, "end": 0.5},
-                {"word": "koniec", "start": 0.5, "end": 1.5, "probability": 1.0}
+                {"word": "koniec", "start": 0.5, "end": 1.0, "probability": 1.0}
             ],
             "segments": [{
                 "id": 0,
@@ -2164,7 +2173,7 @@ mod tests {
 
     #[test]
     fn word_time_outside_duration_keeps_phrase_grain() {
-        let request = cloud_window(0, 16_000);
+        let request = cloud_window(0, 32_000);
         for words_json in [
             r#"[{"word":"raz","start":0.0,"end":0.25},{"word":"za","start":0.5,"end":1.5}]"#,
             r#"[{"word":"przed","start":-0.1,"end":0.25}]"#,
@@ -2178,15 +2187,101 @@ mod tests {
     }
 
     #[test]
-    fn words_without_duration_stay_phrase_grain() {
+    fn words_without_duration_are_bounded_by_the_sent_window() {
+        let mut request = cloud_window(32_000, 8_000);
+        request.sample_rate = 8_000;
+        let body = r#"{
+            "text": "raz dwa",
+            "words": [
+                {"word":"raz","start":0.0,"end":0.25},
+                {"word":"dwa","start":0.25,"end":1.0}
+            ],
+            "segments": [{"text":" raz dwa","start":0.0,"end":0.5}]
+        }"#;
+        let (segments, grain) = admit(body, &request);
+        assert_eq!(grain, TailSegmentGrain::Word);
+        assert_eq!(
+            segments,
+            vec![
+                timed(&request, "raz", TailSegmentGrain::Word, 32_000, 34_000),
+                timed(&request, "dwa", TailSegmentGrain::Word, 34_000, 40_000),
+            ]
+        );
+    }
+
+    #[test]
+    fn words_past_the_sent_window_keep_phrase_grain() {
+        let request = cloud_window(32_000, 16_000);
+        let body = r#"{
+            "text": "raz dwa",
+            "words": [
+                {"word":"raz","start":0.0,"end":0.25},
+                {"word":"dwa","start":0.25,"end":1.25}
+            ],
+            "segments": [{"text":" raz dwa","start":0.0,"end":0.5}]
+        }"#;
+        let (segments, grain) = admit(body, &request);
+        assert_eq!(grain, TailSegmentGrain::Phrase);
+        assert_eq!(
+            segments,
+            vec![timed(
+                &request,
+                " raz dwa",
+                TailSegmentGrain::Phrase,
+                32_000,
+                40_000
+            )]
+        );
+    }
+
+    #[test]
+    fn server_duration_longer_than_sent_window_is_clamped() {
         let request = cloud_window(0, 16_000);
         let (segments, grain) = admit(
-            &phrase_body(r#"[{"word":"raz","start":0.0,"end":0.25}]"#, "null"),
+            &phrase_body(
+                r#"[{"word":"raz","start":0.0,"end":0.25},{"word":"dwa","start":0.25,"end":1.25}]"#,
+                "2.0",
+            ),
             &request,
         );
         assert_eq!(grain, TailSegmentGrain::Phrase);
-        assert_eq!(segments[0].grain, TailSegmentGrain::Phrase);
-        assert_eq!(segments[0].text, " raz dwa");
+        assert_eq!(
+            segments,
+            vec![timed(
+                &request,
+                " raz dwa",
+                TailSegmentGrain::Phrase,
+                0,
+                8_000
+            )]
+        );
+    }
+
+    #[test]
+    fn non_finite_duration_uses_the_sent_window() {
+        let request = cloud_window(0, 16_000);
+        for duration in [
+            None,
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+            Some(f64::NEG_INFINITY),
+        ] {
+            for (end, expected_grain) in [
+                (0.5, TailSegmentGrain::Word),
+                (1.25, TailSegmentGrain::Phrase),
+            ] {
+                let mut response: RemoteTailResponse = serde_json::from_str(&phrase_body(
+                    &format!(r#"[{{"word":"raz","start":0.0,"end":{end}}}]"#),
+                    "null",
+                ))
+                .expect("remote verbose_json");
+                response.duration = duration;
+                let (segments, grain) = remote_tail_segments(&response, &request);
+                assert_eq!(grain, expected_grain);
+                assert_eq!(segments.len(), 1);
+                assert_eq!(segments[0].grain, expected_grain);
+            }
+        }
     }
 
     #[test]
