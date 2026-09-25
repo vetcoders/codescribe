@@ -9321,6 +9321,79 @@ mod storm_tests {
         assert_eq!(state.warned_unmatched_words.len(), 1);
     }
 
+    /// A pause close may retain a padded occurrence through observed silence,
+    /// but that ownership cannot turn an Apple word wholly inside the silent
+    /// tail into sealed text. The audible word is the positive control.
+    #[test]
+    fn apple_word_wholly_inside_pause_silence_stays_uncommitted() {
+        let run = |include_silent_word: bool| {
+            let session = "pause-silence-apple";
+            let mut state = AppleSealState::new_for_session(TEST_SAMPLE_RATE, session.into(), 0);
+            state.energy_calibration = Some(EnergyCalibration {
+                version: "pause-silence-fixture".into(),
+                min_energy_integral: 1.0,
+                min_valley_samples: 1,
+            });
+            let mut pcm = vec![0.2_f32; at(1.0) as usize];
+            pcm.extend(vec![0.0_f32; at(0.5) as usize]);
+            for block in pcm.chunks(1024) {
+                state.audio.push(block);
+            }
+            let mut energy = CaptureLevelAccumulator::bound_to(&state.capture_energy);
+            for block in pcm.chunks(1024) {
+                energy.push_samples(block);
+            }
+            assert!(state
+                .capture_energy
+                .voiced_hops_in(session, 0, at(0.25), at(0.4))
+                .is_some_and(|hops| !hops.is_empty()));
+            assert!(state
+                .capture_energy
+                .voiced_hops_in(session, 0, at(1.1875), at(1.25))
+                .is_some_and(|hops| hops.is_empty()));
+
+            let mut ingress = SileroIngress::new(TEST_SAMPLE_RATE, session, 0);
+            ingress.observe_with_closed_end(Some((0, at(1.0))), false, None, at(1.0));
+            ingress.observe_with_closed_end(None, true, Some(17_024), at(1.5));
+            assert_eq!(ingress.ledger().utterances()[0].range.sample_end, at(1.5));
+            state.fusion = Some(ingress);
+
+            let mut words = vec![segment("real", 0.25, 0.4)];
+            if include_silent_word {
+                words.push(segment("ghost", 1.1875, 1.25));
+            }
+            let (tx, _rx) = mpsc::unbounded_channel();
+            assert!(seal_sliced_by_silero(&mut state, &tx, &words));
+            let occurrence = OccurrenceIdentity::new(session, 0, 0, at(1.5));
+            let ledger = state.acoustic_ledger.lock().unwrap();
+            let sealed_texts = ledger
+                .occurrences()
+                .filter(|identity| ledger.is_sealed(identity))
+                .filter_map(|identity| ledger.text_of(identity).map(str::to_owned))
+                .collect::<Vec<_>>();
+            (
+                ledger.text_of(&occurrence).map(str::to_owned),
+                ledger.is_sealed(&occurrence),
+                sealed_texts,
+            )
+        };
+
+        let (control_text, control_sealed, control_sealed_texts) = run(false);
+        assert_eq!(control_text.as_deref(), Some("real"));
+        assert!(control_sealed, "the audible control must reach a terminal seal");
+        assert_eq!(control_sealed_texts, vec!["real".to_owned()]);
+
+        let (text, sealed, sealed_texts) = run(true);
+        assert!(
+            !sealed || text.as_deref() == Some("real"),
+            "measured silence must not seal the Apple word: {text:?}"
+        );
+        assert!(
+            sealed_texts.iter().all(|label| !label.contains("ghost")),
+            "no physical occurrence may seal the silent word: {sealed_texts:?}"
+        );
+    }
+
     #[test]
     fn silero_tick_with_retained_words_is_constant_cost() {
         let (tx, mut rx) = mpsc::unbounded_channel();
