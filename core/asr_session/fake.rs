@@ -122,12 +122,9 @@ impl FakeAsrSessionProvider {
         if commit_sample == self.commit_cursor {
             return Ok(());
         }
-        let range = AudioRange::from_capture_samples(
-            self.commit_cursor,
-            commit_sample,
-            self.sample_rate,
-        )
-        .ok_or(AsrErrorKind::Protocol)?;
+        let range =
+            AudioRange::from_capture_samples(self.commit_cursor, commit_sample, self.sample_rate)
+                .ok_or(AsrErrorKind::Protocol)?;
         self.pending_commits.push_back(range);
         self.commit_cursor = commit_sample;
         Ok(())

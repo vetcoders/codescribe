@@ -562,8 +562,8 @@ mod tests {
     /// An unselected cloud mode returns nothing, even when a file key is set.
     #[test]
     fn cloud_tail_refine_uses_live_key_and_refine_endpoint() {
-        use super::super::defaults::DEFAULT_CLOUD_REFINE_ENDPOINT;
         use super::super::Config;
+        use super::super::defaults::DEFAULT_CLOUD_REFINE_ENDPOINT;
 
         let idle = Config {
             stt_file_api_key: Some("file-key".into()),

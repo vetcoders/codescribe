@@ -1324,7 +1324,10 @@ fn remote_phrase_segments(
         .collect()
 }
 
-fn remote_word_time_bound(duration: Option<f64>, request: &TailProviderRequest) -> (f64, &'static str) {
+fn remote_word_time_bound(
+    duration: Option<f64>,
+    request: &TailProviderRequest,
+) -> (f64, &'static str) {
     // validate_pcm establishes the range length and non-zero sample rate before upload.
     let range = &request.identity.range;
     let sent_window = (range.sample_end - range.sample_start) as f64 / request.sample_rate as f64;

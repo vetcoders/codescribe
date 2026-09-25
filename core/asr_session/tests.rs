@@ -501,7 +501,9 @@ impl Drop for Layer1TestEnv {
 #[test]
 #[serial_test::serial]
 fn production_layer1_decision_follows_resolved_asr_mode() {
-    use super::{Layer1Decision, LocalTailPatchDisposition, RecorderLayer1Lane, TailPatchTransport};
+    use super::{
+        Layer1Decision, LocalTailPatchDisposition, RecorderLayer1Lane, TailPatchTransport,
+    };
     use crate::config::{Config, UserSettings};
 
     let root = tempfile::tempdir().unwrap();
@@ -893,7 +895,9 @@ fn production_layer1_cloud_forwards_native_pcm_over_real_websocket() {
 #[test]
 #[serial_test::serial]
 fn cloud_consent_arms_ws_provider_and_remote_tail_at_refine_endpoint() {
-    use super::{Layer1Decision, LocalTailPatchDisposition, RecorderLayer1Lane, TailPatchTransport};
+    use super::{
+        Layer1Decision, LocalTailPatchDisposition, RecorderLayer1Lane, TailPatchTransport,
+    };
     use crate::config::{Config, UserSettings};
     use crate::stt::tail_provider::TailProviderId;
 
@@ -914,7 +918,10 @@ fn cloud_consent_arms_ws_provider_and_remote_tail_at_refine_endpoint() {
     .unwrap();
     let snapshot = Config::load_runtime_snapshot_without_keychain().unwrap();
     assert_eq!(snapshot.tail_provider(), Some(TailProviderId::Remote));
-    assert_eq!(snapshot.values().stt_file_endpoint.as_deref(), Some(file_lane));
+    assert_eq!(
+        snapshot.values().stt_file_endpoint.as_deref(),
+        Some(file_lane)
+    );
     assert_eq!(snapshot.values().cloud_refine_endpoint(), refine);
     assert!(snapshot.values().cloud_refine_selected);
     let admission = snapshot

@@ -720,7 +720,9 @@ struct SharedOutbound {
 }
 
 fn lock_outbound(shared: &Mutex<SharedOutbound>) -> std::sync::MutexGuard<'_, SharedOutbound> {
-    shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    shared
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn mark_outbound_failed(shared: &Mutex<SharedOutbound>, kind: AsrErrorKind) {
@@ -789,10 +791,9 @@ impl GatewayWebSocketTransport {
         let sender = self.command_tx.as_ref().ok_or(AsrErrorKind::Transport)?;
         sender.try_send(command).map_err(|error| match error {
             mpsc::error::TrySendError::Full(_) => AsrErrorKind::Overflow,
-            mpsc::error::TrySendError::Closed(_) => self
-                .lock_shared()
-                .failed
-                .unwrap_or(AsrErrorKind::Transport),
+            mpsc::error::TrySendError::Closed(_) => {
+                self.lock_shared().failed.unwrap_or(AsrErrorKind::Transport)
+            }
         })
     }
 }
@@ -1503,11 +1504,10 @@ impl<T: CloudGatewayTransport> LiveCloudAsrSession<T> {
         let commit_id = format!("cs-commit-{}", self.next_commit_number);
         // Record before the wire send so a final polled immediately after
         // this call still finds its span.
-        self.pending_commits
-            .push_back(PendingCommit {
-                commit_id: commit_id.clone(),
-                range,
-            });
+        self.pending_commits.push_back(PendingCommit {
+            commit_id: commit_id.clone(),
+            range,
+        });
         self.last_commit_sample = commit_sample;
         self.next_commit_number = self.next_commit_number.saturating_add(1);
         let sent = match wire {
@@ -1666,6 +1666,8 @@ impl<T: CloudGatewayTransport> LiveCloudAsrSession<T> {
         }
     }
 
+    // CL-W1b replaces this argument list with one wire-final value and drops the allow.
+    #[allow(clippy::too_many_arguments)]
     fn normalize_transcript(
         &mut self,
         is_final: bool,
@@ -2036,10 +2038,7 @@ mod tests {
         item_id: &str,
     ) -> GatewayEvent {
         let mut event = final_event(event_id, utterance_id, 1, text);
-        if let GatewayEvent::Final {
-            item_id: slot, ..
-        } = &mut event
-        {
+        if let GatewayEvent::Final { item_id: slot, .. } = &mut event {
             *slot = Some(item_id.to_string());
         }
         event
@@ -2458,7 +2457,9 @@ mod tests {
         )
         .expect("session");
         session.open(&input()).expect("open");
-        session.push_audio(&[0.0; 4]).expect("audio for the end commit");
+        session
+            .push_audio(&[0.0; 4])
+            .expect("audio for the end commit");
         session.close().expect("bounded close");
         let events = session.drain();
         assert_eq!(events.len(), 2);
@@ -2644,10 +2645,7 @@ mod tests {
     }
 
     fn loopback_endpoint(addr: std::net::SocketAddr) -> String {
-        format!(
-            "{}{addr}/v1/audio/transcribe",
-            concat!("ws", "://")
-        )
+        format!("{}{addr}/v1/audio/transcribe", concat!("ws", "://"))
     }
 
     #[test]
@@ -2694,7 +2692,10 @@ mod tests {
             };
             let set: serde_json::Value = serde_json::from_str(&set_text).unwrap_or_default();
             let vad_off = set.get("vad").and_then(serde_json::Value::as_bool) == Some(false);
-            let sample_rate = set.get("sample_rate").and_then(serde_json::Value::as_u64).unwrap_or(0);
+            let sample_rate = set
+                .get("sample_rate")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
             let mut markers = Vec::new();
             while markers.len() < 50 {
                 let Ok(Message::Text(text)) = socket.read() else {
@@ -2704,7 +2705,10 @@ mod tests {
                 if value.get("type").and_then(serde_json::Value::as_str) != Some("chunk") {
                     continue;
                 }
-                let Some(encoded) = value.get("audio_base64").and_then(serde_json::Value::as_str) else {
+                let Some(encoded) = value
+                    .get("audio_base64")
+                    .and_then(serde_json::Value::as_str)
+                else {
                     break;
                 };
                 let Ok(bytes) = BASE64.decode(encoded) else {
@@ -2741,7 +2745,10 @@ mod tests {
             .expect("server saw the buffered frames");
         assert!(vad_off, "set must carry vad:false");
         assert_eq!(sample_rate, 48_000);
-        assert_eq!(markers, (1..=50).map(|index| index as i16).collect::<Vec<_>>());
+        assert_eq!(
+            markers,
+            (1..=50).map(|index| index as i16).collect::<Vec<_>>()
+        );
         assert_eq!(session.telemetry().frames_queued, 50);
         assert_eq!(session.telemetry().backpressure_events, 0);
         assert!(
@@ -2856,7 +2863,10 @@ mod tests {
         session.commit(768_000).expect("second commit");
         session.close().expect("end is the third commit");
         let events = session.drain();
-        let stamped: Vec<_> = events.iter().map(|event| final_bounds(event, rate)).collect();
+        let stamped: Vec<_> = events
+            .iter()
+            .map(|event| final_bounds(event, rate))
+            .collect();
         assert_eq!(
             stamped,
             vec![
@@ -2886,7 +2896,9 @@ mod tests {
         assert_eq!(final_bounds(&empty_events[1], rate).0, "");
         assert_eq!(final_bounds(&empty_events[1], rate).1, (100, 200));
 
-        let unanchored = [GatewayTransportPoll::Event(final_event("loose", 1, 1, "bez"))];
+        let unanchored = [GatewayTransportPoll::Event(final_event(
+            "loose", 1, 1, "bez",
+        ))];
         let mut bare = LiveCloudAsrSession::new(
             FakeGatewayTransport::scripted(unanchored),
             limits,
@@ -2924,12 +2936,15 @@ mod tests {
         let mut state = VoiceLabReceiveState::new(session_id().to_string());
         let mut script = Vec::new();
         for line in lines {
-            match state.adapt(line).expect("probe line") {
-                Some(event) => script.push(GatewayTransportPoll::Event(event)),
-                None => {}
+            if let Some(event) = state.adapt(line).expect("probe line") {
+                script.push(GatewayTransportPoll::Event(event));
             }
         }
-        assert_eq!(script.len(), 4, "hello is ignored; three finals plus closed");
+        assert_eq!(
+            script.len(),
+            4,
+            "hello is ignored; three finals plus closed"
+        );
 
         let rate = 48_000u32;
         let mut limits = wide_limits(48_000, 8, Duration::from_secs(2));

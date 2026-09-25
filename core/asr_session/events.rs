@@ -118,11 +118,7 @@ impl AudioRange {
     /// `rate_hz` is the native rate the recorder offered the session. Callers
     /// recover the sample bounds with `seconds * rate_hz`. A later conversion
     /// of the PCM bytes onto a 16 kHz wire does not change this span.
-    pub fn from_capture_samples(
-        start_sample: u64,
-        end_sample: u64,
-        rate_hz: u32,
-    ) -> Option<Self> {
+    pub fn from_capture_samples(start_sample: u64, end_sample: u64, rate_hz: u32) -> Option<Self> {
         if rate_hz == 0 || end_sample <= start_sample {
             return None;
         }
