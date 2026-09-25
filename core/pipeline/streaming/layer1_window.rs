@@ -66,13 +66,12 @@ impl OpenSpeechWindowClock {
         if evidence.identity() != &self.capture
             || evidence.producer() != SILERO_RAW_BOUNDARIES_PRODUCER
         {
+            self.pending = None;
             return None;
         }
         let Some(observed) = evidence.availability().observed_samples() else {
-            // A later unmeasured sample cannot create another PCM offer, but
-            // it cannot revoke an already measured one that the queue has not
-            // accepted yet. Retry the exact same immutable range.
-            return self.pending.clone();
+            self.pending = None;
+            return None;
         };
         let closed_through = closed_through.and_then(|(identity, end)| {
             (identity == self.capture && end <= observed).then_some(end)
@@ -777,44 +776,20 @@ mod tests {
     }
 
     #[test]
-    fn unmeasured_or_foreign_pcm_cannot_mint_a_new_l1_window() {
+    fn unmeasured_or_foreign_pcm_cannot_offer_an_l1_window() {
         let mut clock = OpenSpeechWindowClock::new(CaptureEvidenceIdentity::new("take", 7));
         let speech = measured_speech("take", 7, 5_000, &[(0, 5_000)]);
         let offered = clock.next(&speech, 1_000, None, false).unwrap();
         let foreign = measured_speech("other", 7, 5_000, &[(0, 5_000)]);
         assert!(clock.next(&foreign, 1_000, None, false).is_none());
+        assert!(!clock.ack_queued(&offered));
         let unavailable = AcousticSpeechEvidence::unavailable(
             CaptureEvidenceIdentity::new("take", 7),
             SILERO_RAW_BOUNDARIES_PRODUCER,
             AcousticAvailability::Discontinuous { observed_samples: 5_000 },
-        );
-        assert_eq!(clock.next(&unavailable, 1_000, None, false), Some(offered.clone()));
-        assert_eq!(clock.next(&speech, 1_000, None, false), Some(offered));
-        let mut fresh = OpenSpeechWindowClock::new(CaptureEvidenceIdentity::new("take", 7));
-        assert!(fresh.next(&foreign, 1_000, None, false).is_none());
-        assert!(fresh.next(&unavailable, 1_000, None, false).is_none());
-    }
-
-    #[test]
-    fn pending_offer_survives_unavailable_later_evidence() {
-        let mut clock = OpenSpeechWindowClock::new(CaptureEvidenceIdentity::new("take", 7));
-        let speech = measured_speech("take", 7, 4_000, &[(0, 4_000)]);
-        let offered = clock
-            .next(&speech, 1_000, None, false)
-            .expect("measured PCM must be offered before the later discontinuity");
-        let foreign = measured_speech("other", 7, 5_000, &[(0, 5_000)]);
-        assert!(clock.next(&foreign, 1_000, None, false).is_none());
-        let unavailable = AcousticSpeechEvidence::unavailable(
-            CaptureEvidenceIdentity::new("take", 7),
-            SILERO_RAW_BOUNDARIES_PRODUCER,
-            AcousticAvailability::Discontinuous { observed_samples: 5_000 },
-        );
-        assert_eq!(clock.next(&unavailable, 1_000, None, false), Some(offered.clone()));
-        assert!(
-            clock.ack_queued(&offered),
-            "a later unmeasured sample must not erase a prior measured offer accepted by transport"
         );
         assert!(clock.next(&unavailable, 1_000, None, false).is_none());
+        assert_eq!(clock.next(&speech, 1_000, None, false), Some(offered));
     }
 
     #[test]
