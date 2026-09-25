@@ -857,10 +857,10 @@ mod tests {
     fn smart_paste_has_no_post_paste_key_step() {
         let source = include_str!("clipboard.rs");
         let paste = source
-            .split("pub fn paste_text_smart(")
+            .split(concat!("pub fn ", "paste_text_smart("))
             .nth(1)
             .expect("smart paste exists")
-            .split("pub fn paste_and_restore(")
+            .split(concat!("pub fn ", "paste_and_restore("))
             .next()
             .expect("smart paste body exists");
         // Guard the caller too: a second simulation after Cmd+V was the bug.

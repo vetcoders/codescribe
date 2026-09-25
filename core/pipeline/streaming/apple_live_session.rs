@@ -10875,9 +10875,9 @@ mod storm_tests {
                 let mirrors = events
                     .iter()
                     .filter_map(|event| match event {
-                        EngineEvent::UnadmittedAppleWords { revision, words, .. } => {
-                            Some((revision, words))
-                        }
+                        EngineEvent::UnadmittedAppleWords {
+                            revision, words, ..
+                        } => Some((revision, words)),
                         _ => None,
                     })
                     .collect::<Vec<_>>();
@@ -10903,7 +10903,8 @@ mod storm_tests {
             segment("revised", 9.0, 9.125),
         ] {
             let (tx, mut rx) = mpsc::unbounded_channel();
-            let mut state = AppleSealState::new_for_session(TEST_SAMPLE_RATE, "storm-test".into(), 0);
+            let mut state =
+                AppleSealState::new_for_session(TEST_SAMPLE_RATE, "storm-test".into(), 0);
             arm_fusion_slice_admission(&mut state);
             let first = segment("leftover", 9.0, 9.125);
             // An exact copy separated by a distinct word is still a re-delivery.
@@ -10912,11 +10913,7 @@ mod storm_tests {
             assert_eq!(state.unmatched_silero_words.len(), 2);
             let expected = vec![
                 (at(9.0), at(9.125), "leftover"),
-                (
-                    at(second.start_ts),
-                    at(second.end_ts),
-                    second.text.as_str(),
-                ),
+                (at(second.start_ts), at(second.end_ts), second.text.as_str()),
             ];
             assert_eq!(
                 state

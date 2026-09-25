@@ -1396,7 +1396,10 @@ mod tests {
 
             assert_eq!(state.thread_store_id.as_deref(), Some("thread-a"));
             assert!(state.runtime_degraded);
-            let kept = state.runtime.as_ref().expect("runtime must survive refusal");
+            let kept = state
+                .runtime
+                .as_ref()
+                .expect("runtime must survive refusal");
             assert_eq!(kept.thread_store_id, "thread-a");
             assert_eq!(kept.session.messages(), before_messages.as_slice());
             assert_eq!(kept.session.thread_id(), Some("resp_seed"));

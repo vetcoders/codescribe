@@ -2277,7 +2277,7 @@ impl RecordingController {
             focus_confirmed_by_wait = focus_confirmed,
             target_observed_frontmost,
             frontmost_is_external,
-            "{context}: paste target activation bundle_id=unknown"
+            "{context}: paste target activation"
         );
         // Throne law, shadowed on purpose so the corridor below reads exactly
         // as the contract states it: a latched target must have confirmed
@@ -9438,22 +9438,6 @@ mod explicit_startup_tests {
             assert!(std::panic::catch_unwind(constructor).is_err());
             assert_eq!(probe.attempts(), ["settings capture"]);
         }
-    }
-}
-
-#[cfg(test)]
-mod paste_receipt_tests {
-    #[test]
-    fn clipboard_paste_receipt_explicitly_names_unavailable_bundle_id() {
-        let controller = include_str!("mod.rs");
-        let paste = controller
-            .split("async fn execute_clipboard_paste(")
-            .nth(1)
-            .expect("clipboard paste executor exists")
-            .split("async fn deliver_stop_transcript(")
-            .next()
-            .expect("clipboard paste executor body exists");
-        assert!(paste.contains("\"{context}: paste target activation bundle_id=unknown\""));
     }
 }
 
