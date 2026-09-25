@@ -13013,6 +13013,81 @@ mod live_refinement_admission_tests {
         );
     }
 
+    /// A raw Silero crossing is allowed to extend to the observed cursor
+    /// before its end edge arrives. That request range is not a declaration
+    /// that every sample inside it is voiced or may receive Whisper text.
+    #[test]
+    fn open_l1_word_inside_measured_silent_tail_never_reaches_the_ledger() {
+        use super::super::silero_fusion::SileroIngress;
+        use crate::audio::chunker::{VadBoundaryEvidence, VadBoundaryKind};
+
+        let (mut state, events, mut receiver, mut requests) = fixture(4);
+        let mut energy = CaptureLevelAccumulator::bound_to(&state.capture_energy);
+        energy.push_samples(&vec![0.25; 3_520]);
+        energy.push_samples(&vec![0.0; 1_600]);
+        assert_eq!(
+            state
+                .capture_energy
+                .voiced_hops_in("live-admission", 7, 3_680, 3_840),
+            Some(Vec::new()),
+            "the pin itself must be measured silence, not merely quiet on average"
+        );
+        let mut fusion = SileroIngress::new(RATE, "live-admission", 7);
+        fusion.note_observed_pcm(5_120, 5_120);
+        fusion.observe_boundaries(&[VadBoundaryEvidence {
+            kind: VadBoundaryKind::SpeechStart,
+            sample: 0,
+            speech_probability: 0.95,
+        }]);
+        fusion
+            .ledger_mut()
+            .open_or_extend("live-admission", 7, 0, 5_120);
+        state.fusion = Some(fusion);
+
+        assert!(seal_sliced_by_silero(&mut state, &events, &[]));
+        let request = requests
+            .try_recv()
+            .expect("open raw speech still offers the bounded first L1 window");
+        let window = &request.provider_request.identity.range;
+        assert!(window.sample_start <= 3_680 && window.sample_end >= 3_840);
+        request.provider_request.validate_pcm(&request.audio).unwrap();
+        let mut completion = open_word_completion(&request);
+        let payload = completion.payload.as_mut().unwrap();
+        payload.text = "ghost".into();
+        payload.segments[0].text = "ghost".into();
+        payload.segments[0].range.sample_start = 3_680;
+        payload.segments[0].range.sample_end = 3_840;
+        state.complete_whisper_window(&events, completion, 5.1);
+        let before_close = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
+        assert!(!before_close.iter().any(|event| matches!(
+            event,
+            EngineEvent::LedgerMutation { label, receipt, .. }
+                if label == "ghost" && receipt.grants_mutation()
+        )));
+
+        let fusion = state.fusion.as_mut().unwrap();
+        fusion.observe_boundaries(&[VadBoundaryEvidence {
+            kind: VadBoundaryKind::SpeechEnd,
+            sample: 5_120,
+            speech_probability: 0.05,
+        }]);
+        fusion.ledger_mut().close_open(5_120);
+        assert!(seal_sliced_by_silero(&mut state, &events, &[]));
+        let after_close = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
+        assert!(!after_close.iter().any(|event| matches!(
+            event,
+            EngineEvent::LedgerMutation { label, receipt, .. }
+                if label == "ghost" && receipt.grants_mutation()
+        )));
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert!(
+            ledger
+                .occurrences()
+                .all(|identity| ledger.text_of(identity) != Some("ghost")),
+            "the observed raw VAD window cannot turn measured silence into a sealed word"
+        );
+    }
+
     #[test]
     fn whisper_segmentless_text_requires_exact_window_and_rejected_pins_never_fallback() {
         for context in [
