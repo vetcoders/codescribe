@@ -12957,6 +12957,18 @@ mod live_refinement_admission_tests {
         assert!(owner.sample_start <= 500 && owner.sample_end >= 1_000);
         assert!(owner.sample_end <= 6_080);
         let ledger = state.acoustic_ledger.lock().unwrap();
+        let original_serial = ledger
+            .serial_of(owner)
+            .expect("the early L1 owner must retain its qualified acoustic serial");
+        assert_eq!(
+            original_serial.vad_close_sample, None,
+            "a later Silero edge must not rewrite the open L1 citation"
+        );
+        let closure = ledger
+            .vad_closure_of(owner)
+            .expect("real SpeechEnd must close the same open L1 PCM owner");
+        assert_eq!(closure.vad_close_sample, 6_080);
+        assert_eq!(closure.qualified_serial_digest, original_serial.digest);
         let mut occurrences = ledger.occurrences().cloned().collect::<Vec<_>>();
         occurrences.sort_by_key(|identity| (identity.sample_start, identity.sample_end));
         assert!(occurrences.contains(owner), "the label owner cannot be reminted away");
