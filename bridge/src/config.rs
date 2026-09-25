@@ -38,6 +38,26 @@ use directories::BaseDirs;
 
 use crate::{CsError, CsLanguage, application_runtime};
 
+/// User-selected acoustic evidence lifetime; delivery history is unaffected.
+#[uniffi::export]
+pub fn evidence_retention_days() -> u32 {
+    codescribe::presentation::transcript_bus_maintenance::evidence_retention_days()
+}
+
+#[uniffi::export]
+pub fn set_evidence_retention_days(days: u32) -> Result<(), CsError> {
+    if !(1..=3650).contains(&days) {
+        return Err(CsError::Config {
+            msg: "Evidence retention must be between 1 and 3650 days".into(),
+        });
+    }
+    let mut settings = UserSettings::load();
+    settings.evidence_retention_days = Some(days);
+    settings.save().map_err(|error| CsError::Config {
+        msg: error.to_string(),
+    })
+}
+
 /// Read the launch repair receipt without loading settings again.
 #[uniffi::export]
 pub fn config_repair_summary() -> Option<String> {

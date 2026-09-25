@@ -2,6 +2,7 @@
 //! the controller event listener, and microphone permission probes. Live capture
 //! itself is owned exclusively by `CodescribeHotkeys`/`RecordingController`.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use codescribe::presentation::status_projection::{
@@ -579,6 +580,55 @@ pub trait CsWhisperDownloadListener: Send + Sync {
 #[uniffi::export]
 pub fn whisper_model_status() -> CsWhisperModelStatus {
     CsWhisperModelStatus::from(codescribe_core::config::models::whisper_model_status())
+}
+
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsModelDirectory {
+    pub name: String,
+    pub bytes_on_disk: u64,
+    pub status: String,
+    pub detail: String,
+    pub duplicate_tokenizer_with: Option<String>,
+}
+
+fn active_user_model() -> Option<PathBuf> {
+    let snapshot =
+        codescribe_core::config::Config::load_runtime_snapshot_without_keychain().ok()?;
+    codescribe_core::config::models::resolve_runtime_whisper_model_path(Some(
+        &snapshot.values().local_model,
+    ))
+    .ok()
+}
+
+#[uniffi::export]
+pub fn model_directories() -> Result<Vec<CsModelDirectory>, CsError> {
+    let data_dir = codescribe_core::config::Config::config_dir();
+    let active = active_user_model();
+    codescribe_core::config::models::inspect_model_directories(&data_dir, active.as_deref())
+        .map(|rows| {
+            rows.into_iter()
+                .map(|row| CsModelDirectory {
+                    name: row.name,
+                    bytes_on_disk: row.bytes_on_disk,
+                    status: row.status,
+                    detail: row.detail,
+                    duplicate_tokenizer_with: row.duplicate_tokenizer_with,
+                })
+                .collect()
+        })
+        .map_err(|error| CsError::Recording {
+            msg: error.to_string(),
+        })
+}
+
+#[uniffi::export]
+pub fn remove_model_directory(name: String) -> Result<(), CsError> {
+    let data_dir = codescribe_core::config::Config::config_dir();
+    let active = active_user_model();
+    codescribe_core::config::models::remove_model_directory(&data_dir, &name, active.as_deref())
+        .map_err(|error| CsError::Recording {
+            msg: error.to_string(),
+        })
 }
 
 /// Download the default Whisper model (idempotent if already complete).

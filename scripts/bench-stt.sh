@@ -30,6 +30,8 @@ fi
 home_dir="${HOME:-}"
 # shellcheck source=scripts/lib/data-assets.sh
 . "$script_dir/lib/data-assets.sh"
+# shellcheck source=scripts/lib/fixture-audio.sh
+. "$script_dir/lib/fixture-audio.sh"
 model_validator="$repo_root/scripts/validate-whisper-model.sh"
 
 fixture_mode="${BENCH_STT_FIXTURES:-repo}"
@@ -311,7 +313,7 @@ stage_fixtures() {
     staged_audio="$staged_dir/$stem.wav"
     staged_ref="$staged_dir/$stem.txt"
     mkdir -p "$staged_dir"
-    cp -p "$audio" "$staged_audio"
+    stage_fixture_audio "$audio" "$staged_audio"
     cp -p "$ref" "$staged_ref"
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "${date_dir}__${stem}" \

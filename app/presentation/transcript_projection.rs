@@ -293,9 +293,14 @@ impl TranscriptProjectionReader {
         self.retired_sessions.insert(row.session_id.clone());
         self.last_ended_session = Some(row.session_id.clone());
 
-        let has_text = last
-            .as_ref()
-            .is_some_and(|evidence| !evidence.rendered_text.trim().is_empty());
+        let has_text = row
+            .rendered_text
+            .as_deref()
+            .or_else(|| {
+                last.as_ref()
+                    .map(|evidence| evidence.rendered_text.as_str())
+            })
+            .is_some_and(|document| !document.trim().is_empty());
         let legacy_lifecycle = row.phase.is_none();
         let phase = row.phase.unwrap_or(if has_text {
             TranscriptProjectionPhase::Formatted
@@ -337,6 +342,9 @@ impl TranscriptProjectionReader {
             terminal: true,
         });
         projection.kind = TranscriptProjectionKind::TerminalSeal;
+        if let Some(document) = row.rendered_text {
+            projection.rendered_text = document;
+        }
         projection.sequence = row.sequence;
         projection.reducer_action = "session_ended".to_string();
         projection.phase = phase;

@@ -188,17 +188,17 @@ xcodebuild test \
   -destination 'platform=macOS,arch=arm64' \
   CODE_SIGN_IDENTITY="${SWIFT_TEST_CODESIGN_IDENTITY}" \
   "$@" 2>&1 | tee "${SWIFT_TEST_LOG}" | \
-  grep -E "^Test Case .* (failed|error)|Executed [0-9]+ tests|^\*\* TEST|error:"
+  grep -aE "^Test Case .* (failed|error)|Executed [0-9]+ tests|^\*\* TEST|error:"
 rc=${PIPESTATUS[0]}
-executed=$(grep -oE 'Executed [0-9]+ test' "${SWIFT_TEST_LOG}" | tail -1 | grep -oE '[0-9]+')
+executed=$(grep -aoE 'Executed [0-9]+ test' "${SWIFT_TEST_LOG}" | tail -1 | grep -oE '[0-9]+')
 if [ "$rc" -eq 0 ] && [ "${executed:-0}" -eq 0 ]; then
   echo "test-swift: xcodebuild said TEST SUCCEEDED but executed 0 tests." >&2
   echo "test-swift: a -only-testing filter that matches nothing exits 0 — that is a" >&2
   echo "test-swift: silent pass, not a green gate. Check SWIFT_TEST_ARGS." >&2
   rc=3
 fi
-secs=$(sed -nE 's/^.*Executed [0-9]+ tests?,.* in ([0-9.]+) \([0-9.]+\) seconds.*$/\1/p' "${SWIFT_TEST_LOG}" | tail -1)
-slowest=$(sed -nE "s/^.*CodescribeTests\.([A-Za-z0-9_]+) ([A-Za-z0-9_]+)\]' passed \(([0-9.]+) seconds\)\..*$/\3 \1.\2/p" "${SWIFT_TEST_LOG}" | sort -rn | head -1)
+secs=$(LC_ALL=C tr -d '\000' < "${SWIFT_TEST_LOG}" | sed -nE 's/^.*Executed [0-9]+ tests?,.* in ([0-9.]+) \([0-9.]+\) seconds.*$/\1/p' | tail -1)
+slowest=$(LC_ALL=C tr -d '\000' < "${SWIFT_TEST_LOG}" | sed -nE "s/^.*CodescribeTests\.([A-Za-z0-9_]+) ([A-Za-z0-9_]+)\]' passed \(([0-9.]+) seconds\)\..*$/\3 \1.\2/p" | sort -rn | head -1)
 echo "test-swift: full log ${SWIFT_TEST_LOG} (rc=$rc, executed=${executed:-0}, seconds=${secs:-unknown})"
 if [ -n "$slowest" ]; then echo "test-swift: slowest test $slowest"; fi
 if [ "$rc" -eq 0 ] && [ -n "$secs" ] && \

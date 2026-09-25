@@ -4,6 +4,9 @@ import SwiftUI
 /// DMG is slim — the model is not bundled).
 struct DictationWhisperModelTab: View {
   @ObservedObject var model: SettingsViewModel
+  @State private var storedModels: [CsModelDirectory] = []
+  @State private var storageError: String?
+  @State private var retentionDays = 14
 
   var body: some View {
     let status = model.localWhisperStatus
@@ -57,7 +60,65 @@ struct DictationWhisperModelTab: View {
           .font(CSFont.mono(10.5, .medium))
           .foregroundStyle(CSColor.textFaint)
       }
+
+      SettingsSectionLabel("Data footprint")
+      SettingsControlRow(
+        title: "Bus evidence retention",
+        subtitle: "Old acoustic evidence expires; delivery history stays."
+      ) {
+        HStack {
+          Stepper("\(retentionDays) days", value: $retentionDays, in: 1...3650)
+          Button("Save") {
+            do {
+              try setEvidenceRetentionDays(days: UInt32(retentionDays))
+              storageError = nil
+            } catch {
+              storageError = error.localizedDescription
+            }
+          }
+          .buttonStyle(.bordered)
+        }
+      }
+      ForEach(storedModels, id: \.name) { directory in
+        SettingsControlRow(
+          title: directory.name,
+          subtitle: "\(directory.status) · \(ByteCountFormatter.string(fromByteCount: Int64(directory.bytesOnDisk), countStyle: .file))\(directory.duplicateTokenizerWith.map { " · identical tokenizer: \($0)" } ?? "")"
+        ) {
+          Button("Remove") {
+            do {
+              try removeModelDirectory(name: directory.name)
+              refreshStoredModels()
+            } catch {
+              storageError = error.localizedDescription
+            }
+          }
+          .disabled(!Self.canRemoveModel(status: directory.status))
+          .buttonStyle(.bordered)
+        }
+      }
+      if let storageError {
+        Text(storageError)
+          .font(CSFont.mono(10.5, .medium))
+          .foregroundStyle(CSColor.amber)
+      }
     }
+    .onAppear {
+      retentionDays = Int(evidenceRetentionDays())
+      refreshStoredModels()
+    }
+  }
+
+  private func refreshStoredModels() {
+    do {
+      storedModels = try modelDirectories()
+      storageError = nil
+    } catch {
+      storageError = error.localizedDescription
+    }
+  }
+
+  static func canRemoveModel(status: String) -> Bool {
+    status != "active"
   }
 
   private func whisperInstallLabel(_ status: CsWhisperModelStatus) -> String {

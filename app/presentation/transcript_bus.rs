@@ -4,10 +4,11 @@
 //! [`PresentationEmitter`]. It never opens audio, accepts arbitrary text,
 //! re-transcribes a file, or reconstructs text from UI deltas.
 
-use std::fs::OpenOptions;
+use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use chrono::{SecondsFormat, Utc};
 use codescribe_core::pipeline::acoustic_ledger::{
@@ -604,6 +605,58 @@ struct TranscriptBusWriter {
     last_projection: Option<TranscriptBusEvidenceEvent>,
 }
 
+/// All in-process Bus sessions for a path append through this one descriptor.
+/// Compaction takes this exact lock and replaces the descriptor after rename.
+static BUS_FILES: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<File>>>>> = OnceLock::new();
+
+pub(crate) fn shared_bus_file(path: &Path) -> io::Result<Arc<Mutex<File>>> {
+    let registry = BUS_FILES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut registry = registry.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some(file) = registry.get(path).and_then(Weak::upgrade) {
+        return Ok(file);
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = open_bus_append_file(path)?;
+    let shared = Arc::new(Mutex::new(file));
+    registry.insert(path.to_path_buf(), Arc::downgrade(&shared));
+    Ok(shared)
+}
+
+pub(crate) fn open_bus_append_file(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.create(true).append(true).read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(file)
+}
+
+struct SharedBusWriter(Arc<Mutex<File>>);
+
+impl Write for SharedBusWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .write_all(bytes)?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 impl TranscriptBus {
     fn projection_availability(
         &self,
@@ -883,19 +936,8 @@ impl TranscriptBus {
             std::fs::create_dir_all(parent)?;
         }
 
-        let mut options = OpenOptions::new();
-        options.create(true).append(true).read(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&path)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        }
+        let shared = shared_bus_file(&path)?;
+        let mut file = shared.lock().unwrap_or_else(|error| error.into_inner());
 
         // A prior partial write is not an append boundary. Do not join a new
         // session onto it, truncate evidence, or retry the unknown payload.
@@ -910,7 +952,12 @@ impl TranscriptBus {
                 ));
             }
         }
-        Ok(Self::with_writer(session, path, Some(Box::new(file))))
+        drop(file);
+        Ok(Self::with_writer(
+            session,
+            path,
+            Some(Box::new(SharedBusWriter(shared))),
+        ))
     }
 
     /// Announce the recording start exactly once, even if persistence fails.

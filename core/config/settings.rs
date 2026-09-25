@@ -182,6 +182,9 @@ pub fn parse_agent_workspace_roots(value: &str) -> Vec<String> {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(default)]
 pub struct UserSettings {
+    /// Bus evidence lifetime. Delivery rows remain permanent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence_retention_days: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub whisper_language: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1540,6 +1543,8 @@ struct FeaturesV2 {
 #[serde(default)]
 struct SystemV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
+    evidence_retention_days: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     start_at_login: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     qube_daemon_autostart: Option<bool>,
@@ -1759,6 +1764,7 @@ impl UserSettings {
                 quick_notes_save_only: self.quick_notes_save_only,
             }),
             system: Some(SystemV2 {
+                evidence_retention_days: self.evidence_retention_days,
                 start_at_login: self.start_at_login,
                 qube_daemon_autostart: self.qube_daemon_autostart,
                 qube_donor: self.qube_donor.clone(),
@@ -2069,6 +2075,7 @@ impl UserSettings {
                 .system
                 .as_ref()
                 .and_then(|s| s.cloud_audio_egress_consent_at.clone()),
+            evidence_retention_days: v2.system.as_ref().and_then(|s| s.evidence_retention_days),
             agent_permissions: v2.agent.as_ref().and_then(|a| a.permissions.clone()),
             agent_capabilities: v2.agent.as_ref().and_then(|a| a.capabilities.clone()),
         }
@@ -2999,6 +3006,18 @@ mod tests {
     use serial_test::serial;
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    #[serial]
+    fn evidence_retention_days_round_trips_through_settings_json() {
+        let _tmp = setup_isolated_data_dir();
+        let settings = UserSettings {
+            evidence_retention_days: Some(21),
+            ..UserSettings::default()
+        };
+        settings.save().unwrap();
+        assert_eq!(UserSettings::load().evidence_retention_days, Some(21));
+    }
 
     /// Redirect the data dir to a fresh temp directory and clear the legacy
     /// hotkey env vars. The returned guard must stay alive for the whole test:

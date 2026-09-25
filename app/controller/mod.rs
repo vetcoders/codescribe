@@ -2704,6 +2704,15 @@ impl RecordingController {
             .store(false, Ordering::SeqCst);
         // `state` becomes Idle only once the rest of the session state is consistent.
         self.set_state(State::Idle).await;
+        let path = crate::presentation::transcript_bus::transcript_bus_path();
+        tokio::task::spawn_blocking(move || {
+            let days = crate::presentation::transcript_bus_maintenance::evidence_retention_days();
+            if let Err(error) = crate::presentation::transcript_bus_maintenance::compact_bus_owned(
+                &path, days, "idle",
+            ) {
+                warn!(%error, "idle bus compaction unavailable");
+            }
+        });
     }
 
     /// End the active Bus session exactly once with a typed reason. This is

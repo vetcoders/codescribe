@@ -9443,6 +9443,70 @@ public func FfiConverterTypeCsModeBinding_lower(_ value: CsModeBinding) -> RustB
 }
 
 
+public struct CsModelDirectory: Equatable, Hashable {
+    public var name: String
+    public var bytesOnDisk: UInt64
+    public var status: String
+    public var detail: String
+    public var duplicateTokenizerWith: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(name: String, bytesOnDisk: UInt64, status: String, detail: String, duplicateTokenizerWith: String?) {
+        self.name = name
+        self.bytesOnDisk = bytesOnDisk
+        self.status = status
+        self.detail = detail
+        self.duplicateTokenizerWith = duplicateTokenizerWith
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsModelDirectory: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsModelDirectory: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsModelDirectory {
+        return
+            try CsModelDirectory(
+                name: FfiConverterString.read(from: &buf),
+                bytesOnDisk: FfiConverterUInt64.read(from: &buf),
+                status: FfiConverterString.read(from: &buf),
+                detail: FfiConverterString.read(from: &buf),
+                duplicateTokenizerWith: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsModelDirectory, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterUInt64.write(value.bytesOnDisk, into: &buf)
+        FfiConverterString.write(value.status, into: &buf)
+        FfiConverterString.write(value.detail, into: &buf)
+        FfiConverterOptionString.write(value.duplicateTokenizerWith, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsModelDirectory_lift(_ buf: RustBuffer) throws -> CsModelDirectory {
+    return try FfiConverterTypeCsModelDirectory.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsModelDirectory_lower(_ value: CsModelDirectory) -> RustBuffer {
+    return FfiConverterTypeCsModelDirectory.lower(value)
+}
+
+
 /**
  * Live model discovery result for one provider. `status` is one of:
  * `"fresh"`, `"cached"`, `"no_key"`, `"error"`. Errors never carry secrets.
@@ -15483,6 +15547,31 @@ fileprivate struct FfiConverterSequenceTypeCsModeBinding: FfiConverterRustBuffer
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeCsModelDirectory: FfiConverterRustBuffer {
+    typealias SwiftType = [CsModelDirectory]
+
+    public static func write(_ value: [CsModelDirectory], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCsModelDirectory.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CsModelDirectory] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CsModelDirectory]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCsModelDirectory.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeCsModelOption: FfiConverterRustBuffer {
     typealias SwiftType = [CsModelOption]
 
@@ -16024,6 +16113,15 @@ public func downloadWhisperModel(listener: CsWhisperDownloadListener?)async thro
         )
 }
 /**
+ * User-selected acoustic evidence lifetime; delivery history is unaffected.
+ */
+public func evidenceRetentionDays() -> UInt32  {
+    return try!  FfiConverterUInt32.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_func_evidence_retention_days($0
+    )
+})
+}
+/**
  * Read the live custom lexicon as flattened `variant -> canonical` rows.
  */
 public func lexiconCustomEntries()throws  -> [CsLexiconEntry]  {
@@ -16064,6 +16162,12 @@ public func licenseStatus(key: String?, lastOnlineValidationUnixSeconds: Int64?,
 public func micPermissionGranted() -> Bool  {
     return try!  FfiConverterBool.lift(try! rustCall() {
     uniffi_codescribe_ffi_fn_func_mic_permission_granted($0
+    )
+})
+}
+public func modelDirectories()throws  -> [CsModelDirectory]  {
+    return try  FfiConverterSequenceTypeCsModelDirectory.lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_func_model_directories($0
     )
 })
 }
@@ -16122,6 +16226,12 @@ public func qualityTeachSpan(variant: String, canonical: String, kind: String)th
     )
 })
 }
+public func removeModelDirectory(name: String)throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_func_remove_model_directory(
+        FfiConverterString.lower(name),$0
+    )
+}
+}
 /**
  * Request microphone permission (shows the system dialog when undetermined),
  * returning whether access is granted.
@@ -16142,6 +16252,12 @@ public func runtimeLlmLane(lane: CsLlmLane) -> CsRuntimeLlmLane  {
         FfiConverterTypeCsLlmLane_lower(lane),$0
     )
 })
+}
+public func setEvidenceRetentionDays(days: UInt32)throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_func_set_evidence_retention_days(
+        FfiConverterUInt32.lower(days),$0
+    )
+}
 }
 /**
  * Stop controller/account activity first, then tear down every runtime worker.
@@ -16242,6 +16358,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_download_whisper_model() != 38859) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_func_evidence_retention_days() != 26789) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_func_lexicon_custom_entries() != 24996) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -16252,6 +16371,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_mic_permission_granted() != 26303) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_model_directories() != 32805) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_overlay_highlights_enabled() != 21886) {
@@ -16269,10 +16391,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_quality_teach_span() != 20307) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_func_remove_model_directory() != 5083) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_func_request_mic_permission() != 61967) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_runtime_llm_lane() != 23153) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_set_evidence_retention_days() != 55998) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_shutdown_application_runtime() != 56989) {
