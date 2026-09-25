@@ -15449,10 +15449,17 @@ mod rc_w2_test_rehab {
             );
         }
         for (expected_rev, expected) in [(1, "a"), (2, "ab")] {
-            let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
-                .await
-                .expect("preview before EOF")
-                .expect("producer stays open");
+            // Each open partial is also mirrored as unadmitted words; this
+            // test reads only the preview stream.
+            let event = loop {
+                let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                    .await
+                    .expect("preview before EOF")
+                    .expect("producer stays open");
+                if !matches!(event, EngineEvent::UnadmittedAppleWords { .. }) {
+                    break event;
+                }
+            };
             assert!(
                 matches!(event, EngineEvent::Preview { rev, text, .. } if rev == expected_rev && text == expected)
             );
@@ -15651,9 +15658,10 @@ mod rc_w2_test_rehab {
             assert!(
                 matches!(rx.try_recv().unwrap(), EngineEvent::Preview { text, .. } if text == "uruchom doker")
             );
+            // The mirror carries the open partial word by word, still raw.
             assert!(matches!(rx.try_recv().unwrap(),
                 EngineEvent::UnadmittedAppleWords { words, .. }
-                    if words.len() == 1 && words[0].text == "uruchom doker"
+                    if words.iter().map(|word| word.text.as_str()).eq(["uruchom", "doker"])
             ));
             assert!(rx.try_recv().is_err());
             assert!(document(&state).is_empty());
