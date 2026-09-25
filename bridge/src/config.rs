@@ -1828,6 +1828,7 @@ fn clear_agent_settings() -> anyhow::Result<()> {
 }
 
 fn create_agent_reset_destination(trash: &Path) -> anyhow::Result<PathBuf> {
+    codescribe_core::test_isolation::assert_test_write_allowed(trash);
     fs::create_dir_all(trash)?;
     let destination = unique_destination(
         trash,
@@ -2300,6 +2301,7 @@ struct ResetAuditEvent<'a> {
 /// the reset that follows crashes, which is the only way to tell an interrupted
 /// reset from one that never began.
 fn append_reset_audit(event: &ResetAuditEvent<'_>) -> std::io::Result<()> {
+    codescribe_core::test_isolation::assert_test_write_allowed(event.audit_path);
     if let Some(parent) = event.audit_path.parent() {
         fs::create_dir_all(parent)?;
     }

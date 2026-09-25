@@ -1,6 +1,6 @@
 //! Persisted "always allow" grants for external (MCP) tools.
 //!
-//! One JSON file (`~/.codescribe/tool_grants.json`) keyed by
+//! One JSON file under `Config::config_dir()` keyed by
 //! `"<server>:<upstream_tool>"`. A grant means the operator pressed
 //! "Zawsze zezwalaj" on the approval card, so future calls of that exact
 //! server+tool pair skip the approval gate. Grants never apply to
@@ -24,13 +24,9 @@ use serde::{Deserialize, Serialize};
 /// On-disk grants schema version; bump when GrantsFile shape changes.
 const VERSION: u32 = 1;
 
-/// Canonical grants file location: `$HOME/.codescribe/tool_grants.json`.
-/// Errors when `HOME` is unset rather than guessing a fallback directory.
+/// Canonical grants file location in the configured data directory.
 pub fn default_tool_grants_path() -> Result<PathBuf> {
-    let home = std::env::var("HOME").context("HOME environment variable is not set")?;
-    Ok(PathBuf::from(home)
-        .join(".codescribe")
-        .join("tool_grants.json"))
+    Ok(crate::config::Config::config_dir().join("tool_grants.json"))
 }
 
 /// Canonical grant key for an MCP tool. One format, used by the registry
@@ -136,7 +132,7 @@ pub fn list() -> Result<Vec<(String, String)>> {
 /// default, but an **unparsable** one is an error. Tolerating a parse failure
 /// here would mean overwriting an operator's grants with a fresh empty map.
 fn read_for_mutation(path: &Path) -> Result<GrantsFile> {
-    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- The only production caller passes `default_tool_grants_path()` ($HOME/.codescribe/tool_grants.json); tests pass a tempdir. Grant identity (server, tool) becomes a JSON KEY, never a path component — see `grant_key`.
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- The production caller passes `default_tool_grants_path()` (Config::config_dir()/tool_grants.json); tests pass a tempdir. Grant identity (server, tool) becomes a JSON KEY, never a path component — see `grant_key`.
     match std::fs::read_to_string(path) {
         Ok(raw) => serde_json::from_str(&raw).with_context(|| {
             format!(
@@ -153,6 +149,7 @@ fn read_for_mutation(path: &Path) -> Result<GrantsFile> {
 /// into place. A crash mid-write leaves the previous file intact — a partially
 /// written grants file would silently drop consent the operator already gave.
 fn write_atomic(path: &Path, file: &GrantsFile) -> Result<()> {
+    crate::test_isolation::assert_test_write_allowed(path);
     let parent = path
         .parent()
         .context("Tool grants path has no parent directory")?;

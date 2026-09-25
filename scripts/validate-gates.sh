@@ -127,10 +127,17 @@ fi
 if [[ "$test_setup" != *'$(TEST_DATA_DIR_SETUP)'* ]]; then
     fail "TEST_SETUP must establish process-wide test data isolation"
 fi
+if [[ "$test_setup" != *'export CODESCRIBE_TEST_ISOLATION=1'* ]]; then
+    fail "TEST_SETUP must enable the real-home write guard"
+fi
 if [[ "$verify_recipe" != *'$(TEST_DATA_DIR_SETUP)'* ]]; then
     fail "verify must establish process-wide test data isolation before cargo"
 elif [[ "${verify_recipe%%cargo test*}" != *'$(TEST_DATA_DIR_SETUP)'* ]]; then
     fail "verify must export its isolated data directory before the first cargo test"
+fi
+if [[ "$verify_recipe" != *'bash scripts/verify-test-home.sh'* ||
+      "$verify_recipe" != *'bash scripts/tests/verify-test-home-test.sh'* ]]; then
+    fail "verify must run sandbox HOME cargo steps and their leak counterexample"
 fi
 if ! grep -Fq 'export CODESCRIBE_DATA_DIR="$$CODESCRIBE_TEST_DATA_DIR_GUARD"' "$MAKEFILE"; then
     fail "ENV_LOAD must restore the harness-owned CODESCRIBE_DATA_DIR after sourcing operator dotenv"

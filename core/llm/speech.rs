@@ -346,9 +346,7 @@ pub fn chunks(text: &str, cap: usize) -> Vec<&str> {
     result
 }
 fn cache_dir() -> Result<PathBuf, SpeechError> {
-    let home =
-        directories::BaseDirs::new().ok_or(SpeechError::Invalid("Home directory unavailable"))?;
-    Ok(home.home_dir().join(".codescribe/cache/tts"))
+    Ok(Config::config_dir().join("cache/tts"))
 }
 /// Synthesize using the current assistive lane, sealed for the entire request.
 pub async fn synthesize(text: &str) -> Result<SpeechAudio, SpeechError> {

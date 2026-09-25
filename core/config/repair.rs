@@ -136,6 +136,7 @@ fn backup(path: &Path, bytes: &[u8]) -> anyhow::Result<PathBuf> {
         path.file_name().unwrap_or_default().to_string_lossy(),
         uuid::Uuid::new_v4()
     ));
+    crate::test_isolation::assert_test_write_allowed(&target);
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -271,6 +272,7 @@ pub(super) fn repair_settings(path: &Path, pack: Option<&Path>) -> RepairReceipt
         if receipt.actions.is_empty() {
             return Ok(());
         }
+        crate::test_isolation::assert_test_write_allowed(path);
         fs::create_dir_all(
             path.parent()
                 .ok_or_else(|| anyhow::anyhow!("missing settings directory"))?,

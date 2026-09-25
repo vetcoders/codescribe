@@ -972,7 +972,15 @@ where
         // and refuses while a turn is in flight (a merely running app no
         // longer blocks installation — Founder, 2026-09-08). Fail-open: the
         // lease guards the installer, never the conversation.
-        let _agent_turn_lease = match codescribe_core::config::acquire_agent_turn_lease() {
+        #[cfg(test)]
+        let lease_path = std::env::temp_dir().join(format!(
+            "codescribe-agent-turn-test-{}.lock", std::process::id()
+        ));
+        #[cfg(test)]
+        let lease = codescribe_core::config::acquire_agent_turn_lease_at(&lease_path);
+        #[cfg(not(test))]
+        let lease = codescribe_core::config::acquire_agent_turn_lease();
+        let _agent_turn_lease = match lease {
             Ok(lease) => Some(lease),
             Err(error) => {
                 warn!(

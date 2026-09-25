@@ -199,13 +199,61 @@ fn wav_sample_count(path: &Path) -> Result<u64, String> {
 mod tests {
     use super::*;
     use serial_test::serial;
+    use std::ffi::OsString;
     use std::sync::{Mutex, OnceLock};
+
+    struct EnvSnapshot(Vec<(&'static str, Option<OsString>)>);
+
+    impl EnvSnapshot {
+        fn capture() -> Self {
+            Self([ENV_KEY, "CODESCRIBE_DATA_DIR", "CODESCRIBE_ENV_PATH", "HOME"]
+                .into_iter()
+                .map(|key| (key, std::env::var_os(key)))
+                .collect())
+        }
+    }
+
+    impl Drop for EnvSnapshot {
+        fn drop(&mut self) {
+            for (key, previous) in &self.0 {
+                unsafe {
+                    match previous {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+        }
+    }
 
     /// Process-wide mutex so serial donor tests do not race env mutation.
     fn env_lock() -> &'static Mutex<()> {
         /// Shared lock behind [`env_lock`]; held for the duration of each test.
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    #[serial]
+    fn donor_env_snapshot_restores_set_and_unset_values() {
+        let _g = env_lock().lock().unwrap();
+        let original = EnvSnapshot::capture();
+        for key in ["CODESCRIBE_DATA_DIR", "CODESCRIBE_ENV_PATH", "HOME"] {
+            for previous in [None, Some("before")] {
+                unsafe {
+                    match previous {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
+                }
+                {
+                    let _restore = EnvSnapshot::capture();
+                    unsafe { std::env::set_var(key, "during") };
+                }
+                assert_eq!(std::env::var(key).ok().as_deref(), previous);
+            }
+        }
+        drop(original);
     }
 
     /// Write a mono 16 kHz int16 WAV fixture for donor path tests.
@@ -228,6 +276,7 @@ mod tests {
     #[serial]
     fn donor_optin_disabled_by_default() {
         let _g = env_lock().lock().unwrap();
+        let _env = EnvSnapshot::capture();
         unsafe {
             std::env::remove_var(ENV_KEY);
         }
@@ -239,6 +288,7 @@ mod tests {
     #[serial]
     fn donor_optin_parses_on_off() {
         let _g = env_lock().lock().unwrap();
+        let _env = EnvSnapshot::capture();
         unsafe {
             std::env::set_var(ENV_KEY, "on");
         }
@@ -247,9 +297,6 @@ mod tests {
             std::env::set_var(ENV_KEY, "off");
         }
         assert!(!qube_donor_enabled());
-        unsafe {
-            std::env::remove_var(ENV_KEY);
-        }
     }
 
     /// Enabled path: matching-stem WAV+TXT under `qube_inbox/<day>/`.
@@ -257,6 +304,7 @@ mod tests {
     #[serial]
     fn donor_optin_writes_wav_txt_layout_when_on() {
         let _g = env_lock().lock().unwrap();
+        let _env = EnvSnapshot::capture();
         let temp = tempfile::tempdir().expect("temp");
         unsafe {
             std::env::set_var("CODESCRIBE_DATA_DIR", temp.path());
@@ -292,10 +340,6 @@ mod tests {
         assert_eq!(fs::read_to_string(&paths.txt).expect("read txt"), delivered);
         assert!(wav_sample_count(&paths.wav).expect("samples") > 0);
 
-        unsafe {
-            std::env::remove_var(ENV_KEY);
-            std::env::remove_var("CODESCRIBE_DATA_DIR");
-        }
     }
 
     /// Default-off never creates the inbox tree or pair files.
@@ -303,6 +347,7 @@ mod tests {
     #[serial]
     fn donor_optin_off_writes_no_files() {
         let _g = env_lock().lock().unwrap();
+        let _env = EnvSnapshot::capture();
         let temp = tempfile::tempdir().expect("temp");
         unsafe {
             std::env::set_var("CODESCRIBE_DATA_DIR", temp.path());
@@ -318,9 +363,6 @@ mod tests {
             "default-off must not create qube_inbox"
         );
 
-        unsafe {
-            std::env::remove_var("CODESCRIBE_DATA_DIR");
-        }
     }
 
     /// Header-only / zero-sample WAV is skipped even when donor is on.
@@ -328,6 +370,7 @@ mod tests {
     #[serial]
     fn donor_optin_skips_zero_sample_wav() {
         let _g = env_lock().lock().unwrap();
+        let _env = EnvSnapshot::capture();
         let temp = tempfile::tempdir().expect("temp");
         unsafe {
             std::env::set_var("CODESCRIBE_DATA_DIR", temp.path());
@@ -337,9 +380,5 @@ mod tests {
         write_test_wav(&src, &[]);
         let result = persist_qube_donor_pair(&src, "text", Local::now()).expect("ok");
         assert!(result.is_none());
-        unsafe {
-            std::env::remove_var(ENV_KEY);
-            std::env::remove_var("CODESCRIBE_DATA_DIR");
-        }
     }
 }

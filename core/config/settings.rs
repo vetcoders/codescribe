@@ -2057,6 +2057,7 @@ impl UserSettings {
     where
         F: FnOnce(&Path, &Path) -> std::io::Result<()>,
     {
+        crate::test_isolation::assert_test_write_allowed(path);
         let parent = path
             .parent()
             .ok_or_else(|| anyhow::anyhow!("settings path has no parent: {}", path.display()))?;
@@ -2174,6 +2175,7 @@ impl UserSettings {
                         match serde_json::from_str::<Self>(&contents) {
                             Ok(v1) => {
                                 let backup_path = Self::settings_dir().join("settings.v1.bak.json");
+                                crate::test_isolation::assert_test_write_allowed(&backup_path);
                                 if let Err(e) = fs::write(&backup_path, &contents) {
                                     warn!(
                                         "Failed to write V1 backup {}: {e}",
@@ -2521,6 +2523,7 @@ impl UserSettings {
     /// Persist while the settings transaction lock and app-data admission are held.
     pub(super) fn save_unlocked(&self) -> anyhow::Result<()> {
         let dir = Self::settings_dir();
+        crate::test_isolation::assert_test_write_allowed(&dir);
         fs::create_dir_all(&dir)?;
         let path = Self::settings_path();
         if let Some(level) = self.formatting_level.as_deref() {

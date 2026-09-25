@@ -48,6 +48,8 @@ pub mod attachment;
 pub mod audio;
 /// Persistent user settings with the tiered config truth model.
 pub mod config;
+/// Test-process write fence for Codescribe-owned filesystem operations.
+pub mod test_isolation;
 /// External content connectors that produce attachment payloads.
 pub mod connectors;
 /// Full-duplex Moshi conversational AI (voice turn management).

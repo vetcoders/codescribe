@@ -270,13 +270,12 @@ fn ensure_supported_audio_extension(path: &Path) -> Result<()> {
     }
 }
 
-/// Confine reads to `~/.codescribe` or the agent assets directory.
+/// Confine reads to the configured Codescribe data directory or agent assets.
 ///
 /// Both roots are canonicalized before comparison so the two sides of the
 /// prefix test are in the same form. Expects an already-canonical `path`.
 fn ensure_allowed_audio_path(path: &Path) -> Result<()> {
-    let home_var = std::env::var("HOME").context("HOME environment variable is not set")?;
-    let codescribe_dir = canonical_or_original(PathBuf::from(home_var).join(".codescribe"));
+    let codescribe_dir = canonical_or_original(codescribe_core::config::Config::config_dir());
     let assets_dir = canonical_or_original(AgentAssetStore::assets_dir());
 
     if is_path_allowed(path, &codescribe_dir, &assets_dir) {

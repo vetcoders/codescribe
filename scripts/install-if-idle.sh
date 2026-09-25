@@ -23,6 +23,20 @@ import sys
 root = Path(sys.argv[1])
 demux = root / "scripts" / "bus-demux.py"
 
+def lock_holders(path: Path) -> str:
+    try:
+        found = subprocess.run(["lsof", "-t", "--", str(path)], capture_output=True, text=True)
+        pids = sorted(set(found.stdout.split()))
+        if not pids:
+            return "PID and command unavailable"
+        holders = []
+        for pid in pids:
+            command = subprocess.run(["ps", "-p", pid, "-o", "command="], capture_output=True, text=True)
+            holders.append(f"PID {pid} ({command.stdout.strip() or 'command unavailable'})")
+        return ", ".join(holders)
+    except OSError:
+        return "PID and command unavailable"
+
 def resolved_path(flag: str) -> Path:
     result = subprocess.run(
         [sys.executable, str(demux), flag],
@@ -53,7 +67,7 @@ try:
     except OSError as error:
         if error.errno in (errno.EACCES, errno.EAGAIN):
             print(
-                "install-if-idle: refuse — an agent turn is in flight",
+                f"install-if-idle: refuse — agent turn lock held by {lock_holders(lease_path)}",
                 file=sys.stderr,
             )
             raise SystemExit(2)
@@ -74,7 +88,7 @@ try:
         if error.errno not in (errno.EACCES, errno.EAGAIN):
             raise
         print(
-            "install-if-idle: no live take, no agent turn; app is running — "
+            f"install-if-idle: no live take, no agent turn; runtime lock held by {lock_holders(interlock_path)} — "
             "installing over it (restart required to pick up the new build)"
         )
     try:

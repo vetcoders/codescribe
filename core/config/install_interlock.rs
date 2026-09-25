@@ -133,6 +133,7 @@ pub fn acquire_agent_turn_lease() -> Result<AgentTurnLease> {
 }
 
 fn open_shared_lease(path: &Path, what: &str) -> Result<File> {
+    crate::test_isolation::assert_test_write_allowed(path);
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
@@ -154,6 +155,14 @@ fn open_shared_lease(path: &Path, what: &str) -> Result<File> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn real_home_lock_is_refused_before_creation() {
+        let result = std::panic::catch_unwind(|| {
+            let _ = acquire_agent_turn_lease_at(&agent_turn_lease_path());
+        });
+        assert!(result.is_err());
+    }
 
     #[test]
     fn app_shared_lease_blocks_install_exclusive_until_drop() {

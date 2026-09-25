@@ -412,7 +412,6 @@ impl ModelManager {
         // (read-only CLI decodes, parity) must still find the installed model.
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
         let user_models = PathBuf::from(&home).join(".codescribe/models");
-        fs::create_dir_all(&user_models).context("Failed to create user models directory")?;
         Ok(user_models)
     }
 
