@@ -43,6 +43,8 @@ use futures_util::stream::FuturesOrdered;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
+use crate::pipeline::occurrence_slot_receipt::SlotReceiptSink;
+
 use crate::agent::consultation::{
     ConsultationGroupAnswer, ConsultationInputQueue, ConsultationReadiness,
     PendingConsultationGroup, PreparedConsultationGroup, SealedConsultationInput,
@@ -6445,6 +6447,7 @@ fn apple_stream_worker(
         cloud,
     } = config;
     debug_assert_eq!(settings_digest, runtime_settings.digest().as_str());
+    let _slot_receipts = SlotReceiptSink::for_session(&session_id, capture_epoch, sample_rate);
     // The one read of calibration truth for this session: the measured profile
     // of the device actually opened, converted to Σx² at the actual capture
     // rate. Any refusal keeps the worker fail-closed (no floor is invented);
