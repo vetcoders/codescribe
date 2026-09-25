@@ -713,15 +713,16 @@ impl AppleTailPatchLane {
         inflight: Option<TailPatchInFlight>,
         result: Result<TailPatchJobResult>,
     ) -> TailPatchCompletion {
-        let (submission_sequence, fallback_id, request_identity, member_occurrences) = match inflight {
-            Some(job) => (
-                job.submission_sequence,
-                job.utterance_id,
-                Some(job.request_identity),
-                job.member_occurrences,
-            ),
-            None => (0, 0, None, Vec::new()),
-        };
+        let (submission_sequence, fallback_id, request_identity, member_occurrences) =
+            match inflight {
+                Some(job) => (
+                    job.submission_sequence,
+                    job.utterance_id,
+                    Some(job.request_identity),
+                    job.member_occurrences,
+                ),
+                None => (0, 0, None, Vec::new()),
+            };
         match result {
             Ok(job) => {
                 // Counts only. A `Patches` outcome carries transcript text, so
@@ -2265,7 +2266,8 @@ impl AppleSealState {
                     }
                     // A checked, session-monotonic sequence makes live-key reuse impossible.
                     self.last_submission_sequence = inflight.submission_sequence;
-                    let key = inflight_key(inflight.submission_sequence, &inflight.request_identity);
+                    let key =
+                        inflight_key(inflight.submission_sequence, &inflight.request_identity);
                     self.refinement_submitted.insert(key, inflight);
                 }
                 Err(mpsc::error::TrySendError::Full(request)) => {
@@ -4074,7 +4076,10 @@ struct RangedLabelAdmission<'a> {
 
 impl<'a> From<LabelAdmission<'a>> for RangedLabelAdmission<'a> {
     fn from(admission: LabelAdmission<'a>) -> Self {
-        Self { admission, words: &[] }
+        Self {
+            admission,
+            words: &[],
+        }
     }
 }
 
@@ -7280,7 +7285,8 @@ mod c13a_lifecycle_tests {
         assert_eq!(state.tail_patch_awaiting_completion(), 1);
         state.complete_whisper_window(&tx, no_payload_completion(&first_request), 3.0);
         assert_eq!(
-            state.tail_patch_awaiting_completion(), 1,
+            state.tail_patch_awaiting_completion(),
+            1,
             "replayed A cannot consume B's accepted job debt"
         );
         assert!(
@@ -7775,18 +7781,21 @@ mod tests {
         launch_whisper_and_return_lexicon(&mut timed_out, &tx, 1, &timed, "Iwo");
         let (tail_tx, _tail_rx) = mpsc::channel(1);
         timed_out.tail_patch = Some(tail_tx);
-        assert!(timed_out.queue_layer1_flush(&tx, CoalesceFlush {
-            audio: vec![0.5; 16_000],
-            committed_text: "Iwo".into(),
-            member_ids: vec![(1, 1.0)],
-            member_occurrences: vec![(1, timed.clone())],
-            neighbour_context: String::new(),
-            sample_start: 0,
-            sample_end: 16_000,
-            admit_sample_start: 0,
-            admit_sample_end: 16_000,
-            primary_utterance_id: 1,
-        }));
+        assert!(timed_out.queue_layer1_flush(
+            &tx,
+            CoalesceFlush {
+                audio: vec![0.5; 16_000],
+                committed_text: "Iwo".into(),
+                member_ids: vec![(1, 1.0)],
+                member_occurrences: vec![(1, timed.clone())],
+                neighbour_context: String::new(),
+                sample_start: 0,
+                sample_end: 16_000,
+                admit_sample_start: 0,
+                admit_sample_end: 16_000,
+                primary_utterance_id: 1,
+            }
+        ));
         assert_eq!(timed_out.tail_patch_awaiting_completion(), 1);
         timed_out.return_outstanding_whisper_without_label(&tx);
         assert_eq!(timed_out.tail_patch_awaiting_completion(), 0);
@@ -8038,7 +8047,8 @@ mod tests {
         );
 
         assert_eq!(
-            state.tail_patch_awaiting_completion(), 0,
+            state.tail_patch_awaiting_completion(),
+            0,
             "every job reported back — the stop path owes no further wait"
         );
         assert_eq!(state.tail_patch_jobs_applied, 0);
@@ -13301,10 +13311,23 @@ mod live_refinement_admission_tests {
     #[test]
     fn apple_word_slots_are_pinned_before_the_admission_is_published() {
         let (mut state, events, mut receiver, _requests) = fixture(1);
-        assert!(reconcile_silero_ledger(&mut state, &events, &closed(1), &[
-            TranscriptSegment { text: "hello".into(), start_ts: 0.0, end_ts: 0.1 },
-            TranscriptSegment { text: "again".into(), start_ts: 0.2, end_ts: 0.4 },
-        ]));
+        assert!(reconcile_silero_ledger(
+            &mut state,
+            &events,
+            &closed(1),
+            &[
+                TranscriptSegment {
+                    text: "hello".into(),
+                    start_ts: 0.0,
+                    end_ts: 0.1
+                },
+                TranscriptSegment {
+                    text: "again".into(),
+                    start_ts: 0.2,
+                    end_ts: 0.4
+                },
+            ]
+        ));
         let occurrence = OccurrenceIdentity::new("live-admission", 7, 0, 400);
         let ledger = state.acoustic_ledger.lock().unwrap();
         ledger.assert_slot_labels();
@@ -13722,29 +13745,36 @@ mod live_refinement_admission_tests {
     fn tc3_stage_member(state: &mut AppleSealState, occurrence: &OccurrenceIdentity) {
         let calibration = state.energy_calibration.clone().unwrap();
         let mut ledger = state.acoustic_ledger.lock().unwrap();
-        assert!(ledger.qualify(
-            &AcousticEvidence {
-                occurrence: occurrence.clone(),
-                duration_ms: occurrence.sample_len() as f64 / 48.0,
-                energy_integral: occurrence.sample_len() as f64 * 0.0625,
-                mean_rms_dbfs: -12.0,
-                peak_dbfs: -12.0,
-                vad_open_sample: Some(occurrence.sample_start),
-                vad_close_sample: Some(occurrence.sample_end),
-                evidence_calibration_version: calibration.version.clone(),
-            },
-            &calibration,
-        ).is_qualified());
+        assert!(
+            ledger
+                .qualify(
+                    &AcousticEvidence {
+                        occurrence: occurrence.clone(),
+                        duration_ms: occurrence.sample_len() as f64 / 48.0,
+                        energy_integral: occurrence.sample_len() as f64 * 0.0625,
+                        mean_rms_dbfs: -12.0,
+                        peak_dbfs: -12.0,
+                        vad_open_sample: Some(occurrence.sample_start),
+                        vad_close_sample: Some(occurrence.sample_end),
+                        evidence_calibration_version: calibration.version.clone(),
+                    },
+                    &calibration,
+                )
+                .is_qualified()
+        );
         ledger.schedule_frontier(occurrence.clone(), vec![LedgerObservationProducer::Whisper]);
         drop(ledger);
-        state.pending_events.insert(10, PendingAppleSeal {
-            occurrence: occurrence.clone(),
-            raw_text: String::new(),
-            layer1_baseline: String::new(),
-            start_ts: occurrence.sample_start as f32 / 48_000.0,
-            end_ts: occurrence.sample_end as f32 / 48_000.0,
-            segments: Vec::new(),
-        });
+        state.pending_events.insert(
+            10,
+            PendingAppleSeal {
+                occurrence: occurrence.clone(),
+                raw_text: String::new(),
+                layer1_baseline: String::new(),
+                start_ts: occurrence.sample_start as f32 / 48_000.0,
+                end_ts: occurrence.sample_end as f32 / 48_000.0,
+                segments: Vec::new(),
+            },
+        );
     }
 
     fn tc3_submit_window(
@@ -13755,18 +13785,21 @@ mod live_refinement_admission_tests {
         start: u64,
         end: u64,
     ) -> TailPatchRequest {
-        assert!(state.queue_layer1_flush(events, CoalesceFlush {
-            audio: vec![0.25; (end - start) as usize],
-            committed_text: String::new(),
-            member_ids: vec![(10, occurrence.sample_end as f32 / 48_000.0)],
-            member_occurrences: vec![(10, occurrence.clone())],
-            neighbour_context: String::new(),
-            sample_start: start,
-            sample_end: end,
-            admit_sample_start: occurrence.sample_start,
-            admit_sample_end: occurrence.sample_end,
-            primary_utterance_id: 10,
-        }));
+        assert!(state.queue_layer1_flush(
+            events,
+            CoalesceFlush {
+                audio: vec![0.25; (end - start) as usize],
+                committed_text: String::new(),
+                member_ids: vec![(10, occurrence.sample_end as f32 / 48_000.0)],
+                member_occurrences: vec![(10, occurrence.clone())],
+                neighbour_context: String::new(),
+                sample_start: start,
+                sample_end: end,
+                admit_sample_start: occurrence.sample_start,
+                admit_sample_end: occurrence.sample_end,
+                primary_utterance_id: 10,
+            }
+        ));
         let request = requests.try_recv().expect("accepted submission");
         assert_eq!(request.provider_request.identity.request_id, 10);
         assert_eq!(request.provider_request.identity.range.sample_start, start);
@@ -13774,7 +13807,9 @@ mod live_refinement_admission_tests {
         request
     }
 
-    fn tc3_duplicate_geometry(order: [usize; 3]) -> (
+    fn tc3_duplicate_geometry(
+        order: [usize; 3],
+    ) -> (
         AppleSealState,
         mpsc::UnboundedSender<EngineEvent>,
         mpsc::UnboundedReceiver<EngineEvent>,
@@ -13782,7 +13817,10 @@ mod live_refinement_admission_tests {
         let (events, receiver) = mpsc::unbounded_channel();
         let (sender, mut requests) = mpsc::channel(3);
         let mut state = AppleSealState::new_with_tail_patch_for_session(
-            48_000, "ef1fa240".into(), 7, sender,
+            48_000,
+            "ef1fa240".into(),
+            7,
+            sender,
             Arc::new(Mutex::new(AcousticLedger::new())),
             Some(EnergyCalibration {
                 version: "tc3-owned-pcm".into(),
@@ -13794,19 +13832,37 @@ mod live_refinement_admission_tests {
         let old = OccurrenceIdentity::new("ef1fa240", 7, 2_132_992, 2_325_504);
         tc3_stage_member(&mut state, &old);
         let first = tc3_submit_window(
-            &mut state, &events, &mut requests, &old, 1_941_504, 2_325_504,
+            &mut state,
+            &events,
+            &mut requests,
+            &old,
+            1_941_504,
+            2_325_504,
         );
         // Re-close the physical member while the first decode is outstanding.
         state.return_whisper_without_label(&events, 10, &old);
         let current = OccurrenceIdentity::new("ef1fa240", 7, 2_132_992, 2_317_824);
         tc3_stage_member(&mut state, &current);
         let second = tc3_submit_window(
-            &mut state, &events, &mut requests, &current, 1_885_824, 2_317_824,
+            &mut state,
+            &events,
+            &mut requests,
+            &current,
+            1_885_824,
+            2_317_824,
         );
         let third = tc3_submit_window(
-            &mut state, &events, &mut requests, &current, 1_941_504, 2_325_504,
+            &mut state,
+            &events,
+            &mut requests,
+            &current,
+            1_941_504,
+            2_325_504,
         );
-        assert_eq!(first.provider_request.identity, third.provider_request.identity);
+        assert_eq!(
+            first.provider_request.identity,
+            third.provider_request.identity
+        );
         assert!(first.submission_sequence < second.submission_sequence);
         assert!(second.submission_sequence < third.submission_sequence);
         assert_eq!(state.refinement_submitted.len(), 3);
@@ -13814,25 +13870,43 @@ mod live_refinement_admission_tests {
         let submitted = [first, second, third];
         for (finished, index) in order.into_iter().enumerate() {
             let logged = refinement_log(|| {
-                state.complete_whisper_window(&events, labelled_completion(&submitted[index]), 50.0);
+                state.complete_whisper_window(
+                    &events,
+                    labelled_completion(&submitted[index]),
+                    50.0,
+                );
             });
             assert!(!logged.contains("unmatched_completion"), "{logged}");
             if index == 0 {
                 assert!(logged.contains("stale_completion"), "{logged}");
             }
-            assert_eq!(state.tail_patch_awaiting_completion(), (2 - finished) as u64);
+            assert_eq!(
+                state.tail_patch_awaiting_completion(),
+                (2 - finished) as u64
+            );
             assert_eq!(state.refinement_submitted.len(), 2 - finished);
-            assert_eq!(state.tail_patch_jobs_applied + state.tail_patch_jobs_skipped,
-                (finished + 1) as u64, "every matched decode must reach a terminal bucket");
+            assert_eq!(
+                state.tail_patch_jobs_applied + state.tail_patch_jobs_skipped,
+                (finished + 1) as u64,
+                "every matched decode must reach a terminal bucket"
+            );
         }
         assert!(state.refinement_submitted.is_empty());
         assert!(state.refinement_pending.is_empty());
-        assert_eq!(state.acoustic_ledger.lock().unwrap().text_of(&current), Some("hello"));
-        let receipt = tail_patch_receipt_after_stop(true, 3, Some(TailPatchWorkerAccounting {
-            applied_jobs: state.tail_patch_jobs_applied,
-            skipped_jobs: state.tail_patch_jobs_skipped,
-            timeout_residue: state.tail_patch_awaiting_completion(),
-        }), SessionConservationReceipt::default());
+        assert_eq!(
+            state.acoustic_ledger.lock().unwrap().text_of(&current),
+            Some("hello")
+        );
+        let receipt = tail_patch_receipt_after_stop(
+            true,
+            3,
+            Some(TailPatchWorkerAccounting {
+                applied_jobs: state.tail_patch_jobs_applied,
+                skipped_jobs: state.tail_patch_jobs_skipped,
+                timeout_residue: state.tail_patch_awaiting_completion(),
+            }),
+            SessionConservationReceipt::default(),
+        );
         assert_eq!(receipt.timed_out, 0);
         assert_eq!(receipt.abandoned, 0);
         assert_eq!(receipt.drain, TailPatchDrainDisposition::Completed);
@@ -13857,8 +13931,14 @@ mod live_refinement_admission_tests {
             assert!(!state.stop_refinements_tick(&events, now, now + Duration::from_secs(5)));
             assert!(!state.stop_refinements_tick(&events, now, now));
         });
-        assert!(!logged.contains("live_refinement_stop_deadline"), "{logged}");
-        assert_eq!(warnings(&mut receiver, RefinementFailure::StopDeadline.code()), 0);
+        assert!(
+            !logged.contains("live_refinement_stop_deadline"),
+            "{logged}"
+        );
+        assert_eq!(
+            warnings(&mut receiver, RefinementFailure::StopDeadline.code()),
+            0
+        );
     }
 
     #[test]
@@ -13874,13 +13954,24 @@ mod live_refinement_admission_tests {
         state.complete_whisper_window(&events, labelled_completion(&request), 20.0);
         assert!(!state.stop_refinements_tick(&events, now + LIVE_WORKER_QUANTUM, deadline));
         assert_eq!(state.tail_patch_awaiting_completion(), 0);
-        assert_eq!(state.acoustic_ledger.lock().unwrap().text_of(&occurrence), Some("hello"));
-        assert_eq!(warnings(&mut receiver, RefinementFailure::StopDeadline.code()), 0);
-        let receipt = tail_patch_receipt_after_stop(true, 1, Some(TailPatchWorkerAccounting {
-            applied_jobs: state.tail_patch_jobs_applied,
-            skipped_jobs: state.tail_patch_jobs_skipped,
-            timeout_residue: state.tail_patch_awaiting_completion(),
-        }), SessionConservationReceipt::default());
+        assert_eq!(
+            state.acoustic_ledger.lock().unwrap().text_of(&occurrence),
+            Some("hello")
+        );
+        assert_eq!(
+            warnings(&mut receiver, RefinementFailure::StopDeadline.code()),
+            0
+        );
+        let receipt = tail_patch_receipt_after_stop(
+            true,
+            1,
+            Some(TailPatchWorkerAccounting {
+                applied_jobs: state.tail_patch_jobs_applied,
+                skipped_jobs: state.tail_patch_jobs_skipped,
+                timeout_residue: state.tail_patch_awaiting_completion(),
+            }),
+            SessionConservationReceipt::default(),
+        );
         assert_eq!(receipt.applied, 1);
         assert_eq!(receipt.timed_out, 0);
         assert_eq!(receipt.drain, TailPatchDrainDisposition::Completed);
@@ -13902,13 +13993,24 @@ mod live_refinement_admission_tests {
             let logged = refinement_log(|| {
                 state.complete_whisper_window(&events, completion, 20.0);
             });
-            assert!(logged.contains("unmatched_completion"), "{defect}: {logged}");
-            for field in ["submission_sequence=", "request_id=", "sample_start=", "sample_end="] {
+            assert!(
+                logged.contains("unmatched_completion"),
+                "{defect}: {logged}"
+            );
+            for field in [
+                "submission_sequence=",
+                "request_id=",
+                "sample_start=",
+                "sample_end=",
+            ] {
                 assert!(logged.contains(field), "{defect}: {logged}");
             }
             assert_eq!(state.tail_patch_awaiting_completion(), 1);
             assert_eq!(state.refinement_submitted.len(), 1);
-            assert_eq!(state.tail_patch_jobs_applied + state.tail_patch_jobs_skipped, 0);
+            assert_eq!(
+                state.tail_patch_jobs_applied + state.tail_patch_jobs_skipped,
+                0
+            );
         }
         state.complete_whisper_window(&events, labelled_completion(&request), 20.0);
         assert_eq!(state.tail_patch_awaiting_completion(), 0);
@@ -13949,7 +14051,10 @@ mod live_refinement_admission_tests {
             assert!(lane.forward_completion_to_worker(&sender, completion));
             let returned = receiver.try_recv().unwrap();
             assert_eq!(returned.submission_sequence, request.submission_sequence);
-            assert_eq!(returned.request_identity, Some(request.provider_request.identity));
+            assert_eq!(
+                returned.request_identity,
+                Some(request.provider_request.identity)
+            );
             assert_eq!(returned.member_occurrences, request.member_occurrences);
             assert_eq!(returned.payload.is_some(), succeeds);
             state.complete_whisper_window(&events, returned, 20.0);

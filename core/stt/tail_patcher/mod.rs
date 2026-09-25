@@ -80,7 +80,7 @@
 //! `UtteranceFinal.text` and is already trimmed by the emitter (single trim
 //! owner: `final_text` at the session.rs emit site).
 
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::pipeline::contracts::{EngineEvent, LayerSource};
 

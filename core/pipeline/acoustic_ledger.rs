@@ -3681,12 +3681,22 @@ mod tests {
         assert!(ledger.admit(&observation, "Iwo znowu").is_insert());
         assert!(ledger.pin_word_ranges(
             &observation,
-            &[(1_000, 5_000, "Iwo".into()), (8_000, 14_000, "znowu".into())],
+            &[
+                (1_000, 5_000, "Iwo".into()),
+                (8_000, 14_000, "znowu".into())
+            ],
         ));
         ledger.assert_slot_labels();
         assert_eq!(ledger.text_of(&occurrence), Some("Iwo znowu"));
         let composed = ledger.compose(&occurrence).expect("qualified words");
-        assert_eq!(composed.tokens.iter().map(|token| token.token.as_str()).collect::<Vec<_>>(), vec!["Iwo", "znowu"]);
+        assert_eq!(
+            composed
+                .tokens
+                .iter()
+                .map(|token| token.token.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Iwo", "znowu"]
+        );
         assert_eq!(composed.tokens[0].token_sample_start, Some(1_000));
         assert_eq!(composed.tokens[0].token_sample_end, Some(5_000));
         assert_eq!(composed.tokens[1].token_sample_start, Some(8_000));
@@ -3709,20 +3719,34 @@ mod tests {
         assert!(ledger.admit(&whisper, "Iwo wraca").is_correct());
         ledger.assert_slot_labels();
         assert!(matches!(
-            ledger.admit(&obs(ObservationProducer::Lexicon, 2, occurrence.clone()), "Iwo wraca"),
+            ledger.admit(
+                &obs(ObservationProducer::Lexicon, 2, occurrence.clone()),
+                "Iwo wraca"
+            ),
             MutationReceipt::Preserve { .. }
         ));
         ledger.assert_slot_labels();
         ledger.note_frontier_return(&occurrence, ObservationProducer::Whisper);
         ledger.seal(&occurrence).unwrap();
         assert!(matches!(
-            ledger.admit(&obs(ObservationProducer::Apple, 3, occurrence.clone()), "zmiana"),
-            MutationReceipt::Refuse { reason: RefuseReason::SealedReplay, .. }
+            ledger.admit(
+                &obs(ObservationProducer::Apple, 3, occurrence.clone()),
+                "zmiana"
+            ),
+            MutationReceipt::Refuse {
+                reason: RefuseReason::SealedReplay,
+                ..
+            }
         ));
         ledger.assert_slot_labels();
-        assert!(ledger.admit(
-            &obs(ObservationProducer::ManualHuman, 4, occurrence.clone()), "Iwo zostaje"
-        ).is_correct());
+        assert!(
+            ledger
+                .admit(
+                    &obs(ObservationProducer::ManualHuman, 4, occurrence.clone()),
+                    "Iwo zostaje"
+                )
+                .is_correct()
+        );
         ledger.assert_slot_labels();
         let slots = ledger.slots_of(&occurrence).unwrap();
         assert_eq!(slots.len(), 1);
