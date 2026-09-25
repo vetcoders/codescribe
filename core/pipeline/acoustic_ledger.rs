@@ -4454,13 +4454,8 @@ mod tests {
         ledger.admit(&obs(ObservationProducer::Apple, 0, member.clone()), "apple");
         let seam_word = occ(44_000, 51_000);
         assert_eq!(
-            ledger.classify_overlap_pin(
-                &seam_word,
-                0,
-                48_000,
-                std::slice::from_ref(&member),
-                true,
-            ),
+            ledger
+                .classify_overlap_pin(&seam_word, 0, 48_000, std::slice::from_ref(&member), true,),
             OverlapPinClass::ExclusiveTail { member_index: 0 },
         );
         assert_eq!(

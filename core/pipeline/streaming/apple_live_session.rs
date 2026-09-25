@@ -1708,7 +1708,9 @@ fn earlier_exclusive_slice_covers(
         prior_text: &str,
     ) -> bool {
         let overlap = pin_end.min(end).saturating_sub(pin_start.max(start));
-        let shorter = pin_end.saturating_sub(pin_start).min(end.saturating_sub(start));
+        let shorter = pin_end
+            .saturating_sub(pin_start)
+            .min(end.saturating_sub(start));
         if shorter == 0 || overlap < shorter / 2 + shorter % 2 {
             return false;
         }
@@ -1721,33 +1723,26 @@ fn earlier_exclusive_slice_covers(
     }
 
     members.iter().enumerate().any(|(index, member)| {
-        pin.same_capture(member)
-            && pin.sample_end > pin.sample_start
-            && {
-                let pin_start = pin.sample_start.max(member.sample_start);
-                let pin_end = pin.sample_end.min(member.sample_end);
-                slices
-                    .get(member)
-                    .is_some_and(|ranges| {
-                        ranges
-                            .iter()
-                            .any(|(start, end, prior_text)| {
-                                duplicates(pin_start, pin_end, text, *start, *end, prior_text)
-                            })
-                    })
-                    || routes.get(index).is_some_and(|route| {
-                        route.exclusive.iter().any(|prior| {
-                            duplicates(
-                                pin_start,
-                                pin_end,
-                                text,
-                                prior.pin.sample_start.max(member.sample_start),
-                                prior.pin.sample_end.min(member.sample_end),
-                                &prior.text,
-                            )
-                        })
-                    })
-            }
+        pin.same_capture(member) && pin.sample_end > pin.sample_start && {
+            let pin_start = pin.sample_start.max(member.sample_start);
+            let pin_end = pin.sample_end.min(member.sample_end);
+            slices.get(member).is_some_and(|ranges| {
+                ranges.iter().any(|(start, end, prior_text)| {
+                    duplicates(pin_start, pin_end, text, *start, *end, prior_text)
+                })
+            }) || routes.get(index).is_some_and(|route| {
+                route.exclusive.iter().any(|prior| {
+                    duplicates(
+                        pin_start,
+                        pin_end,
+                        text,
+                        prior.pin.sample_start.max(member.sample_start),
+                        prior.pin.sample_end.min(member.sample_end),
+                        &prior.text,
+                    )
+                })
+            })
+        }
     })
 }
 
@@ -2365,19 +2360,20 @@ impl AppleSealState {
                         pin.sample_end,
                     )
                     .is_some_and(|hops| hops.is_empty());
-                let silero_silent = energy_silent && self.fusion.as_ref().is_some_and(|fusion| {
-                    let evidence = fusion.acoustic_speech_evidence();
-                    evidence.identity().session == pin.session
-                        && evidence.identity().capture_epoch == pin.capture_epoch
-                        && evidence
-                            .availability()
-                            .observed_samples()
-                            .is_some_and(|end| end >= pin.sample_end)
-                        && evidence.ranges().iter().all(|range| {
-                            range.sample_end <= pin.sample_start
-                                || range.sample_start >= pin.sample_end
-                        })
-                });
+                let silero_silent = energy_silent
+                    && self.fusion.as_ref().is_some_and(|fusion| {
+                        let evidence = fusion.acoustic_speech_evidence();
+                        evidence.identity().session == pin.session
+                            && evidence.identity().capture_epoch == pin.capture_epoch
+                            && evidence
+                                .availability()
+                                .observed_samples()
+                                .is_some_and(|end| end >= pin.sample_end)
+                            && evidence.ranges().iter().all(|range| {
+                                range.sample_end <= pin.sample_start
+                                    || range.sample_start >= pin.sample_end
+                            })
+                    });
                 // Until a CTC witness exists, Silero and this energy ladder are
                 // the only joint defence against Whisper words on silence.
                 // Replay is already a refusal; missing Silero coverage is not silence.
@@ -14604,7 +14600,10 @@ mod relay_l1_overlap_admission_tests {
         use crate::audio::chunker::{VadBoundaryEvidence, VadBoundaryKind};
 
         let mut fusion = SileroIngress::new(RATE, lane.state.session_id.clone(), 1);
-        assert!(fusion.vad_available(), "the fixture needs a measuring Silero");
+        assert!(
+            fusion.vad_available(),
+            "the fixture needs a measuring Silero"
+        );
         fusion.note_observed_pcm(observed_end, observed_end);
         if let Some((start, end)) = speech {
             fusion.observe_boundaries(&[
@@ -14662,14 +14661,20 @@ mod relay_l1_overlap_admission_tests {
         record_silero(&mut unavailable, 0, None);
         let (routes, events) = route_one_pin(&mut unavailable, "słowo");
         assert_eq!(routes[0].exclusive.len(), 1);
-        assert!(events.is_empty(), "unavailable Silero cannot refuse the pin");
+        assert!(
+            events.is_empty(),
+            "unavailable Silero cannot refuse the pin"
+        );
 
         let mut short = open("relay-silero-short");
         record_energy(&short, &[vec![0.0; 48_000]]);
         record_silero(&mut short, 40_000, None);
         let (routes, events) = route_one_pin(&mut short, "słowo");
         assert_eq!(routes[0].exclusive.len(), 1);
-        assert!(events.is_empty(), "a short Silero extent cannot refuse the pin");
+        assert!(
+            events.is_empty(),
+            "a short Silero extent cannot refuse the pin"
+        );
     }
 
     #[test]
@@ -14681,7 +14686,10 @@ mod relay_l1_overlap_admission_tests {
         let (routes, events) = route_one_pin(&mut lane, "słowo");
         assert_eq!(routes[0].exclusive.len(), 1);
         assert_eq!(routes[0].exclusive[0].text, "słowo");
-        assert!(events.is_empty(), "speech follows the original exclusive route");
+        assert!(
+            events.is_empty(),
+            "speech follows the original exclusive route"
+        );
         assert_eq!(energy_lookups(&lane), 0);
     }
 

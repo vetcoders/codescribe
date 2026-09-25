@@ -3457,12 +3457,14 @@ mod tests {
             .expect("explicit button pass revises the refused take");
         assert_eq!(committed.rendered_text, "Trzecia wersja");
         assert!(committed.provenance_receipt.starts_with("retranscribe-"));
-        assert!(ledger
-            .lock()
-            .unwrap()
-            .terminal_finality("refused-take", 7)
-            .into_refusal()
-            .is_some());
+        assert!(
+            ledger
+                .lock()
+                .unwrap()
+                .terminal_finality("refused-take", 7)
+                .into_refusal()
+                .is_some()
+        );
         let rows = std::fs::read_to_string(temp.path().join("refused.jsonl")).unwrap();
         assert!(rows.contains("\"phase\":\"coverage_refused\""));
         assert!(rows.contains("\"reducer_action\":\"apply_manual_edit\""));
@@ -3477,15 +3479,17 @@ mod tests {
             .find(|row| row.contains("\"reducer_action\":\"apply_manual_edit\""))
             .expect("formatter is the first edit after session_ended");
         assert!(first_edit_after_end.contains("\"phase\":\"coverage_refused\""));
-        assert!(first_edit_after_end.contains(&format!(
-            "\"reducer_revision\":{}",
-            formatted.revision
-        )));
-        assert!(rows.lines().any(|row| {
-            row.contains(&format!("\"reducer_revision\":{}", formatted.revision))
-                && row.contains("\"phase\":\"coverage_refused\"")
-                && row.contains("\"reducer_action\":\"apply_manual_edit\"")
-        }), "formatter revision keeps the refused phase");
+        assert!(
+            first_edit_after_end.contains(&format!("\"reducer_revision\":{}", formatted.revision))
+        );
+        assert!(
+            rows.lines().any(|row| {
+                row.contains(&format!("\"reducer_revision\":{}", formatted.revision))
+                    && row.contains("\"phase\":\"coverage_refused\"")
+                    && row.contains("\"reducer_action\":\"apply_manual_edit\"")
+            }),
+            "formatter revision keeps the refused phase"
+        );
         for row in rows
             .lines()
             .filter(|row| row.contains("\"reducer_action\":\"apply_manual_edit\""))
@@ -5069,7 +5073,8 @@ mod tests {
             .seal_terminal("sealed-revisions", 19)
             .unwrap();
         assert!(!seal.is_occurrence_seal());
-        take.emitter.on_event(&EngineEvent::LedgerSeal { receipt: seal });
+        take.emitter
+            .on_event(&EngineEvent::LedgerSeal { receipt: seal });
 
         let source = take.emitter.terminal_formatter_request().unwrap();
         let original = source.source_text.clone();
