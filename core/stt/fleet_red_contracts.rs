@@ -249,7 +249,7 @@ fn fleet_red_cloud_requires_explicit_consent() {
             GatewayTransportPoll::Pending
         }
 
-        fn begin_end(&mut self) -> Result<(), AsrErrorKind> {
+        fn begin_end(&mut self, _commit_id: Option<&str>) -> Result<(), AsrErrorKind> {
             Ok(())
         }
 

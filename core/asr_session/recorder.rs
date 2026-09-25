@@ -757,6 +757,7 @@ mod tests {
             sequence_id,
             text: text.to_string(),
             range: None,
+            commit: None,
         })
     }
 
@@ -768,6 +769,7 @@ mod tests {
             sequence_id,
             text: text.to_string(),
             range: None,
+            commit: None,
         })
     }
 

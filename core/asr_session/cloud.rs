@@ -751,12 +751,20 @@ impl GatewayEvent {
 pub enum GatewayTransportPoll {
     /// No receive item is ready now.
     Pending,
-    /// One normalized gateway event is ready.
-    Event(GatewayEvent),
+    /// One normalized gateway event is ready. Boxed: a stamped final is far
+    /// larger than the other variants (clippy::large_enum_variant).
+    Event(Box<GatewayEvent>),
     /// The transport failed with a content-free typed reason.
     Fault(AsrErrorKind),
     /// The transport ended and no more events can arrive.
     Closed,
+}
+
+impl GatewayTransportPoll {
+    /// One ready gateway event.
+    pub fn event(event: GatewayEvent) -> Self {
+        Self::Event(Box::new(event))
+    }
 }
 
 /// Injectable boundary between the session adapter and a WebSocket actor.
@@ -863,7 +871,7 @@ fn mark_outbound_failed(shared: &Mutex<SharedOutbound>, kind: AsrErrorKind) {
 
 #[derive(Debug)]
 enum WorkerSignal {
-    Event(GatewayEvent),
+    Event(Box<GatewayEvent>),
     Fault(AsrErrorKind),
     Closed,
 }
@@ -1399,7 +1407,7 @@ async fn forward_gateway_message(
             };
             let ended = matches!(event, GatewayEvent::SessionEnded { .. });
             event_tx
-                .send(WorkerSignal::Event(event))
+                .send(WorkerSignal::Event(Box::new(event)))
                 .await
                 .map_err(|_| AsrErrorKind::Cancelled)?;
             Ok(ended)
@@ -1759,9 +1767,10 @@ impl<T: CloudGatewayTransport> LiveCloudAsrSession<T> {
             }
         }
         if let Some((start, end)) = server
-            && let Some(index) = self.pending_commits.iter().position(|pending| {
-                start >= pending.sample_start && end <= pending.sample_end
-            })
+            && let Some(index) = self
+                .pending_commits
+                .iter()
+                .position(|pending| start >= pending.sample_start && end <= pending.sample_end)
             && let Some(commit) = self.pending_commits.remove(index)
         {
             return Ok(MatchedCommit {
@@ -1787,9 +1796,7 @@ impl<T: CloudGatewayTransport> LiveCloudAsrSession<T> {
     }
 
     fn mismatch_for(&mut self, matched: &MatchedCommit) -> Option<CommitRangeMismatch> {
-        let Some((server_start, server_end)) = matched.server else {
-            return None;
-        };
+        let (server_start, server_end) = matched.server?;
         let tolerance = self.range_tolerance_samples();
         let start_off = matched.commit.sample_start.abs_diff(server_start) > tolerance;
         let end_off = matched.commit.sample_end.abs_diff(server_end) > tolerance;
@@ -2056,7 +2063,7 @@ impl<T: CloudGatewayTransport> LiveCloudAsrSession<T> {
         match self.transport.poll() {
             GatewayTransportPoll::Pending => false,
             GatewayTransportPoll::Event(event) => {
-                self.normalize(event);
+                self.normalize(*event);
                 true
             }
             GatewayTransportPoll::Fault(kind) => {
@@ -2648,13 +2655,13 @@ mod tests {
     fn local_sequence_is_global_across_reordered_utterances_and_duplicates() {
         let duplicate = partial("u2-r1", 2, 1, "drugi");
         let script = [
-            GatewayTransportPoll::Event(partial("u1-r1", 1, 1, "pierwszy")),
-            GatewayTransportPoll::Event(duplicate.clone()),
-            GatewayTransportPoll::Event(duplicate),
-            GatewayTransportPoll::Event(final_event("u1-r3", 1, 3, "pierwszy final")),
-            GatewayTransportPoll::Event(partial("u1-r2-late", 1, 2, "spozniony")),
-            GatewayTransportPoll::Event(final_event("u2-r2", 2, 2, "drugi final")),
-            GatewayTransportPoll::Event(GatewayEvent::Usage {
+            GatewayTransportPoll::event(partial("u1-r1", 1, 1, "pierwszy")),
+            GatewayTransportPoll::event(duplicate.clone()),
+            GatewayTransportPoll::event(duplicate),
+            GatewayTransportPoll::event(final_event("u1-r3", 1, 3, "pierwszy final")),
+            GatewayTransportPoll::event(partial("u1-r2-late", 1, 2, "spozniony")),
+            GatewayTransportPoll::event(final_event("u2-r2", 2, 2, "drugi final")),
+            GatewayTransportPoll::event(GatewayEvent::Usage {
                 event_id: "usage-1".to_string(),
                 session_id: session_id().to_string(),
                 audio_ms: 1_250,
@@ -2690,7 +2697,7 @@ mod tests {
     fn delayed_transport_poll_never_blocks_drain() {
         let script = [
             GatewayTransportPoll::Pending,
-            GatewayTransportPoll::Event(partial("delayed", 1, 1, "pozniej")),
+            GatewayTransportPoll::event(partial("delayed", 1, 1, "pozniej")),
             GatewayTransportPoll::Pending,
         ];
         let mut session = LiveCloudAsrSession::new(
@@ -2728,13 +2735,13 @@ mod tests {
     #[test]
     fn auth_and_quota_are_distinct_content_free_events() {
         let script = [
-            GatewayTransportPoll::Event(GatewayEvent::Error {
+            GatewayTransportPoll::event(GatewayEvent::Error {
                 event_id: "auth".to_string(),
                 session_id: session_id().to_string(),
                 utterance_id: 0,
                 code: GatewayErrorCode::Auth,
             }),
-            GatewayTransportPoll::Event(GatewayEvent::Error {
+            GatewayTransportPoll::event(GatewayEvent::Error {
                 event_id: "quota".to_string(),
                 session_id: session_id().to_string(),
                 utterance_id: 0,
@@ -2787,14 +2794,14 @@ mod tests {
     #[test]
     fn close_drains_trailing_final_and_usage_before_ack() {
         let script = [
-            GatewayTransportPoll::Event(final_event("tail", 2, 7, "ogon")),
-            GatewayTransportPoll::Event(GatewayEvent::Usage {
+            GatewayTransportPoll::event(final_event("tail", 2, 7, "ogon")),
+            GatewayTransportPoll::event(GatewayEvent::Usage {
                 event_id: "tail-usage".to_string(),
                 session_id: session_id().to_string(),
                 audio_ms: 2_000,
                 billable_units: None,
             }),
-            GatewayTransportPoll::Event(GatewayEvent::SessionEnded {
+            GatewayTransportPoll::event(GatewayEvent::SessionEnded {
                 session_id: session_id().to_string(),
             }),
         ];
@@ -3043,8 +3050,10 @@ mod tests {
             };
             let set: serde_json::Value = serde_json::from_str(&set_text).unwrap_or_default();
             let vad_off = set.get("vad").and_then(serde_json::Value::as_bool) == Some(false);
-            let timestamps_on =
-                set.get("include_timestamps").and_then(serde_json::Value::as_bool) == Some(true);
+            let timestamps_on = set
+                .get("include_timestamps")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true);
             let sample_rate = set
                 .get("sample_rate")
                 .and_then(serde_json::Value::as_u64)
@@ -3198,10 +3207,10 @@ mod tests {
         let mut limits = wide_limits(48_000, 8, Duration::from_secs(2));
         limits.close_timeout = Duration::from_millis(200);
         let script = [
-            GatewayTransportPoll::Event(final_event("f1", 1, 1, "raz")),
-            GatewayTransportPoll::Event(final_event("f2", 2, 1, "dwa")),
-            GatewayTransportPoll::Event(final_event("f3", 3, 1, "trzy")),
-            GatewayTransportPoll::Event(GatewayEvent::SessionEnded {
+            GatewayTransportPoll::event(final_event("f1", 1, 1, "raz")),
+            GatewayTransportPoll::event(final_event("f2", 2, 1, "dwa")),
+            GatewayTransportPoll::event(final_event("f3", 3, 1, "trzy")),
+            GatewayTransportPoll::event(GatewayEvent::SessionEnded {
                 session_id: session_id().to_string(),
             }),
         ];
@@ -3232,8 +3241,8 @@ mod tests {
         assert!(session.transport().ending);
 
         let empty_script = [
-            GatewayTransportPoll::Event(final_event("word", 1, 1, "halo")),
-            GatewayTransportPoll::Event(final_event("empty", 2, 1, "")),
+            GatewayTransportPoll::event(final_event("word", 1, 1, "halo")),
+            GatewayTransportPoll::event(final_event("empty", 2, 1, "")),
         ];
         let mut empty_session = LiveCloudAsrSession::new(
             FakeGatewayTransport::scripted(empty_script),
@@ -3250,7 +3259,7 @@ mod tests {
         assert_eq!(final_bounds(&empty_events[1], rate).0, "");
         assert_eq!(final_bounds(&empty_events[1], rate).1, (100, 200));
 
-        let unanchored = [GatewayTransportPoll::Event(final_event(
+        let unanchored = [GatewayTransportPoll::event(final_event(
             "loose", 1, 1, "bez",
         ))];
         let mut bare = LiveCloudAsrSession::new(
@@ -3291,7 +3300,7 @@ mod tests {
         let mut script = Vec::new();
         for line in lines {
             if let Some(event) = state.adapt(line).expect("probe line") {
-                script.push(GatewayTransportPoll::Event(event));
+                script.push(GatewayTransportPoll::event(event));
             }
         }
         assert_eq!(
@@ -3331,13 +3340,13 @@ mod tests {
         let rate = 48_000u32;
         let limits = wide_limits(200, 8, Duration::from_secs(2));
         let script = [
-            GatewayTransportPoll::Event(final_with_item(
+            GatewayTransportPoll::event(final_with_item(
                 "second-first",
                 1,
                 "pozniej",
                 "cs-commit-2",
             )),
-            GatewayTransportPoll::Event(final_event("first-later", 2, 1, "wczesniej")),
+            GatewayTransportPoll::event(final_event("first-later", 2, 1, "wczesniej")),
         ];
         let mut session = LiveCloudAsrSession::new(
             FakeGatewayTransport::scripted(script),
@@ -3360,7 +3369,10 @@ mod tests {
         let AsrSessionEvent::Final(transcript) = event else {
             panic!("expected a final, got {event:?}");
         };
-        transcript.commit.as_ref().expect("final carries its commit")
+        transcript
+            .commit
+            .as_ref()
+            .expect("final carries its commit")
     }
 
     fn script_from_wire(lines: &[&str]) -> Vec<GatewayTransportPoll> {
@@ -3368,7 +3380,7 @@ mod tests {
         lines
             .iter()
             .filter_map(|line| state.adapt(line).expect("probe line"))
-            .map(GatewayTransportPoll::Event)
+            .map(GatewayTransportPoll::event)
             .collect()
     }
 
@@ -3443,20 +3455,28 @@ mod tests {
         assert_eq!(stamp_of(&events[0]).match_path, CommitMatchPath::Range);
         assert_eq!(stamp_of(&events[0]).commit_id, "cs-commit-2");
         assert_eq!(
-            (stamp_of(&events[0]).sample_start, stamp_of(&events[0]).sample_end),
+            (
+                stamp_of(&events[0]).sample_start,
+                stamp_of(&events[0]).sample_end
+            ),
             (48_000, 96_000)
         );
         assert_eq!(stamp_of(&events[1]).commit_id, "cs-commit-1");
         assert!(stamp_of(&events[0]).range_mismatch.is_none());
 
-        let disagreed = [r#"{"type":"transcript.final","text":"za daleko","start_ms":0,"end_ms":5000,"duration_ms":5000,"response_id":"rx"}"#];
+        let disagreed = [
+            r#"{"type":"transcript.final","text":"za daleko","start_ms":0,"end_ms":5000,"duration_ms":5000,"response_id":"rx"}"#,
+        ];
         let mut off = open_session(script_from_wire(&disagreed), rate, 4_800);
         push_samples(&mut off, 48_000, 4_800);
         off.commit(48_000).expect("one commit");
         let events = off.drain();
         let stamp = stamp_of(&events[0]);
         assert_eq!((stamp.sample_start, stamp.sample_end), (0, 48_000));
-        let mismatch = stamp.range_mismatch.as_ref().expect("commit_range_mismatch");
+        let mismatch = stamp
+            .range_mismatch
+            .as_ref()
+            .expect("commit_range_mismatch");
         assert_eq!(mismatch.commit_id, "cs-commit-1");
         assert_eq!(
             (mismatch.commit_sample_start, mismatch.commit_sample_end),
@@ -3491,7 +3511,11 @@ mod tests {
             .map(|event| stamp_of(event).commit_id.as_str())
             .collect();
         assert_eq!(ids, vec!["cs-commit-1", "cs-commit-2", "cs-commit-3"]);
-        assert!(events.iter().all(|event| stamp_of(event).match_path == CommitMatchPath::Fifo));
+        assert!(
+            events
+                .iter()
+                .all(|event| stamp_of(event).match_path == CommitMatchPath::Fifo)
+        );
         assert!(session.pending_commits.is_empty());
     }
 
@@ -3523,7 +3547,9 @@ mod tests {
     #[test]
     fn words_map_to_capture_samples_and_a_partial_overhang_is_clamped() {
         let rate = 48_000u32;
-        let lines = [r#"{"type":"transcript.final","text":"raz dwa","commit_id":"cs-commit-1","start_ms":0,"end_ms":2000,"duration_ms":2000,"response_id":"r","words":[{"word":"raz","start_ms":0,"end_ms":500,"probability":0.8},{"word":"dwa","start_ms":500,"end_ms":1000,"probability":0.7}]}"#];
+        let lines = [
+            r#"{"type":"transcript.final","text":"raz dwa","commit_id":"cs-commit-1","start_ms":0,"end_ms":2000,"duration_ms":2000,"response_id":"r","words":[{"word":"raz","start_ms":0,"end_ms":500,"probability":0.8},{"word":"dwa","start_ms":500,"end_ms":1000,"probability":0.7}]}"#,
+        ];
         let mut session = open_session(script_from_wire(&lines), rate, 48_000);
         push_samples(&mut session, 96_000, 48_000);
         session.commit(96_000).expect("two seconds");
@@ -3544,7 +3570,9 @@ mod tests {
         assert_eq!(stamp.words[0].probability, Some(0.8));
         assert_eq!(stamp.word_time_clamped, 0);
 
-        let overhang = [r#"{"type":"transcript.final","text":"ok koniec","commit_id":"cs-commit-1","start_ms":0,"end_ms":1000,"duration_ms":1000,"response_id":"r","words":[{"word":"ok","start_ms":0,"end_ms":400,"probability":0.9},{"word":"koniec","start_ms":800,"end_ms":1200,"probability":0.6}]}"#];
+        let overhang = [
+            r#"{"type":"transcript.final","text":"ok koniec","commit_id":"cs-commit-1","start_ms":0,"end_ms":1000,"duration_ms":1000,"response_id":"r","words":[{"word":"ok","start_ms":0,"end_ms":400,"probability":0.9},{"word":"koniec","start_ms":800,"end_ms":1200,"probability":0.6}]}"#,
+        ];
         let mut clamped = open_session(script_from_wire(&overhang), rate, 4_800);
         push_samples(&mut clamped, 48_000, 4_800);
         clamped.commit(48_000).expect("one second");
@@ -3560,7 +3588,9 @@ mod tests {
     #[test]
     fn a_word_entirely_outside_the_commit_keeps_the_phrase() {
         let rate = 48_000u32;
-        let lines = [r#"{"type":"transcript.final","text":"caly tekst","commit_id":"cs-commit-1","start_ms":0,"end_ms":1000,"duration_ms":1000,"response_id":"r","words":[{"word":"ok","start_ms":0,"end_ms":200,"probability":0.9},{"word":"poza","start_ms":3000,"end_ms":3100,"probability":0.4}]}"#];
+        let lines = [
+            r#"{"type":"transcript.final","text":"caly tekst","commit_id":"cs-commit-1","start_ms":0,"end_ms":1000,"duration_ms":1000,"response_id":"r","words":[{"word":"ok","start_ms":0,"end_ms":200,"probability":0.9},{"word":"poza","start_ms":3000,"end_ms":3100,"probability":0.4}]}"#,
+        ];
         let mut session = open_session(script_from_wire(&lines), rate, 4_800);
         push_samples(&mut session, 48_000, 4_800);
         session.commit(48_000).expect("commit");
@@ -3579,13 +3609,17 @@ mod tests {
     #[test]
     fn empty_flush_final_pops_its_commit_without_a_fault() {
         let rate = 48_000u32;
-        let lines = [r#"{"type":"transcript.final","text":"","commit_id":"cs-commit-1","start_ms":0,"end_ms":0,"duration_ms":0,"response_id":"r"}"#];
+        let lines = [
+            r#"{"type":"transcript.final","text":"","commit_id":"cs-commit-1","start_ms":0,"end_ms":0,"duration_ms":0,"response_id":"r"}"#,
+        ];
         let mut session = open_session(script_from_wire(&lines), rate, 4_800);
         push_samples(&mut session, 4_800, 4_800);
         session.commit(4_800).expect("silent commit");
         let events = session.drain();
         assert!(
-            events.iter().all(|event| !matches!(event, AsrSessionEvent::Error(_))),
+            events
+                .iter()
+                .all(|event| !matches!(event, AsrSessionEvent::Error(_))),
             "an empty flush is not a fault: {events:?}"
         );
         let stamp = stamp_of(&events[0]);
@@ -3599,12 +3633,9 @@ mod tests {
     fn end_with_nothing_pending_does_not_wait_for_a_final() {
         let mut limits = wide_limits(4_800, 8, Duration::from_secs(2));
         limits.close_timeout = Duration::from_millis(1);
-        let mut session = LiveCloudAsrSession::new(
-            FakeGatewayTransport::default(),
-            limits,
-            authorization(),
-        )
-        .expect("session");
+        let mut session =
+            LiveCloudAsrSession::new(FakeGatewayTransport::default(), limits, authorization())
+                .expect("session");
         session.open(&input_hz(48_000)).expect("open");
         session.close().expect("nothing pending, so close returns");
         assert!(session.transport().ending);
@@ -3615,7 +3646,9 @@ mod tests {
     #[test]
     fn one_dropped_frame_marks_the_clock_once_and_later_commits_still_land() {
         let rate = 48_000u32;
-        let lines = [r#"{"type":"transcript.final","text":"halo tam","start_ms":100,"end_ms":200,"duration_ms":100,"response_id":"r","words":[{"word":"halo","start_ms":100,"end_ms":150,"probability":0.8},{"word":"tam","start_ms":150,"end_ms":200,"probability":0.7}]}"#];
+        let lines = [
+            r#"{"type":"transcript.final","text":"halo tam","start_ms":100,"end_ms":200,"duration_ms":100,"response_id":"r","words":[{"word":"halo","start_ms":100,"end_ms":150,"probability":0.8},{"word":"tam","start_ms":150,"end_ms":200,"probability":0.7}]}"#,
+        ];
         let mut transport = FakeGatewayTransport::scripted(script_from_wire(&lines));
         transport.send_capacity = Some(1);
         let mut session = LiveCloudAsrSession::new(
@@ -3627,8 +3660,14 @@ mod tests {
         session.open(&input_hz(rate)).expect("open");
         session.push_audio(&[0.0; 4_800]).expect("sent");
         session.commit(4_800).expect("before the drop");
-        assert_eq!(session.push_audio(&[0.0; 4_800]), Err(AsrErrorKind::Overflow));
-        assert_eq!(session.push_audio(&[0.0; 4_800]), Err(AsrErrorKind::Overflow));
+        assert_eq!(
+            session.push_audio(&[0.0; 4_800]),
+            Err(AsrErrorKind::Overflow)
+        );
+        assert_eq!(
+            session.push_audio(&[0.0; 4_800]),
+            Err(AsrErrorKind::Overflow)
+        );
         assert_eq!(
             session
                 .protocol_notices()
@@ -3661,7 +3700,9 @@ mod tests {
     fn one_hour_at_48_khz_keeps_exact_u64_commit_bounds() {
         let rate = 48_000u32;
         let hour = 48_000u64 * 3_600;
-        let lines = [r#"{"type":"transcript.final","text":"godzina","commit_id":"cs-commit-1","start_ms":0,"end_ms":3600000,"duration_ms":3600000,"response_id":"r"}"#];
+        let lines = [
+            r#"{"type":"transcript.final","text":"godzina","commit_id":"cs-commit-1","start_ms":0,"end_ms":3600000,"duration_ms":3600000,"response_id":"r"}"#,
+        ];
         let mut session = open_session(script_from_wire(&lines), rate, 48_000);
         session.commit(0).expect("hold the periodic flush");
         let frame = vec![0.0f32; 48_000];
