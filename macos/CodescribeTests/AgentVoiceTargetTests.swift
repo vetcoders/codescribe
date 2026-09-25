@@ -97,7 +97,8 @@ final class AgentVoiceTargetTests: XCTestCase {
       XCTAssertEqual(f.store.currentThread?.messages.last?.text, "Stored conversation")
       XCTAssertEqual(f.engine.targets, before, "browsing must publish nothing, including nil")
       f.store.endDictationSession()
-      XCTAssertEqual(f.engine.targets, before, "terminal resync must also preserve the Agent target")
+      XCTAssertEqual(
+        f.engine.targets, before, "terminal resync must also preserve the Agent target")
     }
   }
 

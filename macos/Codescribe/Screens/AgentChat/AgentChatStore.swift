@@ -1303,7 +1303,8 @@ final class AgentChatStore: ObservableObject {
     }
     self.threads = seeded
     self.threadSearchError = initialThreadError
-    self._selectedThreadID = Published(initialValue: ChatThread.preferredAgentThread(in: seeded)?.id)
+    self._selectedThreadID = Published(
+      initialValue: ChatThread.preferredAgentThread(in: seeded)?.id)
     // Seed the backing storage without invoking the wrapped property's didSet,
     // then publish once so the assistive lane matches the rail's first frame.
     // The composition handoff is deliberately not replayed here: a new store

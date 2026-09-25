@@ -582,7 +582,7 @@ final class OverlayState {
   private var revisionFocusCommitTask: Task<Void, Never>?
   /// Last reducer-owned projection painted by Swift. The reducer owns ordering
   /// and finality within a session; retired sessions cannot repaint the current one.
-  private var finalized = false
+  private(set) var finalized = false
   /// Latest immutable projection event only; Rust `TranscriptRevision` remains
   /// the document owner and Rust `AcousticSerial` remains evidence authority.
   private(set) var latestTranscriptProjection: CsTranscriptProjectionEvent?
