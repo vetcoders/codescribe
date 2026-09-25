@@ -564,12 +564,9 @@ fn lcs_matches(committed: &[Token], retranscribed: &[Token]) -> Vec<(usize, usiz
     matches
 }
 
-/// One INFO receipt for a tail-patch outcome that put nothing on the canvas.
-///
-/// Counts and reason only. The transcript is the user's speech and never enters
-/// a log line; the counts are what makes a starved session diagnosable, which
-/// is exactly what was missing when `Skipped` was a `debug!` and the recovered
-/// text vanished without trace.
+/// Diagnostic for the historical character-diff verdict. This decision has no
+/// authority over occurrence admission; the returned payload is forwarded.
+/// Counts and reason only: transcript text never enters the log.
 fn log_skipped_receipt(
     utterance_id: u64,
     reason: &str,
@@ -578,14 +575,14 @@ fn log_skipped_receipt(
     committed_tokens: usize,
     retranscribed_tokens: usize,
 ) {
-    info!(
+    debug!(
         utterance_id,
         reason,
         committed_chars = committed.trim().chars().count(),
         retranscribed_chars = retranscribed.trim().chars().count(),
         committed_tokens,
         retranscribed_tokens,
-        "tail_patch_skipped"
+        "legacy_char_diff"
     );
 }
 
