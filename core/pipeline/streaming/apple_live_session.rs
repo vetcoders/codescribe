@@ -1690,16 +1690,34 @@ fn pin_intersects(pin: &OccurrenceIdentity, member: &OccurrenceIdentity) -> bool
 /// A word pin repeating a Whisper slice already admitted for this member.
 /// At least half of the shorter member-clipped span must overlap. This admits
 /// small timing jitter without treating the Apple-held member as a word pin.
+/// Matching normalized text is evidence of sameness, never an identity key;
+/// ownership by admit midpoint and routing remain geometric.
 fn earlier_exclusive_slice_covers(
     slices: &BTreeMap<OccurrenceIdentity, Vec<(u64, u64, String)>>,
     members: &[OccurrenceIdentity],
     routes: &[MemberPinRoute],
     pin: &OccurrenceIdentity,
+    text: &str,
 ) -> bool {
-    fn duplicates(pin_start: u64, pin_end: u64, start: u64, end: u64) -> bool {
+    fn duplicates(
+        pin_start: u64,
+        pin_end: u64,
+        text: &str,
+        start: u64,
+        end: u64,
+        prior_text: &str,
+    ) -> bool {
         let overlap = pin_end.min(end).saturating_sub(pin_start.max(start));
         let shorter = pin_end.saturating_sub(pin_start).min(end.saturating_sub(start));
-        shorter > 0 && overlap >= shorter / 2 + shorter % 2
+        if shorter == 0 || overlap < shorter / 2 + shorter % 2 {
+            return false;
+        }
+        let normalize = |word: &str| {
+            word.trim_matches(|ch: char| !ch.is_alphanumeric())
+                .to_lowercase()
+        };
+        let word = normalize(text);
+        !word.is_empty() && word == normalize(prior_text)
     }
 
     members.iter().enumerate().any(|(index, member)| {
@@ -1713,15 +1731,19 @@ fn earlier_exclusive_slice_covers(
                     .is_some_and(|ranges| {
                         ranges
                             .iter()
-                            .any(|(start, end, _)| duplicates(pin_start, pin_end, *start, *end))
+                            .any(|(start, end, prior_text)| {
+                                duplicates(pin_start, pin_end, text, *start, *end, prior_text)
+                            })
                     })
                     || routes.get(index).is_some_and(|route| {
                         route.exclusive.iter().any(|prior| {
                             duplicates(
                                 pin_start,
                                 pin_end,
+                                text,
                                 prior.pin.sample_start.max(member.sample_start),
                                 prior.pin.sample_end.min(member.sample_end),
+                                &prior.text,
                             )
                         })
                     })
@@ -2329,6 +2351,7 @@ impl AppleSealState {
                         &open_members,
                         &routes,
                         &pin,
+                        text,
                     )
                 {
                     class = OverlapPinClass::Replay;
@@ -15131,6 +15154,63 @@ mod relay_l1_overlap_admission_tests {
             Some("szew dalej koniec")
         );
         assert_conserved(&lane, Some("replayed_range_identity"));
+    }
+
+    #[test]
+    fn seam_word_with_case_and_punctuation_change_is_admitted_once() {
+        let session = "seam-normalized-word";
+        let mut lane = open(session);
+        record_voiced_spans(
+            &lane,
+            LONG_SAMPLES,
+            &[(44_000, 53_000), (70_000, 88_000), (100_000, 140_000)],
+        );
+        let (occurrence, requests) = launch_long_span(&mut lane, Some("apple"));
+        let windows = [
+            vec![word_pin(session, "Szew,", 44_000, 51_000)],
+            vec![
+                word_pin(session, "szew", 45_000, 53_000),
+                word_pin(session, "dalej", 70_000, 88_000),
+            ],
+            vec![word_pin(session, "koniec", 100_000, 140_000)],
+        ];
+        let mut events = Vec::new();
+        for (request, segments) in requests.iter().zip(windows) {
+            lane.state
+                .complete_whisper_window(&lane.tx, completion(request, segments), 9.5);
+            events.extend(drain(&mut lane.rx));
+        }
+        let warnings = warning_lines(&events);
+        assert!(replay_refusal(&events, "szew"), "{warnings}");
+        assert_eq!(mutation_count(&events), 1);
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("Szew, dalej koniec"),
+            "{warnings}"
+        );
+    }
+
+    #[test]
+    fn overlapping_distinct_short_words_keep_pcm_order() {
+        let session = "seam-distinct-short-words";
+        let mut lane = open(session);
+        let member = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, 96_000);
+        let routes = lane.state.route_overlap_pins(
+            &lane.tx,
+            1,
+            48_000,
+            96_000,
+            &[(1, member)],
+            &[
+                word_pin(session, "w", 60_000, 64_000),
+                word_pin(session, "i", 62_000, 65_000),
+            ],
+        );
+        let events = drain(&mut lane.rx);
+        assert_eq!(routes[0].exclusive.len(), 2, "{}", warning_lines(&events));
+        assert_eq!(exclusive_label(&routes[0].exclusive), "w i");
+        assert!(!replay_refusal(&events, "w"));
+        assert!(!replay_refusal(&events, "i"));
     }
 
     /// Falsifier for the T-A duplicate rule (integrator W3, parent's counterexample).
