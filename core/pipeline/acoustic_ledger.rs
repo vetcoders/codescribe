@@ -4045,7 +4045,10 @@ mod tests {
             assert_eq!(ledger.text_of(&newer), Some("newer"));
             let slots = ledger.slots_of(&newer).unwrap();
             assert_eq!(slots.len(), 1);
-            assert_eq!((slots[0].sample_start, slots[0].sample_end), (13_000, 14_000));
+            assert_eq!(
+                (slots[0].sample_start, slots[0].sample_end),
+                (13_000, 14_000)
+            );
             assert_eq!(slots[0].observation, observation);
             assert_eq!(ledger.layer_trail_for(&newer).count(), 1);
             assert_eq!(ledger.conservation().residue(), 0);
@@ -4060,7 +4063,10 @@ mod tests {
             vec![(13_000, 13_000, "newer".into())],
             vec![(1_000, 2_000, "newer".into())],
             vec![(13_000, 14_000, "different".into())],
-            vec![(13_000, 15_000, "new".into()), (14_000, 16_000, "er".into())],
+            vec![
+                (13_000, 15_000, "new".into()),
+                (14_000, 16_000, "er".into()),
+            ],
         ] {
             let mut ledger = AcousticLedger::new();
             let older = occ(0, 16_000);
