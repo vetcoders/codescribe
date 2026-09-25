@@ -66,11 +66,9 @@ impl OpenSpeechWindowClock {
         if evidence.identity() != &self.capture
             || evidence.producer() != SILERO_RAW_BOUNDARIES_PRODUCER
         {
-            self.pending = None;
             return None;
         }
         let Some(observed) = evidence.availability().observed_samples() else {
-            self.pending = None;
             return None;
         };
         let closed_through = closed_through.and_then(|(identity, end)| {
@@ -782,7 +780,6 @@ mod tests {
         let offered = clock.next(&speech, 1_000, None, false).unwrap();
         let foreign = measured_speech("other", 7, 5_000, &[(0, 5_000)]);
         assert!(clock.next(&foreign, 1_000, None, false).is_none());
-        assert!(!clock.ack_queued(&offered));
         let unavailable = AcousticSpeechEvidence::unavailable(
             CaptureEvidenceIdentity::new("take", 7),
             SILERO_RAW_BOUNDARIES_PRODUCER,
@@ -790,6 +787,28 @@ mod tests {
         );
         assert!(clock.next(&unavailable, 1_000, None, false).is_none());
         assert_eq!(clock.next(&speech, 1_000, None, false), Some(offered));
+    }
+
+    #[test]
+    fn pending_offer_survives_unavailable_later_evidence() {
+        let mut clock = OpenSpeechWindowClock::new(CaptureEvidenceIdentity::new("take", 7));
+        let speech = measured_speech("take", 7, 4_000, &[(0, 4_000)]);
+        let offered = clock
+            .next(&speech, 1_000, None, false)
+            .expect("measured PCM must be offered before the later discontinuity");
+        let foreign = measured_speech("other", 7, 5_000, &[(0, 5_000)]);
+        assert!(clock.next(&foreign, 1_000, None, false).is_none());
+        let unavailable = AcousticSpeechEvidence::unavailable(
+            CaptureEvidenceIdentity::new("take", 7),
+            SILERO_RAW_BOUNDARIES_PRODUCER,
+            AcousticAvailability::Discontinuous { observed_samples: 5_000 },
+        );
+        assert!(clock.next(&unavailable, 1_000, None, false).is_none());
+        assert!(
+            clock.ack_queued(&offered),
+            "a later unmeasured sample must not erase a prior measured offer already accepted by transport"
+        );
+        assert!(clock.next(&unavailable, 1_000, None, false).is_none());
     }
 
     #[test]
