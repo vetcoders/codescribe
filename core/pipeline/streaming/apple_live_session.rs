@@ -15155,35 +15155,47 @@ mod relay_l1_overlap_admission_tests {
         assert_conserved(&lane, Some("no_voiced_hop_in_pin"));
     }
 
-    /// Synthetic evidence-gap falsifier: qualification of the larger Apple
-    /// occurrence and the per-pin capture-energy clock are deliberately out
-    /// of sync. This is not a replay of an observed live capture. Missing
-    /// per-pin evidence is neither measured silence nor speech proof; the
-    /// larger occurrence must not lend its serial to that Whisper word.
+    /// A later invalid capture hop must not turn an earlier measured silent
+    /// pin into an admissible Whisper word. The capture-energy owner returns
+    /// `None` after any invalid hop, including for an earlier measured range;
+    /// `None` is not proof of speech. This is a synthetic path, not a replay
+    /// of an observed live take.
     #[test]
-    fn unmeasured_word_pin_cannot_relabel_qualified_occurrence() {
-        let mut lane = open("relay-unmeasured-pin");
-        let session = "relay-unmeasured-pin";
-        let observed_end = 24_000_u64;
+    fn later_invalid_pcm_cannot_reopen_earlier_silent_word_pin() {
+        let mut lane = open("relay-late-invalid-pin");
+        let session = "relay-late-invalid-pin";
+        let silence_at = 24_000_usize;
         let occurrence = OccurrenceIdentity::new(session, 1, 0, 48_000);
-        record_energy(&lane, &[vec![0.2; observed_end as usize]]);
+        let mut energy = CaptureLevelAccumulator::bound_to(&lane.state.capture_energy);
+        energy.push_samples(&vec![0.2; silence_at]);
+        energy.push_samples(&vec![0.0; silence_at]);
         assert_eq!(
             lane.state
                 .capture_energy
                 .voiced_hops_in(session, 1, 26_000, 46_000),
-            None,
-            "the pin extends beyond measured PCM, not into certified silence"
+            Some(Vec::new()),
+            "the Whisper word pin was already measured as silence"
         );
         stage(&mut lane, 1, occurrence.clone(), "mowa");
+        let mut offered = piece(1, &occurrence, "mowa");
+        offered.audio[silence_at..].fill(0.0);
         assert!(
             lane.state
-                .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, "mowa"))
+                .enqueue_layer1_piece(&lane.tx, offered)
         );
         assert!(lane.state.flush_layer1_coalesce(&lane.tx));
         close_lexicon(&mut lane, 1, &occurrence, "mowa");
         let _ = drain(&mut lane.rx);
         let requests = take_requests(&mut lane.tail_rx);
         assert_eq!(requests.len(), 1);
+        energy.push_samples(&vec![f32::NAN; 16_000]);
+        assert_eq!(
+            lane.state
+                .capture_energy
+                .voiced_hops_in(session, 1, 26_000, 46_000),
+            None,
+            "a later invalid hop makes the owner unable to attest even an earlier range"
+        );
 
         lane.state.complete_whisper_window(
             &lane.tx,
@@ -15197,7 +15209,7 @@ mod relay_l1_overlap_admission_tests {
         assert_eq!(
             mutation_count(&events),
             0,
-            "unmeasured pin PCM cannot correct the Apple label"
+            "unavailable pin evidence cannot resurrect a word in measured silence"
         );
         assert_eq!(held_text(&lane, &occurrence).as_deref(), Some("mowa"));
         assert_eq!(held_count(&lane), 1);
