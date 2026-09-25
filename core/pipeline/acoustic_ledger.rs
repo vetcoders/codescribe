@@ -1380,7 +1380,7 @@ impl AcousticLedger {
         }
         let serial = AcousticSerial::mint(evidence);
         if let Some(existing) = self.evidence.get(&occurrence) {
-            return if existing == &serial {
+            return if existing.version == serial.version && existing.digest == serial.digest {
                 AdmissionReceipt::Qualified {
                     occurrence,
                     serial: existing.clone(),
