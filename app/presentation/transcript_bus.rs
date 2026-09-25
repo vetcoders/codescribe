@@ -1449,8 +1449,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let repeated_path = temp.path().join("repeated.jsonl");
         let deduplicated_path = temp.path().join("deduplicated.jsonl");
-        let bus = TranscriptBus::open_at(session("history-once"), repeated_path.clone(), None)
-            .unwrap();
+        let bus =
+            TranscriptBus::open_at(session("history-once"), repeated_path.clone(), None).unwrap();
         bus.publish_started();
         let (ledger, _, base) = committed_fixture("history-once");
         let mut versions = vec![bus.publish_revision(&base, &ledger)[0].clone()];
@@ -1468,7 +1468,10 @@ mod tests {
             let full = serde_json::to_string(event).unwrap();
             repeated.push_str(&format!("{full}\n{full}\n"));
             let mut without_text = serde_json::to_value(event).unwrap();
-            without_text.as_object_mut().unwrap().remove("rendered_text");
+            without_text
+                .as_object_mut()
+                .unwrap()
+                .remove("rendered_text");
             deduplicated.push_str(&format!(
                 "{full}\n{}\n",
                 serde_json::to_string(&without_text).unwrap()

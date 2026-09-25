@@ -3024,8 +3024,11 @@ mod tests {
     fn retired_bus_retention_key_is_ignored_on_load() {
         let _tmp = setup_isolated_data_dir();
         let path = UserSettings::settings_path();
-        fs::write(&path, r#"{"schema_version":3,"system":{"evidence_retention_days":21}}"#)
-            .expect("seed old settings");
+        fs::write(
+            &path,
+            r#"{"schema_version":3,"system":{"evidence_retention_days":21}}"#,
+        )
+        .expect("seed old settings");
         let loaded = UserSettings::load();
         loaded.save().expect("save canonical settings");
         let saved: serde_json::Value =

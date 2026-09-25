@@ -789,11 +789,14 @@ mod tests {
             let recorded_len = std::fs::metadata(&path).unwrap().len();
             let report = compact_bus_owned_once(&path, 14, "test", 1, || {
                 std::thread::scope(|scope| {
-                    scope.spawn(|| {
-                        for bus in &buses {
-                            bus.publish_started();
-                        }
-                    }).join().unwrap();
+                    scope
+                        .spawn(|| {
+                            for bus in &buses {
+                                bus.publish_started();
+                            }
+                        })
+                        .join()
+                        .unwrap();
                 });
             })
             .unwrap()
