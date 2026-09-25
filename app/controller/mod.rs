@@ -5592,9 +5592,10 @@ mod terminal_delivery_target_falsifiers {
     /// a second time.
     #[tokio::test]
     async fn stop_clipboard_and_deferred_routes_receive_one_tagged_payload() {
-        for (auto_paste_enabled, expected_route) in [
-            (true, DeliveryRoute::ClipboardPaste),
-            (false, DeliveryRoute::DeferredInsert),
+        for (auto_paste_enabled, force_ai, expected_route) in [
+            (true, false, DeliveryRoute::ClipboardPaste),
+            (false, false, DeliveryRoute::DeferredInsert),
+            (true, true, DeliveryRoute::ClipboardPaste),
         ] {
             let controller = RecordingController::new_without_keychain();
             controller.delivery_tagger.begin("dictation", "pl");
@@ -5614,14 +5615,17 @@ mod terminal_delivery_target_falsifiers {
                     } else {
                         "tagged-deferred"
                     }),
-                    "working text",
-                    (false, false, CaptureTurnIntent::HandsFree, false),
+                    "{selection_1} working  {image_1}  text {name}",
+                    (false, force_ai, CaptureTurnIntent::HandsFree, false),
                     &config,
                     |route, payload, _| async move {
                         assert_eq!(route, expected_route);
                         assert_eq!(
                             payload,
-                            "<codescribe mode=\"dictation\">working text</codescribe>"
+                            format!(
+                                "<codescribe mode=\"{}\">working text {{name}}</codescribe>",
+                                if force_ai { "format" } else { "dictation" }
+                            )
                         );
                         assert_eq!(payload.matches("<codescribe").count(), 1);
                         Ok(OverlayPasteResult {
@@ -5657,7 +5661,7 @@ mod terminal_delivery_target_falsifiers {
         controller
             .deliver_stop_transcript_with_sink(
                 Some("composer-tagged"),
-                "editable draft",
+                "{selection_1} editable {image_1} draft",
                 (true, false, CaptureTurnIntent::SingleTurn, false),
                 &config,
                 |_, _, _| async { panic!("composer route must not call an OS sink") },
@@ -5669,7 +5673,7 @@ mod terminal_delivery_target_falsifiers {
             controller.composer_delivery_payload.read().await.as_ref(),
             Some(&(
                 "composer-tagged".to_string(),
-                "[agent|en|unknown] editable draft".to_string()
+                "[agent|en|unknown] {selection_1} editable {image_1} draft".to_string()
             ))
         );
     }

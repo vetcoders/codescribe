@@ -4,6 +4,7 @@
 //! renders the configured tag only when the controller has selected a sink.
 
 use crate::config::Config;
+use super::context_bucket::strip_markers_for_delivery;
 use codescribe_core::pipeline::contracts::{EngineEvent, EventSink, TranscriptionConfidenceFlag};
 use std::sync::Mutex;
 
@@ -34,13 +35,22 @@ impl TranscriptDeliveryTagger {
         };
     }
 
+    /// Text delivered on any non-agent route (paste, clipboard, Formatting
+    /// output, hands-free paste) contains no bucket context-marker literal.
+    /// The bucket and Bus retain markers; the Agent route keeps them so it can
+    /// resolve their captured context. This is the shared outward boundary.
     pub(super) fn render(
         &self,
         text: &str,
         config: &Config,
         mode_override: Option<&'static str>,
     ) -> String {
-        let trimmed = text.trim();
+        let outward = if mode_override == Some("agent") {
+            text.to_string()
+        } else {
+            strip_markers_for_delivery(text)
+        };
+        let trimmed = outward.trim();
         if trimmed.is_empty() || !config.transcript_tagging_enabled {
             return trimmed.to_string();
         }
@@ -96,6 +106,20 @@ impl EventSink for TranscriptDeliveryTagger {
 mod tests {
     use super::*;
     use codescribe_core::pipeline::contracts::TranscriptSegment;
+
+    #[test]
+    fn non_agent_payloads_strip_bucket_markers_before_tagging() {
+        let tagger = TranscriptDeliveryTagger::default();
+        let config = Config {
+            transcript_tagging_enabled: false,
+            ..Config::default()
+        };
+        let source = "{selection_1} alpha  {image_1}  beta {name}";
+        for mode in [None, Some("dictation"), Some("format"), Some("assistive")] {
+            assert_eq!(tagger.render(source, &config, mode), "alpha beta {name}");
+        }
+        assert_eq!(tagger.render(source, &config, Some("agent")), source);
+    }
 
     fn final_event(
         avg_logprob: Option<f32>,
