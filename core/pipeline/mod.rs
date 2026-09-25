@@ -10,6 +10,8 @@ pub mod contracts;
 pub mod highlight;
 /// Light+ — deterministic, idempotent sentence shaping (L2 floor, no LLM).
 pub mod light_plus;
+/// Local, observational word-slot evidence emitted only when an occurrence seals.
+pub(crate) mod occurrence_slot_receipt;
 /// Event sink helpers: collectors and fan-out to consumers.
 pub mod sinks;
 /// Live streaming session state for partial/final engine events.

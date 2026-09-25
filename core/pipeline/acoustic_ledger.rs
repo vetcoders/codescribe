@@ -2014,6 +2014,7 @@ impl AcousticLedger {
         if !self.seals.contains_key(occurrence) {
             let receipt = self.mint_seal(occurrence)?;
             self.seals.insert(occurrence.clone(), receipt);
+            super::occurrence_slot_receipt::emit(self, occurrence);
         }
         self.seals
             .get(occurrence)
