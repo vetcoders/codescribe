@@ -2654,21 +2654,33 @@ impl RecordingController {
             .iter()
             .filter(|word| word.reason.starts_with("superseded_by_partial rev="))
             .count();
-        let admitted_into_words = missing_words.iter()
+        let admitted_into_words = missing_words
+            .iter()
             .filter(|word| word.reason.starts_with("admitted_into occurrence="))
             .count();
-        let closed_by_final_words = missing_words.iter()
-            .filter(|word| word.reason.starts_with("closed_by_final phrase=")).count();
-        let retained_as_evidence_words = missing_words.iter()
-            .filter(|word| word.reason.starts_with("retained_as_evidence occurrence=")).count();
+        let closed_by_final_words = missing_words
+            .iter()
+            .filter(|word| word.reason.starts_with("closed_by_final phrase="))
+            .count();
+        let retained_as_evidence_words = missing_words
+            .iter()
+            .filter(|word| word.reason.starts_with("retained_as_evidence occurrence="))
+            .count();
         let untimed_final_phrase_arrivals = canvas.map(|canvas| &canvas.untimed_final_phrases);
         let untimed_final_phrases = untimed_final_phrase_arrivals.map_or(0, Vec::len);
-        let moved_to_pending_words = missing_words.iter()
-            .filter(|word| word.reason == "moved_to pending").count();
-        let moved_to_unmatched_words = missing_words.iter()
-            .filter(|word| word.reason == "moved_to unmatched").count();
-        let untimed_final_words = canvas.map_or(0, |canvas| canvas.untimed_final_words)
-            .max(painted_at_stop.as_ref().map_or(0, |canvas| canvas.untimed_final_words));
+        let moved_to_pending_words = missing_words
+            .iter()
+            .filter(|word| word.reason == "moved_to pending")
+            .count();
+        let moved_to_unmatched_words = missing_words
+            .iter()
+            .filter(|word| word.reason == "moved_to unmatched")
+            .count();
+        let untimed_final_words = canvas.map_or(0, |canvas| canvas.untimed_final_words).max(
+            painted_at_stop
+                .as_ref()
+                .map_or(0, |canvas| canvas.untimed_final_words),
+        );
         let covered_by_committed_words = missing_words
             .iter()
             .filter(|word| word.reason.starts_with("covered_by_committed occurrence="))
@@ -6422,26 +6434,43 @@ mod refusal_recovery_tests {
     }
 
     fn stop_preview(text: &str) -> EngineEvent {
-        use codescribe_core::pipeline::contracts::{UnadmittedAppleWord, UnadmittedAppleWordSource};
+        use codescribe_core::pipeline::contracts::{
+            UnadmittedAppleWord, UnadmittedAppleWordSource,
+        };
         EngineEvent::UnadmittedAppleWords {
             revision: 1,
             closed_phrases: Default::default(),
-            words: text.split_whitespace().map(|word| UnadmittedAppleWord {
-                text: word.into(), sample_start: 0, sample_end: 16_000,
-                source: UnadmittedAppleWordSource::OpenPartial { rev: 1, phrase_id: 1 },
-            }).collect(),
+            words: text
+                .split_whitespace()
+                .map(|word| UnadmittedAppleWord {
+                    text: word.into(),
+                    sample_start: 0,
+                    sample_end: 16_000,
+                    source: UnadmittedAppleWordSource::OpenPartial {
+                        rev: 1,
+                        phrase_id: 1,
+                    },
+                })
+                .collect(),
         }
     }
 
     fn stop_closed_phrase(words: usize) -> EngineEvent {
         use codescribe_core::pipeline::contracts::{ApplePhraseOutcome, ClosedApplePhrase};
         EngineEvent::UnadmittedAppleWords {
-            revision: 2, words: Vec::new(),
-            closed_phrases: std::collections::BTreeMap::from([(1, ClosedApplePhrase {
-                arrival_index: 0,
-                outcomes: std::collections::BTreeMap::from([(ApplePhraseOutcome::Admitted, words)]),
-                was_untimed: false,
-            })]),
+            revision: 2,
+            words: Vec::new(),
+            closed_phrases: std::collections::BTreeMap::from([(
+                1,
+                ClosedApplePhrase {
+                    arrival_index: 0,
+                    outcomes: std::collections::BTreeMap::from([(
+                        ApplePhraseOutcome::Admitted,
+                        words,
+                    )]),
+                    was_untimed: false,
+                },
+            )]),
         }
     }
 
@@ -6515,7 +6544,9 @@ mod refusal_recovery_tests {
         take.emitter.on_capture_opened(TAKE, 7);
         let mut mirror = stop_preview("ok wyślij");
         if let EngineEvent::UnadmittedAppleWords { words, .. } = &mut mirror {
-            for word in words { word.sample_end = 0; }
+            for word in words {
+                word.sample_end = 0;
+            }
         }
         take.emitter.on_event(&mirror);
         let receipts = StopReceiptLog::default();
@@ -6735,7 +6766,11 @@ mod refusal_recovery_tests {
         assert!(receipts.text().contains("stop_paste_lost_visible_words"));
         assert!(receipts.text().contains("painted_words_at_stop=3"));
         assert!(receipts.text().contains("paste_words=1"));
-        assert!(receipts.text().contains("closed_by_final phrase=1 outcomes=admitted=1"));
+        assert!(
+            receipts
+                .text()
+                .contains("closed_by_final phrase=1 outcomes=admitted=1")
+        );
         assert!(receipts.text().contains("closed_by_final_words=3"));
         assert!(receipts.text().contains("superseded_by_partial_words=0"));
         assert!(receipts.text().contains("covered_by_committed_words=0"));

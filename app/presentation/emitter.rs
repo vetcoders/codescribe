@@ -20,8 +20,8 @@ use codescribe_core::pipeline::acoustic_ledger::{
     TranscriptComparisonReceipt,
 };
 use codescribe_core::pipeline::contracts::{
-    DeltaSink, EngineEvent, EventSink, SpeechIntegrity, SpeechIntegrityPhase,
-    ClosedApplePhrase, TranscriptDelta, UnadmittedAppleWord, UnadmittedAppleWordSource,
+    ClosedApplePhrase, DeltaSink, EngineEvent, EventSink, SpeechIntegrity, SpeechIntegrityPhase,
+    TranscriptDelta, UnadmittedAppleWord, UnadmittedAppleWordSource,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
@@ -510,7 +510,8 @@ impl VisibleWordSource {
 }
 
 fn normalize_visible_word(word: &str) -> String {
-    word.trim_matches(|ch: char| !ch.is_alphanumeric()).to_lowercase()
+    word.trim_matches(|ch: char| !ch.is_alphanumeric())
+        .to_lowercase()
 }
 
 /// A word position belongs to its typed paint source, never to a text match.
@@ -788,58 +789,95 @@ impl TranscriptReducer {
     /// ledger-before-mirror publication safe: transient overlap never doubles a word.
     fn committed_covering(&self, start: u64, end: u64) -> Option<&OccurrenceIdentity> {
         let midpoint = start + end.saturating_sub(start) / 2;
-        self.document_by_occurrence.keys().find(|owner| {
-            owner.sample_start <= midpoint && midpoint < owner.sample_end
-        })
+        self.document_by_occurrence
+            .keys()
+            .find(|owner| owner.sample_start <= midpoint && midpoint < owner.sample_end)
     }
 
     fn read_paint(&self) -> PaintedCanvas {
         let mut fragments = self.visible_paint_fragments();
-        let ledger_word_keys = self.unanchored_evidence.iter().flat_map(|(range, (text, _, _))| {
-            text.split_whitespace().map(move |word| (range.sample_start, range.sample_end, normalize_visible_word(word)))
-        }).collect::<std::collections::BTreeSet<_>>();
+        let ledger_word_keys = self
+            .unanchored_evidence
+            .iter()
+            .flat_map(|(range, (text, _, _))| {
+                text.split_whitespace().map(move |word| {
+                    (
+                        range.sample_start,
+                        range.sample_end,
+                        normalize_visible_word(word),
+                    )
+                })
+            })
+            .collect::<std::collections::BTreeSet<_>>();
         let mut seen = BTreeMap::new();
         for word in &self.unadmitted_apple_words {
-            let untimed = matches!(word.source, UnadmittedAppleWordSource::OpenPartial { .. }
-                | UnadmittedAppleWordSource::RefusedUntimed { .. });
+            let untimed = matches!(
+                word.source,
+                UnadmittedAppleWordSource::OpenPartial { .. }
+                    | UnadmittedAppleWordSource::RefusedUntimed { .. }
+            );
             if !untimed {
-                if self.committed_covering(word.sample_start, word.sample_end).is_some() {
+                if self
+                    .committed_covering(word.sample_start, word.sample_end)
+                    .is_some()
+                {
                     continue;
                 }
-                let key = (word.sample_start, word.sample_end, normalize_visible_word(&word.text));
-                if ledger_word_keys.contains(&key) { continue; }
+                let key = (
+                    word.sample_start,
+                    word.sample_end,
+                    normalize_visible_word(&word.text),
+                );
+                if ledger_word_keys.contains(&key) {
+                    continue;
+                }
                 let already_seen = seen.contains_key(&key);
                 let first_source = seen.entry(key).or_insert(word.source);
-                if already_seen && !(word.sample_start == word.sample_end && *first_source == word.source) {
+                if already_seen
+                    && !(word.sample_start == word.sample_end && *first_source == word.source)
+                {
                     continue;
                 }
             }
-            fragments.push((word.sample_start, word.text.clone(),
-                VisibleWordSource::Unadmitted(word.clone()), true));
+            fragments.push((
+                word.sample_start,
+                word.text.clone(),
+                VisibleWordSource::Unadmitted(word.clone()),
+                true,
+            ));
         }
         // Only ranged sources have PCM position. Stable sorting preserves word
         // order inside each untimed phrase and inside the open partial.
         fragments.sort_by_key(|(start, _, source, _)| match source {
             VisibleWordSource::Unadmitted(UnadmittedAppleWord {
-                source: UnadmittedAppleWordSource::OpenPartial { .. }, ..
+                source: UnadmittedAppleWordSource::OpenPartial { .. },
+                ..
             }) => (2, 0),
             VisibleWordSource::Unadmitted(UnadmittedAppleWord {
-                source: UnadmittedAppleWordSource::RefusedUntimed { phrase_id }, ..
-            }) => (1, self.closed_apple_phrases.get(phrase_id)
-                .map_or(*phrase_id, |phrase| phrase.arrival_index as u64)),
+                source: UnadmittedAppleWordSource::RefusedUntimed { phrase_id },
+                ..
+            }) => (
+                1,
+                self.closed_apple_phrases
+                    .get(phrase_id)
+                    .map_or(*phrase_id, |phrase| phrase.arrival_index as u64),
+            ),
             _ => (0, *start),
         });
         let mut paint = PaintedCanvas::default();
         for (_, text, source, is_evidence) in fragments {
             for member in source.committed_members() {
-                paint.committed_sources.insert(member.occurrence.clone(), member.clone());
+                paint
+                    .committed_sources
+                    .insert(member.occurrence.clone(), member.clone());
             }
             append_exact_fragment(&mut paint.text, &text);
             if is_evidence {
                 paint.preview_only_words += text.split_whitespace().count();
             }
             if matches!(&source, VisibleWordSource::Unadmitted(word)
-                if matches!(word.source, UnadmittedAppleWordSource::RefusedUntimed { .. })) {
+                if matches!(word.source, UnadmittedAppleWordSource::RefusedUntimed { .. }))
+            {
                 paint.untimed_final_words += text.split_whitespace().count();
             }
             let preview_rev = match &source {
@@ -849,20 +887,39 @@ impl TranscriptReducer {
                 },
                 _ => None,
             };
-            paint.visible_words.extend(text.split_whitespace().enumerate().map(|(offset, word)| {
-                VisibleWord { word: word.to_string(), preview_rev, source: source.clone(),
-                    offset, covered_by: None }
-            }));
+            paint
+                .visible_words
+                .extend(
+                    text.split_whitespace()
+                        .enumerate()
+                        .map(|(offset, word)| VisibleWord {
+                            word: word.to_string(),
+                            preview_rev,
+                            source: source.clone(),
+                            offset,
+                            covered_by: None,
+                        }),
+                );
         }
         // Evidence remains visible in its sidebar, even when committed speech
         // represents it in the paste. Keep that coverage receipt in both reads.
         for (range, (text, _, observation)) in &self.unanchored_evidence {
-            if let Some(owner) = self.document_by_occurrence.keys().find(|owner| range_within(range, owner)) {
-                paint.visible_words.extend(text.split_whitespace().enumerate().map(|(offset, word)| {
-                    VisibleWord { word: word.to_string(), preview_rev: None,
-                        source: VisibleWordSource::Unanchored(observation.clone()),
-                        offset, covered_by: Some(owner.clone()) }
-                }));
+            if let Some(owner) = self
+                .document_by_occurrence
+                .keys()
+                .find(|owner| range_within(range, owner))
+            {
+                paint
+                    .visible_words
+                    .extend(text.split_whitespace().enumerate().map(|(offset, word)| {
+                        VisibleWord {
+                            word: word.to_string(),
+                            preview_rev: None,
+                            source: VisibleWordSource::Unanchored(observation.clone()),
+                            offset,
+                            covered_by: Some(owner.clone()),
+                        }
+                    }));
             }
         }
         paint
@@ -1656,12 +1713,14 @@ impl VisibleCanvasSnapshot {
                 match current.source {
                     UnadmittedAppleWordSource::OpenPartial { rev, phrase_id } => {
                         open_revisions.insert(phrase_id, rev);
-                        *phrase_words.entry((phrase_id, normalize_visible_word(&present.word)))
+                        *phrase_words
+                            .entry((phrase_id, normalize_visible_word(&present.word)))
                             .or_default() += 1;
                         continue;
                     }
                     UnadmittedAppleWordSource::RefusedUntimed { phrase_id } => {
-                        *phrase_words.entry((phrase_id, normalize_visible_word(&present.word)))
+                        *phrase_words
+                            .entry((phrase_id, normalize_visible_word(&present.word)))
                             .or_default() += 1;
                         continue;
                     }
@@ -1669,12 +1728,21 @@ impl VisibleCanvasSnapshot {
                 }
             }
             let range = match &present.source {
-                VisibleWordSource::Unadmitted(current) => Some((current.sample_start, current.sample_end)),
-                VisibleWordSource::Unanchored(observation) => Some((observation.occurrence.sample_start, observation.occurrence.sample_end)),
+                VisibleWordSource::Unadmitted(current) => {
+                    Some((current.sample_start, current.sample_end))
+                }
+                VisibleWordSource::Unanchored(observation) => Some((
+                    observation.occurrence.sample_start,
+                    observation.occurrence.sample_end,
+                )),
                 _ => None,
             };
-            if let Some((start, end)) = range && present.covered_by.is_none() {
-                *available.entry((start, end, normalize_visible_word(&present.word))).or_default() += 1;
+            if let Some((start, end)) = range
+                && present.covered_by.is_none()
+            {
+                *available
+                    .entry((start, end, normalize_visible_word(&present.word)))
+                    .or_default() += 1;
             }
         }
         self.visible_words.iter().filter_map(|word| {
@@ -1892,9 +1960,12 @@ impl PresentationEmitter {
             visible_words: paint.visible_words,
             committed_sources: paint.committed_sources,
             untimed_final_words: paint.untimed_final_words,
-            untimed_final_phrases: reducer.closed_apple_phrases.iter()
+            untimed_final_phrases: reducer
+                .closed_apple_phrases
+                .iter()
                 .filter(|(_, phrase)| phrase.was_untimed)
-                .map(|(&id, phrase)| (id, phrase.arrival_index)).collect(),
+                .map(|(&id, phrase)| (id, phrase.arrival_index))
+                .collect(),
             closed_phrases: reducer.closed_apple_phrases.clone(),
             has_committed_document: !reducer.document_by_occurrence.is_empty(),
             qualified_occurrences: ledger.as_ref().map_or(0, |ledger| {
@@ -2138,16 +2209,27 @@ impl PresentationEmitter {
         let tail = self.cursor_tail.lock().unwrap_or_else(|e| e.into_inner());
         // Snapshot under the sequence lock so a later sequence can never carry
         // older evidence. Callers never hold the reducer lock while painting.
-        let state = self.session_state.lock().unwrap_or_else(|error| error.into_inner());
+        let state = self
+            .session_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let mut evidence = state.unanchored_evidence(session_id, *capture_epoch);
-        evidence.extend(state.unadmitted_apple_words.iter()
-            .filter(|word| state.committed_covering(word.sample_start, word.sample_end).is_none())
-            .map(|word| UnanchoredEvidence {
-                sample_start: word.sample_start,
-                sample_end: word.sample_end,
-                text: word.text.clone(),
-                reason: format!("{:?}", word.source),
-            }));
+        evidence.extend(
+            state
+                .unadmitted_apple_words
+                .iter()
+                .filter(|word| {
+                    state
+                        .committed_covering(word.sample_start, word.sample_end)
+                        .is_none()
+                })
+                .map(|word| UnanchoredEvidence {
+                    sample_start: word.sample_start,
+                    sample_end: word.sample_end,
+                    text: word.text.clone(),
+                    reason: format!("{:?}", word.source),
+                }),
+        );
         drop(state);
         evidence.sort_by_key(|item| (item.sample_start, item.sample_end));
         *sequence = next;
@@ -2196,8 +2278,11 @@ impl PresentationEmitter {
         match &mut cmd {
             EmitterCmd::PublishCommittedRevision { paint, .. }
             | EmitterCmd::PaintEphemeralPreview(paint) => {
-                let canvas = self.session_state.lock()
-                    .unwrap_or_else(|error| error.into_inner()).read_paint();
+                let canvas = self
+                    .session_state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .read_paint();
                 *paint = canvas.text;
                 #[cfg(test)]
                 self.paint_commands.lock().unwrap().push(paint.clone());
@@ -2837,9 +2922,15 @@ impl EventSink for PresentationEmitter {
                     "PresentationEmitter observed sideband evidence without mutating text"
                 );
             }
-            EngineEvent::UnadmittedAppleWords { revision, words, closed_phrases } => {
+            EngineEvent::UnadmittedAppleWords {
+                revision,
+                words,
+                closed_phrases,
+            } => {
                 {
-                    let mut state = self.session_state.lock()
+                    let mut state = self
+                        .session_state
+                        .lock()
                         .unwrap_or_else(|error| error.into_inner());
                     if *revision <= state.apple_mirror_revision {
                         return;
@@ -2851,20 +2942,31 @@ impl EventSink for PresentationEmitter {
                 self.send_cmd(EmitterCmd::PaintEphemeralPreview(String::new()));
             }
             EngineEvent::PreviewDisposition {
-                superseded_through_rev, final_disposition, refused_evidence,
+                superseded_through_rev,
+                final_disposition,
+                refused_evidence,
             } => {
-                let mut state = self.session_state.lock()
+                let mut state = self
+                    .session_state
+                    .lock()
                     .unwrap_or_else(|error| error.into_inner());
                 state.preview_disposition_receipts += 1;
-                debug!(superseded_through_rev, ?final_disposition,
+                debug!(
+                    superseded_through_rev,
+                    ?final_disposition,
                     refused_slices = refused_evidence.len(),
                     receipts = state.preview_disposition_receipts,
-                    "Apple phrase disposition receipt");
+                    "Apple phrase disposition receipt"
+                );
             }
             EngineEvent::Preview { rev, text, pin } => {
-                debug!(rev, text_chars = text.chars().count(),
-                    sample_start = pin.range.sample_start, sample_end = pin.range.sample_end,
-                    "Recognizer preview receipt; Apple mirror owns paint");
+                debug!(
+                    rev,
+                    text_chars = text.chars().count(),
+                    sample_start = pin.range.sample_start,
+                    sample_end = pin.range.sample_end,
+                    "Recognizer preview receipt; Apple mirror owns paint"
+                );
             }
             EngineEvent::UtteranceFinal { utterance_id, .. } => {
                 debug!(
@@ -3021,32 +3123,61 @@ mod tests {
 
     /// A complete mirror containing only this open phrase at its actual PCM range.
     fn partial_mirror(rev: u64, text: &str, start: u64, end: u64) -> EngineEvent {
-        mirror(rev, mirror_words(text, start, end,
-            UnadmittedAppleWordSource::OpenPartial { rev, phrase_id: 1 }))
+        mirror(
+            rev,
+            mirror_words(
+                text,
+                start,
+                end,
+                UnadmittedAppleWordSource::OpenPartial { rev, phrase_id: 1 },
+            ),
+        )
     }
 
     fn mirror(revision: u64, words: Vec<UnadmittedAppleWord>) -> EngineEvent {
-        EngineEvent::UnadmittedAppleWords { revision, words, closed_phrases: Default::default() }
-    }
-
-    fn closed_mirror(revision: u64, words: Vec<UnadmittedAppleWord>, phrase_id: u64,
-        outcome: codescribe_core::pipeline::contracts::ApplePhraseOutcome, count: usize) -> EngineEvent {
-        use codescribe_core::pipeline::contracts::{ApplePhraseOutcome, ClosedApplePhrase};
         EngineEvent::UnadmittedAppleWords {
-            revision, words,
-            closed_phrases: std::collections::BTreeMap::from([(phrase_id, ClosedApplePhrase {
-                arrival_index: (phrase_id - 1) as usize,
-                outcomes: std::collections::BTreeMap::from([(outcome, count)]),
-                was_untimed: outcome == ApplePhraseOutcome::Untimed,
-            })]),
+            revision,
+            words,
+            closed_phrases: Default::default(),
         }
     }
 
-    fn mirror_words(text: &str, sample_start: u64, sample_end: u64,
-        source: UnadmittedAppleWordSource) -> Vec<UnadmittedAppleWord> {
-        text.split_whitespace().map(|word| UnadmittedAppleWord {
-            text: word.into(), sample_start, sample_end, source,
-        }).collect()
+    fn closed_mirror(
+        revision: u64,
+        words: Vec<UnadmittedAppleWord>,
+        phrase_id: u64,
+        outcome: codescribe_core::pipeline::contracts::ApplePhraseOutcome,
+        count: usize,
+    ) -> EngineEvent {
+        use codescribe_core::pipeline::contracts::{ApplePhraseOutcome, ClosedApplePhrase};
+        EngineEvent::UnadmittedAppleWords {
+            revision,
+            words,
+            closed_phrases: std::collections::BTreeMap::from([(
+                phrase_id,
+                ClosedApplePhrase {
+                    arrival_index: (phrase_id - 1) as usize,
+                    outcomes: std::collections::BTreeMap::from([(outcome, count)]),
+                    was_untimed: outcome == ApplePhraseOutcome::Untimed,
+                },
+            )]),
+        }
+    }
+
+    fn mirror_words(
+        text: &str,
+        sample_start: u64,
+        sample_end: u64,
+        source: UnadmittedAppleWordSource,
+    ) -> Vec<UnadmittedAppleWord> {
+        text.split_whitespace()
+            .map(|word| UnadmittedAppleWord {
+                text: word.into(),
+                sample_start,
+                sample_end,
+                source,
+            })
+            .collect()
     }
 
     #[derive(Default)]
@@ -3152,7 +3283,12 @@ mod tests {
                 .unwrap()
                 .push((projection.text.clone(), projection.degraded));
         }));
-        emitter.on_event(&partial_mirror(1, "zero jeden dwa trzy cztery pięć", 0, 16_000));
+        emitter.on_event(&partial_mirror(
+            1,
+            "zero jeden dwa trzy cztery pięć",
+            0,
+            16_000,
+        ));
         assert!(paints.lock().unwrap().is_empty());
         let mut evidence = SpeechIntegrity {
             session_id: "take".into(),
@@ -3200,7 +3336,12 @@ mod tests {
                 paints.lock().unwrap().last().unwrap(),
                 &("jeden dwa trzy cztery pięć".into(), true)
             );
-            emitter.on_event(&partial_mirror(evidence.sequence + 1, "nowe słowa na żywo", 0, 16_000));
+            emitter.on_event(&partial_mirror(
+                evidence.sequence + 1,
+                "nowe słowa na żywo",
+                0,
+                16_000,
+            ));
             assert_eq!(
                 paints.lock().unwrap().last().unwrap(),
                 &("nowe słowa na żywo".into(), true)
@@ -3868,8 +4009,13 @@ mod tests {
             )
         };
         emitter.on_event(&last);
-        emitter.on_event(&closed_mirror(4, Vec::new(), 1,
-            codescribe_core::pipeline::contracts::ApplePhraseOutcome::Admitted, 1));
+        emitter.on_event(&closed_mirror(
+            4,
+            Vec::new(),
+            1,
+            codescribe_core::pipeline::contracts::ApplePhraseOutcome::Admitted,
+            1,
+        ));
         emitter.on_event(&preview_disposition(3, PreviewFinalDisposition::Admitted));
         let frozen = emitter.visible_canvas_snapshot().unwrap();
         assert_eq!(frozen.preview_only_words, 0);
@@ -3911,8 +4057,13 @@ mod tests {
             )
         };
         emitter.on_event(&last);
-        emitter.on_event(&closed_mirror(2, Vec::new(), 1,
-            codescribe_core::pipeline::contracts::ApplePhraseOutcome::Admitted, 2));
+        emitter.on_event(&closed_mirror(
+            2,
+            Vec::new(),
+            1,
+            codescribe_core::pipeline::contracts::ApplePhraseOutcome::Admitted,
+            2,
+        ));
         emitter.on_event(&preview_disposition(1, PreviewFinalDisposition::Admitted));
         let frozen = emitter.visible_canvas_snapshot().unwrap();
         assert_eq!(frozen.preview_only_words, 0);
@@ -3956,8 +4107,13 @@ mod tests {
             "One two three four five six",
         );
         emitter.on_event(&first);
-        emitter.on_event(&closed_mirror(2, Vec::new(), 1,
-            codescribe_core::pipeline::contracts::ApplePhraseOutcome::Admitted, 6));
+        emitter.on_event(&closed_mirror(
+            2,
+            Vec::new(),
+            1,
+            codescribe_core::pipeline::contracts::ApplePhraseOutcome::Admitted,
+            6,
+        ));
         emitter.on_event(&preview_disposition(1, PreviewFinalDisposition::Admitted));
         assert_paint("One two three four five six", 0);
 
@@ -3976,8 +4132,13 @@ mod tests {
             label: "unanchored words".into(),
             receipt,
         });
-        emitter.on_event(&closed_mirror(4, Vec::new(), 1,
-            codescribe_core::pipeline::contracts::ApplePhraseOutcome::Unmatched, 2));
+        emitter.on_event(&closed_mirror(
+            4,
+            Vec::new(),
+            1,
+            codescribe_core::pipeline::contracts::ApplePhraseOutcome::Unmatched,
+            2,
+        ));
         emitter.on_event(&preview_disposition(
             2,
             PreviewFinalDisposition::KeptUnanchored,
@@ -4016,8 +4177,18 @@ mod tests {
             ledger.seal(&occurrence).unwrap().clone()
         };
         emitter.on_event(&EngineEvent::LedgerSeal { receipt: seal });
-        emitter.on_event(&mirror(2, mirror_words("next words", 16_000, 32_000,
-            UnadmittedAppleWordSource::OpenPartial { rev: 2, phrase_id: 1 })));
+        emitter.on_event(&mirror(
+            2,
+            mirror_words(
+                "next words",
+                16_000,
+                32_000,
+                UnadmittedAppleWordSource::OpenPartial {
+                    rev: 2,
+                    phrase_id: 1,
+                },
+            ),
+        ));
         let before = emitter.visible_canvas_snapshot().unwrap();
         assert_eq!(before.text, "Iwo next words");
         assert_eq!(before.preview_only_words, 2);
@@ -4089,8 +4260,18 @@ mod tests {
                 .preview_only_words,
             2
         );
-        emitter.on_event(&mirror(3, mirror_words("side evidence", 32_000, 32_000,
-            UnadmittedAppleWordSource::OpenPartial { rev: 3, phrase_id: 1 })));
+        emitter.on_event(&mirror(
+            3,
+            mirror_words(
+                "side evidence",
+                32_000,
+                32_000,
+                UnadmittedAppleWordSource::OpenPartial {
+                    rev: 3,
+                    phrase_id: 1,
+                },
+            ),
+        ));
         let frozen = emitter.visible_canvas_snapshot().unwrap();
         assert_eq!(
             &frozen.text,
@@ -4115,8 +4296,12 @@ mod tests {
     fn mirror_take() -> (PresentationEmitter, Arc<StdMutex<AcousticLedger>>) {
         let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
         let emitter = PresentationEmitter::new_with_authority(
-            Arc::new(Mutex::new(String::new())), None, None, None,
-            Some(Arc::clone(&ledger)), None,
+            Arc::new(Mutex::new(String::new())),
+            None,
+            None,
+            None,
+            Some(Arc::clone(&ledger)),
+            None,
         );
         emitter.set_literal_delivery(true);
         emitter.on_capture_opened("take", 7);
@@ -4126,15 +4311,36 @@ mod tests {
     #[tokio::test]
     async fn timed_replays_do_not_double_and_zero_width_repetition_is_counted() {
         let (mut emitter, _) = mirror_take();
-        emitter.on_event(&mirror(1, mirror_words("Iwo Iwo", 0, 16_000,
-            UnadmittedAppleWordSource::Pending { utterance_id: 1 })));
+        emitter.on_event(&mirror(
+            1,
+            mirror_words(
+                "Iwo Iwo",
+                0,
+                16_000,
+                UnadmittedAppleWordSource::Pending { utterance_id: 1 },
+            ),
+        ));
         assert_eq!(emitter.visible_canvas_snapshot().unwrap().text, "Iwo");
-        emitter.on_event(&mirror(2, mirror_words("Iwo Iwo", 20_000, 20_000,
-            UnadmittedAppleWordSource::RefusedUntimed { phrase_id: 1 })));
+        emitter.on_event(&mirror(
+            2,
+            mirror_words(
+                "Iwo Iwo",
+                20_000,
+                20_000,
+                UnadmittedAppleWordSource::RefusedUntimed { phrase_id: 1 },
+            ),
+        ));
         let stopped = emitter.begin_stop_canvas().unwrap();
         assert_eq!(stopped.text, "Iwo Iwo");
-        emitter.on_event(&mirror(3, mirror_words("Iwo", 20_000, 20_000,
-            UnadmittedAppleWordSource::RefusedUntimed { phrase_id: 1 })));
+        emitter.on_event(&mirror(
+            3,
+            mirror_words(
+                "Iwo",
+                20_000,
+                20_000,
+                UnadmittedAppleWordSource::RefusedUntimed { phrase_id: 1 },
+            ),
+        ));
         let reasons = stopped.missing_words_from(&emitter.finish_stop_canvas().unwrap());
         assert_eq!(reasons.len(), 1);
         assert_eq!(reasons[0].reason, "unaccounted");
@@ -4144,15 +4350,26 @@ mod tests {
     #[tokio::test]
     async fn ledger_evidence_and_mirror_overlap_is_one_identity() {
         let (mut emitter, ledger) = mirror_take();
-        emitter.on_event(&mirror(1, mirror_words("evidence", 0, 16_000,
-            UnadmittedAppleWordSource::Unmatched)));
+        emitter.on_event(&mirror(
+            1,
+            mirror_words("evidence", 0, 16_000, UnadmittedAppleWordSource::Unmatched),
+        ));
         let stopped = emitter.begin_stop_canvas().unwrap();
-        let observation = ObservationIdentity::new(ObservationProducer::Apple, 1, 0,
-            OccurrenceIdentity::new("take", 7, 0, 16_000));
-        let receipt = ledger.lock().unwrap().keep_visible_unanchored(&observation,
-            "evidence", super::NoAuthorityReason::NoRange);
+        let observation = ObservationIdentity::new(
+            ObservationProducer::Apple,
+            1,
+            0,
+            OccurrenceIdentity::new("take", 7, 0, 16_000),
+        );
+        let receipt = ledger.lock().unwrap().keep_visible_unanchored(
+            &observation,
+            "evidence",
+            super::NoAuthorityReason::NoRange,
+        );
         emitter.on_event(&EngineEvent::LedgerMutation {
-            observation, label: "evidence".into(), receipt,
+            observation,
+            label: "evidence".into(),
+            receipt,
         });
         assert_eq!(emitter.visible_canvas_snapshot().unwrap().text, "evidence");
         emitter.on_event(&mirror(2, Vec::new()));
@@ -4165,28 +4382,63 @@ mod tests {
     #[tokio::test]
     async fn stop_reads_ranged_sources_then_untimed_then_open_partial() {
         let (mut emitter, ledger) = mirror_take();
-        let mutation = admitted_mutation(&mut ledger.lock().unwrap(),
-            OccurrenceIdentity::new("take", 7, 0, 16_000), 1, "committed");
+        let mutation = admitted_mutation(
+            &mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("take", 7, 0, 16_000),
+            1,
+            "committed",
+        );
         emitter.on_event(&mutation);
-        let observation = ObservationIdentity::new(ObservationProducer::Apple, 2, 0,
-            OccurrenceIdentity::new("take", 7, 16_000, 32_000));
-        let receipt = ledger.lock().unwrap().keep_visible_unanchored(&observation,
-            "evidence", super::NoAuthorityReason::NoRange);
+        let observation = ObservationIdentity::new(
+            ObservationProducer::Apple,
+            2,
+            0,
+            OccurrenceIdentity::new("take", 7, 16_000, 32_000),
+        );
+        let receipt = ledger.lock().unwrap().keep_visible_unanchored(
+            &observation,
+            "evidence",
+            super::NoAuthorityReason::NoRange,
+        );
         emitter.on_event(&EngineEvent::LedgerMutation {
-            observation, label: "evidence".into(), receipt,
+            observation,
+            label: "evidence".into(),
+            receipt,
         });
-        let mut words = mirror_words("pending", 32_000, 48_000,
-            UnadmittedAppleWordSource::Pending { utterance_id: 2 });
-        words.extend(mirror_words("unmatched", 48_000, 64_000,
-            UnadmittedAppleWordSource::Unmatched));
-        words.extend(mirror_words("partial", 64_000, 80_000,
-            UnadmittedAppleWordSource::OpenPartial { rev: 1, phrase_id: 1 }));
-        words.extend(mirror_words("untimed", 80_000, 80_000,
-            UnadmittedAppleWordSource::RefusedUntimed { phrase_id: 1 }));
+        let mut words = mirror_words(
+            "pending",
+            32_000,
+            48_000,
+            UnadmittedAppleWordSource::Pending { utterance_id: 2 },
+        );
+        words.extend(mirror_words(
+            "unmatched",
+            48_000,
+            64_000,
+            UnadmittedAppleWordSource::Unmatched,
+        ));
+        words.extend(mirror_words(
+            "partial",
+            64_000,
+            80_000,
+            UnadmittedAppleWordSource::OpenPartial {
+                rev: 1,
+                phrase_id: 1,
+            },
+        ));
+        words.extend(mirror_words(
+            "untimed",
+            80_000,
+            80_000,
+            UnadmittedAppleWordSource::RefusedUntimed { phrase_id: 1 },
+        ));
         emitter.on_event(&mirror(1, words));
         let stopped = emitter.begin_stop_canvas().unwrap();
         let pasted = emitter.finish_stop_canvas().unwrap();
-        assert_eq!(pasted.text, "committed evidence pending unmatched untimed partial");
+        assert_eq!(
+            pasted.text,
+            "committed evidence pending unmatched untimed partial"
+        );
         assert_eq!(pasted.preview_only_words, 5);
         assert_eq!(pasted.untimed_final_words, 1);
         assert!(stopped.missing_words_from(&pasted).is_empty());
@@ -4196,16 +4448,28 @@ mod tests {
     #[tokio::test]
     async fn ledger_then_mirror_then_receipt_reads_each_word_once() {
         let (mut emitter, ledger) = mirror_take();
-        let mut words = mirror_words("admitted", 0, 16_000,
-            UnadmittedAppleWordSource::Pending { utterance_id: 1 });
-        let unmatched = mirror_words("unmatched", 16_000, 32_000,
-            UnadmittedAppleWordSource::Unmatched);
+        let mut words = mirror_words(
+            "admitted",
+            0,
+            16_000,
+            UnadmittedAppleWordSource::Pending { utterance_id: 1 },
+        );
+        let unmatched = mirror_words(
+            "unmatched",
+            16_000,
+            32_000,
+            UnadmittedAppleWordSource::Unmatched,
+        );
         words.extend(unmatched.clone());
         emitter.on_event(&mirror(1, words));
         let stopped = emitter.begin_stop_canvas().unwrap();
         assert_eq!(stopped.text, "admitted unmatched");
-        let mutation = admitted_mutation(&mut ledger.lock().unwrap(),
-            OccurrenceIdentity::new("take", 7, 0, 16_000), 1, "admitted");
+        let mutation = admitted_mutation(
+            &mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("take", 7, 0, 16_000),
+            1,
+            "admitted",
+        );
         emitter.on_event(&mutation);
         let between_ledger_and_mirror = emitter.visible_canvas_snapshot().unwrap();
         assert_eq!(between_ledger_and_mirror.text, "admitted unmatched");
@@ -4225,11 +4489,22 @@ mod tests {
     #[tokio::test]
     async fn deferred_words_close_during_stop_without_duplicate_paste() {
         let (mut emitter, ledger) = mirror_take();
-        emitter.on_event(&mirror(1, mirror_words("deferred words", 0, 16_000,
-            UnadmittedAppleWordSource::Pending { utterance_id: 3 })));
+        emitter.on_event(&mirror(
+            1,
+            mirror_words(
+                "deferred words",
+                0,
+                16_000,
+                UnadmittedAppleWordSource::Pending { utterance_id: 3 },
+            ),
+        ));
         let stopped = emitter.begin_stop_canvas().unwrap();
-        let mutation = admitted_mutation(&mut ledger.lock().unwrap(),
-            OccurrenceIdentity::new("take", 7, 0, 16_000), 1, "deferred words");
+        let mutation = admitted_mutation(
+            &mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("take", 7, 0, 16_000),
+            1,
+            "deferred words",
+        );
         emitter.on_event(&mutation);
         emitter.on_event(&mirror(2, Vec::new()));
         let pasted = emitter.finish_stop_canvas().unwrap();
@@ -4237,7 +4512,11 @@ mod tests {
         assert_eq!(pasted.preview_only_words, 0);
         let reasons = stopped.missing_words_from(&pasted);
         assert_eq!(reasons.len(), 2);
-        assert!(reasons.iter().all(|word| word.reason.starts_with("admitted_into occurrence=")));
+        assert!(
+            reasons
+                .iter()
+                .all(|word| word.reason.starts_with("admitted_into occurrence="))
+        );
         emitter.finish().await;
     }
 
@@ -4245,18 +4524,47 @@ mod tests {
     async fn partial_shortening_accounts_only_for_words_absent_from_new_state() {
         for (start, end) in [(16_000, 32_000), (16_000, 16_000)] {
             let (mut emitter, _) = mirror_take();
-            emitter.on_event(&mirror(1, mirror_words("one two three", start, end,
-                UnadmittedAppleWordSource::OpenPartial { rev: 1, phrase_id: 1 })));
+            emitter.on_event(&mirror(
+                1,
+                mirror_words(
+                    "one two three",
+                    start,
+                    end,
+                    UnadmittedAppleWordSource::OpenPartial {
+                        rev: 1,
+                        phrase_id: 1,
+                    },
+                ),
+            ));
             let stopped = emitter.begin_stop_canvas().unwrap();
-            emitter.on_event(&mirror(2, mirror_words("one", start, end,
-                UnadmittedAppleWordSource::OpenPartial { rev: 2, phrase_id: 1 })));
+            emitter.on_event(&mirror(
+                2,
+                mirror_words(
+                    "one",
+                    start,
+                    end,
+                    UnadmittedAppleWordSource::OpenPartial {
+                        rev: 2,
+                        phrase_id: 1,
+                    },
+                ),
+            ));
             let pasted = emitter.finish_stop_canvas().unwrap();
             assert_eq!(pasted.text, "one");
             let reasons = stopped.missing_words_from(&pasted);
             assert_eq!(reasons.len(), 2);
-            assert_eq!(reasons.iter().map(|word| word.word.as_str()).collect::<Vec<_>>(),
-                ["two", "three"]);
-            assert!(reasons.iter().all(|word| word.reason == "superseded_by_partial rev=2"));
+            assert_eq!(
+                reasons
+                    .iter()
+                    .map(|word| word.word.as_str())
+                    .collect::<Vec<_>>(),
+                ["two", "three"]
+            );
+            assert!(
+                reasons
+                    .iter()
+                    .all(|word| word.reason == "superseded_by_partial rev=2")
+            );
             emitter.finish().await;
         }
     }
@@ -4264,33 +4572,70 @@ mod tests {
     #[tokio::test]
     async fn identical_words_keep_phrase_identity_across_revision_then_close() {
         let (mut emitter, _) = mirror_take();
-        emitter.on_event(&mirror(1, mirror_words("same words", 16_000, 32_000,
-            UnadmittedAppleWordSource::OpenPartial { rev: 1, phrase_id: 1 })));
+        emitter.on_event(&mirror(
+            1,
+            mirror_words(
+                "same words",
+                16_000,
+                32_000,
+                UnadmittedAppleWordSource::OpenPartial {
+                    rev: 1,
+                    phrase_id: 1,
+                },
+            ),
+        ));
         let stopped = emitter.begin_stop_canvas().unwrap();
-        emitter.on_event(&mirror(2, mirror_words("same words", 16_000, 32_000,
-            UnadmittedAppleWordSource::OpenPartial { rev: 2, phrase_id: 1 })));
+        emitter.on_event(&mirror(
+            2,
+            mirror_words(
+                "same words",
+                16_000,
+                32_000,
+                UnadmittedAppleWordSource::OpenPartial {
+                    rev: 2,
+                    phrase_id: 1,
+                },
+            ),
+        ));
         let revised = emitter.visible_canvas_snapshot().unwrap();
         assert_eq!(revised.text, stopped.text);
         assert!(stopped.missing_words_from(&revised).is_empty());
-        emitter.on_event(&closed_mirror(3, mirror_words("same words", 16_000, 32_000,
-            UnadmittedAppleWordSource::Pending { utterance_id: 9 }), 1,
-            codescribe_core::pipeline::contracts::ApplePhraseOutcome::Pending, 2));
+        emitter.on_event(&closed_mirror(
+            3,
+            mirror_words(
+                "same words",
+                16_000,
+                32_000,
+                UnadmittedAppleWordSource::Pending { utterance_id: 9 },
+            ),
+            1,
+            codescribe_core::pipeline::contracts::ApplePhraseOutcome::Pending,
+            2,
+        ));
         let pasted = emitter.finish_stop_canvas().unwrap();
         assert_eq!(pasted.text, stopped.text);
         let reasons = stopped.missing_words_from(&pasted);
         assert_eq!(reasons.len(), 2);
-        assert!(reasons.iter().all(|word| word.reason == "closed_by_final phrase=1 outcomes=pending=2"));
+        assert!(
+            reasons
+                .iter()
+                .all(|word| word.reason == "closed_by_final phrase=1 outcomes=pending=2")
+        );
         emitter.finish().await;
     }
 
     #[tokio::test]
     async fn stop_accounting_does_not_borrow_the_same_text_from_another_range() {
         let (mut emitter, _) = mirror_take();
-        emitter.on_event(&mirror(1, mirror_words("Iwo", 0, 16_000,
-            UnadmittedAppleWordSource::Unmatched)));
+        emitter.on_event(&mirror(
+            1,
+            mirror_words("Iwo", 0, 16_000, UnadmittedAppleWordSource::Unmatched),
+        ));
         let stopped = emitter.begin_stop_canvas().unwrap();
-        emitter.on_event(&mirror(2, mirror_words("Iwo", 32_000, 48_000,
-            UnadmittedAppleWordSource::Unmatched)));
+        emitter.on_event(&mirror(
+            2,
+            mirror_words("Iwo", 32_000, 48_000, UnadmittedAppleWordSource::Unmatched),
+        ));
         let pasted = emitter.finish_stop_canvas().unwrap();
         let reasons = stopped.missing_words_from(&pasted);
         assert_eq!(reasons.len(), 1);
@@ -4301,45 +4646,92 @@ mod tests {
     #[tokio::test]
     async fn mirror_replacement_keeps_pending_words_beside_unrelated_commit() {
         let (mut emitter, ledger) = mirror_take();
-        let pending = mirror_words("pending", 32_000, 48_000,
-            UnadmittedAppleWordSource::Pending { utterance_id: 3 });
+        let pending = mirror_words(
+            "pending",
+            32_000,
+            48_000,
+            UnadmittedAppleWordSource::Pending { utterance_id: 3 },
+        );
         let mut first = pending.clone();
-        first.extend(mirror_words("old suffix", 48_000, 64_000,
-            UnadmittedAppleWordSource::OpenPartial { rev: 1, phrase_id: 1 }));
+        first.extend(mirror_words(
+            "old suffix",
+            48_000,
+            64_000,
+            UnadmittedAppleWordSource::OpenPartial {
+                rev: 1,
+                phrase_id: 1,
+            },
+        ));
         emitter.on_event(&mirror(1, first));
         let stopped = emitter.begin_stop_canvas().unwrap();
         let mut replacement = pending;
-        replacement.extend(mirror_words("latest", 48_000, 64_000,
-            UnadmittedAppleWordSource::OpenPartial { rev: 2, phrase_id: 1 }));
+        replacement.extend(mirror_words(
+            "latest",
+            48_000,
+            64_000,
+            UnadmittedAppleWordSource::OpenPartial {
+                rev: 2,
+                phrase_id: 1,
+            },
+        ));
         emitter.on_event(&mirror(2, replacement));
-        let mutation = admitted_mutation(&mut ledger.lock().unwrap(),
-            OccurrenceIdentity::new("take", 7, 0, 16_000), 1, "earlier");
+        let mutation = admitted_mutation(
+            &mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("take", 7, 0, 16_000),
+            1,
+            "earlier",
+        );
         emitter.on_event(&mutation);
         let pasted = emitter.finish_stop_canvas().unwrap();
         assert_eq!(pasted.text, "earlier pending latest");
         let reasons = stopped.missing_words_from(&pasted);
         assert_eq!(reasons.len(), 2);
-        assert!(reasons.iter().all(|word| word.reason == "superseded_by_partial rev=2"));
+        assert!(
+            reasons
+                .iter()
+                .all(|word| word.reason == "superseded_by_partial rev=2")
+        );
         emitter.finish().await;
     }
 
     #[tokio::test]
     async fn untimed_final_stays_beside_commit_until_same_phrase_gets_timing() {
         let (mut emitter, ledger) = mirror_take();
-        emitter.on_event(&closed_mirror(1, mirror_words("untimed words", 20_000, 20_000,
-            UnadmittedAppleWordSource::RefusedUntimed { phrase_id: 1 }), 1,
-            codescribe_core::pipeline::contracts::ApplePhraseOutcome::Untimed, 2));
+        emitter.on_event(&closed_mirror(
+            1,
+            mirror_words(
+                "untimed words",
+                20_000,
+                20_000,
+                UnadmittedAppleWordSource::RefusedUntimed { phrase_id: 1 },
+            ),
+            1,
+            codescribe_core::pipeline::contracts::ApplePhraseOutcome::Untimed,
+            2,
+        ));
         let stopped = emitter.begin_stop_canvas().unwrap();
         assert_eq!(stopped.text, "untimed words");
         assert_eq!(stopped.untimed_final_words, 2);
         emitter.on_event(&preview_disposition(8, PreviewFinalDisposition::Admitted));
         assert_eq!(emitter.visible_canvas_snapshot().unwrap(), stopped);
-        let mutation = admitted_mutation(&mut ledger.lock().unwrap(),
-            OccurrenceIdentity::new("take", 7, 16_000, 32_000), 1, "tail words");
+        let mutation = admitted_mutation(
+            &mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("take", 7, 16_000, 32_000),
+            1,
+            "tail words",
+        );
         emitter.on_event(&mutation);
-        assert_eq!(emitter.visible_canvas_snapshot().unwrap().text, "tail words untimed words");
-        let mut replacement = closed_mirror(2, Vec::new(), 1,
-            codescribe_core::pipeline::contracts::ApplePhraseOutcome::Admitted, 2);
+        assert_eq!(
+            emitter.visible_canvas_snapshot().unwrap().text,
+            "tail words untimed words"
+        );
+        let mut replacement = closed_mirror(
+            2,
+            Vec::new(),
+            1,
+            codescribe_core::pipeline::contracts::ApplePhraseOutcome::Admitted,
+            2,
+        );
         if let EngineEvent::UnadmittedAppleWords { closed_phrases, .. } = &mut replacement {
             closed_phrases.get_mut(&1).unwrap().was_untimed = true;
         }
@@ -4350,27 +4742,55 @@ mod tests {
         assert_eq!(pasted.untimed_final_phrases, vec![(1, 0)]);
         let reasons = stopped.missing_words_from(&pasted);
         assert_eq!(reasons.len(), 2);
-        assert!(reasons.iter().all(|word| word.reason == "closed_by_final phrase=1 outcomes=admitted=2"));
+        assert!(
+            reasons
+                .iter()
+                .all(|word| word.reason == "closed_by_final phrase=1 outcomes=admitted=2")
+        );
         emitter.finish().await;
     }
 
     #[tokio::test]
     async fn open_partial_closes_to_pending_or_unmatched_state() {
         for (source, outcome) in [
-            (UnadmittedAppleWordSource::Pending { utterance_id: 7 }, codescribe_core::pipeline::contracts::ApplePhraseOutcome::Pending),
-            (UnadmittedAppleWordSource::Unmatched, codescribe_core::pipeline::contracts::ApplePhraseOutcome::Unmatched),
+            (
+                UnadmittedAppleWordSource::Pending { utterance_id: 7 },
+                codescribe_core::pipeline::contracts::ApplePhraseOutcome::Pending,
+            ),
+            (
+                UnadmittedAppleWordSource::Unmatched,
+                codescribe_core::pipeline::contracts::ApplePhraseOutcome::Unmatched,
+            ),
         ] {
             let (mut emitter, _) = mirror_take();
-            emitter.on_event(&mirror(1, mirror_words("open", 8_000, 12_000,
-                UnadmittedAppleWordSource::OpenPartial { rev: 1, phrase_id: 1 })));
+            emitter.on_event(&mirror(
+                1,
+                mirror_words(
+                    "open",
+                    8_000,
+                    12_000,
+                    UnadmittedAppleWordSource::OpenPartial {
+                        rev: 1,
+                        phrase_id: 1,
+                    },
+                ),
+            ));
             let stopped = emitter.begin_stop_canvas().unwrap();
-            emitter.on_event(&closed_mirror(2, mirror_words("closed", 60 * 16_000, 62 * 16_000, source),
-                1, outcome, 1));
+            emitter.on_event(&closed_mirror(
+                2,
+                mirror_words("closed", 60 * 16_000, 62 * 16_000, source),
+                1,
+                outcome,
+                1,
+            ));
             let pasted = emitter.finish_stop_canvas().unwrap();
             assert_eq!(pasted.text, "closed");
             let reasons = stopped.missing_words_from(&pasted);
             assert_eq!(reasons.len(), 1);
-            assert_eq!(reasons[0].reason, format!("closed_by_final phrase=1 outcomes={}=1", outcome.as_str()));
+            assert_eq!(
+                reasons[0].reason,
+                format!("closed_by_final phrase=1 outcomes={}=1", outcome.as_str())
+            );
             emitter.finish().await;
         }
     }
@@ -4379,8 +4799,12 @@ mod tests {
     async fn stuck_partial_pin_paints_at_tail_for_twenty_revisions() {
         for start in [0, 4_800] {
             let (mut emitter, ledger) = mirror_take();
-            let mutation = admitted_mutation(&mut ledger.lock().unwrap(),
-                OccurrenceIdentity::new("take", 7, start, 64_000), 1, "committed");
+            let mutation = admitted_mutation(
+                &mut ledger.lock().unwrap(),
+                OccurrenceIdentity::new("take", 7, start, 64_000),
+                1,
+                "committed",
+            );
             emitter.on_event(&mutation);
             for rev in 1..=20 {
                 let text = format!("open revision {rev}");
@@ -4403,18 +4827,32 @@ mod tests {
             let (mut emitter, ledger) = mirror_take();
             emitter.on_event(&partial_mirror(1, partial, 12_800, 12_800));
             let stopped = emitter.begin_stop_canvas().unwrap();
-            let mutation = admitted_mutation(&mut ledger.lock().unwrap(),
-                OccurrenceIdentity::new("take", 7, 963_200, 992_000), 1, final_text);
+            let mutation = admitted_mutation(
+                &mut ledger.lock().unwrap(),
+                OccurrenceIdentity::new("take", 7, 963_200, 992_000),
+                1,
+                final_text,
+            );
             emitter.on_event(&mutation);
-            emitter.on_event(&closed_mirror(2, Vec::new(), 1,
+            emitter.on_event(&closed_mirror(
+                2,
+                Vec::new(),
+                1,
                 codescribe_core::pipeline::contracts::ApplePhraseOutcome::Admitted,
-                final_text.split_whitespace().count()));
+                final_text.split_whitespace().count(),
+            ));
             let pasted = emitter.finish_stop_canvas().unwrap();
             assert_eq!(pasted.text, final_text);
-            assert_eq!(pasted.text.split_whitespace().count(), final_text.split_whitespace().count());
+            assert_eq!(
+                pasted.text.split_whitespace().count(),
+                final_text.split_whitespace().count()
+            );
             let reasons = stopped.missing_words_from(&pasted);
             assert_eq!(reasons.len(), partial.split_whitespace().count());
-            assert!(reasons.iter().all(|word| word.reason.starts_with("closed_by_final phrase=1 outcomes=admitted=")));
+            assert!(reasons.iter().all(|word| {
+                word.reason
+                    .starts_with("closed_by_final phrase=1 outcomes=admitted=")
+            }));
             emitter.finish().await;
         }
     }
@@ -4429,8 +4867,18 @@ mod tests {
         let reasons = stopped.missing_words_from(&shortened);
         assert_eq!(reasons.len(), 1);
         assert_eq!(reasons[0].reason, "superseded_by_partial rev=2");
-        emitter.on_event(&mirror(3, mirror_words("Iwo Iwo", 0, 0,
-            UnadmittedAppleWordSource::OpenPartial { rev: 3, phrase_id: 2 })));
+        emitter.on_event(&mirror(
+            3,
+            mirror_words(
+                "Iwo Iwo",
+                0,
+                0,
+                UnadmittedAppleWordSource::OpenPartial {
+                    rev: 3,
+                    phrase_id: 2,
+                },
+            ),
+        ));
         let vanished = emitter.finish_stop_canvas().unwrap();
         let reasons = stopped.missing_words_from(&vanished);
         assert_eq!(reasons.len(), 2);
@@ -4441,22 +4889,42 @@ mod tests {
     #[tokio::test]
     async fn ranged_mirror_word_is_accounted_by_covering_ledger_evidence() {
         let (mut emitter, ledger) = mirror_take();
-        emitter.on_event(&mirror(1, mirror_words("old words", 16_000, 24_000,
-            UnadmittedAppleWordSource::Pending { utterance_id: 9 })));
+        emitter.on_event(&mirror(
+            1,
+            mirror_words(
+                "old words",
+                16_000,
+                24_000,
+                UnadmittedAppleWordSource::Pending { utterance_id: 9 },
+            ),
+        ));
         let stopped = emitter.begin_stop_canvas().unwrap();
-        let observation = ObservationIdentity::new(ObservationProducer::Apple, 1, 0,
-            OccurrenceIdentity::new("take", 7, 8_000, 32_000));
-        let receipt = ledger.lock().unwrap().keep_visible_unanchored(&observation,
-            "revised evidence", super::NoAuthorityReason::NoRange);
+        let observation = ObservationIdentity::new(
+            ObservationProducer::Apple,
+            1,
+            0,
+            OccurrenceIdentity::new("take", 7, 8_000, 32_000),
+        );
+        let receipt = ledger.lock().unwrap().keep_visible_unanchored(
+            &observation,
+            "revised evidence",
+            super::NoAuthorityReason::NoRange,
+        );
         emitter.on_event(&EngineEvent::LedgerMutation {
-            observation, label: "revised evidence".into(), receipt,
+            observation,
+            label: "revised evidence".into(),
+            receipt,
         });
         emitter.on_event(&mirror(2, Vec::new()));
         let pasted = emitter.finish_stop_canvas().unwrap();
         assert_eq!(pasted.text, "revised evidence");
         let reasons = stopped.missing_words_from(&pasted);
         assert_eq!(reasons.len(), 2);
-        assert!(reasons.iter().all(|word| word.reason.starts_with("retained_as_evidence occurrence=")));
+        assert!(
+            reasons
+                .iter()
+                .all(|word| word.reason.starts_with("retained_as_evidence occurrence="))
+        );
         emitter.finish().await;
     }
 
@@ -4464,22 +4932,53 @@ mod tests {
     async fn untimed_phrases_follow_arrival_then_open_partial_with_no_pin_authority() {
         use codescribe_core::pipeline::contracts::{ApplePhraseOutcome, ClosedApplePhrase};
         let (mut emitter, ledger) = mirror_take();
-        let mutation = admitted_mutation(&mut ledger.lock().unwrap(),
-            OccurrenceIdentity::new("take", 7, 0, 64_000), 1, "ranged");
+        let mutation = admitted_mutation(
+            &mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("take", 7, 0, 64_000),
+            1,
+            "ranged",
+        );
         emitter.on_event(&mutation);
-        let mut words = mirror_words("second", 0, 0,
-            UnadmittedAppleWordSource::RefusedUntimed { phrase_id: 2 });
-        words.extend(mirror_words("open", 0, 0,
-            UnadmittedAppleWordSource::OpenPartial { rev: 3, phrase_id: 3 }));
-        words.extend(mirror_words("first", 60_000, 60_000,
-            UnadmittedAppleWordSource::RefusedUntimed { phrase_id: 1 }));
+        let mut words = mirror_words(
+            "second",
+            0,
+            0,
+            UnadmittedAppleWordSource::RefusedUntimed { phrase_id: 2 },
+        );
+        words.extend(mirror_words(
+            "open",
+            0,
+            0,
+            UnadmittedAppleWordSource::OpenPartial {
+                rev: 3,
+                phrase_id: 3,
+            },
+        ));
+        words.extend(mirror_words(
+            "first",
+            60_000,
+            60_000,
+            UnadmittedAppleWordSource::RefusedUntimed { phrase_id: 1 },
+        ));
         emitter.on_event(&EngineEvent::UnadmittedAppleWords {
-            revision: 1, words,
-            closed_phrases: [1, 2].into_iter().map(|id| (id, ClosedApplePhrase {
-                arrival_index: (id - 1) as usize,
-                outcomes: std::collections::BTreeMap::from([(ApplePhraseOutcome::Untimed, 1)]),
-                was_untimed: true,
-            })).collect(),
+            revision: 1,
+            words,
+            closed_phrases: [1, 2]
+                .into_iter()
+                .map(|id| {
+                    (
+                        id,
+                        ClosedApplePhrase {
+                            arrival_index: (id - 1) as usize,
+                            outcomes: std::collections::BTreeMap::from([(
+                                ApplePhraseOutcome::Untimed,
+                                1,
+                            )]),
+                            was_untimed: true,
+                        },
+                    )
+                })
+                .collect(),
         });
         let stopped = emitter.begin_stop_canvas().unwrap();
         let pasted = emitter.finish_stop_canvas().unwrap();
@@ -4493,11 +4992,14 @@ mod tests {
     #[tokio::test]
     async fn five_distinct_unadmitted_iwo_ranges_remain_five_in_both_reads() {
         let (mut emitter, _) = mirror_take();
-        let words = (0..5).map(|index| UnadmittedAppleWord {
-            text: "Iwo".into(), sample_start: index * 16_000,
-            sample_end: (index + 1) * 16_000,
-            source: UnadmittedAppleWordSource::Unmatched,
-        }).collect();
+        let words = (0..5)
+            .map(|index| UnadmittedAppleWord {
+                text: "Iwo".into(),
+                sample_start: index * 16_000,
+                sample_end: (index + 1) * 16_000,
+                source: UnadmittedAppleWordSource::Unmatched,
+            })
+            .collect();
         emitter.on_event(&mirror(1, words));
         let stopped = emitter.begin_stop_canvas().unwrap();
         let pasted = emitter.finish_stop_canvas().unwrap();
@@ -4510,27 +5012,47 @@ mod tests {
     #[tokio::test]
     async fn disposition_receipts_never_retain_or_clear_mirror_words() {
         let (mut emitter, _) = mirror_take();
-        emitter.on_event(&mirror(1, mirror_words("pipeline truth", 16_000, 32_000,
-            UnadmittedAppleWordSource::Unmatched)));
+        emitter.on_event(&mirror(
+            1,
+            mirror_words(
+                "pipeline truth",
+                16_000,
+                32_000,
+                UnadmittedAppleWordSource::Unmatched,
+            ),
+        ));
         let before = emitter.begin_stop_canvas().unwrap();
-        for disposition in [PreviewFinalDisposition::Admitted,
+        for disposition in [
+            PreviewFinalDisposition::Admitted,
             PreviewFinalDisposition::KeptUnanchored,
-            PreviewFinalDisposition::Refused { reason: "untimed".into() }] {
+            PreviewFinalDisposition::Refused {
+                reason: "untimed".into(),
+            },
+        ] {
             emitter.on_event(&EngineEvent::PreviewDisposition {
-                superseded_through_rev: 1, final_disposition: disposition,
-                refused_evidence: vec![codescribe_core::pipeline::contracts::RefusedPreviewEvidence {
-                    range: None, text: "receipt text".into(), reason: "untimed".into(),
-                }],
+                superseded_through_rev: 1,
+                final_disposition: disposition,
+                refused_evidence: vec![
+                    codescribe_core::pipeline::contracts::RefusedPreviewEvidence {
+                        range: None,
+                        text: "receipt text".into(),
+                        reason: "untimed".into(),
+                    },
+                ],
             });
             assert_eq!(emitter.visible_canvas_snapshot().unwrap(), before);
         }
         emitter.on_event(&mirror(2, Vec::new()));
         let after = emitter.finish_stop_canvas().unwrap();
         assert!(after.text.is_empty());
-        assert!(before.missing_words_from(&after).iter().all(|word| word.reason == "unaccounted"));
+        assert!(
+            before
+                .missing_words_from(&after)
+                .iter()
+                .all(|word| word.reason == "unaccounted")
+        );
         emitter.finish().await;
     }
-
 
     #[tokio::test]
     async fn relabel_in_place_during_the_wait_is_accounted_not_a_defect() {
@@ -7835,10 +8357,13 @@ mod tests {
         assert_eq!(evidence_texts(), ["inna wersja", "między tokenami"]);
 
         emitter.on_event(&EngineEvent::Preview {
-            rev: 1, text: "dalej mówię".into(),
+            rev: 1,
+            text: "dalej mówię".into(),
             pin: PreviewPin::open_occurrence(TailSampleRange {
-                session: "take".into(), capture_epoch: 7,
-                sample_start: 112_000, sample_end: 128_000,
+                session: "take".into(),
+                capture_epoch: 7,
+                sample_start: 112_000,
+                sample_end: 128_000,
             }),
         });
         assert_eq!(
@@ -7885,17 +8410,23 @@ mod tests {
         let log_path = temp.path().join("preview.log");
         let log_file = std::fs::File::create(&log_path).unwrap();
         let subscriber = tracing_subscriber::fmt()
-            .without_time().with_ansi(false).with_max_level(tracing::Level::DEBUG)
-            .with_writer(move || log_file.try_clone().unwrap()).finish();
+            .without_time()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(move || log_file.try_clone().unwrap())
+            .finish();
         let mut emitter = PresentationEmitter::new(Arc::new(Mutex::new(String::new())), None, None);
         emitter.on_capture_opened("traced", 2);
         let before = emitter.visible_canvas_snapshot().unwrap();
         tracing::subscriber::with_default(subscriber, || {
             emitter.on_event(&EngineEvent::Preview {
-                rev: 3, text: "tajne słowa".into(),
+                rev: 3,
+                text: "tajne słowa".into(),
                 pin: PreviewPin::from_segments(TailSampleRange {
-                    session: "traced".into(), capture_epoch: 2,
-                    sample_start: 4_000, sample_end: 12_000,
+                    session: "traced".into(),
+                    capture_epoch: 2,
+                    sample_start: 4_000,
+                    sample_end: 12_000,
                 }),
             });
         });
@@ -7911,13 +8442,25 @@ mod tests {
         let delivery = Arc::new(Mutex::new(String::new()));
         let mut emitter = PresentationEmitter::new(Arc::clone(&delivery), None, None);
         emitter.on_capture_opened("collapsed", 3);
-        emitter.on_event(&mirror(1, mirror_words("preview only", 400, 400,
-            UnadmittedAppleWordSource::OpenPartial { rev: 1, phrase_id: 1 })));
+        emitter.on_event(&mirror(
+            1,
+            mirror_words(
+                "preview only",
+                400,
+                400,
+                UnadmittedAppleWordSource::OpenPartial {
+                    rev: 1,
+                    phrase_id: 1,
+                },
+            ),
+        ));
         let frozen = emitter.begin_stop_canvas().unwrap();
         assert_eq!(frozen.text, "preview only");
         assert_eq!(frozen.preview_only_words, 2);
         assert!(!frozen.has_committed_document);
-        emitter.on_event(&EngineEvent::NoSpeech { reason: "lane lost".into() });
+        emitter.on_event(&EngineEvent::NoSpeech {
+            reason: "lane lost".into(),
+        });
         assert_eq!(emitter.finish_stop_canvas().unwrap(), frozen);
         emitter.finish().await;
         assert!(delivery.lock().await.is_empty());

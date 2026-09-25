@@ -691,11 +691,16 @@ mod tests {
             revision: 1,
             closed_phrases: Default::default(),
             words: vec![crate::pipeline::contracts::UnadmittedAppleWord {
-                text: "private words".into(), sample_start: 0, sample_end: 16_000,
+                text: "private words".into(),
+                sample_start: 0,
+                sample_end: 16_000,
                 source: crate::pipeline::contracts::UnadmittedAppleWordSource::Unmatched,
             }],
         };
-        assert!(matches!(EngineEventWire::try_from(&event), Err(IpcIneligibleEngineEvent)));
+        assert!(matches!(
+            EngineEventWire::try_from(&event),
+            Err(IpcIneligibleEngineEvent)
+        ));
         assert!(serde_json::to_value(&event).is_err());
     }
 

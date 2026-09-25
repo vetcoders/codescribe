@@ -71,8 +71,9 @@ use crate::pipeline::acoustic_ledger::{
     RefuseReason, SealCoverageReceipt, SealCoverageStatus, SealRefusal,
 };
 use crate::pipeline::contracts::{
-    ApplePhraseOutcome, ClosedApplePhrase, EngineEvent, EventSink, PreviewPin, SessionConservationReceipt, SpeechIntegrity,
-    SpeechIntegrityPhase, TranscriptSegment, UnadmittedAppleWord, UnadmittedAppleWordSource,
+    ApplePhraseOutcome, ClosedApplePhrase, EngineEvent, EventSink, PreviewPin,
+    SessionConservationReceipt, SpeechIntegrity, SpeechIntegrityPhase, TranscriptSegment,
+    UnadmittedAppleWord, UnadmittedAppleWordSource,
 };
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
 use crate::stt::tail_patcher::{SkipReasonCode, TailPatchConfig, TailPatchOutcome};
@@ -1915,14 +1916,19 @@ impl AppleSealState {
         let mut words = Vec::new();
         // The pin is diagnostic only, including when Apple supplied segments.
         // Repeated lexical words in one phrase must retain their multiplicity.
-        words.extend(self.open_partial.split_whitespace().map(|text| UnadmittedAppleWord {
-            text: text.to_string(),
-            sample_start: self.open_partial_pin,
-            sample_end: self.open_partial_pin,
-            source: UnadmittedAppleWordSource::OpenPartial {
-                rev: self.preview_rev, phrase_id: self.phrase_id,
-            },
-        }));
+        words.extend(
+            self.open_partial
+                .split_whitespace()
+                .map(|text| UnadmittedAppleWord {
+                    text: text.to_string(),
+                    sample_start: self.open_partial_pin,
+                    sample_end: self.open_partial_pin,
+                    source: UnadmittedAppleWordSource::OpenPartial {
+                        rev: self.preview_rev,
+                        phrase_id: self.phrase_id,
+                    },
+                }),
+        );
         for (&utterance_id, pending) in &self.pending_silero_words {
             words.extend(pending.iter().map(|word| UnadmittedAppleWord {
                 text: word.text.clone(),
@@ -1931,21 +1937,30 @@ impl AppleSealState {
                 source: UnadmittedAppleWordSource::Pending { utterance_id },
             }));
         }
-        words.extend(self.unmatched_silero_words.iter().map(|word| UnadmittedAppleWord {
-            text: word.text.clone(),
-            sample_start: word.sample_start,
-            sample_end: word.sample_end,
-            source: UnadmittedAppleWordSource::Unmatched,
-        }));
+        words.extend(
+            self.unmatched_silero_words
+                .iter()
+                .map(|word| UnadmittedAppleWord {
+                    text: word.text.clone(),
+                    sample_start: word.sample_start,
+                    sample_end: word.sample_end,
+                    source: UnadmittedAppleWordSource::Unmatched,
+                }),
+        );
         words.extend(self.refused_untimed_words.values().flatten().cloned());
         words.retain(|word| {
-            if matches!(word.source, UnadmittedAppleWordSource::OpenPartial { .. }
-                | UnadmittedAppleWordSource::RefusedUntimed { .. }) {
+            if matches!(
+                word.source,
+                UnadmittedAppleWordSource::OpenPartial { .. }
+                    | UnadmittedAppleWordSource::RefusedUntimed { .. }
+            ) {
                 return true;
             }
             let midpoint =
                 word.sample_start + word.sample_end.saturating_sub(word.sample_start) / 2;
-            !committed.iter().any(|&(start, end)| start <= midpoint && midpoint < end)
+            !committed
+                .iter()
+                .any(|&(start, end)| start <= midpoint && midpoint < end)
         });
         words.sort_by_key(|word| match word.source {
             UnadmittedAppleWordSource::OpenPartial { .. } => (2, 0, 0),
@@ -1953,12 +1968,14 @@ impl AppleSealState {
             _ => (0, word.sample_start, word.sample_end),
         });
         if words == self.published_unadmitted_words
-            && self.closed_phrases == self.published_closed_phrases {
+            && self.closed_phrases == self.published_closed_phrases
+        {
             return;
         }
         self.unadmitted_revision = self.unadmitted_revision.saturating_add(1);
         self.published_unadmitted_words = words.clone();
-        self.published_closed_phrases.clone_from(&self.closed_phrases);
+        self.published_closed_phrases
+            .clone_from(&self.closed_phrases);
         let _ = ev_tx.send(EngineEvent::UnadmittedAppleWords {
             revision: self.unadmitted_revision,
             words,
@@ -4805,7 +4822,12 @@ fn reconcile_silero_ledger(
                         ),
                     });
                     retain_apple_words_at_exit(
-                        state, ev_tx, utterance_id, &words, disjoint, "overlap_refused",
+                        state,
+                        ev_tx,
+                        utterance_id,
+                        &words,
+                        disjoint,
+                        "overlap_refused",
                     );
                     state.reconciled_silero.insert(utterance_id);
                     continue;
@@ -6622,23 +6644,31 @@ fn close_apple_phrase(
     if events.is_empty() && !closes_open {
         return (committed, events);
     }
-    let untimed = events.iter().any(|event| matches!(event,
-        EngineEvent::Warning { code, .. } if code == "apple_final_without_pcm_timing"));
+    let untimed = events.iter().any(|event| {
+        matches!(event,
+        EngineEvent::Warning { code, .. } if code == "apple_final_without_pcm_timing")
+    });
     let mut outcomes = BTreeMap::new();
     if untimed {
         outcomes.insert(ApplePhraseOutcome::Untimed, raw.split_whitespace().count());
-        state.refused_untimed_words.insert(phrase_id, raw.split_whitespace().map(|text| {
-            UnadmittedAppleWord {
-                text: text.into(), sample_start: state.open_partial_pin,
-                sample_end: state.open_partial_pin,
-                source: UnadmittedAppleWordSource::RefusedUntimed { phrase_id },
-            }
-        }).collect());
+        state.refused_untimed_words.insert(
+            phrase_id,
+            raw.split_whitespace()
+                .map(|text| UnadmittedAppleWord {
+                    text: text.into(),
+                    sample_start: state.open_partial_pin,
+                    sample_end: state.open_partial_pin,
+                    source: UnadmittedAppleWordSource::RefusedUntimed { phrase_id },
+                })
+                .collect(),
+        );
     } else {
         if !timed.is_empty() {
             state.refused_untimed_words.remove(&phrase_id);
         }
-        let mut remaining = timed.iter().map(|word| word.text.split_whitespace().count())
+        let mut remaining = timed
+            .iter()
+            .map(|word| word.text.split_whitespace().count())
             .collect::<Vec<_>>();
         for (word, count) in timed.iter().zip(&mut remaining) {
             let held = |candidate: &FusionWord| {
@@ -6663,19 +6693,29 @@ fn close_apple_phrase(
         // again. All budgets are bounded by this closing call's own input.
         for mutations in [false, true] {
             for event in &events {
-                let EngineEvent::LedgerMutation { observation, label, receipt } = event else {
+                let EngineEvent::LedgerMutation {
+                    observation,
+                    label,
+                    receipt,
+                } = event
+                else {
                     continue;
                 };
                 if observation.producer != LedgerObservationProducer::Apple {
                     continue;
                 }
                 let outcome = match receipt {
-                    MutationReceipt::Insert { .. } | MutationReceipt::Correct { .. }
+                    MutationReceipt::Insert { .. }
+                    | MutationReceipt::Correct { .. }
                     | MutationReceipt::Preserve { .. } => ApplePhraseOutcome::Admitted,
                     MutationReceipt::KeepVisibleUnanchored { .. } => ApplePhraseOutcome::Unmatched,
-                    MutationReceipt::Refuse { reason: RefuseReason::SealedReplay
-                        | RefuseReason::BatchDuplicate | RefuseReason::ReplayedRangeIdentity, .. }
-                        => ApplePhraseOutcome::Replay,
+                    MutationReceipt::Refuse {
+                        reason:
+                            RefuseReason::SealedReplay
+                            | RefuseReason::BatchDuplicate
+                            | RefuseReason::ReplayedRangeIdentity,
+                        ..
+                    } => ApplePhraseOutcome::Replay,
                     MutationReceipt::Refuse { .. } => ApplePhraseOutcome::NoChange,
                 };
                 if (outcome == ApplePhraseOutcome::Admitted) != mutations {
@@ -6685,7 +6725,11 @@ fn close_apple_phrase(
                 let range = &observation.occurrence;
                 for (word, count) in timed.iter().zip(&mut remaining) {
                     let midpoint = word.range.sample_start
-                        + word.range.sample_end.saturating_sub(word.range.sample_start) / 2;
+                        + word
+                            .range
+                            .sample_end
+                            .saturating_sub(word.range.sample_start)
+                            / 2;
                     if range.sample_start <= midpoint && midpoint < range.sample_end {
                         let accounted = (*count).min(budget);
                         if accounted > 0 {
@@ -6699,21 +6743,37 @@ fn close_apple_phrase(
         }
         let unchanged: usize = remaining.iter().sum();
         if unchanged > 0 {
-            outcomes.insert(ApplePhraseOutcome::NoChange, unchanged
-                + outcomes.get(&ApplePhraseOutcome::NoChange).copied().unwrap_or(0));
+            outcomes.insert(
+                ApplePhraseOutcome::NoChange,
+                unchanged
+                    + outcomes
+                        .get(&ApplePhraseOutcome::NoChange)
+                        .copied()
+                        .unwrap_or(0),
+            );
         }
         if outcomes.is_empty() {
             // An empty receipt set is no_change, never evidence of admission.
             outcomes.insert(ApplePhraseOutcome::NoChange, raw.split_whitespace().count());
         }
     }
-    let arrival_index = state.closed_phrases.get(&phrase_id)
+    let arrival_index = state
+        .closed_phrases
+        .get(&phrase_id)
         .map_or(state.closed_phrases.len(), |phrase| phrase.arrival_index);
-    let was_untimed = untimed || state.closed_phrases.get(&phrase_id)
-        .is_some_and(|phrase| phrase.was_untimed);
-    state.closed_phrases.insert(phrase_id, ClosedApplePhrase {
-        arrival_index, outcomes, was_untimed,
-    });
+    let was_untimed = untimed
+        || state
+            .closed_phrases
+            .get(&phrase_id)
+            .is_some_and(|phrase| phrase.was_untimed);
+    state.closed_phrases.insert(
+        phrase_id,
+        ClosedApplePhrase {
+            arrival_index,
+            outcomes,
+            was_untimed,
+        },
+    );
     state.last_closed_phrase_id = Some(phrase_id);
     if phrase_id == state.phrase_id {
         state.phrase_id = state.phrase_id.saturating_add(1);
@@ -7674,7 +7734,15 @@ fn emit_stream_events(
                     let frozen_segments = std::mem::take(&mut state.open_partial_segments);
                     state.open_partial.clear();
                     let phrase_id = state.phrase_id;
-                    close_apple_phrase(state, ev_tx, phrase_id, &frozen, frozen_segments, audio_secs, true);
+                    close_apple_phrase(
+                        state,
+                        ev_tx,
+                        phrase_id,
+                        &frozen,
+                        frozen_segments,
+                        audio_secs,
+                        true,
+                    );
                 }
                 // Preserve the recognizer pin as a diagnostic receipt. The
                 // mirror paints this phrase at the tail regardless of its pin.
@@ -7739,8 +7807,15 @@ fn emit_stream_events(
                 state.open_partial.clear();
                 state.open_partial_segments.clear();
                 let phrase_id = state.finishing_phrase_id.take().unwrap_or(state.phrase_id);
-                let (committed, phrase_events) =
-                    close_apple_phrase(state, ev_tx, phrase_id, &text, segments, audio_secs, superseded_through_rev != 0);
+                let (committed, phrase_events) = close_apple_phrase(
+                    state,
+                    ev_tx,
+                    phrase_id,
+                    &text,
+                    segments,
+                    audio_secs,
+                    superseded_through_rev != 0,
+                );
                 let (final_disposition, refused_evidence) =
                     phrase_final_disposition(&phrase_events, &text);
                 let has_receipt = !phrase_events.is_empty() || superseded_through_rev != 0;
@@ -7789,17 +7864,28 @@ fn emit_stream_events(
                     };
                     state.open_partial.clear();
                     state.open_partial_segments.clear();
-                    close_apple_phrase(state, ev_tx, phrase_id, &text, segments, audio_secs, closes_open);
+                    close_apple_phrase(
+                        state,
+                        ev_tx,
+                        phrase_id,
+                        &text,
+                        segments,
+                        audio_secs,
+                        closes_open,
+                    );
                 } else if !state.open_partial.trim().is_empty() {
                     // Preserve the existing summary admission gate. Its open
                     // phrase still closes explicitly, without inventing a seal.
                     let phrase_id = state.phrase_id;
                     let count = state.open_partial.split_whitespace().count();
-                    state.closed_phrases.insert(phrase_id, ClosedApplePhrase {
-                        arrival_index: state.closed_phrases.len(),
-                        outcomes: BTreeMap::from([(ApplePhraseOutcome::NoChange, count)]),
-                        was_untimed: false,
-                    });
+                    state.closed_phrases.insert(
+                        phrase_id,
+                        ClosedApplePhrase {
+                            arrival_index: state.closed_phrases.len(),
+                            outcomes: BTreeMap::from([(ApplePhraseOutcome::NoChange, count)]),
+                            was_untimed: false,
+                        },
+                    );
                     state.last_closed_phrase_id = Some(phrase_id);
                     state.phrase_id = state.phrase_id.saturating_add(1);
                     state.open_partial.clear();
@@ -13511,40 +13597,76 @@ mod rc_w2_test_rehab {
         state.open_partial = "open".into();
         state.open_partial_segments = vec![segment("open", 0.0, 0.5)];
         state.preview_rev = 1;
-        state.pending_silero_words.insert(9, vec![FusionWord {
-            text: "pending".into(),
-            sample_start: sample(1.0),
-            sample_end: sample(1.5),
-        }]);
+        state.pending_silero_words.insert(
+            9,
+            vec![FusionWord {
+                text: "pending".into(),
+                sample_start: sample(1.0),
+                sample_end: sample(1.5),
+            }],
+        );
         state.unmatched_silero_words.push(FusionWord {
             text: "unmatched".into(),
             sample_start: sample(2.0),
             sample_end: sample(2.5),
         });
-        state.refused_untimed_words.insert(1, vec![UnadmittedAppleWord {
-            text: "untimed".into(),
-            sample_start: sample(3.0),
-            sample_end: sample(3.0),
-            source: UnadmittedAppleWordSource::RefusedUntimed { phrase_id: 1 },
-        }]);
+        state.refused_untimed_words.insert(
+            1,
+            vec![UnadmittedAppleWord {
+                text: "untimed".into(),
+                sample_start: sample(3.0),
+                sample_end: sample(3.0),
+                source: UnadmittedAppleWordSource::RefusedUntimed { phrase_id: 1 },
+            }],
+        );
         state.publish_unadmitted_words(&tx);
         let events = drain(&mut rx);
-        let [EngineEvent::UnadmittedAppleWords { revision, words, .. }] = events.as_slice() else {
+        let [
+            EngineEvent::UnadmittedAppleWords {
+                revision, words, ..
+            },
+        ] = events.as_slice()
+        else {
             panic!("one complete mirror expected: {events:?}");
         };
         assert_eq!(*revision, 1);
-        assert_eq!(words.iter().map(|word| word.text.as_str()).collect::<Vec<_>>(),
-            vec!["pending", "unmatched", "untimed", "open"]);
-        assert!(matches!(words[0].source, UnadmittedAppleWordSource::Pending { utterance_id: 9 }));
-        assert!(matches!(words[1].source, UnadmittedAppleWordSource::Unmatched));
-        assert!(matches!(words[2].source, UnadmittedAppleWordSource::RefusedUntimed { phrase_id: 1 }));
-        assert!(matches!(words[3].source, UnadmittedAppleWordSource::OpenPartial { rev: 1, phrase_id: 1 }));
+        assert_eq!(
+            words
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["pending", "unmatched", "untimed", "open"]
+        );
+        assert!(matches!(
+            words[0].source,
+            UnadmittedAppleWordSource::Pending { utterance_id: 9 }
+        ));
+        assert!(matches!(
+            words[1].source,
+            UnadmittedAppleWordSource::Unmatched
+        ));
+        assert!(matches!(
+            words[2].source,
+            UnadmittedAppleWordSource::RefusedUntimed { phrase_id: 1 }
+        ));
+        assert!(matches!(
+            words[3].source,
+            UnadmittedAppleWordSource::OpenPartial {
+                rev: 1,
+                phrase_id: 1
+            }
+        ));
         state.publish_unadmitted_words(&tx);
         assert!(drain(&mut rx).is_empty());
         state.pending_silero_words.clear();
         state.publish_unadmitted_words(&tx);
         let events = drain(&mut rx);
-        let [EngineEvent::UnadmittedAppleWords { revision: 2, words, .. }] = events.as_slice() else {
+        let [
+            EngineEvent::UnadmittedAppleWords {
+                revision: 2, words, ..
+            },
+        ] = events.as_slice()
+        else {
             panic!("replacement mirror expected: {events:?}");
         };
         assert_eq!(words.len(), 3);
@@ -13558,13 +13680,20 @@ mod rc_w2_test_rehab {
             let (tx, mut rx) = mpsc::unbounded_channel();
             emit(&mut state, &tx, vec![segment("committed", start, 3.9)]);
             for rev in 1..=20 {
-                emit_stream_events(vec![LiveStreamEvent::Partial {
-                    text: "Iwo Iwo".into(), segments: Vec::new(),
-                }], &tx, &mut state, 70.0);
+                emit_stream_events(
+                    vec![LiveStreamEvent::Partial {
+                        text: "Iwo Iwo".into(),
+                        segments: Vec::new(),
+                    }],
+                    &tx,
+                    &mut state,
+                    70.0,
+                );
                 assert_eq!(state.open_partial_pin, 0);
                 assert_eq!(state.published_unadmitted_words.len(), 2);
                 assert!(state.published_unadmitted_words.iter().all(|word| {
-                    word.text == "Iwo" && matches!(word.source,
+                    word.text == "Iwo"
+                        && matches!(word.source,
                         UnadmittedAppleWordSource::OpenPartial { rev: current, phrase_id: 2 }
                             if current == rev)
                 }));
@@ -13577,22 +13706,32 @@ mod rc_w2_test_rehab {
     fn stop_flush_and_trailing_final_keep_one_phrase_and_five_iwo_words() {
         let mut state = physical_state("phrase-five-iwo", 63.0, &[(60.2, 62.0)]);
         let (tx, mut rx) = mpsc::unbounded_channel();
-        emit_stream_events(vec![LiveStreamEvent::Partial {
-            text: "Iwo Iwo Iwo Iwo Iwo".into(), segments: Vec::new(),
-        }], &tx, &mut state, 63.0);
+        emit_stream_events(
+            vec![LiveStreamEvent::Partial {
+                text: "Iwo Iwo Iwo Iwo Iwo".into(),
+                segments: Vec::new(),
+            }],
+            &tx,
+            &mut state,
+            63.0,
+        );
         state.open_partial_pin = sample(0.8);
         seal_open_partial(&mut state, &tx, 63.0);
         assert_eq!(state.phrase_id, 2);
         assert_eq!(state.refused_untimed_words[&1].len(), 5);
-        let words = (0..5).map(|index| {
-            let start = 60.2 + index as f32 * 0.3;
-            segment("Iwo", start, start + 0.2)
-        }).collect();
+        let words = (0..5)
+            .map(|index| {
+                let start = 60.2 + index as f32 * 0.3;
+                segment("Iwo", start, start + 0.2)
+            })
+            .collect();
         emit(&mut state, &tx, words);
         assert_eq!(state.phrase_id, 2);
         assert_eq!(state.closed_phrases.len(), 1);
-        assert_eq!(state.closed_phrases[&1].outcomes,
-            BTreeMap::from([(ApplePhraseOutcome::Admitted, 5)]));
+        assert_eq!(
+            state.closed_phrases[&1].outcomes,
+            BTreeMap::from([(ApplePhraseOutcome::Admitted, 5)])
+        );
         assert_eq!(count_iwo(&document(&state)), 5);
         assert!(state.refused_untimed_words.is_empty());
         assert!(state.published_unadmitted_words.is_empty());
@@ -13603,36 +13742,68 @@ mod rc_w2_test_rehab {
     fn mixed_admitted_and_unmatched_final_publishes_the_unmatched_word() {
         let mut state = physical_state("mirror-mixed", 3.0, &[(0.0, 1.0)]);
         let (tx, mut rx) = mpsc::unbounded_channel();
-        emit(&mut state, &tx, vec![segment("admitted", 0.0, 0.8), segment("unmatched", 2.0, 2.5)]);
+        emit(
+            &mut state,
+            &tx,
+            vec![
+                segment("admitted", 0.0, 0.8),
+                segment("unmatched", 2.0, 2.5),
+            ],
+        );
         assert_eq!(document(&state), "admitted");
         let events = drain(&mut rx);
-        let words = events.iter().find_map(|event| match event {
-            EngineEvent::UnadmittedAppleWords { words, .. } => Some(words),
-            _ => None,
-        }).expect("mixed final mirror");
+        let words = events
+            .iter()
+            .find_map(|event| match event {
+                EngineEvent::UnadmittedAppleWords { words, .. } => Some(words),
+                _ => None,
+            })
+            .expect("mixed final mirror");
         assert_eq!(words.len(), 1);
         assert_eq!(words[0].text, "unmatched");
-        assert!(matches!(words[0].source, UnadmittedAppleWordSource::Unmatched));
-        assert_eq!(state.closed_phrases[&1].outcomes, BTreeMap::from([
-            (ApplePhraseOutcome::Admitted, 1), (ApplePhraseOutcome::Unmatched, 1),
-        ]));
+        assert!(matches!(
+            words[0].source,
+            UnadmittedAppleWordSource::Unmatched
+        ));
+        assert_eq!(
+            state.closed_phrases[&1].outcomes,
+            BTreeMap::from([
+                (ApplePhraseOutcome::Admitted, 1),
+                (ApplePhraseOutcome::Unmatched, 1),
+            ])
+        );
     }
 
     #[test]
     fn closed_phrase_keeps_its_pending_result_after_periodic_admission() {
         let mut state = physical_state("phrase-pending", 3.0, &[]);
         let (tx, mut rx) = mpsc::unbounded_channel();
-        state.fusion.as_mut().unwrap().observe(Some((sample(0.0), sample(1.0))), false, sample(1.0));
-        emit(&mut state, &tx, vec![segment("pending", 0.1, 0.8), segment("unmatched", 2.0, 2.5)]);
+        state.fusion.as_mut().unwrap().observe(
+            Some((sample(0.0), sample(1.0))),
+            false,
+            sample(1.0),
+        );
+        emit(
+            &mut state,
+            &tx,
+            vec![segment("pending", 0.1, 0.8), segment("unmatched", 2.0, 2.5)],
+        );
         let own_result = BTreeMap::from([
-            (ApplePhraseOutcome::Pending, 1), (ApplePhraseOutcome::Unmatched, 1),
+            (ApplePhraseOutcome::Pending, 1),
+            (ApplePhraseOutcome::Unmatched, 1),
         ]);
         assert_eq!(state.closed_phrases[&1].outcomes, own_result);
-        state.fusion.as_mut().unwrap().observe(None, true, sample(1.0));
+        state
+            .fusion
+            .as_mut()
+            .unwrap()
+            .observe(None, true, sample(1.0));
         seal_sliced_by_silero(&mut state, &tx, &[]);
         assert_eq!(document(&state), "pending");
-        assert_eq!(state.closed_phrases[&1].outcomes, own_result,
-            "a later periodic admission cannot rewrite the closing call's result");
+        assert_eq!(
+            state.closed_phrases[&1].outcomes, own_result,
+            "a later periodic admission cannot rewrite the closing call's result"
+        );
         drain(&mut rx);
     }
 
@@ -13646,9 +13817,13 @@ mod rc_w2_test_rehab {
         emit(&mut state, &tx, words.clone());
         words.push(segment("Iwo", 1.3, 1.6));
         emit(&mut state, &tx, words);
-        assert_eq!(state.closed_phrases[&2].outcomes, BTreeMap::from([
-            (ApplePhraseOutcome::Replay, 2), (ApplePhraseOutcome::Admitted, 1),
-        ]));
+        assert_eq!(
+            state.closed_phrases[&2].outcomes,
+            BTreeMap::from([
+                (ApplePhraseOutcome::Replay, 2),
+                (ApplePhraseOutcome::Admitted, 1),
+            ])
+        );
         assert_eq!(count_iwo(&document(&state)), 3);
         drain(&mut rx);
     }
@@ -13659,21 +13834,44 @@ mod rc_w2_test_rehab {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let words = vec![segment("Iwo", 0.0, 0.8)];
         emit(&mut state, &tx, words.clone());
-        emit_stream_events(vec![LiveStreamEvent::Partial {
-            text: "Iwo".into(), segments: words.clone(),
-        }], &tx, &mut state, 2.0);
+        emit_stream_events(
+            vec![LiveStreamEvent::Partial {
+                text: "Iwo".into(),
+                segments: words.clone(),
+            }],
+            &tx,
+            &mut state,
+            2.0,
+        );
         emit(&mut state, &tx, words);
-        assert_eq!(state.closed_phrases[&2].outcomes,
-            BTreeMap::from([(ApplePhraseOutcome::NoChange, 1)]));
-        emit_stream_events(vec![
-            LiveStreamEvent::Partial { text: "first phrase".into(), segments: Vec::new() },
-            LiveStreamEvent::Partial { text: "second".into(), segments: Vec::new() },
-        ], &tx, &mut state, 2.0);
+        assert_eq!(
+            state.closed_phrases[&2].outcomes,
+            BTreeMap::from([(ApplePhraseOutcome::NoChange, 1)])
+        );
+        emit_stream_events(
+            vec![
+                LiveStreamEvent::Partial {
+                    text: "first phrase".into(),
+                    segments: Vec::new(),
+                },
+                LiveStreamEvent::Partial {
+                    text: "second".into(),
+                    segments: Vec::new(),
+                },
+            ],
+            &tx,
+            &mut state,
+            2.0,
+        );
         assert_eq!(state.phrase_id, 4);
-        assert_eq!(state.closed_phrases[&3].outcomes,
-            BTreeMap::from([(ApplePhraseOutcome::Untimed, 2)]));
-        assert!(state.published_unadmitted_words.iter().any(|word| matches!(word.source,
-            UnadmittedAppleWordSource::OpenPartial { phrase_id: 4, .. })));
+        assert_eq!(
+            state.closed_phrases[&3].outcomes,
+            BTreeMap::from([(ApplePhraseOutcome::Untimed, 2)])
+        );
+        assert!(state.published_unadmitted_words.iter().any(|word| matches!(
+            word.source,
+            UnadmittedAppleWordSource::OpenPartial { phrase_id: 4, .. }
+        )));
         drain(&mut rx);
     }
 
@@ -13681,28 +13879,50 @@ mod rc_w2_test_rehab {
     fn admitted_words_publish_ledger_then_mirror_then_phrase_receipt() {
         let mut state = physical_state("mirror-order", 1.0, &[(0.0, 1.0)]);
         let (tx, mut rx) = mpsc::unbounded_channel();
-        emit_stream_events(vec![LiveStreamEvent::Partial {
-            text: "Iwo".into(),
-            segments: vec![segment("Iwo", 0.0, 0.8)],
-        }], &tx, &mut state, 1.0);
+        emit_stream_events(
+            vec![LiveStreamEvent::Partial {
+                text: "Iwo".into(),
+                segments: vec![segment("Iwo", 0.0, 0.8)],
+            }],
+            &tx,
+            &mut state,
+            1.0,
+        );
         drain(&mut rx);
         emit(&mut state, &tx, vec![segment("Iwo", 0.0, 0.8)]);
         let events = drain(&mut rx);
-        let ledger_at = events.iter().position(|event| matches!(event,
-            EngineEvent::LedgerMutation { receipt, .. } if receipt.grants_mutation()
-        )).expect("ledger publication");
-        let mirror_at = events.iter().position(|event| matches!(event,
-            EngineEvent::UnadmittedAppleWords { words, .. } if words.is_empty()
-        )).expect("empty mirror after admission");
-        let receipt_at = events.iter().position(|event| matches!(event,
-            EngineEvent::PreviewDisposition { .. }
-        )).expect("phrase receipt");
+        let ledger_at = events
+            .iter()
+            .position(|event| {
+                matches!(event,
+                    EngineEvent::LedgerMutation { receipt, .. } if receipt.grants_mutation()
+                )
+            })
+            .expect("ledger publication");
+        let mirror_at = events
+            .iter()
+            .position(|event| {
+                matches!(event,
+                    EngineEvent::UnadmittedAppleWords { words, .. } if words.is_empty()
+                )
+            })
+            .expect("empty mirror after admission");
+        let receipt_at = events
+            .iter()
+            .position(|event| matches!(event, EngineEvent::PreviewDisposition { .. }))
+            .expect("phrase receipt");
         assert!(ledger_at < mirror_at && mirror_at < receipt_at);
-        let closed = events.iter().find_map(|event| match event {
-            EngineEvent::UnadmittedAppleWords { closed_phrases, .. } => closed_phrases.get(&1),
-            _ => None,
-        }).expect("closing mirror carries the result");
-        assert_eq!(closed.outcomes, BTreeMap::from([(ApplePhraseOutcome::Admitted, 1)]));
+        let closed = events
+            .iter()
+            .find_map(|event| match event {
+                EngineEvent::UnadmittedAppleWords { closed_phrases, .. } => closed_phrases.get(&1),
+                _ => None,
+            })
+            .expect("closing mirror carries the result");
+        assert_eq!(
+            closed.outcomes,
+            BTreeMap::from([(ApplePhraseOutcome::Admitted, 1)])
+        );
         assert!(state.published_unadmitted_words.is_empty());
     }
 
@@ -13752,17 +13972,29 @@ mod rc_w2_test_rehab {
             if replay {
                 assert_eq!(receipt["admitted_into"], serde_json::json!([]));
             } else {
-                assert_eq!(receipt["admitted_into"], serde_json::json!([
-                    { "occurrence": {
-                        "session": owner.session,
-                        "capture_epoch": owner.capture_epoch,
-                        "sample_start": owner.sample_start,
-                        "sample_end": owner.sample_end,
-                    }, "count": 2 }
-                ]));
+                assert_eq!(
+                    receipt["admitted_into"],
+                    serde_json::json!([
+                        { "occurrence": {
+                            "session": owner.session,
+                            "capture_epoch": owner.capture_epoch,
+                            "sample_start": owner.sample_start,
+                            "sample_end": owner.sample_end,
+                        }, "count": 2 }
+                    ])
+                );
             }
             assert_eq!(document(&state), "alpha beta");
-            assert_eq!(state.acoustic_ledger.lock().unwrap().slots_of(&owner).unwrap().len(), 2);
+            assert_eq!(
+                state
+                    .acoustic_ledger
+                    .lock()
+                    .unwrap()
+                    .slots_of(&owner)
+                    .unwrap()
+                    .len(),
+                2
+            );
         }
     }
 
@@ -13780,11 +14012,22 @@ mod rc_w2_test_rehab {
         // with an armed or lost refiner. Apple-only skips the blank earlier.
         state.refinement_lane_lost = true;
         let current = vec![segment("alpha", 0.25, 0.5), segment("beta", 1.0, 1.25)];
-        state.pending_silero_words.insert(2, retention_words(&current));
+        state
+            .pending_silero_words
+            .insert(2, retention_words(&current));
         let (tx, mut rx) = mpsc::unbounded_channel();
         reconcile_silero_ledger(&mut state, &tx, &physical, &current);
         assert_eq!(document(&state), "alpha beta");
-        assert_eq!(state.acoustic_ledger.lock().unwrap().slots_of(&owner).unwrap().len(), 2);
+        assert_eq!(
+            state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .slots_of(&owner)
+                .unwrap()
+                .len(),
+            2
+        );
         let receipts = retention_receipts(&drain(&mut rx));
         assert_eq!(receipts.len(), 1);
         assert_eq!(receipts[0]["exit"], "overlap_refused");
@@ -13797,12 +14040,13 @@ mod rc_w2_test_rehab {
     fn retention_receipt_counts_the_ledger_overlap_rule_separately_from_slots() {
         let mut state = state("retain-slot-rule", 2.0);
         let owner = qualify(&mut state, 0.0, 2.0);
-        let whisper = LedgerObservationIdentity::new(
-            LedgerObservationProducer::Whisper, 1, 0, owner.clone(),
-        );
-        state.acoustic_ledger.lock().unwrap().admit_word_slots(
-            &whisper, &[(sample(0.25), sample(0.5), "heard".into())],
-        );
+        let whisper =
+            LedgerObservationIdentity::new(LedgerObservationProducer::Whisper, 1, 0, owner.clone());
+        state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .admit_word_slots(&whisper, &[(sample(0.25), sample(0.5), "heard".into())]);
         // Less than half overlap passes consumed-span, but any Whisper overlap
         // is refused by the existing Apple slot rule.
         let current = vec![segment("overlap", 0.45, 0.9), segment("novel", 1.0, 1.25)];
@@ -13836,7 +14080,16 @@ mod rc_w2_test_rehab {
             reconcile_silero_ledger(&mut state, &tx, &physical, &current);
             assert!(state.unmatched_silero_words.is_empty());
             assert_eq!(document(&state), "alpha beta");
-            assert_eq!(state.acoustic_ledger.lock().unwrap().slots_of(&owner).unwrap().len(), 2);
+            assert_eq!(
+                state
+                    .acoustic_ledger
+                    .lock()
+                    .unwrap()
+                    .slots_of(&owner)
+                    .unwrap()
+                    .len(),
+                2
+            );
         }
         assert!(retention_receipts(&drain(&mut rx)).is_empty());
     }
@@ -13858,11 +14111,14 @@ mod rc_w2_test_rehab {
             reconcile_silero_ledger(&mut state, &tx, &physical, &current);
             let receipts = retention_receipts(&drain(&mut rx));
             assert_eq!(receipts.len(), 1);
-            assert_eq!(receipts[0]["exit"], if evicted {
-                "qualification_failed_pcm_unavailable"
-            } else {
-                "qualification_failed_refused"
-            });
+            assert_eq!(
+                receipts[0]["exit"],
+                if evicted {
+                    "qualification_failed_pcm_unavailable"
+                } else {
+                    "qualification_failed_refused"
+                }
+            );
             assert_eq!(receipts[0]["words"], 1);
             assert_eq!(receipts[0]["unmatched"], 1);
             assert!(state.reconciled_silero.contains(&1));
@@ -13873,7 +14129,15 @@ mod rc_w2_test_rehab {
             assert!(retention_receipts(&drain(&mut rx)).is_empty());
             assert_eq!(state.unmatched_silero_words.len(), 1);
             assert_eq!(state.unmatched_silero_words[0].text, "Iwo");
-            assert_eq!(state.acoustic_ledger.lock().unwrap().qualified_occurrences().count(), 0);
+            assert_eq!(
+                state
+                    .acoustic_ledger
+                    .lock()
+                    .unwrap()
+                    .qualified_occurrences()
+                    .count(),
+                0
+            );
         }
     }
 
@@ -13885,12 +14149,13 @@ mod rc_w2_test_rehab {
         let (tx, mut rx) = mpsc::unbounded_channel();
         retain_apple_words_at_exit(&mut state, &tx, 2, &words, &current, "overlap_refused");
         let owner = qualify(&mut state, 0.0, 2.0);
-        let whisper = LedgerObservationIdentity::new(
-            LedgerObservationProducer::Whisper, 9, 0, owner.clone(),
-        );
-        let receipt = state.acoustic_ledger.lock().unwrap().admit_word_slots(
-            &whisper, &[(sample(1.5), sample(1.75), "other".into())],
-        );
+        let whisper =
+            LedgerObservationIdentity::new(LedgerObservationProducer::Whisper, 9, 0, owner.clone());
+        let receipt = state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .admit_word_slots(&whisper, &[(sample(1.5), sample(1.75), "other".into())]);
         assert!(receipt.grants_mutation());
         assert_eq!(state.unmatched_silero_words.len(), 2);
         state.reconciled_silero.insert(1);
@@ -13899,11 +14164,15 @@ mod rc_w2_test_rehab {
         assert_eq!(document(&state), "alpha beta other");
         assert!(state.unmatched_silero_words.is_empty());
         let whisper = state.acoustic_ledger.lock().unwrap().next_word_observation(
-            LedgerObservationProducer::Whisper, 10, &owner,
+            LedgerObservationProducer::Whisper,
+            10,
+            &owner,
         );
-        state.acoustic_ledger.lock().unwrap().admit_word_slots(
-            &whisper, &[(sample(1.5), sample(1.75), "revised".into())],
-        );
+        state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .admit_word_slots(&whisper, &[(sample(1.5), sample(1.75), "revised".into())]);
         assert_eq!(document(&state), "alpha beta revised");
         assert_eq!(retention_receipts(&drain(&mut rx)).len(), 1);
     }
@@ -13926,7 +14195,14 @@ mod rc_w2_test_rehab {
                 receipt: MutationReceipt::KeepVisibleUnanchored { label, .. }, ..
             } if label == "Iwo"
         )));
-        assert!(state.acoustic_ledger.lock().unwrap().slots_of(&owner).is_none());
+        assert!(
+            state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .slots_of(&owner)
+                .is_none()
+        );
     }
 
     #[test]
@@ -13959,7 +14235,11 @@ mod rc_w2_test_rehab {
         let ledger = state.acoustic_ledger.lock().unwrap();
         let slots = ledger.slots_of(&owner).unwrap();
         assert_eq!(slots.len(), 5);
-        assert!(slots.windows(2).all(|pair| pair[0].sample_end < pair[1].sample_start));
+        assert!(
+            slots
+                .windows(2)
+                .all(|pair| pair[0].sample_end < pair[1].sample_start)
+        );
     }
 
     /// Existing cumulative-restatement fixture shapes: alpha/beta and five Iwo.
@@ -13967,27 +14247,44 @@ mod rc_w2_test_rehab {
     #[test]
     fn existing_cumulative_replay_fixtures_emit_no_retention_receipts() {
         for labels in [vec!["alpha", "beta"], vec!["Iwo"; 5]] {
-            let ranges = (0..labels.len()).map(|i| (i as f32, (i + 1) as f32))
+            let ranges = (0..labels.len())
+                .map(|i| (i as f32, (i + 1) as f32))
                 .collect::<Vec<_>>();
             let mut state = physical_state("retain-replay", labels.len() as f32, &ranges);
-            let current = labels.iter().zip(&ranges).map(|(text, &(start, end))| {
-                segment(text, start, end)
-            }).collect::<Vec<_>>();
+            let current = labels
+                .iter()
+                .zip(&ranges)
+                .map(|(text, &(start, end))| segment(text, start, end))
+                .collect::<Vec<_>>();
             let (tx, mut rx) = mpsc::unbounded_channel();
             emit(&mut state, &tx, current.clone());
             assert_eq!(document(&state), labels.join(" "));
             let before = {
                 let ledger = state.acoustic_ledger.lock().unwrap();
-                ledger.occurrences().map(|owner| {
-                    (owner.clone(), ledger.slots_of(owner).unwrap().to_vec(), ledger.is_sealed(owner))
-                }).collect::<Vec<_>>()
+                ledger
+                    .occurrences()
+                    .map(|owner| {
+                        (
+                            owner.clone(),
+                            ledger.slots_of(owner).unwrap().to_vec(),
+                            ledger.is_sealed(owner),
+                        )
+                    })
+                    .collect::<Vec<_>>()
             };
             emit(&mut state, &tx, current);
             let after = {
                 let ledger = state.acoustic_ledger.lock().unwrap();
-                ledger.occurrences().map(|owner| {
-                    (owner.clone(), ledger.slots_of(owner).unwrap().to_vec(), ledger.is_sealed(owner))
-                }).collect::<Vec<_>>()
+                ledger
+                    .occurrences()
+                    .map(|owner| {
+                        (
+                            owner.clone(),
+                            ledger.slots_of(owner).unwrap().to_vec(),
+                            ledger.is_sealed(owner),
+                        )
+                    })
+                    .collect::<Vec<_>>()
             };
             assert_eq!(before, after);
             assert_eq!(document(&state), labels.join(" "));
@@ -14000,26 +14297,51 @@ mod rc_w2_test_rehab {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures");
         let manifest: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(root.join("p0_b_five_iwo_manifest.json")).unwrap(),
-        ).unwrap();
-        let pcm = hound::WavReader::open(root.join("p0_b_five_iwo.wav")).unwrap()
-            .samples::<i16>().map(|value| f32::from(value.unwrap()) / 32768.0)
+        )
+        .unwrap();
+        let pcm = hound::WavReader::open(root.join("p0_b_five_iwo.wav"))
+            .unwrap()
+            .samples::<i16>()
+            .map(|value| f32::from(value.unwrap()) / 32768.0)
             .collect::<Vec<_>>();
-        let ranges = manifest["bursts"].as_array().unwrap().iter().map(|burst| {
-            (burst["sample_start"].as_u64().unwrap() as f32 / RATE as f32,
-             burst["sample_end"].as_u64().unwrap() as f32 / RATE as f32)
-        }).collect::<Vec<_>>();
+        let ranges = manifest["bursts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|burst| {
+                (
+                    burst["sample_start"].as_u64().unwrap() as f32 / RATE as f32,
+                    burst["sample_end"].as_u64().unwrap() as f32 / RATE as f32,
+                )
+            })
+            .collect::<Vec<_>>();
         let mut state = physical_state("retain-fixture", pcm.len() as f32 / RATE as f32, &ranges);
         state.audio = super::super::live_audio_buffer::LiveAudioBuffer::new(RATE, 5.0);
         state.audio.push(&pcm);
-        let current = ranges.iter().map(|&(start, end)| segment("Iwo", start, end))
+        let current = ranges
+            .iter()
+            .map(|&(start, end)| segment("Iwo", start, end))
             .collect::<Vec<_>>();
         let (tx, mut rx) = mpsc::unbounded_channel();
         emit(&mut state, &tx, current.clone());
         assert_eq!(document(&state), "Iwo Iwo Iwo Iwo Iwo");
-        let before = state.acoustic_ledger.lock().unwrap().occurrences().cloned().collect::<Vec<_>>();
+        let before = state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .occurrences()
+            .cloned()
+            .collect::<Vec<_>>();
         let slots = {
             let ledger = state.acoustic_ledger.lock().unwrap();
-            before.iter().map(|owner| (ledger.slots_of(owner).unwrap().to_vec(), ledger.is_sealed(owner)))
+            before
+                .iter()
+                .map(|owner| {
+                    (
+                        ledger.slots_of(owner).unwrap().to_vec(),
+                        ledger.is_sealed(owner),
+                    )
+                })
                 .collect::<Vec<_>>()
         };
         emit(&mut state, &tx, current);
@@ -14047,22 +14369,32 @@ mod rc_w2_test_rehab {
         let (tx, mut rx) = mpsc::unbounded_channel();
         emit(&mut state, &tx, vec![segment("Iwo", 0.0, 0.8)]);
         assert!(state.published_unadmitted_words.iter().any(|word| {
-            word.text == "Iwo"
-                && matches!(word.source, UnadmittedAppleWordSource::Pending { .. })
+            word.text == "Iwo" && matches!(word.source, UnadmittedAppleWordSource::Pending { .. })
         }));
         drain(&mut rx);
 
-        state.fusion.as_mut().unwrap().observe(None, true, sample(1.0));
+        state
+            .fusion
+            .as_mut()
+            .unwrap()
+            .observe(None, true, sample(1.0));
         seal_sliced_by_silero(&mut state, &tx, &[]);
         let events = drain(&mut rx);
-        let kept_in_ledger = events.iter().any(|event| matches!(event,
-            EngineEvent::LedgerMutation {
-                receipt: MutationReceipt::KeepVisibleUnanchored { label, .. }, ..
-            } if label.split_whitespace().any(|word| word == "Iwo")
-        ));
+        let kept_in_ledger = events.iter().any(|event| {
+            matches!(event,
+                EngineEvent::LedgerMutation {
+                    receipt: MutationReceipt::KeepVisibleUnanchored { label, .. }, ..
+                } if label.split_whitespace().any(|word| word == "Iwo")
+            )
+        });
         assert!(
-            state.published_unadmitted_words.iter().any(|word| word.text == "Iwo")
-                || document(&state).split_whitespace().any(|word| word == "Iwo")
+            state
+                .published_unadmitted_words
+                .iter()
+                .any(|word| word.text == "Iwo")
+                || document(&state)
+                    .split_whitespace()
+                    .any(|word| word == "Iwo")
                 || kept_in_ledger,
             "qualification refusal must retain the pending Apple word in paint state"
         );
@@ -14072,17 +14404,25 @@ mod rc_w2_test_rehab {
     fn forced_close_clears_partial_and_records_its_own_admission() {
         let mut state = physical_state("mirror-forced-close", 1.0, &[(0.0, 1.0)]);
         let (tx, mut rx) = mpsc::unbounded_channel();
-        emit_stream_events(vec![LiveStreamEvent::Partial {
-            text: "Iwo".into(), segments: vec![segment("Iwo", 0.0, 0.8)],
-        }], &tx, &mut state, 1.0);
+        emit_stream_events(
+            vec![LiveStreamEvent::Partial {
+                text: "Iwo".into(),
+                segments: vec![segment("Iwo", 0.0, 0.8)],
+            }],
+            &tx,
+            &mut state,
+            1.0,
+        );
         drain(&mut rx);
         seal_open_partial(&mut state, &tx, 1.0);
         assert!(state.open_partial.is_empty());
         assert!(state.open_partial_segments.is_empty());
         assert_eq!(state.phrase_id, 2);
         assert_eq!(state.finishing_phrase_id, Some(1));
-        assert_eq!(state.closed_phrases[&1].outcomes,
-            BTreeMap::from([(ApplePhraseOutcome::Admitted, 1)]));
+        assert_eq!(
+            state.closed_phrases[&1].outcomes,
+            BTreeMap::from([(ApplePhraseOutcome::Admitted, 1)])
+        );
         assert_eq!(document(&state), "Iwo");
         assert!(state.published_unadmitted_words.is_empty());
     }
@@ -14091,29 +14431,54 @@ mod rc_w2_test_rehab {
     fn untimed_final_survives_unrelated_commit_without_a_summary() {
         let mut state = physical_state("mirror-untimed", 1.0, &[(0.0, 1.0)]);
         let (tx, mut rx) = mpsc::unbounded_channel();
-        emit_stream_events(vec![LiveStreamEvent::Partial {
-            text: "Iwo".into(), segments: Vec::new(),
-        }], &tx, &mut state, 1.0);
+        emit_stream_events(
+            vec![LiveStreamEvent::Partial {
+                text: "Iwo".into(),
+                segments: Vec::new(),
+            }],
+            &tx,
+            &mut state,
+            1.0,
+        );
         drain(&mut rx);
-        emit_stream_events(vec![LiveStreamEvent::PhraseFinal {
-            text: "Iwo".into(), segments: Vec::new(),
-        }], &tx, &mut state, 1.0);
+        emit_stream_events(
+            vec![LiveStreamEvent::PhraseFinal {
+                text: "Iwo".into(),
+                segments: Vec::new(),
+            }],
+            &tx,
+            &mut state,
+            1.0,
+        );
         let events = drain(&mut rx);
-        let words = events.iter().find_map(|event| match event {
-            EngineEvent::UnadmittedAppleWords { words, .. } => Some(words),
-            _ => None,
-        }).expect("untimed mirror");
+        let words = events
+            .iter()
+            .find_map(|event| match event {
+                EngineEvent::UnadmittedAppleWords { words, .. } => Some(words),
+                _ => None,
+            })
+            .expect("untimed mirror");
         assert_eq!(words.len(), 1);
         assert_eq!(words[0].sample_start, words[0].sample_end);
-        assert!(matches!(words[0].source, UnadmittedAppleWordSource::RefusedUntimed { phrase_id: 1 }));
+        assert!(matches!(
+            words[0].source,
+            UnadmittedAppleWordSource::RefusedUntimed { phrase_id: 1 }
+        ));
         assert!(document(&state).is_empty());
         // A different phrase with a committed range containing the old pin
         // cannot consume phrase 1's untimed words.
         emit(&mut state, &tx, vec![segment("earlier", 0.0, 0.8)]);
         assert_eq!(state.refused_untimed_words.len(), 1);
-        assert_eq!(state.closed_phrases[&1].outcomes,
-            BTreeMap::from([(ApplePhraseOutcome::Untimed, 1)]));
-        assert!(state.published_unadmitted_words.iter().any(|word| word.text == "Iwo"));
+        assert_eq!(
+            state.closed_phrases[&1].outcomes,
+            BTreeMap::from([(ApplePhraseOutcome::Untimed, 1)])
+        );
+        assert!(
+            state
+                .published_unadmitted_words
+                .iter()
+                .any(|word| word.text == "Iwo")
+        );
         drain(&mut rx);
     }
 
@@ -14122,22 +14487,36 @@ mod rc_w2_test_rehab {
         let mut state = physical_state("mirror-timed-summary", 63.0, &[(60.2, 62.0)]);
         let (tx, mut rx) = mpsc::unbounded_channel();
         state.open_partial_pin = sample(0.8);
-        emit_stream_events(vec![LiveStreamEvent::PhraseFinal {
-            text: "Iwo Iwo".into(), segments: Vec::new(),
-        }], &tx, &mut state, 63.0);
+        emit_stream_events(
+            vec![LiveStreamEvent::PhraseFinal {
+                text: "Iwo Iwo".into(),
+                segments: Vec::new(),
+            }],
+            &tx,
+            &mut state,
+            63.0,
+        );
         assert_eq!(state.phrase_id, 2);
         assert_eq!(state.refused_untimed_words[&1].len(), 2);
         state.stop_trailing_finish = true;
-        emit_stream_events(vec![LiveStreamEvent::Summary {
-            text: "Iwo Iwo".into(),
-            segments: vec![segment("Iwo", 60.2, 61.0), segment("Iwo", 61.1, 61.9)],
-            ok: true, error: None,
-        }], &tx, &mut state, 63.0);
+        emit_stream_events(
+            vec![LiveStreamEvent::Summary {
+                text: "Iwo Iwo".into(),
+                segments: vec![segment("Iwo", 60.2, 61.0), segment("Iwo", 61.1, 61.9)],
+                ok: true,
+                error: None,
+            }],
+            &tx,
+            &mut state,
+            63.0,
+        );
         assert!(state.refused_untimed_words.is_empty());
         assert_eq!(state.phrase_id, 2, "a re-seal keeps the phrase id");
         assert_eq!(state.closed_phrases.len(), 1);
-        assert_eq!(state.closed_phrases[&1].outcomes,
-            BTreeMap::from([(ApplePhraseOutcome::Admitted, 2)]));
+        assert_eq!(
+            state.closed_phrases[&1].outcomes,
+            BTreeMap::from([(ApplePhraseOutcome::Admitted, 2)])
+        );
         assert!(state.closed_phrases[&1].was_untimed);
         assert_eq!(state.closed_phrases[&1].arrival_index, 0);
         assert_eq!(count_iwo(&document(&state)), 2);
@@ -14149,24 +14528,60 @@ mod rc_w2_test_rehab {
     fn untimed_final_and_summary_replace_one_phrase_without_deduplicating_words() {
         let mut state = physical_state("untimed-summary", 1.0, &[]);
         let (tx, mut rx) = mpsc::unbounded_channel();
-        emit_stream_events(vec![
-            LiveStreamEvent::Partial { text: "Iwo Iwo".into(), segments: Vec::new() },
-            LiveStreamEvent::PhraseFinal { text: "Iwo Iwo".into(), segments: Vec::new() },
-            LiveStreamEvent::Summary {
-                text: "Iwo Iwo".into(), segments: Vec::new(), ok: true, error: None,
-            },
-        ], &tx, &mut state, 1.0);
-        let mirrors = drain(&mut rx).into_iter().filter_map(|event| match event {
-            EngineEvent::UnadmittedAppleWords { words, .. } => Some(words),
-            _ => None,
-        }).collect::<Vec<_>>();
+        emit_stream_events(
+            vec![
+                LiveStreamEvent::Partial {
+                    text: "Iwo Iwo".into(),
+                    segments: Vec::new(),
+                },
+                LiveStreamEvent::PhraseFinal {
+                    text: "Iwo Iwo".into(),
+                    segments: Vec::new(),
+                },
+                LiveStreamEvent::Summary {
+                    text: "Iwo Iwo".into(),
+                    segments: Vec::new(),
+                    ok: true,
+                    error: None,
+                },
+            ],
+            &tx,
+            &mut state,
+            1.0,
+        );
+        let mirrors = drain(&mut rx)
+            .into_iter()
+            .filter_map(|event| match event {
+                EngineEvent::UnadmittedAppleWords { words, .. } => Some(words),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         assert_eq!(mirrors.len(), 1, "summary leaves the held phrase unchanged");
-        assert_eq!(mirrors[0].len(), 2, "two spoken words survive at one untimed pin");
-        emit_stream_events(vec![
-            LiveStreamEvent::Partial { text: "Iwo".into(), segments: Vec::new() },
-            LiveStreamEvent::PhraseFinal { text: "Iwo".into(), segments: Vec::new() },
-        ], &tx, &mut state, 1.0);
-        assert_eq!(state.refused_untimed_words.len(), 2, "new phrase keeps its own words");
+        assert_eq!(
+            mirrors[0].len(),
+            2,
+            "two spoken words survive at one untimed pin"
+        );
+        emit_stream_events(
+            vec![
+                LiveStreamEvent::Partial {
+                    text: "Iwo".into(),
+                    segments: Vec::new(),
+                },
+                LiveStreamEvent::PhraseFinal {
+                    text: "Iwo".into(),
+                    segments: Vec::new(),
+                },
+            ],
+            &tx,
+            &mut state,
+            1.0,
+        );
+        assert_eq!(
+            state.refused_untimed_words.len(),
+            2,
+            "new phrase keeps its own words"
+        );
         assert_eq!(state.published_unadmitted_words.len(), 3);
     }
 

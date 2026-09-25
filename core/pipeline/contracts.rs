@@ -629,9 +629,11 @@ impl ApplePhraseOutcome {
 
 impl ClosedApplePhrase {
     pub fn describe_outcomes(&self) -> String {
-        self.outcomes.iter().map(|(outcome, count)| {
-            format!("{}={count}", outcome.as_str())
-        }).collect::<Vec<_>>().join(",")
+        self.outcomes
+            .iter()
+            .map(|(outcome, count)| format!("{}={count}", outcome.as_str()))
+            .collect::<Vec<_>>()
+            .join(",")
     }
 }
 

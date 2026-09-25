@@ -2009,20 +2009,30 @@ mod tests {
             let (consumer_tx, mut consumer_rx) = mpsc::channel(8);
             let events = vec![
                 AgentEvent::TextDone("unchanged".to_string()),
-                AgentEvent::ResponseDone { response_id: Some("response".to_string()), clean: true },
+                AgentEvent::ResponseDone {
+                    response_id: Some("response".to_string()),
+                    clean: true,
+                },
                 AgentEvent::Error("Agent SSE HTTP 404 Not Found: endpoint missing".to_string()),
                 AgentEvent::Error("Agent SSE HTTP 403 Forbidden: model access denied".to_string()),
                 AgentEvent::Error(missing.to_string()),
             ];
-            for event in &events { provider_tx.send(event.clone()).await.expect("queue"); }
+            for event in &events {
+                provider_tx.send(event.clone()).await.expect("queue");
+            }
             drop(provider_tx);
-            forward_events_and_track_chain(provider_rx, consumer_tx, None, account_model.clone()).await;
+            forward_events_and_track_chain(provider_rx, consumer_tx, None, account_model.clone())
+                .await;
             for event in events {
-                let expected = if event == AgentEvent::Error(missing.to_string()) && account_model.is_some() {
+                let expected = if event == AgentEvent::Error(missing.to_string())
+                    && account_model.is_some()
+                {
                     AgentEvent::Error(format!(
                         "Model gpt-6-sol is not available on the signed-in account route (HTTP 404). {missing}"
                     ))
-                } else { event };
+                } else {
+                    event
+                };
                 assert_eq!(consumer_rx.recv().await, Some(expected));
             }
             assert!(consumer_rx.recv().await.is_none());
