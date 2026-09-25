@@ -12530,6 +12530,43 @@ mod live_refinement_admission_tests {
         completion
     }
 
+    fn open_word_completion(request: &TailPatchRequest) -> TailPatchCompletion {
+        use crate::stt::tail_provider::{
+            TailEvidenceSource, TailEvidenceStability, TailProviderEvidence, TailProviderId,
+            TailSegmentGrain, TailTimingQuality,
+        };
+        let window = &request.provider_request.identity.range;
+        assert!(window.sample_start <= 500 && window.sample_end >= 1_000);
+        let mut completion = finish(request);
+        completion.payload = Some(TailProviderPayload {
+            identity: request.provider_request.identity.clone(),
+            text: "Iwo".into(),
+            segments: vec![TimedTailSegment {
+                grain: TailSegmentGrain::Word,
+                text: "Iwo".into(),
+                range: TailSampleRange {
+                    session: window.session.clone(),
+                    capture_epoch: window.capture_epoch,
+                    sample_start: 500,
+                    sample_end: 1_000,
+                },
+            }],
+            avg_logprob: None,
+            compression_ratio: None,
+            provider_id: TailProviderId::Fake,
+            elapsed_ms: 0,
+            evidence: TailProviderEvidence {
+                segment_grain: TailSegmentGrain::Word,
+                source: TailEvidenceSource::Whisper,
+                revision: Some("synthetic-open-l1".into()),
+                stability: TailEvidenceStability::Final,
+                timing_quality: TailTimingQuality::Synthetic,
+                avg_logprob: None,
+            },
+        });
+        completion
+    }
+
     /// Synthetic boundary-driven integration witness, not a microphone proof.
     /// Exercise production reconciliation and admission with partial Apple text.
     #[test]
@@ -12773,10 +12810,6 @@ mod live_refinement_admission_tests {
     fn open_l1_result_keeps_one_pcm_owner_through_speech_close() {
         use super::super::silero_fusion::SileroIngress;
         use crate::audio::chunker::{VadBoundaryEvidence, VadBoundaryKind};
-        use crate::stt::tail_provider::{
-            TailEvidenceSource, TailEvidenceStability, TailProviderEvidence, TailProviderId,
-            TailSegmentGrain, TailTimingQuality,
-        };
 
         let (mut state, events, mut receiver, mut requests) = fixture(4);
         let mut fusion = SileroIngress::new(RATE, "live-admission", 7);
@@ -12806,34 +12839,7 @@ mod live_refinement_admission_tests {
         assert!(window.sample_start <= 500 && window.sample_end >= 1_000);
         request.provider_request.validate_pcm(&request.audio).unwrap();
 
-        let mut completion = finish(&request);
-        completion.payload = Some(TailProviderPayload {
-            identity: request.provider_request.identity.clone(),
-            text: "Iwo".into(),
-            segments: vec![TimedTailSegment {
-                grain: TailSegmentGrain::Word,
-                text: "Iwo".into(),
-                range: TailSampleRange {
-                    session: window.session.clone(),
-                    capture_epoch: window.capture_epoch,
-                    sample_start: 500,
-                    sample_end: 1_000,
-                },
-            }],
-            avg_logprob: None,
-            compression_ratio: None,
-            provider_id: TailProviderId::Fake,
-            elapsed_ms: 0,
-            evidence: TailProviderEvidence {
-                segment_grain: TailSegmentGrain::Word,
-                source: TailEvidenceSource::Whisper,
-                revision: Some("synthetic-open-l1".into()),
-                stability: TailEvidenceStability::Final,
-                timing_quality: TailTimingQuality::Synthetic,
-                avg_logprob: None,
-            },
-        });
-        state.complete_whisper_window(&events, completion, 5.0);
+        state.complete_whisper_window(&events, open_word_completion(&request), 5.0);
         let early = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
         let early_grants = early
             .iter()
@@ -12911,6 +12917,100 @@ mod live_refinement_admission_tests {
         for early_owner in &early_grants {
             assert!(occurrences.contains(early_owner));
         }
+    }
+
+    /// Closing the larger speech region while an open-window decode is still
+    /// running must not orphan that exact request or decode its owned PCM from
+    /// zero again. The late result gets one ledger owner; a replay gets none.
+    #[test]
+    fn open_l1_completion_after_speech_close_is_bound_once_not_replayed() {
+        use super::super::silero_fusion::SileroIngress;
+        use crate::audio::chunker::{VadBoundaryEvidence, VadBoundaryKind};
+
+        let (mut state, events, mut receiver, mut requests) = fixture(4);
+        let mut energy = CaptureLevelAccumulator::bound_to(&state.capture_energy);
+        energy.push_samples(&vec![0.25; 5_000]);
+        let mut fusion = SileroIngress::new(RATE, "live-admission", 7);
+        fusion.note_observed_pcm(5_000, 5_000);
+        fusion.observe_boundaries(&[VadBoundaryEvidence {
+            kind: VadBoundaryKind::SpeechStart,
+            sample: 0,
+            speech_probability: 0.95,
+        }]);
+        fusion
+            .ledger_mut()
+            .open_or_extend("live-admission", 7, 0, 5_000);
+        state.fusion = Some(fusion);
+        assert!(seal_sliced_by_silero(&mut state, &events, &[]));
+        let request = requests
+            .try_recv()
+            .expect("open speech must offer a bounded L1 request");
+        request.provider_request.validate_pcm(&request.audio).unwrap();
+        assert_eq!(request.provider_request.identity.range.session, "live-admission");
+        assert_eq!(request.provider_request.identity.range.capture_epoch, 7);
+        assert!(request.admit_sample_end > 1_000);
+        while receiver.try_recv().is_ok() {}
+
+        energy.push_samples(&vec![0.25; 1_080]);
+        let fusion = state.fusion.as_mut().unwrap();
+        fusion.note_observed_pcm(1_080, 6_080);
+        fusion.observe_boundaries(&[VadBoundaryEvidence {
+            kind: VadBoundaryKind::SpeechEnd,
+            sample: 6_080,
+            speech_probability: 0.05,
+        }]);
+        fusion
+            .ledger_mut()
+            .open_or_extend("live-admission", 7, 0, 6_080);
+        fusion.ledger_mut().close_open(6_080);
+        assert!(seal_sliced_by_silero(&mut state, &events, &[]));
+        while let Ok(next) = requests.try_recv() {
+            assert!(
+                next.admit_sample_start >= request.admit_sample_end,
+                "the closed path may cover the residual tail, not re-own open-window PCM"
+            );
+        }
+        while receiver.try_recv().is_ok() {}
+
+        state.complete_whisper_window(&events, open_word_completion(&request), 6.1);
+        let delivered = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
+        let grants = delivered
+            .iter()
+            .filter_map(|event| match event {
+                EngineEvent::LedgerMutation {
+                    observation,
+                    receipt,
+                    label,
+                } if observation.producer == LedgerObservationProducer::Whisper
+                    && receipt.grants_mutation()
+                    && label == "Iwo" => Some(observation.occurrence.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(grants.len(), 1, "late open-window evidence must not be lost");
+        let owner = &grants[0];
+        assert_eq!((&*owner.session, owner.capture_epoch), ("live-admission", 7));
+        assert!(owner.sample_start <= 500 && owner.sample_end >= 1_000);
+        assert!(owner.sample_end <= 6_080);
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(owner), Some("Iwo"));
+        assert_eq!(
+            ledger
+                .occurrences()
+                .filter(|identity| ledger.text_of(identity) == Some("Iwo"))
+                .count(),
+            1
+        );
+        drop(ledger);
+
+        state.complete_whisper_window(&events, open_word_completion(&request), 6.2);
+        assert!(
+            std::iter::from_fn(|| receiver.try_recv().ok()).all(|event| !matches!(
+                event,
+                EngineEvent::LedgerMutation { receipt, .. } if receipt.grants_mutation()
+            )),
+            "the same completion cannot write the word a second time"
+        );
     }
 
     #[test]
