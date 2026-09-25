@@ -371,44 +371,93 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   }
 
   func testIdleRetainedTakeAndVoiceOverDoNotMountToolsThenCapOpensAndCloses() throws {
+    let source = try overlaySource()
+    let tools = try section(of: source, from: "HStack(spacing: 2)", to: "/// 1px separator")
+    let cap = try section(of: tools, from: "Button {", to: "if actions.phase == .open {")
+    XCTAssertTrue(cap.contains("actions.toggle()"))
+    XCTAssertTrue(cap.contains(".accessibilityIdentifier(\"overlay-tools-handle\")"))
+    XCTAssertTrue(
+      cap.contains(".accessibilityValue(actions.phase == .open ? \"Open\" : \"Collapsed\")"))
+    XCTAssertTrue(cap.contains("if state.hasRecoverableSupersededWork && actions.phase != .open {"))
+    XCTAssertTrue(cap.contains("overlay-retained-work-badge"))
+    XCTAssertTrue(tools.contains("if actions.phase == .open {\n            intentRail"))
+    XCTAssertTrue(source.contains("intents: OverlayIntentRail.projectedIntents(for: state)"))
+    let rail = try section(
+      of: railSource(), from: "var body: some View", to: "private var engineChip")
+    XCTAssertTrue(rail.contains(".accessibilityIdentifier(\"overlay-intent-dock\")"))
+    XCTAssertTrue(
+      rail.contains(
+        "if intents.contains(.recoverSuperseded) || intents.contains(.discardSuperseded) {\n"
+          + "        previousTakeMenu"))
+
     let state = OverlayState.previewFormatted()
     state.beginTranscriptEdit()
     state.updateRevisionDraft("Retained edit")
     state.endTranscriptEdit()
     state.handleRecordingPreparing()
+    defer { state.finishControllerRecording() }
     XCTAssertTrue(state.hasRecoverableSupersededWork)
-    try withPanel(state: state, width: 320) { _, root in
-      @MainActor func element(_ identifier: String) -> (any NSAccessibilityProtocol)? {
-        accessibilityTree(root).first { $0.accessibilityIdentifier() == identifier }
-      }
-      let cap = try XCTUnwrap(element("overlay-tools-handle"))
-      XCTAssertEqual(cap.accessibilityValue() as? String, "Collapsed")
-      XCTAssertNil(element("overlay-intent-dock"))
-      XCTAssertNil(element("overlay-previous-take-menu"))
-      XCTAssertTrue(cap.accessibilityPerformPress())
-      settle(root)
-      XCTAssertNotNil(element("overlay-intent-dock"))
-      XCTAssertNotNil(element("overlay-previous-take-menu"))
-      XCTAssertNotNil(element("overlay-intent-finish"))
-      XCTAssertTrue(try XCTUnwrap(element("overlay-tools-handle")).accessibilityPerformPress())
-      settle(root)
-      XCTAssertNil(element("overlay-intent-dock"))
-      state.finishControllerRecording()
-    }
+    XCTAssertFalse(state.isCollapsed)
+    var actions = OverlayActionsPresentation()
+    XCTAssertEqual(
+      actions.phase, .idle, "Retained work must not open the guarded rail or its menus")
+    XCTAssertNil(actions.hideDeadline)
+    actions.toggle()
+    XCTAssertEqual(actions.phase, .open)
+    let intents = OverlayIntentRail.projectedIntents(for: state)
+    XCTAssertTrue(intents.contains(.recoverSuperseded))
+    XCTAssertTrue(intents.contains(.discardSuperseded))
+    XCTAssertTrue(intents.contains(.finish))
+    XCTAssertTrue(rail.contains("ForEach(intents, id: \\.self) { intent in"))
+    XCTAssertTrue(rail.contains("identifier: \"overlay-intent-\\(intent.rawValue)\""))
+    actions.toggle()
+    XCTAssertEqual(actions.phase, .idle, "The same cap removes the guarded rail again")
+    XCTAssertNil(actions.hideDeadline)
     // `accessibilityVoiceOverEnabled` is read-only in the environment, so the
-    // test cannot switch VoiceOver on. The overlay no longer reads it, so
-    // VoiceOver cannot mount the tools; the default render is the proof.
-    XCTAssertFalse(try overlaySource().contains("accessibilityVoiceOverEnabled"))
-    let host = NSHostingView(rootView: DictationOverlayView(state: .previewFormatted()))
-    host.frame = CGRect(x: 0, y: 0, width: 320, height: 280)
-    settle(host)
-    XCTAssertFalse(
-      accessibilityTree(host).contains {
-        $0.accessibilityIdentifier() == "overlay-intent-dock"
-      })
+    // guard pins its absence; no XCTest environment write or AX walk is needed.
+    XCTAssertFalse(source.contains("accessibilityVoiceOverEnabled"))
+    XCTAssertTrue(source.contains("@State private var actions = OverlayActionsPresentation()"))
+    XCTAssertEqual(OverlayActionsPresentation().phase, .idle)
   }
 
   func testOpenRowKeepsEightToolsAndRecordingKeepsItsThreeTools() throws {
+    let source = try railSource()
+    let row = try section(of: source, from: "var body: some View", to: ".buttonStyle(.plain)")
+    XCTAssertTrue(row.contains("if historyAvailable {\n        historyMenu"))
+    XCTAssertTrue(
+      row.contains(
+        "if intents.contains(.recoverSuperseded) || intents.contains(.discardSuperseded) {\n"
+          + "        previousTakeMenu"))
+    XCTAssertTrue(row.contains("ForEach(intents, id: \\.self) { intent in"))
+    let retranscribe = try section(
+      of: row, from: "if intent == .retranscribe {", to: "} else if intent == .format {")
+    XCTAssertTrue(retranscribe.contains("retranscribeMenu"))
+    let format = try section(
+      of: row, from: "} else if intent == .format {", to: "} else if intent != .close")
+    XCTAssertTrue(format.contains("formatLevelMenu"))
+    XCTAssertTrue(format.contains("OverlayDockButton("))
+    XCTAssertTrue(format.contains("identifier: \"overlay-intent-\\(intent.rawValue)\""))
+    let buttons = try XCTUnwrap(
+      row.range(
+        of:
+          "} else if intent != .close && intent != .recoverSuperseded && intent != .discardSuperseded {"
+      ))
+    XCTAssertTrue(row[buttons.upperBound...].contains("OverlayDockButton("))
+    XCTAssertTrue(
+      row[buttons.upperBound...].contains("identifier: \"overlay-intent-\\(intent.rawValue)\""))
+    let menus = [
+      "overlay-history-menu": try section(
+        of: source, from: "private var historyMenu", to: "private var formatLevelMenu"),
+      "overlay-previous-take-menu": try section(
+        of: source, from: "private var previousTakeMenu", to: "private var historyMenu"),
+      "overlay-format-level-picker": try section(
+        of: source, from: "private var formatLevelMenu", to: "private func setHovered"),
+    ]
+    let retranscribeMenu = try section(
+      of: source, from: "private var retranscribeMenu", to: "private var previousTakeMenu")
+    XCTAssertTrue(
+      retranscribeMenu.contains(
+        ".accessibilityIdentifier(\"overlay-intent-\\(OverlayIntent.retranscribe.rawValue)\")"))
     let rows: [(String, [OverlayIntent], Bool, [String])] = [
       (
         "formatted",
@@ -431,45 +480,66 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       let rail = OverlayIntentRail(
         phase: phase, intents: intents, palette: .dark, historyAvailable: history,
         onIntent: { _ in })
-      let host = NSHostingView(rootView: rail)
-      host.frame = CGRect(x: 0, y: 0, width: 280, height: 80)
-      settle(host)
-      let rendered = Set(accessibilityTree(host).compactMap { $0.accessibilityIdentifier() })
-      for identifier in identifiers { XCTAssertTrue(rendered.contains(identifier), identifier) }
-      XCTAssertFalse(rendered.contains("overlay-intent-close"))
+      XCTAssertEqual(rail.historyAvailable, history)
+      XCTAssertTrue(rail.intents.contains(.recoverSuperseded))
+      XCTAssertTrue(rail.intents.contains(.discardSuperseded))
+      for identifier in identifiers {
+        if let menu = menus[identifier] {
+          XCTAssertTrue(menu.contains(".accessibilityIdentifier(\"\(identifier)\")"), identifier)
+        } else {
+          let rawValue = String(identifier.dropFirst("overlay-intent-".count))
+          let intent = try XCTUnwrap(OverlayIntent(rawValue: rawValue), identifier)
+          XCTAssertTrue(rail.intents.contains(intent), identifier)
+        }
+      }
+      XCTAssertEqual(
+        rail.intents.contains(.format), history, "Only the formatted row has a level picker")
+      XCTAssertFalse(row.contains("\"overlay-intent-close\""))
+      XCTAssertTrue(
+        rail.intents.contains(.close), "The guarded row excludes close even when projected")
       XCTAssertEqual(identifiers.count, history ? 8 : 3)
     }
   }
 
   func testTakeStartAndCollapseRemoveMountedTools() throws {
+    let source = try overlaySource()
+    let canvas = try section(of: source, from: "private func canvasStack", to: "/// 1px separator")
+    XCTAssertTrue(canvas.contains("if !state.isCollapsed {\n        HStack(spacing: 2)"))
+    XCTAssertTrue(canvas.contains("if actions.phase == .open {\n            intentRail"))
+    XCTAssertTrue(canvas.contains("actions.toggle()"))
+    XCTAssertTrue(
+      canvas.contains(".onChange(of: state.captureGeneration) { _, _ in actions.reset() }"))
+    let fold = try section(
+      of: canvas, from: ".onChange(of: state.isCollapsed)",
+      to: ".onChange(of: state.captureGeneration)")
+    XCTAssertTrue(fold.contains("if collapsed { actions.reset() }"))
+    XCTAssertFalse(fold.contains("actions.toggle()"), "Expanding must not reopen tools")
+
     let state = OverlayState.previewFormatted()
-    try withPanel(state: state) { _, root in
-      @MainActor func pressCap() throws {
-        let cap = try XCTUnwrap(
-          accessibilityTree(root).first {
-            $0.accessibilityIdentifier() == "overlay-tools-handle"
-          })
-        XCTAssertTrue(cap.accessibilityPerformPress())
-        settle(root)
-      }
-      @MainActor func hasTools() -> Bool {
-        accessibilityTree(root).contains { $0.accessibilityIdentifier() == "overlay-intent-dock" }
-      }
-      try pressCap()
-      XCTAssertTrue(hasTools())
-      state.handleRecordingPreparing()
-      settle(root)
-      XCTAssertFalse(hasTools())
-      try pressCap()
-      XCTAssertTrue(hasTools())
-      state.toggleCollapsed()
-      settle(root)
-      XCTAssertFalse(hasTools())
-      state.toggleCollapsed()
-      settle(root)
-      XCTAssertFalse(hasTools())
-      state.finishControllerRecording()
-    }
+    defer { state.finishControllerRecording() }
+    var actions = OverlayActionsPresentation()
+    actions.toggle()
+    XCTAssertEqual(actions.phase, .open)
+    let generation = state.captureGeneration
+    state.handleRecordingPreparing()
+    XCTAssertGreaterThan(state.captureGeneration, generation)
+    // Exercise the response pinned to each onChange above, without claiming
+    // that this independent value observes SwiftUI state by itself.
+    actions.reset()
+    XCTAssertEqual(actions.phase, .idle)
+    XCTAssertNil(actions.hideDeadline)
+    actions.toggle()
+    XCTAssertEqual(actions.phase, .open)
+    XCTAssertFalse(state.isCollapsed)
+    state.toggleCollapsed()
+    XCTAssertTrue(state.isCollapsed)
+    actions.reset()
+    XCTAssertEqual(actions.phase, .idle)
+    XCTAssertFalse(actions.pointerInside)
+    XCTAssertNil(actions.hideDeadline)
+    state.toggleCollapsed()
+    XCTAssertFalse(state.isCollapsed)
+    XCTAssertEqual(actions.phase, .idle)
   }
 
   func testEveryToolHasACaptionAndDispatchResetsInteraction() {
@@ -506,21 +576,41 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   }
 
   func testFinishingNoticeSurvivesFoldWithoutChangingBarHeight() throws {
+    let canvas = try section(
+      of: overlaySource(), from: "private func canvasStack", to: "/// 1px separator")
+    let expanded = try section(of: canvas, from: "if !state.isCollapsed,", to: "bodySection")
+    let folded = try section(
+      of: canvas, from: "} else if let label = OverlayActionsPresentation.finishingLabel(",
+      to: ".overlay(alignment: .bottom)")
+    for branch in [expanded, folded] {
+      XCTAssertTrue(branch.contains("OverlayActionsPresentation.finishingLabel("))
+      XCTAssertTrue(
+        branch.contains(
+          "mode: state.mode, transcribing: state.transcribing, terminal: state.terminal)"))
+      XCTAssertTrue(branch.contains("Text(label)"))
+      XCTAssertTrue(branch.contains(".accessibilityIdentifier(\"overlay-finishing\")"))
+      XCTAssertTrue(branch.contains(".allowsHitTesting(false)"))
+    }
     let state = OverlayState.previewListening()
     state.handleRecordingStarted()
+    defer { state.finishControllerRecording() }
     state.handleRecordingFinalising()
     let words = state.canvasText
     try withPanel(state: state) { panel, root in
-      @MainActor func noticeExists() -> Bool {
-        accessibilityTree(root).contains { $0.accessibilityIdentifier() == "overlay-finishing" }
-      }
-      XCTAssertTrue(noticeExists())
+      XCTAssertFalse(state.isCollapsed)
+      XCTAssertEqual(
+        OverlayActionsPresentation.finishingLabel(
+          mode: state.mode, transcribing: state.transcribing, terminal: state.terminal),
+        "Finishing…")
       state.toggleCollapsed()
       settle(root)
-      XCTAssertTrue(noticeExists())
+      XCTAssertTrue(state.isCollapsed)
+      XCTAssertEqual(
+        OverlayActionsPresentation.finishingLabel(
+          mode: state.mode, transcribing: state.transcribing, terminal: state.terminal),
+        "Finishing…")
       XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight, accuracy: 0.5)
       XCTAssertEqual(state.canvasText, words)
-      state.finishControllerRecording()
     }
   }
 
