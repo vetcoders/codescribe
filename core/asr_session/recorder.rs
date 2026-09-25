@@ -37,12 +37,24 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::time::Duration;
 
 use tracing::{info, warn};
 
 use super::events::{AsrErrorKind, AsrSessionEvent, TranscriptEvent};
 use super::ingest::{IngestVerdict, SessionIngest};
 use super::provider::{AsrSessionProvider, RefinerMode, SessionInput};
+
+/// Audio kept back from a cloud session so a Silero close can still be the
+/// exclusive end of the next `commit`. Half a second only has to cover the
+/// worker's decision lag.
+pub const CLOUD_COMMIT_HOLDBACK: Duration = Duration::from_millis(500);
+
+/// Samples of [`CLOUD_COMMIT_HOLDBACK`] at `sample_rate` Hz.
+pub fn cloud_commit_holdback_samples(sample_rate: u32) -> usize {
+    usize::try_from(u64::from(sample_rate) * CLOUD_COMMIT_HOLDBACK.as_millis() as u64 / 1_000)
+        .unwrap_or(usize::MAX)
+}
 
 /// Consecutive overflowed frames tolerated before the lane degrades.
 ///
@@ -427,6 +439,21 @@ pub struct RecorderLayer1Lane {
     degrade: Option<Layer1DegradeReason>,
     /// One-shot notice so the session can emit a single degrade warning event.
     degrade_notice: Option<Layer1DegradeReason>,
+    /// Capture rate of the audio this lane was opened with.
+    sample_rate: u32,
+    /// Cloud sessions hold the newest audio so a commit can stop exactly at a
+    /// Silero close. Every other mode pushes immediately.
+    hold_back: bool,
+    /// Samples successfully handed to the provider. This is the server clock.
+    pushed_samples: u64,
+    /// Audio newer than [`Self::pushed_samples`] and not yet sent.
+    held: Vec<f32>,
+    /// Finals not yet handed to the worker.
+    pending_forward: Vec<TranscriptEvent>,
+    /// Finals the worker channel refused because the worker had already exited.
+    unforwarded_after_exit: u64,
+    /// `pushed - S` for each commit that had already passed S.
+    commit_late_lags: Vec<u64>,
 }
 
 impl fmt::Debug for RecorderLayer1Lane {
@@ -462,6 +489,13 @@ impl RecorderLayer1Lane {
             consecutive_overflows: 0,
             degrade: None,
             degrade_notice: None,
+            sample_rate: input.sample_rate.max(1),
+            hold_back: false,
+            pushed_samples: 0,
+            held: Vec::new(),
+            pending_forward: Vec::new(),
+            unforwarded_after_exit: 0,
+            commit_late_lags: Vec::new(),
         };
         match decision {
             Layer1Decision::Disarmed | Layer1Decision::LocalTailPatch(_) => lane,
@@ -474,6 +508,7 @@ impl RecorderLayer1Lane {
                             sample_rate = input.sample_rate,
                             "Layer 1 lane opened at recording start"
                         );
+                        lane.hold_back = provider.mode() == RefinerMode::CloudSession;
                         lane.state = Layer1LaneState::Live;
                         lane.provider = Some(provider);
                     }
@@ -546,12 +581,102 @@ impl RecorderLayer1Lane {
         if !self.is_live() || samples.is_empty() {
             return FanOutVerdict::Inactive;
         }
+        if !self.hold_back {
+            return self.push_samples(samples);
+        }
+        self.held.extend_from_slice(samples);
+        self.release_aged()
+    }
+
+    /// Samples the provider has accepted. A cloud commit stops on this clock.
+    pub fn pushed_samples(&self) -> u64 {
+        self.pushed_samples
+    }
+
+    /// Lags of commits that had to land on audio already pushed past S.
+    pub fn commit_late_lags(&self) -> &[u64] {
+        &self.commit_late_lags
+    }
+
+    /// Finals still waiting, plus any the worker channel refused after exit.
+    pub fn unforwarded_finals(&self) -> u64 {
+        self.pending_forward.len() as u64 + self.unforwarded_after_exit
+    }
+
+    /// Take finals the worker has not seen yet.
+    pub fn take_unforwarded_finals(&mut self) -> Vec<TranscriptEvent> {
+        std::mem::take(&mut self.pending_forward)
+    }
+
+    /// The worker was already gone when a final was ready.
+    pub fn note_final_after_worker_exit(&mut self) {
+        self.unforwarded_after_exit = self.unforwarded_after_exit.saturating_add(1);
+    }
+
+    /// Push every sample still held. Audio EOF uses this before `end`.
+    pub fn flush_holdback(&mut self) -> FanOutVerdict {
+        if !self.is_live() || self.held.is_empty() {
+            return FanOutVerdict::Inactive;
+        }
+        let held = std::mem::take(&mut self.held);
+        self.push_samples(&held)
+    }
+
+    /// Push audio through capture sample `sample`, then commit there.
+    ///
+    /// `sample` is the exclusive Silero close. When that sample was already
+    /// pushed, the commit lands on the pushed position and records
+    /// `commit_late { lag_samples }`. The commit itself is never skipped.
+    /// Returns the lag when the commit was late.
+    pub fn commit_through(&mut self, sample: u64) -> Option<u64> {
+        if !self.is_live() {
+            return None;
+        }
+        if sample < self.pushed_samples {
+            let lag = self.pushed_samples - sample;
+            self.commit_late_lags.push(lag);
+            self.provider_commit(self.pushed_samples);
+            info!(
+                commit_late = 1,
+                lag_samples = lag,
+                pushed = self.pushed_samples,
+                requested = sample,
+                "cloud_live_commit"
+            );
+            return Some(lag);
+        }
+        let need = usize::try_from(sample - self.pushed_samples).unwrap_or(usize::MAX);
+        let take = need.min(self.held.len());
+        if take > 0 {
+            let chunk: Vec<f32> = self.held.drain(..take).collect();
+            let _ = self.push_samples(&chunk);
+        }
+        self.provider_commit(self.pushed_samples);
+        None
+    }
+
+    /// Release audio older than the capture head by [`CLOUD_COMMIT_HOLDBACK`].
+    fn release_aged(&mut self) -> FanOutVerdict {
+        let keep = cloud_commit_holdback_samples(self.sample_rate);
+        if self.held.len() <= keep {
+            return FanOutVerdict::Forwarded;
+        }
+        let release = self.held.len() - keep;
+        let chunk: Vec<f32> = self.held.drain(..release).collect();
+        self.push_samples(&chunk)
+    }
+
+    fn push_samples(&mut self, samples: &[f32]) -> FanOutVerdict {
+        if samples.is_empty() || !self.is_live() {
+            return FanOutVerdict::Inactive;
+        }
         let Some(provider) = self.provider.as_mut() else {
             return FanOutVerdict::Inactive;
         };
         match provider.push_audio(samples) {
             Ok(()) => {
                 self.consecutive_overflows = 0;
+                self.pushed_samples = self.pushed_samples.saturating_add(samples.len() as u64);
                 self.telemetry.frames_forwarded += 1;
                 FanOutVerdict::Forwarded
             }
@@ -568,6 +693,19 @@ impl RecorderLayer1Lane {
                 self.degrade_dropping_provider(Layer1DegradeReason::Disconnect(kind));
                 FanOutVerdict::Inactive
             }
+        }
+    }
+
+    fn provider_commit(&mut self, sample: u64) {
+        if !self.is_live() {
+            return;
+        }
+        let Some(provider) = self.provider.as_mut() else {
+            return;
+        };
+        if let Err(kind) = provider.commit(sample) {
+            self.telemetry.provider_errors += 1;
+            self.degrade_dropping_provider(Layer1DegradeReason::Disconnect(kind));
         }
     }
 
@@ -607,6 +745,9 @@ impl RecorderLayer1Lane {
     /// outcome and the lane ends [`Layer1LaneState::Stopped`] — the stop path
     /// never propagates a Layer 1 failure.
     pub fn stop(&mut self) -> Layer1SessionOutcome {
+        if self.is_live() {
+            let _ = self.flush_holdback();
+        }
         if let Some(mut provider) = self.provider.take() {
             // Route anything already decoded before asking for the tail.
             for event in provider.drain() {
@@ -658,6 +799,7 @@ impl RecorderLayer1Lane {
                 AsrSessionEvent::Final(transcript) => {
                     self.telemetry.finals_accepted += 1;
                     self.draft.remove(&transcript.utterance_id);
+                    self.pending_forward.push(transcript.clone());
                     self.finals.push(transcript);
                 }
                 AsrSessionEvent::Error(error) => {
@@ -700,6 +842,7 @@ impl RecorderLayer1Lane {
     /// they already passed the doctrine seam and remain gap-fill candidates.
     fn degrade_dropping_provider(&mut self, reason: Layer1DegradeReason) {
         self.provider = None;
+        self.held.clear();
         self.draft.clear();
         self.state = Layer1LaneState::Degraded(reason);
         self.note_degrade(reason);
@@ -783,6 +926,14 @@ mod tests {
         })
     }
 
+    /// One provider push. Cloud hold-back keeps half a second, so a 320-sample
+    /// offer never reaches the provider; this offers just past that fence.
+    fn force_provider_push(lane: &mut RecorderLayer1Lane) -> FanOutVerdict {
+        let keep = cloud_commit_holdback_samples(lane.sample_rate);
+        let extra = keep.saturating_sub(lane.held.len()).saturating_add(1);
+        lane.offer_pcm(&vec![0.1; extra.max(1)])
+    }
+
     /// An armed decision over a scripted fake provider.
     fn armed(script: Vec<AsrSessionEvent>) -> Layer1Decision {
         Layer1Decision::Armed(Box::new(FakeAsrSessionProvider::with_script(
@@ -799,7 +950,7 @@ mod tests {
         assert_eq!(lane.state(), Layer1LaneState::Unarmed);
         assert_eq!(lane.refiner_mode(), RefinerMode::Off);
 
-        assert_eq!(lane.offer_pcm(&[0.1; 320]), FanOutVerdict::Inactive);
+        assert_eq!(force_provider_push(&mut lane), FanOutVerdict::Inactive);
         lane.poll();
         assert!(lane.take_degrade_notice().is_none(), "no degrade to report");
 
@@ -828,7 +979,7 @@ mod tests {
             lane.take_degrade_notice(),
             Some(Layer1DegradeReason::OpenFailed(AsrErrorKind::Protocol))
         );
-        assert_eq!(lane.offer_pcm(&[0.1; 320]), FanOutVerdict::Inactive);
+        assert_eq!(force_provider_push(&mut lane), FanOutVerdict::Inactive);
     }
 
     /// Partials are volatile draft: replaced freely, cleared by their final,
@@ -844,15 +995,15 @@ mod tests {
             &input(),
         );
 
-        lane.offer_pcm(&[0.1; 320]);
+        force_provider_push(&mut lane);
         lane.poll();
         assert_eq!(lane.draft_text(1), Some("pacjent"));
 
-        lane.offer_pcm(&[0.1; 320]);
+        force_provider_push(&mut lane);
         lane.poll();
         assert_eq!(lane.draft_text(1), Some("pacjent ma"), "draft is replaced");
 
-        lane.offer_pcm(&[0.1; 320]);
+        force_provider_push(&mut lane);
         lane.poll();
         assert_eq!(lane.draft_text(1), None, "the final clears its draft");
         assert_eq!(lane.finals().len(), 1);
@@ -873,7 +1024,7 @@ mod tests {
         );
 
         for _ in 0..3 {
-            lane.offer_pcm(&[0.1; 320]);
+            force_provider_push(&mut lane);
             lane.poll();
         }
 
@@ -898,7 +1049,7 @@ mod tests {
             RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(provider)), &input());
 
         for _ in 0..(OVERFLOW_DEGRADE_LIMIT - 1) {
-            assert_eq!(lane.offer_pcm(&[0.1; 320]), FanOutVerdict::DroppedOverflow);
+            assert_eq!(force_provider_push(&mut lane), FanOutVerdict::DroppedOverflow);
         }
         assert!(lane.is_live(), "a short overflow run is absorbed");
         assert_eq!(
@@ -917,7 +1068,7 @@ mod tests {
             RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(provider)), &input());
 
         for _ in 0..OVERFLOW_DEGRADE_LIMIT {
-            lane.offer_pcm(&[0.1; 320]);
+            force_provider_push(&mut lane);
         }
         assert_eq!(
             lane.state(),
@@ -929,7 +1080,7 @@ mod tests {
             Some(Layer1DegradeReason::Overflow)
         );
         // Capture is oblivious: further offers are ignored, never errors.
-        assert_eq!(lane.offer_pcm(&[0.1; 320]), FanOutVerdict::Inactive);
+        assert_eq!(force_provider_push(&mut lane), FanOutVerdict::Inactive);
     }
 
     /// A successful push resets the consecutive-overflow run, so scattered
@@ -941,7 +1092,7 @@ mod tests {
         for _ in 0..(OVERFLOW_DEGRADE_LIMIT - 1) {
             // The fake accepts pushes (no failure armed): every offer forwards
             // and the overflow run stays at zero.
-            assert_eq!(lane.offer_pcm(&[0.1; 320]), FanOutVerdict::Forwarded);
+            assert_eq!(force_provider_push(&mut lane), FanOutVerdict::Forwarded);
         }
         assert!(lane.is_live());
         assert_eq!(lane.telemetry().overflow_frame_drops, 0);
@@ -955,7 +1106,7 @@ mod tests {
         let mut lane =
             RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(provider)), &input());
 
-        assert_eq!(lane.offer_pcm(&[0.1; 320]), FanOutVerdict::Inactive);
+        assert_eq!(force_provider_push(&mut lane), FanOutVerdict::Inactive);
         assert_eq!(
             lane.state(),
             Layer1LaneState::Degraded(Layer1DegradeReason::Disconnect(AsrErrorKind::Transport))
@@ -969,7 +1120,7 @@ mod tests {
     fn fatal_error_event_degrades_the_lane() {
         let mut lane =
             RecorderLayer1Lane::open(armed(vec![error_event(1, AsrErrorKind::Auth)]), &input());
-        lane.offer_pcm(&[0.1; 320]);
+        force_provider_push(&mut lane);
         lane.poll();
         assert_eq!(
             lane.state(),
@@ -987,11 +1138,11 @@ mod tests {
             ]),
             &input(),
         );
-        lane.offer_pcm(&[0.1; 320]);
+        force_provider_push(&mut lane);
         lane.poll();
         assert!(lane.is_live(), "rate limiting must not end the session");
 
-        lane.offer_pcm(&[0.1; 320]);
+        force_provider_push(&mut lane);
         lane.poll();
         assert_eq!(lane.finals().len(), 1, "the session keeps producing");
     }
@@ -1000,7 +1151,7 @@ mod tests {
     #[test]
     fn sleep_wake_degrades_and_clears_the_draft() {
         let mut lane = RecorderLayer1Lane::open(armed(vec![partial(1, 1, "pacjent")]), &input());
-        lane.offer_pcm(&[0.1; 320]);
+        force_provider_push(&mut lane);
         lane.poll();
         assert_eq!(lane.draft_len(), 1);
 
@@ -1018,7 +1169,7 @@ mod tests {
     async fn recorder_lifecycle_adapter_reaches_active_lane_transition() {
         let (handle, mut events) = recorder_lifecycle_channel();
         let mut lane = RecorderLayer1Lane::open(armed(vec![partial(1, 1, "pacjent")]), &input());
-        lane.offer_pcm(&[0.1; 320]);
+        force_provider_push(&mut lane);
         lane.poll();
         assert_eq!(lane.draft_len(), 1);
 
@@ -1084,8 +1235,8 @@ mod tests {
         );
         let mut lane =
             RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(provider)), &input());
-        lane.offer_pcm(&[0.1; 320]);
-        lane.offer_pcm(&[0.1; 320]);
+        force_provider_push(&mut lane);
+        force_provider_push(&mut lane);
         lane.poll();
         assert!(matches!(lane.state(), Layer1LaneState::Degraded(_)));
 
@@ -1105,7 +1256,7 @@ mod tests {
             .failing_pushes(AsrErrorKind::Transport);
         let mut lane =
             RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(provider)), &input());
-        lane.offer_pcm(&[0.1; 320]);
+        force_provider_push(&mut lane);
         assert!(matches!(lane.state(), Layer1LaneState::Degraded(_)));
 
         let outcome = lane.stop();
@@ -1115,5 +1266,29 @@ mod tests {
             Some(Layer1DegradeReason::Disconnect(AsrErrorKind::Transport))
         );
         assert!(outcome.finals().is_empty());
+    }
+
+    #[test]
+    fn commit_pushes_exactly_the_silero_close_then_commits() {
+        let mut lane = RecorderLayer1Lane::open(armed(vec![]), &input());
+        let close_at = cloud_commit_holdback_samples(lane.sample_rate) as u64 + 100;
+        lane.offer_pcm(&vec![0.1; close_at as usize]);
+        assert_eq!(lane.pushed_samples(), 100);
+        assert_eq!(lane.commit_through(close_at), None);
+        assert_eq!(lane.pushed_samples(), close_at);
+        assert!(lane.commit_late_lags().is_empty());
+    }
+
+    #[test]
+    fn commit_past_the_holdback_lands_on_the_pushed_sample_and_still_commits() {
+        let mut lane = RecorderLayer1Lane::open(armed(vec![]), &input());
+        let close_at = cloud_commit_holdback_samples(lane.sample_rate) as u64 + 50;
+        lane.offer_pcm(&vec![0.1; 20_000]);
+        let pushed = lane.pushed_samples();
+        assert!(pushed > close_at);
+        assert_eq!(lane.commit_through(close_at), Some(pushed - close_at));
+        assert_eq!(lane.pushed_samples(), pushed);
+        assert_eq!(lane.commit_late_lags(), &[pushed - close_at]);
+        assert!(lane.is_live(), "a late commit still commits");
     }
 }

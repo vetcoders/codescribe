@@ -856,12 +856,12 @@ fn emit_layer1_finals_not_admitted_warning(
         code = LAYER1_FINALS_NOT_ADMITTED_WARNING_CODE,
         finals_accepted,
         refiner,
-        "Layer 1 finals collected but not admitted into the acoustic ledger or paste"
+        "Layer 1 finals arrived after the worker exited"
     );
     event_sink.on_event(&EngineEvent::Warning {
         code: LAYER1_FINALS_NOT_ADMITTED_WARNING_CODE.to_string(),
         message: format!(
-            "finals_accepted={finals_accepted} refiner={refiner}: Layer 1 finals collected but not admitted into the acoustic ledger or paste"
+            "finals_accepted={finals_accepted} refiner={refiner}: Layer 1 finals arrived after the worker exited"
         ),
     });
 }
@@ -1089,6 +1089,15 @@ pub(crate) async fn apple_stream_transcription_session(
     let (formatter_done_tx, formatter_done_rx) = std_mpsc::channel::<FormatterCompletion>();
     let worker_formatter_tx = formatter_on.then_some(formatter_tx);
 
+    let cloud_on = layer1_lane.is_live()
+        && layer1_lane.refiner_mode() == crate::asr_session::RefinerMode::CloudSession;
+    let (cloud_commit_tx, cloud_commit_rx) = mpsc::channel::<u64>(32);
+    let worker_cloud_commit = cloud_on.then_some(cloud_commit_tx);
+    let mut cloud_commit_rx = cloud_on.then_some(cloud_commit_rx);
+    let (cloud_notice_tx, cloud_notice_rx) = std_mpsc::channel::<CloudWorkerNotice>();
+    let worker_cloud_notice = cloud_on.then_some(cloud_notice_rx);
+    let cloud_notice_tx = cloud_on.then_some(cloud_notice_tx);
+
     let (consultation_tx, mut consultation_rx) = mpsc::channel(CONSULTATION_QUEUE_CAP);
     let (consultation_return_tx, consultation_return_rx) = std_mpsc::channel();
     let mut consultation_assessments =
@@ -1134,6 +1143,8 @@ pub(crate) async fn apple_stream_transcription_session(
             tp_done_rx,
             worker_formatter_tx,
             formatter_done_rx,
+            worker_cloud_commit,
+            worker_cloud_notice,
             AppleWorkerConfig {
                 local_execution: worker_execution,
                 sample_rate,
@@ -1238,6 +1249,11 @@ pub(crate) async fn apple_stream_transcription_session(
             chunk = chunk_receiver.recv(), if !audio_eof => {
                 match chunk {
                     Some(chunk) => {
+                        if let Some(receiver) = cloud_commit_rx.as_mut() {
+                            while let Ok(sample) = receiver.try_recv() {
+                                let _late = layer1_lane.commit_through(sample);
+                            }
+                        }
                         capture_level.push_samples(&chunk);
                         // C1 fan-out: offer the frame to the Layer 1 lane
                         // before forwarding to the Apple worker. The offer
@@ -1252,8 +1268,10 @@ pub(crate) async fn apple_stream_transcription_session(
                         }
                     }
                     None => {
-                        // Capture stopped — signal EOF to the worker; keep
-                        // draining events until the worker exits.
+                        // Capture stopped — push the held tail, then signal EOF.
+                        // `end` is the lane's close after the worker has admitted
+                        // the commits this flush makes possible.
+                        layer1_lane.flush_holdback();
                         let _ = pcm_tx.send(None);
                         audio_eof = true;
                     }
@@ -1303,6 +1321,19 @@ pub(crate) async fn apple_stream_transcription_session(
                 // One job is in flight; the coalesce map rides alongside so
                 // the completion can close every member seal.
                 tail_patch_lane_in_flight = Some(inflight);
+            }
+            sample = async {
+                let Some(receiver) = cloud_commit_rx.as_mut() else {
+                    std::future::pending().await
+                };
+                receiver.recv().await
+            } => {
+                match sample {
+                    Some(sample) => {
+                        let _late = layer1_lane.commit_through(sample);
+                    }
+                    None => cloud_commit_rx = None,
+                }
             }
             Some(result) = tail_patch_lane.next() => {
                 tail_patch_in_flight = false;
@@ -1380,8 +1411,18 @@ pub(crate) async fn apple_stream_transcription_session(
         // ingest doctrine. Non-blocking, so live Preview drainage above is
         // never delayed by the refiner.
         layer1_lane.poll();
+        if let Some(sender) = cloud_notice_tx.as_ref() {
+            for event in layer1_lane.take_unforwarded_finals() {
+                if sender.send(CloudWorkerNotice::Final(event)).is_err() {
+                    layer1_lane.note_final_after_worker_exit();
+                }
+            }
+        }
         if let Some(reason) = layer1_lane.take_degrade_notice() {
             emit_layer1_degrade_warning(event_sink.as_ref(), reason);
+            if let Some(sender) = cloud_notice_tx.as_ref() {
+                let _ = sender.send(CloudWorkerNotice::LaneLost);
+            }
         }
         if worker_finished
             && consultation_rx.is_closed()
@@ -1432,9 +1473,10 @@ pub(crate) async fn apple_stream_transcription_session(
         emit_layer1_degrade_warning(event_sink.as_ref(), reason);
     }
     let layer1_counts = layer1_outcome.telemetry();
+    let finals_after_worker = layer1_lane.unforwarded_finals();
     emit_layer1_finals_not_admitted_warning(
         event_sink.as_ref(),
-        layer1_counts.finals_accepted,
+        finals_after_worker,
         layer1_refiner,
     );
     if layer1_counts.frames_offered > 0 || layer1_counts.finals_accepted > 0 {
@@ -1654,6 +1696,36 @@ struct AppleSealState {
     /// This take's capture energy ladder, bound to session and capture epoch.
     /// The live writer is the async capture arm; this is its reader handle.
     capture_energy: CaptureEnergyOwner,
+    /// Present only when this take opened a live cloud session. Local power
+    /// leaves it empty, so no commit is sent and no cloud observer is scheduled.
+    cloud_commit_tx: Option<mpsc::Sender<u64>>,
+    /// Utterances whose Silero close already produced one commit.
+    cloud_commit_sent: BTreeSet<u64>,
+    /// Commit samples the async lane has not accepted yet.
+    cloud_commit_retry: VecDeque<u64>,
+    /// Commits whose finals have not returned. The sample is the Silero close.
+    cloud_inflight: VecDeque<PendingCloudCommit>,
+    cloud_clock_unreliable_logged: bool,
+    cloud_live_admitted: u64,
+    cloud_live_replaced_apple: u64,
+    cloud_live_refused_sealed: u64,
+    cloud_live_unowned_routed: u64,
+    cloud_live_lane_lost: u64,
+    cloud_live_timed_out: u64,
+}
+
+/// One websocket commit waiting for the final the server stamps back.
+struct PendingCloudCommit {
+    /// Exclusive Silero close the worker asked the lane to commit.
+    sample_end: u64,
+    /// Qualified, unsealed occurrences this commit covers.
+    occurrences: Vec<OccurrenceIdentity>,
+}
+
+/// Worker-bound cloud notices. Finals are revisions; lane loss releases seals.
+enum CloudWorkerNotice {
+    Final(crate::asr_session::events::TranscriptEvent),
+    LaneLost,
 }
 
 fn inflight_key(submission_sequence: u64, identity: &TailRequestIdentity) -> (u64, u64, u64, u64) {
@@ -1858,6 +1930,17 @@ impl AppleSealState {
             acoustic_ledger: Arc::new(Mutex::new(AcousticLedger::new())),
             energy_calibration: None,
             capture_energy: CaptureEnergyOwner::bind(session_id_for_energy, capture_epoch),
+            cloud_commit_tx: None,
+            cloud_commit_sent: BTreeSet::new(),
+            cloud_commit_retry: VecDeque::new(),
+            cloud_inflight: VecDeque::new(),
+            cloud_clock_unreliable_logged: false,
+            cloud_live_admitted: 0,
+            cloud_live_replaced_apple: 0,
+            cloud_live_refused_sealed: 0,
+            cloud_live_unowned_routed: 0,
+            cloud_live_lane_lost: 0,
+            cloud_live_timed_out: 0,
         };
         state
             .acoustic_ledger
@@ -1908,6 +1991,376 @@ impl AppleSealState {
         Self {
             tail_patch: Some(tail_patch),
             ..Self::new(sample_rate)
+        }
+    }
+
+    /// Commit the cloud stream at the sample where Silero decided this close.
+    ///
+    /// The sample is the utterance's raw end, after the silence fence. It is
+    /// not the exclusive owned span: that span is last speech plus a pad, and
+    /// a later neighbour can still move it. The commit does not mint, own, or
+    /// resize an occurrence.
+    fn commit_cloud_occurrence(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        utterance_id: u64,
+        sample_end: u64,
+        occurrence: &OccurrenceIdentity,
+    ) {
+        if self.cloud_commit_tx.is_none() {
+            return;
+        }
+        if !self.cloud_commit_sent.insert(utterance_id) {
+            return;
+        }
+        let scheduled = {
+            let mut ledger = self
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !ledger.is_qualified(occurrence) || ledger.is_sealed(occurrence) {
+                false
+            } else if ledger.frontier_of(occurrence).is_none() {
+                ledger.schedule_frontier(
+                    occurrence.clone(),
+                    [LedgerObservationProducer::CloudLive],
+                );
+                true
+            } else {
+                ledger.schedule_observer(
+                    occurrence.clone(),
+                    LedgerObservationProducer::CloudLive,
+                );
+                ledger.frontier_of(occurrence).is_some_and(|frontier| {
+                    frontier
+                        .open_producers()
+                        .contains(&LedgerObservationProducer::CloudLive)
+                })
+            }
+        };
+        if !scheduled {
+            self.cloud_commit_sent.remove(&utterance_id);
+            return;
+        }
+        self.cloud_inflight.push_back(PendingCloudCommit {
+            sample_end,
+            occurrences: vec![occurrence.clone()],
+        });
+        self.cloud_commit_retry.push_back(sample_end);
+        self.flush_cloud_commits(ev_tx);
+    }
+
+    fn flush_cloud_commits(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
+        while let Some(sample_end) = self.cloud_commit_retry.pop_front() {
+            let Some(sender) = self.cloud_commit_tx.as_ref() else {
+                self.cloud_commit_retry.clear();
+                self.return_cloud_live_lost(ev_tx);
+                return;
+            };
+            match sender.try_send(sample_end) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(sample_end)) => {
+                    self.cloud_commit_retry.push_front(sample_end);
+                    return;
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    self.cloud_commit_tx = None;
+                    self.cloud_commit_retry.clear();
+                    self.return_cloud_live_lost(ev_tx);
+                    return;
+                }
+            }
+        }
+    }
+
+    fn handle_cloud_notice(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        notice: CloudWorkerNotice,
+    ) {
+        match notice {
+            CloudWorkerNotice::LaneLost => self.return_cloud_live_lost(ev_tx),
+            CloudWorkerNotice::Final(event) => self.admit_cloud_final(ev_tx, event),
+        }
+    }
+
+    fn return_cloud_live_lost(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
+        let mut occurrences = self
+            .cloud_inflight
+            .drain(..)
+            .flat_map(|commit| commit.occurrences)
+            .collect::<Vec<_>>();
+        for (_, owner) in self.word_owners() {
+            let open = self
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .frontier_of(&owner)
+                .is_some_and(|frontier| {
+                    frontier
+                        .open_producers()
+                        .contains(&LedgerObservationProducer::CloudLive)
+                });
+            if open && !occurrences.contains(&owner) {
+                occurrences.push(owner);
+            }
+        }
+        for occurrence in occurrences {
+            self.cloud_live_lane_lost = self.cloud_live_lane_lost.saturating_add(1);
+            self.cloud_receipt(&occurrence, "cloud_live_lane_lost");
+            self.return_cloud_observer(ev_tx, &occurrence);
+        }
+    }
+
+    /// Cloud-live observers whose commit ended strictly before `horizon` are
+    /// returned. The commit that lands on this horizon is not its own timeout.
+    fn release_cloud_live_behind(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        horizon: u64,
+    ) {
+        if self.cloud_commit_tx.is_none() && self.cloud_inflight.is_empty() {
+            return;
+        }
+        let mut due = Vec::new();
+        let mut kept = VecDeque::new();
+        while let Some(commit) = self.cloud_inflight.pop_front() {
+            if commit.sample_end < horizon {
+                due.extend(commit.occurrences);
+            } else {
+                kept.push_back(commit);
+            }
+        }
+        self.cloud_inflight = kept;
+        for occurrence in due {
+            self.cloud_live_timed_out = self.cloud_live_timed_out.saturating_add(1);
+            self.cloud_receipt(&occurrence, "cloud_live_timed_out");
+            self.return_cloud_observer(ev_tx, &occurrence);
+        }
+    }
+
+    fn return_outstanding_cloud(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
+        self.release_cloud_live_behind(ev_tx, u64::MAX);
+    }
+
+    fn cloud_receipt(&self, occurrence: &OccurrenceIdentity, disposition: &'static str) {
+        info!(
+            session = %occurrence.session,
+            capture_epoch = occurrence.capture_epoch,
+            sample_start = occurrence.sample_start,
+            sample_end = occurrence.sample_end,
+            disposition,
+            "cloud_live"
+        );
+    }
+
+    fn admit_cloud_final(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        event: crate::asr_session::events::TranscriptEvent,
+    ) {
+        let Some(commit) = event.commit.clone() else {
+            return;
+        };
+        self.log_cloud_final(&commit);
+        let pending = self.cloud_inflight.pop_front();
+        let scheduled = pending
+            .map(|commit| commit.occurrences)
+            .unwrap_or_default();
+        let word_grain = commit.grain == crate::asr_session::events::FinalGrain::Word
+            && !commit.words.is_empty()
+            && !commit.phrase_fallback;
+        if word_grain {
+            self.admit_cloud_words(ev_tx, &commit);
+        } else if !event.text.trim().is_empty() {
+            self.admit_cloud_phrase(ev_tx, &commit, event.text.trim());
+        }
+        for occurrence in scheduled {
+            self.return_cloud_observer(ev_tx, &occurrence);
+        }
+    }
+
+    fn log_cloud_final(&mut self, commit: &crate::asr_session::events::FinalCommit) {
+        let mismatch = commit.range_mismatch.as_ref().map(|mismatch| {
+            format!(
+                "commit={}..{} server={}..{}",
+                mismatch.commit_sample_start,
+                mismatch.commit_sample_end,
+                mismatch.server_sample_start,
+                mismatch.server_sample_end
+            )
+        });
+        info!(
+            match_path = commit.match_path.as_label(),
+            word_time_clamped = commit.word_time_clamped,
+            phrase_fallback = commit.phrase_fallback,
+            commit_range_mismatch = mismatch.as_deref().unwrap_or(""),
+            "cloud_live_admission"
+        );
+        if commit.clock_unreliable && !self.cloud_clock_unreliable_logged {
+            self.cloud_clock_unreliable_logged = true;
+            info!(stream_clock_unreliable = true, "cloud_live_admission");
+        }
+    }
+
+    fn admit_cloud_words(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        commit: &crate::asr_session::events::FinalCommit,
+    ) {
+        let segments = commit
+            .words
+            .iter()
+            .map(|word| TimedTailSegment {
+                text: word.word.clone(),
+                range: TailSampleRange {
+                    session: self.session_id.clone(),
+                    capture_epoch: self.capture_epoch,
+                    sample_start: word.sample_start,
+                    sample_end: word.sample_end,
+                },
+                grain: crate::stt::tail_provider::TailSegmentGrain::Word,
+            })
+            .collect::<Vec<_>>();
+        self.admit_cloud_segments(ev_tx, commit, &segments, true);
+    }
+
+    fn admit_cloud_phrase(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        commit: &crate::asr_session::events::FinalCommit,
+        text: &str,
+    ) {
+        let segments = vec![TimedTailSegment {
+            text: text.to_string(),
+            range: TailSampleRange {
+                session: self.session_id.clone(),
+                capture_epoch: self.capture_epoch,
+                sample_start: commit.sample_start,
+                sample_end: commit.sample_end,
+            },
+            grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
+        }];
+        self.admit_cloud_segments(ev_tx, commit, &segments, false);
+    }
+
+    fn admit_cloud_segments(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        commit: &crate::asr_session::events::FinalCommit,
+        segments: &[TimedTailSegment],
+        word_grain: bool,
+    ) {
+        let owners = self.word_owners();
+        let routes = self.route_overlap_pins(
+            ev_tx,
+            commit.sample_start,
+            commit.sample_start,
+            commit.sample_end,
+            &owners,
+            segments,
+            LedgerObservationProducer::CloudLive,
+        );
+        for ((member_id, occurrence), route) in owners.iter().zip(&routes) {
+            if word_grain {
+                if route.exclusive.is_empty() {
+                    continue;
+                }
+                let before = self
+                    .acoustic_ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .layer_trail()
+                    .len();
+                let admitted = self.admit_routed_words(
+                    ev_tx,
+                    *member_id,
+                    occurrence,
+                    commit.sample_start,
+                    &route.exclusive,
+                    LedgerObservationProducer::CloudLive,
+                );
+                if admitted {
+                    self.cloud_live_admitted = self.cloud_live_admitted.saturating_add(1);
+                }
+                let (replaced_apple, refused_sealed) = {
+                    let trail = self
+                        .acoustic_ledger
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut replaced_apple = 0u64;
+                    let mut refused_sealed = 0u64;
+                    for entry in trail.layer_trail().iter().skip(before) {
+                        match &entry.decision {
+                            MutationReceipt::Refuse {
+                                reason: RefuseReason::ReplacedByCloudLive,
+                                ..
+                            } if entry.observation.producer
+                                == LedgerObservationProducer::Apple =>
+                            {
+                                replaced_apple = replaced_apple.saturating_add(1);
+                            }
+                            MutationReceipt::KeepVisibleUnanchored {
+                                reason: NoAuthorityReason::LateCloudLiveWordSealedOwner,
+                                ..
+                            } => {
+                                refused_sealed = refused_sealed.saturating_add(1);
+                            }
+                            _ => {}
+                        }
+                    }
+                    (replaced_apple, refused_sealed)
+                };
+                self.cloud_live_replaced_apple = self
+                    .cloud_live_replaced_apple
+                    .saturating_add(replaced_apple);
+                self.cloud_live_refused_sealed = self
+                    .cloud_live_refused_sealed
+                    .saturating_add(refused_sealed);
+                continue;
+            }
+            let text = exclusive_label(&route.exclusive);
+            if text.is_empty() {
+                continue;
+            }
+            let observation = self
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .next_word_observation(
+                    LedgerObservationProducer::CloudLive,
+                    commit.sample_start,
+                    occurrence,
+                );
+            if admit_ledger_label(
+                self,
+                ev_tx,
+                LabelAdmission {
+                    observation,
+                    label: &text,
+                    energy: EnergyAdmission::RequireExistingQualification,
+                },
+            )
+            .is_some_and(|receipt| receipt.grants_mutation())
+            {
+                self.cloud_live_admitted = self.cloud_live_admitted.saturating_add(1);
+            }
+            self.refresh_pending_label(*member_id, occurrence);
+        }
+    }
+
+    fn return_cloud_observer(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        occurrence: &OccurrenceIdentity,
+    ) {
+        let mut ledger = self
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let closed = ledger.note_frontier_return(occurrence, LedgerObservationProducer::CloudLive);
+        if closed && let Ok(receipt) = ledger.seal(occurrence).cloned() {
+            let _ = ev_tx.send(EngineEvent::LedgerSeal { receipt });
         }
     }
 
@@ -2254,6 +2707,7 @@ impl AppleSealState {
 
     /// Called on every live worker turn, independent of Apple engine lifecycle.
     fn tick_refinements(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>, now: Instant) {
+        self.flush_cloud_commits(ev_tx);
         self.refinement_clock = now;
         for flush in self.layer1_coalesce.flush_due(now) {
             self.queue_layer1_flush(ev_tx, flush);
@@ -2315,6 +2769,7 @@ impl AppleSealState {
         admit_sample_end: u64,
         members: &[(u64, OccurrenceIdentity)],
         segments: &[TimedTailSegment],
+        producer: LedgerObservationProducer,
     ) -> Vec<MemberPinRoute> {
         let word_grain = !segments.is_empty()
             && segments
@@ -2349,9 +2804,32 @@ impl AppleSealState {
                         OverlapPinClass::ExclusiveTail { member_index } => {
                             let owner = &open_members[member_index];
                             // Apple/Lexicon can still be one aggregate slot.
-                            // Its label cannot prove this Whisper word was heard,
-                            // on either side of the current window's admit edge.
-                            ledger.matching_word_slot(owner, &pin, text, true)
+                            // Its label cannot prove this heard word was already
+                            // pinned, on either side of the current window's edge.
+                            // `whisper_only` stays Whisper: a cloud-live slot must
+                            // not make the later Whisper pin look already heard.
+                            let heard_already = if producer == LedgerObservationProducer::CloudLive
+                            {
+                                ledger.slots_of(owner).is_some_and(|slots| {
+                                    slots.iter().any(|slot| {
+                                        matches!(
+                                            slot.producer,
+                                            LedgerObservationProducer::Whisper
+                                                | LedgerObservationProducer::CloudLive
+                                        ) && crate::pipeline::acoustic_ledger::same_word_pin(
+                                            pin.sample_start.max(owner.sample_start),
+                                            pin.sample_end.min(owner.sample_end),
+                                            text,
+                                            slot.sample_start,
+                                            slot.sample_end,
+                                            &slot.text,
+                                        )
+                                    })
+                                })
+                            } else {
+                                ledger.matching_word_slot(owner, &pin, text, true)
+                            };
+                            heard_already
                                 || routes[member_index].exclusive.iter().any(|prior| {
                                     crate::pipeline::acoustic_ledger::same_word_pin(
                                         pin.sample_start.max(owner.sample_start),
@@ -2467,11 +2945,16 @@ impl AppleSealState {
                 ),
             });
             let observation = LedgerObservationIdentity::new(
-                LedgerObservationProducer::Whisper,
+                producer,
                 request_id,
                 1_000 + admit_sample_start + index as u64,
                 pin,
             );
+            if producer == LedgerObservationProducer::CloudLive
+                && matches!(disposition, SidePin::Unanchored(_))
+            {
+                self.cloud_live_unowned_routed = self.cloud_live_unowned_routed.saturating_add(1);
+            }
             let receipt = {
                 let mut ledger = self
                     .acoustic_ledger
@@ -2673,6 +3156,7 @@ impl AppleSealState {
             admit_sample_end,
             &owners,
             segments,
+            LedgerObservationProducer::Whisper,
         );
         let mut mutation_admitted = false;
         for ((member_id, occurrence), route) in owners.iter().zip(&routes) {
@@ -2684,6 +3168,7 @@ impl AppleSealState {
                         occurrence,
                         request_id,
                         &route.exclusive,
+                        LedgerObservationProducer::Whisper,
                     );
                 }
                 continue;
@@ -2824,6 +3309,7 @@ impl AppleSealState {
         owner: &OccurrenceIdentity,
         request: u64,
         pins: &[RoutedPin],
+        producer: LedgerObservationProducer,
     ) -> bool {
         let words = pins
             .iter()
@@ -2842,8 +3328,7 @@ impl AppleSealState {
                 .acoustic_ledger
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let observation =
-                ledger.next_word_observation(LedgerObservationProducer::Whisper, request, owner);
+            let observation = ledger.next_word_observation(producer, request, owner);
             let receipt = ledger.admit_word_slots(&observation, &words);
             let label = match &receipt {
                 MutationReceipt::KeepVisibleUnanchored { label, .. } => label.clone(),
@@ -2911,6 +3396,7 @@ impl AppleSealState {
             self.return_whisper_without_label(ev_tx, id, &owner);
             self.emit_pending_seal(ev_tx, id);
         }
+        self.release_cloud_live_behind(ev_tx, sample_start);
     }
 
     fn finish_whisper_frontier(
@@ -3939,7 +4425,11 @@ fn reconcile_silero_ledger(
             .join(" ");
         // Blank Apple evidence neither consumes this identity nor blocks its PCM.
         let has_apple_label = !text.trim().is_empty();
-        if !has_apple_label && state.tail_patch.is_none() && !state.refinement_lane_lost {
+        if !has_apple_label
+            && state.tail_patch.is_none()
+            && !state.refinement_lane_lost
+            && state.cloud_commit_tx.is_none()
+        {
             // An explicitly Apple-only take has no recovery observer to launch.
             // Leave the occurrence unlabelled until Apple actually observes it;
             // absent text remains uncovered rather than an invented empty seal.
@@ -4231,13 +4721,19 @@ fn reconcile_silero_ledger(
                         LedgerObservationProducer::Lexicon,
                         utterance_id,
                         0,
-                        occurrence,
+                        occurrence.clone(),
                     ),
                     label: &text,
                     energy: EnergyAdmission::RequireExistingQualification,
                 },
             );
         }
+        state.commit_cloud_occurrence(
+            ev_tx,
+            utterance_id,
+            silero.range.sample_end,
+            &occurrence,
+        );
         state.emit_pending_seal(ev_tx, utterance_id);
         state.utterance_id = state.utterance_id.max(utterance_id);
     }
@@ -4367,7 +4863,9 @@ fn admit_ledger_label<'a>(
     }
     let rewritten = if matches!(
         producer,
-        LedgerObservationProducer::Lexicon | LedgerObservationProducer::Whisper
+        LedgerObservationProducer::Lexicon
+            | LedgerObservationProducer::Whisper
+            | LedgerObservationProducer::CloudLive
     ) {
         let (text, counts) = super::live_lexicon::rewrite(label, &state.lexicon_custom_path);
         state.lexicon_entries_custom = counts.custom;
@@ -4398,12 +4896,24 @@ fn admit_ledger_label<'a>(
         let producers = if energy == EnergyAdmission::QualifyFinalPassGap {
             vec![LedgerObservationProducer::Whisper]
         } else {
-            vec![
+            let mut producers = vec![
                 LedgerObservationProducer::Apple,
                 LedgerObservationProducer::Lexicon,
-            ]
+            ];
+            if state.cloud_commit_tx.is_some() {
+                producers.push(LedgerObservationProducer::CloudLive);
+            }
+            producers
         };
         ledger.schedule_frontier(occurrence.clone(), producers);
+    } else if state.cloud_commit_tx.is_some()
+        && energy != EnergyAdmission::QualifyFinalPassGap
+        && matches!(
+            producer,
+            LedgerObservationProducer::Apple | LedgerObservationProducer::Lexicon
+        )
+    {
+        ledger.schedule_observer(occurrence.clone(), LedgerObservationProducer::CloudLive);
     }
     let receipt = ledger.admit_pinned_label(&observation, label, words);
     let _ = ev_tx.send(EngineEvent::LedgerMutation {
@@ -4872,6 +5382,7 @@ fn admit_debt_occurrence_recovery(
             occurrence.sample_end,
             &owners,
             &payload.segments,
+            LedgerObservationProducer::Whisper,
         );
         for ((id, owner), route) in owners.iter().zip(&routes) {
             if !route.exclusive.is_empty() {
@@ -4881,6 +5392,7 @@ fn admit_debt_occurrence_recovery(
                     owner,
                     payload.identity.request_id,
                     &route.exclusive,
+                    LedgerObservationProducer::Whisper,
                 );
             }
         }
@@ -5819,6 +6331,8 @@ fn apple_stream_worker(
     tail_patch_done: std_mpsc::Receiver<TailPatchCompletion>,
     formatter: Option<mpsc::Sender<FormatterRequest>>,
     formatter_done: std_mpsc::Receiver<FormatterCompletion>,
+    cloud_commit: Option<mpsc::Sender<u64>>,
+    cloud_notice: Option<std_mpsc::Receiver<CloudWorkerNotice>>,
     config: AppleWorkerConfig<'_>,
 ) -> anyhow::Result<AppleStreamOutcome> {
     let AppleWorkerConfig {
@@ -5897,6 +6411,8 @@ fn apple_stream_worker(
     };
     state.bind_capture_energy(capture_energy);
     state.formatter = formatter;
+    state.cloud_commit_tx = cloud_commit;
+    let cloud_notice = cloud_notice;
     state.whisper_context_window_sec = runtime_settings.values().whisper_context_window_sec;
     // The session's ONE Silero. Both consumers of speech edges read it: the
     // utterance ledger (identity, ranges) and the engine lifecycle (wake/sleep).
@@ -5944,6 +6460,11 @@ fn apple_stream_worker(
 
     loop {
         state.tick_refinements(&ev_tx, Instant::now());
+        if let Some(notices) = cloud_notice.as_ref() {
+            while let Ok(notice) = notices.try_recv() {
+                state.handle_cloud_notice(&ev_tx, notice);
+            }
+        }
         while let Ok(completion) = tail_patch_done.try_recv() {
             let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
             state.complete_whisper_window(&ev_tx, completion, audio_secs);
@@ -6167,11 +6688,48 @@ fn apple_stream_worker(
     // waiting for a completion that had already arrived for every job it sent.
     let mut tail_patch_timeout_residue = 0;
     let stop_deadline = local_execution.begin_drain(TAIL_PATCH_CLOSURE_TIMEOUT);
-    while !state.refinement_submitted.is_empty() || !state.refinement_pending.is_empty() {
+    // The stop paste already fired from `finish_capture_after_seal`. This wait
+    // is the same bound the tail patch uses. A cloud final that arrives here is
+    // a revision; it does not hold the paste.
+    while !state.refinement_submitted.is_empty()
+        || !state.refinement_pending.is_empty()
+        || !state.cloud_inflight.is_empty()
+    {
         let outstanding = state.tail_patch_awaiting_completion();
-        if !state.stop_refinements_tick(&ev_tx, Instant::now(), stop_deadline) {
-            tail_patch_timeout_residue = outstanding;
+        let cloud_outstanding = !state.cloud_inflight.is_empty();
+        if Instant::now() >= stop_deadline {
+            if outstanding > 0 || !state.refinement_pending.is_empty() {
+                tail_patch_timeout_residue = outstanding;
+                state.return_outstanding_whisper_without_label(&ev_tx);
+            }
+            if cloud_outstanding {
+                state.return_outstanding_cloud(&ev_tx);
+            }
             break;
+        }
+        if !state.refinement_submitted.is_empty() || !state.refinement_pending.is_empty() {
+            state.tick_refinements(&ev_tx, Instant::now());
+        }
+        if let Some(notices) = cloud_notice.as_ref() {
+            while let Ok(notice) = notices.try_recv() {
+                state.handle_cloud_notice(&ev_tx, notice);
+            }
+        }
+        if state.refinement_submitted.is_empty() && state.refinement_pending.is_empty() {
+            if state.cloud_inflight.is_empty() {
+                break;
+            }
+            match cloud_notice.as_ref().map(|notices| {
+                notices.recv_timeout(LIVE_WORKER_QUANTUM)
+            }) {
+                Some(Ok(notice)) => state.handle_cloud_notice(&ev_tx, notice),
+                Some(Err(std_mpsc::RecvTimeoutError::Timeout)) => continue,
+                Some(Err(std_mpsc::RecvTimeoutError::Disconnected)) | None => {
+                    state.return_outstanding_cloud(&ev_tx);
+                    break;
+                }
+            }
+            continue;
         }
         match tail_patch_done.recv_timeout(LIVE_WORKER_QUANTUM) {
             Ok(completion) => state.complete_whisper_window(&ev_tx, completion, audio_secs),
@@ -6180,6 +6738,9 @@ fn apple_stream_worker(
                 warn!("tail-patch closure wait ended before all observations returned: {error}");
                 tail_patch_timeout_residue = state.tail_patch_awaiting_completion();
                 state.return_outstanding_whisper_without_label(&ev_tx);
+                if !state.cloud_inflight.is_empty() {
+                    state.return_outstanding_cloud(&ev_tx);
+                }
                 break;
             }
         }
@@ -6214,6 +6775,22 @@ fn apple_stream_worker(
         retained_unmatched_words = state.unmatched_silero_words.len(),
         "apple_fusion_session_receipt"
     );
+    if state.cloud_commit_tx.is_some()
+        || state.cloud_live_admitted > 0
+        || state.cloud_live_lane_lost > 0
+        || state.cloud_live_timed_out > 0
+    {
+        info!(
+            session_id = %state.session_id,
+            cloud_live_admitted = state.cloud_live_admitted,
+            cloud_live_replaced_apple = state.cloud_live_replaced_apple,
+            cloud_live_refused_sealed = state.cloud_live_refused_sealed,
+            cloud_live_unowned_routed = state.cloud_live_unowned_routed,
+            cloud_live_lane_lost = state.cloud_live_lane_lost,
+            cloud_live_timed_out = state.cloud_live_timed_out,
+            "cloud_live_take"
+        );
+    }
     // Any non-complete verdict takes the same non-success path. The warning
     // names which one it was; neither may reach the terminal seal below.
     if !seal_coverage.status.is_complete() {
@@ -11785,8 +12362,16 @@ mod rc_w2_test_rehab {
                     RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(provider)), &input);
                 let layer1_refiner = lane.refiner_mode();
                 if degraded {
+                    let frame_len = if refiner == RefinerMode::CloudSession {
+                        crate::asr_session::recorder::cloud_commit_holdback_samples(
+                            input.sample_rate,
+                        ) + 1
+                    } else {
+                        320
+                    };
+                    let frame = vec![0.1; frame_len];
                     for _ in 0..3 {
-                        lane.offer_pcm(&[0.1; 320]);
+                        lane.offer_pcm(&frame);
                         lane.poll();
                     }
                     lane.note_sleep_wake();
@@ -11816,7 +12401,7 @@ mod rc_w2_test_rehab {
                 assert_eq!(
                     message,
                     &format!(
-                        "finals_accepted=3 refiner={}: Layer 1 finals collected but not admitted into the acoustic ledger or paste",
+                        "finals_accepted=3 refiner={}: Layer 1 finals arrived after the worker exited",
                         refiner.as_token()
                     )
                 );
@@ -13694,6 +14279,344 @@ mod rc_w2_test_rehab {
             state.acoustic_ledger.lock().unwrap().occurrences().count(),
             2
         );
+    }
+
+    fn cloud_notice_final(
+        text: &str,
+        words: &[(&str, u64, u64)],
+        sample_start: u64,
+        sample_end: u64,
+    ) -> crate::asr_session::events::TranscriptEvent {
+        use crate::asr_session::events::{
+            CaptureWord, CommitMatchPath, FinalCommit, FinalGrain, SessionId, TranscriptEvent,
+        };
+        TranscriptEvent {
+            session_id: SessionId::new("cloud-final").expect("session id"),
+            utterance_id: 1,
+            sequence_id: 1,
+            text: text.to_string(),
+            range: None,
+            commit: Some(FinalCommit {
+                commit_id: "commit-1".to_string(),
+                sample_start,
+                sample_end,
+                capture_rate_hz: RATE,
+                grain: if words.is_empty() {
+                    FinalGrain::Word
+                } else {
+                    FinalGrain::Word
+                },
+                words: words
+                    .iter()
+                    .map(|(word, start, end)| CaptureWord {
+                        word: (*word).to_string(),
+                        sample_start: *start,
+                        sample_end: *end,
+                        probability: None,
+                    })
+                    .collect(),
+                word_time_clamped: 0,
+                phrase_fallback: false,
+                match_path: CommitMatchPath::Echo,
+                range_mismatch: None,
+                clock_unreliable: false,
+            }),
+        }
+    }
+
+    #[test]
+    fn cloud_commit_does_not_mint_or_resize_an_occurrence() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, _commit_rx) = mpsc::channel(4);
+        let mut state = state("commit-identity", 2.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        let occurrence = qualify(&mut state, 0.0, 1.0);
+        let before = state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .qualified_occurrences()
+            .cloned()
+            .collect::<Vec<_>>();
+        state.commit_cloud_occurrence(&tx, 1, sample(1.6), &occurrence);
+        let after = state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .qualified_occurrences()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(before, after);
+        assert_eq!(after[0].sample_start, occurrence.sample_start);
+        assert_eq!(after[0].sample_end, occurrence.sample_end);
+        assert_eq!(state.cloud_inflight.len(), 1);
+        assert_eq!(state.cloud_inflight[0].sample_end, sample(1.6));
+    }
+
+    #[test]
+    fn local_power_without_a_cloud_lane_leaves_the_ledger_unchanged() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut state = state("local-power", 2.0);
+        let occurrence = qualify(&mut state, 0.0, 1.0);
+        let observation = LedgerObservationIdentity::new(
+            LedgerObservationProducer::Apple,
+            1,
+            0,
+            occurrence.clone(),
+        );
+        state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .admit(&observation, "zostaje");
+        let before = state.acoustic_ledger.lock().unwrap().layer_trail().len();
+        let text_before = document(&state);
+        state.commit_cloud_occurrence(&tx, 1, sample(1.6), &occurrence);
+        assert!(state.cloud_inflight.is_empty());
+        assert_eq!(
+            state.acoustic_ledger.lock().unwrap().layer_trail().len(),
+            before
+        );
+        assert_eq!(document(&state), text_before);
+        assert_eq!(state.cloud_live_admitted, 0);
+        assert_eq!(state.cloud_live_timed_out, 0);
+    }
+
+    #[test]
+    fn empty_cloud_final_returns_the_scheduled_observer() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, _commit_rx) = mpsc::channel(4);
+        let mut state = state("empty-final", 2.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        let occurrence = qualify(&mut state, 0.0, 1.0);
+        state.commit_cloud_occurrence(&tx, 7, sample(1.5), &occurrence);
+        state.admit_cloud_final(
+            &tx,
+            cloud_notice_final("", &[], sample(0.0) , sample(1.5)),
+        );
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert!(
+            !ledger
+                .frontier_of(&occurrence)
+                .unwrap()
+                .open_producers()
+                .contains(&LedgerObservationProducer::CloudLive)
+        );
+    }
+
+    #[test]
+    fn cloud_lane_loss_lets_the_covered_occurrence_seal() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut state = state("lane-lost", 2.0);
+        let occurrence = qualify(&mut state, 0.0, 1.0);
+        {
+            let mut ledger = state.acoustic_ledger.lock().unwrap();
+            ledger.schedule_frontier(
+                occurrence.clone(),
+                [
+                    LedgerObservationProducer::Apple,
+                    LedgerObservationProducer::CloudLive,
+                ],
+            );
+            assert!(
+                ledger
+                    .admit(
+                        &LedgerObservationIdentity::new(
+                            LedgerObservationProducer::Apple,
+                            1,
+                            0,
+                            occurrence.clone(),
+                        ),
+                        "zostaje",
+                    )
+                    .is_insert()
+            );
+            ledger.note_frontier_return(&occurrence, LedgerObservationProducer::Apple);
+        }
+        state.cloud_inflight.push_back(super::PendingCloudCommit {
+            sample_end: sample(1.5),
+            occurrences: vec![occurrence.clone()],
+        });
+        state.handle_cloud_notice(&tx, super::CloudWorkerNotice::LaneLost);
+        assert_eq!(state.cloud_live_lane_lost, 1);
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert!(ledger.is_sealed(&occurrence));
+        assert_eq!(ledger.text_of(&occurrence), Some("zostaje"));
+    }
+
+    #[test]
+    fn stalled_cloud_final_seals_when_the_admission_horizon_passes_the_commit() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut state = state("cloud-stall", 2.0);
+        let occurrence = qualify(&mut state, 0.0, 1.0);
+        {
+            let mut ledger = state.acoustic_ledger.lock().unwrap();
+            ledger.schedule_frontier(occurrence.clone(), [LedgerObservationProducer::CloudLive]);
+            assert!(
+                ledger
+                    .admit(
+                        &LedgerObservationIdentity::new(
+                            LedgerObservationProducer::Apple,
+                            1,
+                            0,
+                            occurrence.clone(),
+                        ),
+                        "zostaje",
+                    )
+                    .is_insert()
+            );
+        }
+        let commit_end = sample(1.5);
+        state.cloud_commit_tx = Some(mpsc::channel(1).0);
+        state.cloud_inflight.push_back(super::PendingCloudCommit {
+            sample_end: commit_end,
+            occurrences: vec![occurrence.clone()],
+        });
+        state.close_admission_horizon(&tx, commit_end);
+        assert!(!state.acoustic_ledger.lock().unwrap().is_sealed(&occurrence));
+        state.close_admission_horizon(&tx, commit_end + 1);
+        assert_eq!(state.cloud_live_timed_out, 1);
+        {
+            let ledger = state.acoustic_ledger.lock().unwrap();
+            assert!(ledger.is_sealed(&occurrence));
+        }
+        state.admit_cloud_final(
+            &tx,
+            cloud_notice_final("pozno", &[("pozno", sample(0.2), sample(0.5))], 0, commit_end),
+        );
+        assert_eq!(state.cloud_live_refused_sealed, 1);
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&occurrence), Some("zostaje"));
+        assert!(ledger.layer_trail().iter().any(|entry| {
+            matches!(
+                entry.decision,
+                MutationReceipt::KeepVisibleUnanchored {
+                    reason: NoAuthorityReason::LateCloudLiveWordSealedOwner,
+                    ref label,
+                    ..
+                } if label.contains("pozno")
+            )
+        }));
+    }
+
+    #[test]
+    fn cloud_word_final_keeps_two_slots_on_one_owner() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut state = state("two-slots", 2.0);
+        let occurrence = qualify(&mut state, 0.0, 2.0);
+        state.cloud_inflight.push_back(super::PendingCloudCommit {
+            sample_end: sample(2.0),
+            occurrences: vec![occurrence.clone()],
+        });
+        state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .schedule_frontier(occurrence.clone(), [LedgerObservationProducer::CloudLive]);
+        state.admit_cloud_final(
+            &tx,
+            cloud_notice_final(
+                "dwa slowa",
+                &[("dwa", sample(0.2), sample(0.6)), ("slowa", sample(1.0), sample(1.4))],
+                0,
+                sample(2.0),
+            ),
+        );
+        let slots = state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .slots_of(&occurrence)
+            .unwrap()
+            .to_vec();
+        assert_eq!(slots.len(), 2);
+        assert_eq!(slots[0].text, "dwa");
+        assert_eq!(slots[1].text, "slowa");
+        assert!(slots.iter().all(|slot| slot.producer == LedgerObservationProducer::CloudLive));
+    }
+
+    #[test]
+    fn cloud_word_outside_every_owner_uses_the_whisper_gap_path() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut cloud = state("cloud-gap", 1.0);
+        let mut whisper = state("whisper-gap", 1.0);
+        let _ = qualify(&mut cloud, 0.0, 0.4);
+        let _ = qualify(&mut whisper, 0.0, 0.4);
+        let pin = TimedTailSegment {
+            text: "obok".into(),
+            range: TailSampleRange {
+                session: cloud.session_id.clone(),
+                capture_epoch: cloud.capture_epoch,
+                sample_start: sample(0.6),
+                sample_end: sample(0.8),
+            },
+            grain: crate::stt::tail_provider::TailSegmentGrain::Word,
+        };
+        let owners = cloud.word_owners();
+        cloud.route_overlap_pins(
+            &tx,
+            1,
+            0,
+            sample(1.0),
+            &owners,
+            &[pin.clone()],
+            LedgerObservationProducer::CloudLive,
+        );
+        let whisper_pin = TimedTailSegment {
+            range: TailSampleRange {
+                session: whisper.session_id.clone(),
+                ..pin.range.clone()
+            },
+            ..pin
+        };
+        whisper.route_overlap_pins(
+            &tx,
+            1,
+            0,
+            sample(1.0),
+            &whisper.word_owners(),
+            &[whisper_pin],
+            LedgerObservationProducer::Whisper,
+        );
+        let cloud_reason = cloud.acoustic_ledger.lock().unwrap().layer_trail().iter().rev().find_map(|entry| {
+            match &entry.decision {
+                MutationReceipt::KeepVisibleUnanchored { reason, .. } => Some(*reason),
+                _ => None,
+            }
+        });
+        let whisper_reason = whisper.acoustic_ledger.lock().unwrap().layer_trail().iter().rev().find_map(|entry| {
+            match &entry.decision {
+                MutationReceipt::KeepVisibleUnanchored { reason, .. } => Some(*reason),
+                _ => None,
+            }
+        });
+        assert_eq!(cloud_reason, whisper_reason);
+        assert!(cloud_reason.is_some());
+        assert_eq!(cloud.cloud_live_unowned_routed, 1);
+    }
+
+    #[test]
+    fn stop_ack_does_not_wait_for_a_pending_cloud_commit() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (ack_tx, mut ack_rx) = tokio::sync::oneshot::channel();
+        let mut state = state("stop-ack", 1.0);
+        let occurrence = qualify(&mut state, 0.0, 0.5);
+        state.cloud_inflight.push_back(super::PendingCloudCommit {
+            sample_end: sample(1.0),
+            occurrences: vec![occurrence],
+        });
+        finish_capture_after_seal(
+            &mut state,
+            &tx,
+            1.0,
+            ack_tx,
+            false,
+            || Ok(Vec::new()),
+            |_| {},
+        )
+        .expect("finish");
+        assert!(ack_rx.try_recv().is_ok());
+        assert_eq!(state.cloud_inflight.len(), 1);
     }
 }
 
@@ -16262,7 +17185,15 @@ mod relay_l1_overlap_admission_tests {
         let pin = word_pin(&lane.state.session_id, text, 26_000, 46_000);
         let routes = lane
             .state
-            .route_overlap_pins(&lane.tx, 1, 0, end, &[(1, occurrence)], &[pin]);
+            .route_overlap_pins(
+                &lane.tx,
+                1,
+                0,
+                end,
+                &[(1, occurrence)],
+                &[pin],
+                LedgerObservationProducer::Whisper,
+            );
         let events = drain(&mut lane.rx);
         (routes, events)
     }
@@ -16847,6 +17778,7 @@ mod relay_l1_overlap_admission_tests {
                 word_pin(session, "w", 60_000, 64_000),
                 word_pin(session, "i", 62_000, 65_000),
             ],
+            LedgerObservationProducer::Whisper,
         );
         let events = drain(&mut lane.rx);
         assert_eq!(routes[0].exclusive.len(), 2, "{}", warning_lines(&events));
@@ -17007,6 +17939,7 @@ mod relay_l1_overlap_admission_tests {
                 pin: OccurrenceIdentity::new(session, 1, 44_000, 51_000),
                 text: "szew".into(),
             }],
+            LedgerObservationProducer::Whisper,
         );
         let routes = lane.state.route_overlap_pins(
             &lane.tx,
@@ -17015,6 +17948,7 @@ mod relay_l1_overlap_admission_tests {
             96_000,
             &[(1, owner)],
             &[word_pin(session, "szew", 45_000, 53_000)],
+            LedgerObservationProducer::Whisper,
         );
         assert_eq!(routes[0].exclusive.len(), 1);
         assert!(replay_refusal(&drain(&mut lane.rx), "szew"));
@@ -17091,6 +18025,7 @@ mod relay_l1_overlap_admission_tests {
                 word_pin(session, "first", 8_000, 20_000),
                 word_pin(session, "second", 62_000, 76_000),
             ],
+            LedgerObservationProducer::Whisper,
         );
         assert_eq!(exclusive_label(&routes[0].exclusive), "first");
         assert_eq!(exclusive_label(&routes[1].exclusive), "second");
@@ -17183,6 +18118,7 @@ mod relay_l1_overlap_admission_tests {
             96_000,
             &[(1, member)],
             &[word_pin("seam-apple-held", "nowe", 60_000, 70_000)],
+            LedgerObservationProducer::Whisper,
         );
         assert_eq!(routes[0].exclusive.len(), 1);
         assert_eq!(routes[0].exclusive[0].text, "nowe");
@@ -17200,6 +18136,7 @@ mod relay_l1_overlap_admission_tests {
             96_000,
             &[(1, member)],
             &[word_pin("seam-normal", "zwykle", 60_000, 70_000)],
+            LedgerObservationProducer::Whisper,
         );
         assert_eq!(routes[0].exclusive.len(), 1);
         assert_eq!(routes[0].exclusive[0].text, "zwykle");
