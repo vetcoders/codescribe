@@ -68,6 +68,7 @@ enum EmitterCmd {
     },
     /// Paint volatile text without touching delivery or any committed sink.
     PaintEphemeralPreview(String),
+    PaintBarrier(tokio::sync::oneshot::Sender<()>),
     Finish,
 }
 
@@ -467,7 +468,7 @@ impl std::error::Error for IncrementalShapingRefusal {}
 /// the committed words, and the reducer drops it instead of rendering a lie.
 type ShapedPresentation = IncrementalShapingReceipt;
 
-/// Exact canvas dispatched for paint, including its non-authoritative words.
+/// Complete visible paint: main canvas and separately painted preview evidence.
 #[derive(Debug, Default)]
 struct PaintedCanvas {
     text: String,
@@ -1466,12 +1467,37 @@ pub struct PresentationEmitter {
     /// Every other lane — including auto-format "off" — gets the Light+
     /// floor, exactly as the pre-ledger controller gated it.
     literal_delivery: std::sync::atomic::AtomicBool,
+    /// A terminal diagnostic cannot erase visible words before stop snapshots them.
+    stop_snapshot_pending: std::sync::atomic::AtomicBool,
     sentence_pause_sec: f32,
     #[cfg(test)]
     paint_commands: std::sync::Mutex<Vec<String>>,
 }
 
 impl PresentationEmitter {
+    /// Capture the visible-word receipt before closing PCM can publish EOF events.
+    pub fn begin_stop_canvas(&self) -> Option<VisibleCanvasSnapshot> {
+        self.stop_snapshot_pending
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.visible_canvas_snapshot()
+    }
+
+    /// Read the paint once the live-final signal settles or its bound expires.
+    pub fn finish_stop_canvas(&self) -> Option<VisibleCanvasSnapshot> {
+        let snapshot = self.visible_canvas_snapshot();
+        self.stop_snapshot_pending
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        snapshot
+    }
+
+    /// Fence queued delta publications after the worker's admitted finals.
+    /// The caller includes this wait in the same stop deadline.
+    pub async fn wait_paint_published(&self) -> bool {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        self.send_cmd(EmitterCmd::PaintBarrier(sender), 0);
+        receiver.await.is_ok()
+    }
+
     /// Freeze the revision that owns delivery for this take, without waiting for
     /// the ordered paint worker or any pending transcription producer.
     pub fn visible_canvas_snapshot(&self) -> Option<VisibleCanvasSnapshot> {
@@ -1585,6 +1611,10 @@ impl PresentationEmitter {
                         (paint, Some(delivery))
                     }
                     EmitterCmd::PaintEphemeralPreview(paint) => (paint, None),
+                    EmitterCmd::PaintBarrier(sender) => {
+                        let _ = sender.send(());
+                        continue;
+                    }
                     EmitterCmd::Finish => break,
                 };
                 if let Some(delta) = TranscriptDelta::from_diff(&painted_text, &paint) {
@@ -1612,6 +1642,7 @@ impl PresentationEmitter {
             acoustic_ledger,
             projection_callback,
             literal_delivery: std::sync::atomic::AtomicBool::new(false),
+            stop_snapshot_pending: std::sync::atomic::AtomicBool::new(false),
             sentence_pause_sec: 0.7,
             cursor_observer: None,
             cursor_capture: std::sync::OnceLock::new(),
@@ -1746,18 +1777,32 @@ impl PresentationEmitter {
         match &cmd {
             EmitterCmd::PublishCommittedRevision { paint, .. }
             | EmitterCmd::PaintEphemeralPreview(paint) => {
+                let mut visible = paint.clone();
+                let mut preview_only_words = preview_only_words;
+                if let Some(evidence) = self
+                    .cursor_unanchored_preview
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .as_ref()
+                {
+                    // The overlay paints this in its evidence list, beside
+                    // the main canvas. Record it here once, without sending
+                    // it through the canvas delta or committing its words.
+                    append_rendered_fragment(&mut visible, &evidence.text);
+                    preview_only_words += evidence.text.split_whitespace().count();
+                }
+                #[cfg(test)]
+                self.paint_commands.lock().unwrap().push(visible.clone());
                 self.session_state
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())
                     .last_painted_canvas = PaintedCanvas {
-                    text: paint.clone(),
+                    text: visible,
                     preview_only_words,
                 };
-                #[cfg(test)]
-                self.paint_commands.lock().unwrap().push(paint.clone());
                 self.paint_cursor(paint);
             }
-            EmitterCmd::Finish => {}
+            EmitterCmd::PaintBarrier(_) | EmitterCmd::Finish => {}
         }
         if let Ok(guard) = self.cmd_tx.lock()
             && let Some(tx) = guard.as_ref()
@@ -2429,9 +2474,9 @@ impl EventSink for PresentationEmitter {
                         let mut state =
                             self.session_state.lock().unwrap_or_else(|e| e.into_inner());
                         state.clear_ephemeral_preview();
-                        state.committed_rendered_text()
+                        (state.visible_projection(), state.visible_unanchored_words())
                     };
-                    self.send_cmd(EmitterCmd::PaintEphemeralPreview(canonical), 0);
+                    self.send_cmd(EmitterCmd::PaintEphemeralPreview(canonical.0), canonical.1);
                     self.repaint_cursor();
                     return;
                 }
@@ -2468,6 +2513,18 @@ impl EventSink for PresentationEmitter {
                 );
             }
             EngineEvent::NoSpeech { reason } => {
+                if self
+                    .stop_snapshot_pending
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    // Lane failure is not a retraction of words already shown.
+                    self.session_state
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .mark_terminal_lifecycle();
+                    info!("Engine reported no speech during stop: {}", reason);
+                    return;
+                }
                 *self
                     .cursor_unanchored_preview
                     .lock()
@@ -2522,6 +2579,12 @@ impl EventSink for PresentationEmitter {
                     partial_coalesced_count,
                     partial_dropped_count,
                 );
+                if self
+                    .stop_snapshot_pending
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    return;
+                }
                 let (canonical_text, preview_only_words) = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.clear_ephemeral_preview();
@@ -2540,6 +2603,20 @@ impl EventSink for PresentationEmitter {
                 tracing::warn!("Engine warning [{}]: {}", code, message);
             }
             EngineEvent::SessionFinalised { .. } => {
+                if self
+                    .stop_snapshot_pending
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    self.session_state
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .mark_terminal_lifecycle();
+                    if let Some(ledger) = &self.acoustic_ledger {
+                        let mut ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
+                        self.mint_light_plus_revision(&mut ledger);
+                    }
+                    return;
+                }
                 *self
                     .cursor_unanchored_preview
                     .lock()
@@ -3002,7 +3079,7 @@ mod tests {
             PresentationEmitter::new(Arc::clone(&delivery), Some(deltas.clone()), None);
 
         emitter.on_event(&preview(1, "volatile words"));
-        emitter.finish().await;
+        assert!(emitter.wait_paint_published().await);
 
         assert_eq!(delivery.lock().await.as_str(), "ledger truth");
         assert!(
@@ -3012,6 +3089,7 @@ mod tests {
                 .unwrap_or_else(|error| error.into_inner())
                 .is_empty()
         );
+        emitter.finish().await;
     }
 
     /// App-side drain proof for the armed worker's pre-finish event sequence.
@@ -3585,7 +3663,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stop_snapshot_zero_width_paint_excludes_unanchored_words() {
+    async fn stop_snapshot_zero_width_paint_includes_unanchored_words() {
         let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
         let mut emitter = PresentationEmitter::new_with_authority(
             Arc::new(Mutex::new(String::new())),
@@ -3641,8 +3719,11 @@ mod tests {
             &frozen.text,
             emitter.paint_commands.lock().unwrap().last().unwrap()
         );
-        assert_eq!(frozen.text, "Iwo");
-        assert_eq!(frozen.preview_only_words, 0);
+        assert_eq!(frozen.text, "Iwo unanchored words side evidence");
+        assert_eq!(frozen.preview_only_words, 4);
+        // A committed paint at EOF must still record the visible evidence.
+        emitter.send_committed_paint("Iwo".into());
+        assert_eq!(emitter.visible_canvas_snapshot().unwrap(), frozen);
         emitter.finish().await;
     }
 
@@ -6608,7 +6689,16 @@ mod tests {
         assert_eq!(paint.evidence.len(), 1);
         assert_eq!(paint.evidence[0].text, "preview only");
         assert_eq!(paint.evidence[0].reason, "unanchored_zero_width");
-        assert!(emitter.visible_canvas_snapshot().unwrap().text.is_empty());
+        let frozen = emitter.visible_canvas_snapshot().unwrap();
+        assert_eq!(frozen.text, "preview only");
+        assert_eq!(frozen.preview_only_words, 2);
+        assert_eq!(frozen.text.split_whitespace().count(), 2);
+        assert!(!frozen.has_committed_document);
+        assert_eq!(emitter.begin_stop_canvas().unwrap(), frozen);
+        emitter.on_event(&EngineEvent::NoSpeech {
+            reason: "lane lost".into(),
+        });
+        assert_eq!(emitter.finish_stop_canvas().unwrap(), frozen);
         emitter.finish().await;
         assert!(delivery.lock().await.is_empty());
     }

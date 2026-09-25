@@ -672,13 +672,15 @@ impl StreamingRecorder {
         self.recorder.close_capture().await
     }
 
-    /// Wait only for Apple final admission and reducer delivery, never L1 or
-    /// terminal archive work. A failed worker closes the channel without an ack.
-    pub async fn wait_last_window_closed(&mut self, bound: std::time::Duration) -> bool {
-        let Some(mut receiver) = self.last_window_closed.take() else {
+    /// The live session sends this only after Apple and any armed CloudLive
+    /// end finals have passed the normal event sink. No archive, Whisper or
+    /// formatter completion is part of this signal. The controller owns the
+    /// single stop-instant deadline; lane loss closes the channel without an ack.
+    pub async fn wait_live_finals_admitted(&mut self) -> bool {
+        let Some(receiver) = self.last_window_closed.take() else {
             return false;
         };
-        matches!(tokio::time::timeout(bound, &mut receiver).await, Ok(Ok(())))
+        receiver.await.is_ok()
     }
 
     /// Continue the owned stop tail after the microphone has closed.
@@ -1622,7 +1624,7 @@ mod capture_stop_failure_tests {
     }
 
     #[tokio::test]
-    async fn last_window_ack_does_not_wait_for_slow_refinement_or_recovery() {
+    async fn live_finals_do_not_wait_for_slow_refinement_or_recovery() {
         let mut recorder = recorder();
         let (closed_tx, closed_rx) = oneshot::channel();
         recorder.last_window_closed = Some(closed_rx);
@@ -1637,11 +1639,7 @@ mod capture_stop_failure_tests {
             elapsed_tx.send(close_start.elapsed().as_millis()).unwrap();
             closed_tx.send(()).unwrap();
         });
-        assert!(
-            recorder
-                .wait_last_window_closed(std::time::Duration::from_secs(4))
-                .await
-        );
+        assert!(recorder.wait_live_finals_admitted().await);
         let last_window_close_ms = elapsed_rx.await.unwrap();
         let stop_to_ack_ms = close_start.elapsed().as_millis();
         eprintln!("last_window_close_ms={last_window_close_ms} stop_to_ack_ms={stop_to_ack_ms}");
@@ -1653,14 +1651,17 @@ mod capture_stop_failure_tests {
     }
 
     #[tokio::test]
-    async fn last_window_timeout_keeps_terminal_delivery_available() {
+    async fn live_final_timeout_keeps_terminal_delivery_available() {
         let mut recorder = recorder();
         let (_closed_tx, closed_rx) = oneshot::channel();
         recorder.last_window_closed = Some(closed_rx);
         assert!(
-            !recorder
-                .wait_last_window_closed(std::time::Duration::from_millis(10))
-                .await
+            tokio::time::timeout(
+                std::time::Duration::from_millis(10),
+                recorder.wait_live_finals_admitted(),
+            )
+            .await
+            .is_err()
         );
         assert!(recorder.last_window_closed.is_none());
     }
