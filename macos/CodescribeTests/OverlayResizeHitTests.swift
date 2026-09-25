@@ -59,7 +59,7 @@ final class OverlayResizeHitTests: XCTestCase {
       )
     }
     XCTAssertTrue(
-      panel.isWindowDragHit(at: NSPoint(x: 28, y: root.bounds.maxY - 22)),
+      panel.isWindowDragHit(at: NSPoint(x: 60, y: root.bounds.maxY - 22)),
       "header interior must still be a drag handle"
     )
   }
@@ -90,7 +90,9 @@ final class OverlayResizeHitTests: XCTestCase {
 
     let y = root.bounds.maxY - 22
     let probes: [(String, CGFloat)] = [
-      ("brand", 28),
+      // The wordmark: inert text over the header drag region, right of the
+      // 24 pt close target that now sits where the 7 pt dot used to end.
+      ("brand", 60),
       ("after-brand", 150),
       ("center-waveform", root.bounds.midX),
       ("before-timer", root.bounds.maxX - 150),
@@ -135,7 +137,7 @@ final class OverlayResizeHitTests: XCTestCase {
     root.layoutSubtreeIfNeeded()
 
     let dragPoints = [
-      ("header", NSPoint(x: 28, y: root.bounds.maxY - 22)),
+      ("header", NSPoint(x: 60, y: root.bounds.maxY - 22)),
       ("body margin", NSPoint(x: 18, y: root.bounds.midY)),
     ]
     for (region, point) in dragPoints {
@@ -203,7 +205,7 @@ final class OverlayResizeHitTests: XCTestCase {
 
     let requested = NSSize(width: 100, height: 50)
     let dragPoints = [
-      ("header", NSPoint(x: 28, y: root.bounds.maxY - 22)),
+      ("header", NSPoint(x: 60, y: root.bounds.maxY - 22)),
       ("body-margin", NSPoint(x: 18, y: root.bounds.midY)),
     ]
 

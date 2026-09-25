@@ -208,6 +208,9 @@ struct DictationOverlayView: View {
           .contentShape(Circle().inset(by: compact ? -7.5 : -6))
         }
         .buttonStyle(.plain)
+        // Never the panel's initial key view: the transcript canvas keeps the
+        // preselection, and Space/Return cannot close the overlay by accident.
+        .focusable(false)
         .help(OverlayIntent.close.helpText)
         .accessibilityLabel(OverlayIntent.close.accessibilityLabel)
         .accessibilityIdentifier("overlay-brand-close-dot")
