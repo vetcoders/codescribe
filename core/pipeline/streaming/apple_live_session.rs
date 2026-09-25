@@ -48,8 +48,8 @@ use crate::agent::consultation::{
     PendingConsultationGroup, PreparedConsultationGroup, SealedConsultationInput,
 };
 use crate::asr_session::recorder::{
-    LAYER1_DEGRADED_WARNING_CODE, Layer1DegradeReason, RecorderLayer1Lane,
-    apply_recorder_lifecycle_event,
+    LAYER1_DEGRADED_WARNING_CODE, LAYER1_FINALS_NOT_ADMITTED_WARNING_CODE, Layer1DegradeReason,
+    RecorderLayer1Lane, apply_recorder_lifecycle_event,
 };
 use crate::asr_session::{SessionId as Layer1SessionId, SessionInput as Layer1SessionInput};
 use crate::audio::capture_receipt::{
@@ -842,6 +842,30 @@ fn emit_layer1_degrade_warning(event_sink: &dyn EventSink, reason: Layer1Degrade
     });
 }
 
+/// Emit the stop receipt once for collected finals, without transcript content.
+fn emit_layer1_finals_not_admitted_warning(
+    event_sink: &dyn EventSink,
+    finals_accepted: u64,
+    refiner: crate::asr_session::RefinerMode,
+) {
+    if finals_accepted == 0 {
+        return;
+    }
+    let refiner = refiner.as_token();
+    warn!(
+        code = LAYER1_FINALS_NOT_ADMITTED_WARNING_CODE,
+        finals_accepted,
+        refiner,
+        "Layer 1 finals collected but not admitted into the acoustic ledger or paste"
+    );
+    event_sink.on_event(&EngineEvent::Warning {
+        code: LAYER1_FINALS_NOT_ADMITTED_WARNING_CODE.to_string(),
+        message: format!(
+            "finals_accepted={finals_accepted} refiner={refiner}: Layer 1 finals collected but not admitted into the acoustic ledger or paste"
+        ),
+    });
+}
+
 fn emit_local_tail_patch_degraded_warning(event_sink: &dyn EventSink, disposition: &str) {
     event_sink.on_event(&EngineEvent::Warning {
         code: LOCAL_TAIL_PATCH_DEGRADED_WARNING_CODE.to_string(),
@@ -987,6 +1011,8 @@ pub(crate) async fn apple_stream_transcription_session(
     };
     let local_tail_patch = layer1.local_tail_patch_disposition();
     let mut layer1_lane = RecorderLayer1Lane::open(layer1, &lane_input);
+    // Preserve the opened lane label before stop or degradation drops its provider.
+    let layer1_refiner = layer1_lane.refiner_mode();
     if let Some(reason) = layer1_lane.take_degrade_notice() {
         emit_layer1_degrade_warning(event_sink.as_ref(), reason);
     }
@@ -1397,16 +1423,20 @@ pub(crate) async fn apple_stream_transcription_session(
         );
     }
     tail_patch_lane.execution.close_and_join().await;
-    // C1 stop-drain: close the Layer 1 lane with its bounded drain. Whatever
-    // happened inside (clean close, disconnect, incomplete drain), the method
-    // returns and the recording finishes on Apple + lexicon. The outcome's
-    // finals have already been admitted as occurrence-bound observations by
-    // the worker. They do not form a second whole-session transcript here.
+    // C1 stop-drain: close the Layer 1 lane with its bounded drain. Its finals
+    // are counted, but NOT admitted into the acoustic ledger or the paste;
+    // the recording finishes on Apple + lexicon. The
+    // LAYER1_FINALS_NOT_ADMITTED_WARNING_CODE receipt below makes this explicit.
     let layer1_outcome = layer1_lane.stop();
     if let Some(reason) = layer1_lane.take_degrade_notice() {
         emit_layer1_degrade_warning(event_sink.as_ref(), reason);
     }
     let layer1_counts = layer1_outcome.telemetry();
+    emit_layer1_finals_not_admitted_warning(
+        event_sink.as_ref(),
+        layer1_counts.finals_accepted,
+        layer1_refiner,
+    );
     if layer1_counts.frames_offered > 0 || layer1_counts.finals_accepted > 0 {
         info!(
             frames_forwarded = layer1_counts.frames_forwarded,
@@ -7799,6 +7829,114 @@ mod tests {
                 if code == LOCAL_TAIL_PATCH_DEGRADED_WARNING_CODE
                     && message == "degraded_invalid_override"
         ));
+    }
+
+    /// The stop drain reports collected finals once, before session finality.
+    #[test]
+    fn layer1_stop_warns_once_for_collected_finals() {
+        use crate::asr_session::{
+            AsrSessionEvent, FakeAsrSessionProvider, Layer1Decision, RefinerMode,
+            TranscriptEvent,
+        };
+
+        for refiner in [RefinerMode::CloudSession, RefinerMode::LocalHelper] {
+            for degraded in [false, true] {
+                let sink = RecordingSink::default();
+                let input = Layer1SessionInput {
+                    session_id: Layer1SessionId::new("finals-receipt").expect("session id"),
+                    locale: None,
+                    sample_rate: 16_000,
+                };
+                let script = (1..=3)
+                    .map(|id| {
+                        AsrSessionEvent::Final(TranscriptEvent {
+                            session_id: input.session_id.clone(),
+                            utterance_id: id,
+                            sequence_id: id,
+                            text: "private transcript".to_string(),
+                            range: None,
+                        })
+                    })
+                    .collect();
+                let provider = FakeAsrSessionProvider::with_script(refiner, script);
+                let mut lane =
+                    RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(provider)), &input);
+                let layer1_refiner = lane.refiner_mode();
+                if degraded {
+                    for _ in 0..3 {
+                        lane.offer_pcm(&[0.1; 320]);
+                        lane.poll();
+                    }
+                    lane.note_sleep_wake();
+                    assert_eq!(lane.refiner_mode(), RefinerMode::Off);
+                }
+                let outcome = lane.stop();
+                let counts = outcome.telemetry();
+                assert_eq!(counts.finals_accepted, 3);
+                emit_layer1_finals_not_admitted_warning(
+                    &sink,
+                    counts.finals_accepted,
+                    layer1_refiner,
+                );
+                emit_session_finalised(
+                    &sink,
+                    input.session_id.as_str().to_string(),
+                    0,
+                    SessionConservationReceipt::default(),
+                );
+
+                let events = sink.events();
+                assert_eq!(events.len(), 2);
+                let EngineEvent::Warning { code, message } = &events[0] else {
+                    panic!("expected typed Warning, got {:?}", events[0]);
+                };
+                assert_eq!(code, "layer1_finals_not_admitted");
+                assert_eq!(
+                    message,
+                    &format!(
+                        "finals_accepted=3 refiner={}: Layer 1 finals collected but not admitted into the acoustic ledger or paste",
+                        refiner.as_token()
+                    )
+                );
+                assert!(!message.contains("private transcript"));
+                assert!(matches!(events[1], EngineEvent::SessionFinalised { .. }));
+            }
+        }
+    }
+
+    /// A stopped lane with partials but no accepted finals has no such receipt.
+    #[test]
+    fn layer1_stop_without_finals_is_silent() {
+        use crate::asr_session::{
+            AsrSessionEvent, FakeAsrSessionProvider, Layer1Decision, RefinerMode,
+            TranscriptEvent,
+        };
+
+        let sink = RecordingSink::default();
+        let input = Layer1SessionInput {
+            session_id: Layer1SessionId::new("no-finals-receipt").expect("session id"),
+            locale: None,
+            sample_rate: 16_000,
+        };
+        let provider = FakeAsrSessionProvider::with_script(
+            RefinerMode::CloudSession,
+            vec![AsrSessionEvent::Partial(TranscriptEvent {
+                session_id: input.session_id.clone(),
+                utterance_id: 1,
+                sequence_id: 1,
+                text: "private partial".to_string(),
+                range: None,
+            })],
+        );
+        let mut lane =
+            RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(provider)), &input);
+        let layer1_refiner = lane.refiner_mode();
+        let outcome = lane.stop();
+        let counts = outcome.telemetry();
+        assert_eq!(counts.partials_applied, 1);
+        assert_eq!(counts.finals_accepted, 0);
+        emit_layer1_finals_not_admitted_warning(&sink, counts.finals_accepted, layer1_refiner);
+        assert!(sink.events().is_empty());
     }
 
     fn stage_pending_occurrence(

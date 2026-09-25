@@ -65,6 +65,9 @@ pub const STOP_DRAIN_MAX_POLLS: u32 = 32;
 /// or provider payload content.
 pub const LAYER1_DEGRADED_WARNING_CODE: &str = "layer1_lane_degraded";
 
+/// `EngineEvent::Warning` code for collected finals absent from ledger and paste.
+pub const LAYER1_FINALS_NOT_ADMITTED_WARNING_CODE: &str = "layer1_finals_not_admitted";
+
 /// Host lifecycle boundary delivered to the active recording session.
 ///
 /// This channel is deliberately per recording. A sleep/wake notification must
