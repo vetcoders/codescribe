@@ -1404,15 +1404,21 @@ fn render_context_markers(text: &str, markers: &[DocumentContextMarker]) -> Stri
 /// that copy reads this same Bus book and never re-enters the reducer.
 pub type ProjectionObserver = Arc<dyn Fn(&TranscriptBusEvidenceEvent) + Send + Sync>;
 
-/// The reducer document at one capture-stop instant. Preview paint is excluded:
-/// it has no occurrence-backed delivery authority.
+/// The overlay-visible canvas at one capture-stop instant. Preview words may
+/// be pasted literally at stop, but never gain document revision authority.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VisibleCanvasSnapshot {
     pub session_id: String,
     pub capture_epoch: u64,
     pub revision: u64,
     pub text: String,
+    /// Visible words without committed occurrence authority, including previews
+    /// and unanchored evidence outside the committed ranges.
     pub preview_only_words: usize,
+    /// Whether the reducer has an occurrence-backed document to revise.
+    pub has_committed_document: bool,
+    /// Ledger-qualified speech occurrences for this session and capture epoch.
+    pub qualified_occurrences: usize,
 }
 
 /// All target mutations are serialized through one mpsc worker, guaranteeing
@@ -1446,27 +1452,60 @@ impl PresentationEmitter {
     /// the ordered paint worker or any pending transcription producer.
     pub fn visible_canvas_snapshot(&self) -> Option<VisibleCanvasSnapshot> {
         let (session_id, capture_epoch) = self.cursor_capture.get()?;
+        // Match mutation publication's ledger-before-reducer lock order.
+        let ledger = self
+            .acoustic_ledger
+            .as_ref()
+            .map(|ledger| ledger.lock().unwrap_or_else(|error| error.into_inner()));
         let reducer = self
             .session_state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let text = reducer.committed_rendered_text();
+        let text = reducer.ephemeral_visual_text();
+        let unanchored_words = reducer
+            .unanchored_evidence
+            .iter()
+            .filter(|(occurrence, _)| {
+                !reducer
+                    .document_by_occurrence
+                    .keys()
+                    .any(|committed| range_within(occurrence, committed))
+            })
+            .map(|(_, (label, _))| label.split_whitespace().count())
+            .sum::<usize>();
         Some(VisibleCanvasSnapshot {
             session_id: session_id.clone(),
             capture_epoch: *capture_epoch,
             revision: reducer.revision,
             text,
-            preview_only_words: reducer.ephemeral_preview.split_whitespace().count(),
+            preview_only_words: reducer.ephemeral_preview.split_whitespace().count()
+                + unanchored_words,
+            has_committed_document: !reducer.document_by_occurrence.is_empty(),
+            qualified_occurrences: ledger.as_ref().map_or(0, |ledger| {
+                ledger
+                    .qualified_occurrences()
+                    .filter(|occurrence| {
+                        occurrence.session == *session_id
+                            && occurrence.capture_epoch == *capture_epoch
+                    })
+                    .count()
+            }),
         })
     }
 
     /// Publish the Light+ revision that owns stop delivery before handing its
     /// exact bytes to the destination. Capture is already closed at this point.
+    /// Preview-bearing canvases remain literal: a user revision would claim
+    /// occurrence authority for words that the ledger has not committed.
     pub fn shape_frozen_canvas_at_stop(
         &self,
         frozen: VisibleCanvasSnapshot,
     ) -> Result<VisibleCanvasSnapshot, UserRevisionRefusal> {
-        if self.literal_delivery() || frozen.text.trim().is_empty() {
+        if frozen.preview_only_words > 0
+            || !frozen.has_committed_document
+            || self.literal_delivery()
+            || frozen.text.trim().is_empty()
+        {
             return Ok(frozen);
         }
         let shaped = codescribe_core::pipeline::light_plus::apply(&frozen.text);
@@ -2923,20 +2962,192 @@ mod tests {
         );
     }
 
+    /// App-side drain proof for the armed worker's pre-finish event sequence.
+    /// Worker ordering is pinned in the core tests; here authentic mutation and
+    /// seal events must reach the reducer before the acknowledgement is read.
     #[tokio::test]
-    async fn stop_canvas_counts_preview_only_words_without_delivering_them() {
+    async fn last_window_ack_observes_committed_sealed_partial_before_finish_event() {
+        let mut take = live_take("stop-ack");
+        take.emitter.on_capture_opened("stop-ack", 7);
+        let occurrence = OccurrenceIdentity::new("stop-ack", 7, 0, 16_000);
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
+        let finish_events = AtomicUsize::new(0);
+        let producer = async {
+            take.admit(&occurrence, 1, "Iwo at stop");
+            take.seal(&occurrence);
+            ack_tx.send(()).unwrap();
+            finish_rx.await.unwrap();
+            finish_events.fetch_add(1, Ordering::SeqCst);
+            take.emitter.on_event(&raw_final("Iwo after finish"));
+        };
+        let consumer = async {
+            ack_rx.await.unwrap();
+            assert_eq!(finish_events.load(Ordering::SeqCst), 0);
+            {
+                let reducer = take.emitter.session_state.lock().unwrap();
+                assert!(reducer.committed_rendered_text().contains("Iwo at stop"));
+                let entry = reducer.document_by_occurrence.get(&occurrence).unwrap();
+                assert_eq!(entry.label, "Iwo at stop");
+                assert!(entry.seal_receipt.is_some());
+            }
+            let frozen = take.emitter.visible_canvas_snapshot().unwrap();
+            assert!(frozen.has_committed_document);
+            assert_eq!(frozen.preview_only_words, 0);
+            assert_eq!(frozen.qualified_occurrences, 1);
+            finish_tx.send(()).unwrap();
+        };
+        tokio::join!(producer, consumer);
+        assert_eq!(finish_events.load(Ordering::SeqCst), 1);
+        take.emitter.finish().await;
+    }
+
+    #[tokio::test]
+    async fn stop_canvas_keeps_preview_only_words_raw_without_a_user_revision() {
         let delivery = Arc::new(Mutex::new(String::new()));
-        let mut emitter = PresentationEmitter::new(Arc::clone(&delivery), None, None);
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let mut emitter = PresentationEmitter::new_with_authority(
+            Arc::clone(&delivery),
+            None,
+            None,
+            None,
+            Some(Arc::clone(&ledger)),
+            None,
+        );
         emitter.on_capture_opened("take", 7);
         emitter.on_event(&preview(1, "one two three four five"));
         let frozen = emitter.visible_canvas_snapshot().expect("opened take");
         assert_eq!(frozen.session_id, "take");
         assert_eq!(frozen.capture_epoch, 7);
         assert_eq!(frozen.revision, 0);
-        assert_eq!(frozen.text, "");
+        assert_eq!(frozen.text, "one two three four five");
         assert_eq!(frozen.preview_only_words, 5);
+        assert!(!frozen.has_committed_document);
+        assert_eq!(frozen.qualified_occurrences, 0);
+        assert_eq!(
+            emitter.shape_frozen_canvas_at_stop(frozen.clone()).unwrap(),
+            frozen
+        );
+        assert!(ledger.lock().unwrap().manual_document_revisions().is_empty());
         emitter.finish().await;
         assert!(delivery.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stop_canvas_with_committed_and_preview_words_skips_light_plus() {
+        let delivery = Arc::new(Mutex::new(String::new()));
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let mut emitter = PresentationEmitter::new_with_authority(
+            Arc::clone(&delivery),
+            None,
+            None,
+            None,
+            Some(Arc::clone(&ledger)),
+            None,
+        );
+        emitter.on_capture_opened("take", 7);
+        let mutation = admitted_mutation(
+            &mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("take", 7, 0, 16_000),
+            1,
+            "committed words",
+        );
+        emitter.on_event(&mutation);
+        let committed = emitter.visible_canvas_snapshot().unwrap();
+        emitter.on_event(&preview(2, "preview words"));
+        let frozen = emitter.visible_canvas_snapshot().unwrap();
+        assert_eq!(frozen.text, format!("{} preview words", committed.text));
+        assert_eq!(frozen.preview_only_words, 2);
+        assert!(frozen.has_committed_document);
+        assert_eq!(
+            emitter.shape_frozen_canvas_at_stop(frozen.clone()).unwrap(),
+            frozen
+        );
+        assert!(ledger.lock().unwrap().manual_document_revisions().is_empty());
+        emitter.finish().await;
+        assert_eq!(delivery.lock().await.as_str(), committed.text);
+    }
+
+    #[tokio::test]
+    async fn stop_canvas_counts_only_visible_unanchored_words_as_preview() {
+        let delivery = Arc::new(Mutex::new(String::new()));
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let mut emitter = PresentationEmitter::new_with_authority(
+            delivery,
+            None,
+            None,
+            None,
+            Some(Arc::clone(&ledger)),
+            None,
+        );
+        emitter.on_capture_opened("take", 7);
+        let mutation = admitted_mutation(
+            &mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("take", 7, 0, 16_000),
+            1,
+            "committed words",
+        );
+        emitter.on_event(&mutation);
+        for (request, start, end, label) in [
+            (2, 0, 8_000, "covered evidence"),
+            (3, 16_000, 32_000, "visible evidence"),
+        ] {
+            let observation = ObservationIdentity::new(
+                ObservationProducer::Apple,
+                request,
+                0,
+                OccurrenceIdentity::new("take", 7, start, end),
+            );
+            let receipt = ledger.lock().unwrap().keep_visible_unanchored(
+                &observation,
+                label,
+                codescribe_core::pipeline::acoustic_ledger::NoAuthorityReason::NoRange,
+            );
+            emitter.on_event(&EngineEvent::LedgerMutation {
+                observation,
+                label: label.to_string(),
+                receipt,
+            });
+        }
+        emitter.on_event(&preview(4, "last preview"));
+        let frozen = emitter.visible_canvas_snapshot().unwrap();
+        assert_eq!(frozen.preview_only_words, 4);
+        assert!(frozen.text.ends_with("visible evidence last preview"));
+        assert!(!frozen.text.contains("covered evidence"));
+        assert_eq!(
+            emitter.shape_frozen_canvas_at_stop(frozen.clone()).unwrap(),
+            frozen
+        );
+        assert!(ledger.lock().unwrap().manual_document_revisions().is_empty());
+        emitter.finish().await;
+    }
+
+    #[tokio::test]
+    async fn stop_canvas_speech_count_is_capture_filtered_without_document_text() {
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        for (session, epoch) in [("take", 7), ("take", 8), ("another-take", 7)] {
+            let _ = admitted_mutation(
+                &mut ledger.lock().unwrap(),
+                OccurrenceIdentity::new(session, epoch, 0, 16_000),
+                1,
+                "speech",
+            );
+        }
+        let mut emitter = PresentationEmitter::new_with_authority(
+            Arc::new(Mutex::new(String::new())),
+            None,
+            None,
+            None,
+            Some(Arc::clone(&ledger)),
+            None,
+        );
+        emitter.on_capture_opened("take", 7);
+        let frozen = emitter.visible_canvas_snapshot().unwrap();
+        assert!(frozen.text.is_empty());
+        assert!(!frozen.has_committed_document);
+        assert_eq!(frozen.qualified_occurrences, 1);
+        assert_eq!(ledger.lock().unwrap().qualified_occurrences().count(), 3);
+        emitter.finish().await;
     }
 
     #[tokio::test]
@@ -3085,6 +3296,7 @@ mod tests {
         emitter.finish().await;
         assert_eq!(revised.text, "Iwo Iwo Iwo Iwo Iwo");
         assert_eq!(revised.revision, 5);
+        assert_eq!(revised.qualified_occurrences, 5);
         assert_eq!(delivery.lock().await.as_str(), revised.text);
         assert_eq!(ledger.lock().unwrap().len(), 5);
     }

@@ -54,6 +54,7 @@ pub use helpers::{
 };
 pub use types::{HotkeyAction, HotkeyInput, HotkeyType, State};
 
+use crate::presentation::emitter::VisibleCanvasSnapshot;
 use crate::presentation::status_projection::PresentationStatusProjection;
 use crate::presentation::transcript_bus::{TranscriptDelivery, TranscriptSessionEndReason};
 use crate::presentation::{
@@ -637,29 +638,74 @@ fn refused_take_archive(
     }
 }
 
-// Provisional budget for the last Apple final (codex/integrator choice, not
-// measured and not a contract value: the contract's 4 s is the Layer 1 Whisper
-// window). Calibrate from live `last_window_close_ms` p50/p99. Expiry chooses
-// terminal delivery so a slow final never pastes a short prefix.
-const LAST_WINDOW_CLOSE_BOUND: std::time::Duration = std::time::Duration::from_secs(4);
+// Integrator stop budgets: visible words wait at most 300 ms; an empty short
+// take gets up to 4 s for its first Apple final, never the terminal repair tail.
+const LAST_WINDOW_CLOSE_BOUND: Duration = Duration::from_millis(300);
+const EMPTY_CANVAS_CLOSE_BOUND: Duration = Duration::from_secs(4);
+
+struct StopCanvasWait {
+    snapshot: Option<VisibleCanvasSnapshot>,
+    waited_ms: u128,
+    timeout_fallback: bool,
+    armed_order: bool,
+}
 
 async fn await_last_window_close_for_delivery(
-    recorder: &mut StreamingRecorder,
-    stop_start: std::time::Instant,
-) -> Option<u128> {
-    let closed = recorder
-        .wait_last_window_closed(LAST_WINDOW_CLOSE_BOUND)
-        .await;
-    let elapsed_ms = stop_start.elapsed().as_millis();
+    close: impl std::future::Future<Output = bool>,
+    snapshot: impl Fn() -> Option<VisibleCanvasSnapshot>,
+    armed_order: bool,
+) -> StopCanvasWait {
+    let started = tokio::time::Instant::now();
+    let deadline = started + EMPTY_CANVAS_CLOSE_BOUND;
+    // Keep this single future alive: the recorder takes ownership of the ack
+    // receiver on its first poll. Restarting the wait would lose a short take.
+    tokio::pin!(close);
+    let first = tokio::time::timeout(LAST_WINDOW_CLOSE_BOUND, &mut close).await;
+    let mut closed = matches!(first, Ok(true));
+    let mut frozen = snapshot();
     if !closed {
         warn!(
-            elapsed_ms,
+            elapsed_ms = started.elapsed().as_millis(),
             bound_ms = LAST_WINDOW_CLOSE_BOUND.as_millis(),
             "last_window_close_timeout"
         );
-        return None;
+        if frozen
+            .as_ref()
+            .is_none_or(|canvas| canvas.text.trim().is_empty())
+        {
+            if first.is_err() {
+                closed = matches!(tokio::time::timeout_at(deadline, &mut close).await, Ok(true));
+            }
+            // A closed/failed ack channel is not proof that an empty capture
+            // has settled. Keep the same final-latency budget before freezing.
+            if !closed {
+                tokio::time::sleep_until(deadline).await;
+            }
+            frozen = snapshot();
+        }
     }
-    Some(elapsed_ms)
+    StopCanvasWait {
+        snapshot: frozen,
+        waited_ms: started.elapsed().as_millis(),
+        timeout_fallback: !closed,
+        armed_order,
+    }
+}
+
+/// Empty retention is just as settled as an accepted paste. Only the composer
+/// defers delivery to the terminal path; the terminal result cannot reopen it.
+async fn deliver_terminal_unless_settled<F, Fut>(
+    settled: Option<TranscriptDelivery>,
+    deliver: F,
+) -> Result<TranscriptDelivery>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<TranscriptDelivery>>,
+{
+    match settled {
+        Some(delivery) => Ok(delivery),
+        None => deliver().await,
+    }
 }
 
 /// Stop the recorder for a finished take and classify the outcome.
@@ -2234,65 +2280,122 @@ impl RecordingController {
         .await
     }
 
-    /// Settle the reducer document at microphone close. The later drain may
-    /// revise overlay/history, but cannot paste a second document into this app.
+    /// Freeze and settle stop delivery before the terminal producer can drain.
+    /// `None` belongs only to a composer turn, whose delivery remains terminal.
     async fn deliver_frozen_canvas_at_stop(
         &self,
+        recorder: &mut StreamingRecorder,
         take_id: Option<&str>,
-        assistive: bool,
-        force_ai: bool,
-        capture_turn: CaptureTurnIntent,
+        intent: (bool, bool, CaptureTurnIntent),
         stop_start: std::time::Instant,
-        last_window_close_ms: u128,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<TranscriptDelivery>> {
+        let (assistive, force_ai, capture_turn) = intent;
+        let presentation = self.active_presentation.read().await.clone();
+        let armed_order = recorder.seal_lane_armed();
+        let wait = await_last_window_close_for_delivery(
+            recorder.wait_last_window_closed(EMPTY_CANVAS_CLOSE_BOUND),
+            || {
+                presentation
+                    .as_ref()
+                    .and_then(|emitter| emitter.visible_canvas_snapshot())
+                    .filter(|canvas| Some(canvas.session_id.as_str()) == take_id)
+            },
+            armed_order,
+        )
+        .await;
         if take_delivers_to_composer(capture_turn) {
             return Ok(None);
         }
-        let Some(take_id) = take_id else {
-            return Ok(None);
-        };
-        let presentation = self.active_presentation.read().await.clone();
-        let Some(presentation) = presentation else {
-            return Ok(None);
-        };
-        let Some(snapshot) = presentation.visible_canvas_snapshot() else {
-            return Ok(None);
-        };
-        if snapshot.session_id != take_id {
-            return Ok(None);
-        }
-        if snapshot.text.trim().is_empty() {
-            return Ok(None);
-        }
-        let snapshot = presentation
-            .shape_frozen_canvas_at_stop(snapshot)
-            .map_err(|error| anyhow::anyhow!("Light+ stop revision refused: {error}"))?;
-        self.deliver_stop_transcript(
-            Some(take_id),
-            &snapshot.text,
-            assistive,
-            force_ai,
-            capture_turn,
-            false,
+        self.settle_frozen_canvas_at_stop(
+            take_id,
+            presentation.as_deref(),
+            wait,
+            stop_start,
+            |text| async move {
+                self.deliver_stop_transcript(
+                    take_id, &text, assistive, force_ai, capture_turn, false,
+                )
+                .await
+            },
         )
-        .await?;
+        .await
+        .map(Some)
+    }
+
+    /// The sole stop settlement, with the destination effect injected for
+    /// falsifiers. Preview text never becomes a Light+ document revision merely
+    /// because it was visible at timeout.
+    async fn settle_frozen_canvas_at_stop<F, Fut>(
+        &self,
+        take_id: Option<&str>,
+        presentation: Option<&PresentationEmitter>,
+        wait: StopCanvasWait,
+        stop_start: std::time::Instant,
+        deliver: F,
+    ) -> Result<TranscriptDelivery>
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<Output = Result<TranscriptDelivery>>,
+    {
+        let StopCanvasWait {
+            snapshot,
+            waited_ms,
+            timeout_fallback,
+            armed_order,
+        } = wait;
+        let snapshot = snapshot.filter(|canvas| Some(canvas.session_id.as_str()) == take_id);
+        let (delivery, snapshot, light_plus) = match snapshot {
+            Some(snapshot) if !snapshot.text.trim().is_empty() => {
+                let presentation = presentation
+                    .ok_or_else(|| anyhow::anyhow!("stop canvas has no presentation owner"))?;
+                let light_plus = if snapshot.preview_only_words > 0 || !snapshot.has_committed_document
+                {
+                    "skipped_preview"
+                } else if presentation.literal_delivery() {
+                    "literal"
+                } else {
+                    "applied"
+                };
+                let snapshot = presentation
+                    .shape_frozen_canvas_at_stop(snapshot)
+                    .map_err(|error| anyhow::anyhow!("Light+ stop revision refused: {error}"))?;
+                let delivery = deliver(snapshot.text.clone()).await?;
+                (delivery, Some(snapshot), light_plus)
+            }
+            snapshot => {
+                warn!(
+                    take_id,
+                    waited_ms,
+                    timeout_fallback,
+                    qualified_occurrences = snapshot.as_ref().map_or(0, |canvas| canvas.qualified_occurrences),
+                    capture_epoch = snapshot.as_ref().map(|canvas| canvas.capture_epoch),
+                    "stop_canvas_empty"
+                );
+                (TranscriptDelivery::Retained, snapshot, "literal")
+            }
+        };
+        self.record_delivery_disposition(delivery).await;
+        let canvas = snapshot.as_ref();
+        let text = canvas.map_or("", |canvas| canvas.text.as_str());
+        let preview_words = canvas.map_or(0, |canvas| canvas.preview_only_words);
         info!(
             stop_to_delivery_ms = stop_start.elapsed().as_millis(),
-            last_window_close_ms,
-            capture_epoch = snapshot.capture_epoch,
-            reducer_revision = snapshot.revision,
-            preview_only_words = snapshot.preview_only_words,
-            paste_words = snapshot.text.split_whitespace().count(),
-            paste_periods = snapshot.text.chars().filter(|ch| *ch == '.').count(),
-            paste_commas = snapshot.text.chars().filter(|ch| *ch == ',').count(),
-            paste_qe = snapshot
-                .text
-                .chars()
-                .filter(|ch| matches!(ch, '?' | '!'))
-                .count(),
+            last_window_close_ms = waited_ms,
+            waited_ms,
+            timeout_fallback,
+            armed_order,
+            light_plus,
+            capture_epoch = canvas.map(|canvas| canvas.capture_epoch),
+            reducer_revision = canvas.map(|canvas| canvas.revision),
+            preview_only_words = preview_words,
+            preview_words_in_paste = preview_words,
+            paste_words = text.split_whitespace().count(),
+            paste_periods = text.chars().filter(|ch| *ch == '.').count(),
+            paste_commas = text.chars().filter(|ch| *ch == ',').count(),
+            paste_qe = text.chars().filter(|ch| matches!(ch, '?' | '!')).count(),
             "stop canvas delivery settled"
         );
-        Ok(Some(snapshot.text))
+        Ok(delivery)
     }
 
     async fn deliver_stop_transcript_with_sink<F, Fut>(
@@ -4644,21 +4747,14 @@ impl RecordingController {
             // The live slot is `{uuid}:stopping` here. File-lane identity is
             // the Bus uuid snapped before that rewrite.
             let was_active = recorder.close_capture().await;
-            let last_window_close_ms =
-                await_last_window_close_for_delivery(recorder, stop_start).await;
-            let initial_delivery = if let Some(last_window_close_ms) = last_window_close_ms {
-                self.deliver_frozen_canvas_at_stop(
+            let initial_delivery = self
+                .deliver_frozen_canvas_at_stop(
+                    recorder,
                     session_id_snapshot.as_deref(),
-                    assistive,
-                    force_ai,
-                    capture_turn,
+                    (assistive, force_ai, capture_turn),
                     stop_start,
-                    last_window_close_ms,
                 )
-                .await
-            } else {
-                Ok(None)
-            };
+                .await;
             let stopped =
                 stop_recorder_for_terminal(recorder, session_id_snapshot.as_deref(), Some(was_active)).await;
             rec_stop_secs = phase2.elapsed().as_secs_f64();
@@ -4673,32 +4769,30 @@ impl RecordingController {
             let (streaming_text, raw_audio_path_opt) = match stopped {
                 Ok(stopped) => stopped,
                 Err(err) => {
-                    if initial_delivery.as_ref().ok().is_some_and(Option::is_some) {
-                        return self
-                            .process_terminal_stop_error(err, |_| async {
-                                Ok(TranscriptDelivery::SinkAccepted)
-                            })
-                            .await;
-                    }
                     if let Err(delivery_error) = &initial_delivery {
                         warn!(%delivery_error, "initial delivery failed before terminal stop refusal");
                         return Err(err);
                     }
-                    initial_delivery?;
-                    return self.process_terminal_stop_error(err, |text| async move {
-                        self.deliver_stop_transcript(
-                            session_id_snapshot.as_deref(),
-                            &text,
-                            assistive,
-                            force_ai,
-                            capture_turn,
-                            true,
-                        )
-                        .await
-                    }).await;
+                    let settled = initial_delivery?;
+                    return self
+                        .process_terminal_stop_error(err, |text| async move {
+                            deliver_terminal_unless_settled(settled, || async {
+                                self.deliver_stop_transcript(
+                                    session_id_snapshot.as_deref(),
+                                    &text,
+                                    assistive,
+                                    force_ai,
+                                    capture_turn,
+                                    true,
+                                )
+                                .await
+                            })
+                            .await
+                        })
+                        .await;
                 }
             };
-            let initial_text = initial_delivery?;
+            let settled = initial_delivery?;
             info!(
                 "stop_toggle_inner: PHASE 2 — recorder.stop() returned in {:?} (streaming_text={} chars, has_wav={})",
                 phase2.elapsed(),
@@ -4723,7 +4817,7 @@ impl RecordingController {
                     ),
                 );
             }
-            if initial_text.is_none() {
+            deliver_terminal_unless_settled(settled, || async {
                 self.deliver_stop_transcript(
                     session_id_snapshot.as_deref(),
                     &streaming_text,
@@ -4732,8 +4826,9 @@ impl RecordingController {
                     capture_turn,
                     false,
                 )
-                .await?;
-            }
+                .await
+            })
+            .await?;
             phase3_secs = phase3.elapsed().as_secs_f64();
             info!(
                 "stop_toggle_inner: PHASE 3 — reducer handoff completed in {:?}",
@@ -5218,20 +5313,14 @@ impl RecordingController {
         let serving_engine = recorder.streaming_engine_label();
         let stop_start = std::time::Instant::now();
         let was_active = recorder.close_capture().await;
-        let last_window_close_ms = await_last_window_close_for_delivery(recorder, stop_start).await;
-        let initial_delivery = if let Some(last_window_close_ms) = last_window_close_ms {
-            self.deliver_frozen_canvas_at_stop(
+        let initial_delivery = self
+            .deliver_frozen_canvas_at_stop(
+                recorder,
                 take_id.as_deref(),
-                assistive,
-                force_ai,
-                CaptureTurnIntent::HandsFree,
+                (assistive, force_ai, CaptureTurnIntent::HandsFree),
                 stop_start,
-                last_window_close_ms,
             )
-            .await
-        } else {
-            Ok(None)
-        };
+            .await;
         let stopped =
             stop_recorder_for_terminal(recorder, take_id.as_deref(), Some(was_active)).await;
         Self::clear_recorder_callbacks(recorder);
@@ -5240,36 +5329,30 @@ impl RecordingController {
         let (streaming_text, raw_audio_path_opt) = match stopped {
             Ok(stopped) => stopped,
             Err(err) => {
-                if initial_delivery.as_ref().ok().is_some_and(Option::is_some) {
-                    return self
-                        .process_terminal_stop_error(err, |_| async {
-                            Ok(TranscriptDelivery::SinkAccepted)
-                        })
-                        .await;
-                }
                 if let Err(delivery_error) = &initial_delivery {
                     warn!(%delivery_error, "initial delivery failed before terminal stop refusal");
                     return Err(err);
                 }
-                initial_delivery?;
+                let settled = initial_delivery?;
                 return self
                     .process_terminal_stop_error(err, |text| async move {
-                        self.deliver_stop_transcript(
-                            take_id.as_deref(),
-                            &text,
-                            assistive,
-                            force_ai,
-                            // The hold path has no composer surface: no caller here
-                            // can open a one-turn take.
-                            CaptureTurnIntent::HandsFree,
-                            true,
-                        )
+                        deliver_terminal_unless_settled(settled, || async {
+                            self.deliver_stop_transcript(
+                                take_id.as_deref(),
+                                &text,
+                                assistive,
+                                force_ai,
+                                CaptureTurnIntent::HandsFree,
+                                true,
+                            )
+                            .await
+                        })
                         .await
                     })
                     .await;
             }
         };
-        let initial_text = initial_delivery?;
+        let settled = initial_delivery?;
 
         if let Some(path) = raw_audio_path_opt.as_deref() {
             retain_session_audio(
@@ -5284,7 +5367,7 @@ impl RecordingController {
         // facts already consumed when the emitter was built; delivery reads
         // only the frozen intent.
         let _ = (hold_mode, force_raw);
-        if initial_text.is_none() {
+        deliver_terminal_unless_settled(settled, || async {
             self.deliver_stop_transcript(
                 take_id.as_deref(),
                 &streaming_text,
@@ -5293,8 +5376,9 @@ impl RecordingController {
                 CaptureTurnIntent::HandsFree,
                 false,
             )
-            .await?;
-        }
+            .await
+        })
+        .await?;
         Ok(ProcessRecordingOutcome {
             transcript_present: !streaming_text.trim().is_empty(),
             ..ProcessRecordingOutcome::default()
@@ -5919,6 +6003,250 @@ mod refusal_recovery_tests {
 
     const TAKE: &str = "refusal-capture";
     const WORDS: &str = "Te słowa zostały.";
+
+    #[derive(Clone, Default)]
+    struct StopReceiptLog(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for StopReceiptLog {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl StopReceiptLog {
+        fn text(&self) -> String {
+            String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+        }
+
+        fn subscribe(&self) -> tracing::subscriber::DefaultGuard {
+            let writer = self.clone();
+            tracing::subscriber::set_default(
+                tracing_subscriber::fmt()
+                    .without_time()
+                    .with_ansi(false)
+                    .with_writer(move || writer.clone())
+                    .finish(),
+            )
+        }
+    }
+
+    fn stop_preview(text: &str) -> EngineEvent {
+        EngineEvent::Preview {
+            rev: 1,
+            text: text.into(),
+            pin: codescribe_core::pipeline::contracts::PreviewPin::open_occurrence(TailSampleRange {
+                session: TAKE.into(),
+                capture_epoch: 7,
+                sample_start: 0,
+                sample_end: 16_000,
+            }),
+        }
+    }
+
+    // Synthetic PCM qualification; emitted only when the injected finish step
+    // runs. The reducer starts empty even though acoustic evidence already exists.
+    fn stop_mutation(ledger: &mut AcousticLedger, text: &str) -> EngineEvent {
+        let occurrence = OccurrenceIdentity::new(TAKE, 7, 0, 16_000);
+        let calibration = EnergyCalibration {
+            version: "stop-synthetic".into(),
+            min_energy_integral: 1.0,
+            min_valley_samples: 1,
+        };
+        let evidence = AcousticEvidence {
+            occurrence: occurrence.clone(),
+            duration_ms: 1_000.0,
+            energy_integral: 10.0,
+            mean_rms_dbfs: -12.0,
+            peak_dbfs: -3.0,
+            vad_open_sample: Some(0),
+            vad_close_sample: Some(16_000),
+            evidence_calibration_version: calibration.version.clone(),
+        };
+        assert!(ledger.qualify(&evidence, &calibration).is_qualified());
+        let observation = ObservationIdentity::new(ObservationProducer::Apple, 1, 0, occurrence);
+        let receipt = ledger.admit(&observation, text);
+        EngineEvent::LedgerMutation { observation, label: text.into(), receipt }
+    }
+
+    async fn stop_sink(
+        controller: &RecordingController,
+        text: String,
+        calls: &AtomicUsize,
+    ) -> Result<TranscriptDelivery> {
+        let config = Config {
+            auto_paste_enabled: true,
+            quick_notes_enabled: false,
+            ..Config::default()
+        };
+        let expected = text.clone();
+        controller
+            .deliver_stop_transcript_with_sink(
+                Some(TAKE),
+                &text,
+                (false, false, CaptureTurnIntent::HandsFree, false),
+                &config,
+                |route, payload, _| async move {
+                    assert_eq!(route, DeliveryRoute::ClipboardPaste);
+                    assert_eq!(payload, expected);
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(OverlayPasteResult {
+                        delivery: OverlayPasteDelivery::Pasted,
+                        target_app_name: None,
+                        frontmost_app_name: None,
+                        deferred_insert_shortcut: None,
+                        deferred_insert_failure: None,
+                    })
+                },
+            )
+            .await
+    }
+
+    /// Amendment 1 step 2, R3: no ack, no committed document. This exercises
+    /// the real snapshot, stop settlement and route with only the OS sink faked.
+    #[tokio::test(start_paused = true)]
+    async fn preview_only_timeout_pastes_raw_once_at_300_ms() {
+        let take = take(State::RecHold, false).await;
+        take.emitter.on_capture_opened(TAKE, 7);
+        take.emitter.on_event(&stop_preview("ok wyślij"));
+        let receipts = StopReceiptLog::default();
+        let _trace = receipts.subscribe();
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel::<()>();
+        let wait = await_last_window_close_for_delivery(
+            async { ack_rx.await.is_ok() },
+            || take.emitter.visible_canvas_snapshot(),
+            true,
+        ).await;
+        assert!((300..=350).contains(&wait.waited_ms));
+        assert!(wait.timeout_fallback);
+        assert_eq!(wait.snapshot.as_ref().unwrap().text, "ok wyślij");
+        let calls = AtomicUsize::new(0);
+        let settled = take.controller.settle_frozen_canvas_at_stop(
+            Some(TAKE), Some(&take.emitter), wait, std::time::Instant::now(),
+            |text| stop_sink(&take.controller, text, &calls),
+        ).await.unwrap();
+        assert_eq!(settled, TranscriptDelivery::SinkAccepted);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(take.ledger.lock().unwrap().manual_document_revisions().is_empty());
+        assert!(receipts.text().contains("light_plus=\"skipped_preview\""));
+        assert!(receipts.text().contains("timeout_fallback=true"));
+        assert!(receipts.text().contains("preview_words_in_paste=2"));
+        deliver_terminal_unless_settled(Some(settled), || async {
+            panic!("terminal tail attempted a second paste")
+        }).await.unwrap();
+        drop(ack_tx);
+    }
+
+    /// Amendment 1 steps 1 and 3: first words arrive with finish, after the
+    /// 300 ms check. Delivery waits for that ack and never waits for repair.
+    #[tokio::test(start_paused = true)]
+    async fn short_take_first_finish_text_pastes_once_within_final_latency() {
+        let take = take(State::RecToggle, false).await;
+        take.emitter.on_capture_opened(TAKE, 7);
+        take.emitter.set_literal_delivery(true);
+        let mutation = stop_mutation(&mut take.ledger.lock().unwrap(), "Tak.");
+        assert!(take.emitter.visible_canvas_snapshot().unwrap().text.is_empty());
+        let terminal_tail = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(20)).await;
+        });
+        let wait = await_last_window_close_for_delivery(
+            async {
+                tokio::time::sleep(Duration::from_millis(850)).await;
+                take.emitter.on_event(&mutation);
+                let at_ack = take.emitter.visible_canvas_snapshot().unwrap();
+                assert!(at_ack.has_committed_document);
+                assert_eq!(at_ack.text, "Tak.");
+                true
+            },
+            || take.emitter.visible_canvas_snapshot(),
+            true,
+        ).await;
+        assert!((850..=900).contains(&wait.waited_ms));
+        assert!(!wait.timeout_fallback);
+        let calls = AtomicUsize::new(0);
+        let settled = take.controller.settle_frozen_canvas_at_stop(
+            Some(TAKE), Some(&take.emitter), wait, std::time::Instant::now(),
+            |text| stop_sink(&take.controller, text, &calls),
+        ).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(!terminal_tail.is_finished());
+        terminal_tail.await.unwrap();
+        deliver_terminal_unless_settled(Some(settled), || async {
+            panic!("repair tail attempted short-take paste")
+        }).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// Amendment 1 step 4, R4: speech evidence cannot authorize an empty sink
+    /// payload, and words discovered by the terminal tail cannot reopen stop.
+    #[tokio::test(start_paused = true)]
+    async fn empty_after_four_seconds_is_retained_without_a_late_paste() {
+        let take = take(State::RecToggle, false).await;
+        take.emitter.on_capture_opened(TAKE, 7);
+        let late = stop_mutation(&mut take.ledger.lock().unwrap(), "late words");
+        let receipts = StopReceiptLog::default();
+        let _trace = receipts.subscribe();
+        let wait = await_last_window_close_for_delivery(
+            std::future::pending(),
+            || take.emitter.visible_canvas_snapshot(),
+            true,
+        ).await;
+        assert!((4_000..=4_050).contains(&wait.waited_ms));
+        let settled = take.controller.settle_frozen_canvas_at_stop(
+            Some(TAKE), Some(&take.emitter), wait, std::time::Instant::now(),
+            |_| async { panic!("empty stop called the sink") },
+        ).await.unwrap();
+        assert_eq!(settled, TranscriptDelivery::Retained);
+        assert_eq!(*take.controller.delivery_disposition.read().await, TranscriptDelivery::Retained);
+        let receipt = receipts.text();
+        assert!(receipt.contains("stop_canvas_empty"));
+        assert!(receipt.contains("qualified_occurrences=1"));
+        assert!(receipt.contains("stop canvas delivery settled"));
+        take.emitter.on_event(&late);
+        assert!(!take.emitter.visible_canvas_snapshot().unwrap().text.is_empty());
+        deliver_terminal_unless_settled(Some(settled), || async {
+            panic!("late words reopened empty stop")
+        }).await.unwrap();
+    }
+
+    /// Both stop sites use the same terminal settlement on their Ok and Err
+    /// arms. Authenticated terminal refusal still reaches history, never paste.
+    #[tokio::test]
+    async fn terminal_path_never_pastes_after_stop_paste() {
+        for state in [State::RecHold, State::RecToggle] {
+            for disposition in [TranscriptDelivery::SinkAccepted, TranscriptDelivery::Retained] {
+                let take = take(state, true).await;
+                let ok = deliver_terminal_unless_settled(Some(disposition), || async {
+                    panic!("successful terminal path pasted twice")
+                }).await.unwrap();
+                assert_eq!(ok, disposition);
+                let refused = take.controller.process_terminal_stop_error(
+                    anyhow::Error::new(take.refusal.clone()),
+                    |_| async {
+                        deliver_terminal_unless_settled(Some(disposition), || async {
+                            panic!("refused terminal path pasted twice")
+                        }).await
+                    },
+                ).await.unwrap();
+                assert!(refused.refusal.is_some());
+            }
+        }
+        // Tie the injected production seam to both actual recorder stop sites;
+        // process_recording's cfg(test) shortcut must not stand in for this.
+        let source = include_str!("mod.rs");
+        for (start, end) in [
+            ("    async fn stop_toggle_and_adjudicate_inner(", "    fn publish_live_serving_verdict("),
+            ("    async fn process_recording(", "    pub async fn reset("),
+        ] {
+            let body = source.split_once(start).unwrap().1.split_once(end).unwrap().0;
+            assert_eq!(body.matches("deliver_terminal_unless_settled(settled,").count(), 2);
+            assert_eq!(body.matches(".deliver_frozen_canvas_at_stop(").count(), 1);
+        }
+    }
 
     fn fixture_refusal(
         receipt: &codescribe_core::pipeline::acoustic_ledger::SealCoverageReceipt,
