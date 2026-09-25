@@ -15155,6 +15155,55 @@ mod relay_l1_overlap_admission_tests {
         assert_conserved(&lane, Some("no_voiced_hop_in_pin"));
     }
 
+    /// Synthetic evidence-gap falsifier: qualification of the larger Apple
+    /// occurrence and the per-pin capture-energy clock are deliberately out
+    /// of sync. This is not a replay of an observed live capture. Missing
+    /// per-pin evidence is neither measured silence nor speech proof; the
+    /// larger occurrence must not lend its serial to that Whisper word.
+    #[test]
+    fn unmeasured_word_pin_cannot_relabel_qualified_occurrence() {
+        let mut lane = open("relay-unmeasured-pin");
+        let session = "relay-unmeasured-pin";
+        let observed_end = 24_000_u64;
+        let occurrence = OccurrenceIdentity::new(session, 1, 0, 48_000);
+        record_energy(&lane, &[vec![0.2; observed_end as usize]]);
+        assert_eq!(
+            lane.state
+                .capture_energy
+                .voiced_hops_in(session, 1, 26_000, 46_000),
+            None,
+            "the pin extends beyond measured PCM, not into certified silence"
+        );
+        stage(&mut lane, 1, occurrence.clone(), "mowa");
+        assert!(
+            lane.state
+                .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, "mowa"))
+        );
+        assert!(lane.state.flush_layer1_coalesce(&lane.tx));
+        close_lexicon(&mut lane, 1, &occurrence, "mowa");
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 1);
+
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![word_pin(session, "halucynacja", 26_000, 46_000)],
+            ),
+            3.0,
+        );
+        let events = drain(&mut lane.rx);
+        assert_eq!(
+            mutation_count(&events),
+            0,
+            "unmeasured pin PCM cannot correct the Apple label"
+        );
+        assert_eq!(held_text(&lane, &occurrence).as_deref(), Some("mowa"));
+        assert_eq!(held_count(&lane), 1);
+        assert_conserved(&lane, None);
+    }
+
     /// The same geometry, with the pin overlapping a voiced hop.
     ///
     /// Contract: a pin that contains voiced audio stays admissible. Hop
