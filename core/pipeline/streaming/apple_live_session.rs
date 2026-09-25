@@ -1090,11 +1090,13 @@ pub(crate) async fn apple_stream_transcription_session(
     let cloud_on = layer1_lane.is_live()
         && layer1_lane.refiner_mode() == crate::asr_session::RefinerMode::CloudSession;
     let (cloud_commit_tx, cloud_commit_rx) = mpsc::channel::<u64>(32);
-    let worker_cloud_commit = cloud_on.then_some(cloud_commit_tx);
     let mut cloud_commit_rx = cloud_on.then_some(cloud_commit_rx);
     let (cloud_notice_tx, cloud_notice_rx) = std_mpsc::channel::<CloudWorkerNotice>();
-    let worker_cloud_notice = cloud_on.then_some(cloud_notice_rx);
     let cloud_notice_tx = cloud_on.then_some(cloud_notice_tx);
+    let worker_cloud = cloud_on.then_some(CloudWorkerChannels {
+        commit: cloud_commit_tx,
+        notice: cloud_notice_rx,
+    });
 
     let (consultation_tx, mut consultation_rx) = mpsc::channel(CONSULTATION_QUEUE_CAP);
     let (consultation_return_tx, consultation_return_rx) = std_mpsc::channel();
@@ -1141,8 +1143,6 @@ pub(crate) async fn apple_stream_transcription_session(
             tp_done_rx,
             worker_formatter_tx,
             formatter_done_rx,
-            worker_cloud_commit,
-            worker_cloud_notice,
             AppleWorkerConfig {
                 local_execution: worker_execution,
                 sample_rate,
@@ -1158,6 +1158,7 @@ pub(crate) async fn apple_stream_transcription_session(
                 terminal_audio,
                 last_window_closed: worker_close_tx,
                 consultation: worker_consultation,
+                cloud: worker_cloud,
             },
         )
     });
@@ -1737,6 +1738,12 @@ enum CloudWorkerNotice {
     /// Boxed: a stamped final is far larger than `LaneLost` (clippy::large_enum_variant).
     Final(Box<crate::asr_session::events::TranscriptEvent>),
     LaneLost,
+}
+
+/// The worker's two ends of the CLOUD live lane. They exist only together.
+struct CloudWorkerChannels {
+    commit: mpsc::Sender<u64>,
+    notice: std_mpsc::Receiver<CloudWorkerNotice>,
 }
 
 fn inflight_key(submission_sequence: u64, identity: &TailRequestIdentity) -> (u64, u64, u64, u64) {
@@ -6406,11 +6413,11 @@ struct AppleWorkerConfig<'a> {
     terminal_audio:
         Option<std_mpsc::Receiver<Result<super::live_audio_buffer::FinalizedPcmArchive, String>>>,
     last_window_closed: tokio::sync::oneshot::Sender<()>,
+    /// CLOUD mode only: silence commits to the live WS lane and its notices back.
+    cloud: Option<CloudWorkerChannels>,
 }
 
 /// Blocking worker: owns the SFSpeech stream(s) for the session's full lifetime.
-// CL-W2 added the cloud channels; folding them into a worker-channels value is a separate cut.
-#[allow(clippy::too_many_arguments)]
 fn apple_stream_worker(
     pcm_rx: std_mpsc::Receiver<Option<Vec<f32>>>,
     ev_tx: mpsc::UnboundedSender<EngineEvent>,
@@ -6418,8 +6425,6 @@ fn apple_stream_worker(
     tail_patch_done: std_mpsc::Receiver<TailPatchCompletion>,
     formatter: Option<mpsc::Sender<FormatterRequest>>,
     formatter_done: std_mpsc::Receiver<FormatterCompletion>,
-    cloud_commit: Option<mpsc::Sender<u64>>,
-    cloud_notice: Option<std_mpsc::Receiver<CloudWorkerNotice>>,
     config: AppleWorkerConfig<'_>,
 ) -> anyhow::Result<AppleStreamOutcome> {
     let AppleWorkerConfig {
@@ -6437,6 +6442,7 @@ fn apple_stream_worker(
         utterance_silence_sec,
         terminal_audio,
         last_window_closed,
+        cloud,
     } = config;
     debug_assert_eq!(settings_digest, runtime_settings.digest().as_str());
     // The one read of calibration truth for this session: the measured profile
@@ -6498,8 +6504,8 @@ fn apple_stream_worker(
     };
     state.bind_capture_energy(capture_energy);
     state.formatter = formatter;
+    let (cloud_commit, cloud_notice) = cloud.map(|lane| (lane.commit, lane.notice)).unzip();
     state.cloud_commit_tx = cloud_commit;
-    let cloud_notice = cloud_notice;
     state.whisper_context_window_sec = runtime_settings.values().whisper_context_window_sec;
     // The session's ONE Silero. Both consumers of speech edges read it: the
     // utterance ledger (identity, ranges) and the engine lifecycle (wake/sleep).
