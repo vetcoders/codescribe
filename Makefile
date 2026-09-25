@@ -1066,7 +1066,7 @@ verify:
 	echo "=== Verify (Transcript Bus path + install guard) ==="; \
 	bash scripts/tests/transcript-bus-path-test.sh; \
 	echo "=== Verify (hermetic: workspace tests) ==="; \
-	bash scripts/verify-test-home.sh; \
+	CODESCRIBE_TEST_DATA_DIR="$$CODESCRIBE_TEST_DATA_DIR" bash scripts/verify-test-home.sh; \
 	echo "=== Verify (ship-shaped artifacts contain no test fence) ==="; \
 	bash scripts/tests/test-isolation-not-shipped-test.sh; \
 	echo "=== Verify (Whisper model promotion) ==="; \

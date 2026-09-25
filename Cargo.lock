@@ -712,6 +712,7 @@ dependencies = [
  "candle-transformers",
  "cap-std",
  "chrono",
+ "codescribe-core",
  "cpal",
  "deunicode",
  "directories",
