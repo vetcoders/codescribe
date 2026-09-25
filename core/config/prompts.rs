@@ -366,21 +366,24 @@ impl Default for CapturedRuntimePrompts {
 }
 
 impl CapturedRuntimePrompts {
-    /// Read only the selected rung and assistive source, matching normal startup.
-    pub(crate) fn capture(policy: FormattingPolicy) -> Self {
+    /// Capture every rung for later one-shot choices, including when configured Off.
+    pub(crate) fn capture(_policy: FormattingPolicy) -> Self {
         super::loader::note_startup_acquisition("prompt files");
-        let mut prompts = Self::default();
-        if let Some(kind) = PromptKind::for_formatting_policy(policy) {
-            let captured = CapturedPrompt::capture(kind, "formatting_tuning.txt");
-            match policy {
-                FormattingPolicy::Correction => prompts.correction = captured,
-                FormattingPolicy::Smart => prompts.smart = captured,
-                FormattingPolicy::Max => prompts.max = captured,
-                FormattingPolicy::Off => unreachable!(),
+        let tuning = load_optional("formatting_tuning.txt");
+        let capture_formatting = |kind| {
+            let snapshot = prompt_snapshot(kind);
+            CapturedPrompt {
+                content: snapshot.content,
+                source: snapshot.source,
+                tuning: tuning.clone(),
             }
+        };
+        Self {
+            correction: capture_formatting(PromptKind::Formatting),
+            smart: capture_formatting(PromptKind::FormattingSmart),
+            max: capture_formatting(PromptKind::FormattingMax),
+            assistive: CapturedPrompt::capture(PromptKind::Assistive, "assistive_tuning.txt"),
         }
-        prompts.assistive = CapturedPrompt::capture(PromptKind::Assistive, "assistive_tuning.txt");
-        prompts
     }
 
     pub(crate) fn seal(
@@ -761,6 +764,242 @@ mod tests {
                     Some(value) => std::env::set_var("CODESCRIBE_DATA_DIR", value),
                     None => std::env::remove_var("CODESCRIBE_DATA_DIR"),
                 }
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn one_shot_uses_captured_custom_prompt() {
+        use crate::config::{CapturedRuntimeInputs, Config, StartupAcquisitionProbe};
+
+        let sandbox = TempDir::new().expect("prompt sandbox");
+        let _env = EnvGuard::set(sandbox.path());
+        let dir = prompts_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let files = [
+            ("formatting-smart.txt", "Operator Smart"),
+            ("formatting-max.txt", "Operator Max"),
+            ("formatting_tuning.txt", "  Shared tuning\n"),
+        ];
+        for (name, content) in files {
+            fs::write(dir.join(name), content).unwrap();
+        }
+        let settings_bytes = b"{\"formatting_level\":\"smart\"}\n";
+        fs::write(sandbox.path().join("settings.json"), settings_bytes).unwrap();
+        let mut inputs = CapturedRuntimeInputs::defaults_at(sandbox.path().to_path_buf(), 42);
+        inputs.user_settings.formatting_level = Some("smart".into());
+        inputs.settings_bytes = Some(settings_bytes.to_vec());
+        inputs.prompts = CapturedRuntimePrompts::capture(FormattingPolicy::Smart);
+        for (name, content) in files {
+            assert_eq!(fs::read_to_string(dir.join(name)).unwrap(), content);
+        }
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), files.len());
+
+        // A later edit must not change the inputs sealed for this generation.
+        fs::write(dir.join("formatting-max.txt"), "Later Max").unwrap();
+        fs::write(dir.join("formatting_tuning.txt"), "Later tuning").unwrap();
+        let probe = StartupAcquisitionProbe::forbid();
+        let settings = Config::runtime_snapshot_from_captured(inputs);
+        let before = settings.digest().clone();
+        let request = settings.with_formatting_level(FormattingPolicy::Max);
+        let prompt = request
+            .ai_execution()
+            .formatter()
+            .formatting_prompt()
+            .unwrap();
+        assert_eq!(prompt.composed_content(), "Operator Max\n\nShared tuning");
+        assert_eq!(prompt.source(), PromptSource::CustomFile);
+        assert_eq!(
+            prompt.composed_sha256(),
+            sha256_hex(b"Operator Max\n\nShared tuning")
+        );
+        assert_eq!(settings.formatting_policy(), FormattingPolicy::Smart);
+        assert_eq!(
+            settings.user_settings().formatting_level.as_deref(),
+            Some("smart")
+        );
+        assert_eq!(settings.digest(), &before);
+        assert_eq!(
+            settings
+                .ai_execution()
+                .formatter()
+                .formatting_prompt()
+                .unwrap()
+                .composed_content(),
+            "Operator Smart\n\nShared tuning"
+        );
+        assert!(!format!("{settings:?}").contains("Operator Max"));
+        assert_eq!(
+            fs::read(sandbox.path().join("settings.json")).unwrap(),
+            settings_bytes
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("formatting-max.txt")).unwrap(),
+            "Later Max"
+        );
+        assert!(probe.attempts().is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn unselected_prompt_files_leave_configured_snapshot_digest_unchanged() {
+        use crate::config::{CapturedRuntimeInputs, Config, StartupAcquisitionProbe};
+
+        for policy in FormattingPolicy::ALL {
+            let sandbox = TempDir::new().expect("prompt sandbox");
+            let _env = EnvGuard::set(sandbox.path());
+            let dir = prompts_dir();
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("formatting_tuning.txt"), " Shared tuning \n").unwrap();
+            if let Some(kind) = PromptKind::for_formatting_policy(policy) {
+                fs::write(dir.join(kind.filename()), "Configured prompt").unwrap();
+            }
+            let mut selected = CapturedRuntimeInputs::defaults_at(sandbox.path().to_path_buf(), 42);
+            selected.user_settings.formatting_level = Some(policy.as_str().into());
+            selected.prompts = CapturedRuntimePrompts::capture(policy);
+            // Reconstruct the pre-change capture: only the configured rung and assistive.
+            let mut prior = selected.clone();
+            prior.prompts = CapturedRuntimePrompts::default();
+            match policy {
+                FormattingPolicy::Correction => {
+                    prior.prompts.correction = selected.prompts.correction.clone()
+                }
+                FormattingPolicy::Smart => prior.prompts.smart = selected.prompts.smart.clone(),
+                FormattingPolicy::Max => prior.prompts.max = selected.prompts.max.clone(),
+                FormattingPolicy::Off => {}
+            }
+            prior.prompts.assistive = selected.prompts.assistive.clone();
+            for kind in PromptKind::FORMATTING {
+                if Some(kind) != PromptKind::for_formatting_policy(policy) {
+                    fs::write(dir.join(kind.filename()), "Unselected private prompt").unwrap();
+                }
+            }
+            let mut all = selected.clone();
+            all.prompts = CapturedRuntimePrompts::capture(policy);
+            let probe = StartupAcquisitionProbe::forbid();
+            let before = Config::runtime_snapshot_from_captured(prior);
+            let selected = Config::runtime_snapshot_from_captured(selected);
+            let all = Config::runtime_snapshot_from_captured(all);
+            assert_eq!(before.ai_execution(), selected.ai_execution());
+            assert_eq!(before.digest(), selected.digest());
+            assert_eq!(all.ai_execution(), selected.ai_execution());
+            assert_eq!(all.digest(), selected.digest());
+            assert!(!format!("{all:?}").contains("Unselected private prompt"));
+            assert!(probe.attempts().is_empty());
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn capture_preserves_all_prompt_files() {
+        use crate::config::{CapturedRuntimeInputs, Config, StartupAcquisitionProbe};
+
+        let sandbox = TempDir::new().expect("prompt sandbox");
+        let _env = EnvGuard::set(sandbox.path());
+        let dir = prompts_dir();
+        fs::create_dir_all(&dir).unwrap();
+        for kind in PromptKind::USER_OWNED {
+            fs::write(dir.join(kind.filename()), kind.filename()).unwrap();
+        }
+        fs::write(dir.join("formatting_tuning.txt"), " shared \n").unwrap();
+        fs::write(dir.join("assistive_tuning.txt"), " assistive \n").unwrap();
+        for configured in FormattingPolicy::ALL {
+            let mut inputs = CapturedRuntimeInputs::defaults_at(sandbox.path().to_path_buf(), 42);
+            inputs.user_settings.formatting_level = Some(configured.as_str().into());
+            inputs.prompts = CapturedRuntimePrompts::capture(configured);
+            let probe = StartupAcquisitionProbe::forbid();
+            let settings = Config::runtime_snapshot_from_captured(inputs);
+            for level in FormattingPolicy::ALL {
+                let request = settings.with_formatting_level(level);
+                if let Some(kind) = PromptKind::for_formatting_policy(level) {
+                    let prompt = request
+                        .ai_execution()
+                        .formatter()
+                        .formatting_prompt()
+                        .unwrap();
+                    assert_eq!(prompt.source(), PromptSource::CustomFile);
+                    assert_eq!(
+                        prompt.composed_content(),
+                        format!("{}\n\nshared", kind.filename())
+                    );
+                } else {
+                    assert!(
+                        request
+                            .ai_execution()
+                            .formatter()
+                            .formatting_prompt()
+                            .is_none()
+                    );
+                }
+                assert_eq!(settings.formatting_policy(), configured);
+            }
+            assert_eq!(
+                settings
+                    .ai_execution()
+                    .formatter()
+                    .assistive_prompt()
+                    .composed_content(),
+                "assistive.txt\n\nassistive"
+            );
+            assert!(probe.attempts().is_empty());
+        }
+        for kind in PromptKind::USER_OWNED {
+            assert_eq!(
+                fs::read_to_string(dir.join(kind.filename())).unwrap(),
+                kind.filename()
+            );
+        }
+        assert_eq!(
+            fs::read_dir(&dir).unwrap().count(),
+            PromptKind::USER_OWNED.len() + 2
+        );
+        assert!(!sandbox.path().join("settings.json").exists());
+    }
+
+    #[test]
+    #[serial]
+    fn captured_missing_blank_and_unreadable_rungs_retain_provenance() {
+        let sandbox = TempDir::new().expect("prompt sandbox");
+        let _env = EnvGuard::set(sandbox.path());
+        for state in ["missing", "blank", "unreadable"] {
+            for kind in PromptKind::FORMATTING {
+                let path = prompts_dir().join(kind.filename());
+                match state {
+                    "missing" => {}
+                    "blank" => {
+                        fs::create_dir_all(prompts_dir()).unwrap();
+                        fs::write(&path, " \n\t ").unwrap();
+                    }
+                    _ => {
+                        fs::remove_file(&path).unwrap();
+                        fs::create_dir(&path).unwrap();
+                    }
+                }
+            }
+            for configured in FormattingPolicy::ALL {
+                let captured = CapturedRuntimePrompts::capture(configured);
+                for level in FormattingPolicy::ALL {
+                    if let Some(kind) = PromptKind::for_formatting_policy(level) {
+                        let prompt = captured.seal(level).0.unwrap();
+                        assert_eq!(prompt.composed_content(), kind.default_content());
+                        assert_eq!(
+                            prompt.source(),
+                            if state == "unreadable" {
+                                PromptSource::ReadError
+                            } else {
+                                PromptSource::BuiltInFallback
+                            }
+                        );
+                        assert!(prompt.tuning_sha256().is_none());
+                    }
+                }
+            }
+            if state == "missing" {
+                assert!(
+                    !prompts_dir().exists(),
+                    "capture must not create prompt files"
+                );
             }
         }
     }
