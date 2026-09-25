@@ -2333,7 +2333,7 @@ impl AppleSealState {
                 {
                     class = OverlapPinClass::Replay;
                 }
-                let silent = self
+                let energy_silent = self
                     .capture_energy
                     .voiced_hops_in(
                         &pin.session,
@@ -2342,9 +2342,23 @@ impl AppleSealState {
                         pin.sample_end,
                     )
                     .is_some_and(|hops| hops.is_empty());
-                // Replay is already a refusal. A silent pin that would relabel,
-                // clip, or stay painted is `no_voiced_hop_in_pin` instead.
-                if silent && !matches!(class, OverlapPinClass::Replay) {
+                let silero_silent = energy_silent && self.fusion.as_ref().is_some_and(|fusion| {
+                    let evidence = fusion.acoustic_speech_evidence();
+                    evidence.identity().session == pin.session
+                        && evidence.identity().capture_epoch == pin.capture_epoch
+                        && evidence
+                            .availability()
+                            .observed_samples()
+                            .is_some_and(|end| end >= pin.sample_end)
+                        && evidence.ranges().iter().all(|range| {
+                            range.sample_end <= pin.sample_start
+                                || range.sample_start >= pin.sample_end
+                        })
+                });
+                // Until a CTC witness exists, Silero and this energy ladder are
+                // the only joint defence against Whisper words on silence.
+                // Replay is already a refusal; missing Silero coverage is not silence.
+                if energy_silent && silero_silent && !matches!(class, OverlapPinClass::Replay) {
                     side.push((index, pin, text.to_string(), SidePin::NoVoicedHop));
                     continue;
                 }
@@ -14563,6 +14577,29 @@ mod relay_l1_overlap_admission_tests {
         }
     }
 
+    fn record_silero(lane: &mut Lane, observed_end: u64, speech: Option<(u64, u64)>) {
+        use crate::audio::chunker::{VadBoundaryEvidence, VadBoundaryKind};
+
+        let mut fusion = SileroIngress::new(RATE, lane.state.session_id.clone(), 1);
+        assert!(fusion.vad_available(), "the fixture needs a measuring Silero");
+        fusion.note_observed_pcm(observed_end, observed_end);
+        if let Some((start, end)) = speech {
+            fusion.observe_boundaries(&[
+                VadBoundaryEvidence {
+                    kind: VadBoundaryKind::SpeechStart,
+                    sample: start,
+                    speech_probability: 0.9,
+                },
+                VadBoundaryEvidence {
+                    kind: VadBoundaryKind::SpeechEnd,
+                    sample: end,
+                    speech_probability: 0.1,
+                },
+            ]);
+        }
+        lane.state.fusion = Some(fusion);
+    }
+
     fn energy_lookups(lane: &Lane) -> u64 {
         lane.state
             .acoustic_ledger
@@ -14571,13 +14608,66 @@ mod relay_l1_overlap_admission_tests {
             .energy_lookups_without_voiced_hop()
     }
 
+    fn route_one_pin(lane: &mut Lane, text: &str) -> (Vec<MemberPinRoute>, Vec<EngineEvent>) {
+        let end = 48_000;
+        let occurrence = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, end);
+        let pin = word_pin(&lane.state.session_id, text, 26_000, 46_000);
+        let routes = lane
+            .state
+            .route_overlap_pins(&lane.tx, 1, 0, end, &[(1, occurrence)], &[pin]);
+        let events = drain(&mut lane.rx);
+        (routes, events)
+    }
+
+    #[test]
+    fn energy_silence_with_silero_speech_routes_the_whisper_pin() {
+        let mut lane = open("relay-silero-speech");
+        record_energy(&lane, &[vec![0.0; 48_000]]);
+        record_silero(&mut lane, 48_000, Some((25_000, 47_000)));
+
+        let (routes, events) = route_one_pin(&mut lane, "słowo");
+        assert_eq!(routes[0].exclusive.len(), 1);
+        assert_eq!(routes[0].exclusive[0].text, "słowo");
+        assert!(events.is_empty(), "the pin must reach its exclusive route");
+        assert_eq!(energy_lookups(&lane), 0);
+    }
+
+    #[test]
+    fn unavailable_or_short_silero_extent_cannot_join_an_energy_silence_veto() {
+        let mut unavailable = open("relay-silero-unavailable");
+        record_energy(&unavailable, &[vec![0.0; 48_000]]);
+        record_silero(&mut unavailable, 0, None);
+        let (routes, events) = route_one_pin(&mut unavailable, "słowo");
+        assert_eq!(routes[0].exclusive.len(), 1);
+        assert!(events.is_empty(), "unavailable Silero cannot refuse the pin");
+
+        let mut short = open("relay-silero-short");
+        record_energy(&short, &[vec![0.0; 48_000]]);
+        record_silero(&mut short, 40_000, None);
+        let (routes, events) = route_one_pin(&mut short, "słowo");
+        assert_eq!(routes[0].exclusive.len(), 1);
+        assert!(events.is_empty(), "a short Silero extent cannot refuse the pin");
+    }
+
+    #[test]
+    fn speech_seen_by_both_witnesses_keeps_the_exclusive_pin_route() {
+        let mut lane = open("relay-both-speech");
+        record_energy(&lane, &[vec![0.2; 48_000]]);
+        record_silero(&mut lane, 48_000, Some((25_000, 47_000)));
+
+        let (routes, events) = route_one_pin(&mut lane, "słowo");
+        assert_eq!(routes[0].exclusive.len(), 1);
+        assert_eq!(routes[0].exclusive[0].text, "słowo");
+        assert!(events.is_empty(), "speech follows the original exclusive route");
+        assert_eq!(energy_lookups(&lane), 0);
+    }
+
     /// Qualified occurrence, last 1.5 s measured silence. A Whisper pin that
     /// lies wholly in that silence is offered as an exclusive tail.
     ///
-    /// Contract: "Whisper may not write into verified silence." The pin's own
-    /// `[sample_start, sample_end)` is the lookup, not the occurrence mean and
-    /// not the pin text. No voiced hop → `no_voiced_hop_in_pin`, the receipt
-    /// counter moves, and nothing is relabelled, appended, or painted.
+    /// The pin's own range is checked by energy and a Silero extent covering
+    /// its end. Their agreement refuses a plausible Whisper silence hallucination
+    /// with a named receipt; nothing is relabelled, appended, or painted.
     #[test]
     fn whisper_pin_wholly_inside_measured_silence_cannot_relabel_or_append() {
         let mut lane = open("relay-silent-pin");
@@ -14591,6 +14681,7 @@ mod relay_l1_overlap_admission_tests {
                 vec![0.0; (end - silence_at) as usize],
             ],
         );
+        record_silero(&mut lane, end, Some((0, 20_000)));
         let occurrence = OccurrenceIdentity::new(session, 1, 0, end);
         stage(&mut lane, 1, occurrence.clone(), "mowa");
         assert!(
@@ -14612,7 +14703,7 @@ mod relay_l1_overlap_admission_tests {
             &lane.tx,
             completion(
                 &requests[0],
-                vec![word_pin(session, "halucynacja", pin_start, pin_end)],
+                vec![word_pin(session, "dziękuję", pin_start, pin_end)],
             ),
             3.0,
         );
@@ -14623,7 +14714,7 @@ mod relay_l1_overlap_admission_tests {
             "a pin wholly inside measured silence must not relabel or append"
         );
         assert!(
-            !unanchored_label(&events, "halucynacja"),
+            !unanchored_label(&events, "dziękuję"),
             "no voiced hop is a refusal, not paint"
         );
         assert!(
