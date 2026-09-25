@@ -212,8 +212,10 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       "The close control is the brand status dot")
     XCTAssertEqual(header.components(separatedBy: "state.relayIntent(.close)").count - 1, 1)
     XCTAssertEqual(header.components(separatedBy: "overlay-brand-close-dot").count - 1, 1)
-    XCTAssertTrue(close.contains(".frame(minWidth: 24, minHeight: 24)"))
-    XCTAssertTrue(close.contains(".contentShape(Rectangle())"))
+    // The dot keeps its pre-b83e95538 place: the hit target grows through the
+    // content shape, never through a frame that shifts the dot or the wordmark.
+    XCTAssertTrue(close.contains(".contentShape(Circle().inset(by: compact ? -7.5 : -6))"))
+    XCTAssertFalse(close.contains(".frame("), "A frame would move the dot")
     XCTAssertTrue(header.contains("Text(\"codescribe\")"))
     XCTAssertTrue(header.contains(".allowsHitTesting(false)"))
     // The brand block sits on an inert drag region so the dot answers clicks,

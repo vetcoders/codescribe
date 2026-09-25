@@ -24,7 +24,7 @@ final class OverlayChromeV3Tests: XCTestCase {
       close.contains(
         "ModeDot(color: palette.statusToken(for: state.mode).color, size: compact ? 9 : 12)"))
     XCTAssertTrue(close.contains("Image(systemName: \"xmark\")"))
-    XCTAssertTrue(close.contains(".frame(minWidth: 24, minHeight: 24)"))
+    XCTAssertFalse(close.contains(".frame("), "A frame would move the dot")
     XCTAssertFalse(tail.contains("Text(\"×\")"))
     XCTAssertTrue(tail.contains(".accessibilityLabel(OverlayIntent.close.accessibilityLabel)"))
     for scale in [TextScaleController.minScale, CGFloat(1)] {

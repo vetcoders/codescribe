@@ -203,8 +203,9 @@ struct DictationOverlayView: View {
               .foregroundStyle(palette.desktopBackground.color)
               .accessibilityHidden(true)
           }
-          .frame(minWidth: 24, minHeight: 24)
-          .contentShape(Rectangle())
+          // 24 pt hit target without moving the dot: the shape reaches past the
+          // circle, the layout keeps the pre-b83e95538 position (Founder, 25 IX).
+          .contentShape(Circle().inset(by: compact ? -7.5 : -6))
         }
         .buttonStyle(.plain)
         .help(OverlayIntent.close.helpText)
