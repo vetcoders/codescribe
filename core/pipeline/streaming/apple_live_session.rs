@@ -12232,6 +12232,7 @@ mod rc_w2_acoustic_tests {
         state.complete_whisper_window(
             &tx,
             TailPatchCompletion {
+                submission_sequence: request.submission_sequence,
                 utterance_id: 1,
                 request_identity: Some(request.provider_request.identity.clone()),
                 payload: Some(payload),
