@@ -55,6 +55,8 @@ pub const DEFAULT_SYMMETRIC_PAD_SECS: f32 = 0.40;
 
 /// Producer token for the Silero threshold-crossing observer.
 pub const SILERO_BOUNDARIES_PRODUCER: &str = "silero_boundaries";
+/// The same observer's unpadded threshold crossings, for L1 admit bounds.
+pub const SILERO_RAW_BOUNDARIES_PRODUCER: &str = "silero_raw_boundaries";
 
 /// Symmetric pad applied to a raw Silero threshold crossing when the seal
 /// speech set is built.
@@ -501,6 +503,42 @@ impl SileroIngress {
             SILERO_BOUNDARIES_PRODUCER,
             AcousticAvailability::Observed { observed_samples },
             self.acoustic_speech_ranges(observed_samples),
+        )
+    }
+
+    /// Unpadded crossings for an L1 window's exclusive admit range.
+    ///
+    /// `acoustic_speech_evidence` intentionally pads and merges short gaps for
+    /// seal coverage. Those context samples are useful to a decoder but cannot
+    /// grant a word ownership outside the raw measured crossing. This view has
+    /// the same observer, capture identity and availability; it only removes
+    /// the coverage padding from the ranges.
+    pub fn raw_speech_evidence(&self) -> AcousticSpeechEvidence {
+        let coverage = self.acoustic_speech_evidence();
+        let identity = coverage.identity().clone();
+        let availability = coverage.availability();
+        let Some(observed_samples) = availability.observed_samples() else {
+            return AcousticSpeechEvidence::unavailable(
+                identity,
+                SILERO_RAW_BOUNDARIES_PRODUCER,
+                availability,
+            );
+        };
+        AcousticSpeechEvidence::measured(
+            identity,
+            SILERO_RAW_BOUNDARIES_PRODUCER,
+            availability,
+            self.speech
+                .raw_ranges(observed_samples)
+                .into_iter()
+                .filter(|(start, end)| end > start)
+                .map(|(sample_start, sample_end)| TailSampleRange {
+                    session: self.session.clone(),
+                    capture_epoch: self.capture_epoch,
+                    sample_start,
+                    sample_end,
+                })
+                .collect(),
         )
     }
 
@@ -1855,6 +1893,17 @@ mod tests {
         assert_eq!(evidence.identity().session, "extent");
         assert_eq!(evidence.identity().capture_epoch, 3);
         assert_eq!(evidence.ranges().len(), 1);
+        let raw = ingress.raw_speech_evidence();
+        assert_eq!(raw.producer(), SILERO_RAW_BOUNDARIES_PRODUCER);
+        assert_eq!(raw.identity(), evidence.identity());
+        assert_eq!(raw.availability(), evidence.availability());
+        assert_eq!(raw.ranges().len(), 1);
+        assert_eq!(raw.ranges()[0].session, "extent");
+        assert_eq!(raw.ranges()[0].capture_epoch, 3);
+        assert_eq!(raw.ranges()[0].sample_start, 2_000);
+        assert_eq!(raw.ranges()[0].sample_end, 4_000);
+        assert!(evidence.ranges()[0].sample_start < raw.ranges()[0].sample_start);
+        assert!(evidence.ranges()[0].sample_end > raw.ranges()[0].sample_end);
 
         // A chunk that skips ahead leaves audio this observer never heard.
         ingress.note_observed_pcm(4_000, 24_000);
@@ -1869,6 +1918,13 @@ mod tests {
             ingress.acoustic_speech_evidence().ranges().is_empty(),
             "unavailable evidence reports no ranges"
         );
+        assert_eq!(
+            ingress.raw_speech_evidence().availability(),
+            AcousticAvailability::Discontinuous {
+                observed_samples: 24_000
+            }
+        );
+        assert!(ingress.raw_speech_evidence().ranges().is_empty());
     }
 
     /// rc-w3-acoustic-validity: invalid PCM reaching the VAD is unmeasured, not

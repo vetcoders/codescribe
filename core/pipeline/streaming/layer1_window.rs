@@ -11,9 +11,9 @@ use crate::audio::capture_receipt::{AcousticSpeechEvidence, CaptureEvidenceIdent
 use crate::pipeline::acoustic_ledger::OccurrenceIdentity;
 use crate::stt::tail_provider::TailSampleRange;
 
-use super::silero_fusion::SILERO_BOUNDARIES_PRODUCER;
+use super::silero_fusion::SILERO_RAW_BOUNDARIES_PRODUCER;
 
-/// An immutable L1 request offered while its Silero speech range is still open.
+/// An immutable L1 request offered while its raw Silero crossing is still open.
 ///
 /// The request may repeat PCM for decoder context, but only the exclusive admit
 /// range can later label an occurrence. This is deliberately a capture range,
@@ -27,7 +27,7 @@ pub struct OpenSpeechWindow {
     pub admit_sample_end: u64,
 }
 
-/// Offer ~4 s L1 observations from measured speech, independent of Apple finals.
+/// Offer ~4 s L1 observations from raw Silero crossings, independent of Apple finals.
 ///
 /// One pending offer is retained until the transport acknowledges it. A full
 /// queue therefore cannot advance the clock and silently drop the only L1
@@ -59,7 +59,7 @@ impl OpenSpeechWindowClock {
         capture_closed: bool,
     ) -> Option<OpenSpeechWindow> {
         if evidence.identity() != &self.capture
-            || evidence.producer() != SILERO_BOUNDARIES_PRODUCER
+            || evidence.producer() != SILERO_RAW_BOUNDARIES_PRODUCER
         {
             self.pending = None;
             return None;
@@ -588,7 +588,7 @@ mod tests {
     ) -> AcousticSpeechEvidence {
         AcousticSpeechEvidence::measured(
             CaptureEvidenceIdentity::new(session, capture_epoch),
-            SILERO_BOUNDARIES_PRODUCER,
+            SILERO_RAW_BOUNDARIES_PRODUCER,
             AcousticAvailability::Observed { observed_samples },
             ranges
                 .iter()
@@ -680,7 +680,7 @@ mod tests {
         assert!(!clock.ack_queued(&offered));
         let unavailable = AcousticSpeechEvidence::unavailable(
             CaptureEvidenceIdentity::new("take", 7),
-            SILERO_BOUNDARIES_PRODUCER,
+            SILERO_RAW_BOUNDARIES_PRODUCER,
             AcousticAvailability::Discontinuous { observed_samples: 5_000 },
         );
         assert!(clock.next(&unavailable, 1_000, false).is_none());
@@ -704,6 +704,25 @@ mod tests {
             }],
         );
         assert!(clock.next(&energy, 1_000, false).is_none());
+    }
+
+    #[test]
+    fn padded_coverage_evidence_is_not_an_admit_range() {
+        let mut clock = OpenSpeechWindowClock::new(CaptureEvidenceIdentity::new("take", 7));
+        let padded = AcousticSpeechEvidence::measured(
+            CaptureEvidenceIdentity::new("take", 7),
+            super::super::silero_fusion::SILERO_BOUNDARIES_PRODUCER,
+            AcousticAvailability::Observed {
+                observed_samples: 5_000,
+            },
+            vec![TailSampleRange {
+                session: "take".into(),
+                capture_epoch: 7,
+                sample_start: 0,
+                sample_end: 5_000,
+            }],
+        );
+        assert!(clock.next(&padded, 1_000, false).is_none());
     }
 
     #[test]
