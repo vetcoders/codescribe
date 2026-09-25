@@ -639,8 +639,10 @@ fn refused_take_archive(
 }
 
 // One stop-instant budget covers every live lane, including an empty take.
-// Refinement, archive and formatter work never own this deadline.
-const STOP_FINAL_BOUND: Duration = Duration::from_secs(8);
+// Refinement, archive and formatter work never own this deadline. The stop
+// snapshot already holds every heard word through the Apple mirror, so the
+// live final only anchors them; a longer wait buys nothing and reads as a hang.
+const STOP_FINAL_BOUND: Duration = Duration::from_secs(2);
 
 /// A next-start request interrupts only the live-final wait, never capture.
 /// The global weak slot lets the event tap wake a stop even while its serial
@@ -6539,7 +6541,7 @@ mod refusal_recovery_tests {
     /// No live final, no committed document. This exercises
     /// the real snapshot, stop settlement and route with only the OS sink faked.
     #[tokio::test(start_paused = true)]
-    async fn preview_only_timeout_pastes_raw_once_at_eight_seconds() {
+    async fn preview_only_timeout_pastes_raw_once_at_the_stop_bound() {
         let take = take(State::RecHold, false).await;
         take.emitter.on_capture_opened(TAKE, 7);
         let mut mirror = stop_preview("ok wyślij");
@@ -6561,7 +6563,8 @@ mod refusal_recovery_tests {
             None,
         )
         .await;
-        assert!((8_000..=8_050).contains(&wait.stop_final_wait_ms));
+        let bound_ms = STOP_FINAL_BOUND.as_millis();
+        assert!((bound_ms..=bound_ms + 50).contains(&wait.stop_final_wait_ms));
         assert!(wait.stop_final_timeout);
         assert_eq!(wait.snapshot.as_ref().unwrap().text, "ok wyślij");
         let calls = AtomicUsize::new(0);
@@ -6672,7 +6675,7 @@ mod refusal_recovery_tests {
     /// Amendment 1 step 4, R4: speech evidence cannot authorize an empty sink
     /// payload, and words discovered by the terminal tail cannot reopen stop.
     #[tokio::test(start_paused = true)]
-    async fn empty_after_eight_seconds_is_retained_without_a_late_paste() {
+    async fn empty_after_the_stop_bound_is_retained_without_a_late_paste() {
         let take = take(State::RecToggle, false).await;
         take.emitter.on_capture_opened(TAKE, 7);
         let late = stop_mutation(&mut take.ledger.lock().unwrap(), "late words");
@@ -6687,7 +6690,8 @@ mod refusal_recovery_tests {
             None,
         )
         .await;
-        assert!((8_000..=8_050).contains(&wait.stop_final_wait_ms));
+        let bound_ms = STOP_FINAL_BOUND.as_millis();
+        assert!((bound_ms..=bound_ms + 50).contains(&wait.stop_final_wait_ms));
         let settled = take
             .controller
             .settle_frozen_canvas_at_stop(
@@ -6781,7 +6785,7 @@ mod refusal_recovery_tests {
     #[tokio::test(start_paused = true)]
     async fn live_final_bound_starts_at_stop_not_at_the_wait() {
         let stopped_at = tokio::time::Instant::now();
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        tokio::time::sleep(STOP_FINAL_BOUND / 2).await;
         let wait = await_live_finals_for_delivery(
             std::future::pending(),
             || None,
@@ -6791,7 +6795,7 @@ mod refusal_recovery_tests {
             None,
         )
         .await;
-        assert_eq!(wait.stop_final_wait_ms, 8_000);
+        assert_eq!(wait.stop_final_wait_ms, STOP_FINAL_BOUND.as_millis());
         assert!(wait.stop_final_timeout);
         assert!(!wait.live_finals_admitted);
     }
