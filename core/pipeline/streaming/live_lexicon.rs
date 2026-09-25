@@ -320,10 +320,11 @@ mod tests {
             for (index, line) in content.lines().enumerate() {
                 let row: TermRow = serde_json::from_str(line)
                     .unwrap_or_else(|error| panic!("{name} row {}: {error}", index + 1));
-                let variants = row
-                    .mispronunciations
-                    .iter()
-                    .chain(row.extras.iter().flat_map(|extras| &extras.mispronunciations));
+                let variants = row.mispronunciations.iter().chain(
+                    row.extras
+                        .iter()
+                        .flat_map(|extras| &extras.mispronunciations),
+                );
                 assert!(
                     variants.into_iter().all(|variant| variant != &row.term),
                     "{name} row {}: {}",

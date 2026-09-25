@@ -3,8 +3,8 @@
 //! The reducer document stays clean. This module observes engine metadata and
 //! renders the configured tag only when the controller has selected a sink.
 
-use crate::config::Config;
 use super::context_bucket::strip_markers_for_delivery;
+use crate::config::Config;
 use codescribe_core::pipeline::contracts::{EngineEvent, EventSink, TranscriptionConfidenceFlag};
 use std::sync::Mutex;
 
