@@ -17574,12 +17574,26 @@ mod tc2_window_contract_tests {
     /// synthetic; both live-window and stop recovery must make the same choice.
     #[test]
     fn midpoint_in_closure_overlap_routes_to_exactly_one_owner() {
-        // With both owners labelled and their requests drained, the monotonic
-        // horizon cannot seal newer while leaving older open: closing at
-        // 743_424 also closes older at 510_464. Do not manufacture (false, true).
-        for (older_sealed, newer_sealed) in [(false, false), (true, false), (true, true)] {
+        // The per-owner still_possible skip keeps older open when its outstanding
+        // recovery window ends before newer starts, even at newer's horizon.
+        for (older_sealed, newer_sealed) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
             for stop_recovery in [false, true] {
                 let mut f = fixture();
+                // fixture() submits recovery via reconcile_silero_ledger ->
+                // enqueue_layer1_piece -> queue_layer1_flush (split windows).
+                let held_recovery = if !older_sealed && newer_sealed {
+                    let request = f.requests.try_recv().unwrap();
+                    let range = &request.provider_request.identity.range;
+                    assert_eq!((range.sample_start, range.sample_end), (0, 419_328));
+                    assert!(range.sample_start < f.occurrence.sample_end);
+                    assert!(range.sample_end > f.occurrence.sample_start);
+                    assert!(range.sample_end <= 508_416);
+                    Some(request)
+                } else {
+                    None
+                };
                 assert!(reconcile_silero_ledger(
                     &mut f.state,
                     &f.events,
@@ -17597,8 +17611,8 @@ mod tc2_window_contract_tests {
                     &[apple_word("newer", 652_416, 659_136)],
                 ));
                 f.state.flush_layer1_coalesce(&f.events);
-                // Complete real submitted windows before closing their horizon;
-                // returning a frontier alone leaves the fixture's recovery debt.
+                // Complete every other window; their labels settle recovery debt
+                // while the retained request still blocks only older's horizon.
                 while let Ok(request) = f.requests.try_recv() {
                     let range = &request.provider_request.identity.range;
                     let segments = [
@@ -17618,17 +17632,26 @@ mod tc2_window_contract_tests {
                         15.5,
                     );
                 }
-                assert!(f.state.refinement_submitted.is_empty());
+                assert_eq!(
+                    f.state.refinement_submitted.len(),
+                    usize::from(held_recovery.is_some())
+                );
                 assert!(f.state.refinement_pending.is_empty());
                 assert!(f.state.layer1_coalesce.is_empty());
                 // (false, false): leave both horizons open.
+                // (false, true): the retained recovery window skips only older.
                 // (true, false): close only older's end.
-                // (true, true): close newer's end, which also closes older.
+                // (true, true): drained windows let both owners close.
                 if newer_sealed {
                     f.state.close_admission_horizon(&f.events, newer.sample_end);
                 } else if older_sealed {
                     f.state
                         .close_admission_horizon(&f.events, f.occurrence.sample_end);
+                }
+                for (owner, sealed) in [(&f.occurrence, older_sealed), (&newer, newer_sealed)] {
+                    let ledger = f.state.acoustic_ledger.lock().unwrap();
+                    assert_eq!(ledger.is_sealed(owner), sealed);
+                    assert!(!ledger.text_recovery_pending(owner));
                 }
 
                 // A subsequent physical closure launches a fresh window whose
@@ -17655,6 +17678,21 @@ mod tc2_window_contract_tests {
                 );
                 assert!(request.provider_request.identity.range.sample_start <= 508_800);
                 assert!(request.provider_request.identity.range.sample_end >= 509_800);
+                if let Some(held) = held_recovery {
+                    // Complete the retained job before routing. The fresh later
+                    // window now overlaps older, so still_possible keeps it open.
+                    f.state.complete_whisper_window(
+                        &f.events,
+                        completion(&held, vec![pin("older", 246_464, 262_784)]),
+                        15.5,
+                    );
+                    assert_eq!(f.state.refinement_submitted.len(), 1);
+                    assert!(f.state.refinement_submitted.contains_key(&inflight_key(
+                        request.submission_sequence,
+                        &request.provider_request.identity,
+                    )));
+                    assert!(f.state.refinement_pending.is_empty());
+                }
                 for (owner, sealed) in [(&f.occurrence, older_sealed), (&newer, newer_sealed)] {
                     let ledger = f.state.acoustic_ledger.lock().unwrap();
                     assert!(!ledger.text_recovery_pending(owner));
