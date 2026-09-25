@@ -376,7 +376,8 @@ final class OverlayIntentRailTests: XCTestCase {
     XCTAssertTrue(menu.contains("role: .destructive"))
     XCTAssertTrue(menu.contains("overlay-intent-recover-superseded"))
     XCTAssertTrue(menu.contains("overlay-intent-discard-superseded"))
-    XCTAssertTrue(menu.contains("Label(\"Previous take\", systemImage: OverlayControlSymbols.previousTake)"))
+    XCTAssertTrue(
+      menu.contains("Label(\"Previous take\", systemImage: OverlayControlSymbols.previousTake)"))
     XCTAssertTrue(source.contains("intent != .recoverSuperseded && intent != .discardSuperseded"))
     XCTAssertTrue(source.contains("Restore an earlier revision of this transcript"))
     let recovered = stateWithOneRetainedEdit()
@@ -428,7 +429,8 @@ final class OverlayIntentRailTests: XCTestCase {
   func testOverlayActionSymbolsHaveOneMeaningAcrossRailHeaderAndPlacement() {
     // All cases deliberately over-approximate co-visibility, so adding an
     // intent cannot silently evade the census. Close is a custom brand dot.
-    let symbols = OverlayIntent.allCases.filter { $0 != .close }.map(\.systemImage)
+    let symbols =
+      OverlayIntent.allCases.filter { $0 != .close }.map(\.systemImage)
       + [
         OverlayControlSymbols.history, OverlayControlSymbols.previousTake,
         OverlayControlSymbols.actions, OverlayControlSymbols.autoPasteOff,

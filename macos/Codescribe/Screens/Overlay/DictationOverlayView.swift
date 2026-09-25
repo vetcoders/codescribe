@@ -131,7 +131,8 @@ struct DictationOverlayView: View {
             .padding(.horizontal, 10)
             .frame(
               width: OverlayResizeChrome.actionsWidth(narrow: narrowActions),
-              height: OverlayResizeChrome.actionsHeight)
+              height: OverlayResizeChrome.actionsHeight
+            )
             .background(.regularMaterial, in: Capsule())
             .overlay { Capsule().strokeBorder(palette.border.color, lineWidth: 1) }
             .contentShape(Capsule())
@@ -159,7 +160,9 @@ struct DictationOverlayView: View {
         // SwiftUI hit testing, then tracks .bottom with the edge resize cursor.
         Capsule()
           .fill(palette.primaryText.color.opacity(0.3))
-          .frame(width: OverlayResizeChrome.gripSize.width, height: OverlayResizeChrome.gripSize.height)
+          .frame(
+            width: OverlayResizeChrome.gripSize.width, height: OverlayResizeChrome.gripSize.height
+          )
           .padding(.bottom, OverlayResizeChrome.gripBottomInset)
           .allowsHitTesting(false)
           .accessibilityHidden(true)
@@ -177,7 +180,8 @@ struct DictationOverlayView: View {
         .opacity(OverlayResizeChrome.sideIndicatorOpacity(pointerInside: pointerInsideOverlay))
         .animation(
           OverlayResizeChrome.sideIndicatorAnimation(reduceMotion: reduceMotion),
-          value: pointerInsideOverlay)
+          value: pointerInsideOverlay
+        )
         .transaction { transaction in
           if reduceMotion {
             transaction.animation = nil
@@ -190,7 +194,9 @@ struct DictationOverlayView: View {
     }
     .onGeometryChange(for: Bool.self) { geometry in
       geometry.size.width <= 360
-    } action: { narrowActions = $0 }
+    } action: {
+      narrowActions = $0
+    }
     .onChange(of: state.isCollapsed) { _, collapsed in
       if collapsed { actions.reset() }
     }
@@ -332,8 +338,9 @@ struct DictationOverlayView: View {
       HStack(spacing: 4) {
         Image(
           systemName: state.autoPasteEnabled
-            ? OverlayControlSymbols.autoPasteOn : OverlayControlSymbols.autoPasteOff)
-          .font(.system(size: 10, weight: .semibold))
+            ? OverlayControlSymbols.autoPasteOn : OverlayControlSymbols.autoPasteOff
+        )
+        .font(.system(size: 10, weight: .semibold))
         Circle()
           .fill(state.autoPasteEnabled ? CSColor.oliveLight : CSColor.textFaint)
           .frame(width: 5, height: 5)

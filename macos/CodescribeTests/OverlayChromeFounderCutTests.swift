@@ -266,7 +266,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
 
   func testResizeChromeUsesTheGeometryContractsWithoutAddingSwiftUIHitTargets() throws {
     let source = try overlaySource()
-    let chrome = try section(of: source, from: "private func canvasStack", to: "private var actionsVisible")
+    let chrome = try section(
+      of: source, from: "private func canvasStack", to: "private var actionsVisible")
     XCTAssertTrue(chrome.contains("width: OverlayResizeChrome.actionsWidth(narrow: narrowActions)"))
     XCTAssertTrue(chrome.contains("height: OverlayResizeChrome.actionsHeight"))
     XCTAssertTrue(chrome.contains(".padding(.bottom, OverlayResizeChrome.actionsBottomInset)"))

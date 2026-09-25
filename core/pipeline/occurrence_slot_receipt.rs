@@ -463,7 +463,10 @@ mod tests {
         let evidence = &receipt.slots[1].survived[0];
         assert_eq!(
             evidence.reasons,
-            ["midpoint_in_whisper_gap", "partial_overlap_midpoint_outside"]
+            [
+                "midpoint_in_whisper_gap",
+                "partial_overlap_midpoint_outside"
+            ]
         );
         assert_eq!(evidence.whisper_observation.request, 2);
         assert_eq!(evidence.heard_sample_start, 4_800);
@@ -525,8 +528,22 @@ mod tests {
     fn different_whisper_windows_emit_each_differently_spelled_overlap_once() {
         let owner = occurrence();
         let mut slots = vec![
-            slot(&owner, ObservationProducer::Whisper, 1, 4_800, 14_400, "Provider"),
-            slot(&owner, ObservationProducer::Whisper, 2, 9_600, 19_200, "providers"),
+            slot(
+                &owner,
+                ObservationProducer::Whisper,
+                1,
+                4_800,
+                14_400,
+                "Provider",
+            ),
+            slot(
+                &owner,
+                ObservationProducer::Whisper,
+                2,
+                9_600,
+                19_200,
+                "providers",
+            ),
         ];
         let receipt = build_receipt(&owner, &slots, 48_000);
         let pairs = &receipt.whisper_cross_window_overlap;
@@ -572,8 +589,9 @@ mod tests {
         let mut disabled = mixed_ledger(&owner);
         let mut enabled = disabled.clone();
         disabled.seal(&owner).unwrap();
-        let sink = SlotReceiptSink::open_in(dir.path(), &owner.session, owner.capture_epoch, 48_000)
-            .unwrap();
+        let sink =
+            SlotReceiptSink::open_in(dir.path(), &owner.session, owner.capture_epoch, 48_000)
+                .unwrap();
         let path = sidecar_path(dir.path(), &owner.session).unwrap();
         enabled.seal(&owner).unwrap();
         enabled.seal(&owner).unwrap();
