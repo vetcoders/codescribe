@@ -927,7 +927,7 @@ impl TranscriptReducer {
         session_id: &str,
         source_revision: u64,
     ) -> Result<Vec<OccurrenceIdentity>, UserRevisionRefusal> {
-        if !self.terminal {
+        if !(self.terminal || self.terminal_sealed) {
             return Err(UserRevisionRefusal::NotTerminal);
         }
         self.authenticated_presentation_occurrences(session_id, source_revision)
@@ -1108,7 +1108,7 @@ impl TranscriptReducer {
     /// against, so the one formatter corridor stays
     /// [`Self::terminal_revision_source`] → provider → `apply_formatter_revision`.
     pub fn terminal_formatter_request(&self) -> Option<TerminalFormatterRequest> {
-        if !self.terminal {
+        if !(self.terminal || self.terminal_sealed) {
             return None;
         }
         let session_id = self.document_by_occurrence.keys().next()?.session.clone();
@@ -1147,8 +1147,8 @@ impl TranscriptReducer {
     }
 
     /// Mark terminal review lifecycle without text or a new reducer revision.
-    /// A seal verdict is independent of this lifecycle end. Cardinality has no
-    /// finality meaning; a user revision may follow a refused terminal seal.
+    /// A seal verdict is independent of this lifecycle end. A terminal seal
+    /// opens edit CAS before this event; a refused seal opens it here instead.
     fn mark_terminal_lifecycle(&mut self) {
         self.terminal = true;
         self.unanchored_evidence.clear();
@@ -3467,6 +3467,25 @@ mod tests {
         assert!(rows.contains("\"phase\":\"coverage_refused\""));
         assert!(rows.contains("\"reducer_action\":\"apply_manual_edit\""));
         assert!(rows.contains("\"seal_coverage\""));
+        let ended_at = rows
+            .lines()
+            .position(|row| row.contains("\"reducer_action\":\"session_ended\""))
+            .expect("refused lifecycle row is published");
+        let first_edit_after_end = rows
+            .lines()
+            .skip(ended_at + 1)
+            .find(|row| row.contains("\"reducer_action\":\"apply_manual_edit\""))
+            .expect("formatter is the first edit after session_ended");
+        assert!(first_edit_after_end.contains("\"phase\":\"coverage_refused\""));
+        assert!(first_edit_after_end.contains(&format!(
+            "\"reducer_revision\":{}",
+            formatted.revision
+        )));
+        assert!(rows.lines().any(|row| {
+            row.contains(&format!("\"reducer_revision\":{}", formatted.revision))
+                && row.contains("\"phase\":\"coverage_refused\"")
+                && row.contains("\"reducer_action\":\"apply_manual_edit\"")
+        }), "formatter revision keeps the refused phase");
         for row in rows
             .lines()
             .filter(|row| row.contains("\"reducer_action\":\"apply_manual_edit\""))
@@ -4975,9 +4994,9 @@ mod tests {
     }
 
     /// Recovery falsifier: a real terminal is not identified by cardinality.
-    /// UNRUN under W2; receipt scope cannot end lifecycle or open edit CAS.
+    /// UNRUN under W1; a whole-session seal opens edit CAS before lifecycle end.
     #[tokio::test]
-    async fn a_single_occurrence_seal_does_not_open_cas_before_lifecycle_end() {
+    async fn a_single_occurrence_terminal_opens_the_current_shaped_cas_source() {
         let mut take = live_take("single-terminal");
         let occurrence = OccurrenceIdentity::new("single-terminal", 19, 0, 16_000);
         take.admit(&occurrence, 1, "jedno zdanie");
@@ -5004,8 +5023,8 @@ mod tests {
         assert_eq!(
             take.emitter
                 .terminal_revision_source("single-terminal", revision),
-            Err(UserRevisionRefusal::NotTerminal),
-            "a terminal seal alone cannot end the lifecycle"
+            Ok("Jedno zdanie.".to_string()),
+            "genuine terminal CAS opens before lifecycle end"
         );
         let callbacks = take.projected.lock().unwrap().len();
         take.emitter
@@ -5035,6 +5054,87 @@ mod tests {
             Ok("Jedno zdanie.".to_string()),
             "one occurrence must permit the same authenticated terminal CAS as two"
         );
+    }
+
+    #[tokio::test]
+    async fn sealed_take_formats_and_restores_before_and_after_lifecycle_end() {
+        let mut take = live_take("sealed-revisions");
+        let occurrence = OccurrenceIdentity::new("sealed-revisions", 19, 0, 16_000);
+        take.admit(&occurrence, 1, "jedno zdanie");
+        take.seal(&occurrence);
+        let seal = take
+            .ledger
+            .lock()
+            .unwrap()
+            .seal_terminal("sealed-revisions", 19)
+            .unwrap();
+        assert!(!seal.is_occurrence_seal());
+        take.emitter.on_event(&EngineEvent::LedgerSeal { receipt: seal });
+
+        let source = take.emitter.terminal_formatter_request().unwrap();
+        let original = source.source_text.clone();
+        let before = take
+            .emitter
+            .apply_formatter_revision(
+                source.session_id.clone(),
+                source.source_revision,
+                AiFormatResult {
+                    text: "Format before end".to_string(),
+                    reasoning_text: None,
+                    status: AiFormatStatus::Applied,
+                },
+            )
+            .expect("a sealed take admits Format before lifecycle end");
+        assert!(before.provenance_receipt.starts_with("formatter-"));
+        let restored = take
+            .emitter
+            .apply_user_revision(UserRevisionIntent {
+                session_id: source.session_id.clone(),
+                source_revision: before.revision,
+                rendered_text: original.clone(),
+                provenance: DocumentRevisionProvenance::UserEdit,
+            })
+            .expect("a sealed take admits Restore before lifecycle end");
+        assert_eq!(restored.rendered_text, original);
+        assert!(restored.provenance_receipt.starts_with("user-edit-"));
+
+        take.emitter.on_event(&EngineEvent::SessionFinalised {
+            session_id: source.session_id.clone(),
+            layer_summary: LayerSummary::default(),
+        });
+        let ended = take
+            .bus
+            .publish_ended(
+                TranscriptSessionEndReason::Completed,
+                true,
+                TranscriptDelivery::Retained,
+            )
+            .unwrap();
+        let after = take
+            .emitter
+            .apply_formatter_revision(
+                source.session_id.clone(),
+                ended.reducer_revision,
+                AiFormatResult {
+                    text: "Format after end".to_string(),
+                    reasoning_text: None,
+                    status: AiFormatStatus::Applied,
+                },
+            )
+            .expect("a sealed take admits Format after lifecycle end");
+        assert!(after.provenance_receipt.starts_with("formatter-"));
+        let restored = take
+            .emitter
+            .apply_user_revision(UserRevisionIntent {
+                session_id: source.session_id,
+                source_revision: after.revision,
+                rendered_text: original.clone(),
+                provenance: DocumentRevisionProvenance::UserEdit,
+            })
+            .expect("a sealed take admits Restore after lifecycle end");
+        assert_eq!(restored.rendered_text, original);
+        assert!(restored.provenance_receipt.starts_with("user-edit-"));
+        take.emitter.finish().await;
     }
 
     #[tokio::test]

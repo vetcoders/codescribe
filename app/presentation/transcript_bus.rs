@@ -879,13 +879,18 @@ impl TranscriptBus {
             .writer
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        // A document rewrite does not reverse the acoustic verdict of a
-        // refused take. Keep it visible on every subsequent Bus row.
+        // The authenticated reducer revision carries the ledger's coverage
+        // verdict even before session_ended. A document rewrite cannot clear
+        // that verdict; the ended row also preserves it for later revisions.
         let phase = if is_user_revision
-            && writer
-                .last_projection
+            && (revision
+                .seal_coverage
                 .as_ref()
-                .is_some_and(|event| event.phase == TranscriptProjectionPhase::CoverageRefused)
+                .is_some_and(|coverage| !coverage.status.is_complete())
+                || writer
+                    .last_projection
+                    .as_ref()
+                    .is_some_and(|event| event.phase == TranscriptProjectionPhase::CoverageRefused))
         {
             TranscriptProjectionPhase::CoverageRefused
         } else {
