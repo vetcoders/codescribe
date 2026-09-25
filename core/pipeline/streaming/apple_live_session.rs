@@ -4419,6 +4419,54 @@ fn exclusive_closed_spans(
     spans
 }
 
+/// Accounting only: the ledger remains the authority for every slot decision.
+#[derive(Default)]
+struct LateAppleAdmission {
+    admitted_into: BTreeMap<OccurrenceIdentity, usize>,
+    dropped_by_slot_rules: usize,
+    unmatched: usize,
+    kept_unanchored: usize,
+}
+
+fn retain_apple_words_at_exit(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    utterance_id: u64,
+    words: &[FusionWord],
+    current_slice: &[TranscriptSegment],
+    exit: &str,
+) {
+    let outcome = admit_late_apple_words(state, ev_tx, utterance_id, words, current_slice);
+    let admitted_into = outcome
+        .admitted_into
+        .into_iter()
+        .map(|(occurrence, count)| {
+            serde_json::json!({
+                "occurrence": {
+                    "session": occurrence.session,
+                    "capture_epoch": occurrence.capture_epoch,
+                    "sample_start": occurrence.sample_start,
+                    "sample_end": occurrence.sample_end,
+                },
+                "count": count,
+            })
+        })
+        .collect::<Vec<_>>();
+    let _ = ev_tx.send(EngineEvent::Warning {
+        code: "apple_words_retained".into(),
+        message: serde_json::json!({
+            "exit": exit,
+            "utterance_id": utterance_id,
+            "words": words.len(),
+            "admitted_into": admitted_into,
+            "dropped_by_slot_rules": outcome.dropped_by_slot_rules,
+            "unmatched": outcome.unmatched,
+            "kept_unanchored": outcome.kept_unanchored,
+        })
+        .to_string(),
+    });
+}
+
 /// Production reconciliation seam; tests supply physical edges without a model.
 /// Late Apple labels use the same PCM owners and slot store as live Whisper.
 /// Reconciled means identity has been assigned; it never means words may vanish.
@@ -4428,7 +4476,8 @@ fn admit_late_apple_words(
     request: u64,
     words: &[FusionWord],
     current_slice: &[TranscriptSegment],
-) {
+) -> LateAppleAdmission {
+    let mut outcome = LateAppleAdmission::default();
     let owners = state.word_owners();
     let owner_ranges = owners
         .iter()
@@ -4452,12 +4501,17 @@ fn admit_late_apple_words(
                 .entry(owner_ranges[index].clone())
                 .or_default()
                 .push((word.sample_start, word.sample_end, word.text.clone())),
-            _ => state.unmatched_silero_words.push(word.clone()),
+            _ => {
+                state.unmatched_silero_words.push(word.clone());
+                outcome.unmatched += 1;
+            }
         }
     }
     for (owner, mut words) in by_owner {
         words.sort_by_key(|(start, end, _)| (*start, *end));
+        let before_dedup = words.len();
         words.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1 && a.2 == b.2);
+        outcome.dropped_by_slot_rules += before_dedup - words.len();
         let mut ledger = state
             .acoustic_ledger
             .lock()
@@ -4485,6 +4539,7 @@ fn admit_late_apple_words(
                         && segment.text == text
                 });
             if !exact_current {
+                outcome.kept_unanchored += 1;
                 let receipt =
                     ledger.keep_visible_unanchored(&observation, &text, NoAuthorityReason::NoRange);
                 let _ = ev_tx.send(EngineEvent::LedgerMutation {
@@ -4505,6 +4560,7 @@ fn admit_late_apple_words(
                 })
             });
             if consumed_span {
+                outcome.dropped_by_slot_rules += 1;
                 // Rewording consumed PCM is not new speech, regardless of the
                 // slot's producer or whether its owner has already sealed.
                 let receipt = if ledger.matching_word_slot(&owner, &pin, &text, false) {
@@ -4527,6 +4583,20 @@ fn admit_late_apple_words(
         let observation =
             ledger.next_word_observation(LedgerObservationProducer::Apple, request, &owner);
         let receipt = ledger.admit_word_slots(&observation, &novel);
+        let admitted = ledger
+            .slots_of(&owner)
+            .unwrap_or(&[])
+            .iter()
+            .filter(|slot| slot.observation == observation)
+            .count();
+        if admitted > 0 {
+            outcome.admitted_into.insert(owner.clone(), admitted);
+        }
+        if matches!(&receipt, MutationReceipt::KeepVisibleUnanchored { .. }) {
+            outcome.kept_unanchored += novel.len();
+        } else {
+            outcome.dropped_by_slot_rules += novel.len().saturating_sub(admitted);
+        }
         let label = match &receipt {
             MutationReceipt::KeepVisibleUnanchored { label, reason, .. } => {
                 let _ = ev_tx.send(EngineEvent::Warning {
@@ -4550,6 +4620,7 @@ fn admit_late_apple_words(
             state.refresh_pending_label(*id, &owner);
         }
     }
+    outcome
 }
 
 fn reconcile_silero_ledger(
@@ -4733,6 +4804,9 @@ fn reconcile_silero_ledger(
                             silero.range.sample_start, silero.range.sample_end
                         ),
                     });
+                    retain_apple_words_at_exit(
+                        state, ev_tx, utterance_id, &words, disjoint, "overlap_refused",
+                    );
                     state.reconciled_silero.insert(utterance_id);
                     continue;
                 }
@@ -4784,6 +4858,11 @@ fn reconcile_silero_ledger(
                 RefinementFailure::QualificationRefused
             };
             state.fail_refinement(ev_tx, utterance_id, &occurrence, reason);
+            let exit = match reason {
+                RefinementFailure::PcmUnavailable => "qualification_failed_pcm_unavailable",
+                _ => "qualification_failed_refused",
+            };
+            retain_apple_words_at_exit(state, ev_tx, utterance_id, &words, disjoint, exit);
             state.reconciled_silero.insert(utterance_id);
             continue;
         }
@@ -13625,6 +13704,333 @@ mod rc_w2_test_rehab {
         }).expect("closing mirror carries the result");
         assert_eq!(closed.outcomes, BTreeMap::from([(ApplePhraseOutcome::Admitted, 1)]));
         assert!(state.published_unadmitted_words.is_empty());
+    }
+
+    fn retention_receipts(events: &[EngineEvent]) -> Vec<serde_json::Value> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                EngineEvent::Warning { code, message } if code == "apple_words_retained" => {
+                    Some(serde_json::from_str(message).expect("retention receipt JSON"))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn retention_words(segments: &[TranscriptSegment]) -> Vec<FusionWord> {
+        segments
+            .iter()
+            .map(|word| FusionWord {
+                text: word.text.clone(),
+                sample_start: sample(word.start_ts),
+                sample_end: sample(word.end_ts),
+            })
+            .collect()
+    }
+
+    // Exercise the exit's retention seam directly: the full reconcile path
+    // repartitions these words before a swallowed utterance reaches its exit.
+    #[test]
+    fn overlap_retention_admits_two_words_once_and_counts_consumed_replay() {
+        let mut state = state("retain-overlap", 2.0);
+        let owner = qualify(&mut state, 0.0, 2.0);
+        let current = vec![segment("alpha", 0.25, 0.5), segment("beta", 1.0, 1.25)];
+        let words = retention_words(&current);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        for replay in [false, true] {
+            retain_apple_words_at_exit(&mut state, &tx, 2, &words, &current, "overlap_refused");
+            let receipts = retention_receipts(&drain(&mut rx));
+            assert_eq!(receipts.len(), 1);
+            let receipt = &receipts[0];
+            assert_eq!(receipt["exit"], "overlap_refused");
+            assert_eq!(receipt["utterance_id"], 2);
+            assert_eq!(receipt["words"], 2);
+            assert_eq!(receipt["unmatched"], 0);
+            assert_eq!(receipt["kept_unanchored"], 0);
+            assert_eq!(receipt["dropped_by_slot_rules"], if replay { 2 } else { 0 });
+            if replay {
+                assert_eq!(receipt["admitted_into"], serde_json::json!([]));
+            } else {
+                assert_eq!(receipt["admitted_into"], serde_json::json!([
+                    { "occurrence": {
+                        "session": owner.session,
+                        "capture_epoch": owner.capture_epoch,
+                        "sample_start": owner.sample_start,
+                        "sample_end": owner.sample_end,
+                    }, "count": 2 }
+                ]));
+            }
+            assert_eq!(document(&state), "alpha beta");
+            assert_eq!(state.acoustic_ledger.lock().unwrap().slots_of(&owner).unwrap().len(), 2);
+        }
+    }
+
+    #[test]
+    fn swallowed_utterance_has_no_words_left_at_the_reconcile_exit() {
+        let mut state = physical_state("retain-swallowed", 2.0, &[]);
+        let mut physical = super::super::silero_fusion::UtteranceLedger::new();
+        for _ in 0..2 {
+            physical.open_or_extend(&state.session_id, state.capture_epoch, 0, sample(2.0));
+            physical.close_open(sample(2.0));
+        }
+        let owner = qualify(&mut state, 0.0, 2.0);
+        state.reconciled_silero.insert(1);
+        // Permit a blank closed range to reach the overlap exit, as it would
+        // with an armed or lost refiner. Apple-only skips the blank earlier.
+        state.refinement_lane_lost = true;
+        let current = vec![segment("alpha", 0.25, 0.5), segment("beta", 1.0, 1.25)];
+        state.pending_silero_words.insert(2, retention_words(&current));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        reconcile_silero_ledger(&mut state, &tx, &physical, &current);
+        assert_eq!(document(&state), "alpha beta");
+        assert_eq!(state.acoustic_ledger.lock().unwrap().slots_of(&owner).unwrap().len(), 2);
+        let receipts = retention_receipts(&drain(&mut rx));
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0]["exit"], "overlap_refused");
+        assert_eq!(receipts[0]["utterance_id"], 2);
+        assert_eq!(receipts[0]["words"], 0, "repartition precedes the exit");
+        assert!(state.reconciled_silero.contains(&2));
+    }
+
+    #[test]
+    fn retention_receipt_counts_the_ledger_overlap_rule_separately_from_slots() {
+        let mut state = state("retain-slot-rule", 2.0);
+        let owner = qualify(&mut state, 0.0, 2.0);
+        let whisper = LedgerObservationIdentity::new(
+            LedgerObservationProducer::Whisper, 1, 0, owner.clone(),
+        );
+        state.acoustic_ledger.lock().unwrap().admit_word_slots(
+            &whisper, &[(sample(0.25), sample(0.5), "heard".into())],
+        );
+        // Less than half overlap passes consumed-span, but any Whisper overlap
+        // is refused by the existing Apple slot rule.
+        let current = vec![segment("overlap", 0.45, 0.9), segment("novel", 1.0, 1.25)];
+        let words = retention_words(&current);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        retain_apple_words_at_exit(&mut state, &tx, 2, &words, &current, "overlap_refused");
+        let receipts = retention_receipts(&drain(&mut rx));
+        assert_eq!(receipts[0]["words"], 2);
+        assert_eq!(receipts[0]["admitted_into"][0]["count"], 1);
+        assert_eq!(receipts[0]["dropped_by_slot_rules"], 1);
+        assert_eq!(document(&state), "heard novel");
+    }
+
+    #[test]
+    fn retained_unmatched_words_enter_later_qualified_owner_once() {
+        let mut state = physical_state("retain-later-owner", 2.0, &[(0.0, 2.0)]);
+        let current = vec![segment("alpha", 0.25, 0.5), segment("beta", 1.0, 1.25)];
+        let words = retention_words(&current);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        retain_apple_words_at_exit(&mut state, &tx, 2, &words, &current, "overlap_refused");
+        let receipts = retention_receipts(&drain(&mut rx));
+        assert_eq!(receipts[0]["unmatched"], 2);
+        assert_eq!(receipts[0]["dropped_by_slot_rules"], 0);
+        assert_eq!(state.unmatched_silero_words.len(), 2);
+        let owner = qualify(&mut state, 0.0, 2.0);
+        state.reconciled_silero.insert(1);
+        let physical = state.fusion.as_ref().unwrap().ledger().clone();
+        // Current evidence authenticates slots; no fresh slice means unanchored
+        // evidence instead, which has its own acceptance test below.
+        for _ in 0..2 {
+            reconcile_silero_ledger(&mut state, &tx, &physical, &current);
+            assert!(state.unmatched_silero_words.is_empty());
+            assert_eq!(document(&state), "alpha beta");
+            assert_eq!(state.acoustic_ledger.lock().unwrap().slots_of(&owner).unwrap().len(), 2);
+        }
+        assert!(retention_receipts(&drain(&mut rx)).is_empty());
+    }
+
+    #[test]
+    fn qualification_exits_retain_words_without_retrying_qualification() {
+        for evicted in [false, true] {
+            let mut state = physical_state("retain-qualification", 2.0, &[(0.0, 1.0)]);
+            state.audio = super::super::live_audio_buffer::LiveAudioBuffer::new(RATE, 1.0);
+            if evicted {
+                state.audio.push(&vec![0.25; sample(2.0) as usize]);
+            } else {
+                // Actual silent PCM fails the configured energy qualification.
+                state.audio.push(&vec![0.0; sample(1.0) as usize]);
+            }
+            let current = vec![segment("Iwo", 0.25, 0.5)];
+            let physical = state.fusion.as_ref().unwrap().ledger().clone();
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            reconcile_silero_ledger(&mut state, &tx, &physical, &current);
+            let receipts = retention_receipts(&drain(&mut rx));
+            assert_eq!(receipts.len(), 1);
+            assert_eq!(receipts[0]["exit"], if evicted {
+                "qualification_failed_pcm_unavailable"
+            } else {
+                "qualification_failed_refused"
+            });
+            assert_eq!(receipts[0]["words"], 1);
+            assert_eq!(receipts[0]["unmatched"], 1);
+            assert!(state.reconciled_silero.contains(&1));
+            // Make qualification possible; the next tick must not attempt it.
+            state.audio = super::super::live_audio_buffer::LiveAudioBuffer::new(RATE, 2.0);
+            state.audio.push(&vec![0.25; sample(2.0) as usize]);
+            reconcile_silero_ledger(&mut state, &tx, &physical, &[]);
+            assert!(retention_receipts(&drain(&mut rx)).is_empty());
+            assert_eq!(state.unmatched_silero_words.len(), 1);
+            assert_eq!(state.unmatched_silero_words[0].text, "Iwo");
+            assert_eq!(state.acoustic_ledger.lock().unwrap().qualified_occurrences().count(), 0);
+        }
+    }
+
+    #[test]
+    fn whisper_omission_does_not_consume_retained_words() {
+        let mut state = physical_state("retain-omission", 2.0, &[(0.0, 2.0)]);
+        let current = vec![segment("alpha", 0.25, 0.5), segment("beta", 1.0, 1.25)];
+        let words = retention_words(&current);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        retain_apple_words_at_exit(&mut state, &tx, 2, &words, &current, "overlap_refused");
+        let owner = qualify(&mut state, 0.0, 2.0);
+        let whisper = LedgerObservationIdentity::new(
+            LedgerObservationProducer::Whisper, 9, 0, owner.clone(),
+        );
+        let receipt = state.acoustic_ledger.lock().unwrap().admit_word_slots(
+            &whisper, &[(sample(1.5), sample(1.75), "other".into())],
+        );
+        assert!(receipt.grants_mutation());
+        assert_eq!(state.unmatched_silero_words.len(), 2);
+        state.reconciled_silero.insert(1);
+        let physical = state.fusion.as_ref().unwrap().ledger().clone();
+        reconcile_silero_ledger(&mut state, &tx, &physical, &current);
+        assert_eq!(document(&state), "alpha beta other");
+        assert!(state.unmatched_silero_words.is_empty());
+        let whisper = state.acoustic_ledger.lock().unwrap().next_word_observation(
+            LedgerObservationProducer::Whisper, 10, &owner,
+        );
+        state.acoustic_ledger.lock().unwrap().admit_word_slots(
+            &whisper, &[(sample(1.5), sample(1.75), "revised".into())],
+        );
+        assert_eq!(document(&state), "alpha beta revised");
+        assert_eq!(retention_receipts(&drain(&mut rx)).len(), 1);
+    }
+
+    #[test]
+    fn retained_noncurrent_word_is_receipted_as_unanchored_not_a_slot_or_drop() {
+        let mut state = state("retain-unanchored", 2.0);
+        let owner = qualify(&mut state, 0.0, 2.0);
+        let words = retention_words(&[segment("Iwo", 0.25, 0.5)]);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        retain_apple_words_at_exit(&mut state, &tx, 2, &words, &[], "overlap_refused");
+        let events = drain(&mut rx);
+        let receipts = retention_receipts(&events);
+        assert_eq!(receipts[0]["admitted_into"], serde_json::json!([]));
+        assert_eq!(receipts[0]["kept_unanchored"], 1);
+        assert_eq!(receipts[0]["unmatched"], 0);
+        assert_eq!(receipts[0]["dropped_by_slot_rules"], 0);
+        assert!(events.iter().any(|event| matches!(event,
+            EngineEvent::LedgerMutation {
+                receipt: MutationReceipt::KeepVisibleUnanchored { label, .. }, ..
+            } if label == "Iwo"
+        )));
+        assert!(state.acoustic_ledger.lock().unwrap().slots_of(&owner).is_none());
+    }
+
+    #[test]
+    fn qualification_exit_keeps_five_disjoint_iwo_words_until_late_admission() {
+        let mut state = physical_state("retain-five-iwo", 5.0, &[(0.0, 5.0)]);
+        let calibration = state.energy_calibration.take();
+        let current = (0..5)
+            .map(|i| segment("Iwo", i as f32 + 0.25, i as f32 + 0.5))
+            .collect::<Vec<_>>();
+        let physical = state.fusion.as_ref().unwrap().ledger().clone();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        reconcile_silero_ledger(&mut state, &tx, &physical, &current);
+        let receipts = retention_receipts(&drain(&mut rx));
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0]["exit"], "qualification_failed_refused");
+        assert_eq!(receipts[0]["words"], 5);
+        assert_eq!(receipts[0]["unmatched"], 5);
+        assert_eq!(receipts[0]["dropped_by_slot_rules"], 0);
+        assert_eq!(state.unmatched_silero_words.len(), 5);
+        // A qualified owner arrives independently; the failed utterance itself
+        // remains reconciled and must use late admission on subsequent ticks.
+        state.energy_calibration = calibration;
+        let owner = qualify(&mut state, 0.0, 5.0);
+        for _ in 0..2 {
+            reconcile_silero_ledger(&mut state, &tx, &physical, &current);
+            assert_eq!(count_iwo(&document(&state)), 5);
+            assert!(state.unmatched_silero_words.is_empty());
+        }
+        assert!(retention_receipts(&drain(&mut rx)).is_empty());
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        let slots = ledger.slots_of(&owner).unwrap();
+        assert_eq!(slots.len(), 5);
+        assert!(slots.windows(2).all(|pair| pair[0].sample_end < pair[1].sample_start));
+    }
+
+    /// Existing cumulative-restatement fixture shapes: alpha/beta and five Iwo.
+    /// Replay must not fire a retention exit or alter a slot or seal.
+    #[test]
+    fn existing_cumulative_replay_fixtures_emit_no_retention_receipts() {
+        for labels in [vec!["alpha", "beta"], vec!["Iwo"; 5]] {
+            let ranges = (0..labels.len()).map(|i| (i as f32, (i + 1) as f32))
+                .collect::<Vec<_>>();
+            let mut state = physical_state("retain-replay", labels.len() as f32, &ranges);
+            let current = labels.iter().zip(&ranges).map(|(text, &(start, end))| {
+                segment(text, start, end)
+            }).collect::<Vec<_>>();
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            emit(&mut state, &tx, current.clone());
+            assert_eq!(document(&state), labels.join(" "));
+            let before = {
+                let ledger = state.acoustic_ledger.lock().unwrap();
+                ledger.occurrences().map(|owner| {
+                    (owner.clone(), ledger.slots_of(owner).unwrap().to_vec(), ledger.is_sealed(owner))
+                }).collect::<Vec<_>>()
+            };
+            emit(&mut state, &tx, current);
+            let after = {
+                let ledger = state.acoustic_ledger.lock().unwrap();
+                ledger.occurrences().map(|owner| {
+                    (owner.clone(), ledger.slots_of(owner).unwrap().to_vec(), ledger.is_sealed(owner))
+                }).collect::<Vec<_>>()
+            };
+            assert_eq!(before, after);
+            assert_eq!(document(&state), labels.join(" "));
+            assert!(retention_receipts(&drain(&mut rx)).is_empty());
+        }
+    }
+
+    #[test]
+    fn checked_in_five_iwo_replay_has_no_retention_exit() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures");
+        let manifest: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(root.join("p0_b_five_iwo_manifest.json")).unwrap(),
+        ).unwrap();
+        let pcm = hound::WavReader::open(root.join("p0_b_five_iwo.wav")).unwrap()
+            .samples::<i16>().map(|value| f32::from(value.unwrap()) / 32768.0)
+            .collect::<Vec<_>>();
+        let ranges = manifest["bursts"].as_array().unwrap().iter().map(|burst| {
+            (burst["sample_start"].as_u64().unwrap() as f32 / RATE as f32,
+             burst["sample_end"].as_u64().unwrap() as f32 / RATE as f32)
+        }).collect::<Vec<_>>();
+        let mut state = physical_state("retain-fixture", pcm.len() as f32 / RATE as f32, &ranges);
+        state.audio = super::super::live_audio_buffer::LiveAudioBuffer::new(RATE, 5.0);
+        state.audio.push(&pcm);
+        let current = ranges.iter().map(|&(start, end)| segment("Iwo", start, end))
+            .collect::<Vec<_>>();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        emit(&mut state, &tx, current.clone());
+        assert_eq!(document(&state), "Iwo Iwo Iwo Iwo Iwo");
+        let before = state.acoustic_ledger.lock().unwrap().occurrences().cloned().collect::<Vec<_>>();
+        let slots = {
+            let ledger = state.acoustic_ledger.lock().unwrap();
+            before.iter().map(|owner| (ledger.slots_of(owner).unwrap().to_vec(), ledger.is_sealed(owner)))
+                .collect::<Vec<_>>()
+        };
+        emit(&mut state, &tx, current);
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.rendered_text(), "Iwo Iwo Iwo Iwo Iwo");
+        assert_eq!(ledger.occurrences().cloned().collect::<Vec<_>>(), before);
+        for (owner, (prior_slots, sealed)) in before.iter().zip(slots) {
+            assert_eq!(ledger.slots_of(owner).unwrap(), prior_slots.as_slice());
+            assert_eq!(ledger.is_sealed(owner), sealed);
+        }
+        assert!(retention_receipts(&drain(&mut rx)).is_empty());
     }
 
     /// Boundary acceptance requirement: expected RED by source inspection.
