@@ -7083,7 +7083,7 @@ mod refusal_recovery_tests {
             .ledger
             .lock()
             .unwrap()
-            .admit_word_slots(&observation, &[(9_000, 10_000, "heard".into())]);
+            .admit_word_slots_for_tests(&observation, &[(9_000, 10_000, "heard".into())]);
         take.emitter.on_event(&EngineEvent::LedgerMutation {
             observation,
             label: String::new(),
@@ -7187,7 +7187,10 @@ mod refusal_recovery_tests {
         let target = module_path!()
             .strip_suffix("::refusal_recovery_tests")
             .unwrap();
-        assert_eq!(prefix, format!(" INFO {target}: stop canvas delivery settled "));
+        assert_eq!(
+            prefix,
+            format!(" INFO {target}: stop canvas delivery settled ")
+        );
         let elapsed = fields.split_whitespace().next().unwrap();
         assert!(elapsed.parse::<u128>().is_ok());
         let expected = format!(
