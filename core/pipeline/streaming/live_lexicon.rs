@@ -281,6 +281,60 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bundled_rules_preserve_ordinary_polish_words() {
+        let absent = Path::new("/nonexistent/codescribe-lexicon-test.jsonl");
+        for text in [
+            "następny krok",
+            "grupa",
+            "wraz z człowiekiem",
+            "ten PR",
+            "huk",
+            "kontrola",
+            "pull request",
+        ] {
+            assert_eq!(rewrite(text, absent).0, text, "input: {text}");
+        }
+        for (input, expected) in [("rast", "Rust"), ("postgres", "PostgreSQL")] {
+            assert_eq!(rewrite(input, absent).0, expected, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn every_bundled_row_parses_without_a_canonical_noop() {
+        let seed = std::str::from_utf8(SEED).unwrap();
+        for (index, line) in seed.lines().enumerate() {
+            let row: SeedRow = serde_json::from_str(line)
+                .unwrap_or_else(|error| panic!("seed row {}: {error}", index + 1));
+            assert!(
+                row.normalization
+                    .input_variants
+                    .iter()
+                    .all(|variant| variant != &row.canonical),
+                "seed row {}: {}",
+                index + 1,
+                row.canonical
+            );
+        }
+        for (name, source) in [("programming", PROGRAMMING), ("protected", PROTECTED)] {
+            let content = std::str::from_utf8(source).unwrap();
+            for (index, line) in content.lines().enumerate() {
+                let row: TermRow = serde_json::from_str(line)
+                    .unwrap_or_else(|error| panic!("{name} row {}: {error}", index + 1));
+                let variants = row
+                    .mispronunciations
+                    .iter()
+                    .chain(row.extras.iter().flat_map(|extras| &extras.mispronunciations));
+                assert!(
+                    variants.into_iter().all(|variant| variant != &row.term),
+                    "{name} row {}: {}",
+                    index + 1,
+                    row.term
+                );
+            }
+        }
+    }
+
+    #[test]
     fn rewrite_is_idempotent_and_conserves_surrounding_words() {
         let absent = Path::new("/nonexistent/codescribe-lexicon-test.jsonl");
         let input = "Przed accepromazyna, po schowek i zaznaczenie.";
