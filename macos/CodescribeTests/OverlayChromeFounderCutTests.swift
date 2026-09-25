@@ -264,6 +264,24 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(actions.isVisible(voiceOver: true))
   }
 
+  func testResizeChromeUsesTheGeometryContractsWithoutAddingSwiftUIHitTargets() throws {
+    let source = try overlaySource()
+    let chrome = try section(of: source, from: "private func canvasStack", to: "private var actionsVisible")
+    XCTAssertTrue(chrome.contains("width: OverlayResizeChrome.actionsWidth(narrow: narrowActions)"))
+    XCTAssertTrue(chrome.contains("height: OverlayResizeChrome.actionsHeight"))
+    XCTAssertTrue(chrome.contains(".padding(.bottom, OverlayResizeChrome.actionsBottomInset)"))
+    XCTAssertTrue(chrome.contains("width: OverlayResizeChrome.gripSize.width"))
+    XCTAssertTrue(chrome.contains("height: OverlayResizeChrome.gripSize.height"))
+    XCTAssertTrue(chrome.contains(".padding(.bottom, OverlayResizeChrome.gripBottomInset)"))
+    XCTAssertTrue(chrome.contains("sideIndicatorOpacity(pointerInside: pointerInsideOverlay)"))
+    XCTAssertTrue(chrome.contains("sideIndicatorAnimation(reduceMotion: reduceMotion)"))
+    XCTAssertTrue(chrome.contains("transaction.disablesAnimations = true"))
+    XCTAssertTrue(source.contains("pointerInsideOverlay = inside"))
+    XCTAssertEqual(chrome.components(separatedBy: ".allowsHitTesting(false)").count - 1, 2)
+    XCTAssertEqual(chrome.components(separatedBy: ".accessibilityHidden(true)").count - 1, 2)
+    XCTAssertFalse(chrome.contains("DragGesture"))
+  }
+
   private func findTranscript(in view: NSView) -> LiveTranscriptNativeTextView? {
     if let text = view as? LiveTranscriptNativeTextView { return text }
     return view.subviews.lazy.compactMap { self.findTranscript(in: $0) }.first

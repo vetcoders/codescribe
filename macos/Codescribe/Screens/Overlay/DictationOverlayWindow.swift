@@ -190,8 +190,8 @@ private final class OverlayContentContainer: NSView {
     hosting.frame = bounds
   }
 
-  /// AppKit's borderless resize strip is ~1–2 px. Claim the 12 pt band first
-  /// so SwiftUI / movable-background do not steal the edge.
+  /// AppKit's borderless resize strip is ~1–2 px. Claim the 16 pt band first,
+  /// including the bottom capsule and its margin, so SwiftUI cannot steal it.
   override func hitTest(_ point: NSPoint) -> NSView? {
     if window?.styleMask.contains(.resizable) == true,
       OverlayResizeHit.edge(at: point, in: bounds) != nil
