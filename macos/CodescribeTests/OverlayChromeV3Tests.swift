@@ -6,7 +6,7 @@ import XCTest
 
 @MainActor
 final class OverlayChromeV3Tests: XCTestCase {
-  func testCloseControlKeepsVisibleGlyphAndCloseNameAtBothTextScales() throws {
+  func testCloseControlShowsCrossOnlyOnHoverAndKeepsCloseNameAtBothTextScales() throws {
     let source = try String(
       contentsOf: URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
@@ -14,16 +14,16 @@ final class OverlayChromeV3Tests: XCTestCase {
         .appendingPathComponent("Codescribe/Screens/Overlay/DictationOverlayView.swift"),
       encoding: .utf8)
     let header = try XCTUnwrap(source.range(of: "private func justifiedHeader(compact: Bool)"))
-    let tail = String(source[header.lowerBound...].prefix(1_300))
+    let tail = String(source[header.lowerBound...])
     let button = try XCTUnwrap(tail.range(of: "Button {\n          state.relayIntent(.close)"))
     let wordmark = try XCTUnwrap(tail.range(of: "Text(\"codescribe\")"))
     XCTAssertLessThan(button.lowerBound, wordmark.lowerBound)
     let close = String(tail[button.lowerBound..<wordmark.lowerBound])
-    XCTAssertTrue(close.contains("ZStack {"))
-    XCTAssertTrue(
-      close.contains(
-        "ModeDot(color: palette.statusToken(for: state.mode).color, size: compact ? 9 : 12)"))
-    XCTAssertTrue(close.contains("Image(systemName: \"xmark\")"))
+    XCTAssertTrue(close.contains("ModeDot("))
+    XCTAssertTrue(close.contains("size: closeDotHovered ? (compact ? 7.5 : 10) : (compact ? 5.25 : 7)"))
+    XCTAssertTrue(close.contains("if closeDotHovered {"))
+    XCTAssertTrue(close.contains("OverlayCloseCross()"))
+    XCTAssertTrue(close.contains(".onHover { closeDotHovered = $0 }"))
     XCTAssertFalse(close.contains(".frame("), "A frame would move the dot")
     XCTAssertFalse(tail.contains("Text(\"×\")"))
     XCTAssertTrue(tail.contains(".accessibilityLabel(OverlayIntent.close.accessibilityLabel)"))

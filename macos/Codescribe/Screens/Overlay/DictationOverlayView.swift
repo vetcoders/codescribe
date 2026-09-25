@@ -20,6 +20,7 @@ struct DictationOverlayView: View {
   @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
   @AppStorage(DictationOverlayGate.labModeDefaultsKey) private var labMode = false
   @State private var pointerInside = false
+  @State private var closeDotHovered = false
   @State private var actionsPinned = false
   @State private var actionsFocused = false
   @Bindable var state: OverlayState
@@ -196,18 +197,24 @@ struct DictationOverlayView: View {
         Button {
           state.relayIntent(.close)
         } label: {
-          ZStack {
-            ModeDot(color: palette.statusToken(for: state.mode).color, size: compact ? 9 : 12)
-            Image(systemName: "xmark")
-              .font(.system(size: compact ? 5 : 7, weight: .semibold))
-              .foregroundStyle(palette.desktopBackground.color)
-              .accessibilityHidden(true)
+          ModeDot(
+            color: palette.statusToken(for: state.mode).color,
+            size: closeDotHovered ? (compact ? 7.5 : 10) : (compact ? 5.25 : 7)
+          )
+          .overlay {
+            if closeDotHovered {
+              OverlayCloseCross()
+                .stroke(palette.desktopBackground.color, style: StrokeStyle(lineWidth: 1))
+                .accessibilityHidden(true)
+            }
           }
           // 24 pt hit target without moving the dot: the shape reaches past the
           // circle, the layout keeps the pre-b83e95538 position (Founder, 25 IX).
-          .contentShape(Circle().inset(by: compact ? -7.5 : -6))
+          .contentShape(Circle().inset(by: compact ? -9.375 : -8.5))
         }
         .buttonStyle(.plain)
+        .onHover { closeDotHovered = $0 }
+        .animation(.easeOut(duration: 0.12), value: closeDotHovered)
         // Never the panel's initial key view: the transcript canvas keeps the
         // preselection, and Space/Return cannot close the overlay by accident.
         .focusable(false)
@@ -597,6 +604,18 @@ private struct OverlayHeaderChrome: ViewModifier {
         in: RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
       )
     }
+  }
+}
+
+private struct OverlayCloseCross: Shape {
+  func path(in rect: CGRect) -> Path {
+    let inset = min(rect.width, rect.height) * 0.28
+    var path = Path()
+    path.move(to: CGPoint(x: rect.minX + inset, y: rect.minY + inset))
+    path.addLine(to: CGPoint(x: rect.maxX - inset, y: rect.maxY - inset))
+    path.move(to: CGPoint(x: rect.maxX - inset, y: rect.minY + inset))
+    path.addLine(to: CGPoint(x: rect.minX + inset, y: rect.maxY - inset))
+    return path
   }
 }
 

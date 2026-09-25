@@ -41,6 +41,14 @@ private final class OverlayStateTestEngine: DictationEngine {
   )
   var persistAutoPasteWrites = true
   var autoPasteWrites: [Bool] = []
+  var pinEnabled = false
+  var pinWrites: [Bool] = []
+  func overlayKeepVisibleBetweenTakes() -> Bool { pinEnabled }
+  func setOverlayKeepVisibleBetweenTakes(_ enabled: Bool) -> Bool {
+    pinEnabled = enabled
+    pinWrites.append(enabled)
+    return true
+  }
   var persistFormatLevelWrites = true
   var formatLevelWrites: [FormattingPolicyOption] = []
   var policyReadCount = 0
@@ -1118,6 +1126,45 @@ final class OverlayStateTests: XCTestCase {
 
   func testAutoHideDelayIsFiveSeconds() {
     XCTAssertEqual(OverlayState.autoHideDelaySeconds, 5)
+  }
+
+  func testPinnedTerminalDoesNotArmOrHonorAnAutoHideWake() {
+    let clock = OverlayStateTestClock()
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState(nowProvider: { clock.now })
+    state.engine = engine
+    state.setKeepVisibleBetweenTakes(true)
+    var closes = 0
+    state.onClose = { closes += 1 }
+
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    projectSessionText("sealed", sessionId: "pin-take", sequence: 1, to: state, terminal: true)
+    XCTAssertNil(state.autoHideDeadline)
+    clock.now += OverlayState.autoHideDelaySeconds + 1
+    state.fireAutoHideNowForTests(armedDeadline: 0)
+    XCTAssertNil(state.autoHideDeadline)
+    XCTAssertEqual(closes, 0)
+
+    state.relayIntent(.close)
+    XCTAssertEqual(closes, 1)
+    XCTAssertTrue(state.keepVisibleBetweenTakes)
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    XCTAssertTrue(state.keepVisibleBetweenTakes)
+  }
+
+  func testUnpinRestoresFiveSecondCountdown() throws {
+    let clock = OverlayStateTestClock()
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState(nowProvider: { clock.now })
+    state.engine = engine
+    state.setKeepVisibleBetweenTakes(true)
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    projectSessionText("sealed", sessionId: "unpin-take", sequence: 1, to: state, terminal: true)
+    state.setKeepVisibleBetweenTakes(false)
+    XCTAssertEqual(try XCTUnwrap(state.autoHideDeadline), clock.now + 5)
   }
 
   func testInjectedClockFiresFiveSecondsAfterFinalization() {
@@ -3359,6 +3406,34 @@ final class OverlayStateTests: XCTestCase {
     state.onRecordingStarted = { [unowned controller] in controller.showForRecording() }
     state.onRecordingStopped = { [unowned controller] in controller.markStopped() }
     return controller
+  }
+
+  func testPinnedCloseHidesPanelAndNextDictationShowsItWithoutUnpinning() {
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState()
+    state.engine = engine
+    state.setKeepVisibleBetweenTakes(true)
+    let panel = NSPanel()
+    var shows = 0
+    var hides = 0
+    let controller = makeRoutedController(
+      state: state, overlayEnabled: true, assistive: false, panel: panel,
+      frontCount: { shows += 1 }, outCount: { hides += 1 })
+    state.onClose = { controller.hide() }
+
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    XCTAssertTrue(panel.isVisible)
+    state.relayIntent(.close)
+    XCTAssertFalse(panel.isVisible)
+    XCTAssertTrue(state.keepVisibleBetweenTakes)
+    state.handleRecordingPreparing()
+    XCTAssertTrue(panel.isVisible)
+    XCTAssertGreaterThanOrEqual(shows, 2)
+    XCTAssertGreaterThanOrEqual(hides, 1)
+    XCTAssertEqual(engine.pinWrites, [true])
+    panel.orderOut(nil)
+    withExtendedLifetime(controller) {}
   }
 
   func testEnabledDictationStaysVisibleThroughCaptureAndSilence() {

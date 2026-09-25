@@ -47,7 +47,8 @@
     "hold_indicator": true,
     "hold_badge_size": 8,
     "transcription_overlay_enabled": true,
-    "overlay_expanded_by_default": false
+    "overlay_expanded_by_default": false,
+    "overlay_keep_visible_between_takes": false
   },
   "features": {
     "history_enabled": true

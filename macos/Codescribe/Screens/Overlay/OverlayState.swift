@@ -50,6 +50,8 @@ protocol DictationEngine: AnyObject {
   func setAutoFormatLevel(_ level: FormattingPolicyOption)
   func overlayExpandedByDefault() -> Bool
   func setOverlayExpandedByDefault(_ enabled: Bool) -> Bool
+  func overlayKeepVisibleBetweenTakes() -> Bool
+  func setOverlayKeepVisibleBetweenTakes(_ enabled: Bool) -> Bool
   func pasteText(text: String) async throws -> CsPasteResult
   func deferText(text: String) async throws -> CsPasteResult
   func copyTaggedTranscript(text: String) async throws
@@ -81,6 +83,8 @@ extension DictationEngine {
   }
   func overlayExpandedByDefault() -> Bool { false }
   func setOverlayExpandedByDefault(_ enabled: Bool) -> Bool { false }
+  func overlayKeepVisibleBetweenTakes() -> Bool { false }
+  func setOverlayKeepVisibleBetweenTakes(_ enabled: Bool) -> Bool { false }
 }
 
 struct OverlayPolicySnapshot: Equatable {
@@ -430,6 +434,7 @@ final class OverlayState {
   /// Leaving an edited canvas uses its existing commit-on-blur path.
   private(set) var isCollapsed = true
   private(set) var expandedByDefault = false
+  private(set) var keepVisibleBetweenTakes = false
   private(set) var expansionPreferenceError: String?
   @ObservationIgnored var onCollapseChanged: ((Bool) -> Void)?
 
@@ -454,6 +459,20 @@ final class OverlayState {
     guard isCollapsed != collapsed else { return }
     isCollapsed = collapsed
     onCollapseChanged?(collapsed)
+  }
+
+  func setKeepVisibleBetweenTakes(_ enabled: Bool) {
+    guard let engine, engine.setOverlayKeepVisibleBetweenTakes(enabled) else {
+      expansionPreferenceError = "Couldn't save overlay preference"
+      return
+    }
+    expansionPreferenceError = nil
+    keepVisibleBetweenTakes = engine.overlayKeepVisibleBetweenTakes()
+    if keepVisibleBetweenTakes {
+      cancelAutoHide()
+    } else if terminal {
+      restartAutoHideCountdown()
+    }
   }
   var onRecordingPreparing: (() -> Void)?
   var onRecordingStarted: (() -> Void)?
@@ -636,6 +655,7 @@ final class OverlayState {
 
   func attach() {
     applyPreferredExpansion()
+    keepVisibleBetweenTakes = engine?.overlayKeepVisibleBetweenTakes() ?? false
     engine?.setListener(listener)
   }
 
@@ -1643,6 +1663,10 @@ final class OverlayState {
   }
 
   private func restartAutoHideCountdown() {
+    if keepVisibleBetweenTakes && !agentSessionArmed {
+      cancelAutoHide()
+      return
+    }
     // A presentation revision may arrive before the controller's lifecycle
     // terminal. The Agent timer starts only after that terminal is observed.
     if agentSessionArmed && !agentFinalTranscriptAppeared {
@@ -1688,6 +1712,10 @@ final class OverlayState {
   private func evaluateAutoHideDeadline(rescheduleIfEarly: Bool, generation: UInt64) {
     guard generation == captureGeneration else { return }
     autoHideTask = nil
+    if keepVisibleBetweenTakes && !agentSessionArmed {
+      cancelAutoHide()
+      return
+    }
     if agentSessionArmed && !agentFinalTranscriptAppeared {
       cancelAutoHide()
       return
@@ -2837,6 +2865,12 @@ final class ControllerDictationEngine: DictationEngine {
   }
   func setOverlayExpandedByDefault(_ enabled: Bool) -> Bool {
     config.setOverlayExpandedByDefault(enabled: enabled)
+  }
+  func overlayKeepVisibleBetweenTakes() -> Bool {
+    config.overlayKeepVisibleBetweenTakes()
+  }
+  func setOverlayKeepVisibleBetweenTakes(_ enabled: Bool) -> Bool {
+    config.setOverlayKeepVisibleBetweenTakes(enabled: enabled)
   }
   func setAutoFormatLevel(_ level: FormattingPolicyOption) {
     _ = try? config.setAutoFormatLevel(level: level.rawValue)

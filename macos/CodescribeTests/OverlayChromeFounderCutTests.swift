@@ -106,6 +106,22 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertFalse(reopened.isCollapsed)
     XCTAssertTrue(reopened.expandedByDefault)
   }
+
+  func testSavedPinLoadsWithoutWritingAgain() {
+    let engine = OverlayChromePolicyEngine()
+    let first = OverlayState()
+    first.engine = engine
+    first.attach()
+    XCTAssertFalse(first.keepVisibleBetweenTakes)
+    first.setKeepVisibleBetweenTakes(true)
+    XCTAssertEqual(engine.pinWrites, [true])
+
+    let reopened = OverlayState()
+    reopened.engine = engine
+    reopened.attach()
+    XCTAssertTrue(reopened.keepVisibleBetweenTakes)
+    XCTAssertEqual(engine.pinWrites, [true])
+  }
   func testOverlayStartsAsRecordingBar() throws {
     let state = OverlayState()
     XCTAssertTrue(state.isCollapsed)
@@ -178,9 +194,10 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       let close = try section(
         of: header, from: "Button {\n          state.relayIntent(.close)",
         to: "Text(\"codescribe\")")
-      XCTAssertTrue(close.contains("ZStack {"))
-      XCTAssertTrue(close.contains("ModeDot(color: palette.statusToken(for: state.mode).color"))
-      XCTAssertTrue(close.contains("Image(systemName: \"xmark\")"))
+      XCTAssertTrue(close.contains("ModeDot("))
+      XCTAssertTrue(close.contains("color: palette.statusToken(for: state.mode).color"))
+      XCTAssertTrue(close.contains("if closeDotHovered {"))
+      XCTAssertTrue(close.contains("OverlayCloseCross()"))
       XCTAssertTrue(close.contains(".accessibilityHidden(true)"))
       XCTAssertFalse(header.contains("Text(\"×\")"), "The mark must not be a sibling glyph")
       XCTAssertNotNil(panel.contentView)
@@ -208,19 +225,30 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(
       header.contains(".accessibilityLabel(OverlayIntent.close.accessibilityLabel)"))
     XCTAssertTrue(
-      close.contains("ModeDot(color: palette.statusToken(for: state.mode).color"),
+      close.contains("color: palette.statusToken(for: state.mode).color"),
       "The close control is the brand status dot")
     XCTAssertEqual(header.components(separatedBy: "state.relayIntent(.close)").count - 1, 1)
     XCTAssertEqual(header.components(separatedBy: "overlay-brand-close-dot").count - 1, 1)
     // The dot keeps its pre-b83e95538 place: the hit target grows through the
     // content shape, never through a frame that shifts the dot or the wordmark.
-    XCTAssertTrue(close.contains(".contentShape(Circle().inset(by: compact ? -7.5 : -6))"))
+    XCTAssertTrue(close.contains("size: closeDotHovered ? (compact ? 7.5 : 10) : (compact ? 5.25 : 7)"))
+    XCTAssertTrue(close.contains(".onHover { closeDotHovered = $0 }"))
+    XCTAssertTrue(close.contains(".contentShape(Circle().inset(by: compact ? -9.375 : -8.5))"))
     XCTAssertFalse(close.contains(".frame("), "A frame would move the dot")
     XCTAssertTrue(header.contains("Text(\"codescribe\")"))
     XCTAssertTrue(header.contains(".allowsHitTesting(false)"))
     // The brand block sits on an inert drag region so the dot answers clicks,
     // not window drags (Founder 19:18: the dot next to codescribe closes).
     XCTAssertTrue(header.contains("overlay-header-inert-drag-region"))
+  }
+
+  func testAnchorMenuShowsPersistedPinWithoutOpeningIt() throws {
+    let menu = try source(at: "Codescribe/Screens/Overlay/OverlayPlacementMenu.swift")
+    XCTAssertTrue(menu.contains("\"Keep visible between takes\""))
+    XCTAssertTrue(menu.contains("state.setKeepVisibleBetweenTakes($0)"))
+    XCTAssertTrue(menu.contains("if state.keepVisibleBetweenTakes {"))
+    XCTAssertTrue(menu.contains("Image(systemName: \"pin.fill\")"))
+    XCTAssertTrue(menu.contains("overlay-keep-visible-between-takes"))
   }
 
   func testPhasePillIsGone() throws {
@@ -353,6 +381,14 @@ final class OverlayChromeFounderCutTests: XCTestCase {
 @MainActor
 private final class OverlayChromePolicyEngine: DictationEngine {
   var expansionWrites: [Bool] = []
+  var pinWrites: [Bool] = []
+  var pinEnabled = false
+  func overlayKeepVisibleBetweenTakes() -> Bool { pinEnabled }
+  func setOverlayKeepVisibleBetweenTakes(_ enabled: Bool) -> Bool {
+    pinWrites.append(enabled)
+    pinEnabled = enabled
+    return true
+  }
   var expanded = false
   var expansionWriteAllowed = true
   func overlayExpandedByDefault() -> Bool { expanded }

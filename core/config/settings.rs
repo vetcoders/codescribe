@@ -260,6 +260,9 @@ pub struct UserSettings {
     /// Start the overlay with its transcript visible; absence means compact.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overlay_expanded_by_default: Option<bool>,
+    /// Keep a completed Dictation take visible until explicitly closed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overlay_keep_visible_between_takes: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tray_start_assistive: Option<bool>,
     // Promoted 2026-08-11: these lived only in `.env`, so the tray/settings
@@ -1486,6 +1489,8 @@ struct UiV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     overlay_expanded_by_default: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    overlay_keep_visible_between_takes: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tray_start_assistive: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     hold_indicator: Option<bool>,
@@ -1720,6 +1725,7 @@ impl UserSettings {
                 show_dock_icon: self.show_dock_icon,
                 transcription_overlay_enabled: self.transcription_overlay_enabled,
                 overlay_expanded_by_default: self.overlay_expanded_by_default,
+                overlay_keep_visible_between_takes: self.overlay_keep_visible_between_takes,
                 tray_start_assistive: self.tray_start_assistive,
                 hold_indicator: self.hold_indicator,
                 hold_badge_size: self.hold_badge_size,
@@ -1874,6 +1880,10 @@ impl UserSettings {
                 .ui
                 .as_ref()
                 .and_then(|ui| ui.overlay_expanded_by_default),
+            overlay_keep_visible_between_takes: v2
+                .ui
+                .as_ref()
+                .and_then(|ui| ui.overlay_keep_visible_between_takes),
             hold_indicator: v2.ui.as_ref().and_then(|ui| ui.hold_indicator),
             hold_badge_size: v2.ui.as_ref().and_then(|ui| ui.hold_badge_size),
             deferred_insert_shortcut: v2
@@ -3952,6 +3962,28 @@ mod tests {
             assert_eq!(persisted["ui"]["overlay_expanded_by_default"], expanded);
             assert!(persisted.get("overlay_expanded_by_default").is_none());
         }
+    }
+
+    #[test]
+    #[serial]
+    fn overlay_pin_roundtrips_without_rewriting_on_second_load() {
+        use std::os::unix::fs::MetadataExt;
+
+        let _tmp = setup_isolated_data_dir();
+        assert_eq!(UserSettings::load().overlay_keep_visible_between_takes, None);
+        let mut settings = UserSettings::default();
+        settings.overlay_keep_visible_between_takes = Some(true);
+        settings.save().expect("persist overlay pin");
+        let path = UserSettings::settings_path();
+        let first = fs::read(&path).expect("read saved pin");
+        let saved_inode = fs::metadata(&path).expect("saved pin metadata").ino();
+        let saved: serde_json::Value = serde_json::from_slice(&first).expect("parse saved pin");
+        assert_eq!(saved["ui"]["overlay_keep_visible_between_takes"], true);
+        assert!(saved.get("overlay_keep_visible_between_takes").is_none());
+        assert_eq!(UserSettings::load().overlay_keep_visible_between_takes, Some(true));
+        assert_eq!(UserSettings::load().overlay_keep_visible_between_takes, Some(true));
+        assert_eq!(fs::read(&path).expect("read after second load"), first);
+        assert_eq!(fs::metadata(&path).expect("reloaded pin metadata").ino(), saved_inode);
     }
 
     /// Same section contract for the tray's starting lane.

@@ -719,6 +719,29 @@ impl CodescribeConfig {
         true
     }
 
+    /// Read the user-visible pin from the canonical settings snapshot.
+    pub fn overlay_keep_visible_between_takes(&self) -> bool {
+        Config::load_runtime_snapshot_without_keychain()
+            .expect("canonical runtime settings must load for overlay pin")
+            .user_settings()
+            .overlay_keep_visible_between_takes
+            .unwrap_or(false)
+    }
+
+    /// Persist the pin only on a changed user choice.
+    pub fn set_overlay_keep_visible_between_takes(&self, enabled: bool) -> bool {
+        let mut settings = UserSettings::load();
+        if settings.overlay_keep_visible_between_takes == Some(enabled) {
+            return true;
+        }
+        settings.overlay_keep_visible_between_takes = Some(enabled);
+        if let Err(error) = settings.save() {
+            tracing::warn!(%error, "overlay pin preference could not be saved");
+            return false;
+        }
+        true
+    }
+
     /// Persist Auto Paste and return the prompt-free post-write truth in one
     /// result. Callers may re-read `tray_toggles()` after an error; no optimistic
     /// bridge cache is retained.
@@ -3606,6 +3629,22 @@ mod settings_snapshot_tests {
         assert!(CodescribeConfig::new().overlay_expanded_by_default());
         assert!(config.set_overlay_expanded_by_default(false));
         assert!(!CodescribeConfig::new().overlay_expanded_by_default());
+        let _ = remove_path_without_following_symlinks(&root);
+    }
+
+    #[test]
+    #[serial]
+    fn overlay_pin_defaults_off_and_survives_new_handle() {
+        let root = scratch("overlay_pin_truth");
+        std::fs::create_dir_all(&root).expect("create bridge scratch");
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &root);
+        let _env_path = EnvGuard::remove("CODESCRIBE_ENV_PATH");
+        let config = CodescribeConfig::new();
+        assert!(!config.overlay_keep_visible_between_takes());
+        assert!(config.set_overlay_keep_visible_between_takes(true));
+        assert!(CodescribeConfig::new().overlay_keep_visible_between_takes());
+        assert!(config.set_overlay_keep_visible_between_takes(true));
+        assert!(CodescribeConfig::new().overlay_keep_visible_between_takes());
         let _ = remove_path_without_following_symlinks(&root);
     }
 

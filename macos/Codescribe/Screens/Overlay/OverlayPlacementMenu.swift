@@ -45,13 +45,29 @@ struct OverlayPlacementMenu: View {
       )
       .help("Save whether new recordings open the transcript or just the recording bar")
       .accessibilityIdentifier("overlay-expanded-by-default")
+      Toggle(
+        "Keep visible between takes",
+        isOn: Binding(
+          get: { state.keepVisibleBetweenTakes },
+          set: { state.setKeepVisibleBetweenTakes($0) }
+        )
+      )
+      .help("Keep the overlay open after a take until you close it")
+      .accessibilityIdentifier("overlay-keep-visible-between-takes")
     } label: {
-      Label("Position overlay", systemImage: "location.viewfinder")
-        .labelStyle(.iconOnly)
-        .font(.system(size: 11, weight: .semibold))
-        .foregroundStyle(palette.mutedText.color)
-        .frame(width: 24, height: 24)
-        .contentShape(Rectangle())
+      ZStack(alignment: .bottomTrailing) {
+        Image(systemName: "location.viewfinder")
+        if state.keepVisibleBetweenTakes {
+          Image(systemName: "pin.fill")
+            .font(.system(size: 7, weight: .bold))
+            .offset(x: 5, y: 4)
+            .accessibilityHidden(true)
+        }
+      }
+      .font(.system(size: 11, weight: .semibold))
+      .foregroundStyle(palette.mutedText.color)
+      .frame(width: 24, height: 24)
+      .contentShape(Rectangle())
     }
     .menuStyle(.button)
     .buttonStyle(.plain)
@@ -59,7 +75,9 @@ struct OverlayPlacementMenu: View {
     .fixedSize()
     .help("Position overlay")
     .accessibilityLabel("Position overlay")
-    .accessibilityValue(state.freeMotion ? "Free motion" : state.placementAnchor.label)
+    .accessibilityValue(
+      (state.keepVisibleBetweenTakes ? "Pinned, " : "")
+        + (state.freeMotion ? "Free motion" : state.placementAnchor.label))
     .accessibilityHint("Choose a screen anchor or allow free dragging")
     .accessibilityIdentifier("overlay-placement-menu")
   }
