@@ -699,19 +699,24 @@ impl CodescribeConfig {
         Ok(CsSettings::from_runtime_snapshot(&runtime))
     }
 
-    /// Read the presentation preference from the canonical settings snapshot.
+    /// Show the transcript at take start unless the user explicitly opted out.
     pub fn overlay_expanded_by_default(&self) -> bool {
-        Config::load_runtime_snapshot_without_keychain()
-            .expect("canonical runtime settings must load for overlay preference")
-            .user_settings()
-            .overlay_expanded_by_default
-            .unwrap_or(false)
+        match Config::load_runtime_snapshot_without_keychain() {
+            Ok(snapshot) => snapshot
+                .user_settings()
+                .show_transcript_at_take_start
+                .unwrap_or(true),
+            Err(error) => {
+                tracing::warn!(%error, "overlay take-start preference could not be loaded; showing transcript");
+                true
+            }
+        }
     }
 
     /// Persist only the preferred presentation; never change live capture.
     pub fn set_overlay_expanded_by_default(&self, enabled: bool) -> bool {
         let mut settings = UserSettings::load();
-        settings.overlay_expanded_by_default = Some(enabled);
+        settings.show_transcript_at_take_start = Some(enabled);
         if let Err(error) = settings.save() {
             tracing::warn!(%error, "overlay expansion preference could not be saved");
             return false;
@@ -3618,18 +3623,62 @@ mod settings_snapshot_tests {
 
     #[test]
     #[serial]
-    fn overlay_preference_defaults_compact_and_survives_new_handle() {
-        let root = scratch("overlay_expansion_truth");
-        std::fs::create_dir_all(&root).expect("create bridge scratch");
-        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &root);
-        let _env_path = EnvGuard::remove("CODESCRIBE_ENV_PATH");
+    fn overlay_take_start_defaults_on_and_survives_new_handle() {
+        let root = tempfile::tempdir().unwrap();
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", root.path());
+        let _env_path = EnvGuard::set("CODESCRIBE_ENV_PATH", root.path().join("absent.env"));
         let config = CodescribeConfig::new();
-        assert!(!config.overlay_expanded_by_default());
-        assert!(config.set_overlay_expanded_by_default(true));
-        assert!(CodescribeConfig::new().overlay_expanded_by_default());
+        assert!(config.overlay_expanded_by_default());
         assert!(config.set_overlay_expanded_by_default(false));
         assert!(!CodescribeConfig::new().overlay_expanded_by_default());
-        let _ = remove_path_without_following_symlinks(&root);
+        assert!(config.set_overlay_expanded_by_default(true));
+        assert!(CodescribeConfig::new().overlay_expanded_by_default());
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&fs::read(UserSettings::settings_path()).unwrap()).unwrap();
+        assert_eq!(persisted["ui"]["show_transcript_at_take_start"], true);
+        assert!(persisted["ui"].get("overlay_expanded_by_default").is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn overlay_take_start_ignores_old_false_and_only_writes_new_key() {
+        let root = tempfile::tempdir().unwrap();
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", root.path());
+        let _env_path = EnvGuard::set("CODESCRIBE_ENV_PATH", root.path().join("absent.env"));
+        UserSettings {
+            overlay_expanded_by_default: Some(false),
+            ..UserSettings::default()
+        }
+        .save()
+        .unwrap();
+        let config = CodescribeConfig::new();
+        assert!(config.overlay_expanded_by_default());
+        for enabled in [false, true] {
+            assert!(config.set_overlay_expanded_by_default(enabled));
+            assert_eq!(CodescribeConfig::new().overlay_expanded_by_default(), enabled);
+            let saved = UserSettings::load();
+            assert_eq!(saved.overlay_expanded_by_default, Some(false));
+            assert_eq!(saved.show_transcript_at_take_start, Some(enabled));
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn overlay_take_start_defaults_on_after_settings_load_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", root.path());
+        let _env_path = EnvGuard::set("CODESCRIBE_ENV_PATH", root.path().join("absent.env"));
+        let path = UserSettings::settings_path();
+        // A directory cannot be read as settings JSON or repaired as a file.
+        fs::create_dir(&path).unwrap();
+        assert!(fs::read_to_string(&path).is_err());
+        let expanded =
+            std::panic::catch_unwind(|| CodescribeConfig::new().overlay_expanded_by_default());
+        assert_eq!(expanded.ok(), Some(true));
+        assert!(
+            path.is_dir(),
+            "The getter must not replace an unreadable source"
+        );
     }
 
     #[test]

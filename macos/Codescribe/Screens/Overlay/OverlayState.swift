@@ -81,7 +81,7 @@ extension DictationEngine {
   func transcribeTake(sessionId _: String, path: String) async throws -> CsTranscription {
     try await transcribeFile(path: path)
   }
-  func overlayExpandedByDefault() -> Bool { false }
+  func overlayExpandedByDefault() -> Bool { true }
   func setOverlayExpandedByDefault(_ enabled: Bool) -> Bool { false }
   func overlayKeepVisibleBetweenTakes() -> Bool { false }
   func setOverlayKeepVisibleBetweenTakes(_ enabled: Bool) -> Bool { false }
@@ -437,7 +437,7 @@ final class OverlayState {
   /// Window chrome only: folding never ends capture or creates text edits.
   /// Leaving an edited canvas uses its existing commit-on-blur path.
   private(set) var isCollapsed = true
-  private(set) var expandedByDefault = false
+  private(set) var expandedByDefault = true
   private(set) var keepVisibleBetweenTakes = false
   private(set) var expansionPreferenceError: String?
   @ObservationIgnored var onCollapseChanged: ((Bool) -> Void)?
@@ -445,9 +445,9 @@ final class OverlayState {
   func toggleCollapsed() {
     isCollapsed.toggle()
     onCollapseChanged?(isCollapsed)
-    setExpandedByDefault(!isCollapsed)
   }
 
+  /// The menu toggle alone persists the take-start preference.
   func setExpandedByDefault(_ expanded: Bool) {
     guard let engine, engine.setOverlayExpandedByDefault(expanded) else {
       expansionPreferenceError = "Couldn't save overlay preference"

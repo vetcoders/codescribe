@@ -257,9 +257,12 @@ pub struct UserSettings {
     pub show_dock_icon: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transcription_overlay_enabled: Option<bool>,
-    /// Start the overlay with its transcript visible; absence means compact.
+    /// Retained for settings round trips; no longer controls overlay expansion.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overlay_expanded_by_default: Option<bool>,
+    /// Show the transcript when a take starts; absence means enabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_transcript_at_take_start: Option<bool>,
     /// Keep a completed Dictation take visible until explicitly closed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overlay_keep_visible_between_takes: Option<bool>,
@@ -1496,6 +1499,8 @@ struct UiV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     overlay_expanded_by_default: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    show_transcript_at_take_start: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     overlay_keep_visible_between_takes: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tray_start_assistive: Option<bool>,
@@ -1733,6 +1738,7 @@ impl UserSettings {
                 show_dock_icon: self.show_dock_icon,
                 transcription_overlay_enabled: self.transcription_overlay_enabled,
                 overlay_expanded_by_default: self.overlay_expanded_by_default,
+                show_transcript_at_take_start: self.show_transcript_at_take_start,
                 overlay_keep_visible_between_takes: self.overlay_keep_visible_between_takes,
                 tray_start_assistive: self.tray_start_assistive,
                 hold_indicator: self.hold_indicator,
@@ -1888,6 +1894,10 @@ impl UserSettings {
                 .ui
                 .as_ref()
                 .and_then(|ui| ui.overlay_expanded_by_default),
+            show_transcript_at_take_start: v2
+                .ui
+                .as_ref()
+                .and_then(|ui| ui.show_transcript_at_take_start),
             overlay_keep_visible_between_takes: v2
                 .ui
                 .as_ref()
@@ -3984,6 +3994,83 @@ mod tests {
                     .unwrap();
             assert_eq!(persisted["ui"]["overlay_expanded_by_default"], expanded);
             assert!(persisted.get("overlay_expanded_by_default").is_none());
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn take_start_preference_roundtrips_in_ui_without_changing_other_overlay_keys() {
+        let _tmp = setup_isolated_data_dir();
+        assert_eq!(UserSettings::load().show_transcript_at_take_start, None);
+        for show_transcript in [true, false] {
+            let settings = UserSettings {
+                show_transcript_at_take_start: Some(show_transcript),
+                overlay_expanded_by_default: Some(false),
+                transcription_overlay_enabled: Some(true),
+                ..UserSettings::default()
+            };
+            settings.save().expect("persist take-start preference");
+            let loaded = UserSettings::load();
+            assert_eq!(loaded.show_transcript_at_take_start, Some(show_transcript));
+            assert_eq!(loaded.overlay_expanded_by_default, Some(false));
+            assert_eq!(loaded.transcription_overlay_enabled, Some(true));
+            let persisted: serde_json::Value =
+                serde_json::from_slice(&fs::read(UserSettings::settings_path()).unwrap()).unwrap();
+            assert_eq!(persisted["ui"]["show_transcript_at_take_start"], show_transcript);
+            assert!(persisted.get("show_transcript_at_take_start").is_none());
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn take_start_opt_out_is_not_inferred_from_old_expansion_key_or_reseeded() {
+        use std::os::unix::fs::MetadataExt;
+
+        let _tmp = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        for source in [
+            r#"{"overlay_expanded_by_default":false}"#,
+            r#"{"schema_version":3,"ui":{"overlay_expanded_by_default":false}}"#,
+        ] {
+            fs::write(&path, source).unwrap();
+            let loaded = UserSettings::load();
+            assert_eq!(loaded.overlay_expanded_by_default, Some(false));
+            assert_eq!(loaded.show_transcript_at_take_start, None);
+            loaded.save().unwrap();
+            let saved = fs::read(&path).unwrap();
+            let inode = fs::metadata(&path).unwrap().ino();
+            for _ in 0..2 {
+                let reloaded = UserSettings::load();
+                assert_eq!(reloaded.overlay_expanded_by_default, Some(false));
+                assert_eq!(reloaded.show_transcript_at_take_start, None);
+                assert_eq!(fs::read(&path).unwrap(), saved);
+                assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+            }
+            let persisted: serde_json::Value = serde_json::from_slice(&saved).unwrap();
+            assert_eq!(persisted["ui"]["overlay_expanded_by_default"], false);
+            assert!(persisted["ui"].get("show_transcript_at_take_start").is_none());
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn take_start_preference_survives_flat_settings_migration() {
+        let _tmp = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        for enabled in [true, false] {
+            let source = serde_json::json!({
+                "overlay_expanded_by_default": !enabled,
+                "show_transcript_at_take_start": enabled,
+            });
+            fs::write(&path, serde_json::to_vec(&source).unwrap()).unwrap();
+            let loaded = UserSettings::load();
+            assert_eq!(loaded.show_transcript_at_take_start, Some(enabled));
+            assert_eq!(loaded.overlay_expanded_by_default, Some(!enabled));
+            let persisted: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(persisted["ui"]["show_transcript_at_take_start"], enabled);
+            assert_eq!(persisted["ui"]["overlay_expanded_by_default"], !enabled);
+            assert!(persisted.get("show_transcript_at_take_start").is_none());
         }
     }
 

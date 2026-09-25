@@ -56,8 +56,10 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   func testPreferenceSaveFailureIsVisibleWithoutExpandingTheBar() throws {
     let state = OverlayState()
     let engine = OverlayChromePolicyEngine()
-    engine.expansionWriteAllowed = false
+    engine.expanded = false
     state.engine = engine
+    state.attach()
+    engine.expansionWriteAllowed = false
     state.setExpandedByDefault(true)
     XCTAssertTrue(state.isCollapsed)
     XCTAssertFalse(state.expandedByDefault)
@@ -85,40 +87,51 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     }
   }
 
-  func testChevronPersistsExpansionAcrossPreparingStartedAndReattach() {
+  func testTakeStartShowsTranscriptAndNeverCollapsesAnExpandedPane() {
     let engine = OverlayChromePolicyEngine()
-    let first = OverlayState()
-    first.engine = engine
-    first.attach()
-    XCTAssertTrue(first.isCollapsed)
-    first.setExpandedByDefault(true)
-    XCTAssertEqual(engine.expansionWrites, [true])
-    XCTAssertFalse(first.isCollapsed)
-    first.toggleCollapsed()
-    XCTAssertTrue(first.isCollapsed)
-    XCTAssertEqual(engine.expansionWrites, [true, false])
-    XCTAssertFalse(first.expandedByDefault)
-    first.handleRecordingPreparing()
-    XCTAssertTrue(first.isCollapsed)
-    first.handleRecordingStarted()
-    XCTAssertTrue(first.isCollapsed)
-    first.finishControllerRecording()
-    first.toggleCollapsed()
-    XCTAssertEqual(engine.expansionWrites, [true, false, true])
-    first.handleRecordingPreparing()
-    first.handleRecordingStarted()
-    XCTAssertFalse(first.isCollapsed)
+    let state = OverlayState()
+    state.engine = engine
+    state.attach()
+    XCTAssertTrue(state.expandedByDefault)
+    XCTAssertFalse(state.isCollapsed)
+    var collapses: [Bool] = []
+    state.onCollapseChanged = { collapses.append($0) }
+    state.handleRecordingPreparing()
+    XCTAssertFalse(state.isCollapsed)
+    state.handleRecordingStarted()
+    XCTAssertFalse(state.isCollapsed)
+    XCTAssertTrue(collapses.isEmpty, "Starting a take must not transiently collapse the pane")
+    XCTAssertTrue(engine.expansionWrites.isEmpty)
+    state.finishControllerRecording()
+  }
+
+  func testChevronCollapseIsLocalAndNextTakeExpandsWithoutWritingPreference() {
+    let engine = OverlayChromePolicyEngine()
+    let state = OverlayState()
+    state.engine = engine
+    state.attach()
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    state.toggleCollapsed()
+    XCTAssertTrue(state.isCollapsed)
+    XCTAssertTrue(state.expandedByDefault)
+    XCTAssertTrue(engine.expanded)
+    XCTAssertTrue(engine.expansionWrites.isEmpty)
+    state.finishControllerRecording()
+    state.handleRecordingPreparing()
+    XCTAssertFalse(state.isCollapsed)
+    state.handleRecordingStarted()
+    XCTAssertFalse(state.isCollapsed)
+    XCTAssertTrue(engine.expansionWrites.isEmpty)
+    state.finishControllerRecording()
     let reopened = OverlayState()
     reopened.engine = engine
     reopened.attach()
     XCTAssertFalse(reopened.isCollapsed)
-    engine.expansionWriteAllowed = false
-    reopened.setExpandedByDefault(false)
-    XCTAssertFalse(reopened.isCollapsed)
-    XCTAssertTrue(reopened.expandedByDefault)
+    XCTAssertTrue(engine.expansionWrites.isEmpty)
   }
 
-  func testChevronSaveFailureKeepsLocalChoiceAndReportsError() {
+  func testChevronOnlyChangesViewEvenWhenPreferenceStorageRefusesWrites() {
     let engine = OverlayChromePolicyEngine()
     let state = OverlayState()
     state.engine = engine
@@ -127,19 +140,101 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     var collapses: [Bool] = []
     state.onCollapseChanged = { collapses.append($0) }
     state.toggleCollapsed()
-    XCTAssertEqual(engine.expansionWrites, [true])
-    XCTAssertFalse(state.isCollapsed)
-    XCTAssertFalse(state.expandedByDefault, "The persisted preference did not change")
-    XCTAssertEqual(collapses, [false])
-    XCTAssertEqual(state.expansionPreferenceError, "Couldn't save overlay preference")
-    state.toggleCollapsed()
     XCTAssertTrue(state.isCollapsed)
-    XCTAssertEqual(engine.expansionWrites, [true, false])
-    XCTAssertEqual(collapses, [false, true])
-    engine.expansionWriteAllowed = true
     state.toggleCollapsed()
-    XCTAssertNil(state.expansionPreferenceError)
+    XCTAssertFalse(state.isCollapsed)
+    XCTAssertEqual(collapses, [true, false])
     XCTAssertTrue(state.expandedByDefault)
+    XCTAssertTrue(engine.expanded)
+    XCTAssertTrue(engine.expansionWrites.isEmpty)
+    XCTAssertNil(state.expansionPreferenceError)
+  }
+
+  func testTakeStartHonorsOptOutAfterLocalExpansion() {
+    let engine = OverlayChromePolicyEngine()
+    engine.expanded = false
+    let state = OverlayState()
+    state.engine = engine
+    state.attach()
+    XCTAssertTrue(state.isCollapsed)
+    state.toggleCollapsed()
+    XCTAssertFalse(state.isCollapsed)
+    state.handleRecordingPreparing()
+    XCTAssertTrue(state.isCollapsed)
+    state.handleRecordingStarted()
+    XCTAssertTrue(state.isCollapsed)
+    XCTAssertTrue(state.recording)
+    XCTAssertFalse(state.expandedByDefault)
+    XCTAssertFalse(engine.expanded)
+    XCTAssertTrue(engine.expansionWrites.isEmpty)
+    state.finishControllerRecording()
+  }
+
+  func testTakeStartWithoutPreparingAppliesPreference() {
+    for expanded in [true, false] {
+      let engine = OverlayChromePolicyEngine()
+      engine.expanded = expanded
+      let state = OverlayState()
+      state.engine = engine
+      state.attach()
+      state.toggleCollapsed()
+      state.handleRecordingStarted()
+      XCTAssertEqual(state.isCollapsed, !expanded)
+      XCTAssertTrue(engine.expansionWrites.isEmpty)
+      state.finishControllerRecording()
+    }
+  }
+
+  func testTakeStartDoesNotReapplyPreferenceDuringAnOpenCapture() {
+    let engine = OverlayChromePolicyEngine()
+    let state = OverlayState()
+    state.engine = engine
+    state.attach()
+    state.handleRecordingPreparing()
+    state.toggleCollapsed()
+    state.handleRecordingStarted()
+    XCTAssertTrue(state.isCollapsed, "Ready acknowledgement is still the same take")
+    state.handleRecordingPreparing()
+    XCTAssertTrue(state.isCollapsed, "Duplicate lifecycle callbacks preserve the current view")
+    state.handleRecordingStarted()
+    XCTAssertTrue(state.isCollapsed)
+    XCTAssertTrue(state.expandedByDefault)
+    XCTAssertTrue(engine.expansionWrites.isEmpty)
+    state.finishControllerRecording()
+  }
+
+  func testMenuToggleAlonePersistsTakeStartPreference() throws {
+    let engine = OverlayChromePolicyEngine()
+    let state = OverlayState()
+    state.engine = engine
+    state.attach()
+    state.setExpandedByDefault(false)
+    XCTAssertTrue(state.isCollapsed)
+    XCTAssertFalse(state.expandedByDefault)
+    state.toggleCollapsed()
+    XCTAssertFalse(state.isCollapsed)
+    XCTAssertFalse(state.expandedByDefault)
+    XCTAssertEqual(engine.expansionWrites, [false])
+    let reopened = OverlayState()
+    reopened.engine = engine
+    reopened.attach()
+    XCTAssertTrue(reopened.isCollapsed)
+    state.setExpandedByDefault(true)
+    XCTAssertTrue(state.expandedByDefault)
+    XCTAssertEqual(engine.expansionWrites, [false, true])
+    engine.expansionWriteAllowed = false
+    state.setExpandedByDefault(false)
+    XCTAssertFalse(state.isCollapsed)
+    XCTAssertTrue(state.expandedByDefault)
+    XCTAssertEqual(state.expansionPreferenceError, "Couldn't save overlay preference")
+
+    let menu = try source(at: "Codescribe/Screens/Overlay/OverlayPlacementMenu.swift")
+    XCTAssertTrue(menu.contains("Show transcript by default"))
+    XCTAssertTrue(menu.contains("overlay-expanded-by-default"))
+    XCTAssertTrue(menu.contains("state.setExpandedByDefault($0)"))
+    XCTAssertTrue(
+      menu.contains(
+        "New recordings open with the transcript. Turn off to show only the recording bar."))
   }
 
   func testSavedPinLoadsWithoutWritingAgain() {
@@ -497,7 +592,7 @@ private final class OverlayChromePolicyEngine: DictationEngine {
     pinEnabled = enabled
     return true
   }
-  var expanded = false
+  var expanded = true
   var expansionWriteAllowed = true
   func overlayExpandedByDefault() -> Bool { expanded }
   func setOverlayExpandedByDefault(_ enabled: Bool) -> Bool {

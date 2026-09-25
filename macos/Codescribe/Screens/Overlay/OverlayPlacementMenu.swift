@@ -43,7 +43,7 @@ struct OverlayPlacementMenu: View {
           set: { state.setExpandedByDefault($0) }
         )
       )
-      .help("Save whether new recordings open the transcript or just the recording bar")
+      .help("New recordings open with the transcript. Turn off to show only the recording bar.")
       .accessibilityIdentifier("overlay-expanded-by-default")
       Toggle(
         "Keep visible between takes",
