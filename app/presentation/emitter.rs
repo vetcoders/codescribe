@@ -543,7 +543,6 @@ pub struct MissingVisibleWord {
     pub reason: String,
 }
 
-
 /// The one committed Rust document plus explicitly non-authoritative UI paint.
 /// Only `document_by_occurrence` can produce a committed revision. The preview
 /// field is volatile, has no occurrence identity, and is discarded at terminal
@@ -577,7 +576,8 @@ pub struct TranscriptReducer {
     /// beside committed occurrences and never becomes a document token. It
     /// lives until a seal closes a committed token over its range, or until
     /// the lifecycle ends.
-    unanchored_evidence: BTreeMap<OccurrenceIdentity, (String, NoAuthorityReason, ObservationIdentity)>,
+    unanchored_evidence:
+        BTreeMap<OccurrenceIdentity, (String, NoAuthorityReason, ObservationIdentity)>,
 }
 
 /// Whether `inner` lies wholly inside `outer` on one capture clock.
@@ -698,21 +698,47 @@ impl TranscriptReducer {
 
     /// The same ordered fragments feed the main paint and its STOP receipt.
     fn visible_paint_fragments(&self) -> Vec<(u64, String, VisibleWordSource, bool)> {
-        let mut fragments = self.unanchored_evidence.iter()
-            .filter(|(range, _)| !self.document_by_occurrence.keys()
-                .any(|owner| range_within(range, owner)))
-            .map(|(range, (text, _, observation))| (range.sample_start, text.clone(),
-                VisibleWordSource::Unanchored(observation.clone()), true))
+        let mut fragments = self
+            .unanchored_evidence
+            .iter()
+            .filter(|(range, _)| {
+                !self
+                    .document_by_occurrence
+                    .keys()
+                    .any(|owner| range_within(range, owner))
+            })
+            .map(|(range, (text, _, observation))| {
+                (
+                    range.sample_start,
+                    text.clone(),
+                    VisibleWordSource::Unanchored(observation.clone()),
+                    true,
+                )
+            })
             .collect::<Vec<_>>();
         let source_for = |range: &OccurrenceIdentity, entry: &TranscriptDocumentEntry| {
-            let presentation = self.consultation_presentations.iter()
-                .find(|receipt| receipt.members.iter().any(|member| &member.occurrence == range))
+            let presentation = self
+                .consultation_presentations
+                .iter()
+                .find(|receipt| {
+                    receipt
+                        .members
+                        .iter()
+                        .any(|member| &member.occurrence == range)
+                })
                 .map(|receipt| receipt.receipt_id.clone())
-                .or_else(|| self.shaped_by_occurrence.get(range).map(|receipt| receipt.receipt_id.clone()));
+                .or_else(|| {
+                    self.shaped_by_occurrence
+                        .get(range)
+                        .map(|receipt| receipt.receipt_id.clone())
+                });
             CommittedPaintSource {
                 occurrence: range.clone(),
                 observation_receipt: entry.observation_receipt.clone(),
-                presentation_receipt: self.manual_document_revision_receipt.clone().or(presentation),
+                presentation_receipt: self
+                    .manual_document_revision_receipt
+                    .clone()
+                    .or(presentation),
             }
         };
         if fragments.is_empty()
@@ -720,27 +746,49 @@ impl TranscriptReducer {
         {
             let source = VisibleWordSource::DocumentRevision {
                 receipt: self.manual_document_revision_receipt.clone(),
-                members: self.document_by_occurrence.iter()
-                    .map(|(range, entry)| source_for(range, entry)).collect(),
-                markers: if self.manual_rendered_text.is_some() { 0 } else { self.context_markers.len() },
+                members: self
+                    .document_by_occurrence
+                    .iter()
+                    .map(|(range, entry)| source_for(range, entry))
+                    .collect(),
+                markers: if self.manual_rendered_text.is_some() {
+                    0
+                } else {
+                    self.context_markers.len()
+                },
             };
             fragments.push((0, self.committed_rendered_text(), source, false));
         } else {
             for (range, entry) in &self.document_by_occurrence {
-                let source = self.consultation_presentations.iter()
-                    .find(|receipt| receipt.members.first()
-                        .is_some_and(|member| &member.occurrence == range))
+                let source = self
+                    .consultation_presentations
+                    .iter()
+                    .find(|receipt| {
+                        receipt
+                            .members
+                            .first()
+                            .is_some_and(|member| &member.occurrence == range)
+                    })
                     .map(|receipt| VisibleWordSource::DocumentRevision {
                         receipt: Some(receipt.receipt_id.clone()),
-                        members: receipt.members.iter().filter_map(|member| {
-                            self.document_by_occurrence.get(&member.occurrence)
-                                .map(|entry| source_for(&member.occurrence, entry))
-                        }).collect(),
+                        members: receipt
+                            .members
+                            .iter()
+                            .filter_map(|member| {
+                                self.document_by_occurrence
+                                    .get(&member.occurrence)
+                                    .map(|entry| source_for(&member.occurrence, entry))
+                            })
+                            .collect(),
                         markers: 0,
                     })
                     .unwrap_or_else(|| VisibleWordSource::Committed(source_for(range, entry)));
-                fragments.push((range.sample_start, self.presentation_of(range, entry).to_string(),
-                    source, false));
+                fragments.push((
+                    range.sample_start,
+                    self.presentation_of(range, entry).to_string(),
+                    source,
+                    false,
+                ));
             }
         }
         fragments.sort_by_key(|(start, _, _, _)| *start);
@@ -778,8 +826,10 @@ impl TranscriptReducer {
         {
             let label = label.trim();
             if !label.is_empty() {
-                self.unanchored_evidence
-                    .insert(occurrence.clone(), (label.to_string(), *reason, observation.clone()));
+                self.unanchored_evidence.insert(
+                    occurrence.clone(),
+                    (label.to_string(), *reason, observation.clone()),
+                );
             }
         }
     }
@@ -1535,8 +1585,8 @@ impl VisibleCanvasSnapshot {
     /// Account by phrase lifecycle and PCM identity. A matching word in a
     /// different occurrence cannot hide a missing visible word.
     pub fn missing_words_from(&self, pasted: &Self) -> Vec<MissingVisibleWord> {
-        let same_capture = self.session_id == pasted.session_id
-            && self.capture_epoch == pasted.capture_epoch;
+        let same_capture =
+            self.session_id == pasted.session_id && self.capture_epoch == pasted.capture_epoch;
         self.visible_words.iter().filter_map(|word| {
             let reason = if !same_capture {
                 Some("unaccounted".to_string())
@@ -1634,11 +1684,17 @@ impl PresentationEmitter {
     /// Fence only presentation callbacks; the retired take still drains into
     /// its own ledger, reducer, transcript buffer, and archive.
     pub fn retire_presentation(&self) {
-        *self.active_presentation.lock().unwrap_or_else(|error| error.into_inner()) = false;
+        *self
+            .active_presentation
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = false;
     }
 
     pub fn with_active_presentation(&self, publish: impl FnOnce()) {
-        let active = self.active_presentation.lock().unwrap_or_else(|error| error.into_inner());
+        let active = self
+            .active_presentation
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if *active {
             publish();
         }
@@ -1684,7 +1740,9 @@ impl PresentationEmitter {
             .session_state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let phrase = self.phrase_preview_paint.lock()
+        let phrase = self
+            .phrase_preview_paint
+            .lock()
             .unwrap_or_else(|error| error.into_inner());
         Some(VisibleCanvasSnapshot {
             session_id: session_id.clone(),
@@ -1744,13 +1802,25 @@ impl PresentationEmitter {
             members: committed_sources.values().cloned().collect(),
             markers: 0,
         };
-        let mut visible_words = commit.rendered_text.split_whitespace().enumerate()
+        let mut visible_words = commit
+            .rendered_text
+            .split_whitespace()
+            .enumerate()
             .map(|(offset, word)| VisibleWord {
-                word: word.to_string(), preview_rev: None, source: source.clone(),
-                offset, covered_by: None,
-            }).collect::<Vec<_>>();
-        visible_words.extend(frozen.visible_words.iter()
-            .filter(|word| word.covered_by.is_some()).cloned());
+                word: word.to_string(),
+                preview_rev: None,
+                source: source.clone(),
+                offset,
+                covered_by: None,
+            })
+            .collect::<Vec<_>>();
+        visible_words.extend(
+            frozen
+                .visible_words
+                .iter()
+                .filter(|word| word.covered_by.is_some())
+                .cloned(),
+        );
         Ok(VisibleCanvasSnapshot {
             revision: commit.revision,
             text: commit.rendered_text,
@@ -1819,7 +1889,8 @@ impl PresentationEmitter {
                 };
                 if let Some(delta) = TranscriptDelta::from_diff(&painted_text, &paint) {
                     if let Some(sink) = &delta_callback {
-                        let active = worker_presentation.lock()
+                        let active = worker_presentation
+                            .lock()
                             .unwrap_or_else(|error| error.into_inner());
                         if *active {
                             sink.apply(&delta);
@@ -1931,29 +2002,39 @@ impl PresentationEmitter {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .unanchored_evidence(session_id, *capture_epoch);
-        evidence.extend(self.phrase_preview_paint.lock()
-            .unwrap_or_else(|error| error.into_inner()).retained.clone());
-        if let Some(preview) = self.cursor_unanchored_preview.lock()
-            .unwrap_or_else(|error| error.into_inner()).as_ref()
+        evidence.extend(
+            self.phrase_preview_paint
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .retained
+                .clone(),
+        );
+        if let Some(preview) = self
+            .cursor_unanchored_preview
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
         {
             evidence.push(preview.clone());
         }
         evidence.sort_by_key(|item| (item.sample_start, item.sample_end));
         *sequence = next;
-        self.with_active_presentation(|| observer(&CompactProjection {
-            session_id: session_id.clone(),
-            capture_epoch: *capture_epoch,
-            sequence: next,
-            // Earlier recovery debt must not hide words arriving now. Amber
-            // stays authoritative until that debt is actually resolved.
-            text: if degraded && tail.is_empty() {
-                "…".into()
-            } else {
-                tail.clone()
-            },
-            degraded,
-            evidence,
-        }));
+        self.with_active_presentation(|| {
+            observer(&CompactProjection {
+                session_id: session_id.clone(),
+                capture_epoch: *capture_epoch,
+                sequence: next,
+                // Earlier recovery debt must not hide words arriving now. Amber
+                // stays authoritative until that debt is actually resolved.
+                text: if degraded && tail.is_empty() {
+                    "…".into()
+                } else {
+                    tail.clone()
+                },
+                degraded,
+                evidence,
+            })
+        });
     }
 
     /// Whether this take promised literal words (see [`Self::set_literal_delivery`]).
@@ -1983,31 +2064,53 @@ impl PresentationEmitter {
         match &mut cmd {
             EmitterCmd::PublishCommittedRevision { paint, .. }
             | EmitterCmd::PaintEphemeralPreview(paint) => {
-                let state = self.session_state.lock()
+                let state = self
+                    .session_state
+                    .lock()
                     .unwrap_or_else(|error| error.into_inner());
-                let phrase = self.phrase_preview_paint.lock()
+                let phrase = self
+                    .phrase_preview_paint
+                    .lock()
                     .unwrap_or_else(|error| error.into_inner());
                 let mut fragments = state.visible_paint_fragments();
-                let covered = state.unanchored_evidence.iter().filter_map(|(range, (text, _, observation))| {
-                    state.document_by_occurrence.keys()
-                        .find(|owner| range_within(range, owner))
-                        .map(|owner| (observation.clone(), text.clone(), owner.clone()))
-                }).collect::<Vec<_>>();
+                let covered = state
+                    .unanchored_evidence
+                    .iter()
+                    .filter_map(|(range, (text, _, observation))| {
+                        state
+                            .document_by_occurrence
+                            .keys()
+                            .find(|owner| range_within(range, owner))
+                            .map(|owner| (observation.clone(), text.clone(), owner.clone()))
+                    })
+                    .collect::<Vec<_>>();
                 for (id, evidence) in phrase.retained.iter().enumerate() {
-                    fragments.push((evidence.sample_start, evidence.text.clone(),
-                        VisibleWordSource::Refused(id), true));
+                    fragments.push((
+                        evidence.sample_start,
+                        evidence.text.clone(),
+                        VisibleWordSource::Refused(id),
+                        true,
+                    ));
                 }
                 fragments.sort_by_key(|(start, _, _, _)| *start);
-                let current_zero_preview = self.cursor_unanchored_preview.lock()
-                    .unwrap_or_else(|error| error.into_inner()).clone();
+                let current_zero_preview = self
+                    .cursor_unanchored_preview
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .clone();
                 *paint = state.visible_projection();
-                if let (Some(rev), Some(evidence)) = (phrase.current_rev, phrase.current_evidence.as_ref())
+                if let (Some(rev), Some(evidence)) =
+                    (phrase.current_rev, phrase.current_evidence.as_ref())
                 {
                     if current_zero_preview.is_none() {
                         append_exact_fragment(paint, &evidence.text);
                     }
-                    fragments.push((evidence.sample_start, evidence.text.clone(),
-                        VisibleWordSource::Preview(rev), true));
+                    fragments.push((
+                        evidence.sample_start,
+                        evidence.text.clone(),
+                        VisibleWordSource::Preview(rev),
+                        true,
+                    ));
                 }
                 let mut visible = String::new();
                 let mut visible_words = Vec::new();
@@ -2025,31 +2128,42 @@ impl PresentationEmitter {
                         VisibleWordSource::Preview(rev) => Some(*rev),
                         _ => None,
                     };
-                    visible_words.extend(text.split_whitespace().enumerate().map(|(offset, word)| VisibleWord {
-                        word: word.to_string(), preview_rev, source: source.clone(), offset, covered_by: None,
-                    }));
+                    visible_words.extend(text.split_whitespace().enumerate().map(
+                        |(offset, word)| VisibleWord {
+                            word: word.to_string(),
+                            preview_rev,
+                            source: source.clone(),
+                            offset,
+                            covered_by: None,
+                        },
+                    ));
                 }
                 // The evidence list paints these hypotheses, but their PCM is
                 // already represented by a committed occurrence in the paste.
                 for (observation, text, owner) in covered {
-                    visible_words.extend(text.split_whitespace().enumerate().map(|(offset, word)| VisibleWord {
-                        word: word.to_string(), preview_rev: None,
-                        source: VisibleWordSource::Unanchored(observation.clone()), offset,
-                        covered_by: Some(owner.clone()),
-                    }));
+                    visible_words.extend(text.split_whitespace().enumerate().map(
+                        |(offset, word)| VisibleWord {
+                            word: word.to_string(),
+                            preview_rev: None,
+                            source: VisibleWordSource::Unanchored(observation.clone()),
+                            offset,
+                            covered_by: Some(owner.clone()),
+                        },
+                    ));
                 }
                 drop(phrase);
                 drop(state);
                 #[cfg(test)]
                 self.paint_commands.lock().unwrap().push(visible.clone());
-                self.session_state.lock()
+                self.session_state
+                    .lock()
                     .unwrap_or_else(|error| error.into_inner())
                     .last_painted_canvas = PaintedCanvas {
-                        text: visible,
-                        preview_only_words,
-                        visible_words,
-                        committed_sources,
-                    };
+                    text: visible,
+                    preview_only_words,
+                    visible_words,
+                    committed_sources,
+                };
                 self.paint_cursor(paint);
             }
             EmitterCmd::PaintBarrier(_) | EmitterCmd::Finish => {}
@@ -2514,12 +2628,10 @@ impl EventSink for PresentationEmitter {
                             }
                         }
                     }
-                    self.send_cmd(
-                        EmitterCmd::PublishCommittedRevision {
-                            paint: visible,
-                            delivery: revision.rendered_text,
-                        },
-                    );
+                    self.send_cmd(EmitterCmd::PublishCommittedRevision {
+                        paint: visible,
+                        delivery: revision.rendered_text,
+                    });
                     if was_stop_revision {
                         self.mint_light_plus_revision(&mut ledger);
                     } else {
@@ -2693,27 +2805,51 @@ impl EventSink for PresentationEmitter {
                 final_disposition: _,
                 refused_evidence,
             } => {
-                let mut phrase = self.phrase_preview_paint.lock()
+                let mut phrase = self
+                    .phrase_preview_paint
+                    .lock()
                     .unwrap_or_else(|error| error.into_inner());
-                let closed_revisions = phrase.open_revisions.iter().copied()
-                    .filter(|rev| rev <= superseded_through_rev).collect::<Vec<_>>();
-                phrase.open_revisions.retain(|rev| rev > superseded_through_rev);
+                let closed_revisions = phrase
+                    .open_revisions
+                    .iter()
+                    .copied()
+                    .filter(|rev| rev <= superseded_through_rev)
+                    .collect::<Vec<_>>();
+                phrase
+                    .open_revisions
+                    .retain(|rev| rev > superseded_through_rev);
                 for rev in closed_revisions {
                     // Preserve the first replacement: a stopped rev 5 replaced
                     // by partial 6 remains attributed to partial 6 after final 6.
-                    phrase.supersessions.entry(rev)
+                    phrase
+                        .supersessions
+                        .entry(rev)
                         .or_insert(PreviewSupersession::Final(*superseded_through_rev));
                 }
-                let closes_current = phrase.current_rev
+                let closes_current = phrase
+                    .current_rev
                     .is_some_and(|rev| rev <= *superseded_through_rev);
-                let preview_range = if closes_current { phrase.current_evidence.clone() } else { None };
+                let preview_range = if closes_current {
+                    phrase.current_evidence.clone()
+                } else {
+                    None
+                };
                 for refused in refused_evidence {
-                    let (sample_start, sample_end) = refused.range.as_ref()
+                    let (sample_start, sample_end) = refused
+                        .range
+                        .as_ref()
                         .map(|range| (range.sample_start, range.sample_end))
-                        .or_else(|| preview_range.as_ref().map(|range| (range.sample_start, range.sample_end)))
+                        .or_else(|| {
+                            preview_range
+                                .as_ref()
+                                .map(|range| (range.sample_start, range.sample_end))
+                        })
                         .unwrap_or((0, 0));
                     phrase.retained.push(UnanchoredEvidence {
-                        sample_start, sample_end, text: refused.text.clone(), reason: refused.reason.clone(),
+                        sample_start,
+                        sample_end,
+                        text: refused.text.clone(),
+                        reason: refused.reason.clone(),
                     });
                 }
                 if closes_current {
@@ -2722,25 +2858,35 @@ impl EventSink for PresentationEmitter {
                 }
                 drop(phrase);
                 if closes_current {
-                    *self.cursor_unanchored_preview.lock()
+                    *self
+                        .cursor_unanchored_preview
+                        .lock()
                         .unwrap_or_else(|error| error.into_inner()) = None;
                 }
                 let paint = {
-                    let mut state = self.session_state.lock()
+                    let mut state = self
+                        .session_state
+                        .lock()
                         .unwrap_or_else(|error| error.into_inner());
-                    if closes_current { state.clear_ephemeral_preview(); }
+                    if closes_current {
+                        state.clear_ephemeral_preview();
+                    }
                     state.ephemeral_visual_text()
                 };
                 self.send_cmd(EmitterCmd::PaintEphemeralPreview(paint));
             }
             EngineEvent::Preview { rev, text, pin } => {
                 {
-                    let mut phrase = self.phrase_preview_paint.lock()
+                    let mut phrase = self
+                        .phrase_preview_paint
+                        .lock()
                         .unwrap_or_else(|error| error.into_inner());
                     if let Some(previous) = phrase.current_rev
                         && previous != *rev
                     {
-                        phrase.supersessions.entry(previous)
+                        phrase
+                            .supersessions
+                            .entry(previous)
                             .or_insert(PreviewSupersession::Partial(*rev));
                     }
                     phrase.current_rev = Some(*rev);
@@ -2829,7 +2975,9 @@ impl EventSink for PresentationEmitter {
                     .unwrap_or_else(|e| e.into_inner()) = None;
                 self.repaint_cursor();
                 {
-                    let mut phrase = self.phrase_preview_paint.lock()
+                    let mut phrase = self
+                        .phrase_preview_paint
+                        .lock()
                         .unwrap_or_else(|error| error.into_inner());
                     phrase.current_rev = None;
                     phrase.current_evidence = None;
@@ -2887,7 +3035,9 @@ impl EventSink for PresentationEmitter {
                     return;
                 }
                 {
-                    let mut phrase = self.phrase_preview_paint.lock()
+                    let mut phrase = self
+                        .phrase_preview_paint
+                        .lock()
                         .unwrap_or_else(|error| error.into_inner());
                     phrase.current_rev = None;
                     phrase.current_evidence = None;
@@ -2927,7 +3077,9 @@ impl EventSink for PresentationEmitter {
                     .unwrap_or_else(|e| e.into_inner()) = None;
                 self.repaint_cursor();
                 {
-                    let mut phrase = self.phrase_preview_paint.lock()
+                    let mut phrase = self
+                        .phrase_preview_paint
+                        .lock()
                         .unwrap_or_else(|error| error.into_inner());
                     phrase.current_rev = None;
                     phrase.current_evidence = None;
@@ -2971,6 +3123,7 @@ mod tests {
         DocumentRevisionProvenance, EnergyCalibration, IncrementalShapingReceipt, MutationReceipt,
         ObservationIdentity, ObservationProducer, OccurrenceIdentity, SealRefusal,
     };
+    use codescribe_core::pipeline::contracts::PreviewFinalDisposition;
     use codescribe_core::pipeline::contracts::{
         AnnotationKind, DeltaSink, EngineEvent, EventSink, LayerSource, LayerSummary, PreviewPin,
         TranscriptDelta,
@@ -3563,11 +3716,22 @@ mod tests {
         assert_eq!(frozen.preview_only_words, 4);
         assert!(frozen.text.ends_with("visible evidence last preview"));
         assert!(!frozen.text.contains("covered evidence"));
-        assert!(emitter.session_state.lock().unwrap().unanchored_evidence("take", 7)
-            .iter().any(|item| item.text == "covered evidence"));
+        assert!(
+            emitter
+                .session_state
+                .lock()
+                .unwrap()
+                .unanchored_evidence("take", 7)
+                .iter()
+                .any(|item| item.text == "covered evidence")
+        );
         let accounted = frozen.missing_words_from(&frozen);
         assert_eq!(accounted.len(), 2);
-        assert!(accounted.iter().all(|word| word.reason.starts_with("covered_by_committed occurrence=")));
+        assert!(
+            accounted
+                .iter()
+                .all(|word| word.reason.starts_with("covered_by_committed occurrence="))
+        );
         assert_eq!(
             emitter.shape_frozen_canvas_at_stop(frozen.clone()).unwrap(),
             frozen
@@ -3904,7 +4068,10 @@ mod tests {
             label: "unanchored words".into(),
             receipt,
         });
-        emitter.on_event(&preview_disposition(2, PreviewFinalDisposition::KeptUnanchored));
+        emitter.on_event(&preview_disposition(
+            2,
+            PreviewFinalDisposition::KeptUnanchored,
+        ));
         assert_paint("One two three four five six unanchored words", 2);
 
         let last = admitted_mutation(&mut ledger.lock().unwrap(), tail, 3, "settled tail");
@@ -4067,10 +4234,16 @@ mod tests {
     fn refused_final(rev: u64, text: &str) -> EngineEvent {
         EngineEvent::PreviewDisposition {
             superseded_through_rev: rev,
-            final_disposition: PreviewFinalDisposition::Refused { reason: "untimed".into() },
-            refused_evidence: vec![codescribe_core::pipeline::contracts::RefusedPreviewEvidence {
-                range: None, text: text.into(), reason: "untimed".into(),
-            }],
+            final_disposition: PreviewFinalDisposition::Refused {
+                reason: "untimed".into(),
+            },
+            refused_evidence: vec![
+                codescribe_core::pipeline::contracts::RefusedPreviewEvidence {
+                    range: None,
+                    text: text.into(),
+                    reason: "untimed".into(),
+                },
+            ],
         }
     }
 
@@ -4078,24 +4251,39 @@ mod tests {
     async fn admitted_phrase_clears_only_its_zero_width_preview() {
         let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
         let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::new(Mutex::new(String::new())), None, None, None,
-            Some(Arc::clone(&ledger)), None,
+            Arc::new(Mutex::new(String::new())),
+            None,
+            None,
+            None,
+            Some(Arc::clone(&ledger)),
+            None,
         );
         emitter.set_literal_delivery(true);
         emitter.on_capture_opened("take", 7);
         emitter.on_event(&zero_width_preview(1, "Iwo Iwo"));
         let before = emitter.begin_stop_canvas().unwrap();
-        let admitted = admitted_mutation(&mut ledger.lock().unwrap(),
-            OccurrenceIdentity::new("take", 7, 0, 16_000), 1, "Iwo");
+        let admitted = admitted_mutation(
+            &mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("take", 7, 0, 16_000),
+            1,
+            "Iwo",
+        );
         emitter.on_event(&admitted);
-        emitter.on_event(&preview_disposition(1, super::PreviewFinalDisposition::Admitted));
+        emitter.on_event(&preview_disposition(
+            1,
+            super::PreviewFinalDisposition::Admitted,
+        ));
         let after = emitter.finish_stop_canvas().unwrap();
         assert_eq!(after.text, "Iwo");
         assert_eq!(after.preview_only_words, 0);
         let missing = before.missing_words_from(&after);
         assert_eq!(missing.len(), 2);
         assert_eq!(missing[0].word, "Iwo");
-        assert!(missing.iter().all(|word| word.reason == "superseded_by_final rev=1"));
+        assert!(
+            missing
+                .iter()
+                .all(|word| word.reason == "superseded_by_final rev=1")
+        );
         emitter.finish().await;
     }
 
@@ -4103,8 +4291,12 @@ mod tests {
     async fn shortened_refused_and_pending_phrases_have_zero_unaccounted_words() {
         let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
         let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::new(Mutex::new(String::new())), None, None, None,
-            Some(Arc::clone(&ledger)), None,
+            Arc::new(Mutex::new(String::new())),
+            None,
+            None,
+            None,
+            Some(Arc::clone(&ledger)),
+            None,
         );
         emitter.set_literal_delivery(true);
         emitter.on_capture_opened("take", 7);
@@ -4113,19 +4305,33 @@ mod tests {
         emitter.on_event(&zero_width_preview(2, "Iwo Iwo"));
         let at_stop = emitter.begin_stop_canvas().unwrap();
         assert!(at_stop.text.contains("refused words"));
-        let admitted = admitted_mutation(&mut ledger.lock().unwrap(),
-            OccurrenceIdentity::new("take", 7, 0, 16_000), 1, "Iwo");
+        let admitted = admitted_mutation(
+            &mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("take", 7, 0, 16_000),
+            1,
+            "Iwo",
+        );
         emitter.on_event(&admitted);
-        emitter.on_event(&preview_disposition(2, super::PreviewFinalDisposition::Admitted));
+        emitter.on_event(&preview_disposition(
+            2,
+            super::PreviewFinalDisposition::Admitted,
+        ));
         emitter.on_event(&zero_width_preview(3, "pending words"));
         let deadline = emitter.finish_stop_canvas().unwrap();
         assert_eq!(deadline.text, "Iwo refused words pending words");
         let missing = at_stop.missing_words_from(&deadline);
         assert_eq!(missing.len(), 2);
-        assert!(missing.iter().all(|word| word.reason == "superseded_by_final rev=2"));
+        assert!(
+            missing
+                .iter()
+                .all(|word| word.reason == "superseded_by_final rev=2")
+        );
         assert!(missing.iter().all(|word| word.reason != "unaccounted"));
         // The earlier phrase keeps its own final receipt.
-        assert_eq!(deadline.preview_supersessions.get(&1), Some(&super::PreviewSupersession::Final(1)));
+        assert_eq!(
+            deadline.preview_supersessions.get(&1),
+            Some(&super::PreviewSupersession::Final(1))
+        );
         assert!(!deadline.preview_supersessions.contains_key(&3));
         emitter.finish().await;
     }
@@ -4135,14 +4341,22 @@ mod tests {
         for zero_width in [false, true] {
             let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
             let mut emitter = PresentationEmitter::new_with_authority(
-                Arc::new(Mutex::new(String::new())), None, None, None,
-                Some(Arc::clone(&ledger)), None,
+                Arc::new(Mutex::new(String::new())),
+                None,
+                None,
+                None,
+                Some(Arc::clone(&ledger)),
+                None,
             );
             emitter.set_literal_delivery(true);
             emitter.on_capture_opened("take", 7);
             emitter.on_event(&zero_width_preview(1, "refused earlier"));
             emitter.on_event(&refused_final(1, "refused earlier"));
-            let partial = if zero_width { zero_width_preview } else { preview };
+            let partial = if zero_width {
+                zero_width_preview
+            } else {
+                preview
+            };
             emitter.on_event(&partial(2, "one two three"));
             let stopped = emitter.begin_stop_canvas().unwrap();
             emitter.on_event(&partial(3, "one"));
@@ -4150,19 +4364,40 @@ mod tests {
             assert_eq!(deadline.text, "refused earlier one");
             let missing = stopped.missing_words_from(&deadline);
             assert_eq!(missing.len(), 3);
-            assert!(missing.iter().all(|word| word.reason == "superseded_by_partial rev=3"));
+            assert!(
+                missing
+                    .iter()
+                    .all(|word| word.reason == "superseded_by_partial rev=3")
+            );
             emitter.on_event(&partial(4, "one"));
-            assert_eq!(emitter.visible_canvas_snapshot().unwrap().text, deadline.text);
-            let admitted = admitted_mutation(&mut ledger.lock().unwrap(),
-                OccurrenceIdentity::new("take", 7, 0, 16_000), 1, "one");
+            assert_eq!(
+                emitter.visible_canvas_snapshot().unwrap().text,
+                deadline.text
+            );
+            let admitted = admitted_mutation(
+                &mut ledger.lock().unwrap(),
+                OccurrenceIdentity::new("take", 7, 0, 16_000),
+                1,
+                "one",
+            );
             emitter.on_event(&admitted);
-            emitter.on_event(&preview_disposition(4, super::PreviewFinalDisposition::Admitted));
+            emitter.on_event(&preview_disposition(
+                4,
+                super::PreviewFinalDisposition::Admitted,
+            ));
             let settled = emitter.finish_stop_canvas().unwrap();
             assert_eq!(settled.text, "one refused earlier");
             let missing = stopped.missing_words_from(&settled);
             assert_eq!(missing.len(), 3);
-            assert!(missing.iter().all(|word| word.reason == "superseded_by_partial rev=3"));
-            assert_eq!(settled.preview_supersessions.get(&1), Some(&super::PreviewSupersession::Final(1)));
+            assert!(
+                missing
+                    .iter()
+                    .all(|word| word.reason == "superseded_by_partial rev=3")
+            );
+            assert_eq!(
+                settled.preview_supersessions.get(&1),
+                Some(&super::PreviewSupersession::Final(1))
+            );
             emitter.finish().await;
         }
     }
@@ -4171,19 +4406,35 @@ mod tests {
     async fn kept_unanchored_phrase_replaces_preview_without_losing_evidence() {
         let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
         let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::new(Mutex::new(String::new())), None, None, None,
-            Some(Arc::clone(&ledger)), None,
+            Arc::new(Mutex::new(String::new())),
+            None,
+            None,
+            None,
+            Some(Arc::clone(&ledger)),
+            None,
         );
         emitter.on_capture_opened("take", 7);
         emitter.on_event(&zero_width_preview(1, "unanchored words"));
-        let observation = ObservationIdentity::new(ObservationProducer::Apple, 1, 0,
-            OccurrenceIdentity::new("take", 7, 0, 16_000));
-        let receipt = ledger.lock().unwrap().keep_visible_unanchored(&observation,
-            "unanchored words", super::NoAuthorityReason::NoRange);
+        let observation = ObservationIdentity::new(
+            ObservationProducer::Apple,
+            1,
+            0,
+            OccurrenceIdentity::new("take", 7, 0, 16_000),
+        );
+        let receipt = ledger.lock().unwrap().keep_visible_unanchored(
+            &observation,
+            "unanchored words",
+            super::NoAuthorityReason::NoRange,
+        );
         emitter.on_event(&EngineEvent::LedgerMutation {
-            observation, label: "unanchored words".to_string(), receipt,
+            observation,
+            label: "unanchored words".to_string(),
+            receipt,
         });
-        emitter.on_event(&preview_disposition(1, super::PreviewFinalDisposition::KeptUnanchored));
+        emitter.on_event(&preview_disposition(
+            1,
+            super::PreviewFinalDisposition::KeptUnanchored,
+        ));
         let snapshot = emitter.visible_canvas_snapshot().unwrap();
         assert_eq!(snapshot.text, "unanchored words");
         assert_eq!(snapshot.preview_only_words, 2);
@@ -4209,22 +4460,34 @@ mod tests {
     async fn pending_latest_partial_survives_an_unrelated_committed_paint() {
         let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
         let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::new(Mutex::new(String::new())), None, None, None,
-            Some(Arc::clone(&ledger)), None,
+            Arc::new(Mutex::new(String::new())),
+            None,
+            None,
+            None,
+            Some(Arc::clone(&ledger)),
+            None,
         );
         emitter.set_literal_delivery(true);
         emitter.on_capture_opened("take", 7);
         emitter.on_event(&preview(5, "pending old suffix"));
         let stopped = emitter.begin_stop_canvas().unwrap();
         emitter.on_event(&preview(6, "latest"));
-        let mutation = admitted_mutation(&mut ledger.lock().unwrap(),
-            OccurrenceIdentity::new("take", 7, 0, 16_000), 1, "earlier");
+        let mutation = admitted_mutation(
+            &mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("take", 7, 0, 16_000),
+            1,
+            "earlier",
+        );
         emitter.on_event(&mutation);
         let deadline = emitter.finish_stop_canvas().unwrap();
         assert_eq!(deadline.text, "earlier latest");
         assert_eq!(deadline.preview_only_words, 1);
-        assert!(stopped.missing_words_from(&deadline).iter()
-            .all(|word| word.reason == "superseded_by_partial rev=6"));
+        assert!(
+            stopped
+                .missing_words_from(&deadline)
+                .iter()
+                .all(|word| word.reason == "superseded_by_partial rev=6")
+        );
         emitter.finish().await;
     }
 
@@ -4232,24 +4495,37 @@ mod tests {
     async fn relabel_in_place_during_the_wait_is_accounted_not_a_defect() {
         let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
         let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::new(Mutex::new(String::new())), None, None, None,
-            Some(Arc::clone(&ledger)), None,
+            Arc::new(Mutex::new(String::new())),
+            None,
+            None,
+            None,
+            Some(Arc::clone(&ledger)),
+            None,
         );
         emitter.set_literal_delivery(true);
         emitter.on_capture_opened("take", 7);
         let occurrence = OccurrenceIdentity::new("take", 7, 0, 16_000);
-        let mutation = admitted_mutation(&mut ledger.lock().unwrap(), occurrence.clone(), 1, "before");
+        let mutation =
+            admitted_mutation(&mut ledger.lock().unwrap(), occurrence.clone(), 1, "before");
         emitter.on_event(&mutation);
         let stopped = emitter.begin_stop_canvas().unwrap();
-        let observation = ObservationIdentity::new(ObservationProducer::Apple, 2, 1, occurrence.clone());
+        let observation =
+            ObservationIdentity::new(ObservationProducer::Apple, 2, 1, occurrence.clone());
         let receipt = ledger.lock().unwrap().admit(&observation, "after");
         assert!(matches!(receipt, MutationReceipt::Correct { .. }));
-        emitter.on_event(&EngineEvent::LedgerMutation { observation, label: "after".into(), receipt });
+        emitter.on_event(&EngineEvent::LedgerMutation {
+            observation,
+            label: "after".into(),
+            receipt,
+        });
         let frozen = emitter.finish_stop_canvas().unwrap();
         assert_eq!(frozen.text, "after");
         let missing = stopped.missing_words_from(&frozen);
         assert_eq!(missing.len(), 1);
-        assert_eq!(missing[0].reason, format!("relabeled_in_place occurrence={occurrence:?}"));
+        assert_eq!(
+            missing[0].reason,
+            format!("relabeled_in_place occurrence={occurrence:?}")
+        );
         assert!(missing.iter().all(|word| word.reason != "unaccounted"));
         emitter.finish().await;
     }
@@ -4258,18 +4534,29 @@ mod tests {
     async fn stop_wait_accounts_for_shaping_relabel_and_untouched_occurrences() {
         let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
         let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::new(Mutex::new(String::new())), None, None, None,
-            Some(Arc::clone(&ledger)), None,
+            Arc::new(Mutex::new(String::new())),
+            None,
+            None,
+            None,
+            Some(Arc::clone(&ledger)),
+            None,
         );
         // Hold presentation until the seal arrives during the STOP wait.
         emitter.set_literal_delivery(true);
         emitter.on_capture_opened("take", 7);
-        let occurrences = (0..3).map(|index|
-            OccurrenceIdentity::new("take", 7, index * 16_000, (index + 1) * 16_000)
-        ).collect::<Vec<_>>();
-        for (index, label) in ["first phrase", "old label words", "untouched words"].iter().enumerate() {
-            let mutation = admitted_mutation(&mut ledger.lock().unwrap(),
-                occurrences[index].clone(), index as u64 + 1, label);
+        let occurrences = (0..3)
+            .map(|index| OccurrenceIdentity::new("take", 7, index * 16_000, (index + 1) * 16_000))
+            .collect::<Vec<_>>();
+        for (index, label) in ["first phrase", "old label words", "untouched words"]
+            .iter()
+            .enumerate()
+        {
+            let mutation = admitted_mutation(
+                &mut ledger.lock().unwrap(),
+                occurrences[index].clone(),
+                index as u64 + 1,
+                label,
+            );
             emitter.on_event(&mutation);
         }
         let stopped = emitter.begin_stop_canvas().unwrap();
@@ -4281,21 +4568,39 @@ mod tests {
             ledger.seal(&occurrences[0]).unwrap().clone()
         };
         emitter.on_event(&EngineEvent::LedgerSeal { receipt });
-        let observation = ObservationIdentity::new(
-            ObservationProducer::Whisper, 4, 0, occurrences[1].clone(),
-        );
+        let observation =
+            ObservationIdentity::new(ObservationProducer::Whisper, 4, 0, occurrences[1].clone());
         let receipt = ledger.lock().unwrap().admit(&observation, "new label");
         assert!(matches!(receipt, MutationReceipt::Correct { .. }));
-        emitter.on_event(&EngineEvent::LedgerMutation { observation, label: "new label".into(), receipt });
+        emitter.on_event(&EngineEvent::LedgerMutation {
+            observation,
+            label: "new label".into(),
+            receipt,
+        });
         let frozen = emitter.finish_stop_canvas().unwrap();
         assert_eq!(frozen.text, "First phrase new label untouched words");
-        assert_eq!(frozen.text, *emitter.paint_commands.lock().unwrap().last().unwrap());
+        assert_eq!(
+            frozen.text,
+            *emitter.paint_commands.lock().unwrap().last().unwrap()
+        );
         let missing = stopped.missing_words_from(&frozen);
         assert_eq!(missing.len(), 5);
-        assert_eq!(missing.iter().filter(|word|
-            word.reason == format!("reshaped_in_place occurrence={:?}", occurrences[0])).count(), 2);
-        assert_eq!(missing.iter().filter(|word|
-            word.reason == format!("relabeled_in_place occurrence={:?}", occurrences[1])).count(), 3);
+        assert_eq!(
+            missing
+                .iter()
+                .filter(|word| word.reason
+                    == format!("reshaped_in_place occurrence={:?}", occurrences[0]))
+                .count(),
+            2
+        );
+        assert_eq!(
+            missing
+                .iter()
+                .filter(|word| word.reason
+                    == format!("relabeled_in_place occurrence={:?}", occurrences[1]))
+                .count(),
+            3
+        );
         assert_eq!(stopped.visible_words.len() - missing.len(), 2);
         assert!(missing.iter().all(|word| word.reason != "unaccounted"));
         emitter.finish().await;
@@ -4305,22 +4610,35 @@ mod tests {
     async fn removed_committed_occurrence_without_successor_is_unaccounted() {
         let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
         let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::new(Mutex::new(String::new())), None, None, None,
-            Some(Arc::clone(&ledger)), None,
+            Arc::new(Mutex::new(String::new())),
+            None,
+            None,
+            None,
+            Some(Arc::clone(&ledger)),
+            None,
         );
         emitter.set_literal_delivery(true);
         emitter.on_capture_opened("take", 7);
         let removed = OccurrenceIdentity::new("take", 7, 0, 16_000);
         let survivor = OccurrenceIdentity::new("take", 7, 16_000, 32_000);
         for (index, occurrence) in [&removed, &survivor].iter().enumerate() {
-            let mutation = admitted_mutation(&mut ledger.lock().unwrap(),
-                (*occurrence).clone(), index as u64 + 1, "same words");
+            let mutation = admitted_mutation(
+                &mut ledger.lock().unwrap(),
+                (*occurrence).clone(),
+                index as u64 + 1,
+                "same words",
+            );
             emitter.on_event(&mutation);
         }
         let stopped = emitter.begin_stop_canvas().unwrap();
         // Fault injection: lose a reducer entry while identical words survive
         // at a disjoint PCM range. Text must not conceal the loss.
-        emitter.session_state.lock().unwrap().document_by_occurrence.remove(&removed);
+        emitter
+            .session_state
+            .lock()
+            .unwrap()
+            .document_by_occurrence
+            .remove(&removed);
         emitter.send_committed_paint("same words".into());
         let frozen = emitter.finish_stop_canvas().unwrap();
         let missing = stopped.missing_words_from(&frozen);
@@ -4340,11 +4658,19 @@ mod tests {
         let covered = emitter.visible_canvas_snapshot().unwrap();
         let accounted = stopped.missing_words_from(&covered);
         assert_eq!(accounted.len(), 4);
-        assert!(accounted.iter().all(|word|
-            word.reason == format!("covered_by_committed occurrence={owner:?}")));
+        assert!(
+            accounted
+                .iter()
+                .all(|word| word.reason == format!("covered_by_committed occurrence={owner:?}"))
+        );
         let mut foreign = covered.clone();
         foreign.capture_epoch += 1;
-        assert!(stopped.missing_words_from(&foreign).iter().all(|word| word.reason == "unaccounted"));
+        assert!(
+            stopped
+                .missing_words_from(&foreign)
+                .iter()
+                .all(|word| word.reason == "unaccounted")
+        );
         emitter.finish().await;
     }
 
@@ -4352,63 +4678,103 @@ mod tests {
     async fn document_revision_accounts_for_member_occurrences() {
         let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
         let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::new(Mutex::new(String::new())), None, None, None,
-            Some(Arc::clone(&ledger)), None,
+            Arc::new(Mutex::new(String::new())),
+            None,
+            None,
+            None,
+            Some(Arc::clone(&ledger)),
+            None,
         );
         emitter.set_literal_delivery(true);
         emitter.on_capture_opened("take", 7);
         let first = OccurrenceIdentity::new("take", 7, 0, 16_000);
         let second = OccurrenceIdentity::new("take", 7, 16_000, 32_000);
         for (index, occurrence) in [&first, &second].iter().enumerate() {
-            let mutation = admitted_mutation(&mut ledger.lock().unwrap(),
-                (*occurrence).clone(), index as u64 + 1, "old words");
+            let mutation = admitted_mutation(
+                &mut ledger.lock().unwrap(),
+                (*occurrence).clone(),
+                index as u64 + 1,
+                "old words",
+            );
             emitter.on_event(&mutation);
         }
         let plain = emitter.visible_canvas_snapshot().unwrap();
-        emitter.on_event(&EngineEvent::ContextMarker { position: 0, label: "{selection_1}".into() });
+        emitter.on_event(&EngineEvent::ContextMarker {
+            position: 0,
+            label: "{selection_1}".into(),
+        });
         let stopped = emitter.begin_stop_canvas().unwrap();
         assert!(plain.missing_words_from(&stopped).is_empty());
-        let observation = ObservationIdentity::new(ObservationProducer::Whisper, 3, 0, first.clone());
+        let observation =
+            ObservationIdentity::new(ObservationProducer::Whisper, 3, 0, first.clone());
         let receipt = ledger.lock().unwrap().admit(&observation, "new label");
         assert!(matches!(receipt, MutationReceipt::Correct { .. }));
-        emitter.on_event(&EngineEvent::LedgerMutation { observation, label: "new label".into(), receipt });
+        emitter.on_event(&EngineEvent::LedgerMutation {
+            observation,
+            label: "new label".into(),
+            receipt,
+        });
         let relabeled = emitter.visible_canvas_snapshot().unwrap();
         assert_eq!(relabeled.text, "{selection_1} new label old words");
-        assert!(stopped.missing_words_from(&relabeled).iter().all(|word|
-            word.reason == format!("relabeled_in_place occurrence={first:?}")));
+        assert!(
+            stopped
+                .missing_words_from(&relabeled)
+                .iter()
+                .all(|word| word.reason == format!("relabeled_in_place occurrence={first:?}"))
+        );
 
         emitter.on_event(&EngineEvent::SessionFinalised {
-            session_id: "take".into(), layer_summary: LayerSummary::default(),
+            session_id: "take".into(),
+            layer_summary: LayerSummary::default(),
         });
-        emitter.apply_user_revision(UserRevisionIntent {
-            session_id: "take".into(), source_revision: relabeled.revision,
-            rendered_text: "Revised document.".into(),
-            provenance: DocumentRevisionProvenance::UserEdit,
-        }).unwrap();
+        emitter
+            .apply_user_revision(UserRevisionIntent {
+                session_id: "take".into(),
+                source_revision: relabeled.revision,
+                rendered_text: "Revised document.".into(),
+                provenance: DocumentRevisionProvenance::UserEdit,
+            })
+            .unwrap();
         let revised = emitter.visible_canvas_snapshot().unwrap();
         assert_eq!(revised.committed_sources.len(), 2);
         let reshaped = relabeled.missing_words_from(&revised);
         assert_eq!(reshaped.len(), relabeled.visible_words.len());
-        assert!(reshaped.iter().all(|word|
-            word.reason.contains(&format!("reshaped_in_place occurrence={first:?}"))
-                && word.reason.contains(&format!("reshaped_in_place occurrence={second:?}"))));
+        assert!(reshaped.iter().all(|word| {
+            word.reason
+                .contains(&format!("reshaped_in_place occurrence={first:?}"))
+                && word
+                    .reason
+                    .contains(&format!("reshaped_in_place occurrence={second:?}"))
+        }));
         assert!(revised.missing_words_from(&revised).is_empty());
 
-        emitter.apply_user_revision(UserRevisionIntent {
-            session_id: "take".into(), source_revision: revised.revision,
-            rendered_text: "Another document revision.".into(),
-            provenance: DocumentRevisionProvenance::UserEdit,
-        }).unwrap();
+        emitter
+            .apply_user_revision(UserRevisionIntent {
+                session_id: "take".into(),
+                source_revision: revised.revision,
+                rendered_text: "Another document revision.".into(),
+                provenance: DocumentRevisionProvenance::UserEdit,
+            })
+            .unwrap();
         let frozen = emitter.finish_stop_canvas().unwrap();
         assert_eq!(frozen.text, "Another document revision.");
-        assert!(revised.missing_words_from(&frozen).iter().all(|word|
-            word.reason.contains(&format!("reshaped_in_place occurrence={first:?}"))
-                && word.reason.contains(&format!("reshaped_in_place occurrence={second:?}"))));
+        assert!(revised.missing_words_from(&frozen).iter().all(|word| {
+            word.reason
+                .contains(&format!("reshaped_in_place occurrence={first:?}"))
+                && word
+                    .reason
+                    .contains(&format!("reshaped_in_place occurrence={second:?}"))
+        }));
 
         // Joint document provenance is not permission to lose a member.
         let mut removed = frozen.clone();
         removed.committed_sources.remove(&second);
-        assert!(revised.missing_words_from(&removed).iter().all(|word| word.reason == "unaccounted"));
+        assert!(
+            revised
+                .missing_words_from(&removed)
+                .iter()
+                .all(|word| word.reason == "unaccounted")
+        );
         emitter.finish().await;
     }
 
@@ -4416,26 +4782,41 @@ mod tests {
     async fn frozen_shaping_accounts_for_every_committed_member() {
         let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
         let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::new(Mutex::new(String::new())), None, None, None,
-            Some(Arc::clone(&ledger)), None,
+            Arc::new(Mutex::new(String::new())),
+            None,
+            None,
+            None,
+            Some(Arc::clone(&ledger)),
+            None,
         );
         emitter.set_literal_delivery(true);
         emitter.on_capture_opened("take", 7);
         for index in 0..2 {
-            let mutation = admitted_mutation(&mut ledger.lock().unwrap(),
+            let mutation = admitted_mutation(
+                &mut ledger.lock().unwrap(),
                 OccurrenceIdentity::new("take", 7, index * 16_000, (index + 1) * 16_000),
-                index + 1, "some words");
+                index + 1,
+                "some words",
+            );
             emitter.on_event(&mutation);
         }
         let stopped = emitter.begin_stop_canvas().unwrap();
         emitter.set_literal_delivery(false);
-        let frozen = emitter.shape_frozen_canvas_at_stop(stopped.clone()).unwrap();
+        let frozen = emitter
+            .shape_frozen_canvas_at_stop(stopped.clone())
+            .unwrap();
         assert_eq!(frozen.text, "Some words some words.");
         let missing = stopped.missing_words_from(&frozen);
         assert_eq!(missing.len(), 4);
         for occurrence in stopped.committed_sources.keys() {
-            assert_eq!(missing.iter().filter(|word|
-                word.reason == format!("reshaped_in_place occurrence={occurrence:?}")).count(), 2);
+            assert_eq!(
+                missing
+                    .iter()
+                    .filter(|word| word.reason
+                        == format!("reshaped_in_place occurrence={occurrence:?}"))
+                    .count(),
+                2
+            );
         }
         let painted = emitter.visible_canvas_snapshot().unwrap();
         assert_eq!(frozen.visible_words, painted.visible_words);
@@ -4448,15 +4829,25 @@ mod tests {
         use codescribe_core::pipeline::acoustic_ledger::ConsultationPresentationMember;
         let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
         let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::new(Mutex::new(String::new())), None, None, None,
-            Some(Arc::clone(&ledger)), None,
+            Arc::new(Mutex::new(String::new())),
+            None,
+            None,
+            None,
+            Some(Arc::clone(&ledger)),
+            None,
         );
         emitter.set_literal_delivery(true);
         emitter.on_capture_opened("take", 7);
         let mut members = Vec::new();
         for index in 0..2 {
-            let occurrence = OccurrenceIdentity::new("take", 7, index * 16_000, (index + 1) * 16_000);
-            let mutation = admitted_mutation(&mut ledger.lock().unwrap(), occurrence.clone(), index + 1, "old words");
+            let occurrence =
+                OccurrenceIdentity::new("take", 7, index * 16_000, (index + 1) * 16_000);
+            let mutation = admitted_mutation(
+                &mut ledger.lock().unwrap(),
+                occurrence.clone(),
+                index + 1,
+                "old words",
+            );
             emitter.on_event(&mutation);
             let seal = {
                 let mut ledger = ledger.lock().unwrap();
@@ -4464,21 +4855,34 @@ mod tests {
                 assert!(ledger.note_frontier_return(&occurrence, ObservationProducer::Apple));
                 ledger.seal(&occurrence).unwrap().clone()
             };
-            emitter.on_event(&EngineEvent::LedgerSeal { receipt: seal.clone() });
+            emitter.on_event(&EngineEvent::LedgerSeal {
+                receipt: seal.clone(),
+            });
             members.push(ConsultationPresentationMember {
-                occurrence, source_label: "old words".into(), seal_receipt: seal.receipt_id,
+                occurrence,
+                source_label: "old words".into(),
+                seal_receipt: seal.receipt_id,
             });
         }
         let stopped = emitter.begin_stop_canvas().unwrap();
         let revision = {
             let mut ledger = ledger.lock().unwrap();
-            emitter.session_state.lock().unwrap().apply_consultation_presentation(
-                &mut ledger,
-                ConsultationPresentationInput {
-                    consultation_id: "Max", turn_id: "stop-wait", source_revision: 0, revision: 1,
-                    members: &members, rendered_text: "Combined answer",
-                },
-            ).unwrap()
+            emitter
+                .session_state
+                .lock()
+                .unwrap()
+                .apply_consultation_presentation(
+                    &mut ledger,
+                    ConsultationPresentationInput {
+                        consultation_id: "Max",
+                        turn_id: "stop-wait",
+                        source_revision: 0,
+                        revision: 1,
+                        members: &members,
+                        rendered_text: "Combined answer",
+                    },
+                )
+                .unwrap()
         };
         emitter.publish_revision(revision);
         let frozen = emitter.finish_stop_canvas().unwrap();
@@ -4487,8 +4891,14 @@ mod tests {
         let missing = stopped.missing_words_from(&frozen);
         assert_eq!(missing.len(), 4);
         for member in &members {
-            assert_eq!(missing.iter().filter(|word|
-                word.reason == format!("reshaped_in_place occurrence={:?}", member.occurrence)).count(), 2);
+            assert_eq!(
+                missing
+                    .iter()
+                    .filter(|word| word.reason
+                        == format!("reshaped_in_place occurrence={:?}", member.occurrence))
+                    .count(),
+                2
+            );
         }
         {
             let mut state = emitter.session_state.lock().unwrap();
@@ -4514,11 +4924,16 @@ mod tests {
         assert_eq!(frozen.text, "final evidence");
         let missing = stopped.missing_words_from(&frozen);
         assert_eq!(missing.len(), 3);
-        assert!(missing.iter().all(|word| word.reason == "superseded_by_final rev=1"));
-        let phrase = emitter.phrase_preview_paint.lock().unwrap();
-        assert!(phrase.current_rev.is_none());
-        assert_eq!(phrase.retained[0].sample_start, 16_000);
-        drop(phrase);
+        assert!(
+            missing
+                .iter()
+                .all(|word| word.reason == "superseded_by_final rev=1")
+        );
+        {
+            let phrase = emitter.phrase_preview_paint.lock().unwrap();
+            assert!(phrase.current_rev.is_none());
+            assert_eq!(phrase.retained[0].sample_start, 16_000);
+        }
         emitter.finish().await;
     }
 
@@ -4529,20 +4944,36 @@ mod tests {
         let projections = Arc::new(StdMutex::new(Vec::<super::CompactProjection>::new()));
         let observed = Arc::clone(&projections);
         let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::new(Mutex::new(String::new())), None, None, None,
-            Some(Arc::clone(&ledger)), None,
-        ).with_cursor_observer(Arc::new(move |projection| observed.lock().unwrap().push(projection.clone())));
+            Arc::new(Mutex::new(String::new())),
+            None,
+            None,
+            None,
+            Some(Arc::clone(&ledger)),
+            None,
+        )
+        .with_cursor_observer(Arc::new(move |projection| {
+            observed.lock().unwrap().push(projection.clone())
+        }));
         emitter.set_literal_delivery(true);
         emitter.on_capture_opened("take", 7);
         let owner = OccurrenceIdentity::new("take", 7, 0, 16_000);
         let mutation = admitted_mutation(&mut ledger.lock().unwrap(), owner.clone(), 1, "kept");
         emitter.on_event(&mutation);
-        let evidence = ObservationIdentity::new(ObservationProducer::Apple, 2, 0,
-            OccurrenceIdentity::new("take", 7, 0, 8_000));
-        let receipt = ledger.lock().unwrap().keep_visible_unanchored(&evidence, "covered hypothesis",
-            codescribe_core::pipeline::acoustic_ledger::NoAuthorityReason::NoRange);
+        let evidence = ObservationIdentity::new(
+            ObservationProducer::Apple,
+            2,
+            0,
+            OccurrenceIdentity::new("take", 7, 0, 8_000),
+        );
+        let receipt = ledger.lock().unwrap().keep_visible_unanchored(
+            &evidence,
+            "covered hypothesis",
+            codescribe_core::pipeline::acoustic_ledger::NoAuthorityReason::NoRange,
+        );
         emitter.on_event(&EngineEvent::LedgerMutation {
-            observation: evidence, label: "covered hypothesis".into(), receipt,
+            observation: evidence,
+            label: "covered hypothesis".into(),
+            receipt,
         });
 
         // Preserve is an already-visible final, never a retained preview.
@@ -4551,31 +4982,52 @@ mod tests {
         let observation = ObservationIdentity::new(ObservationProducer::Apple, 3, 0, owner);
         let receipt = ledger.lock().unwrap().admit(&observation, "kept");
         assert!(matches!(receipt, MutationReceipt::Preserve { .. }));
-        emitter.on_event(&EngineEvent::LedgerMutation { observation, label: "kept".into(), receipt });
+        emitter.on_event(&EngineEvent::LedgerMutation {
+            observation,
+            label: "kept".into(),
+            receipt,
+        });
         emitter.on_event(&preview_disposition(1, PreviewFinalDisposition::Admitted));
         let after_preserve = emitter.visible_canvas_snapshot().unwrap();
         assert_eq!(after_preserve.text, "kept");
-        assert!(before_preserve.missing_words_from(&after_preserve).iter().all(|word|
-            word.reason == "superseded_by_final rev=1" || word.reason.starts_with("covered_by_committed")));
+        assert!(
+            before_preserve
+                .missing_words_from(&after_preserve)
+                .iter()
+                .all(|word| word.reason == "superseded_by_final rev=1"
+                    || word.reason.starts_with("covered_by_committed"))
+        );
 
         // The admitted part and refused part both survive, once, in PCM order.
         emitter.on_event(&zero_width_preview(2, "partly guessed preview"));
         let before_refusal = emitter.visible_canvas_snapshot().unwrap();
-        let mutation = admitted_mutation(&mut ledger.lock().unwrap(),
-            OccurrenceIdentity::new("take", 7, 16_000, 32_000), 4, "admitted");
+        let mutation = admitted_mutation(
+            &mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("take", 7, 16_000, 32_000),
+            4,
+            "admitted",
+        );
         emitter.on_event(&mutation);
         emitter.on_event(&EngineEvent::PreviewDisposition {
             superseded_through_rev: 2,
-            final_disposition: PreviewFinalDisposition::Refused { reason: "slice_refused".into() },
+            final_disposition: PreviewFinalDisposition::Refused {
+                reason: "slice_refused".into(),
+            },
             refused_evidence: vec![RefusedPreviewEvidence {
                 range: Some(OccurrenceIdentity::new("take", 7, 32_000, 48_000)),
-                text: "refused label".into(), reason: "slice_refused".into(),
+                text: "refused label".into(),
+                reason: "slice_refused".into(),
             }],
         });
         let after_refusal = emitter.visible_canvas_snapshot().unwrap();
         assert_eq!(after_refusal.text, "kept admitted refused label");
-        assert!(before_refusal.missing_words_from(&after_refusal).iter().all(|word|
-            word.reason == "superseded_by_final rev=2" || word.reason.starts_with("covered_by_committed")));
+        assert!(
+            before_refusal
+                .missing_words_from(&after_refusal)
+                .iter()
+                .all(|word| word.reason == "superseded_by_final rev=2"
+                    || word.reason.starts_with("covered_by_committed"))
+        );
 
         emitter.on_event(&zero_width_preview(5, "newest discarded suffix"));
         let stopped = emitter.begin_stop_canvas().unwrap();
@@ -4583,23 +5035,53 @@ mod tests {
         let at_bound = emitter.visible_canvas_snapshot().unwrap();
         assert_eq!(at_bound.text, "kept admitted refused label newest");
         let missing = stopped.missing_words_from(&at_bound);
-        assert_eq!(missing.iter().filter(|word| word.reason == "superseded_by_partial rev=6").count(), 3);
-        assert_eq!(missing.iter().filter(|word| word.reason.starts_with("covered_by_committed occurrence=")).count(), 2);
+        assert_eq!(
+            missing
+                .iter()
+                .filter(|word| word.reason == "superseded_by_partial rev=6")
+                .count(),
+            3
+        );
+        assert_eq!(
+            missing
+                .iter()
+                .filter(|word| word.reason.starts_with("covered_by_committed occurrence="))
+                .count(),
+            2
+        );
         assert!(missing.iter().all(|word| word.reason != "unaccounted"));
-        let mutation = admitted_mutation(&mut ledger.lock().unwrap(),
-            OccurrenceIdentity::new("take", 7, 48_000, 64_000), 5, "newest");
+        let mutation = admitted_mutation(
+            &mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("take", 7, 48_000, 64_000),
+            5,
+            "newest",
+        );
         emitter.on_event(&mutation);
         emitter.on_event(&preview_disposition(6, PreviewFinalDisposition::Admitted));
         let frozen = emitter.finish_stop_canvas().unwrap();
         assert_eq!(frozen.text, at_bound.text);
         assert_eq!(stopped.missing_words_from(&frozen), missing);
         assert!(!frozen.text.contains("covered hypothesis"));
-        let projections = projections.lock().unwrap();
-        let last = projections.last().unwrap();
-        assert!(last.evidence.iter().any(|item| item.text == "covered hypothesis"));
-        assert!(last.evidence.iter().any(|item| item.text == "refused label"));
-        assert!(!last.evidence.iter().any(|item| item.text == "newest discarded suffix"));
-        drop(projections);
+        {
+            let projections = projections.lock().unwrap();
+            let last = projections.last().unwrap();
+            assert!(
+                last.evidence
+                    .iter()
+                    .any(|item| item.text == "covered hypothesis")
+            );
+            assert!(
+                last.evidence
+                    .iter()
+                    .any(|item| item.text == "refused label")
+            );
+            assert!(
+                !last
+                    .evidence
+                    .iter()
+                    .any(|item| item.text == "newest discarded suffix")
+            );
+        }
         emitter.finish().await;
     }
 
@@ -4609,14 +5091,22 @@ mod tests {
         let delivery = Arc::new(Mutex::new(String::new()));
         let deltas = Arc::new(RecordingDeltaSink::default());
         let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::clone(&delivery), Some(deltas.clone()), None, None,
-            Some(Arc::clone(&ledger)), None,
+            Arc::clone(&delivery),
+            Some(deltas.clone()),
+            None,
+            None,
+            Some(Arc::clone(&ledger)),
+            None,
         );
         emitter.set_literal_delivery(true);
         emitter.on_capture_opened("take", 7);
         emitter.retire_presentation();
-        let admitted = admitted_mutation(&mut ledger.lock().unwrap(),
-            OccurrenceIdentity::new("take", 7, 0, 16_000), 1, "late words");
+        let admitted = admitted_mutation(
+            &mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("take", 7, 0, 16_000),
+            1,
+            "late words",
+        );
         emitter.on_event(&admitted);
         emitter.finish().await;
         assert!(deltas.deltas.lock().unwrap().is_empty());

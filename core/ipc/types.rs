@@ -169,7 +169,8 @@ impl TryFrom<&EngineEvent> for EngineEventWire {
             | EngineEvent::SealCoverage { .. }
             | EngineEvent::SpeechIntegrity { .. }
             | EngineEvent::OccurrenceLabelProposal { .. }
-            | EngineEvent::ContextMarker { .. } => {
+            | EngineEvent::ContextMarker { .. }
+            | EngineEvent::PreviewDisposition { .. } => {
                 return Err(IpcIneligibleEngineEvent);
             }
             EngineEvent::VadStart { speech_prob, ts_ms } => Self::VadStart {
