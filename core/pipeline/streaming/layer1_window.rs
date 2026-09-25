@@ -1,15 +1,143 @@
-//! Layer 1 window: coalesce ~5 Apple segments into one Whisper job.
+//! Layer 1 PCM windows: open-speech offers and closed-span coalescing.
 //!
-//! Apple seals short fragments. Diffing each fragment against its own Whisper
-//! window hits the change-ratio cap and leaves the chopped canvas standing.
-//! This module joins a handful of those fragments — text, PCM, and char
-//! offsets — so one decode can cover the whole sentence. It builds windows
-//! only: every member occurrence keeps its own PCM identity, and the
-//! returned candidate is admitted per occurrence by the acoustic ledger.
+//! The open-speech clock can offer measured PCM before Apple finalizes a word.
+//! Once physical occurrences close, short Apple fragments can share a Whisper
+//! decode. This module builds windows only: the acoustic ledger alone admits
+//! returned candidates to the document.
 
 use std::time::{Duration, Instant};
 
+use crate::audio::capture_receipt::{AcousticSpeechEvidence, CaptureEvidenceIdentity};
 use crate::pipeline::acoustic_ledger::OccurrenceIdentity;
+use crate::stt::tail_provider::TailSampleRange;
+
+/// An immutable L1 request offered while its Silero speech range is still open.
+///
+/// The request may repeat PCM for decoder context, but only the exclusive admit
+/// range can later label an occurrence. This is deliberately a capture range,
+/// not an `OccurrenceIdentity`: the latter is minted only after the physical
+/// Silero extent closes. A caller must bind the returned observation to that
+/// eventual exact identity before admitting any text to the ledger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenSpeechWindow {
+    pub request_range: TailSampleRange,
+    pub admit_sample_start: u64,
+    pub admit_sample_end: u64,
+}
+
+/// Offer ~4 s L1 observations from measured speech, independent of Apple finals.
+///
+/// One pending offer is retained until the transport acknowledges it. A full
+/// queue therefore cannot advance the clock and silently drop the only L1
+/// observation of a range. This clock never mints an occurrence or a document
+/// mutation; it only describes PCM that the capture owner must resolve exactly.
+#[derive(Debug)]
+pub struct OpenSpeechWindowClock {
+    capture: CaptureEvidenceIdentity,
+    queued_through: Option<u64>,
+    pending: Option<OpenSpeechWindow>,
+}
+
+impl OpenSpeechWindowClock {
+    pub fn new(capture: CaptureEvidenceIdentity) -> Self {
+        Self {
+            capture,
+            queued_through: None,
+            pending: None,
+        }
+    }
+
+    /// Return the same offer until `ack_queued` confirms transport ownership.
+    /// A short open tail waits for more speech; a closed island or capture EOF
+    /// may emit the residual tail without borrowing PCM from a silent gap.
+    pub fn next(
+        &mut self,
+        evidence: &AcousticSpeechEvidence,
+        sample_rate: u32,
+        capture_closed: bool,
+    ) -> Option<OpenSpeechWindow> {
+        if evidence.identity() != &self.capture {
+            self.pending = None;
+            return None;
+        }
+        let Some(observed) = evidence.availability().observed_samples() else {
+            self.pending = None;
+            return None;
+        };
+        if let Some(pending) = &self.pending {
+            let still_measured = evidence.ranges().iter().any(|range| {
+                self.capture.matches(&range.session, range.capture_epoch)
+                    && range.sample_start <= pending.request_range.sample_start
+                    && pending.request_range.sample_end <= range.sample_end.min(observed)
+            });
+            if still_measured {
+                return Some(pending.clone());
+            }
+            self.pending = None;
+        }
+
+        let max_samples = window_samples(sample_rate);
+        let overlap = overlap_samples(sample_rate).min(max_samples.saturating_sub(1));
+        for (index, range) in evidence.ranges().iter().enumerate() {
+            if !self.capture.matches(&range.session, range.capture_epoch) {
+                continue;
+            }
+            let range_end = range.sample_end.min(observed);
+            let admit_start = self
+                .queued_through
+                .filter(|end| *end > range.sample_start)
+                .unwrap_or(range.sample_start);
+            if admit_start >= range_end {
+                continue;
+            }
+            let request_start = if self.queued_through.is_some_and(|end| end > range.sample_start) {
+                admit_start.saturating_sub(overlap).max(range.sample_start)
+            } else {
+                range.sample_start
+            };
+            let full_end = request_start.saturating_add(max_samples);
+            let island_closed = capture_closed
+                || evidence.ranges()[index + 1..].iter().any(|next| {
+                    self.capture.matches(&next.session, next.capture_epoch)
+                        && next.sample_start < observed
+                        && next.sample_start >= range_end
+                });
+            let request_end = if full_end <= range_end {
+                full_end
+            } else if island_closed {
+                range_end
+            } else {
+                continue;
+            };
+            if request_end <= admit_start {
+                continue;
+            }
+            let offered = OpenSpeechWindow {
+                request_range: TailSampleRange {
+                    session: self.capture.session.clone(),
+                    capture_epoch: self.capture.capture_epoch,
+                    sample_start: request_start,
+                    sample_end: request_end,
+                },
+                admit_sample_start: admit_start,
+                admit_sample_end: request_end,
+            };
+            self.pending = Some(offered.clone());
+            return Some(offered);
+        }
+        None
+    }
+
+    /// Advance only after the exact offered PCM was accepted by the L1 queue.
+    pub fn ack_queued(&mut self, offered: &OpenSpeechWindow) -> bool {
+        if self.pending.as_ref() != Some(offered) {
+            return false;
+        }
+        self.queued_through = Some(offered.admit_sample_end);
+        self.pending = None;
+        true
+    }
+}
 
 /// One sealed Apple fragment waiting to share a Whisper window.
 #[derive(Debug, Clone)]
@@ -446,6 +574,114 @@ fn flush_from_piece(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::capture_receipt::AcousticAvailability;
+
+    fn measured_speech(
+        session: &str,
+        capture_epoch: u64,
+        observed_samples: u64,
+        ranges: &[(u64, u64)],
+    ) -> AcousticSpeechEvidence {
+        AcousticSpeechEvidence::measured(
+            CaptureEvidenceIdentity::new(session, capture_epoch),
+            "silero_vad",
+            AcousticAvailability::Observed { observed_samples },
+            ranges
+                .iter()
+                .map(|&(sample_start, sample_end)| TailSampleRange {
+                    session: session.to_string(),
+                    capture_epoch,
+                    sample_start,
+                    sample_end,
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn open_speech_offers_four_second_windows_without_an_apple_final() {
+        let mut clock = OpenSpeechWindowClock::new(CaptureEvidenceIdentity::new("take", 7));
+        let five_seconds = measured_speech("take", 7, 5_000, &[(0, 5_000)]);
+        let first = clock.next(&five_seconds, 1_000, false).unwrap();
+        assert_eq!(
+            (first.request_range.sample_start, first.request_range.sample_end),
+            (0, 4_000)
+        );
+        assert_eq!((first.admit_sample_start, first.admit_sample_end), (0, 4_000));
+        assert_eq!(clock.next(&five_seconds, 1_000, false), Some(first.clone()));
+        assert!(!clock.ack_queued(&OpenSpeechWindow {
+            admit_sample_end: 3_000,
+            ..first.clone()
+        }));
+        assert!(clock.ack_queued(&first));
+        assert!(clock.next(&five_seconds, 1_000, false).is_none());
+
+        let eight_seconds = measured_speech("take", 7, 8_000, &[(0, 8_000)]);
+        let second = clock.next(&eight_seconds, 1_000, false).unwrap();
+        assert_eq!(
+            (second.request_range.sample_start, second.request_range.sample_end),
+            (3_000, 7_000)
+        );
+        assert_eq!(
+            (second.admit_sample_start, second.admit_sample_end),
+            (4_000, 7_000)
+        );
+        assert!(clock.ack_queued(&second));
+        assert!(clock.next(&eight_seconds, 1_000, false).is_none());
+
+        let last = clock.next(&eight_seconds, 1_000, true).unwrap();
+        assert_eq!(
+            (last.request_range.sample_start, last.request_range.sample_end),
+            (6_000, 8_000)
+        );
+        assert_eq!((last.admit_sample_start, last.admit_sample_end), (7_000, 8_000));
+        assert!(clock.ack_queued(&last));
+        assert!(clock.next(&eight_seconds, 1_000, true).is_none());
+    }
+
+    #[test]
+    fn disjoint_speech_never_borrows_overlap_from_silence() {
+        let mut clock = OpenSpeechWindowClock::new(CaptureEvidenceIdentity::new("take", 7));
+        let speech = measured_speech("take", 7, 11_000, &[(0, 4_500), (6_000, 11_000)]);
+        let mut offers = Vec::new();
+        while let Some(window) = clock.next(&speech, 1_000, true) {
+            assert!(clock.ack_queued(&window));
+            offers.push(window);
+        }
+        assert_eq!(
+            offers
+                .iter()
+                .map(|window| {
+                    (window.request_range.sample_start, window.request_range.sample_end)
+                })
+                .collect::<Vec<_>>(),
+            vec![(0, 4_000), (3_000, 4_500), (6_000, 10_000), (9_000, 11_000)]
+        );
+        assert_eq!(
+            offers
+                .iter()
+                .map(|window| (window.admit_sample_start, window.admit_sample_end))
+                .collect::<Vec<_>>(),
+            vec![(0, 4_000), (4_000, 4_500), (6_000, 10_000), (10_000, 11_000)]
+        );
+    }
+
+    #[test]
+    fn unmeasured_or_foreign_pcm_cannot_offer_an_l1_window() {
+        let mut clock = OpenSpeechWindowClock::new(CaptureEvidenceIdentity::new("take", 7));
+        let speech = measured_speech("take", 7, 5_000, &[(0, 5_000)]);
+        let offered = clock.next(&speech, 1_000, false).unwrap();
+        let foreign = measured_speech("other", 7, 5_000, &[(0, 5_000)]);
+        assert!(clock.next(&foreign, 1_000, false).is_none());
+        assert!(!clock.ack_queued(&offered));
+        let unavailable = AcousticSpeechEvidence::unavailable(
+            CaptureEvidenceIdentity::new("take", 7),
+            "silero_vad",
+            AcousticAvailability::Discontinuous { observed_samples: 5_000 },
+        );
+        assert!(clock.next(&unavailable, 1_000, false).is_none());
+        assert_eq!(clock.next(&speech, 1_000, false), Some(offered));
+    }
 
     fn piece(id: u64, text: &str, start_ts: f32, end_ts: f32, segs: usize) -> CoalescedPiece {
         let rate = 16_000u64;
