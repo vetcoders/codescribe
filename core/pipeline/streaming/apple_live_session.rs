@@ -12917,6 +12917,74 @@ mod live_refinement_admission_tests {
     }
 
     #[test]
+    fn early_apple_lexicon_cannot_block_later_whisper_correction() {
+        let (mut state, events, mut receiver, mut requests) = fixture(1);
+        let dir = tempfile::tempdir().unwrap();
+        state.lexicon_custom_path = dir.path().join("lexicon.custom.jsonl");
+        let mut physical = UtteranceLedger::new();
+        physical.open_or_extend("live-admission", 7, 0, 2_600);
+        physical.close_open(2_600);
+        reconcile_silero_ledger(
+            &mut state,
+            &events,
+            &physical,
+            &[TranscriptSegment {
+                text: "accepromazyna".into(),
+                start_ts: 0.0,
+                end_ts: 0.2,
+            }],
+        );
+        state.flush_layer1_coalesce(&events);
+        let request = requests.try_recv().expect("Apple-labelled speech still submits L1");
+        let occurrence = request.member_occurrences[0].1.clone();
+        assert_eq!(
+            state.acoustic_ledger.lock().unwrap().text_of(&occurrence),
+            Some("Acepromazyna"),
+            "Apple's early L2 spelling correction is the precondition"
+        );
+
+        let mut completion = labelled_completion(&request);
+        let payload = completion.payload.as_mut().expect("L1 payload");
+        payload.text = "accepromazyna i dawkowanie".into();
+        payload.segments[0].text = payload.text.clone();
+        while receiver.try_recv().is_ok() {}
+        state.complete_whisper_window(&events, completion, 20.0);
+
+        let mutations = std::iter::from_fn(|| receiver.try_recv().ok())
+            .filter_map(|event| match event {
+                EngineEvent::LedgerMutation {
+                    observation,
+                    label,
+                    receipt,
+                } if receipt.grants_mutation() => {
+                    Some((observation.producer, label, observation.occurrence))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            mutations,
+            vec![
+                (
+                    LedgerObservationProducer::Whisper,
+                    "accepromazyna i dawkowanie".to_string(),
+                    occurrence.clone(),
+                ),
+                (
+                    LedgerObservationProducer::Lexicon,
+                    "Acepromazyna i dawkowanie".to_string(),
+                    occurrence.clone(),
+                ),
+            ],
+            "L1 must recover words from the same PCM despite an earlier Apple-only L2 spelling pass"
+        );
+        assert_eq!(
+            state.acoustic_ledger.lock().unwrap().text_of(&occurrence),
+            Some("Acepromazyna i dawkowanie")
+        );
+    }
+
+    #[test]
     fn whisper_foreign_envelopes_preserve_the_submitted_job_until_exact_completion() {
         let (mut state, events, mut receiver, mut requests) = fixture(1);
         reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
