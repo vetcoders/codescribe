@@ -3028,7 +3028,13 @@ mod tests {
             emitter.shape_frozen_canvas_at_stop(frozen.clone()).unwrap(),
             frozen
         );
-        assert!(ledger.lock().unwrap().manual_document_revisions().is_empty());
+        assert!(
+            ledger
+                .lock()
+                .unwrap()
+                .manual_document_revisions()
+                .is_empty()
+        );
         emitter.finish().await;
         assert!(delivery.lock().await.is_empty());
     }
@@ -3063,7 +3069,13 @@ mod tests {
             emitter.shape_frozen_canvas_at_stop(frozen.clone()).unwrap(),
             frozen
         );
-        assert!(ledger.lock().unwrap().manual_document_revisions().is_empty());
+        assert!(
+            ledger
+                .lock()
+                .unwrap()
+                .manual_document_revisions()
+                .is_empty()
+        );
         emitter.finish().await;
         assert_eq!(delivery.lock().await.as_str(), committed.text);
     }
@@ -3118,7 +3130,13 @@ mod tests {
             emitter.shape_frozen_canvas_at_stop(frozen.clone()).unwrap(),
             frozen
         );
-        assert!(ledger.lock().unwrap().manual_document_revisions().is_empty());
+        assert!(
+            ledger
+                .lock()
+                .unwrap()
+                .manual_document_revisions()
+                .is_empty()
+        );
         emitter.finish().await;
     }
 

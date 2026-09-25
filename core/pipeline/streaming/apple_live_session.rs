@@ -1714,14 +1714,13 @@ impl AppleSealState {
             .acoustic_ledger
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let has_text = ledger.qualified_occurrences().any(|occurrence| {
+        ledger.qualified_occurrences().any(|occurrence| {
             occurrence.session == self.session_id
                 && occurrence.capture_epoch == self.capture_epoch
                 && ledger
                     .text_of(occurrence)
                     .is_some_and(|text| !text.trim().is_empty())
-        });
-        has_text
+        })
     }
 
     fn emit_speech_integrity(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
@@ -5767,7 +5766,10 @@ fn finish_capture_after_seal(
 ) -> Result<()> {
     let mut acknowledgement = Some(last_window_closed);
     if ack_before_finish {
-        let _ = acknowledgement.take().expect("stop acknowledgement").send(());
+        let _ = acknowledgement
+            .take()
+            .expect("stop acknowledgement")
+            .send(());
     }
     let trailing = match finish() {
         Ok(events) => events,
@@ -12328,7 +12330,10 @@ mod rc_w2_test_rehab {
                     let events = drain(&mut rx);
                     match case {
                         0 => {
-                            assert!(events.is_empty(), "identical callback is already reconciled");
+                            assert!(
+                                events.is_empty(),
+                                "identical callback is already reconciled"
+                            );
                         }
                         1 => {
                             assert!(events.iter().any(|event| matches!(

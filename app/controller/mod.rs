@@ -674,7 +674,10 @@ async fn await_last_window_close_for_delivery(
             .is_none_or(|canvas| canvas.text.trim().is_empty())
         {
             if first.is_err() {
-                closed = matches!(tokio::time::timeout_at(deadline, &mut close).await, Ok(true));
+                closed = matches!(
+                    tokio::time::timeout_at(deadline, &mut close).await,
+                    Ok(true)
+                );
             }
             // A closed/failed ack channel is not proof that an empty capture
             // has settled. Keep the same final-latency budget before freezing.
@@ -2313,7 +2316,12 @@ impl RecordingController {
             stop_start,
             |text| async move {
                 self.deliver_stop_transcript(
-                    take_id, &text, assistive, force_ai, capture_turn, false,
+                    take_id,
+                    &text,
+                    assistive,
+                    force_ai,
+                    capture_turn,
+                    false,
                 )
                 .await
             },
@@ -2348,14 +2356,14 @@ impl RecordingController {
             Some(snapshot) if !snapshot.text.trim().is_empty() => {
                 let presentation = presentation
                     .ok_or_else(|| anyhow::anyhow!("stop canvas has no presentation owner"))?;
-                let light_plus = if snapshot.preview_only_words > 0 || !snapshot.has_committed_document
-                {
-                    "skipped_preview"
-                } else if presentation.literal_delivery() {
-                    "literal"
-                } else {
-                    "applied"
-                };
+                let light_plus =
+                    if snapshot.preview_only_words > 0 || !snapshot.has_committed_document {
+                        "skipped_preview"
+                    } else if presentation.literal_delivery() {
+                        "literal"
+                    } else {
+                        "applied"
+                    };
                 let snapshot = presentation
                     .shape_frozen_canvas_at_stop(snapshot)
                     .map_err(|error| anyhow::anyhow!("Light+ stop revision refused: {error}"))?;
@@ -2367,7 +2375,9 @@ impl RecordingController {
                     take_id,
                     waited_ms,
                     timeout_fallback,
-                    qualified_occurrences = snapshot.as_ref().map_or(0, |canvas| canvas.qualified_occurrences),
+                    qualified_occurrences = snapshot
+                        .as_ref()
+                        .map_or(0, |canvas| canvas.qualified_occurrences),
                     capture_epoch = snapshot.as_ref().map(|canvas| canvas.capture_epoch),
                     "stop_canvas_empty"
                 );
@@ -6039,12 +6049,14 @@ mod refusal_recovery_tests {
         EngineEvent::Preview {
             rev: 1,
             text: text.into(),
-            pin: codescribe_core::pipeline::contracts::PreviewPin::open_occurrence(TailSampleRange {
-                session: TAKE.into(),
-                capture_epoch: 7,
-                sample_start: 0,
-                sample_end: 16_000,
-            }),
+            pin: codescribe_core::pipeline::contracts::PreviewPin::open_occurrence(
+                TailSampleRange {
+                    session: TAKE.into(),
+                    capture_epoch: 7,
+                    sample_start: 0,
+                    sample_end: 16_000,
+                },
+            ),
         }
     }
 
@@ -6070,7 +6082,11 @@ mod refusal_recovery_tests {
         assert!(ledger.qualify(&evidence, &calibration).is_qualified());
         let observation = ObservationIdentity::new(ObservationProducer::Apple, 1, 0, occurrence);
         let receipt = ledger.admit(&observation, text);
-        EngineEvent::LedgerMutation { observation, label: text.into(), receipt }
+        EngineEvent::LedgerMutation {
+            observation,
+            label: text.into(),
+            receipt,
+        }
     }
 
     async fn stop_sink(
@@ -6120,24 +6136,40 @@ mod refusal_recovery_tests {
             async { ack_rx.await.is_ok() },
             || take.emitter.visible_canvas_snapshot(),
             true,
-        ).await;
+        )
+        .await;
         assert!((300..=350).contains(&wait.waited_ms));
         assert!(wait.timeout_fallback);
         assert_eq!(wait.snapshot.as_ref().unwrap().text, "ok wyślij");
         let calls = AtomicUsize::new(0);
-        let settled = take.controller.settle_frozen_canvas_at_stop(
-            Some(TAKE), Some(&take.emitter), wait, std::time::Instant::now(),
-            |text| stop_sink(&take.controller, text, &calls),
-        ).await.unwrap();
+        let settled = take
+            .controller
+            .settle_frozen_canvas_at_stop(
+                Some(TAKE),
+                Some(&take.emitter),
+                wait,
+                std::time::Instant::now(),
+                |text| stop_sink(&take.controller, text, &calls),
+            )
+            .await
+            .unwrap();
         assert_eq!(settled, TranscriptDelivery::SinkAccepted);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert!(take.ledger.lock().unwrap().manual_document_revisions().is_empty());
+        assert!(
+            take.ledger
+                .lock()
+                .unwrap()
+                .manual_document_revisions()
+                .is_empty()
+        );
         assert!(receipts.text().contains("light_plus=\"skipped_preview\""));
         assert!(receipts.text().contains("timeout_fallback=true"));
         assert!(receipts.text().contains("preview_words_in_paste=2"));
         deliver_terminal_unless_settled(Some(settled), || async {
             panic!("terminal tail attempted a second paste")
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         drop(ack_tx);
     }
 
@@ -6149,7 +6181,13 @@ mod refusal_recovery_tests {
         take.emitter.on_capture_opened(TAKE, 7);
         take.emitter.set_literal_delivery(true);
         let mutation = stop_mutation(&mut take.ledger.lock().unwrap(), "Tak.");
-        assert!(take.emitter.visible_canvas_snapshot().unwrap().text.is_empty());
+        assert!(
+            take.emitter
+                .visible_canvas_snapshot()
+                .unwrap()
+                .text
+                .is_empty()
+        );
         let terminal_tail = tokio::spawn(async {
             tokio::time::sleep(Duration::from_secs(20)).await;
         });
@@ -6164,20 +6202,30 @@ mod refusal_recovery_tests {
             },
             || take.emitter.visible_canvas_snapshot(),
             true,
-        ).await;
+        )
+        .await;
         assert!((850..=900).contains(&wait.waited_ms));
         assert!(!wait.timeout_fallback);
         let calls = AtomicUsize::new(0);
-        let settled = take.controller.settle_frozen_canvas_at_stop(
-            Some(TAKE), Some(&take.emitter), wait, std::time::Instant::now(),
-            |text| stop_sink(&take.controller, text, &calls),
-        ).await.unwrap();
+        let settled = take
+            .controller
+            .settle_frozen_canvas_at_stop(
+                Some(TAKE),
+                Some(&take.emitter),
+                wait,
+                std::time::Instant::now(),
+                |text| stop_sink(&take.controller, text, &calls),
+            )
+            .await
+            .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert!(!terminal_tail.is_finished());
         terminal_tail.await.unwrap();
         deliver_terminal_unless_settled(Some(settled), || async {
             panic!("repair tail attempted short-take paste")
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
@@ -6194,23 +6242,43 @@ mod refusal_recovery_tests {
             std::future::pending(),
             || take.emitter.visible_canvas_snapshot(),
             true,
-        ).await;
+        )
+        .await;
         assert!((4_000..=4_050).contains(&wait.waited_ms));
-        let settled = take.controller.settle_frozen_canvas_at_stop(
-            Some(TAKE), Some(&take.emitter), wait, std::time::Instant::now(),
-            |_| async { panic!("empty stop called the sink") },
-        ).await.unwrap();
+        let settled = take
+            .controller
+            .settle_frozen_canvas_at_stop(
+                Some(TAKE),
+                Some(&take.emitter),
+                wait,
+                std::time::Instant::now(),
+                |_| async { panic!("empty stop called the sink") },
+            )
+            .await
+            .unwrap();
         assert_eq!(settled, TranscriptDelivery::Retained);
-        assert_eq!(*take.controller.delivery_disposition.read().await, TranscriptDelivery::Retained);
+        assert_eq!(
+            *take.controller.delivery_disposition.read().await,
+            TranscriptDelivery::Retained
+        );
         let receipt = receipts.text();
         assert!(receipt.contains("stop_canvas_empty"));
         assert!(receipt.contains("qualified_occurrences=1"));
         assert!(receipt.contains("stop canvas delivery settled"));
         take.emitter.on_event(&late);
-        assert!(!take.emitter.visible_canvas_snapshot().unwrap().text.is_empty());
+        assert!(
+            !take
+                .emitter
+                .visible_canvas_snapshot()
+                .unwrap()
+                .text
+                .is_empty()
+        );
         deliver_terminal_unless_settled(Some(settled), || async {
             panic!("late words reopened empty stop")
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
     }
 
     /// Both stop sites use the same terminal settlement on their Ok and Err
@@ -6218,20 +6286,30 @@ mod refusal_recovery_tests {
     #[tokio::test]
     async fn terminal_path_never_pastes_after_stop_paste() {
         for state in [State::RecHold, State::RecToggle] {
-            for disposition in [TranscriptDelivery::SinkAccepted, TranscriptDelivery::Retained] {
+            for disposition in [
+                TranscriptDelivery::SinkAccepted,
+                TranscriptDelivery::Retained,
+            ] {
                 let take = take(state, true).await;
                 let ok = deliver_terminal_unless_settled(Some(disposition), || async {
                     panic!("successful terminal path pasted twice")
-                }).await.unwrap();
+                })
+                .await
+                .unwrap();
                 assert_eq!(ok, disposition);
-                let refused = take.controller.process_terminal_stop_error(
-                    anyhow::Error::new(take.refusal.clone()),
-                    |_| async {
-                        deliver_terminal_unless_settled(Some(disposition), || async {
-                            panic!("refused terminal path pasted twice")
-                        }).await
-                    },
-                ).await.unwrap();
+                let refused = take
+                    .controller
+                    .process_terminal_stop_error(
+                        anyhow::Error::new(take.refusal.clone()),
+                        |_| async {
+                            deliver_terminal_unless_settled(Some(disposition), || async {
+                                panic!("refused terminal path pasted twice")
+                            })
+                            .await
+                        },
+                    )
+                    .await
+                    .unwrap();
                 assert!(refused.refusal.is_some());
             }
         }
@@ -6239,11 +6317,24 @@ mod refusal_recovery_tests {
         // process_recording's cfg(test) shortcut must not stand in for this.
         let source = include_str!("mod.rs");
         for (start, end) in [
-            ("    async fn stop_toggle_and_adjudicate_inner(", "    fn publish_live_serving_verdict("),
+            (
+                "    async fn stop_toggle_and_adjudicate_inner(",
+                "    fn publish_live_serving_verdict(",
+            ),
             ("    async fn process_recording(", "    pub async fn reset("),
         ] {
-            let body = source.split_once(start).unwrap().1.split_once(end).unwrap().0;
-            assert_eq!(body.matches("deliver_terminal_unless_settled(settled,").count(), 2);
+            let body = source
+                .split_once(start)
+                .unwrap()
+                .1
+                .split_once(end)
+                .unwrap()
+                .0;
+            assert_eq!(
+                body.matches("deliver_terminal_unless_settled(settled,")
+                    .count(),
+                2
+            );
             assert_eq!(body.matches(".deliver_frozen_canvas_at_stop(").count(), 1);
         }
     }
