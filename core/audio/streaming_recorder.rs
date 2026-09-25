@@ -324,6 +324,13 @@ pub struct StreamingRecorder {
 }
 
 impl StreamingRecorder {
+    /// Seal order from the immutable generation bound to this capture.
+    pub fn seal_lane_armed(&self) -> bool {
+        self.runtime_settings
+            .as_ref()
+            .is_some_and(|settings| settings.seal_lane_armed())
+    }
+
     /// Light+ pause from the generation frozen for this take.
     pub fn light_plus_sentence_pause_sec(&self) -> f32 {
         self.runtime_settings.as_ref().map_or(0.7, |settings| {

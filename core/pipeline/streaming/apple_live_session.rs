@@ -1663,6 +1663,9 @@ struct AppleSealState {
     /// lifecycle needs the VAD even when an operator has pinned the seal path
     /// back to Apple's own segment boundaries.
     fusion_seal_armed: bool,
+    /// Summary admission window opened only by the armed EOF early seal.
+    /// Hands-free epoch close never opens it; finish and residue close consume it.
+    stop_trailing_finish: bool,
     fusion_context: FusionContextMode,
     /// Seconds of captured PCM each Layer 1 window must cover. Read once,
     /// from the sealed snapshot, when the take's session is built.
@@ -1736,6 +1739,26 @@ fn pin_intersects(pin: &OccurrenceIdentity, member: &OccurrenceIdentity) -> bool
 }
 
 impl AppleSealState {
+    /// Current partial or accepted capture label; a refused raw callback alone
+    /// must not release an empty stop before finish can supply usable text.
+    fn has_stop_canvas_text(&self) -> bool {
+        if !self.open_partial.trim().is_empty() {
+            return true;
+        }
+        let ledger = self
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let has_text = ledger.qualified_occurrences().any(|occurrence| {
+            occurrence.session == self.session_id
+                && occurrence.capture_epoch == self.capture_epoch
+                && ledger
+                    .text_of(occurrence)
+                    .is_some_and(|text| !text.trim().is_empty())
+        });
+        has_text
+    }
+
     fn emit_speech_integrity(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
         let ledger = self
             .acoustic_ledger
@@ -1855,6 +1878,7 @@ impl AppleSealState {
             tail_patch_refusals: 0,
             fusion: None,
             fusion_seal_armed: false,
+            stop_trailing_finish: false,
             // One source of truth for the default cut. Without a Silero
             // ingress nothing reads this field; when one arms, `from_env`
             // resolves the same default unless an operator overrode it.
@@ -5811,6 +5835,40 @@ fn seal_open_partial(
     state.open_partial.clear();
 }
 
+/// Finish the recognizer after the worker's stop seal. The async arm drains
+/// admission events before forwarding this acknowledgement to the controller.
+fn finish_capture_after_seal(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    audio_secs: f32,
+    last_window_closed: tokio::sync::oneshot::Sender<()>,
+    ack_before_finish: bool,
+    finish: impl FnOnce() -> Result<Vec<LiveStreamEvent>>,
+    close_residue: impl FnOnce(&mut AppleSealState),
+) -> Result<()> {
+    let mut acknowledgement = Some(last_window_closed);
+    if ack_before_finish {
+        let _ = acknowledgement
+            .take()
+            .expect("stop acknowledgement")
+            .send(());
+    }
+    let trailing = match finish() {
+        Ok(events) => events,
+        Err(error) => {
+            state.stop_trailing_finish = false;
+            return Err(error);
+        }
+    };
+    emit_stream_events(trailing, ev_tx, state, audio_secs);
+    close_residue(state);
+    state.stop_trailing_finish = false;
+    if let Some(acknowledgement) = acknowledgement {
+        let _ = acknowledgement.send(());
+    }
+    Ok(())
+}
+
 /// Everything the blocking worker needs that is not a channel.
 struct AppleWorkerConfig<'a> {
     consultation: Option<LiveConsultationCapture>,
@@ -6113,26 +6171,44 @@ fn apple_stream_worker(
     if let Some(fusion) = state.fusion.as_mut() {
         fusion.flush(samples_seen);
     }
-    if let Some(session) = stream.take() {
-        let trailing = shift_events(
-            session.finish()?,
-            epoch_base_secs(epoch_base_samples, sample_rate),
-        );
-        emit_stream_events(trailing, &ev_tx, &mut state, audio_secs);
-    }
-
-    if state.fusion_seal_armed {
+    // The armed lane alone seals before finish. The unarmed lane must retain
+    // finish-first ordering: it synthesizes ranges after the consumed cursor
+    // and admits Summary only at utterance_id == 0. Amendment 1: a take with
+    // no Apple text waits for finish and residue admission before its ack.
+    // Later refusals and K5 visibility receipts are NOT document revisions;
+    // only an accepted mutation can revise the stop document.
+    let ack_before_finish = if state.fusion_seal_armed {
+        let has_text = state.has_stop_canvas_text();
         seal_sliced_by_silero(&mut state, &ev_tx, &[]);
-    }
-
-    // Seal open partial that never got a phrase final (stop mid-phrase).
-    // Same seal-time correction as the phrase path — a stop mid-utterance must
-    // not be the one route that commits uncorrected text.
-    seal_open_partial(&mut state, &ev_tx, audio_secs);
-    // Every event above is L0 admission for the final capture window. The
-    // async arm drains those events into the reducer before acknowledging the
-    // controller; no archive, Whisper drain or debt recovery is on this path.
-    let _ = last_window_closed.send(());
+        seal_open_partial(&mut state, &ev_tx, audio_secs);
+        state.stop_trailing_finish = true;
+        has_text
+    } else {
+        false
+    };
+    finish_capture_after_seal(
+        &mut state,
+        &ev_tx,
+        audio_secs,
+        last_window_closed,
+        ack_before_finish,
+        || {
+            stream.take().map_or_else(
+                || Ok(Vec::new()),
+                |session| {
+                    session.finish().map(|events| {
+                        shift_events(events, epoch_base_secs(epoch_base_samples, sample_rate))
+                    })
+                },
+            )
+        },
+        |state| {
+            seal_open_partial(state, &ev_tx, audio_secs);
+            if state.fusion_seal_armed {
+                seal_sliced_by_silero(state, &ev_tx, &[]);
+            }
+        },
+    )?;
 
     if let Some(receiver) = terminal_audio {
         let archive = receiver
@@ -6340,9 +6416,10 @@ fn phrase_retention_reason(prev: &str, next: &str) -> Option<&'static str> {
 /// `Partial` forwards verbatim, `PhraseFinal` goes through
 /// [`seal_utterance_final`] (lexicon + cleanup). `audio_secs` is the session
 /// clock and only acts as a fallback `end_ts` when the engine hands over no
-/// segments. `Summary` is the partials-only engines' single seal — it commits
-/// only when no phrase final ever arrived, otherwise it would double-seal what
-/// the phrase path already committed.
+/// segments. `Summary` reaches [`seal_utterance_final`] only at `utterance_id == 0`
+/// or during the stop's trailing finish after the armed early seal. Hands-free
+/// epoch close does not open that window; arming alone never admits a summary.
+/// Admitted summaries use the existing physical admission and replay receipts.
 ///
 /// On `Partial`, a collapsed post-stressor restart freezes the open hypothesis
 /// first ([`phrase_restart_should_freeze_prior`]) so a shared-opener rewrite
@@ -6477,8 +6554,9 @@ fn emit_stream_events(
                     });
                     continue;
                 }
-                // No phrase finals → seal the full summary once (partials-only engine).
-                if state.utterance_id == 0 {
+                // Only the stop's trailing finish may add a summary after an
+                // earlier seal. Epoch summaries retain the original gate.
+                if state.stop_trailing_finish || state.utterance_id == 0 {
                     if seal_utterance_final(state, ev_tx, &text, segments, audio_secs) {
                         state.open_partial.clear();
                         state.open_partial_segments.clear();
@@ -7910,111 +7988,6 @@ mod tests {
                 if code == LOCAL_TAIL_PATCH_DEGRADED_WARNING_CODE
                     && message == "degraded_invalid_override"
         ));
-    }
-
-    /// The stop drain reports collected finals once, before session finality.
-    #[test]
-    fn layer1_stop_warns_once_for_collected_finals() {
-        use crate::asr_session::{
-            AsrSessionEvent, FakeAsrSessionProvider, Layer1Decision, RefinerMode, TranscriptEvent,
-        };
-
-        for refiner in [RefinerMode::CloudSession, RefinerMode::LocalHelper] {
-            for degraded in [false, true] {
-                let sink = RecordingSink::default();
-                let input = Layer1SessionInput {
-                    session_id: Layer1SessionId::new("finals-receipt").expect("session id"),
-                    locale: None,
-                    sample_rate: 16_000,
-                };
-                let script = (1..=3)
-                    .map(|id| {
-                        AsrSessionEvent::Final(TranscriptEvent {
-                            session_id: input.session_id.clone(),
-                            utterance_id: id,
-                            sequence_id: id,
-                            text: "private transcript".to_string(),
-                            range: None,
-                        })
-                    })
-                    .collect();
-                let provider = FakeAsrSessionProvider::with_script(refiner, script);
-                let mut lane =
-                    RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(provider)), &input);
-                let layer1_refiner = lane.refiner_mode();
-                if degraded {
-                    for _ in 0..3 {
-                        lane.offer_pcm(&[0.1; 320]);
-                        lane.poll();
-                    }
-                    lane.note_sleep_wake();
-                    assert_eq!(lane.refiner_mode(), RefinerMode::Off);
-                }
-                let outcome = lane.stop();
-                let counts = outcome.telemetry();
-                assert_eq!(counts.finals_accepted, 3);
-                emit_layer1_finals_not_admitted_warning(
-                    &sink,
-                    counts.finals_accepted,
-                    layer1_refiner,
-                );
-                emit_session_finalised(
-                    &sink,
-                    input.session_id.as_str().to_string(),
-                    0,
-                    SessionConservationReceipt::default(),
-                );
-
-                let events = sink.events();
-                assert_eq!(events.len(), 2);
-                let EngineEvent::Warning { code, message } = &events[0] else {
-                    panic!("expected typed Warning, got {:?}", events[0]);
-                };
-                assert_eq!(code, "layer1_finals_not_admitted");
-                assert_eq!(
-                    message,
-                    &format!(
-                        "finals_accepted=3 refiner={}: Layer 1 finals collected but not admitted into the acoustic ledger or paste",
-                        refiner.as_token()
-                    )
-                );
-                assert!(!message.contains("private transcript"));
-                assert!(matches!(events[1], EngineEvent::SessionFinalised { .. }));
-            }
-        }
-    }
-
-    /// A stopped lane with partials but no accepted finals has no such receipt.
-    #[test]
-    fn layer1_stop_without_finals_is_silent() {
-        use crate::asr_session::{
-            AsrSessionEvent, FakeAsrSessionProvider, Layer1Decision, RefinerMode, TranscriptEvent,
-        };
-
-        let sink = RecordingSink::default();
-        let input = Layer1SessionInput {
-            session_id: Layer1SessionId::new("no-finals-receipt").expect("session id"),
-            locale: None,
-            sample_rate: 16_000,
-        };
-        let provider = FakeAsrSessionProvider::with_script(
-            RefinerMode::CloudSession,
-            vec![AsrSessionEvent::Partial(TranscriptEvent {
-                session_id: input.session_id.clone(),
-                utterance_id: 1,
-                sequence_id: 1,
-                text: "private partial".to_string(),
-                range: None,
-            })],
-        );
-        let mut lane = RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(provider)), &input);
-        let layer1_refiner = lane.refiner_mode();
-        let outcome = lane.stop();
-        let counts = outcome.telemetry();
-        assert_eq!(counts.partials_applied, 1);
-        assert_eq!(counts.finals_accepted, 0);
-        emit_layer1_finals_not_admitted_warning(&sink, counts.finals_accepted, layer1_refiner);
-        assert!(sink.events().is_empty());
     }
 
     fn stage_pending_occurrence(
@@ -12308,6 +12281,112 @@ mod rc_w2_acoustic_tests {
 mod rc_w2_test_rehab {
     use super::*;
     use crate::pipeline::acoustic_ledger::RefuseReason;
+    use crate::pipeline::sinks::CollectorEventSink as RecordingSink;
+
+    /// The stop drain reports collected finals once, before session finality.
+    #[test]
+    fn layer1_stop_warns_once_for_collected_finals() {
+        use crate::asr_session::{
+            AsrSessionEvent, FakeAsrSessionProvider, Layer1Decision, RefinerMode, TranscriptEvent,
+        };
+
+        for refiner in [RefinerMode::CloudSession, RefinerMode::LocalHelper] {
+            for degraded in [false, true] {
+                let sink = RecordingSink::default();
+                let input = Layer1SessionInput {
+                    session_id: Layer1SessionId::new("finals-receipt").expect("session id"),
+                    locale: None,
+                    sample_rate: 16_000,
+                };
+                let script = (1..=3)
+                    .map(|id| {
+                        AsrSessionEvent::Final(TranscriptEvent {
+                            session_id: input.session_id.clone(),
+                            utterance_id: id,
+                            sequence_id: id,
+                            text: "private transcript".to_string(),
+                            range: None,
+                        })
+                    })
+                    .collect();
+                let provider = FakeAsrSessionProvider::with_script(refiner, script);
+                let mut lane =
+                    RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(provider)), &input);
+                let layer1_refiner = lane.refiner_mode();
+                if degraded {
+                    for _ in 0..3 {
+                        lane.offer_pcm(&[0.1; 320]);
+                        lane.poll();
+                    }
+                    lane.note_sleep_wake();
+                    assert_eq!(lane.refiner_mode(), RefinerMode::Off);
+                }
+                let outcome = lane.stop();
+                let counts = outcome.telemetry();
+                assert_eq!(counts.finals_accepted, 3);
+                emit_layer1_finals_not_admitted_warning(
+                    &sink,
+                    counts.finals_accepted,
+                    layer1_refiner,
+                );
+                emit_session_finalised(
+                    &sink,
+                    input.session_id.as_str().to_string(),
+                    0,
+                    SessionConservationReceipt::default(),
+                );
+
+                let events = sink.events();
+                assert_eq!(events.len(), 2);
+                let EngineEvent::Warning { code, message } = &events[0] else {
+                    panic!("expected typed Warning, got {:?}", events[0]);
+                };
+                assert_eq!(code, "layer1_finals_not_admitted");
+                assert_eq!(
+                    message,
+                    &format!(
+                        "finals_accepted=3 refiner={}: Layer 1 finals collected but not admitted into the acoustic ledger or paste",
+                        refiner.as_token()
+                    )
+                );
+                assert!(!message.contains("private transcript"));
+                assert!(matches!(events[1], EngineEvent::SessionFinalised { .. }));
+            }
+        }
+    }
+
+    /// A stopped lane with partials but no accepted finals has no such receipt.
+    #[test]
+    fn layer1_stop_without_finals_is_silent() {
+        use crate::asr_session::{
+            AsrSessionEvent, FakeAsrSessionProvider, Layer1Decision, RefinerMode, TranscriptEvent,
+        };
+
+        let sink = RecordingSink::default();
+        let input = Layer1SessionInput {
+            session_id: Layer1SessionId::new("no-finals-receipt").expect("session id"),
+            locale: None,
+            sample_rate: 16_000,
+        };
+        let provider = FakeAsrSessionProvider::with_script(
+            RefinerMode::CloudSession,
+            vec![AsrSessionEvent::Partial(TranscriptEvent {
+                session_id: input.session_id.clone(),
+                utterance_id: 1,
+                sequence_id: 1,
+                text: "private partial".to_string(),
+                range: None,
+            })],
+        );
+        let mut lane = RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(provider)), &input);
+        let layer1_refiner = lane.refiner_mode();
+        let outcome = lane.stop();
+        let counts = outcome.telemetry();
+        assert_eq!(counts.partials_applied, 1);
+        assert_eq!(counts.finals_accepted, 0);
+        emit_layer1_finals_not_admitted_warning(&sink, counts.finals_accepted, layer1_refiner);
+        assert!(sink.events().is_empty());
+    }
 
     const RATE: u32 = 16_000;
 
@@ -12428,6 +12507,431 @@ mod rc_w2_test_rehab {
         text.split_whitespace()
             .filter(|word| word.eq_ignore_ascii_case("iwo"))
             .count()
+    }
+
+    fn close_stop_residue(
+        state: &mut AppleSealState,
+        tx: &mpsc::UnboundedSender<EngineEvent>,
+        secs: f32,
+    ) {
+        seal_open_partial(state, tx, secs);
+        if state.fusion_seal_armed {
+            seal_sliced_by_silero(state, tx, &[]);
+        }
+    }
+
+    #[test]
+    fn armed_epoch_close_summary_does_not_readmit_retimed_words() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tail_tx, _tail_rx) = mpsc::channel(1);
+        let mut state = physical_state("epoch-summary", 3.0, &[(0.0, 2.0)]);
+        state.tail_patch = Some(tail_tx);
+        let owner = OccurrenceIdentity::new("epoch-summary", 7, 0, sample(2.0));
+        emit(
+            &mut state,
+            &tx,
+            vec![segment("alpha", 0.0, 0.5), segment("beta", 1.0, 1.5)],
+        );
+        assert!(state.utterance_id > 0);
+        assert!(!state.stop_trailing_finish);
+        {
+            let ledger = state.acoustic_ledger.lock().unwrap();
+            assert!(!ledger.is_sealed(&owner));
+            assert_eq!(ledger.slots_of(&owner).unwrap().len(), 2);
+        }
+        drain(&mut rx);
+
+        let mut epoch = EpochGate::armed(RATE, 1.0);
+        assert!(matches!(
+            epoch.feed_pcm(&[0.25; 480], sample(2.0), true),
+            EpochDecision::Wake { .. }
+        ));
+        assert!(matches!(
+            epoch.feed_pcm(&vec![0.0; RATE as usize], sample(3.0), false),
+            EpochDecision::Sleep { .. }
+        ));
+        // The Sleep arm delivers finish events before sealing its residue.
+        // Retiming alpha off its slot would create a duplicate on this open
+        // owner if arming alone admitted the restating summary.
+        emit_stream_events(
+            vec![LiveStreamEvent::Summary {
+                text: "alpha beta".into(),
+                segments: vec![segment("alpha", 0.6, 0.9), segment("beta", 1.0, 1.5)],
+                ok: true,
+                error: None,
+            }],
+            &tx,
+            &mut state,
+            3.0,
+        );
+        assert!(drain(&mut rx).is_empty(), "summary must emit no mutation");
+        assert!(!state.stop_trailing_finish);
+        seal_open_partial(&mut state, &tx, 3.0);
+        let _ = state.flush_layer1_coalesce(&tx);
+        state.close_admission_horizon(&tx, sample(3.0));
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.rendered_text(), "alpha beta");
+        assert_eq!(ledger.slots_of(&owner).unwrap().len(), 2);
+        ledger.assert_slot_labels();
+    }
+
+    #[test]
+    fn stop_finish_error_clears_summary_window() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (ack_tx, _ack_rx) = tokio::sync::oneshot::channel();
+        let mut state = physical_state("stop-error", 1.0, &[(0.0, 1.0)]);
+        state.stop_trailing_finish = true;
+        let result = finish_capture_after_seal(
+            &mut state,
+            &tx,
+            1.0,
+            ack_tx,
+            false,
+            || Err(anyhow::anyhow!("finish failed")),
+            |_| panic!("finish failure must not close residue"),
+        );
+        assert!(result.is_err());
+        assert!(!state.stop_trailing_finish);
+    }
+
+    #[test]
+    fn unarmed_stop_ack_follows_finish_and_partial_seal() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (ack_tx, mut ack_rx) = tokio::sync::oneshot::channel();
+        let mut state = state("unarmed-stop", 2.0);
+        state.fusion_seal_armed = false;
+        qualify(&mut state, 0.0, 1.0);
+        emit_stream_events(
+            vec![LiveStreamEvent::Partial {
+                text: "alpha".into(),
+                segments: vec![segment("alpha", 0.0, 1.0)],
+            }],
+            &tx,
+            &mut state,
+            2.0,
+        );
+        let ledger = Arc::clone(&state.acoustic_ledger);
+        finish_capture_after_seal(
+            &mut state,
+            &tx,
+            2.0,
+            ack_tx,
+            false,
+            || {
+                assert_eq!(
+                    ack_rx.try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+                );
+                assert!(ledger.lock().unwrap().rendered_text().is_empty());
+                Ok(vec![LiveStreamEvent::Summary {
+                    text: "alpha".into(),
+                    segments: vec![segment("alpha", 0.0, 1.0)],
+                    ok: true,
+                    error: None,
+                }])
+            },
+            |state| close_stop_residue(state, &tx, 2.0),
+        )
+        .unwrap();
+        assert_eq!(ack_rx.try_recv(), Ok(()));
+        assert_eq!(document(&state), "alpha");
+        assert!(drain(&mut rx).iter().any(|event| matches!(
+            event,
+            EngineEvent::LedgerMutation { receipt, .. } if receipt.grants_mutation()
+        )));
+    }
+
+    #[test]
+    fn armed_short_take_ack_waits_for_first_finish_text_and_residue() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (ack_tx, mut ack_rx) = tokio::sync::oneshot::channel();
+        let mut state = physical_state("short-stop", 1.0, &[(0.0, 1.0)]);
+        assert!(!state.has_stop_canvas_text());
+        assert_eq!(state.sealed_count, 0);
+        assert!(state.open_partial.is_empty());
+        let ack_before_finish = state.has_stop_canvas_text();
+        seal_sliced_by_silero(&mut state, &tx, &[]);
+        seal_open_partial(&mut state, &tx, 1.0);
+        state.stop_trailing_finish = true;
+        finish_capture_after_seal(
+            &mut state,
+            &tx,
+            1.0,
+            ack_tx,
+            ack_before_finish,
+            || {
+                assert_eq!(
+                    ack_rx.try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+                );
+                Ok(vec![LiveStreamEvent::Partial {
+                    text: "Tak".into(),
+                    segments: vec![segment("Tak", 0.0, 0.8)],
+                }])
+            },
+            |state| close_stop_residue(state, &tx, 1.0),
+        )
+        .unwrap();
+        assert_eq!(ack_rx.try_recv(), Ok(()));
+        assert_eq!(document(&state), "Tak");
+        assert!(state.has_stop_canvas_text());
+        assert!(state.open_partial.is_empty());
+        assert!(state.unmatched_silero_words.is_empty());
+        assert!(drain(&mut rx).iter().any(|event| matches!(
+            event,
+            EngineEvent::LedgerMutation { receipt, .. } if receipt.grants_mutation()
+        )));
+    }
+
+    #[test]
+    fn rejected_raw_callback_does_not_release_empty_stop_before_valid_finish() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (ack_tx, mut ack_rx) = tokio::sync::oneshot::channel();
+        let mut state = physical_state("rejected-stop", 1.0, &[(0.0, 1.0)]);
+        emit_stream_events(
+            vec![LiveStreamEvent::PhraseFinal {
+                text: "Tak".into(),
+                segments: Vec::new(),
+            }],
+            &tx,
+            &mut state,
+            1.0,
+        );
+        assert!(drain(&mut rx).iter().any(|event| matches!(
+            event,
+            EngineEvent::Warning { code, .. } if code == "apple_final_without_pcm_timing"
+        )));
+        assert!(document(&state).is_empty());
+        let ack_before_finish = state.has_stop_canvas_text();
+        assert!(!ack_before_finish);
+        seal_sliced_by_silero(&mut state, &tx, &[]);
+        seal_open_partial(&mut state, &tx, 1.0);
+        state.stop_trailing_finish = true;
+        finish_capture_after_seal(
+            &mut state,
+            &tx,
+            1.0,
+            ack_tx,
+            ack_before_finish,
+            || {
+                assert_eq!(
+                    ack_rx.try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+                );
+                Ok(vec![LiveStreamEvent::Summary {
+                    text: "Tak".into(),
+                    segments: vec![segment("Tak", 0.0, 0.8)],
+                    ok: true,
+                    error: None,
+                }])
+            },
+            |state| close_stop_residue(state, &tx, 1.0),
+        )
+        .unwrap();
+        assert_eq!(ack_rx.try_recv(), Ok(()));
+        assert_eq!(document(&state), "Tak");
+        assert!(state.unmatched_silero_words.is_empty());
+    }
+
+    #[test]
+    fn stop_ack_precedes_finish_and_partial_is_already_committed() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (ack_tx, mut ack_rx) = tokio::sync::oneshot::channel();
+        let mut state = physical_state("stop-order", 2.0, &[(0.0, 2.0)]);
+        emit_stream_events(
+            vec![LiveStreamEvent::Partial {
+                text: "alpha beta".into(),
+                segments: vec![segment("alpha", 0.0, 0.5), segment("beta", 1.0, 1.5)],
+            }],
+            &tx,
+            &mut state,
+            2.0,
+        );
+        if let Some(fusion) = state.fusion.as_mut() {
+            fusion.flush(sample(2.0));
+        }
+        seal_sliced_by_silero(&mut state, &tx, &[]);
+        seal_open_partial(&mut state, &tx, 2.0);
+        state.stop_trailing_finish = true;
+        assert!(state.has_stop_canvas_text());
+        let ledger = Arc::clone(&state.acoustic_ledger);
+        let mut finish_called = false;
+        finish_capture_after_seal(
+            &mut state,
+            &tx,
+            2.0,
+            ack_tx,
+            true,
+            || {
+                assert_eq!(ack_rx.try_recv(), Ok(()));
+                assert_eq!(ledger.lock().unwrap().rendered_text(), "alpha beta");
+                let before_finish = drain(&mut rx);
+                assert!(before_finish.iter().any(|event| matches!(
+                    event,
+                    EngineEvent::LedgerMutation { receipt, .. } if receipt.grants_mutation()
+                )));
+                finish_called = true;
+                Ok(vec![LiveStreamEvent::Error {
+                    message: "finish-observed".into(),
+                }])
+            },
+            |state| close_stop_residue(state, &tx, 2.0),
+        )
+        .unwrap();
+        assert!(finish_called);
+        assert!(drain(&mut rx).iter().any(|event| matches!(
+            event,
+            EngineEvent::NoSpeech { reason } if reason.contains("finish-observed")
+        )));
+        assert!(state.open_partial.is_empty());
+    }
+
+    #[test]
+    fn trailing_final_after_stop_ack_keeps_owner_receipts() {
+        for observer_open in [false, true] {
+            for summary in [false, true] {
+                for case in 0..3 {
+                    let (tx, mut rx) = mpsc::unbounded_channel();
+                    let (tail_tx, _tail_rx) = mpsc::channel(1);
+                    let (ack_tx, mut ack_rx) = tokio::sync::oneshot::channel();
+                    let mut state = physical_state("stop-final", 2.0, &[(0.0, 2.0)]);
+                    if observer_open {
+                        state.tail_patch = Some(tail_tx);
+                    }
+                    let owner = OccurrenceIdentity::new("stop-final", 7, 0, sample(2.0));
+                    let mut words = vec![segment("alpha", 0.0, 0.5), segment("beta", 1.0, 1.5)];
+                    emit_stream_events(
+                        vec![LiveStreamEvent::Partial {
+                            text: "alpha beta".into(),
+                            segments: words.clone(),
+                        }],
+                        &tx,
+                        &mut state,
+                        2.0,
+                    );
+                    seal_sliced_by_silero(&mut state, &tx, &[]);
+                    seal_open_partial(&mut state, &tx, 2.0);
+                    assert!(state.utterance_id > 0);
+                    state.stop_trailing_finish = true;
+                    assert_eq!(document(&state), "alpha beta");
+                    assert_eq!(
+                        state.acoustic_ledger.lock().unwrap().is_sealed(&owner),
+                        !observer_open
+                    );
+                    drain(&mut rx);
+                    if case == 1 {
+                        words[1].text = "changed".into();
+                    } else if case == 2 {
+                        words.push(segment("gamma", 1.6, 1.9));
+                    }
+                    let text = words
+                        .iter()
+                        .map(|word| word.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let event = if summary {
+                        LiveStreamEvent::Summary {
+                            text,
+                            segments: words,
+                            ok: true,
+                            error: None,
+                        }
+                    } else {
+                        LiveStreamEvent::PhraseFinal {
+                            text,
+                            segments: words,
+                        }
+                    };
+                    finish_capture_after_seal(
+                        &mut state,
+                        &tx,
+                        2.0,
+                        ack_tx,
+                        true,
+                        || {
+                            assert_eq!(ack_rx.try_recv(), Ok(()));
+                            Ok(vec![event])
+                        },
+                        |state| close_stop_residue(state, &tx, 2.0),
+                    )
+                    .unwrap();
+                    assert!(!state.stop_trailing_finish);
+                    seal_sliced_by_silero(&mut state, &tx, &[]);
+                    let events = drain(&mut rx);
+                    match case {
+                        0 => {
+                            assert!(
+                                events.is_empty(),
+                                "identical callback is already reconciled"
+                            );
+                        }
+                        1 => {
+                            assert!(events.iter().any(|event| matches!(
+                                event,
+                                EngineEvent::LedgerMutation {
+                                    label,
+                                    receipt: MutationReceipt::Refuse {
+                                        reason: RefuseReason::SealedReplay,
+                                        ..
+                                    },
+                                    ..
+                                } if label == "changed"
+                            )));
+                            assert_eq!(document(&state), "alpha beta");
+                        }
+                        _ => {
+                            for word in ["alpha", "beta"] {
+                                assert!(events.iter().any(|event| matches!(
+                                    event,
+                                    EngineEvent::LedgerMutation {
+                                        label,
+                                        receipt: MutationReceipt::Refuse {
+                                            reason: RefuseReason::ReplayedRangeIdentity,
+                                            ..
+                                        },
+                                        ..
+                                    } if label == word
+                                )));
+                            }
+                            if observer_open {
+                                assert_eq!(document(&state), "alpha beta gamma");
+                                assert_eq!(
+                                    state
+                                        .acoustic_ledger
+                                        .lock()
+                                        .unwrap()
+                                        .slots_of(&owner)
+                                        .unwrap()
+                                        .len(),
+                                    3
+                                );
+                                assert!(events.iter().any(|event| matches!(
+                                    event,
+                                    EngineEvent::LedgerMutation { label, receipt, .. }
+                                        if label == "alpha beta gamma" && receipt.grants_mutation()
+                                )));
+                            } else {
+                                assert_eq!(document(&state), "alpha beta");
+                                assert!(events.iter().any(|event| matches!(
+                                    event,
+                                    EngineEvent::LedgerMutation {
+                                        label,
+                                        receipt: MutationReceipt::KeepVisibleUnanchored {
+                                            reason: NoAuthorityReason::LateAppleWordSealedOwner,
+                                            ..
+                                        },
+                                        ..
+                                    } if label == "gamma"
+                                )));
+                            }
+                        }
+                    }
+                    assert!(state.unmatched_silero_words.is_empty());
+                    assert!(state.open_partial.is_empty());
+                    state.acoustic_ledger.lock().unwrap().assert_slot_labels();
+                }
+            }
+        }
     }
 
     #[test]
