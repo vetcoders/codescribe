@@ -122,34 +122,20 @@ struct SettingsView: View {
   @ViewBuilder
   private var detail: some View {
     ScrollViewReader { proxy in
-      ScrollView {
-        Group {
-          switch model.section.destination {
-          case .dictation:
-            EnginePanel(model: model)
-          case .shortcuts:
-            ShortcutsPanel(model: model)
-          case .providers:
-            ProvidersPanel(model: model)
-          case .agent:
-            AgentPanel(model: model)
-          case .user:
-            UserPanel(model: model)
-          case .dictionary:
-            VoiceLabPanel(model: model)
-          case .audio:
-            AudioPanel(model: model)
-          case .license:
-            LicensePanel(model: model)
-          case .creator:
-            CreatorPanel(model: model)
-          case .lab:
-            LabPanel()
+      Group {
+        switch model.section.destination {
+        case .dictation:
+          EnginePanel(model: model)
+        case .agent:
+          AgentPanel(model: model)
+        default:
+          ScrollView {
+            untabbedDetail
+              .frame(maxWidth: .infinity, alignment: .leading)
           }
+          .scrollContentBackground(.hidden)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
       }
-      .scrollContentBackground(.hidden)
       .onChange(of: pendingScrollAnchor) { _, anchor in
         guard let anchor else { return }
         DispatchQueue.main.async {
@@ -159,6 +145,30 @@ struct SettingsView: View {
       }
     }
     .background(CSColor.windowWash)
+  }
+
+  @ViewBuilder
+  private var untabbedDetail: some View {
+    switch model.section.destination {
+    case .shortcuts:
+      ShortcutsPanel(model: model)
+    case .providers:
+      ProvidersPanel(model: model)
+    case .user:
+      UserPanel(model: model)
+    case .dictionary:
+      VoiceLabPanel(model: model)
+    case .audio:
+      AudioPanel(model: model)
+    case .license:
+      LicensePanel(model: model)
+    case .creator:
+      CreatorPanel(model: model)
+    case .lab:
+      LabPanel()
+    case .dictation, .agent:
+      EmptyView()
+    }
   }
 }
 

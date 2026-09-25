@@ -1589,6 +1589,53 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(model.settings.layeredTranscription, "off")
     XCTAssertEqual(model.localWhisperRuntimeState, .degradedEnvOverride)
   }
+
+  func testTabbedHeaderIsOutsideItsOnlyScrollView() throws {
+    let pane = try settingsLayoutSource("SettingsTabbedPane.swift")
+    let scroll = try XCTUnwrap(pane.range(of: "      ScrollView {"))
+    let header = try XCTUnwrap(pane.range(of: "SettingsTabBar(model: model, section: section)"))
+    XCTAssertLessThan(header.lowerBound, scroll.lowerBound)
+    XCTAssertEqual(pane.components(separatedBy: "SettingsTabBar(model: model, section: section)").count, 2)
+    XCTAssertTrue(pane[..<scroll.lowerBound].contains(".background(CSColor.windowWash)"))
+    XCTAssertTrue(pane[scroll.lowerBound...].contains(".id(model.currentTab)"))
+
+    let detail = try settingsLayoutSource("SettingsView.swift")
+    XCTAssertTrue(detail.contains("case .dictation:\n          EnginePanel(model: model)"))
+    XCTAssertTrue(detail.contains("case .agent:\n          AgentPanel(model: model)"))
+  }
+
+  func testDeepLinkAnchorScrollsWithinItsPaneBelowThePinnedHeader() throws {
+    let detail = try settingsLayoutSource("SettingsView.swift")
+    let reader = try XCTUnwrap(detail.range(of: "ScrollViewReader { proxy in"))
+    let scrollTo = try XCTUnwrap(detail.range(of: "proxy.scrollTo(anchor, anchor: .top)"))
+    XCTAssertLessThan(reader.lowerBound, scrollTo.lowerBound)
+    XCTAssertTrue(detail.contains("pendingScrollAnchor = target.anchor"))
+
+    let pane = try settingsLayoutSource("SettingsTabbedPane.swift")
+    let header = try XCTUnwrap(pane.range(of: "SettingsTabBar(model: model, section: section)"))
+    let scroll = try XCTUnwrap(pane.range(of: "      ScrollView {"))
+    let content = try XCTUnwrap(pane.range(of: "          content\n"))
+    XCTAssertLessThan(header.lowerBound, scroll.lowerBound)
+    XCTAssertLessThan(scroll.lowerBound, content.lowerBound)
+  }
+
+  func testShortcutsKeepsThePlainDetailScrollWithoutATabHeader() throws {
+    let detail = try settingsLayoutSource("SettingsView.swift")
+    let plainScroll = try XCTUnwrap(detail.range(of: "default:\n          ScrollView {"))
+    let shortcuts = try XCTUnwrap(detail.range(of: "case .shortcuts:\n      ShortcutsPanel(model: model)"))
+    XCTAssertTrue(detail[plainScroll.lowerBound...].contains("untabbedDetail"))
+    XCTAssertLessThan(plainScroll.lowerBound, shortcuts.lowerBound)
+    XCTAssertFalse(detail.contains("SettingsTabBar("))
+  }
+
+  private func settingsLayoutSource(_ name: String) throws -> String {
+    let source = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Codescribe/Screens/Settings")
+      .appendingPathComponent(name)
+    return try String(contentsOf: source, encoding: .utf8)
+  }
 }
 
 /// Serves one permission snapshot and records the writes the Tools tab makes.

@@ -33,7 +33,7 @@ struct EnginePanel: View {
 
 #if DEBUG
   #Preview("Dictation panel") {
-    ScrollView { EnginePanel(model: .preview(.engine)) }
+    EnginePanel(model: .preview(.engine))
       .frame(width: 720, height: 620)
       .background(CSColor.windowWash)
       .preferredColorScheme(.dark)

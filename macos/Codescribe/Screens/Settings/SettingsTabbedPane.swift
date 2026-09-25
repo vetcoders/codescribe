@@ -11,29 +11,41 @@ struct SettingsTabbedPane<Content: View>: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      EyebrowLabel(text: "Settings · \(section.title)")
-
-      SettingsTabBar(model: model, section: section)
-        .padding(.top, CSSpace.md)
-
-      if let tab = model.currentTab {
-        Text(tab.headline)
-          .font(CSFont.ui(26, .bold))
-          .tracking(-0.5)
-          .foregroundStyle(CSColor.textHigh)
-          .padding(.top, CSSpace.lg)
-
-        Text(tab.blurb)
-          .font(CSFont.ui(12.5))
-          .lineSpacing(2)
-          .foregroundStyle(CSColor.textMutedAlt)
-          .padding(.top, CSSpace.sm)
+      VStack(alignment: .leading, spacing: 0) {
+        EyebrowLabel(text: "Settings · \(section.title)")
+        SettingsTabBar(model: model, section: section)
+          .padding(.top, CSSpace.md)
       }
+      .padding(.horizontal, CSSpace.xl)
+      .padding(.vertical, CSSpace.section)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(CSColor.windowWash)
 
-      content
-        .padding(.top, CSSpace.lg)
+      ScrollView {
+        VStack(alignment: .leading, spacing: 0) {
+          if let tab = model.currentTab {
+            Text(tab.headline)
+              .font(CSFont.ui(26, .bold))
+              .tracking(-0.5)
+              .foregroundStyle(CSColor.textHigh)
+
+            Text(tab.blurb)
+              .font(CSFont.ui(12.5))
+              .lineSpacing(2)
+              .foregroundStyle(CSColor.textMutedAlt)
+              .padding(.top, CSSpace.sm)
+          }
+
+          content
+            .padding(.top, CSSpace.lg)
+        }
+        .padding(.horizontal, CSSpace.xl)
+        .padding(.bottom, CSSpace.section)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      }
+      .scrollContentBackground(.hidden)
+      .id(model.currentTab)
     }
-    .padding(.horizontal, CSSpace.xl)
-    .padding(.vertical, CSSpace.section)
+    .background(CSColor.windowWash)
   }
 }
