@@ -20,7 +20,7 @@ use codescribe_core::pipeline::acoustic_ledger::{
     TranscriptComparisonReceipt,
 };
 use codescribe_core::pipeline::contracts::{
-    DeltaSink, EngineEvent, EventSink, PreviewFinalDisposition, PreviewPinReceipt, SpeechIntegrity, SpeechIntegrityPhase,
+    DeltaSink, EngineEvent, EventSink, PreviewPinReceipt, SpeechIntegrity, SpeechIntegrityPhase,
     TranscriptDelta,
 };
 use sha2::{Digest, Sha256};
@@ -43,7 +43,8 @@ pub struct CompactProjection {
     pub degraded: bool,
     /// Every unanchored text of this capture, in PCM order. It is painted
     /// beside the canvas, never inside the canvas string or the Bus. The
-    /// explicit stop snapshot includes these visible words in its paste.
+    /// stop snapshot pastes uncovered evidence and accounts covered hypotheses
+    /// against their committed occurrence.
     pub evidence: Vec<UnanchoredEvidence>,
 }
 
@@ -469,13 +470,15 @@ impl std::error::Error for IncrementalShapingRefusal {}
 /// the committed words, and the reducer drops it instead of rendering a lie.
 type ShapedPresentation = IncrementalShapingReceipt;
 
+#[cfg(test)]
+use codescribe_core::pipeline::contracts::PreviewFinalDisposition;
+
 /// Complete visible paint: main canvas and separately painted preview evidence.
 #[derive(Debug, Default)]
 struct PaintedCanvas {
     text: String,
     preview_only_words: usize,
     visible_words: Vec<VisibleWord>,
-    preview_paints: BTreeMap<u64, UnanchoredEvidence>,
 }
 
 #[derive(Debug, Default)]
@@ -483,18 +486,37 @@ struct PhrasePreviewPaint {
     current_rev: Option<u64>,
     current_evidence: Option<UnanchoredEvidence>,
     open_revisions: Vec<u64>,
-    retained: BTreeMap<u64, UnanchoredEvidence>,
-    supersessions: BTreeMap<u64, u64>,
-    /// The open phrase paint actually visible at Stop, protected until its
-    /// typed final. Closed refused phrases already live independently above.
-    stop_preview: Option<(u64, UnanchoredEvidence)>,
+    retained: Vec<UnanchoredEvidence>,
+    supersessions: BTreeMap<u64, PreviewSupersession>,
 }
 
-/// A word occurrence in the paint, with its recognizer preview provenance.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PreviewSupersession {
+    Partial(u64),
+    Final(u64),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum VisibleWordSource {
+    Committed(OccurrenceIdentity, String, Option<String>),
+    Unanchored(ObservationIdentity),
+    Refused(usize),
+    Preview(u64),
+    DocumentRevision {
+        receipt: Option<String>,
+        members: Vec<VisibleWordSource>,
+        markers: usize,
+    },
+}
+
+/// A word position belongs to its typed paint source, never to a text match.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VisibleWord {
     pub word: String,
     pub preview_rev: Option<u64>,
+    source: VisibleWordSource,
+    offset: usize,
+    covered_by: Option<OccurrenceIdentity>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -537,7 +559,7 @@ pub struct TranscriptReducer {
     /// beside committed occurrences and never becomes a document token. It
     /// lives until a seal closes a committed token over its range, or until
     /// the lifecycle ends.
-    unanchored_evidence: BTreeMap<OccurrenceIdentity, (String, NoAuthorityReason)>,
+    unanchored_evidence: BTreeMap<OccurrenceIdentity, (String, NoAuthorityReason, ObservationIdentity)>,
 }
 
 /// Whether `inner` lies wholly inside `outer` on one capture clock.
@@ -649,49 +671,47 @@ impl TranscriptReducer {
     /// PCM-ordered canvas: committed tokens, plus unanchored evidence whose
     /// range is not already occupied by one of those tokens.
     pub fn visible_projection(&self) -> String {
-        let extras = self
-            .unanchored_evidence
-            .iter()
-            .filter(|(occurrence, _)| {
-                !self
-                    .document_by_occurrence
-                    .keys()
-                    .any(|committed| range_within(occurrence, committed))
-            })
-            .map(|(occurrence, (label, _))| (occurrence.sample_start, label.as_str()))
-            .collect::<Vec<_>>();
-        if extras.is_empty() {
-            return self.committed_rendered_text();
-        }
-        let mut extras = extras.into_iter().peekable();
         let mut rendered = String::new();
-        for (occurrence, entry) in &self.document_by_occurrence {
-            while extras
-                .peek()
-                .is_some_and(|(start, _)| *start <= occurrence.sample_start)
-            {
-                let (_, label) = extras.next().expect("peeked extra");
-                append_exact_fragment(&mut rendered, label);
-            }
-            append_exact_fragment(&mut rendered, self.presentation_of(occurrence, entry));
-        }
-        for (_, label) in extras {
-            append_exact_fragment(&mut rendered, label);
+        for (_, text, _, _) in self.visible_paint_fragments() {
+            append_exact_fragment(&mut rendered, &text);
         }
         rendered
     }
 
-    fn visible_unanchored_words(&self) -> usize {
-        self.unanchored_evidence
-            .iter()
-            .filter(|(occurrence, _)| {
-                !self
-                    .document_by_occurrence
-                    .keys()
-                    .any(|committed| range_within(occurrence, committed))
-            })
-            .map(|(_, (label, _))| label.split_whitespace().count())
-            .sum()
+    /// The same ordered fragments feed the main paint and its STOP receipt.
+    fn visible_paint_fragments(&self) -> Vec<(u64, String, VisibleWordSource, bool)> {
+        let mut fragments = self.unanchored_evidence.iter()
+            .filter(|(range, _)| !self.document_by_occurrence.keys()
+                .any(|owner| range_within(range, owner)))
+            .map(|(range, (text, _, observation))| (range.sample_start, text.clone(),
+                VisibleWordSource::Unanchored(observation.clone()), true))
+            .collect::<Vec<_>>();
+        let source_for = |range: &OccurrenceIdentity, entry: &TranscriptDocumentEntry| {
+            let presentation = self.consultation_presentations.iter()
+                .find(|receipt| receipt.members.iter().any(|member| &member.occurrence == range))
+                .map(|receipt| receipt.receipt_id.clone())
+                .or_else(|| self.shaped_by_occurrence.get(range).map(|receipt| receipt.receipt_id.clone()));
+            VisibleWordSource::Committed(range.clone(), entry.observation_receipt.clone(), presentation)
+        };
+        if fragments.is_empty()
+            && (self.manual_rendered_text.is_some() || !self.context_markers.is_empty())
+        {
+            let source = VisibleWordSource::DocumentRevision {
+                receipt: self.manual_document_revision_receipt.clone(),
+                members: if self.manual_rendered_text.is_some() { Vec::new() } else {
+                    self.document_by_occurrence.iter().map(|(range, entry)| source_for(range, entry)).collect()
+                },
+                markers: if self.manual_rendered_text.is_some() { 0 } else { self.context_markers.len() },
+            };
+            fragments.push((0, self.committed_rendered_text(), source, false));
+        } else {
+            for (range, entry) in &self.document_by_occurrence {
+                fragments.push((range.sample_start, self.presentation_of(range, entry).to_string(),
+                    source_for(range, entry), false));
+            }
+        }
+        fragments.sort_by_key(|(start, _, _, _)| *start);
+        fragments
     }
 
     /// Every unanchored text of one capture in PCM order, for the paint beside
@@ -707,7 +727,7 @@ impl TranscriptReducer {
             .filter(|(occurrence, _)| {
                 occurrence.session == session_id && occurrence.capture_epoch == capture_epoch
             })
-            .map(|(occurrence, (label, reason))| UnanchoredEvidence {
+            .map(|(occurrence, (label, reason, _))| UnanchoredEvidence {
                 sample_start: occurrence.sample_start,
                 sample_end: occurrence.sample_end,
                 text: label.clone(),
@@ -716,7 +736,7 @@ impl TranscriptReducer {
             .collect()
     }
 
-    fn project_unanchored(&mut self, receipt: &MutationReceipt) {
+    fn project_unanchored(&mut self, observation: &ObservationIdentity, receipt: &MutationReceipt) {
         if let MutationReceipt::KeepVisibleUnanchored {
             occurrence,
             label,
@@ -726,7 +746,7 @@ impl TranscriptReducer {
             let label = label.trim();
             if !label.is_empty() {
                 self.unanchored_evidence
-                    .insert(occurrence.clone(), (label.to_string(), *reason));
+                    .insert(occurrence.clone(), (label.to_string(), *reason, observation.clone()));
             }
         }
     }
@@ -738,7 +758,7 @@ impl TranscriptReducer {
         receipt: &MutationReceipt,
     ) -> Option<TranscriptRevision> {
         if matches!(receipt, MutationReceipt::KeepVisibleUnanchored { .. }) {
-            self.project_unanchored(receipt);
+            self.project_unanchored(observation, receipt);
             return None;
         }
         if !receipt.grants_mutation()
@@ -1465,52 +1485,44 @@ pub struct VisibleCanvasSnapshot {
     pub revision: u64,
     pub text: String,
     /// Visible words without committed occurrence authority, including previews
-    /// and the evidence list, including evidence inside committed ranges.
+    /// and uncovered evidence. Covered hypotheses are accounted separately.
     pub preview_only_words: usize,
     /// Whether the reducer has an occurrence-backed document to revise.
     pub has_committed_document: bool,
     /// Ledger-qualified speech occurrences for this session and capture epoch.
     pub qualified_occurrences: usize,
     pub visible_words: Vec<VisibleWord>,
-    pub preview_supersessions: BTreeMap<u64, u64>,
+    pub preview_supersessions: BTreeMap<u64, PreviewSupersession>,
 }
 
 impl VisibleCanvasSnapshot {
-    /// Each painted word consumes one matching paste occurrence. A missing
-    /// occurrence needs the disposition of its own phrase, never a count floor.
+    /// Account by phrase lifecycle and PCM identity. A matching word in a
+    /// different occurrence cannot hide a missing visible word.
     pub fn missing_words_from(&self, pasted: &Self) -> Vec<MissingVisibleWord> {
-        let mut remaining = BTreeMap::<&str, usize>::new();
-        for word in pasted.text.split_whitespace() {
-            *remaining.entry(word).or_default() += 1;
-        }
         let same_capture = self.session_id == pasted.session_id
             && self.capture_epoch == pasted.capture_epoch;
-        let supersession = |rev| {
-            if same_capture {
-                pasted.preview_supersessions.get(&rev)
-            } else {
-                None
-            }
-        };
-        let mut missing = Vec::new();
-        // Preserve words without supersession first, so an obsolete preview
-        // cannot consume the only paste occurrence owed to a committed word.
-        let mut words = self.visible_words.iter().collect::<Vec<_>>();
-        words.sort_by_key(|word| word.preview_rev.and_then(supersession).is_some());
-        for word in words {
-            if let Some(count) = remaining.get_mut(word.word.as_str())
-                && *count > 0
+        self.visible_words.iter().filter_map(|word| {
+            let reason = if !same_capture {
+                Some("unaccounted".to_string())
+            } else if let Some(occurrence) = &word.covered_by {
+                Some(format!("covered_by_committed occurrence={occurrence:?}"))
+            } else if let Some(disposition) = word.preview_rev
+                .and_then(|rev| pasted.preview_supersessions.get(&rev))
             {
-                *count -= 1;
-                continue;
-            }
-            let reason = word.preview_rev
-                .and_then(supersession)
-                .map(|rev| format!("superseded_by_final rev={rev}"))
-                .unwrap_or_else(|| "unaccounted".to_string());
-            missing.push(MissingVisibleWord { word: word.word.clone(), reason });
-        }
-        missing
+                Some(match disposition {
+                    PreviewSupersession::Partial(rev) => format!("superseded_by_partial rev={rev}"),
+                    PreviewSupersession::Final(rev) => format!("superseded_by_final rev={rev}"),
+                })
+            } else if pasted.visible_words.iter().any(|present|
+                present.covered_by.is_none() && present.source == word.source
+                    && present.offset == word.offset)
+            {
+                None
+            } else {
+                Some("unaccounted".to_string())
+            };
+            reason.map(|reason| MissingVisibleWord { word: word.word.clone(), reason })
+        }).collect()
     }
 }
 
@@ -1564,7 +1576,7 @@ impl PresentationEmitter {
     pub fn begin_stop_canvas(&self) -> Option<VisibleCanvasSnapshot> {
         self.stop_snapshot_pending
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        self.snapshot_canvas(true)
+        self.snapshot_canvas()
     }
 
     /// Read the paint once the live-final signal settles or its bound expires.
@@ -1579,17 +1591,17 @@ impl PresentationEmitter {
     /// The caller includes this wait in the same stop deadline.
     pub async fn wait_paint_published(&self) -> bool {
         let (sender, receiver) = tokio::sync::oneshot::channel();
-        self.send_cmd(EmitterCmd::PaintBarrier(sender), 0);
+        self.send_cmd(EmitterCmd::PaintBarrier(sender));
         receiver.await.is_ok()
     }
 
     /// Freeze the revision that owns delivery for this take, without waiting for
     /// the ordered paint worker or any pending transcription producer.
     pub fn visible_canvas_snapshot(&self) -> Option<VisibleCanvasSnapshot> {
-        self.snapshot_canvas(false)
+        self.snapshot_canvas()
     }
 
-    fn snapshot_canvas(&self, protect_stop_preview: bool) -> Option<VisibleCanvasSnapshot> {
+    fn snapshot_canvas(&self) -> Option<VisibleCanvasSnapshot> {
         let (session_id, capture_epoch) = self.cursor_capture.get()?;
         // Match mutation publication's ledger-before-reducer lock order.
         let ledger = self
@@ -1600,15 +1612,8 @@ impl PresentationEmitter {
             .session_state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let mut phrase = self.phrase_preview_paint.lock()
+        let phrase = self.phrase_preview_paint.lock()
             .unwrap_or_else(|error| error.into_inner());
-        if protect_stop_preview {
-            // Read the paint receipt, not a recognizer revision that could
-            // have arrived but not yet been painted on the other thread.
-            phrase.stop_preview = reducer.last_painted_canvas.preview_paints.iter()
-                .find(|(rev, _)| phrase.open_revisions.contains(rev))
-                .map(|(rev, evidence)| (*rev, evidence.clone()));
-        }
         Some(VisibleCanvasSnapshot {
             session_id: session_id.clone(),
             capture_epoch: *capture_epoch,
@@ -1833,15 +1838,14 @@ impl PresentationEmitter {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .unanchored_evidence(session_id, *capture_epoch);
-        let mut previews = self.phrase_preview_paint.lock()
-            .unwrap_or_else(|error| error.into_inner()).retained.clone();
+        evidence.extend(self.phrase_preview_paint.lock()
+            .unwrap_or_else(|error| error.into_inner()).retained.clone());
         if let Some(preview) = self.cursor_unanchored_preview.lock()
             .unwrap_or_else(|error| error.into_inner()).as_ref()
         {
-            // Current preview follows already closed, refused phrases.
-            previews.insert(u64::MAX, preview.clone());
+            evidence.push(preview.clone());
         }
-        evidence.extend(previews.into_values());
+        evidence.sort_by_key(|item| (item.sample_start, item.sample_end));
         *sequence = next;
         self.with_active_presentation(|| observer(&CompactProjection {
             session_id: session_id.clone(),
@@ -1882,71 +1886,63 @@ impl PresentationEmitter {
     }
 
     /// Send a command to the emitter worker (non-blocking, ordered).
-    fn send_cmd(&self, cmd: EmitterCmd, preview_only_words: usize) {
-        match &cmd {
+    fn send_cmd(&self, mut cmd: EmitterCmd) {
+        match &mut cmd {
             EmitterCmd::PublishCommittedRevision { paint, .. }
             | EmitterCmd::PaintEphemeralPreview(paint) => {
-                let mut visible = paint.clone();
-                let mut preview_only_words = preview_only_words;
-                let (ephemeral_words, hidden_evidence) = {
-                    let state = self.session_state.lock()
-                        .unwrap_or_else(|error| error.into_inner());
-                    let ephemeral_words = preview_only_words
-                        .saturating_sub(state.visible_unanchored_words());
-                    // Evidence wholly inside a canvas occurrence is painted
-                    // beside it, so it also belongs in the frozen paste.
-                    let hidden = state.unanchored_evidence.iter()
-                        .filter(|(range, _)| state.document_by_occurrence.keys()
-                            .any(|committed| range_within(range, committed)))
-                        .map(|(_, (text, _))| text.clone()).collect::<Vec<_>>();
-                    (ephemeral_words, hidden)
-                };
-                let mut phrase = self.phrase_preview_paint.lock()
+                let state = self.session_state.lock()
                     .unwrap_or_else(|error| error.into_inner());
-                let word_count = visible.split_whitespace().count();
-                let mut visible_words = visible.split_whitespace().enumerate()
-                    .map(|(index, word)| VisibleWord {
-                        word: word.to_string(),
-                        preview_rev: (index >= word_count.saturating_sub(ephemeral_words))
-                            .then_some(phrase.current_rev).flatten(),
-                    }).collect::<Vec<_>>();
+                let phrase = self.phrase_preview_paint.lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                let mut fragments = state.visible_paint_fragments();
+                let covered = state.unanchored_evidence.iter().filter_map(|(range, (text, _, observation))| {
+                    state.document_by_occurrence.keys()
+                        .find(|owner| range_within(range, owner))
+                        .map(|owner| (observation.clone(), text.clone(), owner.clone()))
+                }).collect::<Vec<_>>();
+                for (id, evidence) in phrase.retained.iter().enumerate() {
+                    fragments.push((evidence.sample_start, evidence.text.clone(),
+                        VisibleWordSource::Refused(id), true));
+                }
+                fragments.sort_by_key(|(start, _, _, _)| *start);
                 let current_zero_preview = self.cursor_unanchored_preview.lock()
                     .unwrap_or_else(|error| error.into_inner()).clone();
-                if self.stop_snapshot_pending.load(std::sync::atomic::Ordering::SeqCst)
-                    && let Some((rev, evidence)) = phrase.stop_preview.clone()
-                    && !visible_words.iter().any(|word| word.preview_rev == Some(rev))
-                    && !(current_zero_preview.is_some() && phrase.current_rev == Some(rev))
+                *paint = state.visible_projection();
+                if let (Some(rev), Some(evidence)) = (phrase.current_rev, phrase.current_evidence.as_ref())
                 {
-                    // The snapshot can race a producer between its state
-                    // update and paint. Protect the exact stopped revision
-                    // here too, before publishing any replacement paint.
-                    phrase.retained.entry(rev).or_insert(evidence);
+                    if current_zero_preview.is_none() {
+                        append_exact_fragment(paint, &evidence.text);
+                    }
+                    fragments.push((evidence.sample_start, evidence.text.clone(),
+                        VisibleWordSource::Preview(rev), true));
                 }
-                let mut append_evidence = |text: &str, preview_rev| {
-                    append_rendered_fragment(&mut visible, text);
-                    preview_only_words += text.split_whitespace().count();
-                    visible_words.extend(text.split_whitespace().map(|word| VisibleWord {
-                        word: word.to_string(), preview_rev,
+                let mut visible = String::new();
+                let mut visible_words = Vec::new();
+                let mut preview_only_words = 0;
+                for (_, text, source, is_evidence) in fragments {
+                    append_exact_fragment(&mut visible, &text);
+                    if is_evidence {
+                        preview_only_words += text.split_whitespace().count();
+                    }
+                    let preview_rev = match &source {
+                        VisibleWordSource::Preview(rev) => Some(*rev),
+                        _ => None,
+                    };
+                    visible_words.extend(text.split_whitespace().enumerate().map(|(offset, word)| VisibleWord {
+                        word: word.to_string(), preview_rev, source: source.clone(), offset, covered_by: None,
                     }));
-                };
-                for text in hidden_evidence {
-                    append_evidence(&text, None);
                 }
-                for (rev, evidence) in &phrase.retained {
-                    append_evidence(&evidence.text, Some(*rev));
-                }
-                if let Some(evidence) = current_zero_preview.as_ref()
-                {
-                    append_evidence(&evidence.text, phrase.current_rev);
-                }
-                let mut preview_paints = phrase.retained.clone();
-                if let (Some(rev), Some(evidence)) =
-                    (phrase.current_rev, phrase.current_evidence.as_ref())
-                    && visible_words.iter().any(|word| word.preview_rev == Some(rev))
-                {
-                    preview_paints.insert(rev, evidence.clone());
+                // The evidence list paints these hypotheses, but their PCM is
+                // already represented by a committed occurrence in the paste.
+                for (observation, text, owner) in covered {
+                    visible_words.extend(text.split_whitespace().enumerate().map(|(offset, word)| VisibleWord {
+                        word: word.to_string(), preview_rev: None,
+                        source: VisibleWordSource::Unanchored(observation.clone()), offset,
+                        covered_by: Some(owner.clone()),
+                    }));
                 }
                 drop(phrase);
+                drop(state);
                 #[cfg(test)]
                 self.paint_commands.lock().unwrap().push(visible.clone());
                 self.session_state.lock()
@@ -1955,7 +1951,6 @@ impl PresentationEmitter {
                         text: visible,
                         preview_only_words,
                         visible_words,
-                        preview_paints,
                     };
                 self.paint_cursor(paint);
             }
@@ -2010,17 +2005,14 @@ impl PresentationEmitter {
 
     /// Paint the visible projection. Delivery receives only the committed text.
     fn send_committed_paint(&self, delivery: String) {
-        let (paint, preview_only_words) = {
+        let paint = {
             let state = self
                 .session_state
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            (state.visible_projection(), state.visible_unanchored_words())
+            state.visible_projection()
         };
-        self.send_cmd(
-            EmitterCmd::PublishCommittedRevision { paint, delivery },
-            preview_only_words,
-        );
+        self.send_cmd(EmitterCmd::PublishCommittedRevision { paint, delivery });
     }
 
     /// Accept one explicit overlay revision intent against the retained terminal
@@ -2401,15 +2393,11 @@ impl EventSink for PresentationEmitter {
                     .is_some_and(|id| id.starts_with("light-plus-"));
                 let revision = state.apply_ledger_mutation(&ledger, observation, receipt);
                 let visible = state.visible_projection();
-                let preview_only_words = state.visible_unanchored_words();
                 drop(state);
                 if unanchored {
                     drop(ledger);
                     if !visible.trim().is_empty() {
-                        self.send_cmd(
-                            EmitterCmd::PaintEphemeralPreview(visible),
-                            preview_only_words,
-                        );
+                        self.send_cmd(EmitterCmd::PaintEphemeralPreview(visible));
                     }
                     return;
                 }
@@ -2433,7 +2421,6 @@ impl EventSink for PresentationEmitter {
                             paint: visible,
                             delivery: revision.rendered_text,
                         },
-                        preview_only_words,
                     );
                     if was_stop_revision {
                         self.mint_light_plus_revision(&mut ledger);
@@ -2605,66 +2592,58 @@ impl EventSink for PresentationEmitter {
             }
             EngineEvent::PreviewDisposition {
                 superseded_through_rev,
-                final_disposition,
+                final_disposition: _,
+                refused_evidence,
             } => {
-                let clears_preview = matches!(final_disposition,
-                    PreviewFinalDisposition::Admitted | PreviewFinalDisposition::KeptUnanchored);
                 let mut phrase = self.phrase_preview_paint.lock()
                     .unwrap_or_else(|error| error.into_inner());
                 let closed_revisions = phrase.open_revisions.iter().copied()
                     .filter(|rev| rev <= superseded_through_rev).collect::<Vec<_>>();
                 phrase.open_revisions.retain(|rev| rev > superseded_through_rev);
-                if phrase.stop_preview.as_ref()
-                    .is_some_and(|(rev, _)| closed_revisions.contains(rev))
-                {
-                    let (rev, evidence) = phrase.stop_preview.take()
-                        .expect("protected preview belongs to this closing phrase");
-                    if clears_preview {
-                        phrase.retained.remove(&rev);
-                    } else {
-                        phrase.retained.insert(rev, evidence);
-                    }
-                }
-                if clears_preview {
-                    for rev in closed_revisions {
-                        phrase.supersessions.insert(rev, *superseded_through_rev);
-                    }
+                for rev in closed_revisions {
+                    // Preserve the first replacement: a stopped rev 5 replaced
+                    // by partial 6 remains attributed to partial 6 after final 6.
+                    phrase.supersessions.entry(rev)
+                        .or_insert(PreviewSupersession::Final(*superseded_through_rev));
                 }
                 let closes_current = phrase.current_rev
                     .is_some_and(|rev| rev <= *superseded_through_rev);
+                let preview_range = if closes_current { phrase.current_evidence.clone() } else { None };
+                for refused in refused_evidence {
+                    let (sample_start, sample_end) = refused.range.as_ref()
+                        .map(|range| (range.sample_start, range.sample_end))
+                        .or_else(|| preview_range.as_ref().map(|range| (range.sample_start, range.sample_end)))
+                        .unwrap_or((0, 0));
+                    phrase.retained.push(UnanchoredEvidence {
+                        sample_start, sample_end, text: refused.text.clone(), reason: refused.reason.clone(),
+                    });
+                }
                 if closes_current {
-                    let rev = phrase.current_rev.take().expect("current preview revision");
-                    if let Some(evidence) = phrase.current_evidence.take()
-                        && !clears_preview
-                    {
-                        phrase.retained.insert(rev, evidence);
-                    }
+                    phrase.current_rev = None;
+                    phrase.current_evidence = None;
                 }
                 drop(phrase);
                 if closes_current {
                     *self.cursor_unanchored_preview.lock()
                         .unwrap_or_else(|error| error.into_inner()) = None;
-                    let (paint, preview_words) = {
-                        let mut state = self.session_state.lock()
-                            .unwrap_or_else(|error| error.into_inner());
-                        state.clear_ephemeral_preview();
-                        (state.visible_projection(), state.visible_unanchored_words())
-                    };
-                    self.send_cmd(EmitterCmd::PaintEphemeralPreview(paint), preview_words);
                 }
+                let paint = {
+                    let mut state = self.session_state.lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    if closes_current { state.clear_ephemeral_preview(); }
+                    state.ephemeral_visual_text()
+                };
+                self.send_cmd(EmitterCmd::PaintEphemeralPreview(paint));
             }
             EngineEvent::Preview { rev, text, pin } => {
                 {
                     let mut phrase = self.phrase_preview_paint.lock()
                         .unwrap_or_else(|error| error.into_inner());
-                    if self.stop_snapshot_pending.load(std::sync::atomic::Ordering::SeqCst)
-                        && let Some((stopped_rev, evidence)) = phrase.stop_preview.clone()
-                        && stopped_rev != *rev
+                    if let Some(previous) = phrase.current_rev
+                        && previous != *rev
                     {
-                        // A Partial is not a final disposition. Retain the
-                        // stopped paint without guessing which words survived
-                        // in this newer recognizer revision.
-                        phrase.retained.entry(stopped_rev).or_insert(evidence);
+                        phrase.supersessions.entry(previous)
+                            .or_insert(PreviewSupersession::Partial(*rev));
                     }
                     phrase.current_rev = Some(*rev);
                     phrase.current_evidence = Some(UnanchoredEvidence {
@@ -2702,9 +2681,9 @@ impl EventSink for PresentationEmitter {
                         let mut state =
                             self.session_state.lock().unwrap_or_else(|e| e.into_inner());
                         state.clear_ephemeral_preview();
-                        (state.visible_projection(), state.visible_unanchored_words())
+                        state.visible_projection()
                     };
-                    self.send_cmd(EmitterCmd::PaintEphemeralPreview(canonical.0), canonical.1);
+                    self.send_cmd(EmitterCmd::PaintEphemeralPreview(canonical));
                     self.repaint_cursor();
                     return;
                 }
@@ -2713,19 +2692,12 @@ impl EventSink for PresentationEmitter {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner()) = None;
                 self.repaint_cursor();
-                let (visual_text, preview_only_words) = {
+                let visual_text = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.set_ephemeral_preview(text);
-                    (
-                        state.ephemeral_visual_text(),
-                        state.visible_unanchored_words()
-                            + state.ephemeral_preview.split_whitespace().count(),
-                    )
+                    state.ephemeral_visual_text()
                 };
-                self.send_cmd(
-                    EmitterCmd::PaintEphemeralPreview(visual_text),
-                    preview_only_words,
-                );
+                self.send_cmd(EmitterCmd::PaintEphemeralPreview(visual_text));
             }
             EngineEvent::UtteranceFinal { utterance_id, .. } => {
                 debug!(
@@ -2758,16 +2730,19 @@ impl EventSink for PresentationEmitter {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner()) = None;
                 self.repaint_cursor();
-                let (canonical_text, preview_only_words) = {
+                {
+                    let mut phrase = self.phrase_preview_paint.lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    phrase.current_rev = None;
+                    phrase.current_evidence = None;
+                }
+                let canonical_text = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.mark_terminal_lifecycle();
                     state.clear_ephemeral_preview();
-                    (state.visible_projection(), state.visible_unanchored_words())
+                    state.visible_projection()
                 };
-                self.send_cmd(
-                    EmitterCmd::PaintEphemeralPreview(canonical_text),
-                    preview_only_words,
-                );
+                self.send_cmd(EmitterCmd::PaintEphemeralPreview(canonical_text));
                 info!("Engine reported no speech: {}", reason);
             }
             EngineEvent::Drop { kind, text, reason } => {
@@ -2813,15 +2788,18 @@ impl EventSink for PresentationEmitter {
                 {
                     return;
                 }
-                let (canonical_text, preview_only_words) = {
+                {
+                    let mut phrase = self.phrase_preview_paint.lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    phrase.current_rev = None;
+                    phrase.current_evidence = None;
+                }
+                let canonical_text = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.clear_ephemeral_preview();
-                    (state.visible_projection(), state.visible_unanchored_words())
+                    state.visible_projection()
                 };
-                self.send_cmd(
-                    EmitterCmd::PaintEphemeralPreview(canonical_text),
-                    preview_only_words,
-                );
+                self.send_cmd(EmitterCmd::PaintEphemeralPreview(canonical_text));
                 // Capture is over, but terminal presentation authority stays
                 // alive for an explicit overlay revision. The controller
                 // replaces or drops it at the next take; `finish()` is for an
@@ -2850,16 +2828,19 @@ impl EventSink for PresentationEmitter {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner()) = None;
                 self.repaint_cursor();
-                let (canonical_text, preview_only_words) = {
+                {
+                    let mut phrase = self.phrase_preview_paint.lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    phrase.current_rev = None;
+                    phrase.current_evidence = None;
+                }
+                let canonical_text = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.mark_terminal_lifecycle();
                     state.clear_ephemeral_preview();
-                    (state.visible_projection(), state.visible_unanchored_words())
+                    state.visible_projection()
                 };
-                self.send_cmd(
-                    EmitterCmd::PaintEphemeralPreview(canonical_text),
-                    preview_only_words,
-                );
+                self.send_cmd(EmitterCmd::PaintEphemeralPreview(canonical_text));
                 // Lifecycle end closes edit admission independently of the
                 // seal verdict. Light+ is idempotent: a document the terminal
                 // seal already shaped yields no second intent.
@@ -3439,7 +3420,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stop_canvas_counts_canvas_and_evidence_list_words_as_preview() {
+    async fn stop_canvas_counts_only_visible_unanchored_words_as_preview() {
         let delivery = Arc::new(Mutex::new(String::new()));
         let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
         let mut emitter = PresentationEmitter::new_with_authority(
@@ -3481,10 +3462,14 @@ mod tests {
         }
         emitter.on_event(&preview(4, "last preview"));
         let frozen = emitter.visible_canvas_snapshot().unwrap();
-        assert_eq!(frozen.preview_only_words, 6);
-        assert!(frozen.text.contains("visible evidence last preview"));
-        // The covered range is still visible in the overlay evidence list.
-        assert!(frozen.text.ends_with("covered evidence"));
+        assert_eq!(frozen.preview_only_words, 4);
+        assert!(frozen.text.ends_with("visible evidence last preview"));
+        assert!(!frozen.text.contains("covered evidence"));
+        assert!(emitter.session_state.lock().unwrap().unanchored_evidence("take", 7)
+            .iter().any(|item| item.text == "covered evidence"));
+        let accounted = frozen.missing_words_from(&frozen);
+        assert_eq!(accounted.len(), 2);
+        assert!(accounted.iter().all(|word| word.reason.starts_with("covered_by_committed occurrence=")));
         assert_eq!(
             emitter.shape_frozen_canvas_at_stop(frozen.clone()).unwrap(),
             frozen
@@ -3719,6 +3704,7 @@ mod tests {
             )
         };
         emitter.on_event(&last);
+        emitter.on_event(&preview_disposition(3, PreviewFinalDisposition::Admitted));
         let frozen = emitter.visible_canvas_snapshot().unwrap();
         assert_eq!(frozen.preview_only_words, 0);
         assert_eq!(
@@ -3759,6 +3745,7 @@ mod tests {
             )
         };
         emitter.on_event(&last);
+        emitter.on_event(&preview_disposition(1, PreviewFinalDisposition::Admitted));
         let frozen = emitter.visible_canvas_snapshot().unwrap();
         assert_eq!(frozen.preview_only_words, 0);
         assert_eq!(frozen.text, "Last words");
@@ -3801,6 +3788,7 @@ mod tests {
             "One two three four five six",
         );
         emitter.on_event(&first);
+        emitter.on_event(&preview_disposition(1, PreviewFinalDisposition::Admitted));
         assert_paint("One two three four five six", 0);
 
         emitter.on_event(&preview(2, "open tail"));
@@ -3818,6 +3806,7 @@ mod tests {
             label: "unanchored words".into(),
             receipt,
         });
+        emitter.on_event(&preview_disposition(2, PreviewFinalDisposition::KeptUnanchored));
         assert_paint("One two three four five six unanchored words", 2);
 
         let last = admitted_mutation(&mut ledger.lock().unwrap(), tail, 3, "settled tail");
@@ -3973,6 +3962,17 @@ mod tests {
         EngineEvent::PreviewDisposition {
             superseded_through_rev: rev,
             final_disposition: disposition,
+            refused_evidence: Vec::new(),
+        }
+    }
+
+    fn refused_final(rev: u64, text: &str) -> EngineEvent {
+        EngineEvent::PreviewDisposition {
+            superseded_through_rev: rev,
+            final_disposition: PreviewFinalDisposition::Refused { reason: "untimed".into() },
+            refused_evidence: vec![codescribe_core::pipeline::contracts::RefusedPreviewEvidence {
+                range: None, text: text.into(), reason: "untimed".into(),
+            }],
         }
     }
 
@@ -3995,9 +3995,9 @@ mod tests {
         assert_eq!(after.text, "Iwo");
         assert_eq!(after.preview_only_words, 0);
         let missing = before.missing_words_from(&after);
-        assert_eq!(missing.len(), 1);
+        assert_eq!(missing.len(), 2);
         assert_eq!(missing[0].word, "Iwo");
-        assert_eq!(missing[0].reason, "superseded_by_final rev=1");
+        assert!(missing.iter().all(|word| word.reason == "superseded_by_final rev=1"));
         emitter.finish().await;
     }
 
@@ -4011,9 +4011,7 @@ mod tests {
         emitter.set_literal_delivery(true);
         emitter.on_capture_opened("take", 7);
         emitter.on_event(&zero_width_preview(1, "refused words"));
-        emitter.on_event(&preview_disposition(1, super::PreviewFinalDisposition::Refused {
-            reason: "apple_final_without_pcm_timing".to_string(),
-        }));
+        emitter.on_event(&refused_final(1, "refused words"));
         emitter.on_event(&zero_width_preview(2, "Iwo Iwo"));
         let at_stop = emitter.begin_stop_canvas().unwrap();
         assert!(at_stop.text.contains("refused words"));
@@ -4025,17 +4023,17 @@ mod tests {
         let deadline = emitter.finish_stop_canvas().unwrap();
         assert_eq!(deadline.text, "Iwo refused words pending words");
         let missing = at_stop.missing_words_from(&deadline);
-        assert_eq!(missing.len(), 1);
-        assert_eq!(missing[0].reason, "superseded_by_final rev=2");
+        assert_eq!(missing.len(), 2);
+        assert!(missing.iter().all(|word| word.reason == "superseded_by_final rev=2"));
         assert!(missing.iter().all(|word| word.reason != "unaccounted"));
-        // A later final may not claim the previously refused phrase's revision.
-        assert!(!deadline.preview_supersessions.contains_key(&1));
+        // The earlier phrase keeps its own final receipt.
+        assert_eq!(deadline.preview_supersessions.get(&1), Some(&super::PreviewSupersession::Final(1)));
         assert!(!deadline.preview_supersessions.contains_key(&3));
         emitter.finish().await;
     }
 
     #[tokio::test]
-    async fn partial_shortening_after_stop_keeps_stopped_words_until_typed_final() {
+    async fn partial_shortening_after_stop_replaces_stopped_revision_once() {
         for zero_width in [false, true] {
             let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
             let mut emitter = PresentationEmitter::new_with_authority(
@@ -4045,20 +4043,16 @@ mod tests {
             emitter.set_literal_delivery(true);
             emitter.on_capture_opened("take", 7);
             emitter.on_event(&zero_width_preview(1, "refused earlier"));
-            emitter.on_event(&preview_disposition(1, super::PreviewFinalDisposition::Refused {
-                reason: "apple_final_without_pcm_timing".into(),
-            }));
+            emitter.on_event(&refused_final(1, "refused earlier"));
             let partial = if zero_width { zero_width_preview } else { preview };
             emitter.on_event(&partial(2, "one two three"));
             let stopped = emitter.begin_stop_canvas().unwrap();
             emitter.on_event(&partial(3, "one"));
             let deadline = emitter.visible_canvas_snapshot().unwrap();
-            assert!(deadline.text.contains("one two three"));
-            assert!(deadline.text.contains("refused earlier"));
-            assert!(stopped.missing_words_from(&deadline).is_empty());
-            assert!(!deadline.preview_supersessions.contains_key(&2));
-            // Repeated newer partials retain one stopped paint, not every
-            // recognizer revision observed during the wait.
+            assert_eq!(deadline.text, "refused earlier one");
+            let missing = stopped.missing_words_from(&deadline);
+            assert_eq!(missing.len(), 3);
+            assert!(missing.iter().all(|word| word.reason == "superseded_by_partial rev=3"));
             emitter.on_event(&partial(4, "one"));
             assert_eq!(emitter.visible_canvas_snapshot().unwrap().text, deadline.text);
             let admitted = admitted_mutation(&mut ledger.lock().unwrap(),
@@ -4068,9 +4062,9 @@ mod tests {
             let settled = emitter.finish_stop_canvas().unwrap();
             assert_eq!(settled.text, "one refused earlier");
             let missing = stopped.missing_words_from(&settled);
-            assert_eq!(missing.len(), 2);
-            assert!(missing.iter().all(|word| word.reason == "superseded_by_final rev=4"));
-            assert!(!settled.preview_supersessions.contains_key(&1));
+            assert_eq!(missing.len(), 3);
+            assert!(missing.iter().all(|word| word.reason == "superseded_by_partial rev=3"));
+            assert_eq!(settled.preview_supersessions.get(&1), Some(&super::PreviewSupersession::Final(1)));
             emitter.finish().await;
         }
     }
@@ -4099,17 +4093,165 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stop_word_accounting_detects_equal_count_substitution_and_multiplicity() {
+    async fn stop_word_accounting_does_not_borrow_identical_words_from_another_phrase() {
         let mut emitter = PresentationEmitter::new(Arc::new(Mutex::new(String::new())), None, None);
         emitter.on_capture_opened("take", 7);
         emitter.on_event(&zero_width_preview(1, "Iwo Iwo"));
         let before = emitter.begin_stop_canvas().unwrap();
         let mut pasted = before.clone();
-        pasted.text = "Iwo elsewhere".to_string();
+        pasted.visible_words[1].source = super::VisibleWordSource::Preview(99);
         let missing = before.missing_words_from(&pasted);
         assert_eq!(missing.len(), 1);
         assert_eq!(missing[0].word, "Iwo");
         assert_eq!(missing[0].reason, "unaccounted");
+        emitter.finish().await;
+    }
+
+    #[tokio::test]
+    async fn pending_latest_partial_survives_an_unrelated_committed_paint() {
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let mut emitter = PresentationEmitter::new_with_authority(
+            Arc::new(Mutex::new(String::new())), None, None, None,
+            Some(Arc::clone(&ledger)), None,
+        );
+        emitter.set_literal_delivery(true);
+        emitter.on_capture_opened("take", 7);
+        emitter.on_event(&preview(5, "pending old suffix"));
+        let stopped = emitter.begin_stop_canvas().unwrap();
+        emitter.on_event(&preview(6, "latest"));
+        let mutation = admitted_mutation(&mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("take", 7, 0, 16_000), 1, "earlier");
+        emitter.on_event(&mutation);
+        let deadline = emitter.finish_stop_canvas().unwrap();
+        assert_eq!(deadline.text, "earlier latest");
+        assert_eq!(deadline.preview_only_words, 1);
+        assert!(stopped.missing_words_from(&deadline).iter()
+            .all(|word| word.reason == "superseded_by_partial rev=6"));
+        emitter.finish().await;
+    }
+
+    #[tokio::test]
+    async fn changed_label_receipt_cannot_account_for_a_stopped_word() {
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let mut emitter = PresentationEmitter::new_with_authority(
+            Arc::new(Mutex::new(String::new())), None, None, None,
+            Some(Arc::clone(&ledger)), None,
+        );
+        emitter.set_literal_delivery(true);
+        emitter.on_capture_opened("take", 7);
+        let occurrence = OccurrenceIdentity::new("take", 7, 0, 16_000);
+        let mutation = admitted_mutation(&mut ledger.lock().unwrap(), occurrence.clone(), 1, "before");
+        emitter.on_event(&mutation);
+        let stopped = emitter.begin_stop_canvas().unwrap();
+        let observation = ObservationIdentity::new(ObservationProducer::Apple, 2, 1, occurrence);
+        let receipt = ledger.lock().unwrap().admit(&observation, "after");
+        assert!(matches!(receipt, MutationReceipt::Correct { .. }));
+        emitter.on_event(&EngineEvent::LedgerMutation { observation, label: "after".into(), receipt });
+        let frozen = emitter.finish_stop_canvas().unwrap();
+        assert_eq!(frozen.text, "after");
+        let missing = stopped.missing_words_from(&frozen);
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].reason, "unaccounted");
+        emitter.finish().await;
+    }
+
+    #[tokio::test]
+    async fn whole_refusal_pastes_final_text_once_and_supersedes_preview() {
+        let mut emitter = PresentationEmitter::new(Arc::new(Mutex::new(String::new())), None, None);
+        emitter.on_capture_opened("take", 7);
+        emitter.on_event(&zero_width_preview(1, "old preview words"));
+        let stopped = emitter.begin_stop_canvas().unwrap();
+        emitter.on_event(&refused_final(1, "final evidence"));
+        let frozen = emitter.finish_stop_canvas().unwrap();
+        assert_eq!(frozen.text, "final evidence");
+        let missing = stopped.missing_words_from(&frozen);
+        assert_eq!(missing.len(), 3);
+        assert!(missing.iter().all(|word| word.reason == "superseded_by_final rev=1"));
+        let phrase = emitter.phrase_preview_paint.lock().unwrap();
+        assert!(phrase.current_rev.is_none());
+        assert_eq!(phrase.retained[0].sample_start, 16_000);
+        drop(phrase);
+        emitter.finish().await;
+    }
+
+    #[tokio::test]
+    async fn combined_stop_visible_accounting() {
+        use codescribe_core::pipeline::contracts::RefusedPreviewEvidence;
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let projections = Arc::new(StdMutex::new(Vec::<super::CompactProjection>::new()));
+        let observed = Arc::clone(&projections);
+        let mut emitter = PresentationEmitter::new_with_authority(
+            Arc::new(Mutex::new(String::new())), None, None, None,
+            Some(Arc::clone(&ledger)), None,
+        ).with_cursor_observer(Arc::new(move |projection| observed.lock().unwrap().push(projection.clone())));
+        emitter.set_literal_delivery(true);
+        emitter.on_capture_opened("take", 7);
+        let owner = OccurrenceIdentity::new("take", 7, 0, 16_000);
+        let mutation = admitted_mutation(&mut ledger.lock().unwrap(), owner.clone(), 1, "kept");
+        emitter.on_event(&mutation);
+        let evidence = ObservationIdentity::new(ObservationProducer::Apple, 2, 0,
+            OccurrenceIdentity::new("take", 7, 0, 8_000));
+        let receipt = ledger.lock().unwrap().keep_visible_unanchored(&evidence, "covered hypothesis",
+            codescribe_core::pipeline::acoustic_ledger::NoAuthorityReason::NoRange);
+        emitter.on_event(&EngineEvent::LedgerMutation {
+            observation: evidence, label: "covered hypothesis".into(), receipt,
+        });
+
+        // Preserve is an already-visible final, never a retained preview.
+        emitter.on_event(&zero_width_preview(1, "old kept preview"));
+        let before_preserve = emitter.visible_canvas_snapshot().unwrap();
+        let observation = ObservationIdentity::new(ObservationProducer::Apple, 3, 0, owner);
+        let receipt = ledger.lock().unwrap().admit(&observation, "kept");
+        assert!(matches!(receipt, MutationReceipt::Preserve { .. }));
+        emitter.on_event(&EngineEvent::LedgerMutation { observation, label: "kept".into(), receipt });
+        emitter.on_event(&preview_disposition(1, PreviewFinalDisposition::Admitted));
+        let after_preserve = emitter.visible_canvas_snapshot().unwrap();
+        assert_eq!(after_preserve.text, "kept");
+        assert!(before_preserve.missing_words_from(&after_preserve).iter().all(|word|
+            word.reason == "superseded_by_final rev=1" || word.reason.starts_with("covered_by_committed")));
+
+        // The admitted part and refused part both survive, once, in PCM order.
+        emitter.on_event(&zero_width_preview(2, "partly guessed preview"));
+        let before_refusal = emitter.visible_canvas_snapshot().unwrap();
+        let mutation = admitted_mutation(&mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("take", 7, 16_000, 32_000), 4, "admitted");
+        emitter.on_event(&mutation);
+        emitter.on_event(&EngineEvent::PreviewDisposition {
+            superseded_through_rev: 2,
+            final_disposition: PreviewFinalDisposition::Refused { reason: "slice_refused".into() },
+            refused_evidence: vec![RefusedPreviewEvidence {
+                range: Some(OccurrenceIdentity::new("take", 7, 32_000, 48_000)),
+                text: "refused label".into(), reason: "slice_refused".into(),
+            }],
+        });
+        let after_refusal = emitter.visible_canvas_snapshot().unwrap();
+        assert_eq!(after_refusal.text, "kept admitted refused label");
+        assert!(before_refusal.missing_words_from(&after_refusal).iter().all(|word|
+            word.reason == "superseded_by_final rev=2" || word.reason.starts_with("covered_by_committed")));
+
+        emitter.on_event(&zero_width_preview(5, "newest discarded suffix"));
+        let stopped = emitter.begin_stop_canvas().unwrap();
+        emitter.on_event(&zero_width_preview(6, "newest"));
+        let at_bound = emitter.visible_canvas_snapshot().unwrap();
+        assert_eq!(at_bound.text, "kept admitted refused label newest");
+        let missing = stopped.missing_words_from(&at_bound);
+        assert_eq!(missing.iter().filter(|word| word.reason == "superseded_by_partial rev=6").count(), 3);
+        assert_eq!(missing.iter().filter(|word| word.reason.starts_with("covered_by_committed occurrence=")).count(), 2);
+        assert!(missing.iter().all(|word| word.reason != "unaccounted"));
+        let mutation = admitted_mutation(&mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("take", 7, 48_000, 64_000), 5, "newest");
+        emitter.on_event(&mutation);
+        emitter.on_event(&preview_disposition(6, PreviewFinalDisposition::Admitted));
+        let frozen = emitter.finish_stop_canvas().unwrap();
+        assert_eq!(frozen.text, at_bound.text);
+        assert_eq!(stopped.missing_words_from(&frozen), missing);
+        assert!(!frozen.text.contains("covered hypothesis"));
+        let projections = projections.lock().unwrap();
+        let last = projections.last().unwrap();
+        assert!(last.evidence.iter().any(|item| item.text == "covered hypothesis"));
+        assert!(last.evidence.iter().any(|item| item.text == "refused label"));
+        assert!(!last.evidence.iter().any(|item| item.text == "newest discarded suffix"));
+        drop(projections);
         emitter.finish().await;
     }
 

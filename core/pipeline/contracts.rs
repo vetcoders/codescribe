@@ -739,6 +739,16 @@ pub enum PreviewFinalDisposition {
     Refused { reason: String },
 }
 
+/// A refused Apple label retained for presentation and stop delivery.
+/// Its PCM identity orders the evidence but grants no ledger authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusedPreviewEvidence {
+    /// Absent for an untimed whole final; use its superseded preview's range.
+    pub range: Option<crate::pipeline::acoustic_ledger::OccurrenceIdentity>,
+    pub text: String,
+    pub reason: String,
+}
+
 /// Events emitted by the transcription engine.
 ///
 /// These are semantic events — the engine communicates what happened
@@ -818,11 +828,13 @@ pub enum EngineEvent {
     },
 
     /// End of the current recognizer phrase, after its ledger decisions.
-    /// Only admitted or visibly retained finals supersede that phrase's previews.
+    /// Every final supersedes that phrase's previews. Refused labels remain
+    /// visible as evidence, without changing the ledger's admission decision.
     #[serde(skip)]
     PreviewDisposition {
         superseded_through_rev: u64,
         final_disposition: PreviewFinalDisposition,
+        refused_evidence: Vec<RefusedPreviewEvidence>,
     },
 
     /// Correction — re-transcription of accumulated audio improved previous output.

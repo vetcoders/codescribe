@@ -7255,26 +7255,36 @@ fn phrase_retention_reason(prev: &str, next: &str) -> Option<&'static str> {
 /// alone is not evidence that its words were admitted or kept visible.
 fn phrase_final_disposition(
     events: &[EngineEvent],
-) -> crate::pipeline::contracts::PreviewFinalDisposition {
-    use crate::pipeline::contracts::PreviewFinalDisposition;
+    final_text: &str,
+) -> (
+    crate::pipeline::contracts::PreviewFinalDisposition,
+    Vec<crate::pipeline::contracts::RefusedPreviewEvidence>,
+) {
+    use crate::pipeline::contracts::{PreviewFinalDisposition, RefusedPreviewEvidence};
     let mut admitted = false;
     let mut kept_unanchored = false;
     let mut refusal = None;
+    let mut refused_evidence = Vec::new();
     for event in events {
         match event {
-            EngineEvent::LedgerMutation { observation, receipt, .. }
+            EngineEvent::LedgerMutation { observation, label, receipt }
                 if observation.producer == LedgerObservationProducer::Apple =>
             {
                 match receipt {
-                    MutationReceipt::Insert { .. } | MutationReceipt::Correct { .. } => {
+                    MutationReceipt::Insert { .. }
+                    | MutationReceipt::Correct { .. }
+                    | MutationReceipt::Preserve { .. } => {
                         admitted = true;
                     }
                     MutationReceipt::KeepVisibleUnanchored { .. } => kept_unanchored = true,
-                    MutationReceipt::Refuse { reason, .. } => {
-                        refusal = Some(reason.as_str().to_string());
-                    }
-                    MutationReceipt::Preserve { .. } => {
-                        refusal = Some("apple_final_preserved_existing_label".to_string());
+                    MutationReceipt::Refuse { occurrence, reason } => {
+                        let reason = reason.as_str().to_string();
+                        refusal = Some(reason.clone());
+                        refused_evidence.push(RefusedPreviewEvidence {
+                            range: Some(occurrence.clone()),
+                            text: label.clone(),
+                            reason,
+                        });
                     }
                 }
             }
@@ -7284,18 +7294,26 @@ fn phrase_final_disposition(
             _ => {}
         }
     }
-    // A partly refused phrase cannot retract the preview of its missing part.
-    if let Some(reason) = refusal {
+    // Refused slices carry only their own label. Replaying the whole final
+    // here would duplicate any sibling slice already visible in the canvas.
+    if !admitted && !kept_unanchored && refused_evidence.is_empty() {
+        let reason = refusal
+            .get_or_insert_with(|| "apple_final_without_visible_receipt".to_string())
+            .clone();
+        refused_evidence.push(RefusedPreviewEvidence {
+            range: None,
+            text: final_text.to_string(),
+            reason,
+        });
+    }
+    let disposition = if let Some(reason) = refusal {
         PreviewFinalDisposition::Refused { reason }
     } else if kept_unanchored {
         PreviewFinalDisposition::KeptUnanchored
-    } else if admitted {
-        PreviewFinalDisposition::Admitted
     } else {
-        PreviewFinalDisposition::Refused {
-            reason: "apple_final_without_visible_receipt".to_string(),
-        }
-    }
+        PreviewFinalDisposition::Admitted
+    };
+    (disposition, refused_evidence)
 }
 
 /// Map one poll's worth of bridge events onto `EngineEvent`s, sealing where the
@@ -7429,13 +7447,15 @@ fn emit_stream_events(
                 while let Ok(event) = phrase_rx.try_recv() {
                     phrase_events.push(event);
                 }
-                let final_disposition = phrase_final_disposition(&phrase_events);
+                let (final_disposition, refused_evidence) =
+                    phrase_final_disposition(&phrase_events, &text);
                 for event in phrase_events {
                     let _ = ev_tx.send(event);
                 }
                 let _ = ev_tx.send(EngineEvent::PreviewDisposition {
                     superseded_through_rev,
                     final_disposition,
+                    refused_evidence,
                 });
                 info!(
                     audio_secs,
@@ -7664,8 +7684,12 @@ mod c13a_lifecycle_tests {
             let mut dispositions = Vec::new();
             while let Ok(event) = rx.try_recv() {
                 if let EngineEvent::PreviewDisposition {
-                    superseded_through_rev, final_disposition,
+                    superseded_through_rev, final_disposition, refused_evidence,
                 } = event {
+                    assert_eq!(refused_evidence.len(), 1);
+                    assert_eq!(refused_evidence[0].range, None);
+                    assert_eq!(refused_evidence[0].text, "Iwo");
+                    assert_eq!(refused_evidence[0].reason, "apple_final_without_pcm_timing");
                     dispositions.push((superseded_through_rev, final_disposition));
                 }
             }
@@ -7682,6 +7706,94 @@ mod c13a_lifecycle_tests {
                     "a final without a current preview cannot claim an earlier phrase");
             }
         }
+    }
+
+    #[test]
+    fn preserved_apple_final_is_admitted_without_replaying_its_label() {
+        use crate::pipeline::contracts::PreviewFinalDisposition;
+        let occurrence = OccurrenceIdentity {
+            session: "preserved-phrase".into(),
+            capture_epoch: 1,
+            sample_start: 0,
+            sample_end: 16_000,
+        };
+        let event = EngineEvent::LedgerMutation {
+            observation: LedgerObservationIdentity::new(
+                LedgerObservationProducer::Apple, 1, 1, occurrence.clone(),
+            ),
+            label: "already committed".into(),
+            receipt: MutationReceipt::Preserve {
+                occurrence,
+                held_by: LedgerObservationProducer::Apple,
+            },
+        };
+        let (disposition, evidence) = phrase_final_disposition(&[event], "already committed");
+        assert_eq!(disposition, PreviewFinalDisposition::Admitted);
+        assert!(evidence.is_empty());
+    }
+
+    #[test]
+    fn partially_refused_phrase_retains_only_each_refused_apple_slice() {
+        use crate::pipeline::acoustic_ledger::RefuseReason;
+        use crate::pipeline::contracts::{PreviewFinalDisposition, RefusedPreviewEvidence};
+        let admitted = OccurrenceIdentity {
+            session: "partial-refusal".into(),
+            capture_epoch: 1,
+            sample_start: 0,
+            sample_end: 16_000,
+        };
+        let refused = OccurrenceIdentity {
+            sample_start: 16_000,
+            sample_end: 32_000,
+            ..admitted.clone()
+        };
+        let second_refused = OccurrenceIdentity {
+            sample_start: 32_000,
+            sample_end: 48_000,
+            ..admitted.clone()
+        };
+        let mut events = vec![EngineEvent::LedgerMutation {
+            observation: LedgerObservationIdentity::new(
+                LedgerObservationProducer::Apple, 1, 1, admitted.clone(),
+            ),
+            label: "admitted".into(),
+            receipt: MutationReceipt::Insert { occurrence: admitted },
+        }];
+        for (generation, occurrence) in [refused.clone(), second_refused.clone()]
+            .into_iter()
+            .enumerate()
+        {
+            events.push(EngineEvent::LedgerMutation {
+                observation: LedgerObservationIdentity::new(
+                    LedgerObservationProducer::Apple, 1, generation as u64 + 2, occurrence.clone(),
+                ),
+                label: "Iwo".into(),
+                receipt: MutationReceipt::Refuse {
+                    occurrence,
+                    reason: RefuseReason::SealedReplay,
+                },
+            });
+        }
+        let (disposition, evidence) = phrase_final_disposition(&events, "admitted Iwo Iwo");
+        let reason = RefuseReason::SealedReplay.as_str().to_string();
+        assert_eq!(disposition, PreviewFinalDisposition::Refused { reason: reason.clone() });
+        assert_eq!(evidence, vec![
+            RefusedPreviewEvidence { range: Some(refused), text: "Iwo".into(), reason: reason.clone() },
+            RefusedPreviewEvidence { range: Some(second_refused), text: "Iwo".into(), reason },
+        ]);
+    }
+
+    #[test]
+    fn final_without_any_visible_receipt_retains_its_own_text() {
+        use crate::pipeline::contracts::{PreviewFinalDisposition, RefusedPreviewEvidence};
+        let (disposition, evidence) = phrase_final_disposition(&[], "final text without receipt");
+        let reason = "apple_final_without_visible_receipt".to_string();
+        assert_eq!(disposition, PreviewFinalDisposition::Refused { reason: reason.clone() });
+        assert_eq!(evidence, vec![RefusedPreviewEvidence {
+            range: None,
+            text: "final text without receipt".into(),
+            reason,
+        }]);
     }
 
     fn stage_pending_occurrence(
