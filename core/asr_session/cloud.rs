@@ -1,8 +1,13 @@
 //! Dedicated live cloud transport for the Libraxis Voice Lab WebSocket.
 //!
-//! This module owns normal live capture: a `config` message, bounded base64 PCM
-//! `chunk` messages, periodic `flush`, and a bounded `end`/drain. The receive
-//! adapter converts Voice Lab events into Codescribe's normalized vocabulary.
+//! This module owns normal live capture: a `set` message, bounded base64 PCM
+//! `chunk` messages, client `flush` commits, and a bounded `end`/drain. While
+//! the handshake is in progress, PCM sits in a time-bounded pre-connect buffer
+//! sized for `connect_timeout` at up to 192 kHz and drains in order when the
+//! socket opens. After that, the small live queue is unchanged: a slow server
+//! still surfaces overflow. The receive adapter converts Voice Lab events into
+//! Codescribe's normalized vocabulary and stamps each untimed final with the
+//! capture-clock span the client committed.
 //! Whole-file multipart upload lives outside this session and is reserved for
 //! explicit retranscribe actions. This module does not own recorder wiring,
 //! consent, or provider selection.
@@ -14,8 +19,15 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+
+/// Highest native capture rate the pre-connect buffer is sized for.
+const MAX_NATIVE_CAPTURE_HZ: u64 = 192_000;
+
+/// Wall-clock cadence of the periodic flush used until the first explicit commit.
+const PERIODIC_FLUSH_INTERVAL: Duration = Duration::from_millis(2_500);
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use futures_util::{SinkExt, StreamExt};
@@ -310,6 +322,8 @@ impl VoiceLabReceiveState {
                         text,
                         start_ms,
                         end_ms,
+                        commit_id: None,
+                        item_id: None,
                     }
                 } else {
                     GatewayEvent::Partial {
@@ -370,9 +384,9 @@ impl VoiceLabReceiveState {
                 }))
             }
             "transcript.final" => {
-                let Some(text) = voice_lab_text(&value) else {
-                    return Ok(None);
-                };
+                // An empty final is still a commit boundary. Dropping it would
+                // leave the client's oldest span attached to a later final.
+                let text = voice_lab_final_text(&value);
                 self.revision = self.revision.checked_add(1).ok_or(AsrErrorKind::Protocol)?;
                 let event_id = self.event_id()?;
                 let event = GatewayEvent::Final {
@@ -383,6 +397,8 @@ impl VoiceLabReceiveState {
                     text,
                     start_ms: None,
                     end_ms: None,
+                    commit_id: json_string(&value, "commit_id"),
+                    item_id: json_string(&value, "item_id"),
                 };
                 self.utterance_id = self
                     .utterance_id
@@ -425,6 +441,24 @@ fn voice_lab_text(value: &serde_json::Value) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Final text, including the empty string. Partials still use [`voice_lab_text`].
+fn voice_lab_final_text(value: &serde_json::Value) -> String {
+    value
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
+fn json_string(value: &serde_json::Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
 /// Voice Lab live start frame. The engine's frozen inbound types are
 /// `set` / `chunk` / `flush` / `end` — `config` is rejected as unknown.
 fn voice_lab_set_message(config: &GatewaySessionConfig) -> String {
@@ -434,8 +468,25 @@ fn voice_lab_set_message(config: &GatewaySessionConfig) -> String {
         "sample_rate": config.sample_rate_hz(),
         "encoding": "pcm16",
         "vocabulary": config.vocabulary,
+        // The client owns segmentation. Server VAD must not cut the audio.
+        "vad": false,
     })
     .to_string()
+}
+
+fn voice_lab_flush_message() -> String {
+    serde_json::json!({"type": "flush"}).to_string()
+}
+
+fn voice_lab_end_message() -> String {
+    serde_json::json!({"type": "end"}).to_string()
+}
+
+/// Samples of audio the pre-connect buffer holds for one handshake window.
+fn preconnect_sample_capacity(connect_timeout: Duration) -> u64 {
+    let samples = u128::from(MAX_NATIVE_CAPTURE_HZ).saturating_mul(connect_timeout.as_nanos())
+        / 1_000_000_000;
+    u64::try_from(samples).unwrap_or(u64::MAX).max(1)
 }
 
 impl fmt::Debug for GatewayPcmFrame {
@@ -517,6 +568,12 @@ pub enum GatewayEvent {
         start_ms: Option<u64>,
         #[serde(default)]
         end_ms: Option<u64>,
+        /// Client commit id echoed by a vendor, when the final carries one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        commit_id: Option<String>,
+        /// OpenAI Realtime item id, when the final carries one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        item_id: Option<String>,
     },
     /// Typed error without provider prose.
     #[serde(rename = "session.error")]
@@ -582,6 +639,13 @@ pub trait CloudGatewayTransport: Send {
     fn start(&mut self, config: GatewaySessionConfig) -> Result<(), AsrErrorKind>;
     /// Queue one bounded PCM frame without waiting for socket I/O.
     fn try_send_pcm(&mut self, frame: GatewayPcmFrame) -> Result<(), AsrErrorKind>;
+    /// Queue one vendor commit. Libraxis sends `flush`.
+    ///
+    /// The default succeeds without I/O so existing transports keep compiling.
+    fn commit_flush(&mut self, commit_id: &str) -> Result<(), AsrErrorKind> {
+        let _ = commit_id;
+        Ok(())
+    }
     /// Poll one receive item without blocking.
     fn poll(&mut self) -> GatewayTransportPoll;
     /// Queue the normalized end signal.
@@ -593,8 +657,77 @@ pub trait CloudGatewayTransport: Send {
 #[derive(Debug)]
 enum GatewayCommand {
     Pcm(GatewayPcmFrame),
+    Flush,
     End,
     Abort,
+}
+
+/// One outbound item held until the socket handshake finishes.
+#[derive(Debug)]
+enum BufferedOutbound {
+    Pcm(GatewayPcmFrame),
+    Flush,
+    End,
+}
+
+/// PCM accepted during the handshake, bounded by capture time.
+struct PreconnectBuffer {
+    commands: VecDeque<BufferedOutbound>,
+    samples: u64,
+    capacity_samples: u64,
+}
+
+impl PreconnectBuffer {
+    fn covering(connect_timeout: Duration) -> Self {
+        Self {
+            commands: VecDeque::new(),
+            samples: 0,
+            capacity_samples: preconnect_sample_capacity(connect_timeout),
+        }
+    }
+
+    /// Accept one frame. Exceeding the handshake window is a disconnect.
+    fn push_pcm(&mut self, frame: GatewayPcmFrame) -> Result<(), AsrErrorKind> {
+        let samples = u64::try_from(frame.pcm_s16le.len() / 2).unwrap_or(u64::MAX);
+        if self.samples.saturating_add(samples) > self.capacity_samples {
+            return Err(AsrErrorKind::Transport);
+        }
+        self.samples = self.samples.saturating_add(samples);
+        self.commands.push_back(BufferedOutbound::Pcm(frame));
+        Ok(())
+    }
+
+    fn push_flush(&mut self) {
+        self.commands.push_back(BufferedOutbound::Flush);
+    }
+
+    fn push_end(&mut self) {
+        self.commands.push_back(BufferedOutbound::End);
+    }
+
+    fn take_commands(&mut self) -> VecDeque<BufferedOutbound> {
+        self.samples = 0;
+        std::mem::take(&mut self.commands)
+    }
+}
+
+struct SharedOutbound {
+    buffer: PreconnectBuffer,
+    /// Handshake finished; further commands use the live queue.
+    live: bool,
+    aborted: bool,
+    failed: Option<AsrErrorKind>,
+}
+
+fn lock_outbound(shared: &Mutex<SharedOutbound>) -> std::sync::MutexGuard<'_, SharedOutbound> {
+    shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn mark_outbound_failed(shared: &Mutex<SharedOutbound>, kind: AsrErrorKind) {
+    let mut guard = lock_outbound(shared);
+    if guard.failed.is_none() {
+        guard.failed = Some(kind);
+    }
 }
 
 #[derive(Debug)]
@@ -612,6 +745,7 @@ enum WorkerSignal {
 pub struct GatewayWebSocketTransport {
     connection: Option<GatewayConnection>,
     limits: CloudSessionLimits,
+    shared: Arc<Mutex<SharedOutbound>>,
     command_tx: Option<mpsc::Sender<GatewayCommand>>,
     event_rx: Option<mpsc::Receiver<WorkerSignal>>,
     worker: Option<JoinHandle<()>>,
@@ -626,14 +760,39 @@ impl GatewayWebSocketTransport {
         limits: CloudSessionLimits,
     ) -> Result<Self, AsrErrorKind> {
         limits.validate()?;
+        let shared = Arc::new(Mutex::new(SharedOutbound {
+            buffer: PreconnectBuffer::covering(limits.connect_timeout),
+            live: false,
+            aborted: false,
+            failed: None,
+        }));
         Ok(Self {
             connection: Some(connection),
             limits,
+            shared,
             command_tx: None,
             event_rx: None,
             worker: None,
             started: false,
             ending: false,
+        })
+    }
+
+    fn lock_shared(&self) -> std::sync::MutexGuard<'_, SharedOutbound> {
+        lock_outbound(&self.shared)
+    }
+
+    fn live_send(&self, command: GatewayCommand) -> Result<(), AsrErrorKind> {
+        if let Some(kind) = self.lock_shared().failed {
+            return Err(kind);
+        }
+        let sender = self.command_tx.as_ref().ok_or(AsrErrorKind::Transport)?;
+        sender.try_send(command).map_err(|error| match error {
+            mpsc::error::TrySendError::Full(_) => AsrErrorKind::Overflow,
+            mpsc::error::TrySendError::Closed(_) => self
+                .lock_shared()
+                .failed
+                .unwrap_or(AsrErrorKind::Transport),
         })
     }
 }
@@ -661,6 +820,7 @@ impl CloudGatewayTransport for GatewayWebSocketTransport {
         // provider retains no spare credential copy after session start.
         let connection = self.connection.take().ok_or(AsrErrorKind::Protocol)?;
         let limits = self.limits;
+        let shared = Arc::clone(&self.shared);
         let worker = std::thread::Builder::new()
             .name("codescribe-live-cloud-asr".to_string())
             .spawn(move || {
@@ -668,12 +828,13 @@ impl CloudGatewayTransport for GatewayWebSocketTransport {
                     .enable_all()
                     .build();
                 let Ok(runtime) = runtime else {
+                    mark_outbound_failed(&shared, AsrErrorKind::Transport);
                     let _ = event_tx.blocking_send(WorkerSignal::Fault(AsrErrorKind::Transport));
                     let _ = event_tx.blocking_send(WorkerSignal::Closed);
                     return;
                 };
                 runtime.block_on(gateway_worker(
-                    connection, config, limits, command_rx, event_tx,
+                    connection, config, limits, command_rx, event_tx, shared,
                 ));
             })
             .map_err(|_| AsrErrorKind::Transport)?;
@@ -689,13 +850,33 @@ impl CloudGatewayTransport for GatewayWebSocketTransport {
         if !self.started || self.ending {
             return Err(AsrErrorKind::Protocol);
         }
-        let sender = self.command_tx.as_ref().ok_or(AsrErrorKind::Transport)?;
-        sender
-            .try_send(GatewayCommand::Pcm(frame))
-            .map_err(|error| match error {
-                mpsc::error::TrySendError::Full(_) => AsrErrorKind::Overflow,
-                mpsc::error::TrySendError::Closed(_) => AsrErrorKind::Transport,
-            })
+        {
+            let mut shared = self.lock_shared();
+            if let Some(kind) = shared.failed {
+                return Err(kind);
+            }
+            if !shared.live {
+                return shared.buffer.push_pcm(frame);
+            }
+        }
+        self.live_send(GatewayCommand::Pcm(frame))
+    }
+
+    fn commit_flush(&mut self, _commit_id: &str) -> Result<(), AsrErrorKind> {
+        if !self.started || self.ending {
+            return Err(AsrErrorKind::Protocol);
+        }
+        {
+            let mut shared = self.lock_shared();
+            if let Some(kind) = shared.failed {
+                return Err(kind);
+            }
+            if !shared.live {
+                shared.buffer.push_flush();
+                return Ok(());
+            }
+        }
+        self.live_send(GatewayCommand::Flush)
     }
 
     fn poll(&mut self) -> GatewayTransportPoll {
@@ -715,18 +896,29 @@ impl CloudGatewayTransport for GatewayWebSocketTransport {
         if !self.started || self.ending {
             return Err(AsrErrorKind::Protocol);
         }
-        let sender = self.command_tx.as_ref().ok_or(AsrErrorKind::Transport)?;
-        sender
-            .try_send(GatewayCommand::End)
-            .map_err(|error| match error {
-                mpsc::error::TrySendError::Full(_) => AsrErrorKind::Overflow,
-                mpsc::error::TrySendError::Closed(_) => AsrErrorKind::Transport,
-            })?;
+        let buffered_end = {
+            let mut shared = self.lock_shared();
+            if let Some(kind) = shared.failed {
+                return Err(kind);
+            }
+            if !shared.live {
+                shared.buffer.push_end();
+                true
+            } else {
+                false
+            }
+        };
+        if buffered_end {
+            self.ending = true;
+            return Ok(());
+        }
+        self.live_send(GatewayCommand::End)?;
         self.ending = true;
         Ok(())
     }
 
     fn abort(&mut self) {
+        self.lock_shared().aborted = true;
         if let Some(sender) = self.command_tx.take() {
             let _ = sender.try_send(GatewayCommand::Abort);
         }
@@ -751,9 +943,12 @@ async fn gateway_worker(
     limits: CloudSessionLimits,
     command_rx: mpsc::Receiver<GatewayCommand>,
     event_tx: mpsc::Sender<WorkerSignal>,
+    shared: Arc<Mutex<SharedOutbound>>,
 ) {
-    let result = run_gateway_socket(connection, config, limits, command_rx, &event_tx).await;
+    let result =
+        run_gateway_socket(connection, config, limits, command_rx, &event_tx, &shared).await;
     if let Err(kind) = result {
+        mark_outbound_failed(&shared, kind);
         let _ = event_tx.send(WorkerSignal::Fault(kind)).await;
     }
     let _ = event_tx.send(WorkerSignal::Closed).await;
@@ -765,6 +960,7 @@ async fn run_gateway_socket(
     limits: CloudSessionLimits,
     mut command_rx: mpsc::Receiver<GatewayCommand>,
     event_tx: &mpsc::Sender<WorkerSignal>,
+    shared: &Mutex<SharedOutbound>,
 ) -> Result<(), AsrErrorKind> {
     let vendor = crate::llm::speech::vendor_for_endpoint(&connection.endpoint);
     let xai = vendor == Some(crate::llm::provider::ProviderKind::XaiResponses);
@@ -808,11 +1004,31 @@ async fn run_gateway_socket(
         }
     }
 
-    let connected = timeout(limits.connect_timeout, connect_async(request))
-        .await
-        .map_err(|_| AsrErrorKind::Transport)?
-        .map_err(|error| classify_socket_error(&error))?;
+    let connected = match timeout(limits.connect_timeout, connect_async(request)).await {
+        Ok(Ok(stream)) => stream,
+        Ok(Err(error)) => return Err(classify_socket_error(&error)),
+        Err(_elapsed) => return Err(AsrErrorKind::Transport),
+    };
     let (mut socket, _) = connected;
+
+    // Publish the socket before any further send. Audio offered during the
+    // handshake is already in `backlog`; later frames use the live queue.
+    let backlog = {
+        let mut guard = lock_outbound(shared);
+        if guard.aborted {
+            None
+        } else {
+            guard.live = true;
+            Some(guard.buffer.take_commands())
+        }
+    };
+    let Some(backlog) = backlog else {
+        let _ = socket.close(None).await;
+        return Ok(());
+    };
+
+    let mut receive_state = VoiceLabReceiveState::new(config.session_id.clone());
+    receive_state.xai = xai;
 
     // Proven Voice Lab wire: credentials stay in the WebSocket handshake,
     // never in the JSON body. The engine start type is `set`, not `config`.
@@ -832,70 +1048,51 @@ async fn run_gateway_socket(
         .await?;
     }
 
-    let mut receive_state = VoiceLabReceiveState::new(config.session_id.clone());
-    receive_state.xai = xai;
-    let mut flush = tokio::time::interval_at(
-        tokio::time::Instant::now() + Duration::from_millis(2_500),
-        Duration::from_millis(2_500),
-    );
+    for command in backlog {
+        let command = match command {
+            BufferedOutbound::Pcm(frame) => GatewayCommand::Pcm(frame),
+            BufferedOutbound::Flush => GatewayCommand::Flush,
+            BufferedOutbound::End => GatewayCommand::End,
+        };
+        if apply_gateway_command(
+            command,
+            xai,
+            &config,
+            &mut socket,
+            limits,
+            event_tx,
+            &mut receive_state,
+        )
+        .await?
+        {
+            return Ok(());
+        }
+    }
+
     loop {
         tokio::select! {
             command = command_rx.recv() => {
                 match command {
-                    Some(GatewayCommand::Pcm(frame)) => {
-                        if xai {
-                            send_socket_message(&mut socket, Message::Binary(frame.pcm_s16le.into()), limits.send_timeout).await?;
-                            continue;
-                        }
-                        let chunk = serde_json::json!({
-                            "type": "chunk",
-                            "audio_base64": BASE64.encode(&frame.pcm_s16le),
-                            "sample_rate": config.audio.sample_rate_hz,
-                            "encoding": "pcm16",
-                        }).to_string();
-                        send_socket_message(
-                            &mut socket,
-                            Message::Text(chunk.into()),
-                            limits.send_timeout,
-                        ).await?;
-                    }
-                    Some(GatewayCommand::End) => {
-                        if xai {
-                            send_socket_message(&mut socket, Message::Text(r#"{"type":"audio.done"}"#.into()), limits.send_timeout).await?;
-                            return drain_gateway_tail(&mut socket, limits, event_tx, &mut receive_state).await;
-                        }
-                        let flush = serde_json::json!({"type": "flush"}).to_string();
-                        send_socket_message(
-                            &mut socket,
-                            Message::Text(flush.into()),
-                            limits.send_timeout,
-                        ).await?;
-                        let end = serde_json::json!({"type": "end"}).to_string();
-                        send_socket_message(
-                            &mut socket,
-                            Message::Text(end.into()),
-                            limits.send_timeout,
-                        ).await?;
-                        return drain_gateway_tail(
+                    Some(command) => {
+                        if apply_gateway_command(
+                            command,
+                            xai,
+                            &config,
                             &mut socket,
                             limits,
                             event_tx,
                             &mut receive_state,
-                        ).await;
+                        )
+                        .await?
+                        {
+                            return Ok(());
+                        }
                     }
-                    Some(GatewayCommand::Abort) | None => {
+                    None => {
                         let _ = socket.close(None).await;
                         return Ok(());
                     }
                 }
-            }
-            _ = flush.tick(), if !xai => {
-                let message = serde_json::json!({"type": "flush"}).to_string();
-                send_socket_message(
-                    &mut socket,
-                    Message::Text(message.into()),
-                    limits.send_timeout,
-                ).await?;
             }
             incoming = socket.next() => {
                 if forward_gateway_message(
@@ -908,6 +1105,76 @@ async fn run_gateway_socket(
                     return Err(AsrErrorKind::Transport);
                 }
             }
+        }
+    }
+}
+
+/// Send one command. `true` means the socket task should stop.
+async fn apply_gateway_command(
+    command: GatewayCommand,
+    xai: bool,
+    config: &GatewaySessionConfig,
+    socket: &mut WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
+    limits: CloudSessionLimits,
+    event_tx: &mpsc::Sender<WorkerSignal>,
+    receive_state: &mut VoiceLabReceiveState,
+) -> Result<bool, AsrErrorKind> {
+    match command {
+        GatewayCommand::Pcm(frame) => {
+            if xai {
+                send_socket_message(
+                    socket,
+                    Message::Binary(frame.pcm_s16le.into()),
+                    limits.send_timeout,
+                )
+                .await?;
+                return Ok(false);
+            }
+            let chunk = serde_json::json!({
+                "type": "chunk",
+                "audio_base64": BASE64.encode(&frame.pcm_s16le),
+                "sample_rate": config.audio.sample_rate_hz,
+                "encoding": "pcm16",
+            })
+            .to_string();
+            send_socket_message(socket, Message::Text(chunk.into()), limits.send_timeout).await?;
+            Ok(false)
+        }
+        GatewayCommand::Flush => {
+            if !xai {
+                send_socket_message(
+                    socket,
+                    Message::Text(voice_lab_flush_message().into()),
+                    limits.send_timeout,
+                )
+                .await?;
+            }
+            Ok(false)
+        }
+        GatewayCommand::End => {
+            if xai {
+                send_socket_message(
+                    socket,
+                    Message::Text(r#"{"type":"audio.done"}"#.into()),
+                    limits.send_timeout,
+                )
+                .await?;
+            } else {
+                // `end` is itself the final commit. A flush ahead of it would
+                // emit an extra final with nothing left to anchor.
+                send_socket_message(
+                    socket,
+                    Message::Text(voice_lab_end_message().into()),
+                    limits.send_timeout,
+                )
+                .await?;
+            }
+            drain_gateway_tail(socket, limits, event_tx, receive_state).await?;
+            Ok(true)
+        }
+        GatewayCommand::Abort => {
+            let _ = socket.close(None).await;
+            Ok(true)
         }
     }
 }
@@ -1105,12 +1372,37 @@ impl SeenEventIds {
 }
 
 /// Live cloud implementation of [`AsrSessionProvider`].
+/// One client commit waiting for the final that seals it.
+struct PendingCommit {
+    commit_id: String,
+    range: AudioRange,
+}
+
+/// How a recorded commit is asked of the vendor.
+enum CommitWire {
+    /// Libraxis `flush`. The periodic path uses this until the first explicit commit.
+    Flush,
+    /// `end` is the last commit and must not be preceded by another flush.
+    End,
+}
+
 pub struct LiveCloudAsrSession<T: CloudGatewayTransport> {
     _authorization: CloudEgressAuthorization,
     transport: T,
     limits: CloudSessionLimits,
     state: SessionState,
     session_id: Option<SessionId>,
+    /// Native rate from [`SessionInput::sample_rate`] at open. See [`offered_capture_rate_hz`].
+    capture_rate_hz: u32,
+    /// Samples accepted by [`AsrSessionProvider::push_audio`], on the capture clock.
+    capture_samples_pushed: u64,
+    /// Exclusive end of the last recorded commit, in capture samples.
+    last_commit_sample: u64,
+    next_commit_number: u64,
+    pending_commits: VecDeque<PendingCommit>,
+    /// Once set, the 2.5 s flush stops. The caller owns segmentation.
+    explicit_commit: bool,
+    last_periodic_flush: Instant,
     next_audio_sequence: u64,
     next_event_sequence: u64,
     utterance_revisions: HashMap<u64, u64>,
@@ -1119,6 +1411,14 @@ pub struct LiveCloudAsrSession<T: CloudGatewayTransport> {
     ready: VecDeque<AsrSessionEvent>,
     telemetry: CloudSessionTelemetry,
     fault_seen: bool,
+}
+
+/// Native capture rate the recorder offered this session, in Hz.
+///
+/// Commit ranges count `push_audio` samples at this rate. The value is
+/// [`SessionInput::sample_rate`] and is not rewritten to the 16 kHz wire rate.
+fn offered_capture_rate_hz(input: &SessionInput) -> u32 {
+    input.sample_rate
 }
 
 impl<T: CloudGatewayTransport> LiveCloudAsrSession<T> {
@@ -1135,6 +1435,13 @@ impl<T: CloudGatewayTransport> LiveCloudAsrSession<T> {
             limits,
             state: SessionState::Idle,
             session_id: None,
+            capture_rate_hz: 0,
+            capture_samples_pushed: 0,
+            last_commit_sample: 0,
+            next_commit_number: 1,
+            pending_commits: VecDeque::new(),
+            explicit_commit: false,
+            last_periodic_flush: Instant::now(),
             next_audio_sequence: 1,
             next_event_sequence: 1,
             utterance_revisions: HashMap::new(),
@@ -1178,6 +1485,82 @@ impl<T: CloudGatewayTransport> LiveCloudAsrSession<T> {
         }
     }
 
+    /// Record `[last_commit_sample, commit_sample)` and ask the transport to commit it.
+    fn enqueue_commit(&mut self, commit_sample: u64, wire: CommitWire) -> Result<(), AsrErrorKind> {
+        if commit_sample < self.last_commit_sample || commit_sample > self.capture_samples_pushed {
+            return Err(AsrErrorKind::Protocol);
+        }
+        if commit_sample == self.last_commit_sample {
+            return match wire {
+                CommitWire::End => self.transport.begin_end(),
+                CommitWire::Flush => Ok(()),
+            };
+        }
+        let start_sample = self.last_commit_sample;
+        let range =
+            AudioRange::from_capture_samples(start_sample, commit_sample, self.capture_rate_hz)
+                .ok_or(AsrErrorKind::Protocol)?;
+        let commit_id = format!("cs-commit-{}", self.next_commit_number);
+        // Record before the wire send so a final polled immediately after
+        // this call still finds its span.
+        self.pending_commits
+            .push_back(PendingCommit {
+                commit_id: commit_id.clone(),
+                range,
+            });
+        self.last_commit_sample = commit_sample;
+        self.next_commit_number = self.next_commit_number.saturating_add(1);
+        let sent = match wire {
+            CommitWire::Flush => self.transport.commit_flush(&commit_id),
+            CommitWire::End => self.transport.begin_end(),
+        };
+        if let Err(kind) = sent {
+            self.pending_commits.pop_back();
+            self.last_commit_sample = start_sample;
+            self.next_commit_number = self.next_commit_number.saturating_sub(1);
+            return Err(kind);
+        }
+        Ok(())
+    }
+
+    /// Vendor id first, then the oldest commit. Unknown ids do not skip the queue.
+    fn take_pending_commit(
+        &mut self,
+        commit_id: Option<&str>,
+        item_id: Option<&str>,
+    ) -> Option<PendingCommit> {
+        let echoed = commit_id
+            .filter(|value| !value.is_empty())
+            .or_else(|| item_id.filter(|value| !value.is_empty()));
+        if let Some(id) = echoed
+            && let Some(index) = self
+                .pending_commits
+                .iter()
+                .position(|pending| pending.commit_id == id)
+        {
+            return self.pending_commits.remove(index);
+        }
+        self.pending_commits.pop_front()
+    }
+
+    /// Send one flush for audio accepted since the previous commit.
+    ///
+    /// Stops after the first explicit [`AsrSessionProvider::commit`].
+    fn maybe_periodic_flush(&mut self) -> Result<(), AsrErrorKind> {
+        if self.explicit_commit || self.state != SessionState::Open {
+            return Ok(());
+        }
+        if self.last_periodic_flush.elapsed() < PERIODIC_FLUSH_INTERVAL {
+            return Ok(());
+        }
+        if self.capture_samples_pushed == self.last_commit_sample {
+            return Ok(());
+        }
+        self.enqueue_commit(self.capture_samples_pushed, CommitWire::Flush)?;
+        self.last_periodic_flush = Instant::now();
+        Ok(())
+    }
+
     fn normalize(&mut self, event: GatewayEvent) {
         let expected_session = match self.session_id.as_ref() {
             Some(value) => value.as_str(),
@@ -1213,15 +1596,35 @@ impl<T: CloudGatewayTransport> LiveCloudAsrSession<T> {
                 start_ms,
                 end_ms,
                 ..
-            } => self.normalize_transcript(false, utterance_id, revision, text, start_ms, end_ms),
+            } => self.normalize_transcript(
+                false,
+                utterance_id,
+                revision,
+                text,
+                start_ms,
+                end_ms,
+                None,
+                None,
+            ),
             GatewayEvent::Final {
                 utterance_id,
                 revision,
                 text,
                 start_ms,
                 end_ms,
+                commit_id,
+                item_id,
                 ..
-            } => self.normalize_transcript(true, utterance_id, revision, text, start_ms, end_ms),
+            } => self.normalize_transcript(
+                true,
+                utterance_id,
+                revision,
+                text,
+                start_ms,
+                end_ms,
+                commit_id,
+                item_id,
+            ),
             GatewayEvent::Error {
                 utterance_id, code, ..
             } => {
@@ -1271,10 +1674,9 @@ impl<T: CloudGatewayTransport> LiveCloudAsrSession<T> {
         text: String,
         start_ms: Option<u64>,
         end_ms: Option<u64>,
+        commit_id: Option<String>,
+        item_id: Option<String>,
     ) -> Result<Option<AsrSessionEvent>, AsrErrorKind> {
-        if text.trim().is_empty() {
-            return Err(AsrErrorKind::Protocol);
-        }
         if self.sealed_utterances.contains(&utterance_id)
             || self
                 .utterance_revisions
@@ -1284,13 +1686,26 @@ impl<T: CloudGatewayTransport> LiveCloudAsrSession<T> {
             self.telemetry.stale_events += 1;
             return Ok(None);
         }
-        let range = match (start_ms, end_ms) {
-            (None, None) => None,
-            (Some(start), Some(end)) => Some(
-                AudioRange::new(duration_millis_to_secs(start), duration_millis_to_secs(end))
-                    .ok_or(AsrErrorKind::Protocol)?,
-            ),
-            _ => return Err(AsrErrorKind::Protocol),
+        let untimed = start_ms.is_none() && end_ms.is_none();
+        let range = if is_final && untimed {
+            // Libraxis finals carry `duration_ms: null`. The span is the one
+            // this client committed, or `AsrErrorKind::Protocol` — never a guess.
+            let Some(pending) = self.take_pending_commit(commit_id.as_deref(), item_id.as_deref())
+            else {
+                return Err(AsrErrorKind::Protocol);
+            };
+            Some(pending.range)
+        } else if text.trim().is_empty() {
+            return Err(AsrErrorKind::Protocol);
+        } else {
+            match (start_ms, end_ms) {
+                (None, None) => None,
+                (Some(start), Some(end)) => Some(
+                    AudioRange::new(duration_millis_to_secs(start), duration_millis_to_secs(end))
+                        .ok_or(AsrErrorKind::Protocol)?,
+                ),
+                _ => return Err(AsrErrorKind::Protocol),
+            }
         };
         self.utterance_revisions.insert(utterance_id, revision);
         if is_final {
@@ -1350,6 +1765,8 @@ impl<T: CloudGatewayTransport> AsrSessionProvider for LiveCloudAsrSession<T> {
             return Err(AsrErrorKind::Protocol);
         }
         self.session_id = Some(input.session_id.clone());
+        self.capture_rate_hz = offered_capture_rate_hz(input);
+        self.last_periodic_flush = Instant::now();
         if let Err(kind) = self
             .transport
             .start(GatewaySessionConfig::from_input(input))
@@ -1365,6 +1782,7 @@ impl<T: CloudGatewayTransport> AsrSessionProvider for LiveCloudAsrSession<T> {
         if self.state != SessionState::Open || samples.is_empty() {
             return Err(AsrErrorKind::Protocol);
         }
+        self.maybe_periodic_flush()?;
         if samples.len() > self.limits.max_frame_samples {
             self.telemetry.backpressure_events += 1;
             return Err(AsrErrorKind::Overflow);
@@ -1383,6 +1801,9 @@ impl<T: CloudGatewayTransport> AsrSessionProvider for LiveCloudAsrSession<T> {
         match self.transport.try_send_pcm(frame) {
             Ok(()) => {
                 self.next_audio_sequence += 1;
+                self.capture_samples_pushed = self
+                    .capture_samples_pushed
+                    .saturating_add(samples.len() as u64);
                 self.telemetry.frames_queued += 1;
                 self.telemetry.samples_queued += samples.len() as u64;
                 Ok(())
@@ -1397,6 +1818,7 @@ impl<T: CloudGatewayTransport> AsrSessionProvider for LiveCloudAsrSession<T> {
     }
 
     fn drain(&mut self) -> Vec<AsrSessionEvent> {
+        let _ = self.maybe_periodic_flush();
         for _ in 0..self.limits.max_events_per_drain {
             if !self.poll_transport_once() {
                 break;
@@ -1411,7 +1833,8 @@ impl<T: CloudGatewayTransport> AsrSessionProvider for LiveCloudAsrSession<T> {
         if self.state != SessionState::Open {
             return Err(AsrErrorKind::Protocol);
         }
-        if let Err(kind) = self.transport.begin_end() {
+        // `end` commits whatever capture audio is still uncommitted.
+        if let Err(kind) = self.enqueue_commit(self.capture_samples_pushed, CommitWire::End) {
             self.transport.abort();
             self.state = SessionState::Failed;
             return Err(kind);
@@ -1451,6 +1874,14 @@ impl<T: CloudGatewayTransport> AsrSessionProvider for LiveCloudAsrSession<T> {
         self.queue_local_error(0, AsrErrorKind::Transport);
         self.state = SessionState::Failed;
         Err(AsrErrorKind::Transport)
+    }
+
+    fn commit(&mut self, commit_sample: u64) -> Result<(), AsrErrorKind> {
+        if self.state != SessionState::Open {
+            return Err(AsrErrorKind::Protocol);
+        }
+        self.explicit_commit = true;
+        self.enqueue_commit(commit_sample, CommitWire::Flush)
     }
 }
 
@@ -1593,7 +2024,25 @@ mod tests {
             text: text.to_string(),
             start_ms: None,
             end_ms: None,
+            commit_id: None,
+            item_id: None,
         }
+    }
+
+    fn final_with_item(
+        event_id: &str,
+        utterance_id: u64,
+        text: &str,
+        item_id: &str,
+    ) -> GatewayEvent {
+        let mut event = final_event(event_id, utterance_id, 1, text);
+        if let GatewayEvent::Final {
+            item_id: slot, ..
+        } = &mut event
+        {
+            *slot = Some(item_id.to_string());
+        }
+        event
     }
 
     #[test]
@@ -1806,9 +2255,12 @@ mod tests {
             state.adapt(r#"{"type":"vad.sample","energy":0.2,"is_speech":true}"#),
             Ok(None)
         );
-        assert_eq!(
-            state.adapt(r#"{"type":"transcript.final","text":""}"#),
-            Ok(None)
+        let empty = state
+            .adapt(r#"{"type":"transcript.final","text":"","duration_ms":null}"#)
+            .expect("empty final is still a final");
+        assert!(
+            matches!(empty, Some(GatewayEvent::Final { ref text, .. }) if text.is_empty()),
+            "an empty final must reach the commit queue"
         );
         assert_eq!(state.adapt(r#"{"type":"future.control"}"#), Ok(None));
         assert!(matches!(
@@ -1821,7 +2273,7 @@ mod tests {
                 .expect("final after hello")
                 .expect("text"),
             GatewayEvent::Final {
-                utterance_id: 1,
+                utterance_id: 2,
                 revision: 1,
                 ref text,
                 ..
@@ -1840,6 +2292,7 @@ mod tests {
         assert_eq!(payload["sample_rate"], 16_000);
         assert_eq!(payload["encoding"], "pcm16");
         assert_eq!(payload["vocabulary"], "programming");
+        assert_eq!(payload["vad"], false);
         assert!(payload.get("api_key").is_none());
         assert!(payload.get("type").and_then(|value| value.as_str()) != Some("config"));
     }
@@ -1869,6 +2322,10 @@ mod tests {
         )
         .expect("session");
         session.open(&input()).expect("open");
+        session.push_audio(&[0.0; 4]).expect("first span");
+        session.commit(4).expect("first commit");
+        session.push_audio(&[0.0; 4]).expect("second span");
+        session.commit(8).expect("second commit");
 
         let events = session.drain();
         let sequences: Vec<_> = events.iter().map(AsrSessionEvent::sequence_id).collect();
@@ -2001,6 +2458,7 @@ mod tests {
         )
         .expect("session");
         session.open(&input()).expect("open");
+        session.push_audio(&[0.0; 4]).expect("audio for the end commit");
         session.close().expect("bounded close");
         let events = session.drain();
         assert_eq!(events.len(), 2);
@@ -2130,5 +2588,400 @@ mod tests {
             .push_audio(&[0.0; 4])
             .expect("PCM after hello stays accepted");
         let _ = session.close();
+    }
+
+    fn input_hz(rate: u32) -> SessionInput {
+        SessionInput {
+            session_id: session_id(),
+            locale: Some("pl-PL".to_string()),
+            sample_rate: rate,
+        }
+    }
+
+    fn wide_limits(frame: usize, outbound: usize, connect: Duration) -> CloudSessionLimits {
+        CloudSessionLimits {
+            max_frame_samples: frame,
+            max_events_per_drain: 32,
+            max_close_events: 16,
+            outbound_queue_capacity: outbound,
+            inbound_queue_capacity: 16,
+            remembered_event_ids: 32,
+            connect_timeout: connect,
+            send_timeout: Duration::from_secs(2),
+            close_timeout: Duration::from_secs(2),
+        }
+    }
+
+    fn push_samples(
+        session: &mut LiveCloudAsrSession<FakeGatewayTransport>,
+        total: usize,
+        frame: usize,
+    ) {
+        let mut left = total;
+        while left > 0 {
+            let count = left.min(frame);
+            session
+                .push_audio(&vec![0.0; count])
+                .expect("capture frame");
+            left -= count;
+        }
+    }
+
+    fn capture_bounds(range: AudioRange, rate_hz: u32) -> (u64, u64) {
+        let rate = f64::from(rate_hz);
+        (
+            (f64::from(range.start_secs()) * rate).round() as u64,
+            (f64::from(range.end_secs()) * rate).round() as u64,
+        )
+    }
+
+    fn final_bounds(event: &AsrSessionEvent, rate_hz: u32) -> (String, (u64, u64)) {
+        let AsrSessionEvent::Final(transcript) = event else {
+            panic!("expected a final, got {event:?}");
+        };
+        let range = transcript.range.expect("final carries its commit span");
+        (transcript.text.clone(), capture_bounds(range, rate_hz))
+    }
+
+    fn loopback_endpoint(addr: std::net::SocketAddr) -> String {
+        format!(
+            "{}{addr}/v1/audio/transcribe",
+            concat!("ws", "://")
+        )
+    }
+
+    #[test]
+    fn preconnect_capacity_covers_connect_timeout_at_192_khz() {
+        let window = Duration::from_millis(500);
+        let capacity = preconnect_sample_capacity(window);
+        let native_budget = 192_000 * 500 / 1_000;
+        assert!(capacity >= native_budget);
+        let frames = 500 / 10;
+        let frame_samples = 48_000 * 10 / 1_000;
+        assert!(frames * frame_samples <= capacity);
+
+        let mut buffer = PreconnectBuffer::covering(Duration::from_millis(10));
+        let fitting = GatewayPcmFrame {
+            sequence_id: 1,
+            pcm_s16le: vec![0; 1_920 * 2],
+        };
+        buffer.push_pcm(fitting).expect("10 ms at 192 kHz fits");
+        let extra = GatewayPcmFrame {
+            sequence_id: 2,
+            pcm_s16le: vec![0; 2],
+        };
+        assert_eq!(buffer.push_pcm(extra), Err(AsrErrorKind::Transport));
+    }
+
+    #[test]
+    fn handshake_buffers_native_frames_until_connect_then_delivers_in_order() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let (report_tx, report_rx) = std::sync::mpsc::channel::<(bool, u64, Vec<i16>)>();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            let Ok((stream, _)) = listener.accept() else {
+                return;
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("read timeout");
+            let Ok(mut socket) = tokio_tungstenite::tungstenite::accept(stream) else {
+                return;
+            };
+            let Ok(Message::Text(set_text)) = socket.read() else {
+                return;
+            };
+            let set: serde_json::Value = serde_json::from_str(&set_text).unwrap_or_default();
+            let vad_off = set.get("vad").and_then(serde_json::Value::as_bool) == Some(false);
+            let sample_rate = set.get("sample_rate").and_then(serde_json::Value::as_u64).unwrap_or(0);
+            let mut markers = Vec::new();
+            while markers.len() < 50 {
+                let Ok(Message::Text(text)) = socket.read() else {
+                    break;
+                };
+                let value: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+                if value.get("type").and_then(serde_json::Value::as_str) != Some("chunk") {
+                    continue;
+                }
+                let Some(encoded) = value.get("audio_base64").and_then(serde_json::Value::as_str) else {
+                    break;
+                };
+                let Ok(bytes) = BASE64.decode(encoded) else {
+                    break;
+                };
+                let marker = bytes
+                    .chunks_exact(2)
+                    .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+                    .take_while(|sample| *sample == i16::MAX)
+                    .count() as i16;
+                markers.push(marker);
+            }
+            let _ = report_tx.send((vad_off, sample_rate, markers));
+        });
+
+        let limits = wide_limits(480, 8, Duration::from_secs(2));
+        let connection = GatewayConnection::new(loopback_endpoint(addr), "").expect("endpoint");
+        let transport = GatewayWebSocketTransport::new(connection, limits).expect("transport");
+        let mut session =
+            LiveCloudAsrSession::new(transport, limits, authorization()).expect("session");
+        session.open(&input_hz(48_000)).expect("open");
+        for index in 1..=50u16 {
+            let mut samples = vec![0.0; 480];
+            for sample in samples.iter_mut().take(usize::from(index)) {
+                *sample = 1.0;
+            }
+            session
+                .push_audio(&samples)
+                .expect("handshake frame is accepted");
+        }
+
+        let (vad_off, sample_rate, markers) = report_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("server saw the buffered frames");
+        assert!(vad_off, "set must carry vad:false");
+        assert_eq!(sample_rate, 48_000);
+        assert_eq!(markers, (1..=50).map(|index| index as i16).collect::<Vec<_>>());
+        assert_eq!(session.telemetry().frames_queued, 50);
+        assert_eq!(session.telemetry().backpressure_events, 0);
+        assert!(
+            session
+                .drain()
+                .iter()
+                .all(|event| !matches!(event, AsrSessionEvent::Error(_)))
+        );
+    }
+
+    #[test]
+    fn connect_timeout_degrades_as_disconnect_not_overflow() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let limits = wide_limits(480, 8, Duration::from_millis(200));
+        let connection = GatewayConnection::new(loopback_endpoint(addr), "").expect("endpoint");
+        let transport = GatewayWebSocketTransport::new(connection, limits).expect("transport");
+        let mut session =
+            LiveCloudAsrSession::new(transport, limits, authorization()).expect("session");
+        session.open(&input_hz(48_000)).expect("open");
+        for _ in 0..20 {
+            session
+                .push_audio(&vec![0.0; 480])
+                .expect("frames during connect are buffered");
+        }
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(
+            session.push_audio(&vec![0.0; 480]),
+            Err(AsrErrorKind::Transport)
+        );
+        assert_eq!(session.telemetry().backpressure_events, 0);
+        let events = session.drain();
+        assert!(
+            matches!(
+                events.as_slice(),
+                [AsrSessionEvent::Error(ErrorEvent {
+                    kind: AsrErrorKind::Transport,
+                    ..
+                })]
+            ),
+            "timeout must surface transport, got {events:?}"
+        );
+        drop(listener);
+    }
+
+    #[test]
+    fn stalled_socket_after_connect_still_overflows_the_live_queue() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let (set_tx, set_rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            let Ok((stream, _)) = listener.accept() else {
+                return;
+            };
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            let Ok(mut socket) = tokio_tungstenite::tungstenite::accept(stream) else {
+                return;
+            };
+            if socket.read().is_ok() {
+                let _ = set_tx.send(());
+            }
+            std::thread::sleep(Duration::from_secs(2));
+        });
+
+        let limits = wide_limits(38_400, 2, Duration::from_secs(2));
+        let connection = GatewayConnection::new(loopback_endpoint(addr), "").expect("endpoint");
+        let transport = GatewayWebSocketTransport::new(connection, limits).expect("transport");
+        let mut session =
+            LiveCloudAsrSession::new(transport, limits, authorization()).expect("session");
+        session.open(&input_hz(48_000)).expect("open");
+        set_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("handshake completed");
+
+        let mut overflowed = false;
+        for _ in 0..80 {
+            match session.push_audio(&vec![0.2; 38_400]) {
+                Ok(()) => {}
+                Err(AsrErrorKind::Overflow) => {
+                    overflowed = true;
+                    break;
+                }
+                Err(other) => panic!("post-connect stall must be overflow, got {other}"),
+            }
+        }
+        assert!(overflowed, "a stalled live queue must still overflow");
+        assert!(session.telemetry().backpressure_events >= 1);
+    }
+
+    #[test]
+    fn commits_stamp_finals_on_the_capture_clock_including_empty_and_unanchored() {
+        let rate = 48_000u32;
+        let mut limits = wide_limits(48_000, 8, Duration::from_secs(2));
+        limits.close_timeout = Duration::from_millis(200);
+        let script = [
+            GatewayTransportPoll::Event(final_event("f1", 1, 1, "raz")),
+            GatewayTransportPoll::Event(final_event("f2", 2, 1, "dwa")),
+            GatewayTransportPoll::Event(final_event("f3", 3, 1, "trzy")),
+            GatewayTransportPoll::Event(GatewayEvent::SessionEnded {
+                session_id: session_id().to_string(),
+            }),
+        ];
+        let mut session = LiveCloudAsrSession::new(
+            FakeGatewayTransport::scripted(script),
+            limits,
+            authorization(),
+        )
+        .expect("session");
+        session.open(&input_hz(rate)).expect("open");
+        push_samples(&mut session, 1_152_000, 48_000);
+        session.commit(384_000).expect("first commit");
+        session.commit(768_000).expect("second commit");
+        session.close().expect("end is the third commit");
+        let events = session.drain();
+        let stamped: Vec<_> = events.iter().map(|event| final_bounds(event, rate)).collect();
+        assert_eq!(
+            stamped,
+            vec![
+                ("raz".to_string(), (0, 384_000)),
+                ("dwa".to_string(), (384_000, 768_000)),
+                ("trzy".to_string(), (768_000, 1_152_000)),
+            ]
+        );
+        assert!(session.transport().ending);
+
+        let empty_script = [
+            GatewayTransportPoll::Event(final_event("word", 1, 1, "halo")),
+            GatewayTransportPoll::Event(final_event("empty", 2, 1, "")),
+        ];
+        let mut empty_session = LiveCloudAsrSession::new(
+            FakeGatewayTransport::scripted(empty_script),
+            limits,
+            authorization(),
+        )
+        .expect("session");
+        empty_session.open(&input_hz(rate)).expect("open");
+        push_samples(&mut empty_session, 200, 200);
+        empty_session.commit(100).expect("first");
+        empty_session.commit(200).expect("second");
+        let empty_events = empty_session.drain();
+        assert_eq!(final_bounds(&empty_events[0], rate).1, (0, 100));
+        assert_eq!(final_bounds(&empty_events[1], rate).0, "");
+        assert_eq!(final_bounds(&empty_events[1], rate).1, (100, 200));
+
+        let unanchored = [GatewayTransportPoll::Event(final_event("loose", 1, 1, "bez"))];
+        let mut bare = LiveCloudAsrSession::new(
+            FakeGatewayTransport::scripted(unanchored),
+            limits,
+            authorization(),
+        )
+        .expect("session");
+        bare.open(&input_hz(rate)).expect("open");
+        let faults = bare.drain();
+        assert!(
+            matches!(
+                faults.as_slice(),
+                [AsrSessionEvent::Error(ErrorEvent {
+                    kind: AsrErrorKind::Protocol,
+                    ..
+                })]
+            ),
+            "unanchored final is a protocol error, got {faults:?}"
+        );
+        assert!(faults.iter().all(|event| !event.is_final()));
+    }
+
+    #[test]
+    fn probe_vad_false_wire_replays_into_three_stamped_finals() {
+        // Shape measured on the 25 IX `vad:false` probe: `hello`, one
+        // `transcript.final` per flush, one for `end`, then `stream.closed`.
+        // Each final carries `duration_ms: null` and a `response_id`. The
+        // byte log was not in this worktree; the texts below are stand-ins.
+        let lines = [
+            r#"{"type":"hello","protocol":"stt-ws-v1"}"#,
+            r#"{"type":"transcript.final","text":"raz","duration_ms":null,"response_id":"r1"}"#,
+            r#"{"type":"transcript.final","text":"dwa","duration_ms":null,"response_id":"r2"}"#,
+            r#"{"type":"transcript.final","text":"trzy","duration_ms":null,"response_id":"r3"}"#,
+            r#"{"type":"stream.closed"}"#,
+        ];
+        let mut state = VoiceLabReceiveState::new(session_id().to_string());
+        let mut script = Vec::new();
+        for line in lines {
+            match state.adapt(line).expect("probe line") {
+                Some(event) => script.push(GatewayTransportPoll::Event(event)),
+                None => {}
+            }
+        }
+        assert_eq!(script.len(), 4, "hello is ignored; three finals plus closed");
+
+        let rate = 48_000u32;
+        let mut limits = wide_limits(48_000, 8, Duration::from_secs(2));
+        limits.close_timeout = Duration::from_millis(200);
+        let mut session = LiveCloudAsrSession::new(
+            FakeGatewayTransport::scripted(script),
+            limits,
+            authorization(),
+        )
+        .expect("session");
+        session.open(&input_hz(rate)).expect("open");
+        push_samples(&mut session, 1_152_000, 48_000);
+        session.commit(384_000).expect("flush at 8s");
+        session.commit(768_000).expect("flush at 16s");
+        session.close().expect("end at 24s");
+        let events = session.drain();
+        let stamped: Vec<_> = events
+            .iter()
+            .filter(|event| event.is_final())
+            .map(|event| final_bounds(event, rate).1)
+            .collect();
+        assert_eq!(
+            stamped,
+            vec![(0, 384_000), (384_000, 768_000), (768_000, 1_152_000)]
+        );
+    }
+
+    #[test]
+    fn echoed_item_id_wins_over_fifo_order() {
+        let rate = 48_000u32;
+        let limits = wide_limits(200, 8, Duration::from_secs(2));
+        let script = [
+            GatewayTransportPoll::Event(final_with_item(
+                "second-first",
+                1,
+                "pozniej",
+                "cs-commit-2",
+            )),
+            GatewayTransportPoll::Event(final_event("first-later", 2, 1, "wczesniej")),
+        ];
+        let mut session = LiveCloudAsrSession::new(
+            FakeGatewayTransport::scripted(script),
+            limits,
+            authorization(),
+        )
+        .expect("session");
+        session.open(&input_hz(rate)).expect("open");
+        push_samples(&mut session, 200, 200);
+        session.commit(100).expect("cs-commit-1");
+        session.commit(200).expect("cs-commit-2");
+        let events = session.drain();
+        assert_eq!(final_bounds(&events[0], rate).1, (100, 200));
+        assert_eq!(final_bounds(&events[1], rate).1, (0, 100));
     }
 }

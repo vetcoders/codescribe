@@ -12,7 +12,7 @@
 
 use std::collections::VecDeque;
 
-use super::events::{AsrErrorKind, AsrSessionEvent, SessionId, UsageEvent};
+use super::events::{AsrErrorKind, AsrSessionEvent, AudioRange, SessionId, UsageEvent};
 use super::provider::{AsrSessionProvider, RefinerMode, SessionInput};
 
 /// Utterance id the fake stamps on session-scoped records (its closing usage
@@ -47,6 +47,10 @@ pub struct FakeAsrSessionProvider {
     sample_rate: u32,
     /// Total samples pushed, the fake's only notion of time.
     pushed_samples: u64,
+    /// Exclusive end of the last recorded commit, on the capture clock.
+    commit_cursor: u64,
+    /// Capture spans waiting for the next unstamped final.
+    pending_commits: VecDeque<AudioRange>,
     /// Highest sequence released so far, so the closing usage event stays
     /// monotonic whatever the script did.
     highest_sequence: Option<u64>,
@@ -65,6 +69,8 @@ impl FakeAsrSessionProvider {
             session_id: None,
             sample_rate: 1,
             pushed_samples: 0,
+            commit_cursor: 0,
+            pending_commits: VecDeque::new(),
             highest_sequence: None,
             push_failure: None,
         }
@@ -107,6 +113,37 @@ impl FakeAsrSessionProvider {
     fn next_sequence(&self) -> u64 {
         self.highest_sequence.map_or(0, |highest| highest + 1)
     }
+
+    /// Remember `[commit_cursor, commit_sample)` on the capture clock.
+    fn record_commit(&mut self, commit_sample: u64) -> Result<(), AsrErrorKind> {
+        if commit_sample < self.commit_cursor || commit_sample > self.pushed_samples {
+            return Err(AsrErrorKind::Protocol);
+        }
+        if commit_sample == self.commit_cursor {
+            return Ok(());
+        }
+        let range = AudioRange::from_capture_samples(
+            self.commit_cursor,
+            commit_sample,
+            self.sample_rate,
+        )
+        .ok_or(AsrErrorKind::Protocol)?;
+        self.pending_commits.push_back(range);
+        self.commit_cursor = commit_sample;
+        Ok(())
+    }
+
+    /// Fill unstamped finals from the commit queue, oldest first.
+    fn stamp_ready(&mut self, events: &mut [AsrSessionEvent]) {
+        for event in events {
+            if let AsrSessionEvent::Final(transcript) = event
+                && transcript.range.is_none()
+                && let Some(range) = self.pending_commits.pop_front()
+            {
+                transcript.range = Some(range);
+            }
+        }
+    }
 }
 
 impl AsrSessionProvider for FakeAsrSessionProvider {
@@ -141,13 +178,26 @@ impl AsrSessionProvider for FakeAsrSessionProvider {
 
     /// Hand over everything released so far.
     fn drain(&mut self) -> Vec<AsrSessionEvent> {
-        std::mem::take(&mut self.ready)
+        let mut ready = std::mem::take(&mut self.ready);
+        self.stamp_ready(&mut ready);
+        ready
+    }
+
+    /// Record a capture-clock commit. The next unstamped final takes it.
+    fn commit(&mut self, commit_sample: u64) -> Result<(), AsrErrorKind> {
+        if self.state != State::Open {
+            return Err(AsrErrorKind::Protocol);
+        }
+        self.record_commit(commit_sample)
     }
 
     /// Close, flushing the rest of the script and a usage record behind it.
     fn close(&mut self) -> Result<(), AsrErrorKind> {
         if self.state != State::Open {
             return Err(AsrErrorKind::Protocol);
+        }
+        if self.commit_cursor > 0 && self.pushed_samples > self.commit_cursor {
+            self.record_commit(self.pushed_samples)?;
         }
         while !self.script.is_empty() {
             self.release_one();
@@ -163,5 +213,43 @@ impl AsrSessionProvider for FakeAsrSessionProvider {
         }
         self.state = State::Closed;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fake_commit_stamps_the_next_unstamped_final_on_the_capture_clock() {
+        let session_id = SessionId::new("fake-commit").expect("session id");
+        let script = vec![AsrSessionEvent::Final(
+            super::super::events::TranscriptEvent {
+                session_id: session_id.clone(),
+                utterance_id: 1,
+                sequence_id: 1,
+                text: "halo".to_string(),
+                range: None,
+            },
+        )];
+        let mut provider = FakeAsrSessionProvider::with_script(RefinerMode::CloudSession, script);
+        provider
+            .open(&SessionInput {
+                session_id,
+                locale: None,
+                sample_rate: 48_000,
+            })
+            .expect("open");
+        provider
+            .push_audio(&vec![0.0; 384_000])
+            .expect("capture samples");
+        provider.commit(384_000).expect("commit");
+        let events = provider.drain();
+        let AsrSessionEvent::Final(event) = &events[0] else {
+            panic!("expected a final");
+        };
+        let range = event.range.expect("commit stamp");
+        assert_eq!(range.start_secs(), 0.0);
+        assert_eq!(range.end_secs(), 8.0);
     }
 }

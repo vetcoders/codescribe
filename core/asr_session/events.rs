@@ -112,6 +112,25 @@ impl AudioRange {
     pub fn duration_secs(&self) -> f32 {
         self.end_secs - self.start_secs
     }
+
+    /// Capture-clock span in samples at `rate_hz`, stored as session seconds.
+    ///
+    /// `rate_hz` is the native rate the recorder offered the session. Callers
+    /// recover the sample bounds with `seconds * rate_hz`. A later conversion
+    /// of the PCM bytes onto a 16 kHz wire does not change this span.
+    pub fn from_capture_samples(
+        start_sample: u64,
+        end_sample: u64,
+        rate_hz: u32,
+    ) -> Option<Self> {
+        if rate_hz == 0 || end_sample <= start_sample {
+            return None;
+        }
+        let rate = f64::from(rate_hz);
+        let start_secs = (start_sample as f64 / rate) as f32;
+        let end_secs = (end_sample as f64 / rate) as f32;
+        Self::new(start_secs, end_secs)
+    }
 }
 
 /// Why a Layer 1 session failed — typed, with no free-form payload.
