@@ -1904,6 +1904,13 @@ mod tests {
         assert_eq!(raw.ranges()[0].sample_end, 4_000);
         assert!(evidence.ranges()[0].sample_start < raw.ranges()[0].sample_start);
         assert!(evidence.ranges()[0].sample_end > raw.ranges()[0].sample_end);
+        let mut clock = super::super::layer1_window::OpenSpeechWindowClock::new(
+            raw.identity().clone(),
+        );
+        assert!(clock.next(&evidence, 16_000, true).is_none());
+        let offered = clock.next(&raw, 16_000, true).unwrap();
+        assert_eq!(offered.admit_sample_start, 2_000);
+        assert_eq!(offered.admit_sample_end, 4_000);
 
         // A chunk that skips ahead leaves audio this observer never heard.
         ingress.note_observed_pcm(4_000, 24_000);
