@@ -297,6 +297,8 @@ pub enum NoAuthorityReason {
     LateCloudLiveWordSealedOwner,
     /// Apple supplied a word after its immutable owner sealed.
     LateAppleWordSealedOwner,
+    /// A late Apple word is not in the current slice; retain its own word pin.
+    LateAppleWordNotCurrent,
 }
 
 impl NoAuthorityReason {
@@ -306,6 +308,7 @@ impl NoAuthorityReason {
             Self::LateWhisperWordSealedOwner => "late_whisper_word_sealed_owner",
             Self::LateCloudLiveWordSealedOwner => "late_cloud_live_word_sealed_owner",
             Self::LateAppleWordSealedOwner => "late_apple_word_sealed_owner",
+            Self::LateAppleWordNotCurrent => "late_apple_word_not_current",
             Self::ZeroWidth => "zero_width",
             Self::NoRange => "no_range",
             Self::OverlapWithoutWordPins => "overlap_without_word_pins",
@@ -590,6 +593,8 @@ impl ConservationTally {
 #[derive(Debug, Clone, Default)]
 pub struct AcousticLedger {
     committed: BTreeMap<OccurrenceIdentity, CommittedObservation>,
+    /// Provenance only: label-wide slots do not prove individual word pins.
+    word_pin_observations: std::collections::HashSet<ObservationIdentity>,
     answered: Vec<ObservationIdentity>,
     kept_visible: usize,
     evidence: BTreeMap<OccurrenceIdentity, AcousticSerial>,
@@ -654,6 +659,17 @@ impl AcousticLedger {
         self.committed
             .get(occurrence)
             .map(|held| held.slots.as_slice())
+    }
+
+    /// Committed geometry supplied as word pins, excluding whole-label ranges.
+    /// This is evidence for presentation coverage, never an admission rule.
+    pub fn committed_word_pin_ranges(&self, occurrence: &OccurrenceIdentity) -> Vec<(u64, u64)> {
+        self.slots_of(occurrence)
+            .unwrap_or(&[])
+            .iter()
+            .filter(|slot| self.word_pin_observations.contains(&slot.observation))
+            .map(|slot| (slot.sample_start, slot.sample_end))
+            .collect()
     }
 
     /// Admit an Apple label with its exact word ranges in the same decision.
@@ -1306,6 +1322,7 @@ impl AcousticLedger {
             && let Some(slots) = slots
             && let Some(held) = self.committed.get_mut(&observation.occurrence)
         {
+            self.word_pin_observations.insert(observation.clone());
             held.slots = slots;
             held.recompose();
         }

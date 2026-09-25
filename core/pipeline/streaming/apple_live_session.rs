@@ -4557,8 +4557,17 @@ fn admit_late_apple_words(
                 });
             if !exact_current {
                 outcome.kept_unanchored += 1;
-                let receipt =
-                    ledger.keep_visible_unanchored(&observation, &text, NoAuthorityReason::NoRange);
+                // Evidence names the word's PCM, not its containing owner.
+                // This records an observation without minting an occurrence.
+                let observation = LedgerObservationIdentity {
+                    occurrence: pin,
+                    ..observation
+                };
+                let receipt = ledger.keep_visible_unanchored(
+                    &observation,
+                    &text,
+                    NoAuthorityReason::LateAppleWordNotCurrent,
+                );
                 let _ = ev_tx.send(EngineEvent::LedgerMutation {
                     observation,
                     label: text,
@@ -14281,6 +14290,43 @@ mod rc_w2_test_rehab {
             vec!["alpha", "beta"]
         );
         assert_eq!(retention_receipts(&drain(&mut rx)).len(), 1);
+    }
+
+    #[test]
+    fn late_noncurrent_words_keep_their_pins() {
+        for labels in [vec!["alpha", "beta", "gamma"], vec!["Iwo"; 5]] {
+            let mut state = state("late-own-pins", 6.0);
+            let owner = qualify(&mut state, 0.0, 6.0);
+            let words = labels.iter().enumerate().map(|(i, text)| FusionWord {
+                text: (*text).into(),
+                sample_start: sample(i as f32 + 0.25),
+                sample_end: sample(i as f32 + 0.5),
+            }).collect::<Vec<_>>();
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            retain_apple_words_at_exit(&mut state, &tx, 9, &words, &[], "overlap_refused");
+            let events = drain(&mut rx);
+            let receipts = retention_receipts(&events);
+            assert_eq!(receipts[0]["kept_unanchored"], labels.len());
+            assert_eq!(receipts[0]["dropped_by_slot_rules"], 0);
+            let evidence = events.iter().filter_map(|event| match event {
+                EngineEvent::LedgerMutation { observation, receipt, .. } => {
+                    let MutationReceipt::KeepVisibleUnanchored { occurrence, label, reason } = receipt else {
+                        panic!("late words must be evidence: {receipt:?}");
+                    };
+                    assert_eq!(*reason, NoAuthorityReason::LateAppleWordNotCurrent);
+                    assert_eq!(&observation.occurrence, occurrence);
+                    Some((occurrence.sample_start, occurrence.sample_end, label.as_str()))
+                }
+                _ => None,
+            }).collect::<Vec<_>>();
+            assert_eq!(evidence, words.iter().map(|word| {
+                (word.sample_start, word.sample_end, word.text.as_str())
+            }).collect::<Vec<_>>());
+            let ledger = state.acoustic_ledger.lock().unwrap();
+            assert_eq!(ledger.qualified_occurrences().collect::<Vec<_>>(), vec![&owner]);
+            assert!(ledger.is_empty(), "evidence must not mint occurrences");
+            assert!(ledger.slots_of(&owner).is_none());
+        }
     }
 
     #[test]
