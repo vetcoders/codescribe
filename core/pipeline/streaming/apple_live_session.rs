@@ -6815,7 +6815,9 @@ fn apple_stream_worker(
                 Ok(completion) => state.complete_whisper_window(&ev_tx, completion, audio_secs),
                 Err(std_mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(error) => {
-                    warn!("tail-patch closure wait ended before all observations returned: {error}");
+                    warn!(
+                        "tail-patch closure wait ended before all observations returned: {error}"
+                    );
                     tail_patch_timeout_residue = state.tail_patch_awaiting_completion();
                     state.return_outstanding_whisper_without_label(&ev_tx);
                     break;
@@ -6867,7 +6869,9 @@ fn apple_stream_worker(
                 Ok(completion) => state.complete_whisper_window(&ev_tx, completion, audio_secs),
                 Err(std_mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(error) => {
-                    warn!("tail-patch closure wait ended before all observations returned: {error}");
+                    warn!(
+                        "tail-patch closure wait ended before all observations returned: {error}"
+                    );
                     tail_patch_timeout_residue = state.tail_patch_awaiting_completion();
                     state.return_outstanding_whisper_without_label(&ev_tx);
                     if !state.cloud_inflight.is_empty() {
@@ -14440,7 +14444,7 @@ mod rc_w2_test_rehab {
                 sample_end,
                 capture_rate_hz: RATE,
                 grain: if words.is_empty() {
-                    FinalGrain::Word
+                    FinalGrain::Phrase
                 } else {
                     FinalGrain::Word
                 },
@@ -15152,7 +15156,7 @@ mod rc_w2_test_rehab {
             0,
             sample(1.0),
             &owners,
-            &[pin.clone()],
+            std::slice::from_ref(&pin),
             LedgerObservationProducer::CloudLive,
         );
         let whisper_pin = TimedTailSegment {
