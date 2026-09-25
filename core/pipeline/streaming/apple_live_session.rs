@@ -2361,23 +2361,21 @@ impl AppleSealState {
                         // Preserve the replay receipt while allowing an earlier
                         // PCM representative to replace a jittered copy that
                         // completed first. This never adds a second word slot.
-                        if word_grain {
-                            if let Some((owner_index, owner)) = ledger
+                        if word_grain
+                            && let Some((owner_index, owner)) = ledger
                                 .word_owner_index(&pin, &open_members)
                                 .map(|index| (index, &open_members[index]))
-                                && !ledger.is_sealed(owner)
-                                && ledger.matching_word_slot(owner, &pin, text, true)
-                            {
-                                let mut owned_pin = pin.clone();
-                                owned_pin.sample_start =
-                                    owned_pin.sample_start.max(owner.sample_start);
-                                owned_pin.sample_end = owned_pin.sample_end.min(owner.sample_end);
-                                routes[owner_index].exclusive.push(RoutedPin {
-                                    index,
-                                    pin: owned_pin,
-                                    text: text.to_string(),
-                                });
-                            }
+                            && !ledger.is_sealed(owner)
+                            && ledger.matching_word_slot(owner, &pin, text, true)
+                        {
+                            let mut owned_pin = pin.clone();
+                            owned_pin.sample_start = owned_pin.sample_start.max(owner.sample_start);
+                            owned_pin.sample_end = owned_pin.sample_end.min(owner.sample_end);
+                            routes[owner_index].exclusive.push(RoutedPin {
+                                index,
+                                pin: owned_pin,
+                                text: text.to_string(),
+                            });
                         }
                         side.push((index, pin, text.to_string(), SidePin::Replay));
                     }
@@ -3522,9 +3520,9 @@ fn seal_sliced_by_silero(
                     && prior.start_ts == current.start_ts
                     && prior.end_ts == current.end_ts
             })
-        && utterances.iter().all(|utterance| {
-            utterance.closed && state.reconciled_silero.contains(&utterance.id)
-        })
+        && utterances
+            .iter()
+            .all(|utterance| utterance.closed && state.reconciled_silero.contains(&utterance.id))
         && state
             .silero_slice_revision
             .as_ref()
@@ -17362,11 +17360,8 @@ mod tc2_window_contract_tests {
             } else {
                 pin("debt", 246_464, 262_784)
             };
-            f.state.complete_whisper_window(
-                &f.events,
-                completion(&request, vec![word]),
-                50.0,
-            );
+            f.state
+                .complete_whisper_window(&f.events, completion(&request, vec![word]), 50.0);
         }
         assert!(!f.state.acoustic_ledger.lock().unwrap().is_sealed(&owner));
         let windows_before = f.state.windows_admitted;
@@ -17486,13 +17481,11 @@ mod tc2_window_contract_tests {
                             .any(|(_, owner)| owner == &newer)
                     })
                     .unwrap();
-                for (id, owner, sealed) in [
-                    (1, &f.occurrence, older_sealed),
-                    (2, &newer, newer_sealed),
-                ] {
+                for (id, owner, sealed) in
+                    [(1, &f.occurrence, older_sealed), (2, &newer, newer_sealed)]
+                {
                     if sealed {
-                        f.state
-                            .return_whisper_without_label(&f.events, id, owner);
+                        f.state.return_whisper_without_label(&f.events, id, owner);
                         f.state.emit_pending_seal(&f.events, id);
                     }
                     assert_eq!(
@@ -17513,7 +17506,9 @@ mod tc2_window_contract_tests {
                     &f.events,
                     30,
                     &[FusionWord::from_timed(&pin(
-                        "apple_overlap", 508_800, 509_200,
+                        "apple_overlap",
+                        508_800,
+                        509_200,
                     ))],
                     &[apple_word("apple_overlap", 508_800, 509_200)],
                 );
@@ -17533,8 +17528,7 @@ mod tc2_window_contract_tests {
                 assert_eq!(apple_owners, vec![winner]);
                 assert!(f.state.unmatched_silero_words.is_empty());
 
-                let returned =
-                    completion(request, vec![pin("whisper_overlap", 509_400, 509_800)]);
+                let returned = completion(request, vec![pin("whisper_overlap", 509_400, 509_800)]);
                 if stop_recovery {
                     admit_debt_occurrence_recovery(
                         &mut f.state,
@@ -17560,9 +17554,12 @@ mod tc2_window_contract_tests {
                     .collect::<Vec<_>>();
                 assert_eq!(whisper_owners, vec![winner]);
                 assert!(
-                    !apple_events.iter().chain(&whisper_events).any(|event| matches!(
-                        event, EngineEvent::Warning { code, .. } if code == "no_time_overlap"
-                    ))
+                    !apple_events
+                        .iter()
+                        .chain(&whisper_events)
+                        .any(|event| matches!(
+                            event, EngineEvent::Warning { code, .. } if code == "no_time_overlap"
+                        ))
                 );
                 assert_eq!(f.state.no_time_overlap_warnings, 0);
                 assert!(f.state.unmatched_silero_words.is_empty());
@@ -17579,15 +17576,25 @@ mod tc2_window_contract_tests {
                     }
                 }
                 if winner_sealed {
-                    assert!(apple_events.iter().any(|event| matches!(event,
-                        EngineEvent::LedgerMutation { receipt: MutationReceipt::KeepVisibleUnanchored {
-                            reason: NoAuthorityReason::LateAppleWordSealedOwner, ..
-                        }, .. }
+                    assert!(apple_events.iter().any(|event| matches!(
+                        event,
+                        EngineEvent::LedgerMutation {
+                            receipt: MutationReceipt::KeepVisibleUnanchored {
+                                reason: NoAuthorityReason::LateAppleWordSealedOwner,
+                                ..
+                            },
+                            ..
+                        }
                     )));
-                    assert!(whisper_events.iter().any(|event| matches!(event,
-                        EngineEvent::LedgerMutation { receipt: MutationReceipt::KeepVisibleUnanchored {
-                            reason: NoAuthorityReason::LateWhisperWordSealedOwner, ..
-                        }, .. }
+                    assert!(whisper_events.iter().any(|event| matches!(
+                        event,
+                        EngineEvent::LedgerMutation {
+                            receipt: MutationReceipt::KeepVisibleUnanchored {
+                                reason: NoAuthorityReason::LateWhisperWordSealedOwner,
+                                ..
+                            },
+                            ..
+                        }
                     )));
                 }
                 ledger.assert_slot_labels();

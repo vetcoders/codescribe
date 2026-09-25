@@ -1646,9 +1646,7 @@ impl AcousticLedger {
         if !open_members.iter().any(|member| pin.same_capture(member)) {
             return OverlapPinClass::Unanchored(NoAuthorityReason::NoRange);
         }
-        if word_grain
-            && let Some(member_index) = self.word_owner_index(pin, open_members)
-        {
+        if word_grain && let Some(member_index) = self.word_owner_index(pin, open_members) {
             return OverlapPinClass::ExclusiveTail { member_index };
         }
         // Unqualified geometry candidates have no ledger owner to break a tie.
