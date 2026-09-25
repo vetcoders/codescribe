@@ -6086,4 +6086,36 @@ mod tests {
                 .any(|row| row.kind == QualityIssueKind::ClockLie)
         );
     }
+
+    #[test]
+    fn read_only_overlap_cannot_register_clock_lie_veto() {
+        let mut ledger = AcousticLedger::new();
+        ledger.bind_capture_rate(16_000);
+        let host = occ(0, 16_000);
+        let short_overlap = occ(0, 1_600);
+
+        assert!(
+            ledger
+                .admit(&obs(ObservationProducer::Apple, 0, host.clone()), "kot")
+                .is_insert()
+        );
+        assert!(matches!(
+            ledger.admit(
+                &obs(ObservationProducer::Apple, 1, short_overlap.clone()),
+                &"x".repeat(41),
+            ),
+            MutationReceipt::KeepVisibleUnanchored {
+                reason: NoAuthorityReason::OverlapWithoutWordPins,
+                ..
+            }
+        ));
+        // This observation was not admitted as document text. It may be
+        // diagnosed as implausible, but cannot acquire persistent veto
+        // authority over the committed host. Local Word-pin admission is a
+        // separate contract; this test must not demand whole-host replacement.
+        assert!(!ledger.clock_lie_blocks_neighbour_replacement(&host));
+        assert_eq!(ledger.text_of(&short_overlap), None);
+        assert_eq!(ledger.text_of(&host), Some("kot"));
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
 }
