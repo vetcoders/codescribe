@@ -80,6 +80,7 @@ expected_recipe = r'''test-swift: $(ENGINE_BRIDGE)
 	@$(TEST_DATA_DIR_SETUP); \
 	$(SHELL) scripts/test-swift.sh "$(PROFILE)" "$(ENGINE_BRIDGE)" \
 	  "$(SWIFT_TEST_CODESIGN_IDENTITY)" "$(SWIFT_TEST_MAX_SECONDS)" \
+	  "$(SWIFT_TEST_MAX_TEST_SECONDS)" \
 	  "$(SWIFT_TEST_LOG)" $(SWIFT_TEST_ARGS)'''
 if recipe_lines != expected_recipe.splitlines():
     refuse("invocation", "require data-directory setup before the connected scripts/test-swift.sh invocation with canonical bridge argument 2")
@@ -141,8 +142,9 @@ PROFILE="$1"
 ENGINE_BRIDGE="$2"
 SWIFT_TEST_CODESIGN_IDENTITY="$3"
 SWIFT_TEST_MAX_SECONDS="$4"
-SWIFT_TEST_LOG="$5"
-shift 5'''),
+SWIFT_TEST_MAX_TEST_SECONDS="$5"
+SWIFT_TEST_LOG="$6"
+shift 6'''),
     ('self-test', r'''echo "=== Apple phrase-restart Rust/Swift lockstep self-test ==="
 "${ENGINE_BRIDGE}" --phrase-restart-self-test || exit $?'''),
     ('artifact-root', r'''# Match build-app profiles; this test path consumes existing host artifacts.
@@ -198,9 +200,17 @@ if [ "$rc" -eq 0 ] && [ "${executed:-0}" -eq 0 ]; then
   rc=3
 fi
 secs=$(LC_ALL=C tr -d '\000' < "${SWIFT_TEST_LOG}" | sed -nE 's/^.*Executed [0-9]+ tests?,.* in ([0-9.]+) \([0-9.]+\) seconds.*$/\1/p' | tail -1)
-slowest=$(LC_ALL=C tr -d '\000' < "${SWIFT_TEST_LOG}" | sed -nE "s/^.*CodescribeTests\.([A-Za-z0-9_]+) ([A-Za-z0-9_]+)\]' passed \(([0-9.]+) seconds\)\..*$/\3 \1.\2/p" | sort -rn | head -1)
+test_durations=$(LC_ALL=C tr -d '\000' < "${SWIFT_TEST_LOG}" | sed -nE "s/^.*CodescribeTests\.([A-Za-z0-9_]+) ([A-Za-z0-9_]+)\]' passed \(([0-9.]+) seconds\)\..*$/\3 \1.\2/p")
+slowest=$(printf '%s\n' "$test_durations" | sort -rn | head -1)
 echo "test-swift: full log ${SWIFT_TEST_LOG} (rc=$rc, executed=${executed:-0}, seconds=${secs:-unknown})"
 if [ -n "$slowest" ]; then echo "test-swift: slowest test $slowest"; fi
+over_tests=$(printf '%s\n' "$test_durations" | awk -v m="${SWIFT_TEST_MAX_TEST_SECONDS}" 'NF == 2 && $1 > m {print}')
+if [ -n "$over_tests" ]; then
+  while read -r test_secs test_name; do
+    echo "test-swift: test ${test_name} took ${test_secs} s, over the ${SWIFT_TEST_MAX_TEST_SECONDS} s per-test ceiling." >&2
+  done <<< "$over_tests"
+  if [ "$rc" -eq 0 ]; then rc=5; fi
+fi
 if [ "$rc" -eq 0 ] && [ -n "$secs" ] && \
    awk -v s="$secs" -v m="${SWIFT_TEST_MAX_SECONDS}" 'BEGIN{exit !(s>m)}'; then
   echo "test-swift: suite took $secs s, over the ${SWIFT_TEST_MAX_SECONDS} s budget." >&2

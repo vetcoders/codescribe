@@ -911,17 +911,21 @@ smoke-macos27:
 # budget stays because the next such regression should be a red gate, not
 # folklore about an unexplained hang.
 #
-# 30 s is ~6x the measured fast mode and would have failed both bad runs above,
-# while leaving room for a loaded host (this machine also runs CI). Raise it for
-# a genuinely busy box rather than deleting it:
+# In the 2026-09-25 suite (663 tests), three runs took 30.6-31.4 s. Designed
+# waits dominate: OverlayRefusalLayoutHangTests takes 14.4 s and the slowest
+# individual test takes 5.4 s. A 10 s per-test ceiling catches a stalled test;
+# the 60 s suite budget remains a coarse ~2x backstop. Raise the suite budget
+# for a genuinely busy box:
 #   make test-swift SWIFT_TEST_MAX_SECONDS=90
 SWIFT_TEST_CODESIGN_IDENTITY ?= -
-SWIFT_TEST_MAX_SECONDS ?= 30
+SWIFT_TEST_MAX_SECONDS ?= 60
+SWIFT_TEST_MAX_TEST_SECONDS ?= 10
 .PHONY: test-swift
 test-swift: $(ENGINE_BRIDGE)
 	@$(TEST_DATA_DIR_SETUP); \
 	$(SHELL) scripts/test-swift.sh "$(PROFILE)" "$(ENGINE_BRIDGE)" \
 	  "$(SWIFT_TEST_CODESIGN_IDENTITY)" "$(SWIFT_TEST_MAX_SECONDS)" \
+	  "$(SWIFT_TEST_MAX_TEST_SECONDS)" \
 	  "$(SWIFT_TEST_LOG)" $(SWIFT_TEST_ARGS)
 
 # Apple live engine proof.
