@@ -638,59 +638,35 @@ fn refused_take_archive(
     }
 }
 
-// Integrator stop budgets: visible words wait at most 300 ms; an empty short
-// take gets up to 4 s for its first Apple final, never the terminal repair tail.
-const LAST_WINDOW_CLOSE_BOUND: Duration = Duration::from_millis(300);
-const EMPTY_CANVAS_CLOSE_BOUND: Duration = Duration::from_secs(4);
+// One stop-instant budget covers every live lane, including an empty take.
+// Refinement, archive and formatter work never own this deadline.
+const STOP_FINAL_BOUND: Duration = Duration::from_secs(8);
 
 struct StopCanvasWait {
     snapshot: Option<VisibleCanvasSnapshot>,
-    waited_ms: u128,
-    timeout_fallback: bool,
+    stop_final_wait_ms: u128,
+    stop_final_timeout: bool,
+    live_finals_admitted: bool,
+    painted_words_at_stop: usize,
     armed_order: bool,
 }
 
-async fn await_last_window_close_for_delivery(
-    close: impl std::future::Future<Output = bool>,
+async fn await_live_finals_for_delivery(
+    finals: impl std::future::Future<Output = bool>,
     snapshot: impl Fn() -> Option<VisibleCanvasSnapshot>,
+    stopped_at: tokio::time::Instant,
+    painted_words_at_stop: usize,
     armed_order: bool,
 ) -> StopCanvasWait {
-    let started = tokio::time::Instant::now();
-    let deadline = started + EMPTY_CANVAS_CLOSE_BOUND;
-    // Keep this single future alive: the recorder takes ownership of the ack
-    // receiver on its first poll. Restarting the wait would lose a short take.
-    tokio::pin!(close);
-    let first = tokio::time::timeout(LAST_WINDOW_CLOSE_BOUND, &mut close).await;
-    let mut closed = matches!(first, Ok(true));
-    let mut frozen = snapshot();
-    if !closed {
-        warn!(
-            elapsed_ms = started.elapsed().as_millis(),
-            bound_ms = LAST_WINDOW_CLOSE_BOUND.as_millis(),
-            "last_window_close_timeout"
-        );
-        if frozen
-            .as_ref()
-            .is_none_or(|canvas| canvas.text.trim().is_empty())
-        {
-            if first.is_err() {
-                closed = matches!(
-                    tokio::time::timeout_at(deadline, &mut close).await,
-                    Ok(true)
-                );
-            }
-            // A closed/failed ack channel is not proof that an empty capture
-            // has settled. Keep the same final-latency budget before freezing.
-            if !closed {
-                tokio::time::sleep_until(deadline).await;
-            }
-            frozen = snapshot();
-        }
-    }
+    let settled = tokio::time::timeout_at(stopped_at + STOP_FINAL_BOUND, finals).await;
+    // A lost lane releases the wait immediately; it is not a successful final.
+    // The worker owns that distinction, never a controller text heuristic.
     StopCanvasWait {
-        snapshot: frozen,
-        waited_ms: started.elapsed().as_millis(),
-        timeout_fallback: !closed,
+        snapshot: snapshot(),
+        stop_final_wait_ms: stopped_at.elapsed().as_millis(),
+        stop_final_timeout: settled.is_err(),
+        live_finals_admitted: matches!(settled, Ok(true)),
+        painted_words_at_stop,
         armed_order,
     }
 }
@@ -2283,7 +2259,7 @@ impl RecordingController {
         .await
     }
 
-    /// Freeze and settle stop delivery before the terminal producer can drain.
+    /// Settle the painted live finals before archive and terminal refinement drain.
     /// `None` belongs only to a composer turn, whose delivery remains terminal.
     async fn deliver_frozen_canvas_at_stop(
         &self,
@@ -2291,18 +2267,27 @@ impl RecordingController {
         take_id: Option<&str>,
         intent: (bool, bool, CaptureTurnIntent),
         stop_start: std::time::Instant,
+        painted_words_at_stop: usize,
     ) -> Result<Option<TranscriptDelivery>> {
         let (assistive, force_ai, capture_turn) = intent;
         let presentation = self.active_presentation.read().await.clone();
         let armed_order = recorder.seal_lane_armed();
-        let wait = await_last_window_close_for_delivery(
-            recorder.wait_last_window_closed(EMPTY_CANVAS_CLOSE_BOUND),
+        let wait = await_live_finals_for_delivery(
+            async {
+                let admitted = recorder.wait_live_finals_admitted().await;
+                match presentation.as_ref() {
+                    Some(emitter) => emitter.wait_paint_published().await && admitted,
+                    None => admitted,
+                }
+            },
             || {
                 presentation
                     .as_ref()
-                    .and_then(|emitter| emitter.visible_canvas_snapshot())
+                    .and_then(|emitter| emitter.finish_stop_canvas())
                     .filter(|canvas| Some(canvas.session_id.as_str()) == take_id)
             },
+            tokio::time::Instant::from_std(stop_start),
+            painted_words_at_stop,
             armed_order,
         )
         .await;
@@ -2347,8 +2332,10 @@ impl RecordingController {
     {
         let StopCanvasWait {
             snapshot,
-            waited_ms,
-            timeout_fallback,
+            stop_final_wait_ms,
+            stop_final_timeout,
+            live_finals_admitted,
+            painted_words_at_stop,
             armed_order,
         } = wait;
         let snapshot = snapshot.filter(|canvas| Some(canvas.session_id.as_str()) == take_id);
@@ -2373,8 +2360,8 @@ impl RecordingController {
             snapshot => {
                 warn!(
                     take_id,
-                    waited_ms,
-                    timeout_fallback,
+                    stop_final_wait_ms,
+                    stop_final_timeout,
                     qualified_occurrences = snapshot
                         .as_ref()
                         .map_or(0, |canvas| canvas.qualified_occurrences),
@@ -2388,18 +2375,31 @@ impl RecordingController {
         let canvas = snapshot.as_ref();
         let text = canvas.map_or("", |canvas| canvas.text.as_str());
         let preview_words = canvas.map_or(0, |canvas| canvas.preview_only_words);
+        let paste_words = text.split_whitespace().count();
+        let painted_words_at_snapshot = paste_words;
+        if paste_words < painted_words_at_stop {
+            warn!(
+                take_id,
+                paste_words,
+                painted_words_at_stop,
+                painted_words_at_snapshot,
+                "stop_paste_lost_visible_words"
+            );
+        }
         info!(
             stop_to_delivery_ms = stop_start.elapsed().as_millis(),
-            last_window_close_ms = waited_ms,
-            waited_ms,
-            timeout_fallback,
+            stop_final_wait_ms,
+            stop_final_timeout,
+            live_finals_admitted,
+            painted_words_at_stop,
+            painted_words_at_snapshot,
             armed_order,
             light_plus,
             capture_epoch = canvas.map(|canvas| canvas.capture_epoch),
             reducer_revision = canvas.map(|canvas| canvas.revision),
             preview_only_words = preview_words,
             preview_words_in_paste = preview_words,
-            paste_words = text.split_whitespace().count(),
+            paste_words,
             paste_periods = text.chars().filter(|ch| *ch == '.').count(),
             paste_commas = text.chars().filter(|ch| *ch == ',').count(),
             paste_qe = text.chars().filter(|ch| matches!(ch, '?' | '!')).count(),
@@ -4756,6 +4756,14 @@ impl RecordingController {
             info!("stop_toggle_inner: PHASE 2 — closing capture before delivery");
             // The live slot is `{uuid}:stopping` here. File-lane identity is
             // the Bus uuid snapped before that rewrite.
+            let painted_words_at_stop = self
+                .active_presentation
+                .read()
+                .await
+                .as_ref()
+                .and_then(|emitter| emitter.begin_stop_canvas())
+                .filter(|canvas| Some(canvas.session_id.as_str()) == session_id_snapshot.as_deref())
+                .map_or(0, |canvas| canvas.text.split_whitespace().count());
             let was_active = recorder.close_capture().await;
             let initial_delivery = self
                 .deliver_frozen_canvas_at_stop(
@@ -4763,6 +4771,7 @@ impl RecordingController {
                     session_id_snapshot.as_deref(),
                     (assistive, force_ai, capture_turn),
                     stop_start,
+                    painted_words_at_stop,
                 )
                 .await;
             let stopped =
@@ -5322,6 +5331,14 @@ impl RecordingController {
         let recorder = Self::recorder_from_guard_mut(&mut recorder_guard, "Process-recording")?;
         let serving_engine = recorder.streaming_engine_label();
         let stop_start = std::time::Instant::now();
+        let painted_words_at_stop = self
+            .active_presentation
+            .read()
+            .await
+            .as_ref()
+            .and_then(|emitter| emitter.begin_stop_canvas())
+            .filter(|canvas| Some(canvas.session_id.as_str()) == take_id.as_deref())
+            .map_or(0, |canvas| canvas.text.split_whitespace().count());
         let was_active = recorder.close_capture().await;
         let initial_delivery = self
             .deliver_frozen_canvas_at_stop(
@@ -5329,6 +5346,7 @@ impl RecordingController {
                 take_id.as_deref(),
                 (assistive, force_ai, CaptureTurnIntent::HandsFree),
                 stop_start,
+                painted_words_at_stop,
             )
             .await;
         let stopped =
@@ -6122,24 +6140,42 @@ mod refusal_recovery_tests {
             .await
     }
 
-    /// Amendment 1 step 2, R3: no ack, no committed document. This exercises
+    /// No live final, no committed document. This exercises
     /// the real snapshot, stop settlement and route with only the OS sink faked.
     #[tokio::test(start_paused = true)]
-    async fn preview_only_timeout_pastes_raw_once_at_300_ms() {
+    async fn preview_only_timeout_pastes_raw_once_at_eight_seconds() {
         let take = take(State::RecHold, false).await;
         take.emitter.on_capture_opened(TAKE, 7);
-        take.emitter.on_event(&stop_preview("ok wyślij"));
+        take.emitter.on_event(&EngineEvent::Preview {
+            rev: 1,
+            text: "ok wyślij".into(),
+            pin: codescribe_core::pipeline::contracts::PreviewPin::from_segments(
+                TailSampleRange {
+                    session: TAKE.into(),
+                    capture_epoch: 7,
+                    sample_start: 0,
+                    sample_end: 0,
+                },
+            ),
+        });
         let receipts = StopReceiptLog::default();
         let _trace = receipts.subscribe();
         let (ack_tx, ack_rx) = tokio::sync::oneshot::channel::<()>();
-        let wait = await_last_window_close_for_delivery(
+        let wait = await_live_finals_for_delivery(
             async { ack_rx.await.is_ok() },
             || take.emitter.visible_canvas_snapshot(),
+            tokio::time::Instant::now(),
+            take.emitter
+                .visible_canvas_snapshot()
+                .unwrap()
+                .text
+                .split_whitespace()
+                .count(),
             true,
         )
         .await;
-        assert!((300..=350).contains(&wait.waited_ms));
-        assert!(wait.timeout_fallback);
+        assert!((8_000..=8_050).contains(&wait.stop_final_wait_ms));
+        assert!(wait.stop_final_timeout);
         assert_eq!(wait.snapshot.as_ref().unwrap().text, "ok wyślij");
         let calls = AtomicUsize::new(0);
         let settled = take
@@ -6163,8 +6199,12 @@ mod refusal_recovery_tests {
                 .is_empty()
         );
         assert!(receipts.text().contains("light_plus=\"skipped_preview\""));
-        assert!(receipts.text().contains("timeout_fallback=true"));
+        assert!(receipts.text().contains("stop_final_timeout=true"));
         assert!(receipts.text().contains("preview_words_in_paste=2"));
+        assert!(receipts.text().contains("stop_final_wait_ms=8000"));
+        assert!(receipts.text().contains("painted_words_at_stop=2"));
+        assert!(receipts.text().contains("painted_words_at_snapshot=2"));
+        assert!(!receipts.text().contains("stop_paste_lost_visible_words"));
         deliver_terminal_unless_settled(Some(settled), || async {
             panic!("terminal tail attempted a second paste")
         })
@@ -6173,39 +6213,46 @@ mod refusal_recovery_tests {
         drop(ack_tx);
     }
 
-    /// Amendment 1 steps 1 and 3: first words arrive with finish, after the
-    /// 300 ms check. Delivery waits for that ack and never waits for repair.
+    /// First words arrive with the live final. Delivery never waits for repair.
     #[tokio::test(start_paused = true)]
-    async fn short_take_first_finish_text_pastes_once_within_final_latency() {
+    async fn armed_ack_does_not_paste_before_the_five_second_apple_final() {
         let take = take(State::RecToggle, false).await;
         take.emitter.on_capture_opened(TAKE, 7);
         take.emitter.set_literal_delivery(true);
-        let mutation = stop_mutation(&mut take.ledger.lock().unwrap(), "Tak.");
-        assert!(
+        take.emitter.on_event(&stop_preview("last"));
+        let mutation = stop_mutation(&mut take.ledger.lock().unwrap(), "last complete words");
+        let receipts = StopReceiptLog::default();
+        let _trace = receipts.subscribe();
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        ack_tx.send(()).unwrap();
+        ack_rx.await.unwrap();
+        let terminal_tail = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(20)).await;
+        });
+        let wait = await_live_finals_for_delivery(
+            async {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                take.emitter.on_event(&mutation);
+                let at_ack = take.emitter.visible_canvas_snapshot().unwrap();
+                assert!(at_ack.has_committed_document);
+                assert_eq!(at_ack.text, "last complete words");
+                true
+            },
+            || take.emitter.visible_canvas_snapshot(),
+            tokio::time::Instant::now(),
             take.emitter
                 .visible_canvas_snapshot()
                 .unwrap()
                 .text
-                .is_empty()
-        );
-        let terminal_tail = tokio::spawn(async {
-            tokio::time::sleep(Duration::from_secs(20)).await;
-        });
-        let wait = await_last_window_close_for_delivery(
-            async {
-                tokio::time::sleep(Duration::from_millis(850)).await;
-                take.emitter.on_event(&mutation);
-                let at_ack = take.emitter.visible_canvas_snapshot().unwrap();
-                assert!(at_ack.has_committed_document);
-                assert_eq!(at_ack.text, "Tak.");
-                true
-            },
-            || take.emitter.visible_canvas_snapshot(),
+                .split_whitespace()
+                .count(),
             true,
         )
         .await;
-        assert!((850..=900).contains(&wait.waited_ms));
-        assert!(!wait.timeout_fallback);
+        assert_eq!(wait.stop_final_wait_ms, 5_000);
+        assert_eq!(wait.snapshot.as_ref().unwrap().text, "last complete words");
+        assert!(wait.live_finals_admitted);
+        assert!(!wait.stop_final_timeout);
         let calls = AtomicUsize::new(0);
         let settled = take
             .controller
@@ -6220,6 +6267,9 @@ mod refusal_recovery_tests {
             .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert!(!terminal_tail.is_finished());
+        assert!(receipts.text().contains("stop_final_wait_ms=5000"));
+        assert!(receipts.text().contains("stop_final_timeout=false"));
+        assert!(receipts.text().contains("paste_words=3"));
         terminal_tail.await.unwrap();
         deliver_terminal_unless_settled(Some(settled), || async {
             panic!("repair tail attempted short-take paste")
@@ -6232,19 +6282,26 @@ mod refusal_recovery_tests {
     /// Amendment 1 step 4, R4: speech evidence cannot authorize an empty sink
     /// payload, and words discovered by the terminal tail cannot reopen stop.
     #[tokio::test(start_paused = true)]
-    async fn empty_after_four_seconds_is_retained_without_a_late_paste() {
+    async fn empty_after_eight_seconds_is_retained_without_a_late_paste() {
         let take = take(State::RecToggle, false).await;
         take.emitter.on_capture_opened(TAKE, 7);
         let late = stop_mutation(&mut take.ledger.lock().unwrap(), "late words");
         let receipts = StopReceiptLog::default();
         let _trace = receipts.subscribe();
-        let wait = await_last_window_close_for_delivery(
+        let wait = await_live_finals_for_delivery(
             std::future::pending(),
             || take.emitter.visible_canvas_snapshot(),
+            tokio::time::Instant::now(),
+            take.emitter
+                .visible_canvas_snapshot()
+                .unwrap()
+                .text
+                .split_whitespace()
+                .count(),
             true,
         )
         .await;
-        assert!((4_000..=4_050).contains(&wait.waited_ms));
+        assert!((8_000..=8_050).contains(&wait.stop_final_wait_ms));
         let settled = take
             .controller
             .settle_frozen_canvas_at_stop(
@@ -6279,6 +6336,78 @@ mod refusal_recovery_tests {
         })
         .await
         .unwrap();
+    }
+
+    // Boundary witness: a later committed revision can still replace an
+    // anchored preview with fewer words. Detect it; do not invent a merge of
+    // labels to claim conservation without occurrence replacement evidence.
+    #[tokio::test(start_paused = true)]
+    async fn shorter_revision_reports_unresolved_visible_word_loss() {
+        let take = take(State::RecHold, false).await;
+        take.emitter.on_capture_opened(TAKE, 7);
+        take.emitter.set_literal_delivery(true);
+        take.emitter.on_event(&stop_preview("three visible words"));
+        let at_stop = take.emitter.begin_stop_canvas().unwrap();
+        let mutation = stop_mutation(&mut take.ledger.lock().unwrap(), "shorter");
+        take.emitter.on_event(&mutation);
+        let receipts = StopReceiptLog::default();
+        let _trace = receipts.subscribe();
+        let wait = await_live_finals_for_delivery(
+            async { true },
+            || take.emitter.finish_stop_canvas(),
+            tokio::time::Instant::now(),
+            at_stop.text.split_whitespace().count(),
+            true,
+        )
+        .await;
+        let calls = AtomicUsize::new(0);
+        take.controller
+            .settle_frozen_canvas_at_stop(
+                Some(TAKE),
+                Some(&take.emitter),
+                wait,
+                std::time::Instant::now(),
+                |text| stop_sink(&take.controller, text, &calls),
+            )
+            .await
+            .unwrap();
+        assert!(receipts.text().contains("stop_paste_lost_visible_words"));
+        assert!(receipts.text().contains("painted_words_at_stop=3"));
+        assert!(receipts.text().contains("paste_words=1"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn live_final_bound_starts_at_stop_not_at_the_wait() {
+        let stopped_at = tokio::time::Instant::now();
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let wait = await_live_finals_for_delivery(
+            std::future::pending(),
+            || None,
+            stopped_at,
+            0,
+            true,
+        )
+        .await;
+        assert_eq!(wait.stop_final_wait_ms, 8_000);
+        assert!(wait.stop_final_timeout);
+        assert!(!wait.live_finals_admitted);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn lost_live_final_channel_releases_stop_immediately() {
+        let (sender, receiver) = tokio::sync::oneshot::channel::<()>();
+        drop(sender);
+        let wait = await_live_finals_for_delivery(
+            async { receiver.await.is_ok() },
+            || None,
+            tokio::time::Instant::now(),
+            0,
+            true,
+        )
+        .await;
+        assert_eq!(wait.stop_final_wait_ms, 0);
+        assert!(!wait.stop_final_timeout);
+        assert!(!wait.live_finals_admitted);
     }
 
     /// Both stop sites use the same terminal settlement on their Ok and Err

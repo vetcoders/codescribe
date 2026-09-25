@@ -1024,6 +1024,8 @@ pub(crate) async fn apple_stream_transcription_session(
     // Worker → async events.
     let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<EngineEvent>();
     let (worker_close_tx, mut worker_close_rx) = tokio::sync::oneshot::channel();
+    let (apple_finished_tx, mut apple_finished_rx) = tokio::sync::oneshot::channel();
+    let (live_finals_tx, mut live_finals_rx) = tokio::sync::oneshot::channel();
 
     // The local Whisper decision is resolved once from product mode + the
     // compatibility phase token before capture starts. Never re-read env here:
@@ -1159,6 +1161,8 @@ pub(crate) async fn apple_stream_transcription_session(
                 utterance_silence_sec,
                 terminal_audio,
                 last_window_closed: worker_close_tx,
+                apple_finished: apple_finished_tx,
+                live_finals_admitted: live_finals_tx,
                 consultation: worker_consultation,
                 cloud: worker_cloud,
             },
@@ -1174,21 +1178,102 @@ pub(crate) async fn apple_stream_transcription_session(
     let mut audio_eof = false;
     let mut worker_finished = false;
     let mut close_ack_pending = true;
+    let mut apple_finish_pending = true;
+    let mut live_finals_pending = true;
+    let mut cloud_stop_task: Option<
+        tokio::task::JoinHandle<(
+            RecorderLayer1Lane,
+            crate::asr_session::recorder::Layer1SessionOutcome,
+        )>,
+    > = None;
+    let mut stopped_layer1_outcome = None;
+    let mut stop_live_tick = tokio::time::interval(LIVE_WORKER_QUANTUM);
     loop {
         tokio::select! {
+            // Once capture is closed, a quiet Apple finish must not prevent
+            // the cloud owner from observing a final or a lost live lane.
+            _ = stop_live_tick.tick(), if audio_eof && cloud_on && cloud_stop_task.is_none() => {}
             close = &mut worker_close_rx, if close_ack_pending => {
                 close_ack_pending = false;
                 if close.is_ok() {
-                    // The worker sent every L0 event before its close receipt.
-                    // Admit them through the normal sink before waking stop.
+                    // Preserve seal acknowledgement ordering, but only the
+                    // live-final receipt below can release the stop snapshot.
                     while let Ok(event) = ev_rx.try_recv() {
                         deliver_event(&event, event_sink.as_ref(), stream_log_path.as_deref());
                     }
-                    if let Some(sender) = last_window_closed.take() {
-                        let _ = sender.send(());
+                }
+            }
+            settled = &mut live_finals_rx, if live_finals_pending => {
+                live_finals_pending = false;
+                forward_live_finals_admitted(
+                    settled.is_ok(),
+                    &mut ev_rx,
+                    event_sink.as_ref(),
+                    stream_log_path.as_deref(),
+                    &mut last_window_closed,
+                );
+            }
+            finished = &mut apple_finished_rx, if apple_finish_pending => {
+                apple_finish_pending = false;
+                if finished.is_ok() && cloud_on {
+                    // Apple has emitted its last capture-owned close requests.
+                    // Process those before `end`, then move the provider's
+                    // bounded blocking close off the event-drain executor.
+                    if let Some(receiver) = cloud_commit_rx.as_mut() {
+                        while let Ok(sample) = receiver.try_recv() {
+                            let _late = layer1_lane.commit_through(sample);
+                        }
                     }
-                } else {
-                    drop(last_window_closed.take());
+                    cloud_commit_rx = None;
+                    let mut stopping_lane = std::mem::replace(
+                        &mut layer1_lane,
+                        RecorderLayer1Lane::open(
+                            crate::asr_session::recorder::Layer1Decision::Disarmed,
+                            &lane_input,
+                        ),
+                    );
+                    cloud_stop_task = Some(tokio::task::spawn_blocking(move || {
+                        let outcome = stopping_lane.stop();
+                        (stopping_lane, outcome)
+                    }));
+                }
+            }
+            stopped = async {
+                match cloud_stop_task.as_mut() {
+                    Some(task) => task.await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                cloud_stop_task = None;
+                match stopped {
+                    Ok((lane, outcome)) => {
+                        layer1_lane = lane;
+                        let succeeded = outcome.degrade_reason().is_none()
+                            && cloud_stop_finals_cover_capture(
+                                outcome.finals(),
+                                layer1_lane.pushed_samples(),
+                            );
+                        if let Some(sender) = cloud_notice_tx.as_ref() {
+                            for event in layer1_lane.take_unforwarded_finals() {
+                                if sender.send(CloudWorkerNotice::Final(Box::new(event))).is_err() {
+                                    layer1_lane.note_final_after_worker_exit();
+                                }
+                            }
+                            let notice = if succeeded {
+                                CloudWorkerNotice::EndSettled
+                            } else {
+                                CloudWorkerNotice::LaneLost
+                            };
+                            let _ = sender.send(notice);
+                        }
+                        stopped_layer1_outcome = Some(outcome);
+                    }
+                    Err(error) => {
+                        warn!(%error, "Cloud live stop worker failed");
+                        if let Some(sender) = cloud_notice_tx.as_ref() {
+                            let _ = sender.send(CloudWorkerNotice::LaneLost);
+                        }
+                    }
                 }
             }
             event = ev_rx.recv(), if !worker_finished => {
@@ -1291,6 +1376,7 @@ pub(crate) async fn apple_stream_transcription_session(
                             emit_layer1_degrade_warning(event_sink.as_ref(), reason);
                             if let Some(sender) = cloud_notice_tx.as_ref() {
                                 let _ = sender.send(CloudWorkerNotice::LaneLost);
+                                drop(last_window_closed.take());
                             }
                         }
                     }
@@ -1429,9 +1515,12 @@ pub(crate) async fn apple_stream_transcription_session(
             emit_layer1_degrade_warning(event_sink.as_ref(), reason);
             if let Some(sender) = cloud_notice_tx.as_ref() {
                 let _ = sender.send(CloudWorkerNotice::LaneLost);
+                drop(last_window_closed.take());
             }
         }
         if worker_finished
+            && !live_finals_pending
+            && cloud_stop_task.is_none()
             && consultation_rx.is_closed()
             && consultation_rx.is_empty()
             && consultation_assessments.is_empty()
@@ -1471,11 +1560,9 @@ pub(crate) async fn apple_stream_transcription_session(
         );
     }
     tail_patch_lane.execution.close_and_join().await;
-    // C1 stop-drain: close the Layer 1 lane with its bounded drain. Its finals
-    // are counted, but NOT admitted into the acoustic ledger or the paste;
-    // the recording finishes on Apple + lexicon. The
-    // LAYER1_FINALS_NOT_ADMITTED_WARNING_CODE receipt below makes this explicit.
-    let layer1_outcome = layer1_lane.stop();
+    // CLOUD has already ended while its worker could admit the final. Other
+    // modes retain their existing terminal lane accounting.
+    let layer1_outcome = stopped_layer1_outcome.unwrap_or_else(|| layer1_lane.stop());
     if let Some(reason) = layer1_lane.take_degrade_notice() {
         emit_layer1_degrade_warning(event_sink.as_ref(), reason);
     }
@@ -1735,11 +1822,12 @@ struct PendingCloudCommit {
     occurrences: Vec<OccurrenceIdentity>,
 }
 
-/// Worker-bound cloud notices. Finals are revisions; lane loss releases seals.
+/// Worker-bound cloud notices. The end receipt follows all stop finals.
 enum CloudWorkerNotice {
     /// Boxed: a stamped final is far larger than `LaneLost` (clippy::large_enum_variant).
     Final(Box<crate::asr_session::events::TranscriptEvent>),
     LaneLost,
+    EndSettled,
 }
 
 /// The worker's two ends of the CLOUD live lane. They exist only together.
@@ -2140,6 +2228,7 @@ impl AppleSealState {
         match notice {
             CloudWorkerNotice::LaneLost => self.return_cloud_live_lost(ev_tx),
             CloudWorkerNotice::Final(event) => self.admit_cloud_final(ev_tx, *event),
+            CloudWorkerNotice::EndSettled => {}
         }
     }
 
@@ -6393,6 +6482,91 @@ fn finish_capture_after_seal(
     Ok(())
 }
 
+/// A successful transport return alone does not prove a recognizer final:
+/// `finish` can also return an error event or a disconnected partial stream.
+fn apple_stop_final_received(events: &[LiveStreamEvent]) -> bool {
+    let failed = events.iter().any(|event| {
+        matches!(
+            event,
+            LiveStreamEvent::Error { .. } | LiveStreamEvent::Summary { ok: false, .. }
+        )
+    });
+    !failed
+        && events.iter().any(|event| {
+            matches!(
+                event,
+                LiveStreamEvent::PhraseFinal { .. } | LiveStreamEvent::Summary { ok: true, .. }
+            )
+        })
+}
+
+/// Forward completion only after every preceding worker event reached the
+/// reducer and its synchronous paint path. Channel loss is never success.
+fn forward_live_finals_admitted(
+    succeeded: bool,
+    events: &mut mpsc::UnboundedReceiver<EngineEvent>,
+    sink: &dyn EventSink,
+    stream_log_path: Option<&std::path::Path>,
+    completion: &mut Option<tokio::sync::oneshot::Sender<()>>,
+) {
+    while let Ok(event) = events.try_recv() {
+        deliver_event(&event, sink, stream_log_path);
+    }
+    if let Some(sender) = completion.take()
+        && succeeded
+    {
+        let _ = sender.send(());
+    }
+}
+
+/// A clean transport close can precede a missing final. Only accepted typed
+/// commit ranges prove that every offered capture sample reached a final;
+/// this is a stop-completion predicate, never document or seal authority.
+fn cloud_stop_finals_cover_capture(
+    finals: &[crate::asr_session::events::TranscriptEvent],
+    captured_samples: u64,
+) -> bool {
+    if captured_samples == 0 {
+        return true;
+    }
+    let mut ranges = finals
+        .iter()
+        .filter_map(|event| event.commit.as_ref())
+        .map(|commit| (commit.sample_start, commit.sample_end))
+        .collect::<Vec<_>>();
+    ranges.sort_unstable();
+    let mut frontier = 0;
+    for (start, end) in ranges {
+        if start > frontier {
+            return false;
+        }
+        frontier = frontier.max(end);
+        if frontier >= captured_samples {
+            return true;
+        }
+    }
+    false
+}
+
+/// The provider's bounded `end` close supplies one terminal notice after its
+/// finals. Drain only that live lane; pending refinement work cannot hold it.
+fn drain_cloud_stop_finals(
+    state: &mut AppleSealState,
+    events: &mpsc::UnboundedSender<EngineEvent>,
+    notices: &std_mpsc::Receiver<CloudWorkerNotice>,
+) -> bool {
+    loop {
+        match notices.recv() {
+            Ok(CloudWorkerNotice::EndSettled) => return true,
+            Ok(CloudWorkerNotice::Final(event)) => state.admit_cloud_final(events, *event),
+            Ok(CloudWorkerNotice::LaneLost) | Err(_) => {
+                state.return_cloud_live_lost(events);
+                return false;
+            }
+        }
+    }
+}
+
 /// Everything the blocking worker needs that is not a channel.
 struct AppleWorkerConfig<'a> {
     consultation: Option<LiveConsultationCapture>,
@@ -6415,6 +6589,8 @@ struct AppleWorkerConfig<'a> {
     terminal_audio:
         Option<std_mpsc::Receiver<Result<super::live_audio_buffer::FinalizedPcmArchive, String>>>,
     last_window_closed: tokio::sync::oneshot::Sender<()>,
+    apple_finished: tokio::sync::oneshot::Sender<()>,
+    live_finals_admitted: tokio::sync::oneshot::Sender<()>,
     /// CLOUD mode only: silence commits to the live WS lane and its notices back.
     cloud: Option<CloudWorkerChannels>,
 }
@@ -6444,6 +6620,8 @@ fn apple_stream_worker(
         utterance_silence_sec,
         terminal_audio,
         last_window_closed,
+        apple_finished,
+        live_finals_admitted,
         cloud,
     } = config;
     debug_assert_eq!(settings_digest, runtime_settings.digest().as_str());
@@ -6744,6 +6922,7 @@ fn apple_stream_worker(
     } else {
         false
     };
+    let mut apple_final_received = stream.is_none();
     finish_capture_after_seal(
         &mut state,
         &ev_tx,
@@ -6755,6 +6934,7 @@ fn apple_stream_worker(
                 || Ok(Vec::new()),
                 |session| {
                     session.finish().map(|events| {
+                        apple_final_received = apple_stop_final_received(&events);
                         shift_events(events, epoch_base_secs(epoch_base_samples, sample_rate))
                     })
                 },
@@ -6768,6 +6948,23 @@ fn apple_stream_worker(
         },
     )
     .inspect_err(|_| state.return_outstanding_cloud(&ev_tx))?;
+
+    // `finish` has delivered the post-endAudio Apple events. CLOUD now ends
+    // its live transport while this worker still owns admission. Neither the
+    // archive handoff nor Whisper/formatter/recovery work owns this receipt.
+    let _ = apple_finished.send(());
+    let live_finals_complete = match cloud_notice.as_ref() {
+        Some(notices) if state.cloud_commit_tx.is_some() => {
+            drain_cloud_stop_finals(&mut state, &ev_tx, notices)
+        }
+        Some(_) => false,
+        None => true,
+    };
+    if live_finals_complete && apple_final_received {
+        let _ = live_finals_admitted.send(());
+    } else {
+        drop(live_finals_admitted);
+    }
 
     if let Some(receiver) = terminal_audio {
         let archive = receiver
@@ -6834,9 +7031,8 @@ fn apple_stream_worker(
             }
         }
     } else {
-        // The stop paste already fired from `finish_capture_after_seal`. This wait
-        // is the same bound the tail patch uses. A cloud final that arrives here is
-        // a revision; it does not hold the paste.
+        // Live-final admission has already settled before the archive handoff.
+        // Remaining observer/refinement work stays a post-delivery revision.
         while !state.refinement_submitted.is_empty()
             || !state.refinement_pending.is_empty()
             || !state.cloud_inflight.is_empty()
@@ -12942,7 +13138,7 @@ mod rc_w2_test_rehab {
     }
 
     #[test]
-    fn stop_ack_precedes_finish_and_partial_is_already_committed() {
+    fn internal_seal_ack_precedes_finish_and_partial_is_already_committed() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let (ack_tx, mut ack_rx) = tokio::sync::oneshot::channel();
         let mut state = physical_state("stop-order", 2.0, &[(0.0, 2.0)]);
@@ -15212,9 +15408,224 @@ mod rc_w2_test_rehab {
     }
 
     #[test]
-    fn stop_ack_does_not_wait_for_a_pending_cloud_commit() {
+    fn apple_partial_or_error_never_claims_a_live_final() {
+        assert!(!apple_stop_final_received(&[]));
+        assert!(!apple_stop_final_received(&[LiveStreamEvent::Partial {
+            text: "visible words".into(),
+            segments: Vec::new(),
+        }]));
+        assert!(!apple_stop_final_received(&[LiveStreamEvent::Summary {
+            text: "visible words".into(),
+            segments: Vec::new(),
+            ok: false,
+            error: Some("lane lost".into()),
+        }]));
+        assert!(apple_stop_final_received(&[LiveStreamEvent::Summary {
+            text: String::new(),
+            segments: Vec::new(),
+            ok: true,
+            error: None,
+        }]));
+        let final_event = LiveStreamEvent::PhraseFinal {
+            text: "complete words".into(),
+            segments: Vec::new(),
+        };
+        assert!(apple_stop_final_received(std::slice::from_ref(&final_event)));
+        assert!(!apple_stop_final_received(&[
+            final_event,
+            LiveStreamEvent::Error {
+                message: "lane lost".into(),
+            },
+        ]));
+    }
+
+    #[test]
+    fn live_final_receipt_follows_paint_even_when_the_lane_is_lost() {
+        struct PaintSink {
+            completion: Mutex<tokio::sync::oneshot::Receiver<()>>,
+            painted: Mutex<Vec<EngineEvent>>,
+        }
+        impl EventSink for PaintSink {
+            fn on_event(&self, event: &EngineEvent) {
+                assert_eq!(
+                    self.completion.lock().unwrap().try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty),
+                    "the stop receipt cannot precede painting its final events",
+                );
+                self.painted.lock().unwrap().push(event.clone());
+            }
+        }
+        for succeeded in [true, false] {
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let (completion, receiver) = tokio::sync::oneshot::channel();
+            let sink = PaintSink {
+                completion: Mutex::new(receiver),
+                painted: Mutex::new(Vec::new()),
+            };
+            tx.send(EngineEvent::NoSpeech {
+                reason: "last admitted event".into(),
+            })
+            .unwrap();
+            let mut completion = Some(completion);
+            forward_live_finals_admitted(succeeded, &mut rx, &sink, None, &mut completion);
+            assert_eq!(sink.painted.lock().unwrap().len(), 1);
+            assert!(completion.is_none());
+            let received = sink.completion.lock().unwrap().try_recv();
+            if succeeded {
+                assert_eq!(received, Ok(()));
+            } else {
+                assert_eq!(
+                    received,
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn actual_lane_stop_retains_end_finals_in_the_forward_queue_once() {
+        use crate::asr_session::{
+            AsrSessionEvent, FakeAsrSessionProvider, Layer1Decision, RefinerMode, TranscriptEvent,
+        };
+        let input = Layer1SessionInput {
+            session_id: Layer1SessionId::new("stop-forward-queue").unwrap(),
+            locale: None,
+            sample_rate: RATE,
+        };
+        let mut first = cloud_notice_final("first", &[], 0, 500);
+        first.session_id = input.session_id.clone();
+        let mut last = cloud_notice_final("last", &[], 500, 1_000);
+        last.session_id = input.session_id.clone();
+        last.utterance_id = 2;
+        last.sequence_id = 3;
+        let interim = TranscriptEvent {
+            session_id: input.session_id.clone(),
+            utterance_id: 2,
+            sequence_id: 2,
+            text: "unfinished".into(),
+            range: None,
+            commit: None,
+        };
+        let provider = FakeAsrSessionProvider::with_script(
+            RefinerMode::CloudSession,
+            vec![
+                AsrSessionEvent::Final(first.clone()),
+                AsrSessionEvent::Partial(interim),
+                AsrSessionEvent::Final(last.clone()),
+            ],
+        );
+        let mut lane = RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(provider)), &input);
+        let _ = lane.offer_pcm(&vec![0.25; 500]);
+        let _ = lane.flush_holdback();
+        lane.poll();
+        assert_eq!(lane.take_unforwarded_finals(), vec![first.clone()]);
+        let _ = lane.offer_pcm(&vec![0.25; 500]);
+        // The second push releases only the partial; the final is released
+        // by the real lane.stop → provider.close → route_event path.
+        let outcome = lane.stop();
+        assert!(outcome.degrade_reason().is_none());
+        assert_eq!(outcome.finals(), &[first, last.clone()]);
+        assert!(cloud_stop_finals_cover_capture(
+            outcome.finals(),
+            lane.pushed_samples()
+        ));
+        assert_eq!(lane.take_unforwarded_finals(), vec![last]);
+        assert!(lane.take_unforwarded_finals().is_empty());
+    }
+
+    #[test]
+    fn clean_cloud_transport_stop_without_an_end_final_is_not_complete() {
+        use crate::asr_session::{FakeAsrSessionProvider, Layer1Decision, RefinerMode};
+        let input = Layer1SessionInput {
+            session_id: Layer1SessionId::new("stop-missing-final").unwrap(),
+            locale: None,
+            sample_rate: RATE,
+        };
+        for captured_samples in [0, 1_000] {
+            let provider =
+                FakeAsrSessionProvider::with_script(RefinerMode::CloudSession, Vec::new());
+            let mut lane =
+                RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(provider)), &input);
+            let _ = lane.offer_pcm(&vec![0.25; captured_samples]);
+            let outcome = lane.stop();
+            assert!(outcome.degrade_reason().is_none());
+            assert_eq!(
+                cloud_stop_finals_cover_capture(outcome.finals(), lane.pushed_samples()),
+                captured_samples == 0,
+            );
+        }
+        let end_only = cloud_notice_final("end", &[], 500, 1_000);
+        assert!(!cloud_stop_finals_cover_capture(&[end_only], 1_000));
+    }
+
+    #[test]
+    fn cloud_end_final_is_admitted_before_live_final_completion() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, _commit_rx) = mpsc::channel(4);
+        let (notice_tx, notice_rx) = std_mpsc::channel();
+        let mut state = state("cloud-stop-final", 2.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        let owner = cloud_owner(&mut state, &tx, 1, 0.0, 1.0);
+        state.commit_cloud_close(&tx, silence_close(1.5));
+        notice_tx
+            .send(CloudWorkerNotice::Final(Box::new(cloud_notice_final(
+                "cloud",
+                &[("cloud", sample(0.2), sample(0.6))],
+                0,
+                sample(1.5),
+            ))))
+            .unwrap();
+        notice_tx.send(CloudWorkerNotice::EndSettled).unwrap();
+        assert!(drain_cloud_stop_finals(&mut state, &tx, &notice_rx));
+        assert_eq!(state.cloud_live_admitted, 1);
+        assert!(!cloud_open(&state, &owner));
+        assert!(state.cloud_inflight.is_empty());
+        assert!(
+            state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .slots_of(&owner)
+                .unwrap()
+                .iter()
+                .any(|slot| slot.producer == LedgerObservationProducer::CloudLive)
+        );
+    }
+
+    #[test]
+    fn cloud_lane_loss_releases_stop_without_a_success_receipt() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (commit_tx, _commit_rx) = mpsc::channel(4);
+        let (notice_tx, notice_rx) = std_mpsc::channel();
+        let mut state = state("cloud-stop-lost", 2.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        let owner = cloud_owner(&mut state, &tx, 1, 0.0, 1.0);
+        state.commit_cloud_close(&tx, silence_close(1.5));
+        // Keep the notice sender alive and send no end receipt: lane loss is
+        // enough to release this wait, even with outstanding commit debt.
+        notice_tx.send(CloudWorkerNotice::LaneLost).unwrap();
+        assert!(!drain_cloud_stop_finals(&mut state, &tx, &notice_rx));
+        assert!(!cloud_open(&state, &owner));
+        assert!(state.cloud_inflight.is_empty());
+        let (completion, mut receiver) = tokio::sync::oneshot::channel();
+        forward_live_finals_admitted(
+            false,
+            &mut rx,
+            &RecordingSink::default(),
+            None,
+            &mut Some(completion),
+        );
+        assert_eq!(
+            receiver.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed),
+        );
+    }
+
+    #[test]
+    fn internal_seal_ack_does_not_release_a_pending_cloud_final() {
         let (tx, _rx) = mpsc::unbounded_channel();
         let (ack_tx, mut ack_rx) = tokio::sync::oneshot::channel();
+        let (_live_final_tx, mut live_final_rx) = tokio::sync::oneshot::channel::<()>();
         let mut state = state("stop-ack", 1.0);
         let occurrence = qualify(&mut state, 0.0, 0.5);
         state.cloud_inflight.push_back(super::PendingCloudCommit {
@@ -15233,6 +15644,10 @@ mod rc_w2_test_rehab {
         .expect("finish");
         assert!(ack_rx.try_recv().is_ok());
         assert_eq!(state.cloud_inflight.len(), 1);
+        assert_eq!(
+            live_final_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty),
+        );
     }
 }
 
