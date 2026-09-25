@@ -36,7 +36,7 @@ protocol DictationEngine: AnyObject {
     sessionId: String, sourceRevision: UInt64, renderedText: String
   ) async throws -> CsUserRevisionResult
   func commitFormatterRevision(
-    sessionId: String, sourceRevision: UInt64
+    sessionId: String, sourceRevision: UInt64, level: FormattingPolicyOption?
   ) async throws -> CsUserRevisionResult
   func documentHistory(sessionId: String) async throws -> [CsDocumentHistoryEntry]
   func restoreDocumentRevision(
@@ -2305,7 +2305,11 @@ final class OverlayState {
     }
   }
 
-  private func relayFormatIntent() {
+  func formatTranscript(at level: FormattingPolicyOption) {
+    relayFormatIntent(level: level)
+  }
+
+  private func relayFormatIntent(level: FormattingPolicyOption? = nil) {
     guard mode == .formatted || mode == .coverageRefused, terminal, canFormat,
       !isRevisionDraftDirty,
       !revisionCommitPending, !formatterCommitPending
@@ -2326,7 +2330,8 @@ final class OverlayState {
       do {
         let receipt = try await engine.commitFormatterRevision(
           sessionId: projection.sessionId,
-          sourceRevision: projection.reducerRevision
+          sourceRevision: projection.reducerRevision,
+          level: level
         )
         guard receipt.sessionId == projection.sessionId,
           receipt.sourceRevision == projection.reducerRevision,
@@ -2829,11 +2834,12 @@ final class ControllerDictationEngine: DictationEngine {
     )
   }
   func commitFormatterRevision(
-    sessionId: String, sourceRevision: UInt64
+    sessionId: String, sourceRevision: UInt64, level: FormattingPolicyOption?
   ) async throws -> CsUserRevisionResult {
-    try await hotkeys.commitFormatterRevision(
+    try await hotkeys.commitFormatterRevisionAtLevel(
       sessionId: sessionId,
-      sourceRevision: sourceRevision
+      sourceRevision: sourceRevision,
+      level: level?.rawValue
     )
   }
   func documentHistory(sessionId: String) async throws -> [CsDocumentHistoryEntry] {

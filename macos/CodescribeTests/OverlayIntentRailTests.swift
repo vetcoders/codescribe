@@ -31,8 +31,9 @@ private final class OverlayIntentBoundaryEngine: DictationEngine {
     )
   }
   func commitFormatterRevision(
-    sessionId: String, sourceRevision: UInt64
+    sessionId: String, sourceRevision: UInt64, level: FormattingPolicyOption?
   ) async throws -> CsUserRevisionResult {
+    XCTAssertNil(level)
     formatterRequests.append((sessionId, sourceRevision))
     onFormatter?()
     if let formatterFailure { throw formatterFailure }

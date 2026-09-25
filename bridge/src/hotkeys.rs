@@ -1191,13 +1191,33 @@ impl CodescribeHotkeys {
         session_id: String,
         source_revision: u64,
     ) -> Result<CsUserRevisionResult, CsError> {
+        self.commit_formatter_revision_at_level(session_id, source_revision, None)
+            .await
+    }
+
+    /// Request a terminal formatter revision with an optional one-shot level.
+    /// A missing level uses Settings. An unavailable level is refused, never
+    /// persisted or silently replaced with the configured level.
+    pub async fn commit_formatter_revision_at_level(
+        &self,
+        session_id: String,
+        source_revision: u64,
+        level: Option<String>,
+    ) -> Result<CsUserRevisionResult, CsError> {
+        let level = level
+            .as_deref()
+            .map(codescribe_core::config::FormattingPolicy::parse)
+            .transpose()
+            .map_err(|error| CsError::Recording {
+                msg: error.to_string(),
+            })?;
         application_runtime::run(async move {
             let controller =
                 current_controller(&shared_controller()).ok_or_else(|| CsError::Recording {
                     msg: "no recording controller for formatter revision".to_string(),
                 })?;
             controller
-                .apply_formatter_revision_from_overlay(session_id, source_revision)
+                .apply_formatter_revision_from_overlay(session_id, source_revision, level)
                 .await
                 .map(CsUserRevisionResult::from)
                 .map_err(|error| CsError::Recording {

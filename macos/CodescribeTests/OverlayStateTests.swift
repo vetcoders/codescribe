@@ -18,6 +18,7 @@ private final class OverlayStateTestEngine: DictationEngine {
   struct FormatterRequest: Equatable {
     let sessionId: String
     let sourceRevision: UInt64
+    var level: FormattingPolicyOption? = nil
   }
 
   var pastedText: String?
@@ -93,10 +94,10 @@ private final class OverlayStateTestEngine: DictationEngine {
     )
   }
   func commitFormatterRevision(
-    sessionId: String, sourceRevision: UInt64
+    sessionId: String, sourceRevision: UInt64, level: FormattingPolicyOption?
   ) async throws -> CsUserRevisionResult {
     formatterRequests.append(
-      FormatterRequest(sessionId: sessionId, sourceRevision: sourceRevision)
+      FormatterRequest(sessionId: sessionId, sourceRevision: sourceRevision, level: level)
     )
     onFormatter?()
     if formatterShouldFail {
@@ -1656,6 +1657,35 @@ final class OverlayStateTests: XCTestCase {
       XCTAssertEqual(state.autoFormatLevel, persists ? .smart : .off)
       XCTAssertEqual(engine.policyReadCount, 2, "level repaints from a fresh engine read")
       XCTAssertTrue(state.autoPasteEnabled)
+    }
+  }
+
+  func testOneShotFormatterForwardsEveryLevelWithoutWritingSettings() async {
+    for level in FormattingPolicyOption.allCases {
+      let state = OverlayState()
+      let engine = OverlayStateTestEngine()
+      engine.persistedPolicy = OverlayPolicySnapshot(
+        autoPasteEnabled: true, autoFormatLevel: .smart)
+      state.engine = engine
+      state.handleRecordingPreparing()
+      projectText(
+        "source words for one-shot formatting", to: state,
+        canCopy: true, canFormat: true, terminal: true,
+        sessionId: "one-shot", reducerRevision: 11)
+      let requested = expectation(description: "one-shot level forwarded")
+      engine.onFormatter = { requested.fulfill() }
+
+      state.formatTranscript(at: level)
+      await fulfillment(of: [requested], timeout: 1)
+
+      XCTAssertEqual(
+        engine.formatterRequests,
+        [.init(sessionId: "one-shot", sourceRevision: 11, level: level)])
+      XCTAssertTrue(engine.formatLevelWrites.isEmpty)
+      XCTAssertEqual(engine.persistedPolicy.autoFormatLevel, .smart)
+      XCTAssertEqual(state.autoFormatLevel, .smart)
+      XCTAssertEqual(state.formattedText, "source words for one-shot formatting")
+      XCTAssertTrue(state.formatterCommitPending, "only a reducer projection repaints")
     }
   }
 

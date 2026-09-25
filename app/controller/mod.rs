@@ -77,7 +77,7 @@ use crate::audio::streaming_recorder::{
     CaptureStopFailure, CaptureTurnIntent, StreamingRecorder, TerminalSealRefused,
 };
 use crate::config::models::ModelManager;
-use crate::config::{Config, RuntimeSettingsSnapshot, UserSettings};
+use crate::config::{Config, FormattingPolicy, RuntimeSettingsSnapshot, UserSettings};
 use crate::os::clipboard;
 use crate::os::hold_badge::BadgeMode;
 use crate::os::hotkeys::{self, HoldMode};
@@ -117,6 +117,38 @@ const NO_OVERLAY_PROFILE_INTERIM_SEC: f32 = 8.0;
 /// thread never constructs IPC events or timestamps and never accumulates a
 /// backlog when the bridge/UI is slower than CoreAudio.
 const AUDIO_LEVEL_QUEUE_CAPACITY: usize = 1;
+
+fn formatter_revision_level(
+    requested: Option<FormattingPolicy>,
+    settings: &RuntimeSettingsSnapshot,
+) -> Result<(FormattingPolicy, &'static str)> {
+    let configured = settings.formatting_policy();
+    let selected = requested.unwrap_or(configured);
+    // The core formatter consumes a sealed policy and its matching prompt.
+    // Refuse a differing request until that owner accepts a request-level policy.
+    anyhow::ensure!(
+        selected == configured,
+        "one-shot formatting at {} is unavailable: the formatter snapshot is sealed at {}",
+        selected.as_str(),
+        configured.as_str()
+    );
+    Ok((
+        selected,
+        if requested.is_some() { "request" } else { "settings" },
+    ))
+}
+
+fn log_formatter_revision(receipt: &UserRevisionCommit, level: FormattingPolicy, source: &str) {
+    info!(
+        session_id = %receipt.session_id,
+        source_revision = receipt.source_revision,
+        revision = receipt.revision,
+        provenance_receipt = %receipt.provenance_receipt,
+        format_level = level.as_str(),
+        source,
+        "formatter revision committed"
+    );
+}
 
 /// Publish the live-transcription tuning for the session that is about to start
 /// and report whether the overlay is enabled.
@@ -1671,6 +1703,7 @@ impl RecordingController {
         &self,
         session_id: String,
         source_revision: u64,
+        requested_level: Option<FormattingPolicy>,
     ) -> Result<UserRevisionCommit> {
         if self.current_state().await != State::Idle {
             return Err(anyhow::anyhow!(
@@ -1687,6 +1720,8 @@ impl RecordingController {
             .terminal_revision_source(&session_id, source_revision)
             .map_err(anyhow::Error::new)?;
         let runtime_settings = self.runtime_settings_arc().await;
+        let (format_level, level_source) =
+            formatter_revision_level(requested_level, runtime_settings.as_ref())?;
         let language = runtime_settings.values().whisper_language;
         let consultation = self
             .selected_max_consultation(runtime_settings.as_ref())
@@ -1719,9 +1754,11 @@ impl RecordingController {
         if !Arc::ptr_eq(&presentation, &current_presentation) {
             return Err(anyhow::anyhow!("terminal transcript authority changed"));
         }
-        presentation
+        let receipt = presentation
             .apply_formatter_revision(session_id, source_revision, result)
-            .map_err(anyhow::Error::new)
+            .map_err(anyhow::Error::new)?;
+        log_formatter_revision(&receipt, format_level, level_source);
+        Ok(receipt)
     }
 
     /// Forward one host sleep/wake boundary to the active recording session.
@@ -9786,5 +9823,102 @@ mod max_start_order_tests {
             selection[..discovery].rfind("Box::new(||").is_some(),
             "recording selection constructs the tool registry before opening audio"
         );
+    }
+}
+
+#[cfg(test)]
+mod formatter_revision_request_tests {
+    use super::*;
+    use codescribe_core::config::CapturedRuntimeInputs;
+    use std::io::Write;
+
+    fn snapshot(root: &std::path::Path, level: FormattingPolicy) -> RuntimeSettingsSnapshot {
+        let mut inputs = CapturedRuntimeInputs::defaults_at(root.to_path_buf(), 1);
+        inputs.user_settings.formatting_level = Some(level.as_str().to_string());
+        inputs.settings_bytes = std::fs::read(root.join("settings.json")).ok();
+        Config::runtime_snapshot_from_captured(inputs)
+    }
+
+    #[test]
+    fn absent_request_uses_each_settings_level() {
+        let root = tempfile::tempdir().unwrap();
+        for level in FormattingPolicy::ALL {
+            let settings = snapshot(root.path(), level);
+            assert_eq!(
+                formatter_revision_level(None, &settings).unwrap(),
+                (level, "settings")
+            );
+            assert_eq!(
+                formatter_revision_level(Some(level), &settings).unwrap(),
+                (level, "request")
+            );
+            assert_eq!(settings.formatting_policy(), level);
+        }
+    }
+
+    #[test]
+    fn max_request_uses_max_without_writing_settings() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("settings.json");
+        let original = b"{\n  \"formatting_level\": \"smart\"\n}\n";
+        std::fs::write(&path, original).unwrap();
+        let settings = snapshot(root.path(), FormattingPolicy::Smart);
+        let selected = formatter_revision_level(Some(FormattingPolicy::Max), &settings);
+        assert_eq!(settings.formatting_policy(), FormattingPolicy::Smart);
+        assert_eq!(std::fs::read(path).unwrap(), original);
+        // Expected RED until the core formatter can consume a request policy
+        // and its matching prompt without changing the settings snapshot.
+        assert_eq!(selected.unwrap(), (FormattingPolicy::Max, "request"));
+    }
+
+    #[derive(Clone, Default)]
+    struct ReceiptLog(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl Write for ReceiptLog {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for ReceiptLog {
+        type Writer = Self;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    #[test]
+    fn formatter_log_names_level_and_source_without_changing_reducer_receipt() {
+        for source in ["request", "settings"] {
+            let log = ReceiptLog::default();
+            let subscriber = tracing_subscriber::fmt()
+                .without_time()
+                .with_ansi(false)
+                .with_writer(log.clone())
+                .finish();
+            let receipt = UserRevisionCommit {
+                session_id: "formatter-test".into(),
+                source_revision: 4,
+                revision: 5,
+                rendered_text: "formatted words".into(),
+                provenance_receipt: "formatter-test-4-5-0".into(),
+            };
+            tracing::subscriber::with_default(subscriber, || {
+                log_formatter_revision(&receipt, FormattingPolicy::Smart, source);
+            });
+            let text = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+            assert!(text.contains("format_level=\"smart\""));
+            assert!(text.contains(&format!("source=\"{source}\"")));
+            assert!(text.contains("provenance_receipt=formatter-test-4-5-0"));
+            assert_eq!(receipt.provenance_receipt, "formatter-test-4-5-0");
+            assert_eq!(receipt.source_revision, 4);
+            assert_eq!(receipt.revision, 5);
+        }
     }
 }

@@ -621,7 +621,7 @@ private final class OverlayChromePolicyEngine: DictationEngine {
     sessionId: String, sourceRevision: UInt64, renderedText: String
   ) async throws -> CsUserRevisionResult { throw CocoaError(.featureUnsupported) }
   func commitFormatterRevision(
-    sessionId: String, sourceRevision: UInt64
+    sessionId: String, sourceRevision: UInt64, level: FormattingPolicyOption?
   ) async throws -> CsUserRevisionResult { throw CocoaError(.featureUnsupported) }
   func pasteText(text: String) async throws -> CsPasteResult {
     throw CocoaError(.featureUnsupported)
