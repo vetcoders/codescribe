@@ -12843,9 +12843,11 @@ mod live_refinement_admission_tests {
         );
     }
 
-    /// An early L1 result may label an already immutable PCM subspan or wait
-    /// for the speech close. Either way its one word must retain one physical
-    /// owner: a growing Silero end cannot remint or replay the same samples.
+    /// The real-time Relay must put an L1 answer in the ledger while a long
+    /// Silero speech run remains open. Waiting for its final edge would turn
+    /// the ~4 s observations into a stop/utterance-end patch. The early word
+    /// owns fixed PCM, but cannot be sealed by an invented VAD close; growth
+    /// must not remint or replay the same samples.
     #[test]
     fn open_l1_result_keeps_one_pcm_owner_through_speech_close() {
         use super::super::silero_fusion::SileroIngress;
@@ -12894,11 +12896,30 @@ mod live_refinement_admission_tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert!(early_grants.len() <= 1, "one source word has one early owner");
+        assert_eq!(
+            early_grants.len(),
+            1,
+            "the L1 word must reach the ledger before Silero closes long speech"
+        );
+        assert!(
+            !early.iter().any(|event| matches!(
+                event,
+                EngineEvent::LedgerSeal { receipt }
+                    if receipt.sealed_occurrences.contains(&early_grants[0])
+            )),
+            "an open speech observation is not a measured VAD close"
+        );
         for owner in &early_grants {
             assert_eq!((&*owner.session, owner.capture_epoch), ("live-admission", 7));
             assert!(owner.sample_start <= 500 && owner.sample_end >= 1_000);
             assert!(owner.sample_end <= 5_000, "an open label needs fixed observed PCM");
+            let ledger = state.acoustic_ledger.lock().unwrap();
+            assert!(!ledger.is_sealed(owner));
+            assert_eq!(
+                ledger.serial_of(owner).and_then(|serial| serial.vad_close_sample),
+                None,
+                "a live L1 mutation cannot invent Silero's missing end edge"
+            );
         }
 
         energy.push_samples(&vec![0.25; 1_080]);
