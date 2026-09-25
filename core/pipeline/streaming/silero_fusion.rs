@@ -21,12 +21,13 @@
 //! ranges depending on which consumer was asked. [`SileroIngress::observe`] is
 //! the single decision point that derives both from one observation.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 use crate::audio::capture_receipt::{
     AcousticAvailability, AcousticSpeechEvidence, CaptureEvidenceIdentity,
 };
 use crate::audio::chunker::{SpeechEvent, SpeechSession, VadBoundaryEvidence, VadBoundaryKind};
+pub(crate) use crate::audio::chunker::{UtteranceCloseCause, UtteranceCloseReceipt};
 use crate::config::RuntimeSettingsSnapshot;
 use crate::pipeline::contracts::{
     NonSpeechEvidence, SidebandEvidence, SidebandEvidenceKind, SidebandProvenance,
@@ -117,6 +118,7 @@ pub struct SileroUtterance {
 pub struct UtteranceLedger {
     next_id: u64,
     utterances: Vec<SileroUtterance>,
+    close_receipts: BTreeMap<u64, UtteranceCloseReceipt>,
 }
 
 impl UtteranceLedger {
@@ -168,6 +170,11 @@ impl UtteranceLedger {
         open.range.sample_end = boundary.max(open.range.sample_start);
         open.closed = true;
         Some(open.id)
+    }
+
+    /// The measured close decision; synthetic range-only observations have none.
+    pub(crate) fn close_receipt(&self, id: u64) -> Option<UtteranceCloseReceipt> {
+        self.close_receipts.get(&id).copied()
     }
 
     pub fn utterances(&self) -> &[SileroUtterance] {
@@ -564,6 +571,11 @@ impl SileroIngress {
         let closed_end = self.vad.last_closed_segment_raw_range().map(|(_, end)| end);
         let mut out =
             self.observe_with_closed_end(open_range, closed_here, closed_end, samples_seen);
+        if let Some(receipt) = self.vad.last_close_receipt() {
+            for id in &out.closed {
+                self.ledger.close_receipts.insert(*id, receipt);
+            }
+        }
         out.sideband = self.observe_boundaries(&boundaries);
         out
     }
@@ -713,7 +725,15 @@ impl SileroIngress {
     pub fn flush(&mut self, samples_seen: u64) -> Option<u64> {
         let _ = self.vad.flush();
         self.speech.close(samples_seen);
-        self.ledger.close_open(samples_seen)
+        let id = self.ledger.close_open(samples_seen)?;
+        self.ledger.close_receipts.insert(
+            id,
+            UtteranceCloseReceipt {
+                decision_sample: samples_seen,
+                cause: UtteranceCloseCause::EndOfCapture,
+            },
+        );
+        Some(id)
     }
 }
 
@@ -943,6 +963,56 @@ mod tests {
     /// the closing silence. The utterance keeps that trailing extent, so an
     /// Apple word whose midpoint lands just past the padded end still has an
     /// owner instead of becoming a `no_time_overlap` leftover.
+    #[test]
+    fn live_ingest_attaches_measured_silence_decision_beside_unchanged_ranges() {
+        let mut ingress = SileroIngress::new(16_000, "close-receipt", 7);
+        ingress.vad = SpeechSession::new_utterance_with_silence(16_000, 0.20);
+        let mut cursor = 0;
+        for _ in 0..20 {
+            ingress.push_scripted_speech_prob_for_test(0.9);
+            cursor += 512;
+            ingress.ingest(&[0.2; 512], cursor);
+        }
+        let mut closed = None;
+        for _ in 0..30 {
+            ingress.push_scripted_speech_prob_for_test(0.01);
+            cursor += 512;
+            let out = ingress.ingest(&[0.0; 512], cursor);
+            if let Some(id) = out.closed.first() {
+                closed = Some(*id);
+                break;
+            }
+        }
+        let id = closed.expect("live ingress must close after measured silence");
+        let receipt = ingress.ledger().close_receipt(id).unwrap();
+        assert_eq!(receipt.cause, UtteranceCloseCause::SilenceFence);
+        assert_eq!(receipt.decision_sample, cursor);
+        assert!(receipt.decision_sample >= 20 * 512 + 3_200);
+        assert_eq!(ingress.ledger().utterances()[0].range.sample_end, cursor);
+        assert!(ingress.ledger().utterances()[0].closed);
+        assert!(ingress.flush(cursor).is_none());
+        assert_eq!(ingress.ledger().close_receipt(id), Some(receipt));
+    }
+
+    #[test]
+    fn fusion_stop_records_end_of_capture_only_for_the_open_utterance() {
+        let mut ingress = SileroIngress::new(16_000, "stop-receipt", 8);
+        ingress.push_scripted_speech_prob_for_test(0.9);
+        let out = ingress.ingest(&[0.2; 512], 512);
+        let id = out.open.expect("speech opens a live utterance");
+        assert!(ingress.ledger().close_receipt(id).is_none());
+        assert_eq!(ingress.flush(512), Some(id));
+        assert_eq!(
+            ingress.ledger().close_receipt(id),
+            Some(UtteranceCloseReceipt {
+                decision_sample: 512,
+                cause: UtteranceCloseCause::EndOfCapture,
+            })
+        );
+        assert!(ingress.flush(512).is_none());
+        assert_eq!(ingress.ledger().close_receipts.len(), 1);
+    }
+
     #[test]
     fn a_pause_close_keeps_the_trailing_extent_for_late_apple_words() {
         let mut ingress = SileroIngress::new(16_000, "s", 0);

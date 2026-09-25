@@ -1288,6 +1288,9 @@ pub(crate) async fn apple_stream_transcription_session(
                         apply_recorder_lifecycle_event(&mut layer1_lane, event);
                         if let Some(reason) = layer1_lane.take_degrade_notice() {
                             emit_layer1_degrade_warning(event_sink.as_ref(), reason);
+                            if let Some(sender) = cloud_notice_tx.as_ref() {
+                                let _ = sender.send(CloudWorkerNotice::LaneLost);
+                            }
                         }
                     }
                     None => lifecycle_events = None,
@@ -1699,8 +1702,10 @@ struct AppleSealState {
     /// Present only when this take opened a live cloud session. Local power
     /// leaves it empty, so no commit is sent and no cloud observer is scheduled.
     cloud_commit_tx: Option<mpsc::Sender<u64>>,
-    /// Utterances whose Silero close already produced one commit.
-    cloud_commit_sent: BTreeSet<u64>,
+    /// Every scheduled CloudLive occurrence not yet assigned to a commit.
+    cloud_uncommitted: BTreeSet<OccurrenceIdentity>,
+    cloud_last_commit_sample: u64,
+    cloud_uncommitted_span_ms: u64,
     /// Commit samples the async lane has not accepted yet.
     cloud_commit_retry: VecDeque<u64>,
     /// Commits whose finals have not returned. The sample is the Silero close.
@@ -1712,7 +1717,11 @@ struct AppleSealState {
     cloud_live_unowned_routed: u64,
     cloud_live_lane_lost: u64,
     cloud_live_timed_out: u64,
+    cloud_live_unmatched_final: u64,
 }
+
+/// Capture-clock allowance for a final; the scheduled frontier is the hold.
+const CLOUD_FINAL_GRACE: Duration = Duration::from_secs(3);
 
 /// One websocket commit waiting for the final the server stamps back.
 struct PendingCloudCommit {
@@ -1931,7 +1940,9 @@ impl AppleSealState {
             energy_calibration: None,
             capture_energy: CaptureEnergyOwner::bind(session_id_for_energy, capture_epoch),
             cloud_commit_tx: None,
-            cloud_commit_sent: BTreeSet::new(),
+            cloud_uncommitted: BTreeSet::new(),
+            cloud_last_commit_sample: 0,
+            cloud_uncommitted_span_ms: 0,
             cloud_commit_retry: VecDeque::new(),
             cloud_inflight: VecDeque::new(),
             cloud_clock_unreliable_logged: false,
@@ -1941,6 +1952,7 @@ impl AppleSealState {
             cloud_live_unowned_routed: 0,
             cloud_live_lane_lost: 0,
             cloud_live_timed_out: 0,
+            cloud_live_unmatched_final: 0,
         };
         state
             .acoustic_ledger
@@ -1994,60 +2006,65 @@ impl AppleSealState {
         }
     }
 
-    /// Commit the cloud stream at the sample where Silero decided this close.
-    ///
-    /// The sample is the utterance's raw end, after the silence fence. It is
-    /// not the exclusive owned span: that span is last speech plus a pad, and
-    /// a later neighbour can still move it. The commit does not mint, own, or
-    /// resize an occurrence.
-    fn commit_cloud_occurrence(
-        &mut self,
-        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
-        utterance_id: u64,
-        sample_end: u64,
-        occurrence: &OccurrenceIdentity,
-    ) {
+    /// Schedule at creation, before synchronous observers can close the frontier.
+    /// Exact PCM identities survive utterance re-partition and re-mint.
+    fn track_cloud_occurrence(&mut self, occurrence: &OccurrenceIdentity) {
         if self.cloud_commit_tx.is_none() {
             return;
         }
-        if !self.cloud_commit_sent.insert(utterance_id) {
+        let mut ledger = self
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !ledger.is_qualified(occurrence) || ledger.is_sealed(occurrence) {
             return;
         }
-        let scheduled = {
-            let mut ledger = self
-                .acoustic_ledger
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if !ledger.is_qualified(occurrence) || ledger.is_sealed(occurrence) {
-                false
-            } else if ledger.frontier_of(occurrence).is_none() {
-                ledger.schedule_frontier(
-                    occurrence.clone(),
-                    [LedgerObservationProducer::CloudLive],
-                );
-                true
-            } else {
-                ledger.schedule_observer(
-                    occurrence.clone(),
-                    LedgerObservationProducer::CloudLive,
-                );
-                ledger.frontier_of(occurrence).is_some_and(|frontier| {
-                    frontier
-                        .open_producers()
-                        .contains(&LedgerObservationProducer::CloudLive)
-                })
-            }
-        };
-        if !scheduled {
-            self.cloud_commit_sent.remove(&utterance_id);
+        if ledger.frontier_of(occurrence).is_none() {
+            ledger.schedule_frontier(occurrence.clone(), [LedgerObservationProducer::CloudLive]);
+        } else {
+            ledger.schedule_observer(occurrence.clone(), LedgerObservationProducer::CloudLive);
+        }
+        if ledger.frontier_of(occurrence).is_some_and(|frontier| {
+            frontier.open_producers().contains(&LedgerObservationProducer::CloudLive)
+        }) && !self.cloud_inflight.iter().any(|commit| commit.occurrences.contains(occurrence)) {
+            self.cloud_uncommitted.insert(occurrence.clone());
+        }
+    }
+
+    /// Only the VAD's typed silence decision can cut the live stream.
+    /// EndOfCapture is handled by the lane's existing `end` at stop.
+    fn commit_cloud_close(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        receipt: super::silero_fusion::UtteranceCloseReceipt,
+    ) {
+        if self.cloud_commit_tx.is_none()
+            || receipt.cause != super::silero_fusion::UtteranceCloseCause::SilenceFence
+            || receipt.decision_sample <= self.cloud_last_commit_sample
+            || self.cloud_commit_retry.back().is_some_and(|sample| receipt.decision_sample <= *sample)
+        {
             return;
         }
-        self.cloud_inflight.push_back(PendingCloudCommit {
-            sample_end,
-            occurrences: vec![occurrence.clone()],
-        });
+        let sample_end = receipt.decision_sample;
+        let occurrences = self.cloud_uncommitted.iter()
+            .filter(|owner| owner.sample_end <= sample_end)
+            .cloned()
+            .collect::<Vec<_>>();
+        for occurrence in &occurrences {
+            self.cloud_uncommitted.remove(occurrence);
+        }
+        self.cloud_inflight.push_back(PendingCloudCommit { sample_end, occurrences });
         self.cloud_commit_retry.push_back(sample_end);
         self.flush_cloud_commits(ev_tx);
+    }
+
+    /// Measure the longest span since a commit, including split-only monologues.
+    fn observe_cloud_capture_head(&mut self, capture_head: u64) {
+        if self.cloud_commit_tx.is_some() {
+            let span_ms = capture_head.saturating_sub(self.cloud_last_commit_sample)
+                .saturating_mul(1_000) / u64::from(self.sample_rate.max(1));
+            self.cloud_uncommitted_span_ms = self.cloud_uncommitted_span_ms.max(span_ms);
+        }
     }
 
     fn flush_cloud_commits(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
@@ -2058,7 +2075,10 @@ impl AppleSealState {
                 return;
             };
             match sender.try_send(sample_end) {
-                Ok(()) => {}
+                Ok(()) => {
+                    self.observe_cloud_capture_head(sample_end);
+                    self.cloud_last_commit_sample = self.cloud_last_commit_sample.max(sample_end);
+                }
                 Err(mpsc::error::TrySendError::Full(sample_end)) => {
                     self.cloud_commit_retry.push_front(sample_end);
                     return;
@@ -2085,47 +2105,28 @@ impl AppleSealState {
     }
 
     fn return_cloud_live_lost(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
-        let mut occurrences = self
-            .cloud_inflight
-            .drain(..)
-            .flat_map(|commit| commit.occurrences)
-            .collect::<Vec<_>>();
-        for (_, owner) in self.word_owners() {
-            let open = self
-                .acoustic_ledger
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .frontier_of(&owner)
-                .is_some_and(|frontier| {
-                    frontier
-                        .open_producers()
-                        .contains(&LedgerObservationProducer::CloudLive)
-                });
-            if open && !occurrences.contains(&owner) {
-                occurrences.push(owner);
-            }
-        }
-        for occurrence in occurrences {
+        self.cloud_commit_tx = None;
+        self.cloud_commit_retry.clear();
+        for occurrence in self.take_outstanding_cloud() {
             self.cloud_live_lane_lost = self.cloud_live_lane_lost.saturating_add(1);
             self.cloud_receipt(&occurrence, "cloud_live_lane_lost");
             self.return_cloud_observer(ev_tx, &occurrence);
         }
     }
 
-    /// Cloud-live observers whose commit ended strictly before `horizon` are
-    /// returned. The commit that lands on this horizon is not its own timeout.
+    /// A later utterance or Whisper horizon cannot expire CloudLive. Only
+    /// S + grace on the raw capture clock returns a stalled commit's observers.
     fn release_cloud_live_behind(
         &mut self,
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
-        horizon: u64,
+        capture_head: u64,
     ) {
-        if self.cloud_commit_tx.is_none() && self.cloud_inflight.is_empty() {
-            return;
-        }
+        let grace_samples = CLOUD_FINAL_GRACE.as_secs()
+            .saturating_mul(u64::from(self.sample_rate.max(1)));
         let mut due = Vec::new();
         let mut kept = VecDeque::new();
         while let Some(commit) = self.cloud_inflight.pop_front() {
-            if commit.sample_end < horizon {
+            if capture_head >= commit.sample_end.saturating_add(grace_samples) {
                 due.extend(commit.occurrences);
             } else {
                 kept.push_back(commit);
@@ -2139,8 +2140,19 @@ impl AppleSealState {
         }
     }
 
+    fn take_outstanding_cloud(&mut self) -> BTreeSet<OccurrenceIdentity> {
+        let mut occurrences = std::mem::take(&mut self.cloud_uncommitted);
+        occurrences.extend(self.cloud_inflight.drain(..).flat_map(|commit| commit.occurrences));
+        occurrences
+    }
+
     fn return_outstanding_cloud(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
-        self.release_cloud_live_behind(ev_tx, u64::MAX);
+        self.cloud_commit_tx = None;
+        self.cloud_commit_retry.clear();
+        for occurrence in self.take_outstanding_cloud() {
+            self.cloud_receipt(&occurrence, "cloud_live_session_end");
+            self.return_cloud_observer(ev_tx, &occurrence);
+        }
     }
 
     fn cloud_receipt(&self, occurrence: &OccurrenceIdentity, disposition: &'static str) {
@@ -2163,7 +2175,15 @@ impl AppleSealState {
             return;
         };
         self.log_cloud_final(&commit);
-        let pending = self.cloud_inflight.pop_front();
+        let matched = self.cloud_inflight.iter()
+            .position(|pending| pending.sample_end == commit.sample_end)
+            .or_else(|| self.cloud_inflight.iter()
+                .position(|pending| pending.sample_end <= commit.sample_end));
+        let pending = matched.and_then(|index| self.cloud_inflight.remove(index));
+        if pending.is_none() {
+            self.cloud_live_unmatched_final = self.cloud_live_unmatched_final.saturating_add(1);
+            info!(sample_end = commit.sample_end, cloud_live_unmatched_final = 1, "cloud_live_admission");
+        }
         let scheduled = pending
             .map(|commit| commit.occurrences)
             .unwrap_or_default();
@@ -2191,7 +2211,7 @@ impl AppleSealState {
             )
         });
         info!(
-            match_path = commit.match_path.as_label(),
+            match_path = %commit.match_path.as_label(),
             word_time_clamped = commit.word_time_clamped,
             phrase_fallback = commit.phrase_fallback,
             commit_range_mismatch = mismatch.as_deref().unwrap_or(""),
@@ -2354,10 +2374,16 @@ impl AppleSealState {
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
         occurrence: &OccurrenceIdentity,
     ) {
+        self.cloud_uncommitted.remove(occurrence);
         let mut ledger = self
             .acoustic_ledger
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !ledger.frontier_of(occurrence).is_some_and(|frontier| {
+            frontier.open_producers().contains(&LedgerObservationProducer::CloudLive)
+        }) {
+            return;
+        }
         let closed = ledger.note_frontier_return(occurrence, LedgerObservationProducer::CloudLive);
         if closed && let Ok(receipt) = ledger.seal(occurrence).cloned() {
             let _ = ev_tx.send(EngineEvent::LedgerSeal { receipt });
@@ -3396,7 +3422,6 @@ impl AppleSealState {
             self.return_whisper_without_label(ev_tx, id, &owner);
             self.emit_pending_seal(ev_tx, id);
         }
-        self.release_cloud_live_behind(ev_tx, sample_start);
     }
 
     fn finish_whisper_frontier(
@@ -4684,6 +4709,7 @@ fn reconcile_silero_ledger(
                     state.window_by_samples(silero.range.sample_start, silero.range.sample_end)
                 })
         };
+        state.track_cloud_occurrence(&occurrence);
         let _current_piece_owned = if let Some(window) = window {
             let committed_text = text.clone();
             state.enqueue_layer1_piece(
@@ -4728,14 +4754,13 @@ fn reconcile_silero_ledger(
                 },
             );
         }
-        state.commit_cloud_occurrence(
-            ev_tx,
-            utterance_id,
-            silero.range.sample_end,
-            &occurrence,
-        );
         state.emit_pending_seal(ev_tx, utterance_id);
         state.utterance_id = state.utterance_id.max(utterance_id);
+    }
+    for utterance in ledger.utterances() {
+        if let Some(receipt) = ledger.close_receipt(utterance.id) {
+            state.commit_cloud_close(ev_tx, receipt);
+        }
     }
     true
 }
@@ -4915,13 +4940,20 @@ fn admit_ledger_label<'a>(
     {
         ledger.schedule_observer(occurrence.clone(), LedgerObservationProducer::CloudLive);
     }
+    if state.cloud_commit_tx.is_some()
+        && producer != LedgerObservationProducer::CloudLive
+        && ledger.frontier_of(&occurrence).is_some_and(|frontier| {
+        frontier.open_producers().contains(&LedgerObservationProducer::CloudLive)
+    }) && !state.cloud_inflight.iter().any(|commit| commit.occurrences.contains(&occurrence)) {
+        state.cloud_uncommitted.insert(occurrence.clone());
+    }
     let receipt = ledger.admit_pinned_label(&observation, label, words);
     let _ = ev_tx.send(EngineEvent::LedgerMutation {
         observation,
         label: label.to_string(),
         receipt: receipt.clone(),
     });
-    if producer == LedgerObservationProducer::Whisper
+    if matches!(producer, LedgerObservationProducer::Whisper | LedgerObservationProducer::CloudLive)
         && energy != EnergyAdmission::QualifyFinalPassGap
     {
         return Some(receipt);
@@ -6460,6 +6492,7 @@ fn apple_stream_worker(
 
     loop {
         state.tick_refinements(&ev_tx, Instant::now());
+        state.flush_cloud_commits(&ev_tx);
         if let Some(notices) = cloud_notice.as_ref() {
             while let Ok(notice) = notices.try_recv() {
                 state.handle_cloud_notice(&ev_tx, notice);
@@ -6471,6 +6504,7 @@ fn apple_stream_worker(
         }
         while let Ok(completion) = formatter_done.try_recv() {
             if !state.complete_formatter(&ev_tx, completion) {
+                state.return_outstanding_cloud(&ev_tx);
                 return Err(anyhow::anyhow!(
                     "formatter completion reached worker without an emitter-sealed exact occurrence",
                 ));
@@ -6491,6 +6525,15 @@ fn apple_stream_worker(
                 // engine rests: it is what the pre-roll of the next epoch is cut
                 // from, and what Layer 1 windows still resolve against.
                 state.audio.push(&samples);
+                // A final may have queued while recv_timeout waited for PCM.
+                // Admit it before advancing the capture-clock expiry boundary.
+                if let Some(notices) = cloud_notice.as_ref() {
+                    while let Ok(notice) = notices.try_recv() {
+                        state.handle_cloud_notice(&ev_tx, notice);
+                    }
+                }
+                state.observe_cloud_capture_head(samples_seen);
+                state.release_cloud_live_behind(&ev_tx, samples_seen);
                 // One observation of the spectrum, two consumers: the ledger
                 // mints identity from it and the lifecycle wakes/sleeps on it.
                 let silero_ingest = state
@@ -6526,7 +6569,9 @@ fn apple_stream_worker(
                 match epoch.feed_pcm(&samples, samples_seen, speech_live) {
                     EpochDecision::Forward => {
                         if let Some(session) = stream.as_mut() {
-                            session.write_pcm(&samples)?;
+                            session.write_pcm(&samples).inspect_err(|_| {
+                                state.return_outstanding_cloud(&ev_tx);
+                            })?;
                             let events = shift_events(
                                 session.poll_events(),
                                 epoch_base_secs(epoch_base_samples, sample_rate),
@@ -6535,7 +6580,8 @@ fn apple_stream_worker(
                         }
                     }
                     EpochDecision::Wake { preroll_from } => {
-                        let mut session = LiveStreamSession::open(language, sample_rate)?;
+                        let mut session = LiveStreamSession::open(language, sample_rate)
+                            .inspect_err(|_| state.return_outstanding_cloud(&ev_tx))?;
                         let chunk_start = samples_seen.saturating_sub(samples.len() as u64);
                         // The base is whatever audio this epoch ACTUALLY starts
                         // with, never what was asked for: a pre-roll that fell
@@ -6548,9 +6594,12 @@ fn apple_stream_worker(
                         let preroll_samples =
                             preroll.as_ref().map_or(0, |window| window.samples.len());
                         if let Some(window) = preroll.filter(|w| !w.samples.is_empty()) {
-                            session.write_pcm(&window.samples)?;
+                            session.write_pcm(&window.samples)
+                                .inspect_err(|_| state.return_outstanding_cloud(&ev_tx))?;
                         }
-                        session.write_pcm(&samples)?;
+                        session.write_pcm(&samples).inspect_err(|_| {
+                                state.return_outstanding_cloud(&ev_tx);
+                            })?;
                         info!(
                             audio_secs,
                             epoch_base_secs = epoch_base_secs(epoch_base_samples, sample_rate),
@@ -6567,7 +6616,11 @@ fn apple_stream_worker(
                     EpochDecision::Sleep { silence_secs } => {
                         if let Some(session) = stream.take() {
                             let base_secs = epoch_base_secs(epoch_base_samples, sample_rate);
-                            let trailing = shift_events(session.finish()?, base_secs);
+                            let trailing = shift_events(
+                                session.finish()
+                                    .inspect_err(|_| state.return_outstanding_cloud(&ev_tx))?,
+                                base_secs,
+                            );
                             emit_stream_events(trailing, &ev_tx, &mut state, audio_secs);
                             // Same close as capture EOF: whatever the engine
                             // left open is sealed here, because no later
@@ -6647,7 +6700,7 @@ fn apple_stream_worker(
                 seal_sliced_by_silero(state, &ev_tx, &[]);
             }
         },
-    )?;
+    ).inspect_err(|_| state.return_outstanding_cloud(&ev_tx))?;
 
     if let Some(receiver) = terminal_audio {
         let archive = receiver
@@ -6669,6 +6722,7 @@ fn apple_stream_worker(
                     code: "terminal_owned_pcm_unavailable".into(),
                     message: error.to_string(),
                 });
+                state.return_outstanding_cloud(&ev_tx);
                 return Err(error);
             }
         }
@@ -6746,6 +6800,7 @@ fn apple_stream_worker(
         }
     }
 
+    state.return_outstanding_cloud(&ev_tx);
     state.close_admission_horizon(&ev_tx, u64::MAX);
 
     // A bounded formatter execution has its own provider timeout policy. Once
@@ -6779,6 +6834,8 @@ fn apple_stream_worker(
         || state.cloud_live_admitted > 0
         || state.cloud_live_lane_lost > 0
         || state.cloud_live_timed_out > 0
+        || state.cloud_live_unmatched_final > 0
+        || state.cloud_uncommitted_span_ms > 0
     {
         info!(
             session_id = %state.session_id,
@@ -6788,6 +6845,8 @@ fn apple_stream_worker(
             cloud_live_unowned_routed = state.cloud_live_unowned_routed,
             cloud_live_lane_lost = state.cloud_live_lane_lost,
             cloud_live_timed_out = state.cloud_live_timed_out,
+            cloud_live_unmatched_final = state.cloud_live_unmatched_final,
+            cloud_uncommitted_span_ms = state.cloud_uncommitted_span_ms,
             "cloud_live_take"
         );
     }
@@ -14324,6 +14383,314 @@ mod rc_w2_test_rehab {
         }
     }
 
+    fn silence_close(secs: f32) -> super::super::silero_fusion::UtteranceCloseReceipt {
+        super::super::silero_fusion::UtteranceCloseReceipt {
+            decision_sample: sample(secs),
+            cause: super::super::silero_fusion::UtteranceCloseCause::SilenceFence,
+        }
+    }
+
+    fn cloud_owner(
+        state: &mut AppleSealState,
+        tx: &mpsc::UnboundedSender<EngineEvent>,
+        id: u64,
+        start: f32,
+        end: f32,
+    ) -> OccurrenceIdentity {
+        let owner = qualify(state, start, end);
+        for producer in [LedgerObservationProducer::Apple, LedgerObservationProducer::Lexicon] {
+            admit_ledger_label(
+                state,
+                tx,
+                LabelAdmission {
+                    observation: LedgerObservationIdentity::new(producer, id, 0, owner.clone()),
+                    label: "zostaje",
+                    energy: EnergyAdmission::RequireExistingQualification,
+                },
+            ).expect("qualified fixture label");
+        }
+        owner
+    }
+
+    fn cloud_open(state: &AppleSealState, owner: &OccurrenceIdentity) -> bool {
+        state.acoustic_ledger.lock().unwrap().frontier_of(owner)
+            .is_some_and(|frontier| frontier.open_producers().contains(&LedgerObservationProducer::CloudLive))
+    }
+
+    #[test]
+    fn live_silero_receipt_drives_the_hub_commit_without_changing_owned_pcm() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, mut commit_rx) = mpsc::channel(4);
+        let mut state = state("live-cloud-receipt", 0.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        state.fusion_seal_armed = true;
+        state.fusion = Some(SileroIngress::new(RATE, &state.session_id, state.capture_epoch));
+        let mut cursor = 0;
+        let mut closed = None;
+        for frame in 0..100 {
+            let speech = frame < 20;
+            let pcm = vec![if speech { 0.25 } else { 0.0 }; 512];
+            state.audio.push(&pcm);
+            cursor += pcm.len() as u64;
+            let fusion = state.fusion.as_mut().unwrap();
+            fusion.push_scripted_speech_prob_for_test(if speech { 0.9 } else { 0.01 });
+            let ingest = fusion.ingest(&pcm, cursor);
+            let receipt = ingest.closed.first().and_then(|id| fusion.ledger().close_receipt(*id));
+            seal_sliced_by_silero(&mut state, &tx, &[]);
+            if let Some(receipt) = receipt {
+                closed = Some(receipt);
+                break;
+            }
+        }
+        let receipt = closed.expect("scripted VAD must reach a silence fence");
+        assert_eq!(commit_rx.try_recv().unwrap(), receipt.decision_sample);
+        assert_eq!(state.cloud_inflight.len(), 1);
+        assert_eq!(state.cloud_inflight[0].occurrences.len(), 1);
+        let owner = state.cloud_inflight[0].occurrences[0].clone();
+        assert_eq!(owner.sample_end, receipt.decision_sample);
+        assert!(cloud_open(&state, &owner));
+        let before = state.acoustic_ledger.lock().unwrap().qualified_occurrences().cloned().collect::<Vec<_>>();
+        state.commit_cloud_close(&tx, receipt);
+        assert!(commit_rx.try_recv().is_err());
+        assert_eq!(state.acoustic_ledger.lock().unwrap().qualified_occurrences().cloned().collect::<Vec<_>>(), before);
+    }
+
+    #[test]
+    fn phrase_final_never_requeues_its_returned_observer() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, _commit_rx) = mpsc::channel(4);
+        let mut state = state("phrase-return", 2.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        let owner = cloud_owner(&mut state, &tx, 1, 0.0, 1.0);
+        state.commit_cloud_close(&tx, silence_close(1.5));
+        let mut final_event = cloud_notice_final("zostaje", &[], 0, sample(1.5));
+        final_event.commit.as_mut().unwrap().phrase_fallback = true;
+        state.admit_cloud_final(&tx, final_event);
+        assert!(!cloud_open(&state, &owner));
+        assert!(state.cloud_uncommitted.is_empty());
+        state.commit_cloud_close(&tx, silence_close(2.0));
+        assert!(state.cloud_inflight[0].occurrences.is_empty());
+        state.release_cloud_live_behind(&tx, sample(5.0));
+        assert_eq!(state.cloud_live_timed_out, 0);
+    }
+
+    #[test]
+    fn lane_loss_returns_tracked_and_inflight_and_disarms_future_scheduling() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, _commit_rx) = mpsc::channel(4);
+        let mut state = state("cloud-loss-all", 4.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        let first = cloud_owner(&mut state, &tx, 1, 0.0, 1.0);
+        state.commit_cloud_close(&tx, silence_close(1.5));
+        let open = cloud_owner(&mut state, &tx, 2, 2.0, 3.0);
+        state.handle_cloud_notice(&tx, super::CloudWorkerNotice::LaneLost);
+        assert_eq!(state.cloud_live_lane_lost, 2);
+        assert!(state.cloud_commit_tx.is_none());
+        assert!(state.cloud_uncommitted.is_empty());
+        assert!(state.cloud_inflight.is_empty());
+        assert!(!cloud_open(&state, &first));
+        assert!(!cloud_open(&state, &open));
+        let next = cloud_owner(&mut state, &tx, 3, 3.0, 4.0);
+        assert!(!cloud_open(&state, &next));
+        state.handle_cloud_notice(&tx, super::CloudWorkerNotice::LaneLost);
+        assert_eq!(state.cloud_live_lane_lost, 2);
+    }
+
+    #[test]
+    fn split_waits_for_silence_then_commits_both_occurrences_at_decision_sample() {
+        use super::super::silero_fusion::{UtteranceCloseCause, UtteranceCloseReceipt};
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, mut commit_rx) = mpsc::channel(4);
+        let mut state = state("split-commit", 4.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        let first = cloud_owner(&mut state, &tx, 1, 0.0, 1.0);
+        state.commit_cloud_close(&tx, UtteranceCloseReceipt {
+            decision_sample: sample(1.0),
+            cause: UtteranceCloseCause::MaxUtteranceSplit,
+        });
+        assert!(commit_rx.try_recv().is_err());
+        assert!(state.cloud_inflight.is_empty());
+        let second = cloud_owner(&mut state, &tx, 2, 1.0, 2.0);
+        state.commit_cloud_close(&tx, silence_close(2.6));
+        assert_eq!(commit_rx.try_recv().unwrap(), sample(2.6));
+        assert_eq!(state.cloud_inflight[0].occurrences, vec![first.clone(), second.clone()]);
+        assert!(state.cloud_uncommitted.is_empty());
+        state.commit_cloud_close(&tx, silence_close(2.6));
+        assert!(commit_rx.try_recv().is_err());
+        state.admit_cloud_final(&tx, cloud_notice_final("", &[], 0, sample(2.6)));
+        assert!(!cloud_open(&state, &first));
+        assert!(!cloud_open(&state, &second));
+    }
+
+    #[test]
+    fn owner_extending_past_the_decision_stays_tracked_for_the_next_range() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, _commit_rx) = mpsc::channel(4);
+        let mut state = state("callback-past-decision", 3.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        let owner = cloud_owner(&mut state, &tx, 1, 0.0, 1.6);
+        state.commit_cloud_close(&tx, silence_close(1.5));
+        assert!(state.cloud_inflight[0].occurrences.is_empty());
+        assert!(state.cloud_uncommitted.contains(&owner));
+        state.admit_cloud_final(&tx, cloud_notice_final("", &[], 0, sample(1.5)));
+        assert!(cloud_open(&state, &owner));
+        state.commit_cloud_close(&tx, silence_close(2.5));
+        assert_eq!(state.cloud_inflight[0].occurrences, vec![owner.clone()]);
+        state.admit_cloud_final(&tx, cloud_notice_final("", &[], sample(1.5), sample(2.5)));
+        assert!(!cloud_open(&state, &owner));
+    }
+
+    #[test]
+    fn reminted_utterance_id_tracks_the_new_occurrence_until_its_next_final() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, _commit_rx) = mpsc::channel(4);
+        let mut state = state("remint", 4.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        let first = cloud_owner(&mut state, &tx, 7, 0.0, 1.0);
+        state.commit_cloud_close(&tx, silence_close(1.5));
+        state.admit_cloud_final(&tx, cloud_notice_final("", &[], 0, sample(1.5)));
+        let reminted = cloud_owner(&mut state, &tx, 7, 2.0, 3.0);
+        assert!(state.cloud_uncommitted.contains(&reminted));
+        state.commit_cloud_close(&tx, silence_close(3.5));
+        assert_eq!(state.cloud_inflight[0].occurrences, vec![reminted.clone()]);
+        state.admit_cloud_final(&tx, cloud_notice_final("", &[], sample(1.5), sample(3.5)));
+        assert!(!cloud_open(&state, &first));
+        assert!(!cloud_open(&state, &reminted));
+        assert!(state.acoustic_ledger.lock().unwrap().is_sealed(&reminted));
+    }
+
+    #[test]
+    fn session_end_returns_committed_and_open_uncommitted_observers_once() {
+        use super::super::silero_fusion::{UtteranceCloseCause, UtteranceCloseReceipt};
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (commit_tx, mut commit_rx) = mpsc::channel(4);
+        let mut state = state("cloud-stop-all", 4.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        let first = cloud_owner(&mut state, &tx, 1, 0.0, 1.0);
+        state.commit_cloud_close(&tx, silence_close(1.5));
+        let open = cloud_owner(&mut state, &tx, 2, 2.0, 4.0);
+        state.commit_cloud_close(&tx, UtteranceCloseReceipt {
+            decision_sample: sample(4.0),
+            cause: UtteranceCloseCause::EndOfCapture,
+        });
+        assert_eq!(commit_rx.try_recv().unwrap(), sample(1.5));
+        assert!(commit_rx.try_recv().is_err(), "stop uses the existing lane end");
+        drain(&mut rx);
+        state.return_outstanding_cloud(&tx);
+        assert!(state.cloud_inflight.is_empty());
+        assert!(state.cloud_uncommitted.is_empty());
+        for owner in [&first, &open] {
+            assert!(!cloud_open(&state, owner));
+            assert!(state.acoustic_ledger.lock().unwrap().is_sealed(owner));
+        }
+        let seals = drain(&mut rx).iter().filter(|event| matches!(event, EngineEvent::LedgerSeal { .. })).count();
+        assert_eq!(seals, 2);
+        state.return_outstanding_cloud(&tx);
+        assert!(drain(&mut rx).is_empty());
+    }
+
+    #[test]
+    fn fluent_next_utterance_does_not_expire_a_final_inside_capture_grace() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, _commit_rx) = mpsc::channel(4);
+        let mut state = state("fluent-cloud", 4.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        let first = cloud_owner(&mut state, &tx, 1, 0.0, 1.0);
+        state.commit_cloud_close(&tx, silence_close(1.5));
+        let next = cloud_owner(&mut state, &tx, 2, 1.7, 2.2);
+        state.close_admission_horizon(&tx, sample(1.7));
+        state.release_cloud_live_behind(&tx, sample(2.7));
+        assert!(cloud_open(&state, &first));
+        assert!(!state.acoustic_ledger.lock().unwrap().is_sealed(&first));
+        state.admit_cloud_final(&tx, cloud_notice_final(
+            "cloud", &[("cloud", sample(0.2), sample(0.6))], 0, sample(1.5),
+        ));
+        assert_eq!(state.cloud_live_refused_sealed, 0);
+        assert_eq!(state.cloud_live_admitted, 1);
+        assert!(state.acoustic_ledger.lock().unwrap().slots_of(&first).unwrap()
+            .iter().any(|slot| slot.producer == LedgerObservationProducer::CloudLive));
+        assert!(cloud_open(&state, &next));
+    }
+
+    #[test]
+    fn reverse_finals_release_only_their_matching_commit_and_unmatched_text_is_routed() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, _commit_rx) = mpsc::channel(4);
+        let mut state = state("reverse-cloud", 4.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        let first = cloud_owner(&mut state, &tx, 1, 0.0, 1.0);
+        state.commit_cloud_close(&tx, silence_close(1.5));
+        let second = cloud_owner(&mut state, &tx, 2, 2.0, 3.0);
+        state.commit_cloud_close(&tx, silence_close(3.5));
+        state.admit_cloud_final(&tx, cloud_notice_final("", &[], sample(1.5), sample(3.5)));
+        assert!(cloud_open(&state, &first));
+        assert!(!cloud_open(&state, &second));
+        assert_eq!(state.cloud_inflight[0].sample_end, sample(1.5));
+        state.admit_cloud_final(&tx, cloud_notice_final("", &[], 0, sample(1.5)));
+        assert!(!cloud_open(&state, &first));
+        assert!(state.cloud_inflight.is_empty());
+        state.admit_cloud_final(&tx, cloud_notice_final(
+            "kept", &[("kept", sample(0.2), sample(0.6))], 0, sample(1.5),
+        ));
+        assert_eq!(state.cloud_live_unmatched_final, 1);
+        assert!(state.acoustic_ledger.lock().unwrap().layer_trail().iter().any(|entry| {
+            matches!(&entry.decision, MutationReceipt::KeepVisibleUnanchored { label, .. } if label == "kept")
+        }));
+    }
+
+    #[test]
+    fn late_commit_end_selects_the_first_eligible_range() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, _commit_rx) = mpsc::channel(4);
+        let mut state = state("late-commit-end", 4.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        let first = cloud_owner(&mut state, &tx, 1, 0.0, 1.0);
+        state.commit_cloud_close(&tx, silence_close(1.5));
+        let second = cloud_owner(&mut state, &tx, 2, 2.0, 3.0);
+        state.commit_cloud_close(&tx, silence_close(3.5));
+        state.admit_cloud_final(&tx, cloud_notice_final("", &[], 0, sample(1.8)));
+        assert!(!cloud_open(&state, &first));
+        assert!(cloud_open(&state, &second));
+    }
+
+    #[test]
+    fn cloud_return_waits_for_whisper_on_the_same_frontier() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, _commit_rx) = mpsc::channel(4);
+        let mut state = state("cloud-and-whisper", 2.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        let owner = cloud_owner(&mut state, &tx, 1, 0.0, 1.0);
+        state.acoustic_ledger.lock().unwrap()
+            .schedule_observer(owner.clone(), LedgerObservationProducer::Whisper);
+        state.commit_cloud_close(&tx, silence_close(1.5));
+        state.admit_cloud_final(&tx, cloud_notice_final("", &[], 0, sample(1.5)));
+        assert!(!cloud_open(&state, &owner));
+        assert!(!state.acoustic_ledger.lock().unwrap().is_sealed(&owner));
+        state.finish_whisper_frontier(&tx, &owner);
+        assert!(state.acoustic_ledger.lock().unwrap().is_sealed(&owner));
+    }
+
+    #[test]
+    fn split_only_monologue_records_the_longest_uncommitted_capture_span() {
+        use super::super::silero_fusion::{UtteranceCloseCause, UtteranceCloseReceipt};
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, mut commit_rx) = mpsc::channel(4);
+        let mut state = state("long-monologue", 40.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        for second in [12.0, 24.0, 36.0, 40.0] {
+            state.observe_cloud_capture_head(sample(second));
+            state.commit_cloud_close(&tx, UtteranceCloseReceipt {
+                decision_sample: sample(second),
+                cause: UtteranceCloseCause::MaxUtteranceSplit,
+            });
+        }
+        assert!(commit_rx.try_recv().is_err());
+        assert_eq!(state.cloud_uncommitted_span_ms, 40_000);
+        state.commit_cloud_close(&tx, silence_close(40.0));
+        state.observe_cloud_capture_head(sample(42.0));
+        assert_eq!(state.cloud_uncommitted_span_ms, 40_000);
+    }
+
     #[test]
     fn cloud_commit_does_not_mint_or_resize_an_occurrence() {
         let (tx, _rx) = mpsc::unbounded_channel();
@@ -14338,7 +14705,8 @@ mod rc_w2_test_rehab {
             .qualified_occurrences()
             .cloned()
             .collect::<Vec<_>>();
-        state.commit_cloud_occurrence(&tx, 1, sample(1.6), &occurrence);
+        state.track_cloud_occurrence(&occurrence);
+        state.commit_cloud_close(&tx, silence_close(1.6));
         let after = state
             .acoustic_ledger
             .lock()
@@ -14371,7 +14739,8 @@ mod rc_w2_test_rehab {
             .admit(&observation, "zostaje");
         let before = state.acoustic_ledger.lock().unwrap().layer_trail().len();
         let text_before = document(&state);
-        state.commit_cloud_occurrence(&tx, 1, sample(1.6), &occurrence);
+        state.track_cloud_occurrence(&occurrence);
+        state.commit_cloud_close(&tx, silence_close(1.6));
         assert!(state.cloud_inflight.is_empty());
         assert_eq!(
             state.acoustic_ledger.lock().unwrap().layer_trail().len(),
@@ -14389,7 +14758,8 @@ mod rc_w2_test_rehab {
         let mut state = state("empty-final", 2.0);
         state.cloud_commit_tx = Some(commit_tx);
         let occurrence = qualify(&mut state, 0.0, 1.0);
-        state.commit_cloud_occurrence(&tx, 7, sample(1.5), &occurrence);
+        state.track_cloud_occurrence(&occurrence);
+        state.commit_cloud_close(&tx, silence_close(1.5));
         state.admit_cloud_final(
             &tx,
             cloud_notice_final("", &[], sample(0.0) , sample(1.5)),
@@ -14445,7 +14815,7 @@ mod rc_w2_test_rehab {
     }
 
     #[test]
-    fn stalled_cloud_final_seals_when_the_admission_horizon_passes_the_commit() {
+    fn stalled_cloud_final_seals_only_after_capture_clock_grace() {
         let (tx, _rx) = mpsc::unbounded_channel();
         let mut state = state("cloud-stall", 2.0);
         let occurrence = qualify(&mut state, 0.0, 1.0);
@@ -14474,7 +14844,11 @@ mod rc_w2_test_rehab {
         });
         state.close_admission_horizon(&tx, commit_end);
         assert!(!state.acoustic_ledger.lock().unwrap().is_sealed(&occurrence));
-        state.close_admission_horizon(&tx, commit_end + 1);
+        state.close_admission_horizon(&tx, commit_end + sample(0.2));
+        assert_eq!(state.cloud_live_timed_out, 0);
+        state.release_cloud_live_behind(&tx, commit_end + sample(3.0) - 1);
+        assert_eq!(state.cloud_live_timed_out, 0);
+        state.release_cloud_live_behind(&tx, commit_end + sample(3.0));
         assert_eq!(state.cloud_live_timed_out, 1);
         {
             let ledger = state.acoustic_ledger.lock().unwrap();
