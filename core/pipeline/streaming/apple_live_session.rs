@@ -12766,11 +12766,11 @@ mod live_refinement_admission_tests {
         );
     }
 
-    /// An early L1 result is evidence about a PCM window, not a license to
-    /// mint an occurrence whose end still moves with the speaker. Once the
-    /// physical speech closes, the same result must bind to that final range.
+    /// An early L1 result may label an already immutable PCM subspan or wait
+    /// for the speech close. Either way its one word must retain one physical
+    /// owner: a growing Silero end cannot remint or replay the same samples.
     #[test]
-    fn open_l1_result_binds_once_to_the_closed_pcm_occurrence() {
+    fn open_l1_result_keeps_one_pcm_owner_through_speech_close() {
         use super::super::silero_fusion::SileroIngress;
         use crate::audio::chunker::{VadBoundaryEvidence, VadBoundaryKind};
         use crate::stt::tail_provider::{
@@ -12795,15 +12795,10 @@ mod live_refinement_admission_tests {
         let request = requests
             .try_recv()
             .expect("open speech must reach L1 before the final Silero edge");
-        assert!(
-            request.member_occurrences.is_empty(),
-            "the still-changing physical end is not an occurrence identity"
-        );
         let window = &request.provider_request.identity.range;
         assert_eq!((&*window.session, window.capture_epoch), ("live-admission", 7));
         assert!(window.sample_start <= 500 && window.sample_end >= 1_000);
         request.provider_request.validate_pcm(&request.audio).unwrap();
-        assert_eq!(state.acoustic_ledger.lock().unwrap().occurrences().count(), 0);
 
         let mut completion = finish(&request);
         completion.payload = Some(TailProviderPayload {
@@ -12833,18 +12828,26 @@ mod live_refinement_admission_tests {
             },
         });
         state.complete_whisper_window(&events, completion, 5.0);
-        assert_eq!(
-            state.acoustic_ledger.lock().unwrap().occurrences().count(),
-            0,
-            "a decoded open window must not freeze a provisional speech end"
-        );
-        assert!(
-            std::iter::from_fn(|| receiver.try_recv().ok()).all(|event| !matches!(
-                event,
-                EngineEvent::LedgerMutation { .. } | EngineEvent::LedgerSeal { .. }
-            )),
-            "open L1 evidence is staged, never committed directly to the Bus"
-        );
+        let early = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
+        let early_grants = early
+            .iter()
+            .filter_map(|event| match event {
+                EngineEvent::LedgerMutation {
+                    observation,
+                    receipt,
+                    label,
+                } if observation.producer == LedgerObservationProducer::Whisper
+                    && receipt.grants_mutation()
+                    && label == "Iwo" => Some(observation.occurrence.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(early_grants.len() <= 1, "one source word has one early owner");
+        for owner in &early_grants {
+            assert_eq!((&*owner.session, owner.capture_epoch), ("live-admission", 7));
+            assert!(owner.sample_start <= 500 && owner.sample_end >= 1_000);
+            assert!(owner.sample_end <= 5_000, "an open label needs fixed observed PCM");
+        }
 
         let fusion = state.fusion.as_mut().unwrap();
         fusion.note_observed_pcm(1_000, 6_000);
@@ -12859,29 +12862,48 @@ mod live_refinement_admission_tests {
         fusion.ledger_mut().close_open(6_000);
         assert!(seal_sliced_by_silero(&mut state, &events, &[]));
 
-        let occurrence = OccurrenceIdentity::new("live-admission", 7, 0, 6_000);
+        let late = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
+        let grants = early
+            .iter()
+            .chain(late.iter())
+            .filter_map(|event| match event {
+                EngineEvent::LedgerMutation {
+                    observation,
+                    receipt,
+                    label,
+                } if observation.producer == LedgerObservationProducer::Whisper
+                    && receipt.grants_mutation()
+                    && label == "Iwo" => Some(observation.occurrence.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(grants.len(), 1, "the returned word must enter the ledger once");
+        let owner = &grants[0];
+        assert_eq!((&*owner.session, owner.capture_epoch), ("live-admission", 7));
+        assert!(owner.sample_start <= 500 && owner.sample_end >= 1_000);
+        assert!(owner.sample_end <= 6_000);
         let ledger = state.acoustic_ledger.lock().unwrap();
-        assert_eq!(ledger.occurrences().count(), 1);
-        assert_eq!(ledger.text_of(&occurrence), Some("Iwo"));
-        drop(ledger);
-        let emitted = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
+        let mut occurrences = ledger.occurrences().cloned().collect::<Vec<_>>();
+        occurrences.sort_by_key(|identity| (identity.sample_start, identity.sample_end));
+        assert!(occurrences.contains(owner), "the label owner cannot be reminted away");
+        assert_eq!(ledger.text_of(owner), Some("Iwo"));
         assert_eq!(
-            emitted
+            occurrences
                 .iter()
-                .filter(|event| matches!(
-                    event,
-                    EngineEvent::LedgerMutation {
-                        observation,
-                        receipt: MutationReceipt::Insert { .. },
-                        label,
-                    } if observation.producer == LedgerObservationProducer::Whisper
-                        && observation.occurrence == occurrence
-                        && label == "Iwo"
-                ))
+                .filter(|identity| ledger.text_of(identity) == Some("Iwo"))
                 .count(),
             1,
-            "the early L1 label must enter the document through the final occurrence receipt"
+            "overlapping L1 context must not duplicate the spoken word"
         );
+        for pair in occurrences.windows(2) {
+            assert!(
+                pair[0].sample_end <= pair[1].sample_start,
+                "speech growth must not remint overlapping PCM ownership"
+            );
+        }
+        for early_owner in &early_grants {
+            assert!(occurrences.contains(early_owner));
+        }
     }
 
     #[test]
