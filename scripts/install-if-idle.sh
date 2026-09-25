@@ -67,7 +67,7 @@ try:
     except OSError as error:
         if error.errno in (errno.EACCES, errno.EAGAIN):
             print(
-                f"install-if-idle: refuse — agent turn lock held by {lock_holders(lease_path)}",
+                f"install-if-idle: refuse — an agent turn is in flight (lock held by {lock_holders(lease_path)})",
                 file=sys.stderr,
             )
             raise SystemExit(2)
@@ -88,7 +88,7 @@ try:
         if error.errno not in (errno.EACCES, errno.EAGAIN):
             raise
         print(
-            f"install-if-idle: no live take, no agent turn; runtime lock held by {lock_holders(interlock_path)} — "
+            f"install-if-idle: no live take, no agent turn; app is running (runtime lock held by {lock_holders(interlock_path)}) — "
             "installing over it (restart required to pick up the new build)"
         )
     try:

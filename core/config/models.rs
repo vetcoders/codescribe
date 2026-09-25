@@ -361,12 +361,12 @@ impl ModelManager {
         Ok(Self { models_dir })
     }
 
-    /// Locate the models directory, creating the user-level fallback if needed.
+    /// Locate the models directory. Resolution is read-only: nothing is created.
     ///
     /// Order: `CODESCRIBE_MODELS_DIR` override, bundled `Contents/Resources/models`,
     /// the development tree two levels above the executable, a repo-root-relative
-    /// `../../models`, and finally `~/.codescribe/models` (created on demand, so
-    /// this tier always succeeds).
+    /// `../../models`, and finally `~/.codescribe/models`, which is returned even
+    /// when it does not exist; callers treat a missing directory as no models.
     fn resolve_models_dir() -> Result<PathBuf> {
         // Environment override
         if let Ok(path) = std::env::var("CODESCRIBE_MODELS_DIR") {

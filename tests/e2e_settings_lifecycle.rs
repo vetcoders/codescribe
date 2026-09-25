@@ -11,8 +11,8 @@
 
 use codescribe::config::{Config, ShortcutBinding, UserSettings, WorkMode};
 use serial_test::serial;
-use std::fs;
 use std::ffi::OsString;
+use std::fs;
 use tempfile::TempDir;
 
 struct TestEnv {
@@ -22,7 +22,9 @@ struct TestEnv {
 
 impl std::ops::Deref for TestEnv {
     type Target = TempDir;
-    fn deref(&self) -> &Self::Target { &self.temp }
+    fn deref(&self) -> &Self::Target {
+        &self.temp
+    }
 }
 
 impl Drop for TestEnv {
@@ -41,8 +43,22 @@ impl Drop for TestEnv {
 /// Setup isolated config environment (same pattern as e2e_settings_commands)
 fn setup_test_env() -> TestEnv {
     let tmp = TempDir::new().expect("tempdir");
-    let keys = ["CODESCRIBE_DATA_DIR", "CODESCRIBE_ENV_PATH", "HOME", "WHISPER_LANGUAGE", "AI_FORMATTING_ENABLED", "HOLD_EXCLUSIVE", "CODESCRIBE_TYPING_CPS", "USE_LOCAL_STT", "HOLD_MODS", "TOGGLE_TRIGGER"];
-    let previous = keys.into_iter().map(|key| (key, std::env::var_os(key))).collect();
+    let keys = [
+        "CODESCRIBE_DATA_DIR",
+        "CODESCRIBE_ENV_PATH",
+        "HOME",
+        "WHISPER_LANGUAGE",
+        "AI_FORMATTING_ENABLED",
+        "HOLD_EXCLUSIVE",
+        "CODESCRIBE_TYPING_CPS",
+        "USE_LOCAL_STT",
+        "HOLD_MODS",
+        "TOGGLE_TRIGGER",
+    ];
+    let previous = keys
+        .into_iter()
+        .map(|key| (key, std::env::var_os(key)))
+        .collect();
     // SAFETY: Tests run serially, single-threaded context
     unsafe {
         std::env::set_var("CODESCRIBE_DATA_DIR", tmp.path());
@@ -54,7 +70,10 @@ fn setup_test_env() -> TestEnv {
         std::env::remove_var("HOLD_MODS");
         std::env::remove_var("TOGGLE_TRIGGER");
     }
-    TestEnv { temp: tmp, previous }
+    TestEnv {
+        temp: tmp,
+        previous,
+    }
 }
 
 fn set_mode_binding(mode: WorkMode, binding: ShortcutBinding) {
@@ -205,7 +224,11 @@ fn test_agent_permissions_roundtrip_and_remember_allow() {
     // remember_allow writes settings.json with the same identity the gate checks.
     AgentPermissions::remember_allow("Desktop-Commander", "edit_block").expect("remember");
     let grants_path = codescribe_core::agent::tool_grants::default_tool_grants_path().unwrap();
-    assert_eq!(grants_path, _tmp.path().join("tool_grants.json"));
+    // Config::config_dir() canonicalizes the data dir (/var -> /private/var on macOS).
+    assert_eq!(
+        grants_path,
+        _tmp.path().canonicalize().unwrap().join("tool_grants.json")
+    );
     assert!(grants_path.exists());
     let after = UserSettings::load()
         .agent_permissions
