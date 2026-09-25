@@ -10265,6 +10265,69 @@ mod rc_w2_acoustic_tests {
         );
     }
 
+    /// RED on the current terminal gap path: an eight-second, Silero-proven
+    /// speech gap must use the same bounded 4 s / 1 s L1 cadence as live
+    /// refinement, not one whole-gap decode after Stop.
+    #[test]
+    fn terminal_gap_recovery_uses_bounded_overlapping_l1_windows() {
+        let mut state = state_for("terminal-long-gap", 10.0);
+        let mut ingress = SileroIngress::new(RATE, state.session_id.clone(), 0);
+        ingress.note_observed_pcm(at(10.0), at(10.0));
+        ingress.observe_boundaries(&[
+            crossing(VadBoundaryKind::SpeechStart, at(1.0)),
+            crossing(VadBoundaryKind::SpeechEnd, at(9.0)),
+        ]);
+        ingress.observe(Some((0, at(10.0))), true, at(10.0));
+        state.fusion = Some(ingress);
+        let speech_ranges = coverage_speech_evidence(&state).ranges().to_vec();
+        assert_eq!(speech_ranges.len(), 1);
+        let speech = &speech_ranges[0];
+        assert!(speech.sample_end - speech.sample_start > at(4.0));
+
+        let calls = Arc::new(Mutex::new(Vec::<TailSampleRange>::new()));
+        let observed = Arc::clone(&calls);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let execution = LocalExecutionOwner::default();
+        let _ = repair_terminal_seal_coverage_with(
+            &mut state,
+            &tx,
+            Some("pl"),
+            &execution,
+            move |request, pcm, control| {
+                control.check()?;
+                request.validate_pcm(pcm)?;
+                observed
+                    .lock()
+                    .unwrap()
+                    .push(request.identity.range.clone());
+                Err(anyhow::anyhow!(
+                    "intentional provider refusal after request capture"
+                ))
+            },
+        );
+
+        let calls = calls.lock().unwrap();
+        assert!(
+            calls.len() >= 2,
+            "an eight-second speech gap needs several L1 windows: {calls:?}"
+        );
+        assert_eq!(calls[0].sample_start, speech.sample_start);
+        assert_eq!(calls.last().unwrap().sample_end, speech.sample_end);
+        for call in calls.iter() {
+            assert!(
+                call.sample_end - call.sample_start <= at(4.0),
+                "automatic Whisper request exceeds the 4 s Relay window: {call:?}"
+            );
+        }
+        for pair in calls.windows(2) {
+            let overlap = pair[0].sample_end.saturating_sub(pair[1].sample_start);
+            assert!(
+                overlap >= at(0.8) && overlap <= at(1.2),
+                "adjacent L1 requests need about one second of shared speech PCM: {pair:?}"
+            );
+        }
+    }
+
     #[test]
     fn owned_terminal_repair_still_admits_both_exact_gaps() {
         let mut state = two_bursts("owned-repair");
@@ -16144,12 +16207,108 @@ mod relay_l1_overlap_admission_tests {
         }
         assert_eq!(mutation_count(&events), 0);
         assert!(unanchored_label(&events, "krawedz"));
+        assert!(
+            unanchored_label(&events, "trzy"),
+            "later windows still return visible pins before terminal observer closure"
+        );
         assert!(named_refusal(&events, "intersecting_pin_not_exclusive"));
         assert_eq!(
             held_text(&lane, &occurrence).as_deref(),
             Some("cale zdanie")
         );
         assert_conserved(&lane, Some("intersecting_pin_not_exclusive"));
+        assert_eq!(
+            lane.state.tail_patch_awaiting_completion(),
+            0,
+            "every launched window returned before terminal drain"
+        );
+        // The production Stop path no longer equates zero jobs with a closed
+        // observer: it settles any still-open Whisper frontier before seal.
+        lane.state.close_admission_horizon(&lane.tx, u64::MAX);
+        lane.state.seal_remaining_at_session_end(&lane.tx);
+        let terminal = drain(&mut lane.rx);
+        assert_eq!(
+            terminal
+                .iter()
+                .filter(|event| matches!(event, EngineEvent::LedgerSeal { .. }))
+                .count(),
+            1,
+            "a straddle refuses Whisper text but must still allow one ledger seal"
+        );
+        let whisper_still_open = lane
+            .state
+            .acoustic_ledger
+            .lock()
+            .expect("ledger")
+            .frontier_of(&occurrence)
+            .is_some_and(|frontier| {
+                frontier
+                    .open_producers()
+                    .contains(&ObservationProducer::Whisper)
+            });
+        assert!(
+            !whisper_still_open,
+            "a read-only straddling pin must not strand Whisper's observer after all windows return"
+        );
+    }
+
+    /// All provider jobs can return without enough exclusive text to relabel
+    /// the occurrence. This is a normal no-label EOF, not a stop deadline.
+    #[test]
+    fn completed_windows_with_incomplete_slices_return_the_whisper_frontier() {
+        let mut lane = open("relay-complete-incomplete");
+        let (occurrence, requests) = launch_long(&mut lane, "cale zdanie");
+        let session = "relay-complete-incomplete";
+        for (request, segments) in requests.iter().zip([
+            vec![segment(session, "raz", 8_000, 40_000)],
+            Vec::new(),
+            vec![segment(session, "trzy", 100_000, 150_000)],
+        ]) {
+            lane.state
+                .complete_whisper_window(&lane.tx, completion(request, segments), 8.0);
+        }
+        let mut events = drain(&mut lane.rx);
+        assert_eq!(lane.state.tail_patch_awaiting_completion(), 0);
+        assert!(
+            lane.state
+                .acoustic_ledger
+                .lock()
+                .expect("ledger")
+                .frontier_of(&occurrence)
+                .is_some_and(|frontier| frontier
+                    .open_producers()
+                    .contains(&ObservationProducer::Whisper))
+        );
+
+        lane.state.close_admission_horizon(&lane.tx, u64::MAX);
+        lane.state.seal_remaining_at_session_end(&lane.tx);
+        events.extend(drain(&mut lane.rx));
+        assert_eq!(
+            mutation_count(&events),
+            0,
+            "partial slices cannot rewrite Apple"
+        );
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("cale zdanie")
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, EngineEvent::LedgerSeal { .. }))
+                .count(),
+            1,
+            "completed jobs must permit one terminal ledger seal"
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            EngineEvent::Warning { code, .. } if code == RefinementFailure::NoLabel.code()
+        )));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            EngineEvent::Warning { code, .. } if code == RefinementFailure::StopDeadline.code()
+        )));
+        assert_conserved(&lane, Some("incomplete_exclusive_coverage"));
     }
 
     /// (iii) Two of three windows return, then stop drains the accumulator.
