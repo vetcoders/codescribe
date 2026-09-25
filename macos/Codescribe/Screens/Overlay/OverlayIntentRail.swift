@@ -8,9 +8,8 @@ struct OverlayDockLayout: Equatable {
 }
 
 enum OverlayChromeVisibility {
-  /// Chrome stays ephemeral (Founder cut): pointer, keyboard focus or VoiceOver
-  /// reveal it, nothing else. `retainedWork` is the one standing exception and
-  /// it defaults off, so every existing caller keeps the ephemeral contract.
+  /// Hover, focus and VoiceOver reveal chrome; an explicit Actions pin or
+  /// retained work keeps it reachable after the pointer leaves.
   ///
   /// Unacknowledged superseded work has to be reachable without the user first
   /// guessing to hover a panel that is currently showing a NEW take. Revealing
@@ -20,10 +19,43 @@ enum OverlayChromeVisibility {
     pointerInside: Bool,
     keyboardFocus: Bool,
     voiceOver: Bool,
-    retainedWork: Bool = false
+    retainedWork: Bool = false,
+    pinned: Bool = false
   ) -> Bool {
-    pointerInside || keyboardFocus || voiceOver || retainedWork
+    pointerInside || keyboardFocus || voiceOver || retainedWork || pinned
   }
+}
+
+/// View-owned chrome state. Neither pinning nor dismissing changes the document.
+struct OverlayActionsPresentation {
+  var pointerInside = false
+  var keyboardFocus = false
+  private(set) var isPinned = false
+
+  mutating func togglePin() { isPinned.toggle() }
+
+  mutating func dismiss() {
+    isPinned = false
+    keyboardFocus = false
+  }
+
+  mutating func reset() { self = Self() }
+
+  func isVisible(voiceOver: Bool = false, retainedWork: Bool = false) -> Bool {
+    OverlayChromeVisibility.actionsVisible(
+      pointerInside: pointerInside, keyboardFocus: keyboardFocus, voiceOver: voiceOver,
+      retainedWork: retainedWork, pinned: isPinned)
+  }
+}
+
+/// Symbols shared by the rendered controls and their collision census.
+enum OverlayControlSymbols {
+  static let history = "clock.arrow.circlepath"
+  static let previousTake = "tray.and.arrow.up"
+  static let actions = "ellipsis"
+  static let autoPasteOff = "doc.on.clipboard"
+  static let autoPasteOn = "doc.on.clipboard.fill"
+  static let placement = "location.viewfinder"
 }
 
 enum OverlayDockVisuals {
@@ -39,6 +71,7 @@ enum OverlayDockVisuals {
 struct OverlayIntentRail: View {
   @FocusState private var focusedControl: String?
   let onFocusChange: (Bool) -> Void
+  let onDismiss: () -> Void
   let phase: String
   let intents: [OverlayIntent]
   let palette: OverlayAppearancePalette
@@ -71,9 +104,11 @@ struct OverlayIntentRail: View {
     onRestore: @escaping (UInt64) -> Void = { _ in },
     onHistoryRequest: @escaping () -> Void = {},
     onFormatLevel: @escaping (FormattingPolicyOption) -> Void = { _ in },
-    onFocusChange: @escaping (Bool) -> Void = { _ in }
+    onFocusChange: @escaping (Bool) -> Void = { _ in },
+    onDismiss: @escaping () -> Void = {}
   ) {
     self.onFocusChange = onFocusChange
+    self.onDismiss = onDismiss
     self.phase = phase
     self.intents = intents
     self.palette = palette
@@ -102,6 +137,11 @@ struct OverlayIntentRail: View {
       HStack(spacing: 4) {
         if historyAvailable {
           historyMenu
+            .focused($focusedControl, equals: "history")
+        }
+        if intents.contains(.recoverSuperseded) || intents.contains(.discardSuperseded) {
+          previousTakeMenu
+            .focused($focusedControl, equals: "previous-take")
         }
         ForEach(intents, id: \.self) { intent in
           if intent == .retranscribe {
@@ -109,6 +149,7 @@ struct OverlayIntentRail: View {
               .focused($focusedControl, equals: intent.rawValue)
           } else if intent == .format {
             formatLevelMenu
+              .focused($focusedControl, equals: "format-level")
             OverlayDockButton(
               title: intent.accessibilityLabel,
               systemImage: intent.systemImage,
@@ -119,7 +160,7 @@ struct OverlayIntentRail: View {
               dispatch(intent)
             }
             .focused($focusedControl, equals: intent.rawValue)
-          } else if intent != .close {
+          } else if intent != .close && intent != .recoverSuperseded && intent != .discardSuperseded {
             OverlayDockButton(
               title: intent.accessibilityLabel,
               systemImage: intent.systemImage,
@@ -141,6 +182,11 @@ struct OverlayIntentRail: View {
     .fixedSize(horizontal: false, vertical: true)
     .frame(maxWidth: .infinity, alignment: .center)
     .onChange(of: focusedControl) { _, control in onFocusChange(control != nil) }
+    .onExitCommand {
+      focusedControl = nil
+      onFocusChange(false)
+      onDismiss()
+    }
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Overlay actions")
     .accessibilityValue(Self.accessibilityValue(for: phase))
@@ -206,6 +252,36 @@ struct OverlayIntentRail: View {
     .accessibilityIdentifier("overlay-intent-\(OverlayIntent.retranscribe.rawValue)")
   }
 
+  private var previousTakeMenu: some View {
+    Menu {
+      if intents.contains(.recoverSuperseded) {
+        Button(OverlayIntent.recoverSuperseded.accessibilityLabel) {
+          dispatch(.recoverSuperseded)
+        }
+        .help(OverlayIntent.recoverSuperseded.accessibilityHint)
+        .accessibilityIdentifier("overlay-intent-recover-superseded")
+      }
+      if intents.contains(.discardSuperseded) {
+        Button(OverlayIntent.discardSuperseded.accessibilityLabel, role: .destructive) {
+          dispatch(.discardSuperseded)
+        }
+        .help(OverlayIntent.discardSuperseded.accessibilityHint)
+        .accessibilityIdentifier("overlay-intent-discard-superseded")
+      }
+    } label: {
+      Label("Previous take", systemImage: OverlayControlSymbols.previousTake)
+        .labelStyle(.iconOnly)
+        .frame(width: 32, height: 28)
+    }
+    .menuStyle(.button)
+    .buttonStyle(.plain)
+    .menuIndicator(.hidden)
+    .help("Previous take: copy to clipboard or discard retained work")
+    .accessibilityLabel("Previous take")
+    .accessibilityHint("Copy or discard the retained previous take")
+    .accessibilityIdentifier("overlay-previous-take-menu")
+  }
+
   private var historyMenu: some View {
     Menu {
       Button("Refresh transcript history") { onHistoryRequest() }
@@ -221,14 +297,14 @@ struct OverlayIntentRail: View {
         .accessibilityIdentifier("overlay-history-revision-\(entry.revision)")
       }
     } label: {
-      Label("Transcript history", systemImage: "clock.arrow.circlepath")
+      Label("Transcript history", systemImage: OverlayControlSymbols.history)
         .labelStyle(.iconOnly)
         .frame(width: 32, height: 28)
     }
     .menuStyle(.button)
     .buttonStyle(.plain)
     .menuIndicator(.hidden)
-    .help("Restore an earlier transcript as a new revision")
+    .help("Restore an earlier revision of this transcript")
     .accessibilityLabel("Transcript version history")
     .accessibilityIdentifier("overlay-history-menu")
   }
@@ -399,8 +475,8 @@ extension OverlayIntent {
     case .undoRetranscribe: "Undo retranscribe"
     case .format: "Format transcript"
     case .sendToAgent: "Send transcript to Agent"
-    case .recoverSuperseded: "Recover previous transcript"
-    case .discardSuperseded: "Discard previous transcript"
+    case .recoverSuperseded: "Copy previous take to clipboard"
+    case .discardSuperseded: "Discard previous take"
     case .close: "Close overlay"
     }
   }
@@ -434,7 +510,7 @@ extension OverlayIntent {
     case .undoRetranscribe: "arrow.uturn.backward"
     case .format: "textformat"
     case .sendToAgent: "paperplane"
-    case .recoverSuperseded: "clock.arrow.circlepath"
+    case .recoverSuperseded: "arrow.up.doc"
     case .discardSuperseded: "trash"
     case .close: "circle.fill"
     }

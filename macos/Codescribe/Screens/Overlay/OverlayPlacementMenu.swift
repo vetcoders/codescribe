@@ -56,7 +56,7 @@ struct OverlayPlacementMenu: View {
       .accessibilityIdentifier("overlay-keep-visible-between-takes")
     } label: {
       ZStack(alignment: .bottomTrailing) {
-        Image(systemName: "location.viewfinder")
+        Image(systemName: OverlayControlSymbols.placement)
         if state.keepVisibleBetweenTakes {
           Image(systemName: "pin.fill")
             .font(.system(size: 7, weight: .bold))

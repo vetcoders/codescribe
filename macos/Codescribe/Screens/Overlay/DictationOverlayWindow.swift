@@ -16,9 +16,11 @@ import SwiftUI
 /// previous app the moment editing ends.
 final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   var onUserMove: (() -> Void)?
+  var onUserDragEnded: ((NSPoint) -> Void)?
   var onUserResize: (() -> Void)?
   fileprivate var presence: OverlayPresence?
   private var dragStart: (mouse: NSPoint, frame: NSRect)?
+  private var dragMoved = false
   private var expandedSize: NSSize?
   var sizeForPersistence: NSSize { expandedSize ?? frame.size }
 
@@ -98,21 +100,29 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// container's own resize band continue through ordinary AppKit dispatch
   /// untouched.
   override func sendEvent(_ event: NSEvent) {
-    if event.type == .leftMouseDown { dragStart = nil }
+    if event.type == .leftMouseDown {
+      dragStart = nil
+      dragMoved = false
+    }
     switch event.type {
     case .leftMouseDown where isWindowDragHit(at: event.locationInWindow):
       dragStart = (screenPoint(for: event), frame)
     case .leftMouseDragged where dragStart != nil:
       guard let dragStart else { return }
       let current = screenPoint(for: event)
+      let previousOrigin = frame.origin
       setFrameOrigin(
         NSPoint(
           x: dragStart.frame.minX + current.x - dragStart.mouse.x,
           y: dragStart.frame.minY + current.y - dragStart.mouse.y
         )
       )
+      dragMoved = dragMoved || frame.origin != previousOrigin
     case .leftMouseUp where dragStart != nil:
       dragStart = nil
+      let moved = dragMoved
+      dragMoved = false
+      if moved { onUserDragEnded?(frame.origin) }
     default:
       super.sendEvent(event)
     }
@@ -284,6 +294,9 @@ enum DictationOverlayWindow {
     panel.onUserMove = { [weak state] in
       guard !OverlayController.isApplyingFrame else { return }
       state?.userDraggedOverlay()
+    }
+    panel.onUserDragEnded = { [weak state] origin in
+      state?.recordUserDrag(at: origin)
     }
     panel.onUserResize = { [weak state] in
       guard !OverlayController.isApplyingFrame else { return }

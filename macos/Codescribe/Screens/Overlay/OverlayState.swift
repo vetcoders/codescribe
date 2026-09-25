@@ -200,7 +200,7 @@ enum OverlayRetranscribePass: String, CaseIterable, Identifiable {
   }
 }
 
-enum OverlayIntent: String, Equatable, Hashable {
+enum OverlayIntent: String, Equatable, Hashable, CaseIterable {
   case finish
   case commitRevision = "commit-revision"
   case discardRevision = "discard-revision"
@@ -386,15 +386,15 @@ final class OverlayState {
     didSet {
       guard placementAnchor != oldValue else { return }
       OverlayPlacement.anchor = placementAnchor
-      if freeMotion { freeMotion = false } else { onPlacementChanged?() }
+      freeMotion = false
+      onPlacementChanged?()
     }
   }
   /// Free motion: the panel keeps (and restores) wherever the user dragged it.
-  var freeMotion: Bool = OverlayPlacement.freeMotion {
+  private(set) var freeMotion: Bool = OverlayPlacement.freeMotion {
     didSet {
       guard freeMotion != oldValue else { return }
       OverlayPlacement.freeMotion = freeMotion
-      onPlacementChanged?()
     }
   }
   /// Wired by the orchestrator: re-derive the visible panel's origin now.
@@ -405,9 +405,8 @@ final class OverlayState {
   func selectPlacementAnchor(_ anchor: OverlayAnchor) {
     if placementAnchor != anchor {
       placementAnchor = anchor
-    } else if freeMotion {
-      freeMotion = false
     } else {
+      freeMotion = false
       onPlacementChanged?()
     }
   }
@@ -415,11 +414,16 @@ final class OverlayState {
   /// Free motion starts from the panel's current/restored origin; subsequent
   /// windowDidMove callbacks persist every user drag.
   func selectFreeMotion() {
-    if freeMotion {
-      onPlacementChanged?()
-    } else {
-      freeMotion = true
-    }
+    freeMotion = true
+    onPlacementChanged?()
+  }
+
+  /// The window already reached this point through a user drag. Persist it
+  /// before changing modes, without asking the orchestrator to place it again.
+  func recordUserDrag(at origin: NSPoint) {
+    OverlayPlacement.persistOrigin(origin)
+    freeMotion = true
+    userDraggedOverlay()
   }
 
   // MARK: Injected collaborators (all optional so #Preview renders standalone)
@@ -441,6 +445,7 @@ final class OverlayState {
   func toggleCollapsed() {
     isCollapsed.toggle()
     onCollapseChanged?(isCollapsed)
+    setExpandedByDefault(!isCollapsed)
   }
 
   func setExpandedByDefault(_ expanded: Bool) {
@@ -589,7 +594,7 @@ final class OverlayState {
   /// occurrence, a seal, a delivery acknowledgement or acoustic evidence. Rust
   /// owns all five, and a UI counter that started naming them would be exactly
   /// the forged transcript authority this overlay is forbidden to invent.
-  @ObservationIgnored private(set) var captureGeneration: UInt64 = 0
+  private(set) var captureGeneration: UInt64 = 0
   /// The ONE owner of superseded work, oldest first.
   ///
   /// Every entry is an identity-associated `OverlaySupersededTake` moved OUT of

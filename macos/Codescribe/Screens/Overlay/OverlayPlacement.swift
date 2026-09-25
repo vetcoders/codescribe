@@ -4,8 +4,7 @@ import AppKit
 //
 // Two modes, deliberately binary (no hidden third state):
 // - Anchored (default): the origin is ALWAYS derived from one of six screen
-//   anchors on every show(). A drag in this mode is ephemeral — the next show
-//   snaps back to the anchor. Predictability over cleverness.
+//   anchors on every show(). Dropping a user drag selects Free motion.
 // - Free motion: the user's last dragged origin is persisted and restored
 //   (clamped to the visible frame); the anchor is ignored.
 //

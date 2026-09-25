@@ -292,8 +292,8 @@ final class OverlayIntentRailTests: XCTestCase {
         "Insert transcript",
         "Retranscribe recording",
         "Format transcript",
-        "Recover previous transcript",
-        "Discard previous transcript",
+        "Copy previous take to clipboard",
+        "Discard previous take",
         "Close overlay",
       ]
     )
@@ -362,7 +362,23 @@ final class OverlayIntentRailTests: XCTestCase {
   /// The rail's own dispatch route reaches the retention owner, and the
   /// retained bytes leave through the injected pasteboard rather than the
   /// reducer, a seal, a delivery or the canvas.
-  func testRailDispatchRecoversAndDiscardsThroughTheProductionRoute() {
+  func testPreviousTakeMenuDispatchesRecoveryAndDiscardThroughTheProductionRoute() throws {
+    let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Codescribe/Screens/Overlay/OverlayIntentRail.swift")
+    let source = try String(contentsOf: url, encoding: .utf8)
+    let menuStart = try XCTUnwrap(source.range(of: "private var previousTakeMenu:"))
+    let menuEnd = try XCTUnwrap(source.range(of: "private var historyMenu:"))
+    let menu = String(source[menuStart.lowerBound..<menuEnd.lowerBound])
+    XCTAssertTrue(menu.contains("Menu {"))
+    XCTAssertTrue(menu.contains("dispatch(.recoverSuperseded)"))
+    XCTAssertTrue(menu.contains("dispatch(.discardSuperseded)"))
+    XCTAssertTrue(menu.contains("role: .destructive"))
+    XCTAssertTrue(menu.contains("overlay-intent-recover-superseded"))
+    XCTAssertTrue(menu.contains("overlay-intent-discard-superseded"))
+    XCTAssertTrue(menu.contains("Label(\"Previous take\", systemImage: OverlayControlSymbols.previousTake)"))
+    XCTAssertTrue(source.contains("intent != .recoverSuperseded && intent != .discardSuperseded"))
+    XCTAssertTrue(source.contains("Restore an earlier revision of this transcript"))
     let recovered = stateWithOneRetainedEdit()
     let engine = OverlayIntentBoundaryEngine()
     recovered.engine = engine
@@ -390,7 +406,12 @@ final class OverlayIntentRailTests: XCTestCase {
     XCTAssertFalse(recovered.isEditingTranscript, "recovery takes no focus")
 
     let discarded = stateWithOneRetainedEdit()
-    discarded.relayIntent(.discardSuperseded)
+    let discardRail = OverlayIntentRail(
+      phase: discarded.statusText,
+      intents: OverlayIntentRail.projectedIntents(for: discarded),
+      palette: .dark,
+      onIntent: discarded.relayIntent)
+    discardRail.dispatch(.discardSuperseded)
     XCTAssertFalse(discarded.hasRecoverableSupersededWork)
 
     // A refused write keeps the item, so the rail keeps offering both choices.
@@ -402,6 +423,24 @@ final class OverlayIntentRailTests: XCTestCase {
     XCTAssertEqual(
       OverlayIntentRail.recoveryIntents(for: refused),
       [.recoverSuperseded, .discardSuperseded])
+  }
+
+  func testOverlayActionSymbolsHaveOneMeaningAcrossRailHeaderAndPlacement() {
+    // All cases deliberately over-approximate co-visibility, so adding an
+    // intent cannot silently evade the census. Close is a custom brand dot.
+    let symbols = OverlayIntent.allCases.filter { $0 != .close }.map(\.systemImage)
+      + [
+        OverlayControlSymbols.history, OverlayControlSymbols.previousTake,
+        OverlayControlSymbols.actions, OverlayControlSymbols.autoPasteOff,
+        OverlayControlSymbols.autoPasteOn, OverlayControlSymbols.placement,
+        "chevron.up", "chevron.down", "pin.fill",
+        "arrow.up.and.down.and.arrow.left.and.right",
+      ] + OverlayAnchor.allCases.map(\.systemImage)
+    let collisions = Dictionary(grouping: symbols, by: { $0 }).filter { $0.value.count > 1 }
+    XCTAssertTrue(collisions.isEmpty, "Duplicate overlay symbols: \(collisions.keys.sorted())")
+    for symbol in symbols {
+      XCTAssertNotNil(NSImage(systemSymbolName: symbol, accessibilityDescription: nil), symbol)
+    }
   }
 
   /// One formatted take with an uncommitted edit, superseded by a new capture.
