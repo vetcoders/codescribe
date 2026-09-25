@@ -875,9 +875,7 @@
             {
               "symbol": "decide_observation",
               "file": "core/pipeline/acoustic_ledger.rs",
-              "required_code": [
-                "if overlaps && !has_word_pins {"
-              ]
+              "required_code": ["if overlaps && !has_word_pins {"]
             },
             {
               "symbol": "qualify",
