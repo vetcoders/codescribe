@@ -457,7 +457,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
       .deletingLastPathComponent().appendingPathComponent("Codescribe/Screens/Overlay")
     let files = try FileManager.default.contentsOfDirectory(
-      at: directory, includingPropertiesForKeys: nil).filter { $0.pathExtension == "swift" }
+      at: directory, includingPropertiesForKeys: nil
+    ).filter { $0.pathExtension == "swift" }
     XCTAssertFalse(files.isEmpty)
     for file in files {
       let source = try String(contentsOf: file, encoding: .utf8)
