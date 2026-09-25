@@ -294,7 +294,8 @@ final class OverlayIntentRailTests: XCTestCase {
     rail.dispatch(.retranscribe)
     await fulfillment(of: [local], timeout: 1)
     XCTAssertEqual(engine.receivedTranscribePath, "hq:/tmp/overlay-intent-boundary.wav")
-    XCTAssertTrue(engine.formatLevelWrites.isEmpty, "retranscribe never writes the formatting level")
+    XCTAssertTrue(
+      engine.formatLevelWrites.isEmpty, "retranscribe never writes the formatting level")
   }
 
   func testEveryIntentHasVoiceOverCopyAndRailReportsProjectedPhase() {

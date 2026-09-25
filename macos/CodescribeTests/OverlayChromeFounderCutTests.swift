@@ -308,7 +308,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertFalse(source.contains("voiceOverEnabled"))
     XCTAssertTrue(tools.contains(".onExitCommand { actions.dismiss() }"))
     XCTAssertTrue(tools.contains("if collapsed { actions.reset() }"))
-    XCTAssertTrue(tools.contains(".onChange(of: state.captureGeneration) { _, _ in actions.reset() }"))
+    XCTAssertTrue(
+      tools.contains(".onChange(of: state.captureGeneration) { _, _ in actions.reset() }"))
     XCTAssertTrue(tools.contains(".task(id: actions.hideDeadline)"))
     XCTAssertTrue(tools.contains("guard !Task.isCancelled else { return }"))
   }
@@ -398,20 +399,30 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         .environment(\.accessibilityVoiceOverEnabled, true))
     host.frame = CGRect(x: 0, y: 0, width: 320, height: 280)
     settle(host)
-    XCTAssertFalse(accessibilityTree(host).contains {
-      $0.accessibilityIdentifier() == "overlay-intent-dock"
-    })
+    XCTAssertFalse(
+      accessibilityTree(host).contains {
+        $0.accessibilityIdentifier() == "overlay-intent-dock"
+      })
   }
 
   func testOpenRowKeepsEightToolsAndRecordingKeepsItsThreeTools() throws {
     let rows: [(String, [OverlayIntent], Bool, [String])] = [
-      ("formatted", [.recoverSuperseded, .discardSuperseded, .insertPaste, .copy,
-        .retranscribe, .format, .sendToAgent, .close], true,
-       ["overlay-history-menu", "overlay-previous-take-menu", "overlay-intent-insert-paste",
-        "overlay-intent-copy", "overlay-intent-retranscribe", "overlay-format-level-picker",
-        "overlay-intent-format", "overlay-intent-send-to-agent"]),
-      ("listening", [.recoverSuperseded, .discardSuperseded, .finish, .copy, .close], false,
-       ["overlay-previous-take-menu", "overlay-intent-finish", "overlay-intent-copy"]),
+      (
+        "formatted",
+        [
+          .recoverSuperseded, .discardSuperseded, .insertPaste, .copy,
+          .retranscribe, .format, .sendToAgent, .close,
+        ], true,
+        [
+          "overlay-history-menu", "overlay-previous-take-menu", "overlay-intent-insert-paste",
+          "overlay-intent-copy", "overlay-intent-retranscribe", "overlay-format-level-picker",
+          "overlay-intent-format", "overlay-intent-send-to-agent",
+        ]
+      ),
+      (
+        "listening", [.recoverSuperseded, .discardSuperseded, .finish, .copy, .close], false,
+        ["overlay-previous-take-menu", "overlay-intent-finish", "overlay-intent-copy"]
+      ),
     ]
     for (phase, intents, history, identifiers) in rows {
       let rail = OverlayIntentRail(
@@ -431,9 +442,10 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let state = OverlayState.previewFormatted()
     try withPanel(state: state) { _, root in
       func pressCap() throws {
-        let cap = try XCTUnwrap(accessibilityTree(root).first {
-          $0.accessibilityIdentifier() == "overlay-tools-handle"
-        })
+        let cap = try XCTUnwrap(
+          accessibilityTree(root).first {
+            $0.accessibilityIdentifier() == "overlay-tools-handle"
+          })
         XCTAssertTrue(cap.accessibilityPerformPress())
         settle(root)
       }
@@ -512,25 +524,31 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   func testFinishingFollowsStopLifecycleAndTerminalReceiptWithoutADuration() {
     let state = OverlayState.previewListening()
     state.handleRecordingStarted()
-    XCTAssertNil(OverlayActionsPresentation.finishingLabel(
-      mode: state.mode, transcribing: state.transcribing, terminal: state.terminal))
+    XCTAssertNil(
+      OverlayActionsPresentation.finishingLabel(
+        mode: state.mode, transcribing: state.transcribing, terminal: state.terminal))
     state.handleRecordingFinalising()
-    XCTAssertEqual(OverlayActionsPresentation.finishingLabel(
-      mode: state.mode, transcribing: state.transcribing, terminal: state.terminal), "Finishing…")
+    XCTAssertEqual(
+      OverlayActionsPresentation.finishingLabel(
+        mode: state.mode, transcribing: state.transcribing, terminal: state.terminal), "Finishing…")
     state.finishControllerRecording()
-    XCTAssertNil(OverlayActionsPresentation.finishingLabel(
-      mode: .formatted, transcribing: state.transcribing, terminal: true))
-    XCTAssertEqual(OverlayActionsPresentation.finishingLabel(
-      mode: .finalizing, transcribing: false, terminal: false), "Finishing…")
-    XCTAssertNil(OverlayActionsPresentation.finishingLabel(
-      mode: .finalizing, transcribing: true, terminal: true))
+    XCTAssertNil(
+      OverlayActionsPresentation.finishingLabel(
+        mode: .formatted, transcribing: state.transcribing, terminal: true))
+    XCTAssertEqual(
+      OverlayActionsPresentation.finishingLabel(
+        mode: .finalizing, transcribing: false, terminal: false), "Finishing…")
+    XCTAssertNil(
+      OverlayActionsPresentation.finishingLabel(
+        mode: .finalizing, transcribing: true, terminal: true))
   }
 
   func testResizeChromeUsesTheGeometryContractsWithoutAddingSwiftUIHitTargets() throws {
     let source = try overlaySource()
     let chrome = try section(
       of: source, from: "private func canvasStack", to: "/// 1px separator")
-    XCTAssertTrue(chrome.contains("width: OverlayResizeChrome.actionsWidth(narrow: actions.phase != .hover)"))
+    XCTAssertTrue(
+      chrome.contains("width: OverlayResizeChrome.actionsWidth(narrow: actions.phase != .hover)"))
     XCTAssertTrue(chrome.contains("height: OverlayResizeChrome.actionsHeight"))
     XCTAssertTrue(chrome.contains(".padding(.bottom, OverlayResizeChrome.actionsBottomInset)"))
     XCTAssertTrue(chrome.contains("width: OverlayResizeChrome.gripSize.width"))

@@ -157,7 +157,8 @@ struct DictationOverlayView: View {
           .accessibilityHint(
             state.hasRecoverableSupersededWork
               ? "Previous take available. Open actions to copy or discard it."
-              : "Show or hide transcript tools")
+              : "Show or hide transcript tools"
+          )
           .accessibilityIdentifier("overlay-tools-handle")
           if actions.phase == .open {
             intentRail

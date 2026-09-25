@@ -184,8 +184,7 @@ struct OverlayIntentRail: View {
           }
           .focused($focusedControl, equals: intent.rawValue)
           .onHover { setHovered(intent.rawValue, inside: $0) }
-        } else if intent != .close && intent != .recoverSuperseded && intent != .discardSuperseded
-        {
+        } else if intent != .close && intent != .recoverSuperseded && intent != .discardSuperseded {
           OverlayDockButton(
             title: intent.accessibilityLabel,
             systemImage: intent.systemImage,
