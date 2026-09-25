@@ -48,8 +48,13 @@ struct DictationOverlayView: View {
           footerEngineLabel: state.footerEngineLabel,
           footerNotice: state.toast,
           footerEngineDot: footerEngineDot,
+          history: state.documentHistory,
+          currentRevision: state.revision,
+          formatLevel: state.autoFormatLevel,
           onIntent: state.relayIntent,
           onRetranscribe: { state.retranscribe(pass: $0) },
+          onRestore: state.restoreDocumentRevision,
+          onFormatLevel: state.setAutoFormatLevel,
           onFocusChange: { actionsFocused = $0 }
         )
       )
@@ -186,22 +191,28 @@ struct DictationOverlayView: View {
   private func justifiedHeader(compact: Bool) -> some View {
     HStack(spacing: compact ? 6 : 10) {
       HStack(spacing: 5) {
-        Button {
-          state.relayIntent(.close)
-        } label: {
-          ModeDot(color: palette.statusToken(for: state.mode).color, size: 7)
-            .contentShape(Circle().inset(by: -3))
-        }
-        .buttonStyle(.plain)
-        .help(OverlayIntent.close.helpText)
-        .accessibilityLabel(OverlayIntent.close.accessibilityLabel)
-        .accessibilityIdentifier("overlay-brand-close-dot")
-
         Text("codescribe")
           .font(CSFont.ui(compact ? 12 : 15, .bold))
           .tracking(-0.3)
           .foregroundStyle(palette.primaryText.color)
           .allowsHitTesting(false)
+
+        Button {
+          state.relayIntent(.close)
+        } label: {
+          HStack(spacing: 3) {
+            ModeDot(color: palette.statusToken(for: state.mode).color, size: 7)
+            Text("×")
+              .csFont(16, .medium)
+              .foregroundStyle(palette.primaryText.color)
+          }
+          .frame(minWidth: 24, minHeight: 24)
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(OverlayIntent.close.helpText)
+        .accessibilityLabel(OverlayIntent.close.accessibilityLabel)
+        .accessibilityIdentifier("overlay-brand-close-dot")
       }
       .fixedSize()
       .accessibilityElement(children: .contain)
@@ -338,6 +349,7 @@ struct DictationOverlayView: View {
         case .formatted:
           revisionStatusRow
         case .coverageRefused:
+          revisionStatusRow
           if showsDiagnostics {
             coverageRefusedBody
               .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 8)))
@@ -419,8 +431,8 @@ struct DictationOverlayView: View {
           Image(systemName: "pencil.line")
           Text("Draft · not committed")
         } else {
-          Image(systemName: "checkmark.seal")
-          Text("Ledger projection")
+          Image(systemName: state.mode == .coverageRefused ? "doc.text" : "checkmark.seal")
+          Text(state.mode == .coverageRefused ? "Unsealed transcript" : "Ledger projection")
         }
       }
       .csMono(10, .semibold)

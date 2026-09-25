@@ -87,6 +87,9 @@ final class OverlayEditKeyGateTests: XCTestCase {
     project("final text", phase: "formatted", terminal: true, sequence: 1, to: state)
     settle(root)
     let canvas = try XCTUnwrap(descendant(of: LiveTranscriptNativeTextView.self, in: root))
+    // AppKit may preselect the canvas before the take becomes editable. Force
+    // a real responder transition for this resign-key contract.
+    XCTAssertTrue(panel.makeFirstResponder(nil))
     XCTAssertTrue(panel.makeFirstResponder(canvas))
     XCTAssertTrue(panel.canBecomeKey)
 
@@ -97,6 +100,35 @@ final class OverlayEditKeyGateTests: XCTestCase {
     XCTAssertFalse(panel.canBecomeKey)
     XCTAssertFalse(panel.firstResponder === canvas, "the canvas resigns with the key")
     XCTAssertFalse(state.isEditingTranscript)
+  }
+
+  func testClickOpensEditGateForPreselectedCanvas() throws {
+    let state = OverlayState()
+    let panel = try XCTUnwrap(
+      DictationOverlayWindow.make(
+        state: state,
+        textScale: TextScaleController(key: "OverlayEditKeyGateTests.preselected.textScale")
+      ) as? FloatingOverlayPanel
+    )
+    defer {
+      panel.makeFirstResponder(nil)
+      panel.orderOut(nil)
+      panel.invalidatePresence()
+    }
+    panel.orderFrontRegardless()
+    let root = try XCTUnwrap(panel.contentView)
+    project("final text", phase: "formatted", terminal: true, sequence: 1, to: state)
+    settle(root)
+    let canvas = try XCTUnwrap(descendant(of: LiveTranscriptNativeTextView.self, in: root))
+    XCTAssertTrue(panel.firstResponder === canvas)
+    XCTAssertTrue(canvas.isEditable)
+    XCTAssertFalse(panel.canBecomeKey)
+
+    // The same edit activation used after an actual AppKit mouseDown. A
+    // synthetic NSTextView mouseDown waits for a matching system mouse-up.
+    canvas.beginEditingIfNeeded()
+    XCTAssertTrue(panel.canBecomeKey)
+    XCTAssertTrue(state.isEditingTranscript)
   }
 
   // MARK: Helpers

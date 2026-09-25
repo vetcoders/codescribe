@@ -19,6 +19,7 @@ use codescribe::os::permissions::{PermissionStatus, check_accessibility, check_i
 use codescribe::os::shortcut_registry::{detect_hotkey_conflicts, fn_tap_intercept_note};
 use codescribe::os::tray_status::{self, TrayStatus};
 use codescribe::os::{clipboard, notifications};
+use codescribe::presentation::transcript_bus::{self, DocumentHistoryEntry};
 use codescribe_core::config::{Config, ModeBinding, ShortcutBinding, UserSettings, WorkMode};
 use codescribe_core::ipc::{EngineEventWire, IpcEventPayload};
 use crossbeam_channel::unbounded;
@@ -34,6 +35,25 @@ use crate::recording::{
     CsTranscriptionListener,
 };
 use crate::{CsError, application_runtime};
+
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsDocumentHistoryEntry {
+    pub revision: u64,
+    pub rendered_text: String,
+    pub provenance: String,
+    pub emitted_at: String,
+}
+
+impl From<DocumentHistoryEntry> for CsDocumentHistoryEntry {
+    fn from(entry: DocumentHistoryEntry) -> Self {
+        Self {
+            revision: entry.revision,
+            rendered_text: entry.rendered_text,
+            provenance: entry.provenance,
+            emitted_at: entry.emitted_at,
+        }
+    }
+}
 
 /// Shared process-wide slot for the lazily-created `RecordingController`.
 /// Mutex so the first hotkey/FFI path wins construction; `Option` until first use.
@@ -1060,6 +1080,60 @@ impl CodescribeHotkeys {
                 })?;
             controller
                 .apply_user_revision_from_overlay(session_id, source_revision, rendered_text)
+                .await
+                .map(CsUserRevisionResult::from)
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })
+        })
+        .await?
+    }
+
+    /// List the persisted reducer/Bus revisions of one take. The Bus journal is
+    /// the source of historical text; Swift receives a read-only projection.
+    pub async fn document_history(
+        &self,
+        session_id: String,
+    ) -> Result<Vec<CsDocumentHistoryEntry>, CsError> {
+        application_runtime::run(async move {
+            transcript_bus::document_history(&session_id)
+                .map(|entries| entries.into_iter().map(Into::into).collect())
+                .map_err(|error| CsError::Recording {
+                    msg: format!("Transcript history unavailable: {error}"),
+                })
+        })
+        .await?
+    }
+
+    /// Restore a selected journal version as a fresh ledger UserEdit revision.
+    /// The historical bytes are selected in Rust, then submitted through the
+    /// existing session/revision compare-and-swap corridor.
+    pub async fn restore_document_revision(
+        &self,
+        session_id: String,
+        source_revision: u64,
+        restore_revision: u64,
+    ) -> Result<CsUserRevisionResult, CsError> {
+        application_runtime::run(async move {
+            let selected = transcript_bus::document_history(&session_id)
+                .map_err(|error| CsError::Recording {
+                    msg: format!("Transcript history unavailable: {error}"),
+                })?
+                .into_iter()
+                .find(|entry| entry.revision == restore_revision)
+                .ok_or_else(|| CsError::Recording {
+                    msg: "Selected transcript revision is not in the Bus history".to_string(),
+                })?;
+            let controller =
+                current_controller(&shared_controller()).ok_or_else(|| CsError::Recording {
+                    msg: "no recording controller for transcript restoration".to_string(),
+                })?;
+            controller
+                .apply_user_revision_from_overlay(
+                    session_id,
+                    source_revision,
+                    selected.rendered_text,
+                )
                 .await
                 .map(CsUserRevisionResult::from)
                 .map_err(|error| CsError::Recording {

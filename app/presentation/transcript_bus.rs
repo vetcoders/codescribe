@@ -5,7 +5,7 @@
 //! re-transcribes a file, or reconstructs text from UI deltas.
 
 use std::fs::OpenOptions;
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -360,6 +360,75 @@ pub struct TranscriptBusEvidenceEvent {
     pub comparison: Option<ProjectedTranscriptComparisonReceipt>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub consultation_presentations: Vec<ProjectedConsultationPresentation>,
+}
+
+/// One previously published document revision, read from the Bus journal.
+/// This is display evidence, never a mutation input or a substitute reducer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentHistoryEntry {
+    pub revision: u64,
+    pub rendered_text: String,
+    pub provenance: String,
+    pub emitted_at: String,
+}
+
+/// Read the already published history for one take. A missing journal means
+/// there is no persisted history; it never licenses reconstructing it in UI.
+pub fn document_history(session_id: &str) -> io::Result<Vec<DocumentHistoryEntry>> {
+    document_history_at(&transcript_bus_path(), session_id)
+}
+
+pub(crate) fn document_history_at(
+    path: &Path,
+    session_id: &str,
+) -> io::Result<Vec<DocumentHistoryEntry>> {
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut revisions = std::collections::BTreeMap::new();
+    for line in BufReader::new(file).lines() {
+        let line = line?;
+        let Ok(event) = serde_json::from_str::<TranscriptBusEvidenceEvent>(&line) else {
+            continue;
+        };
+        if event.session_id != session_id
+            || event.document_index != 0
+            || event.reducer_revision == 0
+            || event.reducer_action == "session_ended"
+            || event.rendered_text.trim().is_empty()
+        {
+            continue;
+        }
+        let receipt = (event.reducer_action == "apply_manual_edit")
+            .then(|| {
+                event
+                    .acoustic_receipts
+                    .first()
+                    .and_then(|acoustic| acoustic.manual_edit_receipt.as_deref())
+            })
+            .flatten();
+        let provenance = ["user-edit", "retranscribe", "formatter", "light-plus"]
+            .into_iter()
+            .find(|kind| receipt.is_some_and(|id| id.starts_with(&format!("{kind}-"))))
+            .map(str::to_string)
+            .unwrap_or_else(|| match event.reducer_action.as_str() {
+                "apply_ledger_decision" => "acoustic-ledger".to_string(),
+                "apply_incremental_shaping" => "light-plus".to_string(),
+                "apply_consultation_presentation" => "consultation".to_string(),
+                action => action.to_string(),
+            });
+        revisions
+            .entry(event.reducer_revision)
+            .or_insert(DocumentHistoryEntry {
+                revision: event.reducer_revision,
+                rendered_text: event.rendered_text,
+                provenance,
+                emitted_at: event.emitted_at,
+            });
+    }
+    Ok(revisions.into_values().collect())
 }
 
 /// Group-level provenance, deliberately separate from per-word acoustic rows.
@@ -1161,6 +1230,43 @@ mod tests {
         ObservationProducer, OccurrenceIdentity,
     };
     use std::sync::Arc;
+
+    #[test]
+    fn history_lists_three_revisions_of_one_take_with_provenance() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("history.jsonl");
+        let bus = TranscriptBus::open_at(session("history-take"), path.clone(), None).unwrap();
+        bus.publish_started();
+        let (ledger, _, base) = committed_fixture("history-take");
+        let published = bus.publish_revision(&base, &ledger);
+        assert_eq!(published.len(), 2);
+        let mut formatter = published[0].clone();
+        formatter.reducer_revision += 1;
+        formatter.reducer_action = "apply_manual_edit".to_string();
+        formatter.rendered_text = "Formatted words".to_string();
+        formatter.acoustic_receipts[0].manual_edit_receipt =
+            Some("formatter-history-take-2-3-0".to_string());
+        let mut retranscribe = formatter.clone();
+        retranscribe.reducer_revision += 1;
+        retranscribe.rendered_text = "Retranscribed words".to_string();
+        retranscribe.acoustic_receipts[0].manual_edit_receipt =
+            Some("retranscribe-history-take-3-4-1".to_string());
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, "{}", serde_json::to_string(&formatter).unwrap()).unwrap();
+        writeln!(file, "{}", serde_json::to_string(&retranscribe).unwrap()).unwrap();
+        let history = document_history_at(&path, "history-take").unwrap();
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].revision, base.revision);
+        assert_eq!(history[0].provenance, "acoustic-ledger");
+        assert_eq!(history[1].provenance, "formatter");
+        assert_eq!(history[2].provenance, "retranscribe");
+        assert_eq!(history[2].rendered_text, "Retranscribed words");
+        assert!(
+            document_history_at(&path, "another-take")
+                .unwrap()
+                .is_empty()
+        );
+    }
 
     #[derive(Default)]
     struct Fault {

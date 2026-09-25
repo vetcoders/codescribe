@@ -45,8 +45,13 @@ struct OverlayIntentRail: View {
   let footerEngineLabel: String
   let footerNotice: String?
   let footerEngineDot: Color
+  let history: [CsDocumentHistoryEntry]
+  let currentRevision: UInt64
+  let formatLevel: FormattingPolicyOption
   let onIntent: (OverlayIntent) -> Void
   let onRetranscribe: (OverlayRetranscribePass) -> Void
+  let onRestore: (UInt64) -> Void
+  let onFormatLevel: (FormattingPolicyOption) -> Void
 
   init(
     phase: String,
@@ -55,8 +60,13 @@ struct OverlayIntentRail: View {
     footerEngineLabel: String = "",
     footerNotice: String? = nil,
     footerEngineDot: Color = .clear,
+    history: [CsDocumentHistoryEntry] = [],
+    currentRevision: UInt64 = 0,
+    formatLevel: FormattingPolicyOption = .correction,
     onIntent: @escaping (OverlayIntent) -> Void,
     onRetranscribe: @escaping (OverlayRetranscribePass) -> Void = { _ in },
+    onRestore: @escaping (UInt64) -> Void = { _ in },
+    onFormatLevel: @escaping (FormattingPolicyOption) -> Void = { _ in },
     onFocusChange: @escaping (Bool) -> Void = { _ in }
   ) {
     self.onFocusChange = onFocusChange
@@ -66,8 +76,13 @@ struct OverlayIntentRail: View {
     self.footerEngineLabel = footerEngineLabel
     self.footerNotice = footerNotice
     self.footerEngineDot = footerEngineDot
+    self.history = history
+    self.currentRevision = currentRevision
+    self.formatLevel = formatLevel
     self.onIntent = onIntent
     self.onRetranscribe = onRetranscribe
+    self.onRestore = onRestore
+    self.onFormatLevel = onFormatLevel
   }
 
   var body: some View {
@@ -79,10 +94,25 @@ struct OverlayIntentRail: View {
       .padding(.horizontal, 8)
       .background(.regularMaterial, in: Capsule())
       HStack(spacing: 4) {
+        if !history.isEmpty {
+          historyMenu
+        }
         ForEach(intents, id: \.self) { intent in
           if intent == .retranscribe {
             retranscribeMenu
               .focused($focusedControl, equals: intent.rawValue)
+          } else if intent == .format {
+            formatLevelMenu
+            OverlayDockButton(
+              title: intent.accessibilityLabel,
+              systemImage: intent.systemImage,
+              hint: intent.accessibilityHint,
+              identifier: "overlay-intent-\(intent.rawValue)",
+              palette: palette
+            ) {
+              dispatch(intent)
+            }
+            .focused($focusedControl, equals: intent.rawValue)
           } else if intent != .close {
             OverlayDockButton(
               title: intent.accessibilityLabel,
@@ -167,6 +197,55 @@ struct OverlayIntentRail: View {
     .accessibilityIdentifier("overlay-intent-\(OverlayIntent.retranscribe.rawValue)")
   }
 
+  private var historyMenu: some View {
+    Menu {
+      ForEach(history, id: \.revision) { entry in
+        Button {
+          onRestore(entry.revision)
+        } label: {
+          Text("Revision \(entry.revision) · \(entry.provenance) · \(entry.emittedAt)")
+          Text(String(entry.renderedText.prefix(64)).replacingOccurrences(of: "\n", with: " "))
+        }
+        .disabled(entry.revision == currentRevision)
+        .accessibilityIdentifier("overlay-history-revision-\(entry.revision)")
+      }
+    } label: {
+      Label("Transcript history", systemImage: "clock.arrow.circlepath")
+        .labelStyle(.iconOnly)
+        .frame(width: 32, height: 28)
+    }
+    .menuStyle(.button)
+    .buttonStyle(.plain)
+    .menuIndicator(.hidden)
+    .help("Restore an earlier transcript as a new revision")
+    .accessibilityLabel("Transcript version history")
+    .accessibilityIdentifier("overlay-history-menu")
+  }
+
+  private var formatLevelMenu: some View {
+    Menu {
+      ForEach(FormattingPolicyOption.editablePrompts) { level in
+        Button {
+          onFormatLevel(level)
+        } label: {
+          if level == formatLevel { Image(systemName: "checkmark") }
+          Text(level.visibleName)
+        }
+        .accessibilityIdentifier("overlay-format-level-\(level.rawValue)")
+      }
+    } label: {
+      Text(formatLevel.visibleName)
+        .csMono(10, .medium)
+        .frame(minWidth: 52, minHeight: 28)
+    }
+    .menuStyle(.button)
+    .buttonStyle(.plain)
+    .menuIndicator(.hidden)
+    .help("Choose Correction, Smart, or Max formatting")
+    .accessibilityLabel("Formatter level")
+    .accessibilityIdentifier("overlay-format-level-picker")
+  }
+
   static func projectedIntents(for state: OverlayState) -> [OverlayIntent] {
     if state.revisionCommitPending || state.formatterCommitPending {
       return []
@@ -210,12 +289,9 @@ struct OverlayIntentRail: View {
   /// only Close would have hidden the recovery behind the word "error" while
   /// the producer was saying, bit by bit, that recovery was available.
   ///
-  /// Format is the deliberate exception on both. `OverlayState.relayFormatIntent`
-  /// refuses unless `mode == .formatted`, so projecting it here would paint a
-  /// button that does nothing — and the shape it would produce if that guard
-  /// were ever loosened is a refused take relabelled `formatted` by a UI
-  /// command. A false `canFormat` bit is honoured everywhere; on these two
-  /// phases a true one is declined by the receiver, not by the producer.
+  /// Format remains available for refused coverage when the reducer projects
+  /// permission. The request still passes through the terminal revision CAS;
+  /// any reducer refusal is shown to the user without changing the seal verdict.
   static func projectedIntents(
     phase: OverlayMode,
     canPaste: Bool,
@@ -237,7 +313,14 @@ struct OverlayIntentRail: View {
         + (canFormat ? [.format] : [])
         + (canSendToAgent ? [.sendToAgent] : [])
         + [.close]
-    case .coverageRefused, .error:
+    case .coverageRefused:
+      ((canPaste || canInsert) ? [.insertPaste] : [])
+        + (canCopy ? [.copy] : [])
+        + (canRetranscribe ? [.retranscribe] : [])
+        + (canFormat ? [.format] : [])
+        + (canSendToAgent ? [.sendToAgent] : [])
+        + [.close]
+    case .error:
       ((canPaste || canInsert) ? [.insertPaste] : [])
         + (canCopy ? [.copy] : [])
         + (canRetranscribe ? [.retranscribe] : [])

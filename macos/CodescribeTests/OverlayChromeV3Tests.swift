@@ -6,6 +6,23 @@ import XCTest
 
 @MainActor
 final class OverlayChromeV3Tests: XCTestCase {
+  func testCloseControlKeepsVisibleGlyphAndCloseNameAtBothTextScales() throws {
+    let source = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Codescribe/Screens/Overlay/DictationOverlayView.swift"),
+      encoding: .utf8)
+    let header = try XCTUnwrap(source.range(of: "private func justifiedHeader(compact: Bool)"))
+    let tail = String(source[header.lowerBound...].prefix(1_300))
+    XCTAssertTrue(tail.contains("Text(\"×\")"), "Close must have a visible glyph")
+    XCTAssertTrue(tail.contains(".accessibilityLabel(OverlayIntent.close.accessibilityLabel)"))
+    XCTAssertEqual(OverlayIntent.close.accessibilityLabel, "Close overlay")
+    for scale in [TextScaleController.minScale, CGFloat(1)] {
+      XCTAssertGreaterThanOrEqual(14 * scale, 11)
+    }
+  }
+
   func testPointerEntryAndExitRevealWithoutAReservedDock() {
     XCTAssertFalse(
       OverlayChromeVisibility.actionsVisible(

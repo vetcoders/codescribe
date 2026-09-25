@@ -2369,6 +2369,12 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func deferText(text: String) async throws  -> CsPasteResult
 
     /**
+     * List the persisted reducer/Bus revisions of one take. The Bus journal is
+     * the source of historical text; Swift receives a read-only projection.
+     */
+    func documentHistory(sessionId: String) async throws  -> [CsDocumentHistoryEntry]
+
+    /**
      * Current per-mode bindings (Dictation / Formatting / Assistive), normalized
      * against defaults so every mode is always present. Reads on-disk truth.
      */
@@ -2462,6 +2468,13 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
      * Answer a Max card using the exact session, consultation and call identity.
      */
     func resolveMaxToolApproval(sessionId: String, threadId: String, callId: String, approved: Bool, remember: Bool) async throws  -> Bool
+
+    /**
+     * Restore a selected journal version as a fresh ledger UserEdit revision.
+     * The historical bytes are selected in Rust, then submitted through the
+     * existing session/revision compare-and-swap corridor.
+     */
+    func restoreDocumentRevision(sessionId: String, sourceRevision: UInt64, restoreRevision: UInt64) async throws  -> CsUserRevisionResult
 
     /**
      * Deliver an assistive transcript from the editable overlay. The
@@ -2848,6 +2861,27 @@ open func deferText(text: String)async throws  -> CsPasteResult  {
 }
 
     /**
+     * List the persisted reducer/Bus revisions of one take. The Bus journal is
+     * the source of historical text; Swift receives a read-only projection.
+     */
+open func documentHistory(sessionId: String)async throws  -> [CsDocumentHistoryEntry]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_document_history(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(sessionId)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypeCsDocumentHistoryEntry.lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+
+    /**
      * Current per-mode bindings (Dictation / Formatting / Assistive), normalized
      * against defaults so every mode is always present. Reads on-disk truth.
      */
@@ -3096,6 +3130,28 @@ open func resolveMaxToolApproval(sessionId: String, threadId: String, callId: St
             completeFunc: ffi_codescribe_ffi_rust_future_complete_i8,
             freeFunc: ffi_codescribe_ffi_rust_future_free_i8,
             liftFunc: FfiConverterBool.lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+
+    /**
+     * Restore a selected journal version as a fresh ledger UserEdit revision.
+     * The historical bytes are selected in Rust, then submitted through the
+     * existing session/revision compare-and-swap corridor.
+     */
+open func restoreDocumentRevision(sessionId: String, sourceRevision: UInt64, restoreRevision: UInt64)async throws  -> CsUserRevisionResult  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_restore_document_revision(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(sessionId),FfiConverterUInt64.lower(sourceRevision),FfiConverterUInt64.lower(restoreRevision)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeCsUserRevisionResult_lift,
             errorHandler: FfiConverterTypeCsError_lift
         )
 }
@@ -8119,6 +8175,66 @@ public func FfiConverterTypeCsDictionaryTeachResult_lift(_ buf: RustBuffer) thro
 #endif
 public func FfiConverterTypeCsDictionaryTeachResult_lower(_ value: CsDictionaryTeachResult) -> RustBuffer {
     return FfiConverterTypeCsDictionaryTeachResult.lower(value)
+}
+
+
+public struct CsDocumentHistoryEntry: Equatable, Hashable {
+    public var revision: UInt64
+    public var renderedText: String
+    public var provenance: String
+    public var emittedAt: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(revision: UInt64, renderedText: String, provenance: String, emittedAt: String) {
+        self.revision = revision
+        self.renderedText = renderedText
+        self.provenance = provenance
+        self.emittedAt = emittedAt
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsDocumentHistoryEntry: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsDocumentHistoryEntry: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsDocumentHistoryEntry {
+        return
+            try CsDocumentHistoryEntry(
+                revision: FfiConverterUInt64.read(from: &buf),
+                renderedText: FfiConverterString.read(from: &buf),
+                provenance: FfiConverterString.read(from: &buf),
+                emittedAt: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsDocumentHistoryEntry, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.revision, into: &buf)
+        FfiConverterString.write(value.renderedText, into: &buf)
+        FfiConverterString.write(value.provenance, into: &buf)
+        FfiConverterString.write(value.emittedAt, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDocumentHistoryEntry_lift(_ buf: RustBuffer) throws -> CsDocumentHistoryEntry {
+    return try FfiConverterTypeCsDocumentHistoryEntry.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDocumentHistoryEntry_lower(_ value: CsDocumentHistoryEntry) -> RustBuffer {
+    return FfiConverterTypeCsDocumentHistoryEntry.lower(value)
 }
 
 
@@ -15167,6 +15283,31 @@ fileprivate struct FfiConverterSequenceTypeCsConfigEntry: FfiConverterRustBuffer
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeCsDocumentHistoryEntry: FfiConverterRustBuffer {
+    typealias SwiftType = [CsDocumentHistoryEntry]
+
+    public static func write(_ value: [CsDocumentHistoryEntry], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCsDocumentHistoryEntry.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CsDocumentHistoryEntry] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CsDocumentHistoryEntry]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCsDocumentHistoryEntry.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeCsHistoryEntry: FfiConverterRustBuffer {
     typealias SwiftType = [CsHistoryEntry]
 
@@ -16380,6 +16521,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_defer_text() != 26341) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_document_history() != 45148) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_get_mode_bindings() != 18882) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -16420,6 +16564,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_resolve_max_tool_approval() != 6688) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_restore_document_revision() != 52565) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_send_assistive_transcript() != 10588) {

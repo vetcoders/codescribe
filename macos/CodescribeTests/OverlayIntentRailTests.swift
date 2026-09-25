@@ -12,6 +12,7 @@ private final class OverlayIntentBoundaryEngine: DictationEngine {
   var onCopyTagged: (() -> Void)?
   var copiedTaggedText: String?
   var formatterRequests: [(sessionId: String, sourceRevision: UInt64)] = []
+  var formatterFailure: Error?
   var policy = OverlayPolicySnapshot(autoPasteEnabled: true, autoFormatLevel: .correction)
   var formatLevelWrites: [FormattingPolicyOption] = []
 
@@ -34,6 +35,7 @@ private final class OverlayIntentBoundaryEngine: DictationEngine {
   ) async throws -> CsUserRevisionResult {
     formatterRequests.append((sessionId, sourceRevision))
     onFormatter?()
+    if let formatterFailure { throw formatterFailure }
     return CsUserRevisionResult(
       sessionId: sessionId,
       sourceRevision: sourceRevision,
@@ -96,13 +98,11 @@ final class OverlayIntentRailTests: XCTestCase {
         ),
         ("no_speech", "", false, false, false, true, false, true, [.retranscribe, .close]),
         // Refused coverage: the ledger declined the seal, the words are real.
-        // Every producer-authorized recovery is painted; Format is not, because
-        // its production relay refuses outside `formatted` and a projected
-        // Format here would be a dead button whose only working version would
-        // relabel a refused take as a sealed one.
+        // Every producer-authorized recovery is painted. Format reaches the
+        // existing reducer path and any terminal refusal is shown by name.
         (
           "coverage_refused", "usable words", true, true, true, true, true, true,
-          [.insertPaste, .copy, .retranscribe, .close]
+          [.insertPaste, .copy, .retranscribe, .format, .close]
         ),
         // Empty typed refusal: nothing to act on, and the rail invents nothing.
         ("coverage_refused", "", false, false, false, false, false, true, [.close]),
@@ -182,6 +182,26 @@ final class OverlayIntentRailTests: XCTestCase {
     XCTAssertEqual(engine.formatterRequests[0].sourceRevision, 1)
     XCTAssertTrue(state.formatterCommitPending, "FFI acknowledgement is not projection")
     XCTAssertNil(state.formatterError)
+  }
+
+  func testRefusedSealStillOffersFormatterAndNamesReducerRefusal() async {
+    let state = projectedState(
+      phase: "coverage_refused", text: "usable words", canPaste: false,
+      canInsert: false, canCopy: true, canRetranscribe: true, canFormat: true,
+      terminal: true)
+    let engine = OverlayIntentBoundaryEngine()
+    engine.formatterFailure = NSError(domain: "NotTerminal", code: 1)
+    state.engine = engine
+    XCTAssertTrue(OverlayIntentRail.projectedIntents(for: state).contains(.format))
+    let requested = expectation(description: "refused formatter reached reducer")
+    engine.onFormatter = { requested.fulfill() }
+    state.relayIntent(.format)
+    await fulfillment(of: [requested], timeout: 1)
+    await Task.yield()
+    XCTAssertEqual(engine.formatterRequests.count, 1)
+    XCTAssertEqual(state.mode, .coverageRefused)
+    XCTAssertEqual(state.formattedText, "usable words")
+    XCTAssertTrue(state.formatterError?.contains("NotTerminal") == true)
   }
 
   func testFloatingActionsKeepProjectedOrderWithCloseInHeader() {
@@ -492,7 +512,7 @@ final class OverlayIntentRailTests: XCTestCase {
       (.listening, [.finish, .copy, .close]),
       (.finalizing, [.copy, .close]),
       (.formatted, [.insertPaste, .copy, .retranscribe, .format, .close]),
-      (.coverageRefused, [.insertPaste, .copy, .retranscribe, .close]),
+      (.coverageRefused, [.insertPaste, .copy, .retranscribe, .format, .close]),
       (.noSpeech, [.retranscribe, .close]),
       (.error, [.insertPaste, .copy, .retranscribe, .close]),
     ]
@@ -515,12 +535,15 @@ final class OverlayIntentRailTests: XCTestCase {
     }
   }
 
-  /// Negative control for the one command deliberately withheld. `canFormat`
-  /// is honoured on `formatted` and declined on both refusal phases, so the
-  /// difference is a receiver decision about a dead relay — not a producer bit
-  /// being quietly dropped everywhere.
-  func testFormatIsProjectedOnlyWhereItsProductionRelayWillRun() {
-    for mode in [OverlayMode.coverageRefused, .error] {
+  /// Refused coverage honors the producer bit; an error phase still withholds
+  /// Format because the user cannot start a terminal formatter there.
+  func testRefusedFormatUsesProducerPermission() {
+    XCTAssertTrue(
+      OverlayIntentRail.projectedIntents(
+        phase: .coverageRefused, canPaste: false, canInsert: false, canCopy: false,
+        canRetranscribe: false, canFormat: true
+      ).contains(.format))
+    for mode in [OverlayMode.error] {
       XCTAssertFalse(
         OverlayIntentRail.projectedIntents(
           phase: mode, canPaste: false, canInsert: false, canCopy: false,

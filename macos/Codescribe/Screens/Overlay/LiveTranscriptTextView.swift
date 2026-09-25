@@ -225,14 +225,25 @@ final class LiveTranscriptNativeTextView: NSTextView {
     delegate as? LiveTranscriptTextView.Coordinator
   }
 
+  func beginEditingIfNeeded() {
+    guard isEditable, let coordinator = editCoordinator, !coordinator.isEditing else { return }
+    (window as? FloatingOverlayPanel)?.takeKeyForEdit()
+    coordinator.isEditing = true
+    coordinator.onEditingChanged?(true)
+  }
+
   override func becomeFirstResponder() -> Bool {
     guard super.becomeFirstResponder() else { return false }
-    if isEditable, let coordinator = editCoordinator, !coordinator.isEditing {
-      (window as? FloatingOverlayPanel)?.takeKeyForEdit()
-      coordinator.isEditing = true
-      coordinator.onEditingChanged?(true)
-    }
+    beginEditingIfNeeded()
     return true
+  }
+
+  override func mouseDown(with event: NSEvent) {
+    super.mouseDown(with: event)
+    // AppKit can preselect this view while the take is still read-only. An
+    // explicit later click must open the edit gate even if responder identity
+    // does not change and becomeFirstResponder is therefore not called again.
+    if window?.firstResponder === self { beginEditingIfNeeded() }
   }
 
   override func resignFirstResponder() -> Bool {

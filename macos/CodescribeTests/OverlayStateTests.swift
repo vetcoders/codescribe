@@ -54,6 +54,10 @@ private final class OverlayStateTestEngine: DictationEngine {
   var formatterRenderedText = "Tekst sformatowany."
   var formatterShouldFail = false
   var onFormatter: (() -> Void)?
+  var historyEntries: [CsDocumentHistoryEntry] = []
+  var onHistoryRead: (() -> Void)?
+  var onRestore: (() -> Void)?
+  var restoredSelections: [UInt64] = []
 
   func setListener(_ listener: CsTranscriptionListener) {}
   func startRecording(language: CsLanguage?) async throws {}
@@ -99,6 +103,24 @@ private final class OverlayStateTestEngine: DictationEngine {
       renderedText: formatterRenderedText,
       provenanceReceipt: "formatter-test-\(sourceRevision + 1)"
     )
+  }
+  func documentHistory(sessionId _: String) async throws -> [CsDocumentHistoryEntry] {
+    onHistoryRead?()
+    return historyEntries
+  }
+  func restoreDocumentRevision(
+    sessionId: String, sourceRevision: UInt64, restoreRevision: UInt64
+  ) async throws -> CsUserRevisionResult {
+    restoredSelections.append(restoreRevision)
+    onRestore?()
+    let text = historyEntries.first(where: { $0.revision == restoreRevision })!.renderedText
+    historyEntries.append(CsDocumentHistoryEntry(
+      revision: sourceRevision + 1, renderedText: text, provenance: "user-edit",
+      emittedAt: "2026-09-25T00:00:04Z"))
+    return CsUserRevisionResult(
+      sessionId: sessionId, sourceRevision: sourceRevision,
+      revision: sourceRevision + 1, renderedText: text,
+      provenanceReceipt: "user-edit-test-\(sourceRevision + 1)")
   }
   func isRecording() async -> Bool { false }
   func initModel() async throws {}
@@ -1669,6 +1691,87 @@ final class OverlayStateTests: XCTestCase {
     state.fireAutoHideNowForTests()
     await fulfillment(of: [delivered], timeout: 1)
     XCTAssertEqual(engine.sentAssistiveTexts, ["untouched final"])
+  }
+
+  func testUntouchedRefusedAgentTakeAutoSendsOnceAtDeadline() async {
+    let clock = OverlayStateTestClock()
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState(nowProvider: { clock.now })
+    state.engine = engine
+    state.applyIndicatorMode(.assistive)
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    projectText("usable refused words", to: state, phase: "coverage_refused",
+      canSendToAgent: true, terminal: true)
+    state.finishControllerRecording()
+    let delivered = expectation(description: "refused Agent take delivered")
+    engine.onAssistiveSend = { delivered.fulfill() }
+    clock.now = 5
+    state.fireAutoHideNowForTests()
+    await fulfillment(of: [delivered], timeout: 1)
+    state.fireAutoHideNowForTests()
+    XCTAssertEqual(engine.sentAssistiveTexts, ["usable refused words"])
+  }
+
+  func testEditingRefusedAgentTakeCancelsAutoSend() async {
+    let clock = OverlayStateTestClock()
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState(nowProvider: { clock.now })
+    state.engine = engine
+    state.applyIndicatorMode(.assistive)
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    projectText("words for review", to: state, phase: "coverage_refused",
+      canSendToAgent: true, terminal: true)
+    state.finishControllerRecording()
+    state.beginTranscriptEdit()
+    state.updateRevisionDraft("edited words")
+    state.endTranscriptEdit()
+    clock.now = 5
+    state.fireAutoHideNowForTests()
+    await Task.yield()
+    XCTAssertTrue(state.isRevisionDraftDirty)
+    XCTAssertTrue(engine.sentAssistiveTexts.isEmpty)
+  }
+
+  func testThreeVersionHistoryRestoresFirstAsFourthWithoutRewritingCanvas() async {
+    let engine = OverlayStateTestEngine()
+    engine.historyEntries = [
+      CsDocumentHistoryEntry(
+        revision: 1, renderedText: "first", provenance: "acoustic-ledger",
+        emittedAt: "2026-09-25T00:00:01Z"),
+      CsDocumentHistoryEntry(
+        revision: 2, renderedText: "second", provenance: "formatter",
+        emittedAt: "2026-09-25T00:00:02Z"),
+      CsDocumentHistoryEntry(
+        revision: 3, renderedText: "third", provenance: "retranscribe",
+        emittedAt: "2026-09-25T00:00:03Z"),
+    ]
+    let state = OverlayState()
+    state.engine = engine
+    let loaded = expectation(description: "Bus history loaded")
+    engine.onHistoryRead = { loaded.fulfill() }
+    projectText("third", to: state, terminal: true, reducerRevision: 3)
+    await fulfillment(of: [loaded], timeout: 1)
+    engine.onHistoryRead = nil
+    XCTAssertEqual(state.documentHistory.map(\.provenance),
+      ["acoustic-ledger", "formatter", "retranscribe"])
+
+    let requested = expectation(description: "selected history revision reached Rust")
+    engine.onRestore = { requested.fulfill() }
+    state.restoreDocumentRevision(1)
+    await fulfillment(of: [requested], timeout: 1)
+    XCTAssertEqual(engine.restoredSelections, [1])
+    XCTAssertEqual(state.formattedText, "third", "only the reducer projection repaints")
+    let refreshed = expectation(description: "fourth version loaded")
+    engine.onHistoryRead = { refreshed.fulfill() }
+    projectText("first", to: state, terminal: true, lifecycleTerminal: false,
+      sessionId: "overlay-state-tests", reducerRevision: 4,
+      reducerAction: "apply_manual_edit", manualEditReceipt: "user-edit-test-4")
+    await fulfillment(of: [refreshed], timeout: 1)
+    XCTAssertEqual(state.formattedText, "first")
+    XCTAssertEqual(state.documentHistory.map(\.revision), [1, 2, 3, 4])
+    XCTAssertEqual(state.documentHistory.last?.provenance, "user-edit")
   }
 
   func testAgentDeadlineRequiresProjectedSendPermission() async {
@@ -3422,9 +3525,8 @@ final class OverlayStateTests: XCTestCase {
   }
 
   /// Positive and negative in one place: the explanation is present and
-  /// persistent, and none of the success machinery fires. `onSuccessfulDictation`
-  /// is the seam that arms Agent auto-send, so a refused take reaching it would
-  /// submit words the ledger declined to seal.
+  /// persistent, and the seal-success callback does not fire. Agent auto-send
+  /// has its separate lifecycle and untouched-text gate.
   func testRefusedCoverageExplainsItselfWithoutMintingSuccess() {
     let state = OverlayState()
     var successes = 0
@@ -3438,7 +3540,7 @@ final class OverlayStateTests: XCTestCase {
       "No seal was recorded for this take, so nothing here is certified complete.")
     XCTAssertEqual(successes, 0, "a refused seal fired the success callback")
     XCTAssertNil(state.errorMessage, "refusal is not an error message")
-    XCTAssertFalse(state.isTranscriptEditable, "the producer authorized no user revision")
+    XCTAssertTrue(state.isTranscriptEditable, "review is possible even when a seal was refused")
     XCTAssertTrue(state.blocksAssistiveOverlayHide)
 
     // The same document arriving as a real seal clears the notice, because the

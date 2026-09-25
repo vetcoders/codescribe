@@ -3537,6 +3537,101 @@ mod tests {
         assert!(replayed_revision.terminal);
     }
 
+    #[tokio::test]
+    async fn restoring_first_bus_version_appends_new_document_version() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("versions.jsonl");
+        let bus = Arc::new(
+            TranscriptBus::open_at(
+                TranscriptSession {
+                    session_id: "version-take".into(),
+                    mode: TranscriptMode::Dictation,
+                    has_latched_target: false,
+                    latched_target_is_self: false,
+                },
+                path.clone(),
+                None,
+            )
+            .unwrap(),
+        );
+        let occurrence = OccurrenceIdentity::new("version-take", 3, 0, 16_000);
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let mutation = {
+            let mut ledger = ledger.lock().unwrap();
+            let mutation = admitted_mutation(&mut ledger, occurrence.clone(), 1, "First words");
+            ledger.schedule_frontier(occurrence.clone(), [ObservationProducer::Apple]);
+            assert!(ledger.note_frontier_return(&occurrence, ObservationProducer::Apple));
+            mutation
+        };
+        bus.publish_started();
+        let mut emitter = PresentationEmitter::new_with_authority(
+            Arc::new(Mutex::new(String::new())),
+            None,
+            None,
+            Some(Arc::clone(&bus)),
+            Some(Arc::clone(&ledger)),
+            None,
+        );
+        emitter.on_event(&mutation);
+        let seal = ledger
+            .lock()
+            .unwrap()
+            .seal_terminal("version-take", 3)
+            .unwrap();
+        emitter.on_event(&EngineEvent::LedgerSeal { receipt: seal });
+        emitter.on_event(&EngineEvent::SessionFinalised {
+            session_id: "version-take".into(),
+            layer_summary: LayerSummary::default(),
+        });
+        let terminal = bus
+            .publish_ended(
+                TranscriptSessionEndReason::Completed,
+                true,
+                TranscriptDelivery::Retained,
+            )
+            .unwrap();
+        let initial =
+            crate::presentation::transcript_bus::document_history_at(&path, "version-take")
+                .unwrap();
+        let first = initial.first().unwrap().clone();
+        let second = emitter
+            .apply_user_revision(UserRevisionIntent {
+                session_id: "version-take".into(),
+                source_revision: terminal.reducer_revision,
+                rendered_text: "Second words".into(),
+                provenance: DocumentRevisionProvenance::Formatter,
+            })
+            .unwrap();
+        let third = emitter
+            .apply_user_revision(UserRevisionIntent {
+                session_id: "version-take".into(),
+                source_revision: second.revision,
+                rendered_text: "Third words".into(),
+                provenance: DocumentRevisionProvenance::Retranscribe,
+            })
+            .unwrap();
+        let before =
+            crate::presentation::transcript_bus::document_history_at(&path, "version-take")
+                .unwrap();
+        assert_eq!(before[before.len() - 2].provenance, "formatter");
+        assert_eq!(before.last().unwrap().provenance, "retranscribe");
+        let restored = emitter
+            .apply_user_revision(UserRevisionIntent {
+                session_id: "version-take".into(),
+                source_revision: third.revision,
+                rendered_text: first.rendered_text.clone(),
+                provenance: DocumentRevisionProvenance::UserEdit,
+            })
+            .unwrap();
+        let after = crate::presentation::transcript_bus::document_history_at(&path, "version-take")
+            .unwrap();
+        assert_eq!(after.len(), before.len() + 1);
+        assert_eq!(after.last().unwrap().revision, restored.revision);
+        assert_eq!(after.last().unwrap().rendered_text, first.rendered_text);
+        assert_eq!(after.last().unwrap().provenance, "user-edit");
+        emitter.finish().await;
+    }
+
     /// I4m effect witness: a failed formatter result cannot touch ledger, Bus,
     /// projection, or delivery. An applied result then mints formatter
     /// provenance and repaints only through the committed projection callback.

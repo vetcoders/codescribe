@@ -4,7 +4,7 @@ import XCTest
 @testable import Codescribe
 
 /// Founder cut 2026-09-08 19:18 for the overlay header: the brand dot is the
-/// only close control (no `xmark` glyph), Auto Paste is toggled from the
+/// close control, Auto Paste is toggled from the
 /// header, and no phase capsule ("listening" pill) renders anywhere.
 ///
 /// The accepted chrome (agy, `b9c7e8f47`) builds these controls as SwiftUI
@@ -170,17 +170,15 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     return view.subviews.lazy.compactMap { self.findTranscript(in: $0) }.first
   }
 
-  func testHeaderHasNoCloseGlyph() throws {
+  func testHeaderCloseHasVisibleGlyph() throws {
     try withPanel(state: .previewListening()) { panel, root in
       let elements = accessibilityTree(root)
       XCTAssertFalse(elements.isEmpty, "The rendered accessibility hierarchy must be observable")
       for element in elements where element.accessibilityRole() == .image {
         XCTAssertFalse((element.accessibilityLabel() ?? "").contains("xmark"))
       }
-      // SwiftUI may flatten a Button's Image out of AX; cover its symbol source too.
-      XCTAssertNotEqual(OverlayIntent.close.systemImage, "xmark")
       let source = try overlaySource()
-      XCTAssertFalse(source.contains("Image(systemName: \"xmark\")"))
+      XCTAssertTrue(source.contains("Text(\"×\")"))
       XCTAssertNotNil(panel.contentView)
     }
   }
@@ -204,8 +202,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       header.contains(".accessibilityLabel(OverlayIntent.close.accessibilityLabel)"))
     XCTAssertTrue(
       header.contains("ModeDot(color: palette.statusToken(for: state.mode).color"),
-      "The close control is the brand dot, not a glyph")
-    XCTAssertFalse(header.contains("xmark"))
+      "The close control retains the brand status dot")
+    XCTAssertTrue(header.contains("Text(\"×\")"))
     // The brand block sits on an inert drag region so the dot answers clicks,
     // not window drags (Founder 19:18: the dot next to codescribe closes).
     XCTAssertTrue(header.contains("overlay-header-inert-drag-region"))

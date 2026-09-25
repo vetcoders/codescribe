@@ -38,6 +38,10 @@ protocol DictationEngine: AnyObject {
   func commitFormatterRevision(
     sessionId: String, sourceRevision: UInt64
   ) async throws -> CsUserRevisionResult
+  func documentHistory(sessionId: String) async throws -> [CsDocumentHistoryEntry]
+  func restoreDocumentRevision(
+    sessionId: String, sourceRevision: UInt64, restoreRevision: UInt64
+  ) async throws -> CsUserRevisionResult
   func isRecording() async -> Bool
   func initModel() async throws
   func isModelLoaded() -> Bool
@@ -58,6 +62,12 @@ protocol DictationEngine: AnyObject {
 }
 
 extension DictationEngine {
+  func documentHistory(sessionId _: String) async throws -> [CsDocumentHistoryEntry] { [] }
+  func restoreDocumentRevision(
+    sessionId _: String, sourceRevision _: UInt64, restoreRevision _: UInt64
+  ) async throws -> CsUserRevisionResult {
+    throw NSError(domain: "Transcript history unavailable", code: 1)
+  }
   func commitRetranscribeRevision(
     sessionId: String, sourceRevision: UInt64, renderedText: String
   ) async throws -> CsUserRevisionResult {
@@ -299,6 +309,8 @@ final class OverlayState {
   private(set) var revisionCommitError: String?
   private(set) var formatterCommitPending = false
   private(set) var formatterError: String?
+  /// Read-only projection of this take's Bus journal revisions.
+  private(set) var documentHistory: [CsDocumentHistoryEntry] = []
   private(set) var userRevisionProvenance: String?
   private(set) var canPaste = false
   private(set) var canInsert = false
@@ -700,12 +712,13 @@ final class OverlayState {
   /// that is not mid-commit. Listening / finalizing stay read-only and the
   /// panel never takes the keyboard for them.
   var isTranscriptEditable: Bool {
-    mode == .formatted && terminal && presentationStatus == nil
+    (mode == .formatted || mode == .coverageRefused) && terminal && presentationStatus == nil
       && !revisionCommitPending && !formatterCommitPending
   }
 
   var isRevisionDraftDirty: Bool {
-    mode == .formatted && terminal && revisionDraft != formattedText
+    (mode == .formatted || mode == .coverageRefused) && terminal
+      && revisionDraft != formattedText
   }
 
   /// Bytes painted on the canvas: the local draft while a formatted take is
@@ -729,10 +742,8 @@ final class OverlayState {
   /// surface must not yield to an Assistive tray tick — that path calls
   /// `hide()` and arms Agent auto-send.
   ///
-  /// A refused take is the case that needs this most, not least. It is the one
-  /// terminal outcome whose only recovery handle lives on this panel, so
-  /// letting a tray tick take the panel away would remove the handle while
-  /// arming the auto-send the refusal explicitly did not earn.
+  /// A refused take keeps its recovery controls on this panel. Agent delivery
+  /// has its own untouched-final countdown; a tray tick cannot dismiss it.
   var blocksAssistiveOverlayHide: Bool {
     presentationStatus != nil || mode == .formatted || mode == .coverageRefused
       || mode == .noSpeech
@@ -1415,7 +1426,8 @@ final class OverlayState {
   func commitRevisionDraft() {
     revisionFocusCommitTask?.cancel()
     revisionFocusCommitTask = nil
-    guard mode == .formatted, terminal, isRevisionDraftDirty, !revisionCommitPending,
+    guard mode == .formatted || mode == .coverageRefused, terminal,
+      isRevisionDraftDirty, !revisionCommitPending,
       !formatterCommitPending
     else {
       return
@@ -1621,10 +1633,23 @@ final class OverlayState {
     terminal
   }
 
+  private var mayAutoSendRefusedAgentTake: Bool {
+    agentSessionArmed && agentFinalTranscriptAppeared && !agentAutoSendCancelled
+      && canSendToAgent
+      && !formattedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
   private func restartAutoHideCountdown() {
-    // Refused coverage still needs reachable recovery controls. A timer is
-    // not human dismissal, even when the document is retained in memory.
-    guard mode != .coverageRefused else {
+    // A presentation revision may arrive before the controller's lifecycle
+    // terminal. The Agent timer starts only after that terminal is observed.
+    if agentSessionArmed && !agentFinalTranscriptAppeared {
+      cancelAutoHide()
+      return
+    }
+    // Refused coverage keeps recovery visible. The one exception is an armed
+    // Agent take with untouched final words: its deadline sends through the
+    // existing permission gate, without claiming an acoustic seal.
+    guard mode != .coverageRefused || mayAutoSendRefusedAgentTake else {
       cancelAutoHide()
       return
     }
@@ -1656,9 +1681,13 @@ final class OverlayState {
   private func evaluateAutoHideDeadline(rescheduleIfEarly: Bool, generation: UInt64) {
     guard generation == captureGeneration else { return }
     autoHideTask = nil
-    // Recheck the current verdict: this wake may have been armed before the
-    // refusal arrived. It may neither close recovery nor reach Agent delivery.
-    guard mode != .coverageRefused else {
+    if agentSessionArmed && !agentFinalTranscriptAppeared {
+      cancelAutoHide()
+      return
+    }
+    // Recheck the current verdict: an older wake cannot dismiss refused
+    // recovery. An armed, untouched Agent take may reach its send gate.
+    guard mode != .coverageRefused || mayAutoSendRefusedAgentTake else {
       cancelAutoHide()
       return
     }
@@ -2040,15 +2069,14 @@ final class OverlayState {
       && projection.sessionId == pendingRevisionSessionId
       && projection.reducerRevision > (pendingRevisionSource ?? UInt64.max)
       && formatterReceipt != nil
-    // `formatted` and nothing else. This is the success callback and it feeds
-    // the Agent auto-send arming below, so widening it to "any terminal" —
-    // the obvious-looking simplification — would let a refused take fire the
-    // success seam and then submit words the ledger declined to seal.
+    // A successful acoustic terminal has its own callback. Agent auto-send
+    // below uses lifecycle completion and nonempty text, not this seal signal.
     let signalsFirstSuccessfulTerminal =
       !terminal && projection.terminal && projection.phase == OverlayMode.formatted.rawValue
     // Initialize before the first event can obtain a receiver receipt or retain
     // refused bytes. The first observed projection may already end this session.
     if isNewSession {
+      documentHistory = []
       if let priorProjection { retiredProjectionSessions.insert(priorProjection.sessionId) }
       deliveredText = ""
       deliveredTextSessionId = nil
@@ -2133,11 +2161,16 @@ final class OverlayState {
     }
 
     if projection.terminal {
+      refreshDocumentHistory(
+        sessionId: projection.sessionId, sourceRevision: projection.reducerRevision)
       if deliveredTextSessionId != projection.sessionId {
         deliveredText = projection.renderedText
         deliveredTextSessionId = projection.sessionId
       }
-      agentFinalTranscriptAppeared = projection.phase == OverlayMode.formatted.rawValue
+      if isLifecycleTerminal {
+        agentFinalTranscriptAppeared =
+          !projection.renderedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      }
       if signalsFirstSuccessfulTerminal {
         onSuccessfulDictation?()
       }
@@ -2225,7 +2258,8 @@ final class OverlayState {
   }
 
   private func relayFormatIntent() {
-    guard mode == .formatted, terminal, canFormat, !isRevisionDraftDirty,
+    guard mode == .formatted || mode == .coverageRefused, terminal, canFormat,
+      !isRevisionDraftDirty,
       !revisionCommitPending, !formatterCommitPending
     else { return }
     guard let projection = latestTranscriptProjection, let engine else {
@@ -2269,6 +2303,61 @@ final class OverlayState {
         formatterError = "Couldn't format transcript: \(error)"
         showFooterNotice("format failed")
         restartAutoHideCountdown()
+      }
+    }
+  }
+
+  func restoreDocumentRevision(_ selectedRevision: UInt64) {
+    guard terminal, !isRevisionDraftDirty, !revisionCommitPending,
+      !formatterCommitPending, let projection = latestTranscriptProjection,
+      documentHistory.contains(where: { $0.revision == selectedRevision }),
+      selectedRevision != projection.reducerRevision, let engine
+    else { return }
+    revisionCommitPending = true
+    revisionCommitError = nil
+    pendingRevisionSessionId = projection.sessionId
+    pendingRevisionSource = projection.reducerRevision
+    cancelAutoHide()
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      do {
+        let receipt = try await engine.restoreDocumentRevision(
+          sessionId: projection.sessionId,
+          sourceRevision: projection.reducerRevision,
+          restoreRevision: selectedRevision)
+        guard receipt.sessionId == projection.sessionId,
+          receipt.sourceRevision == projection.reducerRevision,
+          receipt.revision > receipt.sourceRevision,
+          receipt.provenanceReceipt.hasPrefix("user-edit-")
+        else {
+          revisionCommitPending = false
+          pendingRevisionSessionId = nil
+          pendingRevisionSource = nil
+          revisionCommitError = "Transcript restore receipt was inconsistent"
+          return
+        }
+        // Only the matching reducer callback repaints the canvas.
+      } catch {
+        revisionCommitPending = false
+        pendingRevisionSessionId = nil
+        pendingRevisionSource = nil
+        revisionCommitError = "Couldn't restore transcript version: \(error)"
+      }
+    }
+  }
+
+  private func refreshDocumentHistory(sessionId: String, sourceRevision: UInt64) {
+    guard let engine else { return }
+    Task { @MainActor [weak self] in
+      do {
+        let entries = try await engine.documentHistory(sessionId: sessionId)
+        guard let self, self.latestTranscriptProjection?.sessionId == sessionId,
+          self.latestTranscriptProjection?.reducerRevision == sourceRevision
+        else { return }
+        self.documentHistory = entries
+      } catch {
+        guard let self, self.latestTranscriptProjection?.sessionId == sessionId else { return }
+        self.revisionCommitError = "Couldn't read transcript history: \(error)"
       }
     }
   }
@@ -2453,6 +2542,7 @@ final class OverlayState {
     }
     latestTranscriptProjection = nil
     revisionDraft = ""
+    documentHistory = []
     // Retained chrome is evidence about the previous take, not this one.
     transcriptMode = "dictation"
     mode = .listening
@@ -2690,6 +2780,17 @@ final class ControllerDictationEngine: DictationEngine {
       sessionId: sessionId,
       sourceRevision: sourceRevision
     )
+  }
+  func documentHistory(sessionId: String) async throws -> [CsDocumentHistoryEntry] {
+    try await hotkeys.documentHistory(sessionId: sessionId)
+  }
+  func restoreDocumentRevision(
+    sessionId: String, sourceRevision: UInt64, restoreRevision: UInt64
+  ) async throws -> CsUserRevisionResult {
+    try await hotkeys.restoreDocumentRevision(
+      sessionId: sessionId,
+      sourceRevision: sourceRevision,
+      restoreRevision: restoreRevision)
   }
   func isRecording() async -> Bool {
     await hotkeys.isRecording()
