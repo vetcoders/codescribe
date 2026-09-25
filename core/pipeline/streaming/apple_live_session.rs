@@ -1544,10 +1544,11 @@ struct AppleSealState {
     refinement_pending: VecDeque<TailPatchRequest>,
     refinement_submitted: BTreeMap<(u64, u64, u64), TailPatchInFlight>,
     /// Exclusive Whisper text for an occurrence sliced across windows.
-    /// Admitted once, when those slices partition the occurrence and every
-    /// intersecting pin was an exclusive tail.
+    /// Admitted once, when exclusive slices and coverage-only ranges account
+    /// for its voiced hops.
     whisper_slices: BTreeMap<OccurrenceIdentity, Vec<(u64, u64, String)>>,
-    /// Same-word replay extents answer hop coverage only; they never supply text.
+    /// Same-word replay and the non-owner portions of owned word pins answer
+    /// hop coverage only; they never supply text.
     whisper_replay_coverage: BTreeMap<OccurrenceIdentity, Vec<(u64, u64)>>,
     /// Occurrences whose whole-span replacement was already refused.
     whisper_span_refused: BTreeSet<OccurrenceIdentity>,
@@ -1663,8 +1664,9 @@ fn exclusive_label(pins: &[RoutedPin]) -> String {
 ///
 /// Coverage answers "did Whisper hear this sound", not "who owns this word".
 /// A pin reclassified as a replay of the same word (T-A2: overlap ≥ ½ of
-/// the shorter member-clipped span and equal normalized text) lends its
-/// member-clipped extent to hop coverage. It lends no text and no authority.
+/// the shorter member-clipped span and equal normalized text), or the part of
+/// an owned word inside another member, lends its member-clipped extent to hop
+/// coverage. Neither lends text or authority to that member.
 /// The document text of the occurrence is exactly the joined exclusive slices, as today.
 /// Without hop evidence the windows must abut from the member's start to its
 /// end. With hop evidence, a pause between pins that contains no voiced hop is
@@ -2311,7 +2313,7 @@ impl AppleSealState {
     /// Send every pin the admit filter used to drop. Exclusive-tail pins stay
     /// with their member; covered overlap is a named refusal; the rest stays
     /// visible at its own PCM range and does not enter the committed map.
-    /// A pin that intersects a member without being its exclusive tail blocks
+    /// An utterance pin that intersects a member without fitting it blocks
     /// replacement of that whole member.
     fn route_overlap_pins(
         &mut self,
@@ -2354,7 +2356,7 @@ impl AppleSealState {
                 // label on the member cannot. Compare this window's earlier
                 // pins too, so one payload cannot duplicate a word.
                 let same_word_replay = word_grain
-                    && !matches!(&class, OverlapPinClass::Replay)
+                    && matches!(&class, OverlapPinClass::ExclusiveTail { .. })
                     && earlier_exclusive_slice_covers(
                         &self.whisper_slices,
                         &open_members,
@@ -2397,9 +2399,26 @@ impl AppleSealState {
                 }
                 match class {
                     OverlapPinClass::ExclusiveTail { member_index } => {
+                        if word_grain {
+                            for (other_index, member) in open_members.iter().enumerate() {
+                                if other_index != member_index
+                                    && pin.same_capture(member)
+                                    && pin_intersects(&pin, member)
+                                {
+                                    routes[other_index].replay_coverage.push((
+                                        pin.sample_start.max(member.sample_start),
+                                        pin.sample_end.min(member.sample_end),
+                                    ));
+                                }
+                            }
+                        }
+                        let owner = &open_members[member_index];
+                        let mut owned_pin = pin.clone();
+                        owned_pin.sample_start = owned_pin.sample_start.max(owner.sample_start);
+                        owned_pin.sample_end = owned_pin.sample_end.min(owner.sample_end);
                         routes[member_index].exclusive.push(RoutedPin {
                             index,
-                            pin,
+                            pin: owned_pin,
                             text: text.to_string(),
                         });
                     }
@@ -2418,8 +2437,7 @@ impl AppleSealState {
                     }
                     OverlapPinClass::Unanchored(reason) => {
                         // Utterance grain addresses the whole span or nothing.
-                        // Word grain keeps the straddle as read-only evidence
-                        // and still admits the exclusive remainder.
+                        // A word with no midpoint owner stays read-only evidence.
                         if !word_grain {
                             for (member_index, member) in open_members.iter().enumerate() {
                                 if pin_intersects(&pin, member) {
@@ -15427,6 +15445,125 @@ mod relay_l1_overlap_admission_tests {
             &routes[0].replay_coverage,
             Some(&[(52_000, 53_000)]),
         ));
+    }
+
+    /// The first pin geometry is copied from live take b2707ce7: the word
+    /// starts at 96_000, 768 samples before Apple's 96_768 occurrence edge.
+    #[test]
+    fn live_member_start_straddle_keeps_every_whisper_word_once() {
+        let session = "live-member-edge";
+        let mut lane = open(session);
+        let occurrence = OccurrenceIdentity::new(session, 1, 96_768, 192_768);
+        record_voiced_spans(
+            &lane,
+            192_768,
+            &[(96_768, 126_720), (132_000, 152_000), (160_000, 188_000)],
+        );
+        stage(&mut lane, 1, occurrence.clone(), "apple floor");
+        assert!(lane.state.enqueue_layer1_piece(
+            &lane.tx,
+            piece(1, &occurrence, "apple floor"),
+        ));
+        close_lexicon(&mut lane, 1, &occurrence, "apple floor");
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 2);
+        let windows = [
+            vec![
+                word_pin(session, "tak", 96_000, 126_720),
+                word_pin(session, "poza", 132_000, 152_000),
+            ],
+            vec![
+                word_pin(session, "tak", 98_624, 135_104),
+                word_pin(session, "tym", 160_000, 174_000),
+                word_pin(session, "to", 174_000, 188_000),
+            ],
+        ];
+        let mut events = Vec::new();
+        for (request, words) in requests.iter().zip(windows) {
+            lane.state
+                .complete_whisper_window(&lane.tx, completion(request, words), 9.0);
+            events.extend(drain(&mut lane.rx));
+        }
+        let warnings = warning_lines(&events);
+        assert_eq!(mutation_count(&events), 1, "{warnings}");
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("tak poza tym to"),
+            "{warnings}"
+        );
+        assert_conserved(&lane, Some("replayed_range_identity"));
+    }
+
+    #[test]
+    fn owned_word_lends_only_its_non_owner_extent_to_adjacent_member() {
+        let session = "adjacent-word-coverage";
+        let mut lane = open(session);
+        let first = OccurrenceIdentity::new(session, 1, 0, 64_000);
+        let second = OccurrenceIdentity::new(session, 1, 64_000, 96_000);
+        record_voiced_spans(
+            &lane,
+            96_000,
+            &[(8_000, 20_000), (62_000, 64_000), (64_000, 76_000)],
+        );
+        stage(&mut lane, 1, first.clone(), "apple first");
+        stage(&mut lane, 2, second.clone(), "apple second");
+        let routes = lane.state.route_overlap_pins(
+            &lane.tx,
+            3,
+            0,
+            96_000,
+            &[(1, first.clone()), (2, second.clone())],
+            &[
+                word_pin(session, "first", 8_000, 20_000),
+                word_pin(session, "second", 62_000, 76_000),
+            ],
+        );
+        assert_eq!(exclusive_label(&routes[0].exclusive), "first");
+        assert_eq!(exclusive_label(&routes[1].exclusive), "second");
+        assert_eq!(routes[0].replay_coverage, vec![(62_000, 64_000)]);
+        assert!(routes[1].replay_coverage.is_empty());
+        assert!(exclusive_slices_cover(
+            &first,
+            &[(8_000, 20_000, "first".into())],
+            &routes[0].replay_coverage,
+            Some(&[(8_000, 20_000), (62_000, 64_000)]),
+        ));
+        let receipt = admit_ledger_label(
+            &mut lane.state,
+            &lane.tx,
+            LabelAdmission {
+                observation: ObservationIdentity::new(
+                    ObservationProducer::Whisper,
+                    3,
+                    0,
+                    first.clone(),
+                ),
+                label: &exclusive_label(&routes[0].exclusive),
+                energy: EnergyAdmission::RequireExistingQualification,
+            },
+        )
+        .expect("first member admission");
+        assert!(receipt.grants_mutation());
+        assert_eq!(held_text(&lane, &first).as_deref(), Some("first"));
+        assert!(!held_text(&lane, &first).unwrap().contains("second"));
+        let second_receipt = admit_ledger_label(
+            &mut lane.state,
+            &lane.tx,
+            LabelAdmission {
+                observation: ObservationIdentity::new(
+                    ObservationProducer::Whisper,
+                    3,
+                    1,
+                    second.clone(),
+                ),
+                label: &exclusive_label(&routes[1].exclusive),
+                energy: EnergyAdmission::RequireExistingQualification,
+            },
+        )
+        .expect("second member admission");
+        assert!(second_receipt.grants_mutation());
+        assert_eq!(held_text(&lane, &second).as_deref(), Some("second"));
     }
 
     /// Falsifier for the T-A duplicate rule (integrator W3, parent's counterexample).

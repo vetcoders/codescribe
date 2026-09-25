@@ -1234,8 +1234,14 @@ impl AcousticLedger {
 
     /// Classify one timed pin against the window's exclusive admit range.
     ///
-    /// Text is not an argument. Word ownership uses the midpoint on the PCM
-    /// axis; member routing still requires containment in one occurrence.
+    /// Word grain: a word belongs to the window whose admit range holds its
+    /// midpoint (T-A), and to the open member whose range holds its midpoint.
+    /// The member need not contain the whole pin; clip the pin to that member
+    /// wherever its extent is used, while keeping the full word text. A part
+    /// inside another open member lends only hop coverage, never text. A
+    /// midpoint in no member, or in overlapping members, remains unanchored.
+    /// Utterance grain is unchanged: the whole pin must fit the admit range
+    /// and exactly one member.
     pub fn classify_overlap_pin(
         &self,
         pin: &OccurrenceIdentity,
@@ -1256,14 +1262,20 @@ impl AcousticLedger {
             return OverlapPinClass::Unanchored(NoAuthorityReason::NoRange);
         }
         let inside_admit = if word_grain {
-            // Keep the ownership rule in one place for a future seam policy.
             word_midpoint_in_admit(pin, admit_start, admit_end)
         } else {
             pin.sample_start >= admit_start && pin.sample_end <= admit_end
         };
         if inside_admit {
+            let midpoint = pin.sample_start + pin.sample_len() / 2;
             let mut owners = open_members.iter().enumerate().filter(|(_, member)| {
-                pin.sample_start >= member.sample_start && pin.sample_end <= member.sample_end
+                pin.same_capture(member)
+                    && if word_grain {
+                        midpoint >= member.sample_start && midpoint < member.sample_end
+                    } else {
+                        pin.sample_start >= member.sample_start
+                            && pin.sample_end <= member.sample_end
+                    }
             });
             let first = owners.next();
             let another = owners.next();
@@ -1273,7 +1285,20 @@ impl AcousticLedger {
             return OverlapPinClass::Unanchored(NoAuthorityReason::OverlapWithoutWordPins);
         }
         if word_grain {
-            return OverlapPinClass::Replay;
+            let midpoint = pin.sample_start + pin.sample_len() / 2;
+            let owners = open_members
+                .iter()
+                .filter(|member| {
+                    pin.same_capture(member)
+                        && midpoint >= member.sample_start
+                        && midpoint < member.sample_end
+                })
+                .count();
+            return if owners == 1 {
+                OverlapPinClass::Replay
+            } else {
+                OverlapPinClass::Unanchored(NoAuthorityReason::OverlapWithoutWordPins)
+            };
         }
         let overlaps_admit = pin.sample_end > admit_start && pin.sample_start < admit_end;
         if !overlaps_admit {
@@ -4478,6 +4503,49 @@ mod tests {
                 true,
             ),
             OverlapPinClass::ExclusiveTail { member_index: 0 },
+        );
+    }
+
+    #[test]
+    fn word_midpoint_owns_a_pin_straddling_either_member_edge() {
+        let ledger = AcousticLedger::new();
+        let member = occ(10_000, 30_000);
+        for pin in [occ(8_000, 14_000), occ(26_000, 32_000)] {
+            assert_eq!(
+                ledger.classify_overlap_pin(&pin, 0, 40_000, std::slice::from_ref(&member), true),
+                OverlapPinClass::ExclusiveTail { member_index: 0 },
+            );
+            assert_eq!(
+                ledger.classify_overlap_pin(&pin, 0, 40_000, std::slice::from_ref(&member), false),
+                OverlapPinClass::Unanchored(NoAuthorityReason::OverlapWithoutWordPins),
+            );
+        }
+    }
+
+    #[test]
+    fn word_midpoint_in_member_gap_remains_unanchored() {
+        let ledger = AcousticLedger::new();
+        assert_eq!(
+            ledger.classify_overlap_pin(&occ(8_000, 12_000), 0, 40_000, &[occ(12_000, 30_000)], true),
+            OverlapPinClass::Unanchored(NoAuthorityReason::OverlapWithoutWordPins),
+        );
+    }
+
+    #[test]
+    fn adjacent_members_give_straddling_word_to_its_midpoint_owner() {
+        let ledger = AcousticLedger::new();
+        let members = [occ(0, 16_000), occ(16_000, 32_000)];
+        assert_eq!(
+            ledger.classify_overlap_pin(&occ(14_000, 22_000), 0, 32_000, &members, true),
+            OverlapPinClass::ExclusiveTail { member_index: 1 },
+        );
+        assert_eq!(
+            ledger.classify_overlap_pin(&occ(14_000, 22_000), 0, 32_000, &members, false),
+            OverlapPinClass::Unanchored(NoAuthorityReason::OverlapWithoutWordPins),
+        );
+        assert_eq!(
+            ledger.classify_overlap_pin(&occ(14_000, 22_000), 0, 32_000, &[occ(0, 20_000), occ(16_000, 32_000)], true),
+            OverlapPinClass::Unanchored(NoAuthorityReason::OverlapWithoutWordPins),
         );
     }
 
