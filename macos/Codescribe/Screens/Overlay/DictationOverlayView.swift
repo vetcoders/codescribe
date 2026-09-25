@@ -19,10 +19,9 @@ struct DictationOverlayView: View {
   @Environment(\.colorScheme) private var colorScheme
   @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
   @AppStorage(DictationOverlayGate.labModeDefaultsKey) private var labMode = false
-  @State private var pointerInside = false
   @State private var closeDotHovered = false
-  @State private var actionsPinned = false
-  @State private var actionsFocused = false
+  @State private var actions = OverlayActionsPresentation()
+  @State private var narrowActions = false
   @Bindable var state: OverlayState
 
   // Geometry constants local to this surface. The window is user-resizable;
@@ -58,7 +57,8 @@ struct DictationOverlayView: View {
           onRestore: state.restoreDocumentRevision,
           onHistoryRequest: state.loadDocumentHistory,
           onFormatLevel: state.setAutoFormatLevel,
-          onFocusChange: { actionsFocused = $0 }
+          onFocusChange: { actions.keyboardFocus = $0 },
+          onDismiss: { actions.dismiss() }
         )
       )
     }
@@ -118,19 +118,25 @@ struct DictationOverlayView: View {
             .accessibilityHidden(!actionsVisible)
             .accessibilityIdentifier("overlay-actions-ephemeral")
           Button {
-            actionsPinned.toggle()
+            actions.togglePin()
           } label: {
-            Capsule()
-              .fill(palette.mutedText.color.opacity(0.7))
-              .frame(width: 38, height: 4)
-              .padding(.horizontal, 20)
-              .padding(.vertical, 8)
-              .contentShape(Rectangle())
+            HStack(spacing: 4) {
+              Image(systemName: OverlayControlSymbols.actions)
+              if !narrowActions { Text("Actions") }
+            }
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(palette.primaryText.color)
+            .padding(.horizontal, 10)
+            .frame(minHeight: 24)
+            .background(.regularMaterial, in: Capsule())
+            .overlay { Capsule().strokeBorder(palette.border.color, lineWidth: 1) }
+            .contentShape(Capsule())
           }
           .buttonStyle(.plain)
-          .help(actionsVisible ? "Hide tools" : "Show tools")
-          .accessibilityLabel("Overlay tools")
-          .accessibilityValue(actionsVisible ? "Expanded" : "Collapsed")
+          .onExitCommand { actions.dismiss() }
+          .help(actions.isPinned ? "Unpin actions" : "Pin actions open")
+          .accessibilityLabel("Actions")
+          .accessibilityValue(actions.isPinned ? "Pinned" : "Hidden")
           .accessibilityIdentifier("overlay-tools-handle")
         }
         .fixedSize(horizontal: true, vertical: true)
@@ -138,26 +144,24 @@ struct DictationOverlayView: View {
         .padding(.bottom, 8)
         .contentShape(Rectangle())
         .onHover { hovering in
-          pointerInside = hovering
-          if !hovering {
-            actionsPinned = false
-            actionsFocused = false
-          }
+          actions.pointerInside = hovering
         }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: actionsVisible)
       }
     }
-    .onChange(of: state.isCollapsed) { _, _ in
-      pointerInside = false
-      actionsPinned = false
+    .onGeometryChange(for: Bool.self) { geometry in
+      geometry.size.width <= 360
+    } action: { narrowActions = $0 }
+    .onChange(of: state.isCollapsed) { _, collapsed in
+      if collapsed { actions.reset() }
     }
+    .onChange(of: state.captureGeneration) { _, _ in actions.reset() }
   }
 
   private var actionsVisible: Bool {
-    OverlayChromeVisibility.actionsVisible(
-      pointerInside: pointerInside,
-      keyboardFocus: actionsFocused || actionsPinned,
-      voiceOver: voiceOverEnabled
+    actions.isVisible(
+      voiceOver: voiceOverEnabled,
+      retainedWork: state.hasRecoverableSupersededWork
     )
   }
 
@@ -287,7 +291,9 @@ struct DictationOverlayView: View {
       state.setAutoPasteEnabled(!state.autoPasteEnabled)
     } label: {
       HStack(spacing: 4) {
-        Image(systemName: state.autoPasteEnabled ? "doc.on.clipboard.fill" : "doc.on.clipboard")
+        Image(
+          systemName: state.autoPasteEnabled
+            ? OverlayControlSymbols.autoPasteOn : OverlayControlSymbols.autoPasteOff)
           .font(.system(size: 10, weight: .semibold))
         Circle()
           .fill(state.autoPasteEnabled ? CSColor.oliveLight : CSColor.textFaint)

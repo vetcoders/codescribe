@@ -85,7 +85,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     }
   }
 
-  func testSavedExpansionAppliesOnAttachAndTemporaryChevronDoesNotWritePreference() {
+  func testChevronPersistsExpansionAcrossPreparingStartedAndReattach() {
     let engine = OverlayChromePolicyEngine()
     let first = OverlayState()
     first.engine = engine
@@ -96,7 +96,18 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertFalse(first.isCollapsed)
     first.toggleCollapsed()
     XCTAssertTrue(first.isCollapsed)
-    XCTAssertEqual(engine.expansionWrites, [true])
+    XCTAssertEqual(engine.expansionWrites, [true, false])
+    XCTAssertFalse(first.expandedByDefault)
+    first.handleRecordingPreparing()
+    XCTAssertTrue(first.isCollapsed)
+    first.handleRecordingStarted()
+    XCTAssertTrue(first.isCollapsed)
+    first.finishControllerRecording()
+    first.toggleCollapsed()
+    XCTAssertEqual(engine.expansionWrites, [true, false, true])
+    first.handleRecordingPreparing()
+    first.handleRecordingStarted()
+    XCTAssertFalse(first.isCollapsed)
     let reopened = OverlayState()
     reopened.engine = engine
     reopened.attach()
@@ -105,6 +116,30 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     reopened.setExpandedByDefault(false)
     XCTAssertFalse(reopened.isCollapsed)
     XCTAssertTrue(reopened.expandedByDefault)
+  }
+
+  func testChevronSaveFailureKeepsLocalChoiceAndReportsError() {
+    let engine = OverlayChromePolicyEngine()
+    let state = OverlayState()
+    state.engine = engine
+    state.attach()
+    engine.expansionWriteAllowed = false
+    var collapses: [Bool] = []
+    state.onCollapseChanged = { collapses.append($0) }
+    state.toggleCollapsed()
+    XCTAssertEqual(engine.expansionWrites, [true])
+    XCTAssertFalse(state.isCollapsed)
+    XCTAssertFalse(state.expandedByDefault, "The persisted preference did not change")
+    XCTAssertEqual(collapses, [false])
+    XCTAssertEqual(state.expansionPreferenceError, "Couldn't save overlay preference")
+    state.toggleCollapsed()
+    XCTAssertTrue(state.isCollapsed)
+    XCTAssertEqual(engine.expansionWrites, [true, false])
+    XCTAssertEqual(collapses, [false, true])
+    engine.expansionWriteAllowed = true
+    state.toggleCollapsed()
+    XCTAssertNil(state.expansionPreferenceError)
+    XCTAssertTrue(state.expandedByDefault)
   }
 
   func testSavedPinLoadsWithoutWritingAgain() {
@@ -162,23 +197,71 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     }
   }
 
-  func testToolsHaveSmallHandleAndDoNotRevealOnCanvasHover() throws {
+  func testActionsControlPinsWithoutChangingCanvasHoverOrDocumentOwnership() throws {
     let source = try overlaySource()
     XCTAssertTrue(source.contains("overlay-tools-handle"))
     XCTAssertTrue(source.contains("overlay-collapse-toggle"))
     let tools = try section(
       of: source, from: "VStack(spacing: 2)", to: "private var actionsVisible")
     XCTAssertTrue(tools.contains(".fixedSize(horizontal: true, vertical: true)"))
-    XCTAssertTrue(tools.contains("pointerInside = hovering"))
-    XCTAssertTrue(tools.contains("if !hovering {"))
-    XCTAssertTrue(tools.contains("actionsPinned = false"))
-    XCTAssertTrue(tools.contains("actionsFocused = false"))
+    XCTAssertTrue(tools.contains("actions.pointerInside = hovering"))
+    XCTAssertTrue(tools.contains("actions.togglePin()"))
+    XCTAssertTrue(tools.contains("Image(systemName: OverlayControlSymbols.actions)"))
+    XCTAssertTrue(tools.contains("if !narrowActions { Text(\"Actions\") }"))
+    XCTAssertTrue(tools.contains("geometry.size.width <= 360"))
+    XCTAssertTrue(tools.contains(".accessibilityLabel(\"Actions\")"))
+    XCTAssertTrue(tools.contains("actions.isPinned ? \"Pinned\" : \"Hidden\""))
+    let hover = try section(of: tools, from: ".onHover { hovering in", to: ".animation(")
+    XCTAssertFalse(hover.contains("reset()"))
+    XCTAssertFalse(hover.contains("dismiss()"))
+    XCTAssertTrue(tools.contains("if collapsed { actions.reset() }"))
+    XCTAssertTrue(tools.contains(".onChange(of: state.captureGeneration)"))
+    XCTAssertTrue(source.contains("retainedWork: state.hasRecoverableSupersededWork"))
+    let stateSource = try self.source(at: "Codescribe/Screens/Overlay/OverlayState.swift")
+    XCTAssertFalse(stateSource.contains("@ObservationIgnored private(set) var captureGeneration"))
+    let rail = try railSource()
+    XCTAssertTrue(rail.contains(".onExitCommand {"))
+    XCTAssertTrue(rail.contains("focusedControl = nil"))
+    XCTAssertTrue(rail.contains("onDismiss()"))
+    XCTAssertTrue(source.contains("onDismiss: { actions.dismiss() }"))
     XCTAssertFalse(source.contains("NSApp.isFullKeyboardAccessEnabled"))
     XCTAssertFalse(
       source.contains("pointerInside = inside"), "Whole canvas hover must not reveal tools")
     XCTAssertFalse(
       OverlayChromeVisibility.actionsVisible(
         pointerInside: false, keyboardFocus: false, voiceOver: false))
+  }
+
+  func testActionsPinSurvivesPointerExitAndEndsOnSecondClickEscapeOrReset() {
+    var actions = OverlayActionsPresentation()
+    XCTAssertFalse(actions.isVisible())
+    actions.pointerInside = true
+    XCTAssertTrue(actions.isVisible(), "Hover remains ephemeral")
+    actions.togglePin()
+    actions.pointerInside = false
+    XCTAssertTrue(actions.isPinned)
+    XCTAssertTrue(actions.isVisible())
+    actions.togglePin()
+    XCTAssertFalse(actions.isPinned)
+    XCTAssertFalse(actions.isVisible())
+
+    actions.togglePin()
+    actions.keyboardFocus = true
+    actions.dismiss()
+    XCTAssertFalse(actions.isPinned)
+    XCTAssertFalse(actions.isVisible())
+
+    for _ in 0..<2 {
+      // Both new-capture and collapse observers use this same reset.
+      actions.togglePin()
+      actions.pointerInside = true
+      actions.keyboardFocus = true
+      actions.reset()
+      XCTAssertFalse(actions.isPinned)
+      XCTAssertFalse(actions.isVisible())
+    }
+    XCTAssertTrue(actions.isVisible(retainedWork: true))
+    XCTAssertTrue(actions.isVisible(voiceOver: true))
   }
 
   private func findTranscript(in view: NSView) -> LiveTranscriptNativeTextView? {
@@ -399,8 +482,8 @@ private final class OverlayChromePolicyEngine: DictationEngine {
   var expansionWriteAllowed = true
   func overlayExpandedByDefault() -> Bool { expanded }
   func setOverlayExpandedByDefault(_ enabled: Bool) -> Bool {
-    guard expansionWriteAllowed else { return false }
     expansionWrites.append(enabled)
+    guard expansionWriteAllowed else { return false }
     expanded = enabled
     return true
   }
