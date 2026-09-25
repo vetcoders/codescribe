@@ -4016,7 +4016,10 @@ mod tests {
             assert_eq!(loaded.transcription_overlay_enabled, Some(true));
             let persisted: serde_json::Value =
                 serde_json::from_slice(&fs::read(UserSettings::settings_path()).unwrap()).unwrap();
-            assert_eq!(persisted["ui"]["show_transcript_at_take_start"], show_transcript);
+            assert_eq!(
+                persisted["ui"]["show_transcript_at_take_start"],
+                show_transcript
+            );
             assert!(persisted.get("show_transcript_at_take_start").is_none());
         }
     }
@@ -4048,7 +4051,11 @@ mod tests {
             }
             let persisted: serde_json::Value = serde_json::from_slice(&saved).unwrap();
             assert_eq!(persisted["ui"]["overlay_expanded_by_default"], false);
-            assert!(persisted["ui"].get("show_transcript_at_take_start").is_none());
+            assert!(
+                persisted["ui"]
+                    .get("show_transcript_at_take_start")
+                    .is_none()
+            );
         }
     }
 

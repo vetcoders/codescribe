@@ -3655,7 +3655,10 @@ mod settings_snapshot_tests {
         assert!(config.overlay_expanded_by_default());
         for enabled in [false, true] {
             assert!(config.set_overlay_expanded_by_default(enabled));
-            assert_eq!(CodescribeConfig::new().overlay_expanded_by_default(), enabled);
+            assert_eq!(
+                CodescribeConfig::new().overlay_expanded_by_default(),
+                enabled
+            );
             let saved = UserSettings::load();
             assert_eq!(saved.overlay_expanded_by_default, Some(false));
             assert_eq!(saved.show_transcript_at_take_start, Some(enabled));

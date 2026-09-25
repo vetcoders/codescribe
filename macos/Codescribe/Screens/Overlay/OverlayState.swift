@@ -562,7 +562,7 @@ final class OverlayState {
   private var projectionOrder: [String: (sequence: UInt64, revision: UInt64, epoch: UInt64)] = [:]
   private var endedProjectionSessions: Set<String> = []
 
-  private var recording = false
+  private(set) var recording = false
   /// Reason from `on_no_speech`, captured before the terminal stop.
   private var pendingNoSpeechMessage: String?
   /// The exact rendered text at the terminal projection.
