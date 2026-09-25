@@ -531,12 +531,15 @@ impl SileroIngress {
             self.speech
                 .raw_ranges(observed_samples)
                 .into_iter()
-                .filter(|(start, end)| end > start)
-                .map(|(sample_start, sample_end)| TailSampleRange {
-                    session: self.session.clone(),
-                    capture_epoch: self.capture_epoch,
-                    sample_start,
-                    sample_end,
+                .filter_map(|(start, end)| {
+                    let sample_start = start.min(observed_samples);
+                    let sample_end = end.min(observed_samples);
+                    (sample_end > sample_start).then(|| TailSampleRange {
+                        session: self.session.clone(),
+                        capture_epoch: self.capture_epoch,
+                        sample_start,
+                        sample_end,
+                    })
                 })
                 .collect(),
         )
@@ -1911,6 +1914,11 @@ mod tests {
         let offered = clock.next(&raw, 16_000, true).unwrap();
         assert_eq!(offered.admit_sample_start, 2_000);
         assert_eq!(offered.admit_sample_end, 4_000);
+        ingress.speech.open(7_000);
+        ingress.speech.close(9_000);
+        let clamped = ingress.raw_speech_evidence();
+        assert_eq!(clamped.ranges().last().unwrap().sample_start, 7_000);
+        assert_eq!(clamped.ranges().last().unwrap().sample_end, 8_000);
 
         // A chunk that skips ahead leaves audio this observer never heard.
         ingress.note_observed_pcm(4_000, 24_000);
