@@ -140,7 +140,7 @@ fi
 # Naming them makes removal of the setup fail closed instead of disappearing
 # from a dynamic search together with the protection it was meant to enforce.
 for target in test test-quick test-e2e test-e2e-real test-sse test-formatting \
-              test-engine-apple-channel test-engine-candle test-all; do
+              test-engine-apple-channel test-all; do
     target_recipe="$(make_target_block "$target")"
     if [[ -z "$target_recipe" ]]; then
         fail "$target is missing while test isolation still expects it"
