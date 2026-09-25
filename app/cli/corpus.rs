@@ -2154,6 +2154,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn worker_profiles_pin_one_mode_and_reject_retired_selectors() {
         let _serial = crate::test_env::data_dir_env_serial();
         struct RestoreEnv(Vec<(std::ffi::OsString, Option<std::ffi::OsString>)>);
