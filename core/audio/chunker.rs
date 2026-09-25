@@ -1884,7 +1884,12 @@ mod tests {
             interim_limit: 16_000,
             max_utterance_samples: 2_048,
         };
-        session.iter_state.as_mut().unwrap().params.max_speech_samples = 960_000.0;
+        session
+            .iter_state
+            .as_mut()
+            .unwrap()
+            .params
+            .max_speech_samples = 960_000.0;
         session.scripted_speech_probs.extend([0.9; 4]);
         for _ in 0..4 {
             session.feed(&[0.2; 512], 0);

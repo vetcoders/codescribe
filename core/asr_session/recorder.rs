@@ -1049,7 +1049,10 @@ mod tests {
             RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(provider)), &input());
 
         for _ in 0..(OVERFLOW_DEGRADE_LIMIT - 1) {
-            assert_eq!(force_provider_push(&mut lane), FanOutVerdict::DroppedOverflow);
+            assert_eq!(
+                force_provider_push(&mut lane),
+                FanOutVerdict::DroppedOverflow
+            );
         }
         assert!(lane.is_live(), "a short overflow run is absorbed");
         assert_eq!(

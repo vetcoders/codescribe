@@ -894,15 +894,15 @@ impl AcousticLedger {
                 ObservationProducer::Whisper | ObservationProducer::CloudLive
             ) && canonical.iter().any(|prior| {
                 prior.producer == slot.producer
-                        && same_word_pin(
-                            slot.sample_start,
-                            slot.sample_end,
-                            &slot.text,
-                            prior.sample_start,
-                            prior.sample_end,
-                            &prior.text,
-                        )
-                });
+                    && same_word_pin(
+                        slot.sample_start,
+                        slot.sample_end,
+                        &slot.text,
+                        prior.sample_start,
+                        prior.sample_end,
+                        &prior.text,
+                    )
+            });
             if !duplicate {
                 canonical.push(slot);
             }
@@ -6252,15 +6252,26 @@ mod tests {
         let slots = ledger.slots_of(&occurrence).unwrap();
         assert_eq!(slots.len(), 2);
         assert_eq!(
-            (slots[0].sample_start, slots[0].sample_end, slots[0].text.as_str()),
+            (
+                slots[0].sample_start,
+                slots[0].sample_end,
+                slots[0].text.as_str()
+            ),
             (1_000, 4_000, "dwa")
         );
         assert_eq!(
-            (slots[1].sample_start, slots[1].sample_end, slots[1].text.as_str()),
+            (
+                slots[1].sample_start,
+                slots[1].sample_end,
+                slots[1].text.as_str()
+            ),
             (8_000, 12_000, "slowa")
         );
-        assert!(slots.iter().all(|slot| slot.sample_end - slot.sample_start
-            < occurrence.sample_len()));
+        assert!(
+            slots
+                .iter()
+                .all(|slot| slot.sample_end - slot.sample_start < occurrence.sample_len())
+        );
     }
 
     #[test]
