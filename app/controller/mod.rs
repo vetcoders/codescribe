@@ -2588,6 +2588,12 @@ impl RecordingController {
             .filter(|word| word.reason.starts_with("superseded_by_final rev=")).count();
         let covered_by_committed_words = missing_words.iter()
             .filter(|word| word.reason.starts_with("covered_by_committed occurrence=")).count();
+        let relabeled_in_place_words = missing_words.iter()
+            .filter(|word| word.reason.split("; ")
+                .any(|reason| reason.starts_with("relabeled_in_place occurrence="))).count();
+        let reshaped_in_place_words = missing_words.iter()
+            .filter(|word| word.reason.split("; ")
+                .any(|reason| reason.starts_with("reshaped_in_place occurrence="))).count();
         let unaccounted = missing_words.iter().filter(|word| word.reason == "unaccounted").count();
         if !missing_words.is_empty() {
             warn!(take_id, paste_words, painted_words_at_stop, painted_words_at_snapshot,
@@ -2607,6 +2613,8 @@ impl RecordingController {
             superseded_by_partial_words,
             superseded_by_final_words,
             covered_by_committed_words,
+            relabeled_in_place_words,
+            reshaped_in_place_words,
             unaccounted,
             armed_order,
             light_plus,

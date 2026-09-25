@@ -479,6 +479,7 @@ struct PaintedCanvas {
     text: String,
     preview_only_words: usize,
     visible_words: Vec<VisibleWord>,
+    committed_sources: BTreeMap<OccurrenceIdentity, CommittedPaintSource>,
 }
 
 #[derive(Debug, Default)]
@@ -497,16 +498,33 @@ pub enum PreviewSupersession {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct CommittedPaintSource {
+    occurrence: OccurrenceIdentity,
+    observation_receipt: String,
+    presentation_receipt: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum VisibleWordSource {
-    Committed(OccurrenceIdentity, String, Option<String>),
+    Committed(CommittedPaintSource),
     Unanchored(ObservationIdentity),
     Refused(usize),
     Preview(u64),
     DocumentRevision {
         receipt: Option<String>,
-        members: Vec<VisibleWordSource>,
+        members: Vec<CommittedPaintSource>,
         markers: usize,
     },
+}
+
+impl VisibleWordSource {
+    fn committed_members(&self) -> &[CommittedPaintSource] {
+        match self {
+            Self::Committed(source) => std::slice::from_ref(source),
+            Self::DocumentRevision { members, .. } => members,
+            _ => &[],
+        }
+    }
 }
 
 /// A word position belongs to its typed paint source, never to a text match.
@@ -691,23 +709,38 @@ impl TranscriptReducer {
                 .find(|receipt| receipt.members.iter().any(|member| &member.occurrence == range))
                 .map(|receipt| receipt.receipt_id.clone())
                 .or_else(|| self.shaped_by_occurrence.get(range).map(|receipt| receipt.receipt_id.clone()));
-            VisibleWordSource::Committed(range.clone(), entry.observation_receipt.clone(), presentation)
+            CommittedPaintSource {
+                occurrence: range.clone(),
+                observation_receipt: entry.observation_receipt.clone(),
+                presentation_receipt: self.manual_document_revision_receipt.clone().or(presentation),
+            }
         };
         if fragments.is_empty()
             && (self.manual_rendered_text.is_some() || !self.context_markers.is_empty())
         {
             let source = VisibleWordSource::DocumentRevision {
                 receipt: self.manual_document_revision_receipt.clone(),
-                members: if self.manual_rendered_text.is_some() { Vec::new() } else {
-                    self.document_by_occurrence.iter().map(|(range, entry)| source_for(range, entry)).collect()
-                },
+                members: self.document_by_occurrence.iter()
+                    .map(|(range, entry)| source_for(range, entry)).collect(),
                 markers: if self.manual_rendered_text.is_some() { 0 } else { self.context_markers.len() },
             };
             fragments.push((0, self.committed_rendered_text(), source, false));
         } else {
             for (range, entry) in &self.document_by_occurrence {
+                let source = self.consultation_presentations.iter()
+                    .find(|receipt| receipt.members.first()
+                        .is_some_and(|member| &member.occurrence == range))
+                    .map(|receipt| VisibleWordSource::DocumentRevision {
+                        receipt: Some(receipt.receipt_id.clone()),
+                        members: receipt.members.iter().filter_map(|member| {
+                            self.document_by_occurrence.get(&member.occurrence)
+                                .map(|entry| source_for(&member.occurrence, entry))
+                        }).collect(),
+                        markers: 0,
+                    })
+                    .unwrap_or_else(|| VisibleWordSource::Committed(source_for(range, entry)));
                 fragments.push((range.sample_start, self.presentation_of(range, entry).to_string(),
-                    source_for(range, entry), false));
+                    source, false));
             }
         }
         fragments.sort_by_key(|(start, _, _, _)| *start);
@@ -1493,6 +1526,9 @@ pub struct VisibleCanvasSnapshot {
     pub qualified_occurrences: usize,
     pub visible_words: Vec<VisibleWord>,
     pub preview_supersessions: BTreeMap<u64, PreviewSupersession>,
+    /// Provenance from the same paint, including consultation members whose
+    /// text is rendered together under the group's first occurrence.
+    committed_sources: BTreeMap<OccurrenceIdentity, CommittedPaintSource>,
 }
 
 impl VisibleCanvasSnapshot {
@@ -1518,6 +1554,42 @@ impl VisibleCanvasSnapshot {
                     && present.offset == word.offset)
             {
                 None
+            } else if !word.source.committed_members().is_empty() {
+                let mut reasons = Vec::new();
+                for source in word.source.committed_members() {
+                    let occurrence = &source.occurrence;
+                    if let Some(present) = pasted.committed_sources.get(occurrence) {
+                        if source.observation_receipt != present.observation_receipt {
+                            reasons.push(format!("relabeled_in_place occurrence={occurrence:?}"));
+                        } else if source.presentation_receipt != present.presentation_receipt {
+                            reasons.push(format!("reshaped_in_place occurrence={occurrence:?}"));
+                        }
+                    } else if let Some(owner) = pasted.committed_sources.keys()
+                        .find(|owner| range_within(occurrence, owner))
+                    {
+                        reasons.push(format!("covered_by_committed occurrence={owner:?}"));
+                    } else {
+                        // A surviving member must never conceal a removed one.
+                        return Some(MissingVisibleWord {
+                            word: word.word.clone(), reason: "unaccounted".into(),
+                        });
+                    }
+                }
+                if !reasons.is_empty() {
+                    // A document word has joint member provenance. Keep one
+                    // word receipt while naming each changed member.
+                    Some(reasons.join("; "))
+                } else if matches!(&word.source, VisibleWordSource::DocumentRevision { .. })
+                    || pasted.visible_words.iter().any(|present| {
+                        matches!(&present.source, VisibleWordSource::DocumentRevision { members, .. }
+                            if word.source.committed_members().iter().all(|source| members.contains(source)))
+                    })
+                {
+                    None
+                } else {
+                    // Unchanged receipts still require the original offset.
+                    Some("unaccounted".to_string())
+                }
             } else {
                 Some("unaccounted".to_string())
             };
@@ -1621,6 +1693,7 @@ impl PresentationEmitter {
             text: reducer.last_painted_canvas.text.clone(),
             preview_only_words: reducer.last_painted_canvas.preview_only_words,
             visible_words: reducer.last_painted_canvas.visible_words.clone(),
+            committed_sources: reducer.last_painted_canvas.committed_sources.clone(),
             preview_supersessions: phrase.supersessions.clone(),
             has_committed_document: !reducer.document_by_occurrence.is_empty(),
             qualified_occurrences: ledger.as_ref().map_or(0, |ledger| {
@@ -1660,9 +1733,29 @@ impl PresentationEmitter {
             rendered_text: shaped,
             provenance: DocumentRevisionProvenance::LightPlus,
         })?;
+        // The accepted revision rewrites this frozen document's presentation.
+        // Carry its receipt with the pasted bytes, without sampling later paint.
+        let mut committed_sources = frozen.committed_sources.clone();
+        for source in committed_sources.values_mut() {
+            source.presentation_receipt = Some(commit.provenance_receipt.clone());
+        }
+        let source = VisibleWordSource::DocumentRevision {
+            receipt: Some(commit.provenance_receipt.clone()),
+            members: committed_sources.values().cloned().collect(),
+            markers: 0,
+        };
+        let mut visible_words = commit.rendered_text.split_whitespace().enumerate()
+            .map(|(offset, word)| VisibleWord {
+                word: word.to_string(), preview_rev: None, source: source.clone(),
+                offset, covered_by: None,
+            }).collect::<Vec<_>>();
+        visible_words.extend(frozen.visible_words.iter()
+            .filter(|word| word.covered_by.is_some()).cloned());
         Ok(VisibleCanvasSnapshot {
             revision: commit.revision,
             text: commit.rendered_text,
+            visible_words,
+            committed_sources,
             ..frozen
         })
     }
@@ -1919,7 +2012,11 @@ impl PresentationEmitter {
                 let mut visible = String::new();
                 let mut visible_words = Vec::new();
                 let mut preview_only_words = 0;
+                let mut committed_sources = BTreeMap::new();
                 for (_, text, source, is_evidence) in fragments {
+                    for member in source.committed_members() {
+                        committed_sources.insert(member.occurrence.clone(), member.clone());
+                    }
                     append_exact_fragment(&mut visible, &text);
                     if is_evidence {
                         preview_only_words += text.split_whitespace().count();
@@ -1951,6 +2048,7 @@ impl PresentationEmitter {
                         text: visible,
                         preview_only_words,
                         visible_words,
+                        committed_sources,
                     };
                 self.paint_cursor(paint);
             }
@@ -4131,7 +4229,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn changed_label_receipt_cannot_account_for_a_stopped_word() {
+    async fn relabel_in_place_during_the_wait_is_accounted_not_a_defect() {
         let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
         let mut emitter = PresentationEmitter::new_with_authority(
             Arc::new(Mutex::new(String::new())), None, None, None,
@@ -4143,7 +4241,7 @@ mod tests {
         let mutation = admitted_mutation(&mut ledger.lock().unwrap(), occurrence.clone(), 1, "before");
         emitter.on_event(&mutation);
         let stopped = emitter.begin_stop_canvas().unwrap();
-        let observation = ObservationIdentity::new(ObservationProducer::Apple, 2, 1, occurrence);
+        let observation = ObservationIdentity::new(ObservationProducer::Apple, 2, 1, occurrence.clone());
         let receipt = ledger.lock().unwrap().admit(&observation, "after");
         assert!(matches!(receipt, MutationReceipt::Correct { .. }));
         emitter.on_event(&EngineEvent::LedgerMutation { observation, label: "after".into(), receipt });
@@ -4151,7 +4249,257 @@ mod tests {
         assert_eq!(frozen.text, "after");
         let missing = stopped.missing_words_from(&frozen);
         assert_eq!(missing.len(), 1);
-        assert_eq!(missing[0].reason, "unaccounted");
+        assert_eq!(missing[0].reason, format!("relabeled_in_place occurrence={occurrence:?}"));
+        assert!(missing.iter().all(|word| word.reason != "unaccounted"));
+        emitter.finish().await;
+    }
+
+    #[tokio::test]
+    async fn stop_wait_accounts_for_shaping_relabel_and_untouched_occurrences() {
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let mut emitter = PresentationEmitter::new_with_authority(
+            Arc::new(Mutex::new(String::new())), None, None, None,
+            Some(Arc::clone(&ledger)), None,
+        );
+        // Hold presentation until the seal arrives during the STOP wait.
+        emitter.set_literal_delivery(true);
+        emitter.on_capture_opened("take", 7);
+        let occurrences = (0..3).map(|index|
+            OccurrenceIdentity::new("take", 7, index * 16_000, (index + 1) * 16_000)
+        ).collect::<Vec<_>>();
+        for (index, label) in ["first phrase", "old label words", "untouched words"].iter().enumerate() {
+            let mutation = admitted_mutation(&mut ledger.lock().unwrap(),
+                occurrences[index].clone(), index as u64 + 1, label);
+            emitter.on_event(&mutation);
+        }
+        let stopped = emitter.begin_stop_canvas().unwrap();
+        emitter.set_literal_delivery(false);
+        let receipt = {
+            let mut ledger = ledger.lock().unwrap();
+            ledger.schedule_frontier(occurrences[0].clone(), [ObservationProducer::Apple]);
+            assert!(ledger.note_frontier_return(&occurrences[0], ObservationProducer::Apple));
+            ledger.seal(&occurrences[0]).unwrap().clone()
+        };
+        emitter.on_event(&EngineEvent::LedgerSeal { receipt });
+        let observation = ObservationIdentity::new(
+            ObservationProducer::Whisper, 4, 0, occurrences[1].clone(),
+        );
+        let receipt = ledger.lock().unwrap().admit(&observation, "new label");
+        assert!(matches!(receipt, MutationReceipt::Correct { .. }));
+        emitter.on_event(&EngineEvent::LedgerMutation { observation, label: "new label".into(), receipt });
+        let frozen = emitter.finish_stop_canvas().unwrap();
+        assert_eq!(frozen.text, "First phrase new label untouched words");
+        assert_eq!(frozen.text, *emitter.paint_commands.lock().unwrap().last().unwrap());
+        let missing = stopped.missing_words_from(&frozen);
+        assert_eq!(missing.len(), 5);
+        assert_eq!(missing.iter().filter(|word|
+            word.reason == format!("reshaped_in_place occurrence={:?}", occurrences[0])).count(), 2);
+        assert_eq!(missing.iter().filter(|word|
+            word.reason == format!("relabeled_in_place occurrence={:?}", occurrences[1])).count(), 3);
+        assert_eq!(stopped.visible_words.len() - missing.len(), 2);
+        assert!(missing.iter().all(|word| word.reason != "unaccounted"));
+        emitter.finish().await;
+    }
+
+    #[tokio::test]
+    async fn removed_committed_occurrence_without_successor_is_unaccounted() {
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let mut emitter = PresentationEmitter::new_with_authority(
+            Arc::new(Mutex::new(String::new())), None, None, None,
+            Some(Arc::clone(&ledger)), None,
+        );
+        emitter.set_literal_delivery(true);
+        emitter.on_capture_opened("take", 7);
+        let removed = OccurrenceIdentity::new("take", 7, 0, 16_000);
+        let survivor = OccurrenceIdentity::new("take", 7, 16_000, 32_000);
+        for (index, occurrence) in [&removed, &survivor].iter().enumerate() {
+            let mutation = admitted_mutation(&mut ledger.lock().unwrap(),
+                (*occurrence).clone(), index as u64 + 1, "same words");
+            emitter.on_event(&mutation);
+        }
+        let stopped = emitter.begin_stop_canvas().unwrap();
+        // Fault injection: lose a reducer entry while identical words survive
+        // at a disjoint PCM range. Text must not conceal the loss.
+        emitter.session_state.lock().unwrap().document_by_occurrence.remove(&removed);
+        emitter.send_committed_paint("same words".into());
+        let frozen = emitter.finish_stop_canvas().unwrap();
+        let missing = stopped.missing_words_from(&frozen);
+        assert_eq!(missing.len(), 2);
+        assert!(missing.iter().all(|word| word.reason == "unaccounted"));
+
+        // A different committed owner may account for that range only when
+        // its PCM actually contains it on the same capture clock.
+        let owner = OccurrenceIdentity::new("take", 7, 0, 32_000);
+        {
+            let mut state = emitter.session_state.lock().unwrap();
+            let mut entry = state.document_by_occurrence.remove(&survivor).unwrap();
+            entry.occurrence = owner.clone();
+            state.document_by_occurrence.insert(owner.clone(), entry);
+        }
+        emitter.send_committed_paint("same words".into());
+        let covered = emitter.visible_canvas_snapshot().unwrap();
+        let accounted = stopped.missing_words_from(&covered);
+        assert_eq!(accounted.len(), 4);
+        assert!(accounted.iter().all(|word|
+            word.reason == format!("covered_by_committed occurrence={owner:?}")));
+        let mut foreign = covered.clone();
+        foreign.capture_epoch += 1;
+        assert!(stopped.missing_words_from(&foreign).iter().all(|word| word.reason == "unaccounted"));
+        emitter.finish().await;
+    }
+
+    #[tokio::test]
+    async fn document_revision_accounts_for_member_occurrences() {
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let mut emitter = PresentationEmitter::new_with_authority(
+            Arc::new(Mutex::new(String::new())), None, None, None,
+            Some(Arc::clone(&ledger)), None,
+        );
+        emitter.set_literal_delivery(true);
+        emitter.on_capture_opened("take", 7);
+        let first = OccurrenceIdentity::new("take", 7, 0, 16_000);
+        let second = OccurrenceIdentity::new("take", 7, 16_000, 32_000);
+        for (index, occurrence) in [&first, &second].iter().enumerate() {
+            let mutation = admitted_mutation(&mut ledger.lock().unwrap(),
+                (*occurrence).clone(), index as u64 + 1, "old words");
+            emitter.on_event(&mutation);
+        }
+        let plain = emitter.visible_canvas_snapshot().unwrap();
+        emitter.on_event(&EngineEvent::ContextMarker { position: 0, label: "{selection_1}".into() });
+        let stopped = emitter.begin_stop_canvas().unwrap();
+        assert!(plain.missing_words_from(&stopped).is_empty());
+        let observation = ObservationIdentity::new(ObservationProducer::Whisper, 3, 0, first.clone());
+        let receipt = ledger.lock().unwrap().admit(&observation, "new label");
+        assert!(matches!(receipt, MutationReceipt::Correct { .. }));
+        emitter.on_event(&EngineEvent::LedgerMutation { observation, label: "new label".into(), receipt });
+        let relabeled = emitter.visible_canvas_snapshot().unwrap();
+        assert_eq!(relabeled.text, "{selection_1} new label old words");
+        assert!(stopped.missing_words_from(&relabeled).iter().all(|word|
+            word.reason == format!("relabeled_in_place occurrence={first:?}")));
+
+        emitter.on_event(&EngineEvent::SessionFinalised {
+            session_id: "take".into(), layer_summary: LayerSummary::default(),
+        });
+        emitter.apply_user_revision(UserRevisionIntent {
+            session_id: "take".into(), source_revision: relabeled.revision,
+            rendered_text: "Revised document.".into(),
+            provenance: DocumentRevisionProvenance::UserEdit,
+        }).unwrap();
+        let revised = emitter.visible_canvas_snapshot().unwrap();
+        assert_eq!(revised.committed_sources.len(), 2);
+        let reshaped = relabeled.missing_words_from(&revised);
+        assert_eq!(reshaped.len(), relabeled.visible_words.len());
+        assert!(reshaped.iter().all(|word|
+            word.reason.contains(&format!("reshaped_in_place occurrence={first:?}"))
+                && word.reason.contains(&format!("reshaped_in_place occurrence={second:?}"))));
+        assert!(revised.missing_words_from(&revised).is_empty());
+
+        emitter.apply_user_revision(UserRevisionIntent {
+            session_id: "take".into(), source_revision: revised.revision,
+            rendered_text: "Another document revision.".into(),
+            provenance: DocumentRevisionProvenance::UserEdit,
+        }).unwrap();
+        let frozen = emitter.finish_stop_canvas().unwrap();
+        assert_eq!(frozen.text, "Another document revision.");
+        assert!(revised.missing_words_from(&frozen).iter().all(|word|
+            word.reason.contains(&format!("reshaped_in_place occurrence={first:?}"))
+                && word.reason.contains(&format!("reshaped_in_place occurrence={second:?}"))));
+
+        // Joint document provenance is not permission to lose a member.
+        let mut removed = frozen.clone();
+        removed.committed_sources.remove(&second);
+        assert!(revised.missing_words_from(&removed).iter().all(|word| word.reason == "unaccounted"));
+        emitter.finish().await;
+    }
+
+    #[tokio::test]
+    async fn frozen_shaping_accounts_for_every_committed_member() {
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let mut emitter = PresentationEmitter::new_with_authority(
+            Arc::new(Mutex::new(String::new())), None, None, None,
+            Some(Arc::clone(&ledger)), None,
+        );
+        emitter.set_literal_delivery(true);
+        emitter.on_capture_opened("take", 7);
+        for index in 0..2 {
+            let mutation = admitted_mutation(&mut ledger.lock().unwrap(),
+                OccurrenceIdentity::new("take", 7, index * 16_000, (index + 1) * 16_000),
+                index + 1, "some words");
+            emitter.on_event(&mutation);
+        }
+        let stopped = emitter.begin_stop_canvas().unwrap();
+        emitter.set_literal_delivery(false);
+        let frozen = emitter.shape_frozen_canvas_at_stop(stopped.clone()).unwrap();
+        assert_eq!(frozen.text, "Some words some words.");
+        let missing = stopped.missing_words_from(&frozen);
+        assert_eq!(missing.len(), 4);
+        for occurrence in stopped.committed_sources.keys() {
+            assert_eq!(missing.iter().filter(|word|
+                word.reason == format!("reshaped_in_place occurrence={occurrence:?}")).count(), 2);
+        }
+        let painted = emitter.visible_canvas_snapshot().unwrap();
+        assert_eq!(frozen.visible_words, painted.visible_words);
+        assert_eq!(frozen.committed_sources, painted.committed_sources);
+        emitter.finish().await;
+    }
+
+    #[tokio::test]
+    async fn stop_wait_accounts_for_all_consultation_members() {
+        use codescribe_core::pipeline::acoustic_ledger::ConsultationPresentationMember;
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let mut emitter = PresentationEmitter::new_with_authority(
+            Arc::new(Mutex::new(String::new())), None, None, None,
+            Some(Arc::clone(&ledger)), None,
+        );
+        emitter.set_literal_delivery(true);
+        emitter.on_capture_opened("take", 7);
+        let mut members = Vec::new();
+        for index in 0..2 {
+            let occurrence = OccurrenceIdentity::new("take", 7, index * 16_000, (index + 1) * 16_000);
+            let mutation = admitted_mutation(&mut ledger.lock().unwrap(), occurrence.clone(), index + 1, "old words");
+            emitter.on_event(&mutation);
+            let seal = {
+                let mut ledger = ledger.lock().unwrap();
+                ledger.schedule_frontier(occurrence.clone(), [ObservationProducer::Apple]);
+                assert!(ledger.note_frontier_return(&occurrence, ObservationProducer::Apple));
+                ledger.seal(&occurrence).unwrap().clone()
+            };
+            emitter.on_event(&EngineEvent::LedgerSeal { receipt: seal.clone() });
+            members.push(ConsultationPresentationMember {
+                occurrence, source_label: "old words".into(), seal_receipt: seal.receipt_id,
+            });
+        }
+        let stopped = emitter.begin_stop_canvas().unwrap();
+        let revision = {
+            let mut ledger = ledger.lock().unwrap();
+            emitter.session_state.lock().unwrap().apply_consultation_presentation(
+                &mut ledger,
+                ConsultationPresentationInput {
+                    consultation_id: "Max", turn_id: "stop-wait", source_revision: 0, revision: 1,
+                    members: &members, rendered_text: "Combined answer",
+                },
+            ).unwrap()
+        };
+        emitter.publish_revision(revision);
+        let frozen = emitter.finish_stop_canvas().unwrap();
+        assert_eq!(frozen.text, "Combined answer");
+        assert_eq!(frozen.committed_sources.len(), 2);
+        let missing = stopped.missing_words_from(&frozen);
+        assert_eq!(missing.len(), 4);
+        for member in &members {
+            assert_eq!(missing.iter().filter(|word|
+                word.reason == format!("reshaped_in_place occurrence={:?}", member.occurrence)).count(), 2);
+        }
+        {
+            let mut state = emitter.session_state.lock().unwrap();
+            state.document_by_occurrence.remove(&members[1].occurrence);
+            state.invalidate_stale_shapes();
+        }
+        emitter.send_committed_paint("old words".into());
+        let removed = emitter.visible_canvas_snapshot().unwrap();
+        let lost = frozen.missing_words_from(&removed);
+        assert_eq!(lost.len(), 2);
+        assert!(lost.iter().all(|word| word.reason == "unaccounted"));
         emitter.finish().await;
     }
 
