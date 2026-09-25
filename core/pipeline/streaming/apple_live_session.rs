@@ -3936,9 +3936,9 @@ fn reconcile_silero_ledger(
                 (silero.range.sample_start, silero.range.sample_end)
             }
         };
-        // A contained re-partition is already owned while its admission horizon
-        // remains open. This decision cannot mint identity or plan another job.
-        let contained_open_owner = {
+        // A contained re-partition is already owned, including sealed speech.
+        // This decision cannot mint identity or plan another job.
+        let contained_owner = {
             let ledger = state
                 .acoustic_ledger
                 .lock()
@@ -3946,14 +3946,12 @@ fn reconcile_silero_ledger(
             ledger.qualified_occurrences().any(|owner| {
                 owner.session == state.session_id
                     && owner.capture_epoch == state.capture_epoch
-                    && ledger.frontier_of(owner).is_some()
-                    && !ledger.is_sealed(owner)
                     && owner.sample_start <= owned_start
                     && owned_end <= owner.sample_end
                     && (owned_start, owned_end) != (owner.sample_start, owner.sample_end)
             })
         };
-        if contained_open_owner {
+        if contained_owner {
             admit_late_apple_words(state, ev_tx, utterance_id, &words, disjoint);
             state.reconciled_silero.insert(utterance_id);
             continue;
@@ -4354,10 +4352,7 @@ fn admit_ledger_label<'a>(
         };
         ledger.schedule_frontier(occurrence.clone(), producers);
     }
-    let receipt = ledger.admit(&observation, label);
-    if receipt.grants_mutation() && !words.is_empty() {
-        ledger.pin_word_ranges(&observation, words);
-    }
+    let receipt = ledger.admit_pinned_label(&observation, label, words);
     let _ = ev_tx.send(EngineEvent::LedgerMutation {
         observation,
         label: label.to_string(),
@@ -12708,23 +12703,13 @@ mod rc_w2_test_rehab {
                 EngineEvent::LedgerMutation { label, receipt, .. }
                     if label == "alpha beta revised" =>
                 {
-                    if armed {
-                        matches!(
-                            receipt,
-                            MutationReceipt::Refuse {
-                                reason: RefuseReason::SealedReplay,
-                                ..
-                            }
-                        )
-                    } else {
-                        matches!(
-                            receipt,
-                            MutationReceipt::KeepVisibleUnanchored {
-                                reason: NoAuthorityReason::LateAppleWordSealedOwner,
-                                ..
-                            }
-                        )
-                    }
+                    matches!(
+                        receipt,
+                        MutationReceipt::Refuse {
+                            reason: RefuseReason::SealedReplay,
+                            ..
+                        }
+                    )
                 }
                 _ => false,
             }));
@@ -12741,7 +12726,7 @@ mod rc_w2_test_rehab {
                 state.tail_patch = Some(tail_tx);
             }
             let owner = OccurrenceIdentity::new("restatement-slot", 7, 0, sample(2.0));
-            let words = vec![segment("alpha", 0.0, 0.5), segment("beta", 1.0, 1.5)];
+            let mut words = vec![segment("alpha", 0.0, 0.5), segment("beta", 1.0, 1.5)];
             emit(&mut state, &tx, words.clone());
             let before = state
                 .acoustic_ledger
@@ -12751,9 +12736,11 @@ mod rc_w2_test_rehab {
                 .unwrap()
                 .to_vec();
             drain(&mut rx);
-            emit(&mut state, &tx, words);
+            let receipts_before = state.acoustic_ledger.lock().unwrap().layer_trail().len();
+            emit(&mut state, &tx, words.clone());
             assert!(drain(&mut rx).is_empty());
             let ledger = state.acoustic_ledger.lock().unwrap();
+            assert_eq!(ledger.layer_trail().len(), receipts_before);
             assert_eq!(ledger.text_of(&owner), Some("alpha beta"));
             assert_eq!(ledger.slots_of(&owner).unwrap(), before.as_slice());
             assert_eq!(
@@ -12767,10 +12754,83 @@ mod rc_w2_test_rehab {
                         }
                     ))
                     .count(),
-                2
+                0
             );
             assert_eq!(ledger.conservation().residue(), 0);
             assert_eq!(ledger.is_sealed(&owner), !armed);
+            drop(ledger);
+
+            // A new callback crosses the callback fence. Its consumed ranges
+            // receive replay receipts; only the novel range may add a slot.
+            words.push(segment("gamma", 1.6, 1.9));
+            emit(&mut state, &tx, words);
+            let events = drain(&mut rx);
+            let ledger = state.acoustic_ledger.lock().unwrap();
+            for label in ["alpha", "beta"] {
+                assert_eq!(
+                    ledger
+                        .layer_trail_for(&owner)
+                        .filter(|entry| {
+                            entry.candidate_label == label
+                                && matches!(
+                                    entry.decision,
+                                    MutationReceipt::Refuse {
+                                        reason: RefuseReason::ReplayedRangeIdentity,
+                                        ..
+                                    }
+                                )
+                        })
+                        .count(),
+                    1
+                );
+                assert_eq!(
+                    events
+                        .iter()
+                        .filter(|event| matches!(
+                            event,
+                            EngineEvent::LedgerMutation {
+                                observation,
+                                label: emitted,
+                                receipt: MutationReceipt::Refuse {
+                                    reason: RefuseReason::ReplayedRangeIdentity,
+                                    ..
+                                },
+                            } if observation.occurrence == owner && emitted == label
+                        ))
+                        .count(),
+                    1
+                );
+            }
+            let slots = ledger.slots_of(&owner).unwrap();
+            assert_eq!(&slots[..before.len()], before.as_slice());
+            if armed {
+                assert_eq!(slots.len(), before.len() + 1);
+                assert_eq!(slots.last().unwrap().text, "gamma");
+                assert_eq!(ledger.text_of(&owner), Some("alpha beta gamma"));
+                assert!(events.iter().any(|event| matches!(
+                    event,
+                    EngineEvent::LedgerMutation { label, receipt, .. }
+                        if label == "alpha beta gamma" && receipt.grants_mutation()
+                )));
+            } else {
+                assert_eq!(slots, before.as_slice());
+                assert_eq!(ledger.text_of(&owner), Some("alpha beta"));
+                assert!(events.iter().any(|event| matches!(
+                    event,
+                    EngineEvent::LedgerMutation {
+                        label,
+                        receipt: MutationReceipt::KeepVisibleUnanchored {
+                            reason: NoAuthorityReason::LateAppleWordSealedOwner,
+                            ..
+                        },
+                        ..
+                    } if label == "gamma"
+                )));
+            }
+            ledger.assert_slot_labels();
+            assert_eq!(ledger.conservation().residue(), 0);
+            assert_eq!(ledger.is_sealed(&owner), !armed);
+            assert!(state.unmatched_silero_words.is_empty());
         }
     }
 
@@ -17260,6 +17320,72 @@ mod tc2_window_contract_tests {
             start_ts: start as f32 / RATE as f32,
             end_ts: end as f32 / RATE as f32,
         }
+    }
+
+    #[test]
+    fn sealed_owner_repartition_mints_no_second_identity() {
+        let mut f = fixture();
+        while let Ok(request) = f.requests.try_recv() {
+            f.state.complete_whisper_window(
+                &f.events,
+                completion(&request, vec![pin("alpha", 246_464, 262_784)]),
+                10.7,
+            );
+        }
+        f.state.close_admission_horizon(&f.events, 510_464);
+        let (seal, frontier) = {
+            let ledger = f.state.acoustic_ledger.lock().unwrap();
+            (
+                ledger.seal_of(&f.occurrence).unwrap().clone(),
+                ledger.frontier_of(&f.occurrence).unwrap().clone(),
+            )
+        };
+        let newer = OccurrenceIdentity::new(SESSION, 1, 508_416, 743_424);
+        f.physical
+            .open_or_extend(SESSION, 1, newer.sample_start, newer.sample_end);
+        f.physical.close_open(newer.sample_end);
+        assert!(reconcile_silero_ledger(
+            &mut f.state,
+            &f.events,
+            &f.physical,
+            &[],
+        ));
+        while f.receiver.try_recv().is_ok() {}
+        let request = f.requests.try_recv().unwrap();
+        f.state.complete_whisper_window(
+            &f.events,
+            completion(&request, vec![pin("delta", 434_496, 470_976)]),
+            14.6,
+        );
+        let events = std::iter::from_fn(|| f.receiver.try_recv().ok()).collect::<Vec<_>>();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    EngineEvent::LedgerMutation {
+                        observation,
+                        label,
+                        receipt: MutationReceipt::KeepVisibleUnanchored {
+                            occurrence,
+                            reason: NoAuthorityReason::LateWhisperWordSealedOwner,
+                            ..
+                        },
+                    } if observation.occurrence == f.occurrence
+                        && occurrence == &f.occurrence && label == "delta"
+                ))
+                .count(),
+            1
+        );
+        let ledger = f.state.acoustic_ledger.lock().unwrap();
+        let owners = ledger.qualified_occurrences().collect::<Vec<_>>();
+        assert_eq!(owners, vec![&f.occurrence, &newer]);
+        assert_eq!(ledger.text_of(&f.occurrence), Some("alpha"));
+        assert_eq!(ledger.seal_of(&f.occurrence), Some(&seal));
+        assert_eq!(ledger.frontier_of(&f.occurrence), Some(&frontier));
+        assert!(f.state.unmatched_silero_words.is_empty());
+        assert_eq!(ledger.conservation().residue(), 0);
+        ledger.assert_slot_labels();
     }
 
     #[test]

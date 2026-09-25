@@ -643,30 +643,21 @@ impl AcousticLedger {
             .map(|held| held.slots.as_slice())
     }
 
-    /// Attach exact Apple word ranges to the observation just admitted.
-    /// This may refine timing only: the recomposed label must be identical,
-    /// the observation must still own the text, and seals are immutable.
-    /// Invalid or absent word timing leaves the single whole-occurrence slot.
-    pub(crate) fn pin_word_ranges(
+    /// Admit an Apple label with its exact word ranges in the same decision.
+    /// Pins must compose the offered label before they can authorize overlap.
+    /// Invalid or absent timing uses ordinary whole-label admission.
+    pub(crate) fn admit_pinned_label(
         &mut self,
         observation: &ObservationIdentity,
+        label: &str,
         words: &[(u64, u64, String)],
-    ) -> bool {
+    ) -> MutationReceipt {
         let occurrence = &observation.occurrence;
         if observation.producer != ObservationProducer::Apple
             || self.is_sealed(occurrence)
             || words.is_empty()
         {
-            return false;
-        }
-        let Some(held) = self.committed.get_mut(occurrence) else {
-            return false;
-        };
-        if held.producer != observation.producer
-            || held.request != observation.request
-            || held.generation != observation.generation
-        {
-            return false;
+            return self.admit(observation, label);
         }
         let mut slots = Vec::with_capacity(words.len());
         for (start, end, text) in words {
@@ -675,7 +666,7 @@ impl AcousticLedger {
                 || midpoint < occurrence.sample_start
                 || midpoint >= occurrence.sample_end
             {
-                return false;
+                return self.admit(observation, label);
             }
             slots.push(WordSlot {
                 sample_start: (*start).max(occurrence.sample_start),
@@ -692,13 +683,13 @@ impl AcousticLedger {
         if slots
             .windows(2)
             .any(|pair| pair[0].sample_end > pair[1].sample_start)
-            || compose_label(&slots) != held.label
+            || compose_label(&slots) != label
         {
-            return false;
+            return self.admit(observation, label);
         }
-        held.slots = slots;
-        held.recompose();
-        true
+        // Exact timing does not grant the producer a slot-merge revision or
+        // permission to repin another producer's preserved label.
+        self.admit_with_slots(observation, label, Some(slots), false)
     }
 
     /// Allocate a new generation of this occurrence's producer, independently
@@ -876,7 +867,7 @@ impl AcousticLedger {
             }
         }
         let label = compose_label(&canonical);
-        let receipt = self.admit_with_slots(observation, &label, Some(canonical));
+        let receipt = self.admit_with_slots(observation, &label, Some(canonical), true);
         if receipt.grants_mutation() || matches!(receipt, MutationReceipt::Preserve { .. }) {
             for slot in removed {
                 self.refuse_replacement(
@@ -1238,7 +1229,7 @@ impl AcousticLedger {
     /// Every call also appends exactly one [`LayerDecisionReceipt`], so the
     /// per-layer history can never fall behind the decisions it describes.
     pub fn admit(&mut self, observation: &ObservationIdentity, text: &str) -> MutationReceipt {
-        self.admit_with_slots(observation, text, None)
+        self.admit_with_slots(observation, text, None, false)
     }
 
     fn admit_with_slots(
@@ -1246,6 +1237,7 @@ impl AcousticLedger {
         observation: &ObservationIdentity,
         text: &str,
         slots: Option<Vec<WordSlot>>,
+        slot_revision: bool,
     ) -> MutationReceipt {
         self.offered_observations += 1;
         let authorized_recovery = !text.trim().is_empty()
@@ -1262,8 +1254,9 @@ impl AcousticLedger {
                         || (observation.producer == held.producer
                             && observation.generation > held.generation)
                 });
-        let decision = self.decide_observation(observation, text, slots.is_some());
-        if (decision.grants_mutation() || matches!(decision, MutationReceipt::Preserve { .. }))
+        let decision = self.decide_observation(observation, text, slot_revision, slots.is_some());
+        if (decision.grants_mutation()
+            || (slot_revision && matches!(decision, MutationReceipt::Preserve { .. })))
             && let Some(slots) = slots
             && let Some(held) = self.committed.get_mut(&observation.occurrence)
         {
@@ -1285,6 +1278,7 @@ impl AcousticLedger {
         observation: &ObservationIdentity,
         text: &str,
         slot_revision: bool,
+        has_word_pins: bool,
     ) -> MutationReceipt {
         // An observation that names no audio may be shown but may not act. It
         // is NOT written to the ledger: a zero-width prior that entered the map
@@ -1417,7 +1411,7 @@ impl AcousticLedger {
                 OccurrenceRelation::Overlapping { .. }
             )
         });
-        if overlaps {
+        if overlaps && !has_word_pins {
             // Shares audio with something committed, but the payload carries no
             // word pins, so no token can be attributed to the shared part.
             // Clipping here would delete speech on a guess; the honest answer is
@@ -3946,14 +3940,18 @@ mod tests {
     fn word_slots_compose_with_their_own_ranges_and_one_occurrence_serial() {
         let (mut ledger, occurrence) = whisper_only_qualified_ledger();
         let observation = obs(ObservationProducer::Apple, 0, occurrence.clone());
-        assert!(ledger.admit(&observation, "Iwo znowu").is_insert());
-        assert!(ledger.pin_word_ranges(
-            &observation,
-            &[
-                (1_000, 5_000, "Iwo".into()),
-                (8_000, 14_000, "znowu".into())
-            ],
-        ));
+        assert!(
+            ledger
+                .admit_pinned_label(
+                    &observation,
+                    "Iwo znowu",
+                    &[
+                        (1_000, 5_000, "Iwo".into()),
+                        (8_000, 14_000, "znowu".into())
+                    ],
+                )
+                .is_insert()
+        );
         ledger.assert_slot_labels();
         assert_eq!(ledger.text_of(&occurrence), Some("Iwo znowu"));
         let composed = ledger.compose(&occurrence).expect("qualified words");
@@ -4025,18 +4023,104 @@ mod tests {
     }
 
     #[test]
+    fn pinned_first_label_admits_overlapping_owner() {
+        for producer in [ObservationProducer::Apple, ObservationProducer::Whisper] {
+            let mut ledger = AcousticLedger::new();
+            let older = occ(0, 16_000);
+            let newer = occ(12_000, 24_000);
+            assert!(
+                ledger
+                    .admit(&obs(ObservationProducer::Apple, 0, older.clone()), "older")
+                    .is_insert()
+            );
+            let observation = obs(producer, 1, newer.clone());
+            let words = [(13_000, 14_000, "newer".into())];
+            let receipt = if producer == ObservationProducer::Apple {
+                ledger.admit_pinned_label(&observation, "newer", &words)
+            } else {
+                ledger.admit_word_slots(&observation, &words)
+            };
+            assert!(receipt.is_insert());
+            assert_eq!(ledger.text_of(&older), Some("older"));
+            assert_eq!(ledger.text_of(&newer), Some("newer"));
+            let slots = ledger.slots_of(&newer).unwrap();
+            assert_eq!(slots.len(), 1);
+            assert_eq!((slots[0].sample_start, slots[0].sample_end), (13_000, 14_000));
+            assert_eq!(slots[0].observation, observation);
+            assert_eq!(ledger.layer_trail_for(&newer).count(), 1);
+            assert_eq!(ledger.conservation().residue(), 0);
+            ledger.assert_slot_labels();
+        }
+    }
+
+    #[test]
+    fn invalid_first_label_pins_cannot_bypass_overlap() {
+        for words in [
+            vec![],
+            vec![(13_000, 13_000, "newer".into())],
+            vec![(1_000, 2_000, "newer".into())],
+            vec![(13_000, 14_000, "different".into())],
+            vec![(13_000, 15_000, "new".into()), (14_000, 16_000, "er".into())],
+        ] {
+            let mut ledger = AcousticLedger::new();
+            let older = occ(0, 16_000);
+            let newer = occ(12_000, 24_000);
+            assert!(
+                ledger
+                    .admit(&obs(ObservationProducer::Apple, 0, older.clone()), "older")
+                    .is_insert()
+            );
+            assert!(matches!(
+                ledger.admit_pinned_label(
+                    &obs(ObservationProducer::Apple, 1, newer.clone()),
+                    "newer",
+                    &words,
+                ),
+                MutationReceipt::KeepVisibleUnanchored {
+                    reason: NoAuthorityReason::OverlapWithoutWordPins,
+                    ..
+                }
+            ));
+            assert_eq!(ledger.text_of(&older), Some("older"));
+            assert_eq!(ledger.text_of(&newer), None);
+            assert!(ledger.slots_of(&newer).is_none());
+            assert_eq!(ledger.layer_trail_for(&newer).count(), 1);
+            assert_eq!(ledger.conservation().residue(), 0);
+        }
+    }
+
+    #[test]
     fn word_ranges_cannot_rewrite_a_label_or_a_sealed_occurrence() {
         let (mut ledger, occurrence) = whisper_only_qualified_ledger();
         let observation = obs(ObservationProducer::Apple, 0, occurrence.clone());
-        ledger.admit(&observation, "Iwo");
-        assert!(!ledger.pin_word_ranges(&observation, &[(0, 8_000, "inne".into())]));
-        assert!(ledger.pin_word_ranges(&observation, &[(1_000, 8_000, "Iwo".into())]));
+        assert!(
+            ledger
+                .admit_pinned_label(&observation, "Iwo", &[(0, 8_000, "inne".into())])
+                .is_insert()
+        );
+        assert_eq!(ledger.text_of(&occurrence), Some("Iwo"));
+        assert_eq!(ledger.slots_of(&occurrence).unwrap()[0].sample_end, 16_000);
+        let next = ledger.next_word_observation(ObservationProducer::Apple, 0, &occurrence);
+        assert!(matches!(
+            ledger.admit_pinned_label(&next, "Iwo", &[(1_000, 8_000, "Iwo".into())]),
+            MutationReceipt::Preserve { .. }
+        ));
+        let before = ledger.slots_of(&occurrence).unwrap().to_vec();
         ledger.assert_slot_labels();
         ledger.note_frontier_return(&occurrence, ObservationProducer::Whisper);
-        ledger.seal(&occurrence).unwrap();
-        assert!(!ledger.pin_word_ranges(&observation, &[(2_000, 9_000, "Iwo".into())]));
+        let seal = ledger.seal(&occurrence).unwrap().clone();
+        let late = ledger.next_word_observation(ObservationProducer::Apple, 0, &occurrence);
+        assert!(matches!(
+            ledger.admit_pinned_label(&late, "Iwo", &[(2_000, 9_000, "Iwo".into())]),
+            MutationReceipt::Refuse {
+                reason: RefuseReason::SealedReplay,
+                ..
+            }
+        ));
         ledger.assert_slot_labels();
-        assert_eq!(ledger.slots_of(&occurrence).unwrap()[0].sample_start, 1_000);
+        assert_eq!(ledger.slots_of(&occurrence).unwrap(), before.as_slice());
+        assert_eq!(ledger.seal_of(&occurrence), Some(&seal));
+        assert_eq!(ledger.conservation().residue(), 0);
     }
 
     fn debt_speech() -> AcousticSpeechEvidence {
@@ -5040,17 +5124,21 @@ mod tests {
         let mut ledger = AcousticLedger::new();
         let owner = occ(0, 240_000);
         let apple = obs(ObservationProducer::Apple, 0, owner.clone());
-        ledger.admit(&apple, "a b c d e");
-        assert!(ledger.pin_word_ranges(
-            &apple,
-            &[
-                (0, 48_000, "a".into()),
-                (48_000, 96_000, "b".into()),
-                (96_000, 144_000, "c".into()),
-                (144_000, 192_000, "d".into()),
-                (192_000, 240_000, "e".into()),
-            ]
-        ));
+        assert!(
+            ledger
+                .admit_pinned_label(
+                    &apple,
+                    "a b c d e",
+                    &[
+                        (0, 48_000, "a".into()),
+                        (48_000, 96_000, "b".into()),
+                        (96_000, 144_000, "c".into()),
+                        (144_000, 192_000, "d".into()),
+                        (192_000, 240_000, "e".into()),
+                    ]
+                )
+                .is_insert()
+        );
         let whisper = obs(ObservationProducer::Whisper, 1, owner.clone());
         assert!(
             ledger
