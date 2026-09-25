@@ -3901,44 +3901,31 @@ fn reconcile_silero_ledger(
             }
             state.reconciled_silero.insert(utterance_id);
         }
+        let word_ranges = words
+            .iter()
+            .map(|word| (word.sample_start, word.sample_end, word.text.clone()))
+            .collect::<Vec<_>>();
         let apple_admitted = if has_apple_label {
             admit_ledger_label(
                 state,
                 ev_tx,
-                LabelAdmission {
-                    observation: LedgerObservationIdentity::new(
-                        LedgerObservationProducer::Apple,
-                        utterance_id,
-                        0,
-                        occurrence.clone(),
-                    ),
-                    label: &text,
-                    energy: EnergyAdmission::RequireExistingQualification,
+                RangedLabelAdmission {
+                    admission: LabelAdmission {
+                        observation: LedgerObservationIdentity::new(
+                            LedgerObservationProducer::Apple,
+                            utterance_id,
+                            0,
+                            occurrence.clone(),
+                        ),
+                        label: &text,
+                        energy: EnergyAdmission::RequireExistingQualification,
+                    },
+                    words: &word_ranges,
                 },
             )
         } else {
             None
         };
-        if apple_admitted
-            .as_ref()
-            .is_some_and(MutationReceipt::grants_mutation)
-        {
-            let observation = LedgerObservationIdentity::new(
-                LedgerObservationProducer::Apple,
-                utterance_id,
-                0,
-                occurrence.clone(),
-            );
-            let word_ranges = words
-                .iter()
-                .map(|word| (word.sample_start, word.sample_end, word.text.clone()))
-                .collect::<Vec<_>>();
-            state
-                .acoustic_ledger
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .pin_word_ranges(&observation, &word_ranges);
-        }
         state.pending_events.insert(
             utterance_id,
             PendingAppleSeal {
@@ -4078,6 +4065,19 @@ struct LabelAdmission<'a> {
     energy: EnergyAdmission,
 }
 
+/// Optional word timing carried into the same locked admission and publication.
+/// Label-only producers supply no ranges and retain one occurrence-wide slot.
+struct RangedLabelAdmission<'a> {
+    admission: LabelAdmission<'a>,
+    words: &'a [(u64, u64, String)],
+}
+
+impl<'a> From<LabelAdmission<'a>> for RangedLabelAdmission<'a> {
+    fn from(admission: LabelAdmission<'a>) -> Self {
+        Self { admission, words: &[] }
+    }
+}
+
 /// Qualification consumes owned PCM and calibration, never a candidate label.
 fn qualify_owned_occurrence(state: &AppleSealState, occurrence: &OccurrenceIdentity) -> bool {
     if occurrence.session != state.session_id || occurrence.capture_epoch != state.capture_epoch {
@@ -4134,11 +4134,12 @@ fn qualify_owned_occurrence(state: &AppleSealState, occurrence: &OccurrenceIdent
     true
 }
 
-fn admit_ledger_label(
+fn admit_ledger_label<'a>(
     state: &mut AppleSealState,
     ev_tx: &mpsc::UnboundedSender<EngineEvent>,
-    admission: LabelAdmission<'_>,
+    admission: impl Into<RangedLabelAdmission<'a>>,
 ) -> Option<MutationReceipt> {
+    let RangedLabelAdmission { admission, words } = admission.into();
     let LabelAdmission {
         observation,
         label,
@@ -4190,6 +4191,9 @@ fn admit_ledger_label(
         ledger.schedule_frontier(occurrence.clone(), producers);
     }
     let receipt = ledger.admit(&observation, label);
+    if receipt.grants_mutation() && !words.is_empty() {
+        ledger.pin_word_ranges(&observation, words);
+    }
     let _ = ev_tx.send(EngineEvent::LedgerMutation {
         observation,
         label: label.to_string(),
@@ -13292,6 +13296,30 @@ mod live_refinement_admission_tests {
             EngineEvent::LedgerMutation { label, receipt, .. }
                 if label.trim().is_empty() && receipt.grants_mutation()
         )));
+    }
+
+    #[test]
+    fn apple_word_slots_are_pinned_before_the_admission_is_published() {
+        let (mut state, events, mut receiver, _requests) = fixture(1);
+        assert!(reconcile_silero_ledger(&mut state, &events, &closed(1), &[
+            TranscriptSegment { text: "hello".into(), start_ts: 0.0, end_ts: 0.1 },
+            TranscriptSegment { text: "again".into(), start_ts: 0.2, end_ts: 0.4 },
+        ]));
+        let occurrence = OccurrenceIdentity::new("live-admission", 7, 0, 400);
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        ledger.assert_slot_labels();
+        let slots = ledger.slots_of(&occurrence).unwrap();
+        assert_eq!(slots.len(), 2);
+        assert_eq!((slots[0].sample_start, slots[0].sample_end), (0, 100));
+        assert_eq!((slots[1].sample_start, slots[1].sample_end), (200, 400));
+        let tokens = ledger.compose(&occurrence).unwrap().tokens;
+        assert_eq!(tokens[0].token_sample_end, Some(100));
+        assert_eq!(tokens[1].token_sample_start, Some(200));
+        assert!(std::iter::from_fn(|| receiver.try_recv().ok()).any(|event| matches!(event,
+            EngineEvent::LedgerMutation { observation, receipt: MutationReceipt::Insert { .. }, .. }
+                if observation.producer == LedgerObservationProducer::Apple
+        )));
+        assert_eq!(ledger.conservation().residue(), 0);
     }
 
     #[test]
