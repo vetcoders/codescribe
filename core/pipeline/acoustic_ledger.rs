@@ -468,6 +468,7 @@ pub struct WordSlot {
     pub witness: SlotWitness,
 }
 
+/// Compare two owner-clipped word spans without using text as identity.
 pub(crate) fn same_word_pin(
     start: u64, end: u64, text: &str,
     prior_start: u64, prior_end: u64, prior_text: &str,
@@ -521,7 +522,7 @@ impl CommittedObservation {
 
     fn recompose(&mut self) {
         self.slots
-            .sort_by_key(|slot| (slot.sample_start, slot.sample_end));
+            .sort_by(|a, b| (a.sample_start, a.sample_end, &a.text).cmp(&(b.sample_start, b.sample_end, &b.text)));
         self.label = compose_label(&self.slots);
         debug_assert_eq!(self.label, compose_label(&self.slots));
     }
@@ -673,7 +674,7 @@ impl AcousticLedger {
                 witness: SlotWitness::Unwitnessed,
             });
         }
-        slots.sort_by_key(|slot| (slot.sample_start, slot.sample_end));
+        slots.sort_by(|a, b| (a.sample_start, a.sample_end, &a.text).cmp(&(b.sample_start, b.sample_end, &b.text)));
         if slots
             .windows(2)
             .any(|pair| pair[0].sample_end > pair[1].sample_start)
@@ -713,9 +714,10 @@ impl AcousticLedger {
         owner: &OccurrenceIdentity,
         pin: &OccurrenceIdentity,
         text: &str,
+        whisper_only: bool,
     ) -> bool {
         self.slots_of(owner).is_some_and(|slots| slots.iter().any(|slot| {
-            same_word_pin(
+            (!whisper_only || slot.producer == ObservationProducer::Whisper) && same_word_pin(
                 pin.sample_start.max(owner.sample_start), pin.sample_end.min(owner.sample_end), text,
                 slot.sample_start, slot.sample_end, &slot.text,
             )
@@ -738,8 +740,20 @@ impl AcousticLedger {
             } else {
                 NoAuthorityReason::LateAppleWordSealedOwner
             };
-            let text = words.iter().map(|(_, _, text)| text.as_str()).collect::<Vec<_>>().join(" ");
-            return self.keep_visible_unanchored(observation, &text, reason);
+            // The reducer keys evidence by occurrence. Carry forward the last
+            // K5 receipt so another late window cannot erase earlier evidence.
+            let prior = self.trail.iter().rev().find_map(|entry| {
+                if &entry.observation.occurrence != owner { return None; }
+                match &entry.decision {
+                    MutationReceipt::KeepVisibleUnanchored { label, reason:
+                        NoAuthorityReason::LateWhisperWordSealedOwner | NoAuthorityReason::LateAppleWordSealedOwner, ..
+                    } => Some(label.clone()),
+                    _ => None,
+                }
+            });
+            let mut labels = prior.into_iter().collect::<Vec<_>>();
+            labels.extend(words.iter().map(|(_, _, text)| text.clone()));
+            return self.keep_visible_unanchored(observation, &labels.join(" "), reason);
         }
         let mut incoming = Vec::new();
         for (start, end, text) in words {
@@ -780,9 +794,20 @@ impl AcousticLedger {
         }).cloned().collect::<Vec<_>>();
         let mut slots = previous.into_iter().filter(|slot| !removed.contains(slot)).collect::<Vec<_>>();
         slots.extend(incoming);
-        slots.sort_by_key(|slot| (slot.sample_start, slot.sample_end));
-        let label = compose_label(&slots);
-        let receipt = self.admit_with_slots(observation, &label, Some(slots));
+        slots.sort_by(|a, b| (a.sample_start, a.sample_end, &a.text).cmp(&(b.sample_start, b.sample_end, &b.text)));
+        // A replay delivered before its earlier window must yield the same
+        // surface. Keep the smallest PCM/text ordering key for overlapping
+        // copies; distinct words and disjoint repetitions remain separate.
+        let mut canonical: Vec<WordSlot> = Vec::with_capacity(slots.len());
+        for slot in slots {
+            let duplicate = slot.producer == ObservationProducer::Whisper
+                && canonical.iter().any(|prior| prior.producer == ObservationProducer::Whisper
+                    && same_word_pin(slot.sample_start, slot.sample_end, &slot.text,
+                        prior.sample_start, prior.sample_end, &prior.text));
+            if !duplicate { canonical.push(slot); }
+        }
+        let label = compose_label(&canonical);
+        let receipt = self.admit_with_slots(observation, &label, Some(canonical));
         if receipt.grants_mutation() || matches!(receipt, MutationReceipt::Preserve { .. }) {
             for slot in removed {
                 self.refuse_replacement(&slot.observation, &slot.text, RefuseReason::ReplacedByWhisper);
