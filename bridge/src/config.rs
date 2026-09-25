@@ -139,14 +139,6 @@ pub struct CsSettings {
     pub local_model: String,
     pub stt_file_endpoint: Option<String>,
     pub stt_live_endpoint: Option<String>,
-    /// STT engine selection (`CODESCRIBE_STT_ENGINE`): `"auto"` | `"apple"` |
-    /// `"whisper"`. `None` means the built-in auto policy. Written back via
-    /// `update_config` with the same key (promoted → settings.json).
-    pub stt_engine: Option<String>,
-    /// Legacy stop-file-pass token (`FINAL_PASS_MODE`). Runtime ignores it
-    /// on stop; Settings no longer exposes Always/Smart/Off. Persist `off`
-    /// if a value must still be written.
-    pub final_pass_mode: Option<String>,
     // ── Clipboard ──
     pub restore_clipboard: bool,
     pub restore_clipboard_delay_ms: u64,
@@ -163,9 +155,8 @@ pub struct CsSettings {
     pub llm_assistive_model: Option<String>,
     pub formatting_level: Option<String>,
     pub whisper_model: Option<String>,
-    /// Layered incremental transcription phase (`CODESCRIBE_LAYERED_TRANSCRIPTION`):
-    /// `"phase1"` | `"off"` (anything non-phase means OFF). Written back via
-    /// `update_config` with the same key (promoted → settings.json).
+    /// Read-only diagnostic env override captured by the runtime snapshot.
+    /// ASR mode owns the default; Settings never writes this value.
     pub layered_transcription: Option<String>,
     /// Workspace root directories the agent scans (`list_projects` tool) to
     /// resolve project names to paths (`AGENT_WORKSPACE_ROOTS`, colon-joined on
@@ -246,8 +237,6 @@ impl CsSettings {
             local_model: config.local_model.clone(),
             stt_file_endpoint: config.stt_file_endpoint.clone(),
             stt_live_endpoint: config.stt_live_endpoint.clone(),
-            stt_engine: setting_string(settings.stt_engine.clone()),
-            final_pass_mode: setting_string(settings.final_pass_mode.clone()),
             restore_clipboard: config.restore_clipboard,
             restore_clipboard_delay_ms: config.restore_clipboard_delay_ms,
             start_at_login: config.start_at_login,
@@ -267,7 +256,7 @@ impl CsSettings {
                 .or_else(|| Some(assistive.provider().as_string())),
             formatting_level: Some(runtime.formatting_policy().as_str().to_string()),
             whisper_model: setting_string(settings.whisper_model.clone()),
-            layered_transcription: setting_string(settings.layered_transcription.clone()),
+            layered_transcription: runtime.layered_transcription_override().map(str::to_owned),
             agent_workspace_roots,
             buffer_delay_ms: settings.buffer_delay_ms,
             typing_cps: settings.typing_cps,
@@ -3819,6 +3808,35 @@ mod settings_snapshot_tests {
                 }
             }
         }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn engine_controls_project_only_the_captured_layered_override() {
+        use codescribe_core::config::CapturedRuntimeInputs;
+
+        let _ambient = EnvGuard::set("CODESCRIBE_LAYERED_TRANSCRIPTION", "off");
+        let mut input = CapturedRuntimeInputs::defaults_at(
+            std::path::PathBuf::from("/fixture/engine-controls"),
+            1_700_000_000_000,
+        );
+        input.user_settings.asr_mode = Some("local_power".into());
+        let normal = Config::runtime_snapshot_from_captured(input.clone());
+        let projected = CsSettings::from_runtime_snapshot(&normal);
+        assert_eq!(projected.asr_mode.as_deref(), Some("local_power"));
+        assert_eq!(projected.layered_transcription, None);
+
+        input.overrides.insert(
+            "CODESCRIBE_LAYERED_TRANSCRIPTION".into(),
+            Ok("off".into()),
+        );
+        let degraded = Config::runtime_snapshot_from_captured(input);
+        let _changed = EnvGuard::set("CODESCRIBE_LAYERED_TRANSCRIPTION", "phase1");
+        assert_eq!(
+            CsSettings::from_runtime_snapshot(&degraded).layered_transcription.as_deref(),
+            Some("off")
+        );
+        assert_eq!(CsSettings::from_runtime_snapshot(&normal).layered_transcription, None);
     }
 
     /// C15D falsifier (source-level; W2 does not execute): Settings UI projection

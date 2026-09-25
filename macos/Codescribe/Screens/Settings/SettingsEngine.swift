@@ -785,8 +785,6 @@ extension CsSettings {
     localModel: "whisper-large-v3-turbo",
     sttFileEndpoint: nil,
     sttLiveEndpoint: nil,
-    sttEngine: nil,
-    finalPassMode: nil,
     restoreClipboard: true,
     restoreClipboardDelayMs: 200,
     startAtLogin: false,

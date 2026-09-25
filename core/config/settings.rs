@@ -338,23 +338,6 @@ pub struct UserSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backend_max_upload_mb: Option<u64>,
 
-    // ── STT engine / layered transcription (F1) ──
-    /// STT engine selection ("auto" | "apple" | "whisper").
-    /// Seeds `CODESCRIBE_STT_ENGINE`; string on purpose (1:1 env mapping, like
-    /// `onboarding_mode`). `None`/absent means the built-in auto policy.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stt_engine: Option<String>,
-    /// Final-pass routing mode (`always` | `smart` | `off`).
-    /// Seeds `FINAL_PASS_MODE` (alias `CODESCRIBE_FINAL_PASS_MODE`). Default
-    /// Smart when absent. Distinct from lexicon `FinalPassMode` in contracts.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub final_pass_mode: Option<String>,
-    /// Layered incremental transcription phase ("off" | "phase1").
-    /// Seeds `CODESCRIBE_LAYERED_TRANSCRIPTION`. In Local Power, absent means
-    /// the required Apple-first patcher default is armed; explicit `off` is a
-    /// named degraded override. `phase1` remains a compatibility token.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub layered_transcription: Option<String>,
     /// Opt-in Whisper `initial_prompt` vocabulary hint.
     /// Seeds `CODESCRIBE_STT_INITIAL_PROMPT_ENABLED`; absent means default OFF.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1038,6 +1021,7 @@ pub struct RuntimeSettingsSnapshot {
     /// power-user env override. Consumers never re-read either source.
     seal_lane_armed: bool,
     local_tail_patch: crate::asr_session::recorder::LocalTailPatchDisposition,
+    layered_transcription_override: Option<String>,
     tail_provider: Option<crate::stt::tail_provider::TailProviderId>,
 }
 
@@ -1056,6 +1040,7 @@ pub(crate) struct RuntimeSnapshotParts {
     pub(crate) energy_calibration: SealedEnergyCalibration,
     pub(crate) seal_lane_armed: bool,
     pub(crate) local_tail_patch: crate::asr_session::recorder::LocalTailPatchDisposition,
+    pub(crate) layered_transcription_override: Option<String>,
     pub(crate) tail_provider: Option<crate::stt::tail_provider::TailProviderId>,
 }
 
@@ -1077,6 +1062,7 @@ impl RuntimeSettingsSnapshot {
             energy_calibration,
             seal_lane_armed,
             local_tail_patch,
+            layered_transcription_override,
             tail_provider,
         } = parts;
         SettingsSnapshotValidation::admit(&values, &provenance, &digest)?;
@@ -1092,6 +1078,7 @@ impl RuntimeSettingsSnapshot {
             energy_calibration,
             seal_lane_armed,
             local_tail_patch,
+            layered_transcription_override,
             tail_provider,
         })
     }
@@ -1122,6 +1109,7 @@ impl RuntimeSettingsSnapshot {
             energy_calibration,
             seal_lane_armed,
             local_tail_patch,
+            layered_transcription_override,
             tail_provider,
         } = parts;
         Self {
@@ -1136,6 +1124,7 @@ impl RuntimeSettingsSnapshot {
             energy_calibration,
             seal_lane_armed,
             local_tail_patch,
+            layered_transcription_override,
             tail_provider,
         }
     }
@@ -1143,6 +1132,11 @@ impl RuntimeSettingsSnapshot {
     /// Repair facts captured for this generation, independent of later process state.
     pub fn repair_receipt(&self) -> &super::repair::RepairReceipt {
         &self.repair_receipt
+    }
+
+    /// Diagnostic environment override captured by the sole loader.
+    pub fn layered_transcription_override(&self) -> Option<&str> {
+        self.layered_transcription_override.as_deref()
     }
 
     /// Recording-start local Whisper decision, frozen by the sole loader.
@@ -1372,9 +1366,7 @@ struct SpeechV2 {
     // by the one-shot migration in `load_unlocked` and never written back.
 }
 
-/// Which recognizer runs and how. `mode` is the legacy local/cloud switch;
-/// `stt_engine` is the newer product selector that supersedes it. Both are
-/// kept because existing files on disk still carry the former.
+/// ASR product mode and the endpoints and models used by its lanes.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct SpeechEngineV2 {
@@ -1396,13 +1388,6 @@ struct SpeechEngineV2 {
     whisper_context_window_sec: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     light_plus_sentence_pause_sec: Option<f32>,
-    // F1 layered transcription: engine selector + phase flag (string, 1:1 env).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    stt_engine: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    final_pass_mode: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    layered_transcription: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     initial_prompt_enabled: Option<bool>,
     // C2: Layer 1 product mode (cloud | local_power | apple_only) and the
@@ -1411,20 +1396,6 @@ struct SpeechEngineV2 {
     asr_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     gateway_session_url: Option<String>,
-}
-
-/// Normalize the only accepted local STT engine settings.
-///
-/// `candle` is the low-level spelling of the user-facing `whisper` route.
-/// Retired or unknown selectors are rejected rather than kept as dormant
-/// compatibility values that a future router could accidentally revive.
-pub(crate) fn normalize_stt_engine(value: &str) -> Option<String> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "auto" => Some("auto".to_string()),
-        "apple" => Some("apple".to_string()),
-        "whisper" | "candle" => Some("whisper".to_string()),
-        _ => None,
-    }
 }
 
 /// LLM post-processing of the transcript: whether it runs, how aggressively,
@@ -1647,15 +1618,6 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "CODESCRIBE_BUFFERED_INTERIM_SEC",
     "WHISPER_MODEL",
     "BACKEND_MAX_UPLOAD_MB",
-    // STT contract (2026-07-24): engine + final-pass are product settings.
-    // UI writes land in settings.json; process env is reconciled on write so
-    // a stale ~/.codescribe/.env line cannot silently lottery the live path.
-    "CODESCRIBE_STT_ENGINE",
-    "FINAL_PASS_MODE",
-    "CODESCRIBE_FINAL_PASS_MODE",
-    // Promoted 2026-08-10: the un-promoted toggle wrote .env only, the stale
-    // process env won the UI read-back, and the Layered switch snapped OFF.
-    "CODESCRIBE_LAYERED_TRANSCRIPTION",
     // C2: Layer 1 product mode, audio-egress consent, gateway mint endpoint.
     // settings.json is the single brain — no .env dual-write for these.
     "CODESCRIBE_ASR_MODE",
@@ -1717,9 +1679,6 @@ impl UserSettings {
                         self.light_plus_sentence_pause_sec
                             .unwrap_or_else(super::default_light_plus_sentence_pause_sec),
                     ),
-                    stt_engine: self.stt_engine.clone(),
-                    final_pass_mode: self.final_pass_mode.clone(),
-                    layered_transcription: self.layered_transcription.clone(),
                     initial_prompt_enabled: self.stt_initial_prompt_enabled,
                     asr_mode: self.asr_mode.clone(),
                     gateway_session_url: self.asr_gateway_url.clone(),
@@ -1806,11 +1765,6 @@ impl UserSettings {
     /// Flatten the on-disk schema back into runtime settings. Missing sections
     /// collapse to `None` rather than failing, which is what lets a partially
     /// written file still load.
-    ///
-    /// Two fields deliberately do not: `stt_engine` and `final_pass_mode` fall
-    /// back to the product defaults (`apple` / `smart`). An empty
-    /// `speech.engine: {}` used to leave them unset, handing the decision to
-    /// whatever the environment happened to say.
     pub(super) fn from_v2(v2: SettingsV2) -> Self {
         Self {
             whisper_language: v2.speech.as_ref().and_then(|s| s.language.clone()),
@@ -2038,27 +1992,6 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.engine.as_ref())
                 .and_then(|e| e.cloud_max_upload_mb),
-            // Product default: Apple live (must-have). Empty `speech.engine: {}`
-            // used to leave stt_engine=None → env/auto lottery; pin apple.
-            stt_engine: v2
-                .speech
-                .as_ref()
-                .and_then(|s| s.engine.as_ref())
-                .and_then(|e| e.stt_engine.as_deref())
-                .and_then(normalize_stt_engine)
-                .or_else(|| Some("apple".to_string())),
-            final_pass_mode: v2
-                .speech
-                .as_ref()
-                .and_then(|s| s.engine.as_ref())
-                .and_then(|e| e.final_pass_mode.clone())
-                .filter(|s| !s.trim().is_empty())
-                .or_else(|| Some("smart".to_string())),
-            layered_transcription: v2
-                .speech
-                .as_ref()
-                .and_then(|s| s.engine.as_ref())
-                .and_then(|e| e.layered_transcription.clone()),
             stt_initial_prompt_enabled: v2
                 .speech
                 .as_ref()
@@ -2777,32 +2710,6 @@ impl UserSettings {
             "SOUND_NAME" => self.sound_name = Some(value.to_owned()),
             "WHISPER_MODEL" => self.whisper_model = Some(value.to_owned()),
             "ONBOARDING_MODE" => self.onboarding_mode = Some(value.to_owned()),
-            "CODESCRIBE_STT_ENGINE" => match normalize_stt_engine(value) {
-                Some(normalized) => self.stt_engine = Some(normalized),
-                None => {
-                    warn!(
-                        "Rejected STT engine write (expected auto|apple|whisper|candle): {value}"
-                    );
-                    return;
-                }
-            },
-            "FINAL_PASS_MODE" | "CODESCRIBE_FINAL_PASS_MODE" => {
-                let normalized = value.trim().to_ascii_lowercase();
-                match normalized.as_str() {
-                    "always" | "smart" | "off" => {
-                        self.final_pass_mode = Some(normalized);
-                    }
-                    _ => {
-                        warn!(
-                            "Rejected final_pass_mode write (expected always|smart|off): {value}"
-                        );
-                        return;
-                    }
-                }
-            }
-            "CODESCRIBE_LAYERED_TRANSCRIPTION" => {
-                self.layered_transcription = Some(value.to_owned())
-            }
             "CODESCRIBE_ASR_MODE" => {
                 // Empty clears back to derivation (legacy choice or Apple-only).
                 let trimmed = value.trim();
@@ -3883,85 +3790,17 @@ mod tests {
         assert!(settings.llm_custom_providers.is_empty());
     }
 
-    /// The STT selector keys survive the `speech.engine` round-trip, and the
-    /// setters route them to the same place — so `settings.json` remains a
-    /// valid seed source instead of being overwritten by env on next load.
     #[test]
-    #[serial]
-    fn test_stt_engine_and_layered_transcription_survive_roundtrip() {
-        // F1 layered transcription: both env-managed keys must round-trip through
-        // the V2 speech.engine section, or save→load silently drops the seed value.
-        let _tmp = setup_isolated_data_dir();
-        let settings = UserSettings {
-            stt_engine: Some("apple".to_string()),
-            final_pass_mode: Some("smart".to_string()),
-            layered_transcription: Some("phase1".to_string()),
-            stt_initial_prompt_enabled: Some(true),
-            ..Default::default()
-        };
-        settings.save().expect("save settings");
-
-        let loaded = UserSettings::load();
-        assert_eq!(loaded.stt_engine.as_deref(), Some("apple"));
-        assert_eq!(loaded.final_pass_mode.as_deref(), Some("smart"));
-        assert_eq!(loaded.layered_transcription.as_deref(), Some("phase1"));
-        assert_eq!(loaded.stt_initial_prompt_enabled, Some(true));
-
-        // Setters route keys (settings.json stays a valid seed source).
-        let mut mutated = loaded;
-        mutated.set_string("CODESCRIBE_STT_ENGINE", "whisper");
-        mutated.set_string("FINAL_PASS_MODE", "off");
-        mutated.set_string("CODESCRIBE_LAYERED_TRANSCRIPTION", "off");
-        mutated.set_bool("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED", false);
-        let reloaded = UserSettings::load();
-        assert_eq!(reloaded.stt_engine.as_deref(), Some("whisper"));
-        assert_eq!(reloaded.final_pass_mode.as_deref(), Some("off"));
-        assert_eq!(reloaded.layered_transcription.as_deref(), Some("off"));
-        assert_eq!(reloaded.stt_initial_prompt_enabled, Some(false));
-    }
-
-    /// Layered transcription is a promoted product setting (full single-brain,
-    /// same contract as `CODESCRIBE_STT_ENGINE`). Without promotion the toggle
-    /// write lands in `.env` only, the stale process env wins the UI read-back,
-    /// and the switch visibly snaps OFF (operator repro 2026-08-10).
-    #[test]
-    fn layered_transcription_is_promoted_single_brain_key() {
-        assert!(
-            is_promoted_key("CODESCRIBE_LAYERED_TRANSCRIPTION"),
-            "CODESCRIBE_LAYERED_TRANSCRIPTION must be a promoted settings.json key"
-        );
-    }
-
-    /// An empty `speech.engine: {}` must resolve to the product default, not to
-    /// "unset". Unset handed the choice to the environment, so which recognizer
-    /// ran depended on a stale `.env` line rather than on the product.
-    #[test]
-    #[serial]
-    fn empty_speech_engine_defaults_to_apple_live_product() {
-        // MacGyver lottery shape: schema v3 with speech.engine: {} left stt_engine
-        // unset and .env=auto won. Product must pin Apple live + smart final.
-        let _tmp = setup_isolated_data_dir();
-        let path = UserSettings::settings_path();
-        fs::write(
-            &path,
-            r#"{
-  "schema_version": 3,
-  "speech": {
-    "language": "pl",
-    "engine": {}
-  }
-}"#,
-        )
-        .expect("write empty engine settings");
-        let loaded = UserSettings::load();
-        assert_eq!(
-            loaded.stt_engine.as_deref(),
-            Some("apple"),
-            "empty speech.engine must pin Apple live, not leave None/auto lottery"
-        );
-        assert_eq!(loaded.final_pass_mode.as_deref(), Some("smart"));
-        assert!(is_promoted_key("CODESCRIBE_STT_ENGINE"));
-        assert!(is_promoted_key("FINAL_PASS_MODE"));
+    fn asr_mode_is_the_only_promoted_engine_axis() {
+        assert!(is_promoted_key("CODESCRIBE_ASR_MODE"));
+        for key in [
+            "CODESCRIBE_STT_ENGINE",
+            "FINAL_PASS_MODE",
+            "CODESCRIBE_FINAL_PASS_MODE",
+            "CODESCRIBE_LAYERED_TRANSCRIPTION",
+        ] {
+            assert!(!is_promoted_key(key), "{key} must not be persisted as product intent");
+        }
     }
 
     /// Tool permissions survive persistence *and* land under `agent.permissions`
@@ -4477,6 +4316,7 @@ mod captured_sealer_tests {
             energy_calibration: snapshot.energy_calibration,
             seal_lane_armed: true,
             local_tail_patch: snapshot.local_tail_patch,
+            layered_transcription_override: snapshot.layered_transcription_override.clone(),
             tail_provider: snapshot.tail_provider,
         };
         let error = RuntimeSettingsSnapshot::seal_loaded(parts.clone()).unwrap_err();

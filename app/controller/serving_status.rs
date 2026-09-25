@@ -1,7 +1,7 @@
 //! Last serving-verdict owner for runtime STT truth.
 //!
-//! Settings "Active STT" must consume this owner — not project configured
-//! `sttEngine` / `finalPassMode`. The controller publishes after each
+//! Settings "Active STT" consumes this owner independently of the configured
+//! ASR product mode. The controller publishes after each
 //! adjudication so the UI can show Apple→Whisper fallback honestly.
 
 use std::sync::{Arc, OnceLock, RwLock};

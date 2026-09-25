@@ -29,8 +29,6 @@
     "language": "pl",
     "engine": {
       "asr_mode": "local_power",
-      "stt_engine": "apple",
-      "final_pass_mode": "smart",
       "file_transcription_endpoint": "https://api.libraxis.com/v1/audio/transcriptions",
       "live_transcription_endpoint": "wss://api.libraxis.com/v1/audio/transcribe"
     },

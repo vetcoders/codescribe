@@ -68,12 +68,10 @@ by the required `transcript.done`. Chunk finals remain provisional until
 `speech_final`; terminal cumulative text is not republished as another
 occurrence. OpenAI live STT is unsupported by this adapter.
 
-**Integration boundary:** the current application has no production constructor
-of `GatewayWebSocketTransport` or `LiveCloudAsrSession`. Persisting a
-`STT_LIVE_ENDPOINT` or passing a handshake probe does not establish a working
-live transcription path in the app. The xAI adapter is transport support;
-attachment to live capture remains unfinished. Apple retains live capture's
-existing observation path.
+**Integration boundary:** `asr_session::layer1_decision` constructs the live
+provider after Cloud consent and endpoint/key admission. Configuration and a
+handshake probe alone do not prove a real capture round trip. Apple retains
+the live canvas; Cloud supplies the selected Layer 1 session.
 
 Wire reference: [xAI speech-to-text](https://docs.x.ai/developers/model-capabilities/audio/speech-to-text).
 
@@ -93,12 +91,12 @@ Recording stopped before a transcript was available.
 
 **Not rocket science:** auto picked Apple; Apple failed mid-take; live refuses Whisper.
 
-### Fixed product contract (2026-07-24 ship cut)
+### Current engine contract (2026-09-25 source cut)
 
 | Layer                 | Rule                                                                                                     |
 | --------------------- | -------------------------------------------------------------------------------------------------------- |
-| Empty `speech.engine` | Load defaults to **`stt_engine=apple`** and **`final_pass_mode=smart`**; explicit saved values still win |
-| Settings UI write     | **Promoted** to `settings.json` + reconciles process env **and** `.env` (single brain)                   |
+| Empty `speech.engine` | ASR mode resolver derives the mode from existing local/cloud intent; otherwise Apple only |
+| Settings UI write | ASR mode persists in `settings.json`; no engine or layered side writes |
 | Record start          | **`preflight_apple_live_ready()`** when engine is Apple — refuse before REC if Speech/bridge not ready   |
 | Live vs final         | Cloud/Apple-only live fails closed without local weights; explicit HQ/local Retranscribe may use Whisper |
 
@@ -114,9 +112,8 @@ Recording stopped before a transcript was available.
 | JSON path                       | Internal field          | Wire / env              | Values                                     | Required for “simple works”? |
 | ------------------------------- | ----------------------- | ----------------------- | ------------------------------------------ | ---------------------------- |
 | `speech.language`               | `whisper_language`      | `WHISPER_LANGUAGE`      | `pl`, `en`, …                              | Yes (you have `pl` ✓)        |
-| `speech.engine.stt_engine`      | `stt_engine`            | `CODESCRIBE_STT_ENGINE` | `auto` \| `apple` \| `whisper` \| `candle` | **Yes — pick explicit**      |
-| `speech.engine.final_pass_mode` | `final_pass_mode`       | `FINAL_PASS_MODE`       | legacy migration token                     | No                           |
-| `speech.engine.whisper_model`   | `whisper_model`         | `WHISPER_MODEL`         | model id                                   | If engine = whisper          |
+| `speech.engine.asr_mode` | `asr_mode` | `CODESCRIBE_ASR_MODE` | `apple_only` / `local_power` / `cloud` | Sole engine control |
+| `speech.engine.whisper_model`   | `whisper_model`         | `WHISPER_MODEL`         | model id                                   | For local refinement          |
 | `speech.engine.mode`            | maps to `use_local_stt` | legacy                  | `local_whisper` / `cloud_whisper`          | Optional legacy              |
 | `speech.engine.local_model`     | `local_model`           | path                    | model path                                 | Optional                     |
 | `speech.formatting.level`       | `formatting_level`      | —                       | `off`/`correction`/`smart`/`max`           | AI format (not STT)          |
@@ -185,78 +182,40 @@ overwritten until the user saves a correction. Missing archive must refuse —
 never fall back to `last_session.wav`. Lab three-judge / `:8444` is not this
 button.
 
-**Yours today:**
+**Minimal durable engine block (Apple live with local refinement):**
 
 ```json
-"speech": {
-  "language": "pl",
-  "engine": {},          // ← EMPTY = no choice recorded
-  "formatting": { "enabled": true, "level": "smart", ... },
-  "emission": { ... }
+{
+  "speech": {
+    "language": "pl",
+    "engine": {
+      "asr_mode": "local_power",
+      "whisper_model": "whisper-large-v3-turbo"
+    }
+  }
 }
 ```
 
-**Minimal durable engine block (Apple-first daily driver):**
+## 2. One engine control
 
-```json
-"speech": {
-  "language": "pl",
-  "engine": {
-    "stt_engine": "apple",
-    "whisper_model": "whisper-large-v3-turbo",
-    "final_pass_mode": "smart"
-  },
-  "formatting": { "enabled": true, "level": "smart" }
-}
-```
+Settings writes `CODESCRIBE_ASR_MODE` to `settings.json`; Cloud additionally
+requires explicit `CODESCRIBE_CLOUD_CONSENT`. Apple only has no Layer 1 refiner.
+Local Power arms local refinement by default. Cloud uses the live provider
+factory and reports `live_endpoint_missing` or `live_key_missing` when unconfigured.
 
-**And** either:
+The router probes Apple runtime and bridge availability directly. The retired
+`CODESCRIBE_STT_ENGINE`, `FINAL_PASS_MODE`, and `CODESCRIBE_FINAL_PASS_MODE`
+keys have no routing effect and cannot be written through the configuration API.
+Repair removes persisted `stt_engine`, `final_pass_mode`, and `layered_transcription`
+with named receipts. It does not seed them again or rewrite an unchanged file.
 
-1. Remove `CODESCRIBE_STT_ENGINE=auto` from `~/.codescribe/.env`, **or**
-2. Set `CODESCRIBE_STT_ENGINE=apple` in `.env` (env always wins if present).
+`CODESCRIBE_LAYERED_TRANSCRIPTION` remains an env-only diagnostic override for
+Local Power. Unset arms the lane; `off` or invalid input degrades it and Settings
+shows “Degraded (env override)” with the key name. Cloud ignores this local knob.
+The read-only Live Whisper refinement row shows Ready / Not ready / Degraded
+and offers Recheck. `CODESCRIBE_STT_INITIAL_PROMPT_ENABLED` remains env-seedable.
 
-If you keep `.env = auto` and only fill `settings.json`, **settings do not win** for engine selection at runtime.
-
-Empty recordings with Apple selected are a **reliability cut** (preflight + typed Whisper _recovery_ with audio), not a reason to abandon Apple as primary.
-
----
-
-## 2. Precedence (one rule)
-
-```text
-1. Process env (set at boot from .env load, OR reconciled on Settings write)
-2. Else settings.json seeds process env once (loader.rs apply_user_settings)
-3. Else built-in default:
-     auto → Apple if bridge resolvable else Candle Whisper
-     empty settings.stt_engine → product default **apple**
-```
-
-Code: `core/config/loader.rs` · `core/stt/mod.rs::selected_engine()` · `reconcile_stt_runtime_key`.
-
-**Single brain (W2-A):**
-`CODESCRIBE_STT_ENGINE` and `FINAL_PASS_MODE` are **promoted** settings. UI write updates `settings.json`, process env, and `.env` together. No silent dual brain.
-
-`CODESCRIBE_LAYERED_TRANSCRIPTION` is promoted single-brain configuration;
-`CODESCRIBE_STT_INITIAL_PROMPT_ENABLED` remains env-seedable when unset.
-
-> **Historical power-user hazard (measured 2026-08-08, now closed).** Before promotion,
-> `Config::inject_file_env_for_runtime` copied `CODESCRIBE_LAYERED_TRANSCRIPTION` out of
-> `~/.codescribe/.env` into the process env on the first `Config::load()` — in _every_ process
-> that loads the core, tests and harnesses included. A stale `.env` line therefore arms Layer 1
-> silently. This was observed live: the same `make test-engine-parity` binary scored 0.931 with
-> the lane off and 0.833 with the operator's dotenv arming `phase1`, and the low score was the
-> _more accurate_ transcript. The parity target now pins the lane explicitly (`Makefile`), but
-> the general hazard affected any tool loading the core. The key is now
-> promoted to settings.json; parity harnesses still pin their requested lane.
-
-**Final pass vs layered (orthogonal):**
-
-| Setting               | Env                                | Default    | Role                                                                                                                                    |
-| --------------------- | ---------------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| Final pass            | `FINAL_PASS_MODE`                  | legacy     | No routing effect on normal stop; terminal gaps use local owned-archive Whisper evidence; explicit file surfaces keep their own actions |
-| Layered compatibility | `CODESCRIBE_LAYERED_TRANSCRIPTION` | mode-owned | Local Power + Apple/Auto: unset or `phase1` arms; explicit off/invalid degrades. No parallel VAD/scheduler live route remains           |
-
-Normal capture ignores legacy final-pass routing and never uploads the
+Normal capture ignores retired final-pass routing and never uploads the
 completed WAV for seal coverage. Stop uses the finalized owned archive to
 recover material uncovered ranges locally. It does not compare or replace the
 whole document automatically. A fresh gap request never clips text from a
@@ -351,7 +310,7 @@ consequences and `docs/TRANSCRIPT_BUS.md` for the projected wire contract.
 | ------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------- |
 | Load Settings form              | `CodescribeConfig.load_settings()`                  | one `RuntimeSettingsSnapshot` → `CsSettings::from_runtime_snapshot`    |
 | Save knobs                      | `update_config` / `update_config_many`              | `UserSettings::set_*` → write `settings.json`; may seed env            |
-| ASR mode picker                 | `CODESCRIBE_ASR_MODE` + `CODESCRIBE_CLOUD_CONSENT`  | Cloud never displays without `granted`; stop ignores `FINAL_PASS_MODE` |
+| ASR mode picker                 | `CODESCRIBE_ASR_MODE` + `CODESCRIBE_CLOUD_CONSENT`  | Cloud requires `granted`; local override cannot disarm Cloud |
 | Active STT row                  | `current_serving_verdict()`                         | last live take (`local_apple` → Apple). No Smart-final-pass suffix     |
 | Whisper model status / download | `whisper_model_status` / `download_whisper_model`   | `core/config/models.rs`                                                |
 | Audio device                    | `audio_input_snapshot` + config keys                | `UserSettings.audio_input_device` + cpal                               |
@@ -559,7 +518,7 @@ Tests distinguish one document revision from its N per-entry projection rows.
 
 | Surface                              | Source of truth                             | Not truth          |
 | ------------------------------------ | ------------------------------------------- | ------------------ |
-| Settings **preference** `stt_engine` | `CsSettings.stt_engine` (env-merged)        | —                  |
+| Settings **ASR mode** | resolved mode from the runtime snapshot | Last serving engine |
 | Settings **Active STT**              | `current_serving_verdict().engine` last run | Preference string  |
 | Overlay footer engine chip           | last verdict / controller truth label       | “I wanted Whisper” |
 | Error text                           | actual failing path                         | —                  |
@@ -568,45 +527,15 @@ Valid engine labels on verdict: `local_apple`, `local_whisper`, `streaming_whisp
 
 ---
 
-## 5. Operator cheat-sheet — make it boring
+## 5. Engine selection
 
-### Want Apple live (product default — must-have)
+Choose Apple only for the Apple canvas without refinement; Local power for
+bounded local Whisper refinement; Cloud for consent-gated live audio egress.
+The last take supplies Active STT and the overlay engine chip. A selection or
+model readiness check is not evidence that a particular engine served a take.
 
-1. Settings + env both pin Apple (no empty `engine: {}`, no silent `auto` fight):
-   ```bash
-   CODESCRIBE_STT_ENGINE=apple
-   ```
-   ```json
-   "engine": {
-     "stt_engine": "apple",
-     "whisper_model": "whisper-large-v3-turbo",
-     "final_pass_mode": "off"
-   }
-   ```
-2. Full quit + relaunch.
-3. Footer / Active STT after a take: **`local_apple`** on happy path.
-4. Local Power arms bounded Whisper Layer 1 by mode when the model is ready;
-   Apple-only does not. An explicit global `off` is a degraded override.
-5. Empty death mid-take = **code cut** (preflight + recovery when audio exists).
-   Settings alone cannot repair a broken live session.
-
-### Want Whisper-only (power user / offline — not product default)
-
-Same pattern with `stt_engine: "whisper"`. Allowed; not the Codescribe daily-driver story while Apple is must-have.
-
-### Do **not** leave
-
-```json
-"engine": {}
-```
-
-plus
-
-```bash
-CODESCRIBE_STT_ENGINE=auto
-```
-
-unless you accept Apple lottery on every session.
+Normal stop never performs a whole-session file pass. Dictionary Retranscribe
+and other explicit file actions retain their own routes.
 
 ---
 
@@ -640,16 +569,12 @@ unless you accept Apple lottery on every session.
 
 ---
 
-## 8. Cuts landed (this ship)
+## 8. Engine controls source checkpoint (2026-09-25)
 
-| Cut                                                          | Status               | Where                                                  |
-| ------------------------------------------------------------ | -------------------- | ------------------------------------------------------ |
-| P0 Promote STT engine to settings + reconcile `.env`/process | **landed**           | `PROMOTED_SETTINGS_KEYS` + `reconcile_stt_runtime_key` |
-| P0 Default empty engine → apple + smart final                | **landed**           | `UserSettings::from_v2`                                |
-| P1 Preflight Apple before hold/toggle start                  | **landed**           | `preflight_apple_live_ready` + controller start        |
-| P1 Settings truth note (pref vs last Active STT)             | **landed**           | `sttEngineTruthNote` + Engine panel                    |
-| P1 Mid-live Apple fail → live Layer 1 recovery               | **open** (next wave) | recover inside session; no stop-path file decode       |
-| Operator machine pin                                         | **done**             | `settings.json` + `.env` → `apple`                     |
+One ASR mode control replaces the retired engine selector and fixed Final Pass
+row. Local readiness and diagnostic override status are read-only projections.
+The W1 source checkpoint does not certify build, installation, or live audio;
+those remain integrator W3/W4 gates.
 
 ---
 

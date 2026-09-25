@@ -3,7 +3,7 @@
 //! When `CODESCRIBE_QUBE_DONOR=on`, each stop writes a date-subfolder pair under
 //! `~/.codescribe/qube_inbox/<YYYY-MM-DD>/<session_ts>.{wav,txt}` so `qube-daemon`
 //! (`--input ~/.codescribe/qube_inbox`) can mine lexicon candidates even when
-//! `FINAL_PASS_MODE=off` (donor never runs Whisper — files only).
+//! ASR mode (donor never runs Whisper — files only).
 //!
 //! Default is hard-off. Persist failures log a warning and never fail delivery.
 

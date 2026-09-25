@@ -512,14 +512,13 @@ fn production_layer1_decision_follows_resolved_asr_mode() {
         (
             "local_power",
             Some("granted"),
-            "local_helper_unavailable",
+            "local_tail_patch_armed",
             false,
         ),
     ] {
         let settings = UserSettings {
             asr_mode: Some(mode.into()),
             cloud_consent: consent.map(str::to_owned),
-            layered_transcription: Some("phase1".into()),
             stt_live_endpoint: Some("wss://gateway.invalid/live".into()),
             ..Default::default()
         };
@@ -624,6 +623,73 @@ impl Layer1TestEnv {
 }
 
 #[test]
+fn cloud_layer_ignores_local_override_and_reports_missing_live_configuration() {
+    use crate::config::{CapturedRuntimeInputs, Config};
+
+    for phase in ["", "off", "phase1", "phase2", "invalid"] {
+        for (endpoint, key, expected) in [
+            (None, None, "live_endpoint_missing"),
+            (Some(""), Some(""), "live_endpoint_missing"),
+            (Some("wss://gateway.invalid/live"), None, "live_key_missing"),
+            (Some("wss://gateway.invalid/live"), Some(""), "live_key_missing"),
+            (
+                Some("wss://gateway.invalid/live"),
+                Some("fixture-live-key"),
+                "cloud_ready",
+            ),
+        ] {
+            // Captured facts isolate missing credentials from the host bundle cache.
+            // Provider construction is dormant: this test never opens a connection.
+            let mut input = CapturedRuntimeInputs::defaults_at(
+                std::path::PathBuf::from("/fixture/cloud-engine-controls"),
+                1_700_000_000_000,
+            );
+            input.user_settings.asr_mode = Some("cloud".into());
+            input.user_settings.cloud_consent = Some("granted".into());
+            input.values.stt_live_endpoint = endpoint.map(str::to_owned);
+            input.values.stt_live_api_key = key.map(str::to_owned);
+            input.overrides.insert(
+                "CODESCRIBE_LAYERED_TRANSCRIPTION".into(),
+                Ok(phase.into()),
+            );
+            let snapshot = Config::runtime_snapshot_from_captured(input);
+            let (decision, receipt) = super::layer1_decision(&snapshot);
+            assert_eq!(receipt.reason, expected, "phase={phase}");
+            assert_eq!(decision.is_armed(), expected == "cloud_ready");
+        }
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn local_power_mode_alone_arms_tail_patch_and_env_off_degrades() {
+    use crate::config::{Config, UserSettings};
+
+    let root = tempfile::tempdir().unwrap();
+    let mut environment = Layer1TestEnv::new(root.path());
+    UserSettings {
+        asr_mode: Some("local_power".into()),
+        ..Default::default()
+    }
+    .save()
+    .unwrap();
+    for (phase, armed, reason) in [
+        ("", true, "local_tail_patch_armed"),
+        ("phase1", true, "local_tail_patch_armed"),
+        ("off", false, "layered_off"),
+    ] {
+        environment.set("CODESCRIBE_LAYERED_TRANSCRIPTION", phase);
+        let snapshot = Config::load_runtime_snapshot_without_keychain().unwrap();
+        let (decision, receipt) = super::layer1_decision(&snapshot);
+        assert_eq!(decision.is_armed(), armed);
+        assert_eq!(receipt.reason, reason);
+        if armed {
+            assert_eq!(receipt.refiner, "local_tail_patch");
+        }
+    }
+}
+
+#[test]
 #[serial_test::serial]
 fn production_layer1_refusals_never_construct_a_cloud_provider() {
     use super::Layer1Decision;
@@ -631,14 +697,14 @@ fn production_layer1_refusals_never_construct_a_cloud_provider() {
 
     let root = tempfile::tempdir().unwrap();
     let mut environment = Layer1TestEnv::new(root.path());
-    for (consent, phase, reason) in [
-        ("denied", "phase1", "consent_denied"),
-        ("granted", "off", "layered_off"),
-        ("granted", "phase2", "layered_invalid"),
+    for (mode, consent, phase, reason) in [
+        ("cloud", "denied", "phase1", "consent_denied"),
+        ("local_power", "granted", "off", "layered_off"),
+        ("local_power", "granted", "phase2", "layered_invalid"),
     ] {
         environment.set("CODESCRIBE_LAYERED_TRANSCRIPTION", phase);
         UserSettings {
-            asr_mode: Some("cloud".into()),
+            asr_mode: Some(mode.into()),
             cloud_consent: Some(consent.into()),
             ..Default::default()
         }
@@ -653,7 +719,14 @@ fn production_layer1_refusals_never_construct_a_cloud_provider() {
         assert_eq!(receipt.consent, consent);
     }
 
-    environment.set("CODESCRIBE_LAYERED_TRANSCRIPTION", "phase1");
+    UserSettings {
+        asr_mode: Some("cloud".into()),
+        cloud_consent: Some("granted".into()),
+        ..Default::default()
+    }
+    .save()
+    .unwrap();
+    environment.set("CODESCRIBE_LAYERED_TRANSCRIPTION", "off");
     let snapshot = Config::load_runtime_snapshot_without_keychain().unwrap();
     let (decision, receipt) =
         super::layer1_decision_with_factory(&snapshot, |_, _| Err("live_connection_invalid"));

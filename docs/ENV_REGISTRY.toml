@@ -546,7 +546,8 @@ default = "auto"
 type = "string"
 reload = "restart"
 category = "stt"
-description = "STT engine: auto (Apple on supported macOS, Candle fallback), whisper/candle, or apple"
+description = "Retired engine control; ignored by runtime and rejected on config writes. Select CODESCRIBE_ASR_MODE instead."
+deprecated = "CODESCRIBE_ASR_MODE"
 
 [vars.CODESCRIBE_ASR_MODE]
 default = ""
@@ -574,7 +575,7 @@ default = ""
 type = "string"
 reload = "hot"
 category = "stt"
-description = "Promoted compatibility override for live local Whisper refinement. Product mode owns the default: Local Power with Apple/Auto arms the Layer 1 tail-provider observation on the Apple-ledger session when unset or phase1; explicit off/0/false/no and malformed values produce a named degraded disposition. Apple-only does not arm it. This token does not select or restore a VAD/scheduler route. Phases 2..4 remain reserved. Orthogonal to FINAL_PASS_MODE; normal stop performs no whole-file pass. Runtime truth is the per-session tail_patch_session_receipt, not UI state."
+description = "Env-only diagnostic override for Local Power refinement. Unset arms by ASR mode; phase1 or 1 arms explicitly; off/0/false/no or invalid values degrade. Settings never persists this key. Cloud ignores this local override. No VAD or scheduler selection."
 
 [vars.CODESCRIBE_SEAL_ATLAS_DUMP]
 default = ""
@@ -742,14 +743,16 @@ default = "smart"
 type = "string"
 reload = "restart"
 category = "stt"
-description = "Legacy settings-migration token (always|smart|off). Normal stop never performs a saved-WAV file pass; explicit Retranscribe owns whole-file inference. Does not enable or disable CODESCRIBE_LAYERED_TRANSCRIPTION, and Dictionary/lexicon always applies in postprocess. Alias: CODESCRIBE_FINAL_PASS_MODE."
+description = "Retired engine control; ignored by runtime and rejected on config writes. Select CODESCRIBE_ASR_MODE instead."
+deprecated = "CODESCRIBE_ASR_MODE"
 
 [vars.CODESCRIBE_FINAL_PASS_MODE]
 default = "smart"
 type = "string"
 reload = "restart"
 category = "stt"
-description = "Legacy alias of FINAL_PASS_MODE; retained for settings migration only"
+description = "Retired engine control; ignored by runtime and rejected on config writes. Select CODESCRIBE_ASR_MODE instead."
+deprecated = "CODESCRIBE_ASR_MODE"
 
 [vars.CODESCRIBE_LOCAL_STT_FINAL_PASS]
 default = "0"
@@ -1328,7 +1331,7 @@ default = "off"
 type = "string"
 reload = "hot"
 category = "quality"
-description = "Opt-in qube donor at stop (off|on, default off). When on, copies each session's WAV + delivered transcript into ~/.codescribe/qube_inbox/<YYYY-MM-DD>/<session_ts>.{wav,txt} for lexicon candidate mining by qube-daemon. Writes files only — never runs Whisper. Orthogonal to FINAL_PASS_MODE (works under off/smart/always). Persist failures log a warning and never fail delivery."
+description = "Opt-in qube donor at stop (off|on, default off). When on, copies each session's WAV + delivered transcript into ~/.codescribe/qube_inbox/<YYYY-MM-DD>/<session_ts>.{wav,txt} for lexicon candidate mining by qube-daemon. Writes files only — never runs Whisper. Independent of ASR mode. Persist failures log a warning and never fail delivery."
 
 [vars.QUBE_DAEMON_USE_CLOUD_STT]
 default = "0"

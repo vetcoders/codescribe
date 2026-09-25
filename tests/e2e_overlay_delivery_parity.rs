@@ -15,8 +15,6 @@
 //! Opt-in (needs STT engine + model / Apple):
 //! ```bash
 //! CODESCRIBE_E2E_STT=1 cargo test --test e2e_overlay_delivery_parity -- --nocapture
-//! # optional: force Candle for deterministic CI without Apple
-//! CODESCRIBE_STT_ENGINE=candle CODESCRIBE_E2E_STT=1 cargo test --test e2e_overlay_delivery_parity -- --nocapture
 //! # optional single clip:
 //! CODESCRIBE_E2E_AUDIO=tests/assets/data_assets/01_no-to-dobra.wav ...
 //! ```
@@ -24,6 +22,9 @@
 //! Always-on (no model): assembly contract + regression math on synthetic events.
 //!
 //! Authored-By: grok <agents@vetcoders.io>
+
+#[path = "support/asr_settings.rs"]
+mod asr_settings;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -38,7 +39,6 @@ use codescribe_core::pipeline::contracts::{
 };
 use codescribe_core::pipeline::streaming::{
     TAIL_PATCH_SESSION_RECEIPT_WARNING_CODE, TailPatchDrainDisposition, TailPatchSessionReceipt,
-    collect_buffered_engine_events,
 };
 use codescribe_core::quality::{MergeMode, merge_live_whisper};
 use codescribe_core::stt;
@@ -162,9 +162,9 @@ fn measured_lane_matches_request(
         (None, leaked) => Err(format!(
             "this target scores Layer 0 against the Apple-fidelity reference, but the run \
              measured Layer 1: {leaked} ReplaceRange{{TailPatch}} event(s) reached the \
-             assembly. An unpinned compatibility override can arm the layer underneath a \
+             assembly. An unpinned ASR mode can arm the layer underneath a \
              Layer-0 bar. Pin the lane on the target \
-             (`CODESCRIBE_LAYERED_TRANSCRIPTION=off`) and re-run — the similarity number \
+             (`CODESCRIBE_ASR_MODE=apple_only`) and re-run — the similarity number \
              from this run says nothing about Layer 0."
         )),
         (Some(phase), 0) => Err(format!(
@@ -1029,6 +1029,7 @@ async fn e2e_file_audio_as_mic_overlay_and_delivery_parity() {
 }
 
 async fn run_one_clip(clip: &Path, language: Option<String>) {
+    let isolated = asr_settings::IsolatedAsrSettings::from_requested_mode();
     eprintln!("═══════════════════════════════════════════════════════════");
     eprintln!("  Overlay/delivery parity — {}", clip.display());
     eprintln!("═══════════════════════════════════════════════════════════");
@@ -1056,9 +1057,12 @@ async fn run_one_clip(clip: &Path, language: Option<String>) {
             let _ = std::io::Write::flush(&mut std::io::stderr());
         }
     });
-    let events = collect_buffered_engine_events(&samples, sample_rate, language.clone())
-        .await
-        .unwrap_or_else(|e| panic!("live session on {}: {e}", clip.display()));
+    let events = codescribe_core::audio::streaming_recorder::replay_production_session(
+        &samples, sample_rate, language.clone(), &isolated.settings,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("live session on {}: {e}", clip.display()))
+    .events;
     heartbeat.abort();
     eprintln!("  live session done in {:?}", t0.elapsed());
     let _ = std::io::Write::flush(&mut std::io::stderr());
@@ -1100,7 +1104,7 @@ async fn run_one_clip(clip: &Path, language: Option<String>) {
     // Live must produce something for speech fixtures (otherwise STT cold/broken).
     assert!(
         !overlay.trim().is_empty() || !stream_floor.trim().is_empty(),
-        "live assembly empty for speech fixture {} — check STT engine (CODESCRIBE_STT_ENGINE) \
+        "live assembly empty for speech fixture {} — check Apple STT bridge \
          and model/Apple availability. events={}",
         clip.display(),
         events.len()
@@ -1276,13 +1280,14 @@ fn coverage_tokens(text: &str) -> Vec<String> {
 /// the coverage test and the apple-live parity test — the CAPTURE ROAD must be
 /// byte-identical between them or their verdicts measure different products.
 async fn capture_clip_via_device(device: &str, clip: &Path) -> (Vec<EngineEvent>, String, f32) {
+    let _isolated = asr_settings::IsolatedAsrSettings::from_requested_mode();
     let (samples, sample_rate) =
         audio::load_audio_file(clip).unwrap_or_else(|e| panic!("load {}: {e}", clip.display()));
     let clip_seconds = samples.len() as f32 / sample_rate as f32;
     eprintln!(
-        "device-capture: {:.1}s fixture through '{device}' (engine: {})",
+        "device-capture: {:.1}s fixture through '{device}' (ASR mode: {})",
         clip_seconds,
-        std::env::var("CODESCRIBE_STT_ENGINE").unwrap_or_else(|_| "default".into())
+        std::env::var("CODESCRIBE_ASR_MODE").unwrap_or_else(|_| "default".into())
     );
 
     // 1) Arm capture FIRST — the recorder must already be listening when the
@@ -1291,6 +1296,17 @@ async fn capture_clip_via_device(device: &str, clip: &Path) -> (Vec<EngineEvent>
     let mut recorder = codescribe_core::audio::streaming_recorder::StreamingRecorder::new()
         .expect("recorder init (is the loopback device present?)");
     recorder.set_event_sink(Some(sink.clone()));
+    let runtime_settings = std::sync::Arc::new(
+        codescribe_core::config::Config::load_runtime_snapshot_without_keychain()
+            .expect("isolated capture runtime snapshot"),
+    );
+    let capture_path = codescribe_core::audio::recorder::probe_input_capture_path()
+        .expect("resolve selected loopback capture path");
+    assert_eq!(capture_path.device_name, device);
+    runtime_settings
+        .energy_calibration_for_capture(&capture_path.device_name, capture_path.sample_rate)
+        .expect("measured loopback calibration is required before capture");
+    recorder.bind_session_authority(uuid::Uuid::new_v4().to_string(), runtime_settings);
     recorder
         .start_event_session(Some("pl".to_string()))
         .await
@@ -1533,13 +1549,13 @@ fn apple_reference_for_wav(wav: &Path) -> Option<String> {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "private truth-paired corpus; set CODESCRIBE_PRODUCTION_CORPUS_OUT"]
 async fn e2e_production_overlay_corpus_replay() {
+    let _isolated = asr_settings::IsolatedAsrSettings::from_requested_mode();
     init_e2e_tracing();
     // Capture operator intent before `UserSettings::load` or a production
     // final-pass loader can re-seed process env from persisted settings. Each
     // recording restores these pins so one corpus run cannot silently blend
     // live lanes after the preceding recording's stop path.
-    let requested_stt_engine = std::env::var("CODESCRIBE_STT_ENGINE").ok();
-    let requested_layered = std::env::var("CODESCRIBE_LAYERED_TRANSCRIPTION").ok();
+    let requested_asr_mode = std::env::var("CODESCRIBE_ASR_MODE").ok();
     let requested_local_final = std::env::var("CODESCRIBE_LOCAL_STT_FINAL_PASS").ok();
     let output_path = std::env::var("CODESCRIBE_PRODUCTION_CORPUS_OUT")
         .map(PathBuf::from)
@@ -1585,7 +1601,10 @@ async fn e2e_production_overlay_corpus_replay() {
         "exact repair-wave corpus must contain 3 truth-paired recordings"
     );
 
-    let settings = codescribe_core::config::UserSettings::load();
+    let mut settings = codescribe_core::config::UserSettings::load();
+    if let Some(mode) = requested_asr_mode.as_ref() {
+        settings.asr_mode = Some(mode.clone());
+    }
     let resolved = settings.resolved_asr_mode();
     let language = std::env::var("CODESCRIBE_E2E_LANG")
         .ok()
@@ -1599,11 +1618,8 @@ async fn e2e_production_overlay_corpus_replay() {
         // process. The pins are restored before the production session starts,
         // before any session worker reads them.
         unsafe {
-            if let Some(value) = requested_stt_engine.as_deref() {
-                std::env::set_var("CODESCRIBE_STT_ENGINE", value);
-            }
-            if let Some(value) = requested_layered.as_deref() {
-                std::env::set_var("CODESCRIBE_LAYERED_TRANSCRIPTION", value);
+            if let Some(value) = requested_asr_mode.as_deref() {
+                std::env::set_var("CODESCRIBE_ASR_MODE", value);
             }
             if let Some(value) = requested_local_final.as_deref() {
                 std::env::set_var("CODESCRIBE_LOCAL_STT_FINAL_PASS", value);
@@ -1787,8 +1803,7 @@ async fn e2e_production_overlay_corpus_replay() {
             "resolved_asr_mode": resolved.mode.as_str(),
             "gateway": "unavailable",
             "language": language,
-            "stt_engine": requested_stt_engine.as_deref().unwrap_or("auto"),
-            "layered_transcription": requested_layered.as_deref().unwrap_or("unset"),
+            "asr_mode": requested_asr_mode.as_deref().unwrap_or("unset"),
             "local_final_pass": requested_local_final.as_deref().unwrap_or("unset"),
             "capture_pacing_ms": 100,
             "event_reducer": "presentation_emitter_transcript_reducer",
@@ -1955,7 +1970,11 @@ async fn e2e_apple_live_parity() {
     // `Config::load()`: the first load injects ~/.codescribe/.env into the
     // process environment, so reading this afterwards would report a leak as if
     // it were the request. See `measured_lane_matches_request`.
-    let requested_lane = codescribe_core::stt::tail_patcher::layered_phase();
+    let requested_lane = match std::env::var("CODESCRIBE_ASR_MODE").as_deref() {
+        Ok("apple_only") => None,
+        Ok("local_power") => Some(1),
+        other => panic!("parity requires an explicit apple_only or local_power mode: {other:?}"),
+    };
 
     let clip = std::env::var("CODESCRIBE_E2E_AUDIO")
         .map(PathBuf::from)

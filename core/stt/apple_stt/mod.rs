@@ -1085,10 +1085,8 @@ fn bundled_bridge_binary_for_exe(current_exe: Option<&Path>) -> Option<PathBuf> 
 /// Cheap, process-cached check that the Apple STT bridge binary can actually be
 /// launched: an explicit `CODESCRIBE_APPLE_STT_BRIDGE` path wins first, then a
 /// bridge bundled beside the current `.app` executable, then the default bare
-/// command name on `PATH`. AUTO engine selection gates on this so it never
-/// advertises Apple on a host where the bridge is absent (which wastes a probe
-/// and then silently falls back to Candle). Explicit `CODESCRIBE_STT_ENGINE=apple`
-/// bypasses this and still probes + fails loudly.
+/// command name on `PATH`. Automatic router selection gates on this so it
+/// never advertises Apple on a host where the bridge is absent.
 pub(crate) fn is_bridge_resolvable() -> bool {
     /// Cached answer to "can we launch the bridge binary" for AUTO engine selection.
     static RESOLVABLE: OnceLock<bool> = OnceLock::new();

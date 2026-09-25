@@ -151,9 +151,9 @@ Normal stop:
    the seal alone could not establish terminality), then `session_ended`; and
 7. delivers through the route latched from explicit operator intent.
 
-Normal stop starts no whole-file Whisper pass and no fifth text layer. Legacy
-`FINAL_PASS_MODE` spellings remain migration tokens; explicit Retranscribe owns
-whole-file inference.
+Normal stop starts no whole-file Whisper pass and no fifth text layer.
+`FINAL_PASS_MODE` spellings are retired and removed from persisted settings;
+explicit Retranscribe owns whole-file inference.
 
 ## 5. Responses Formatting lane truth
 
@@ -229,10 +229,10 @@ revision for the session that is still current for exactly this reason.
 | Surface                                          | Meaning                                                                               |
 | ------------------------------------------------ | ------------------------------------------------------------------------------------- |
 | `CODESCRIBE_ASR_MODE`                            | product intent: `local_power`, `cloud`, or `apple_only`                               |
-| `CODESCRIBE_LAYERED_TRANSCRIPTION`               | compatibility override for live Layer 1 arming; it does not select another dispatcher |
+| `CODESCRIBE_LAYERED_TRANSCRIPTION`               | env-only diagnostic override for Local Power; Cloud ignores it |
 | `CODESCRIBE_APPLE_STT_LIVE_MODE`                 | Apple bridge transport A/B only                                                       |
 | `STT_TAIL_PROVIDER`                              | Layer 1 provider implementation                                                       |
-| `FINAL_PASS_MODE` / `CODESCRIBE_FINAL_PASS_MODE` | migration-only stop token; no normal-stop file pass                                   |
+| `FINAL_PASS_MODE` / `CODESCRIBE_FINAL_PASS_MODE` | retired; ignored at runtime and rejected on config writes                                   |
 | `RuntimeSettingsSnapshot::llm_lanes()`           | sealed per-take LLM provider/model/endpoint/credential availability                   |
 | `tail_patch_session_receipt`                     | per-take evidence of live Layer 1 exercise and terminal accounting                    |
 

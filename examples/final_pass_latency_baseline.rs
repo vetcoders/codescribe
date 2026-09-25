@@ -1,12 +1,12 @@
 //! A2 final-pass latency baseline: per-stage timing on fixture WAVs.
 //!
-//! Exercises the exact production stop-path call
+//! Exercises the explicit production file-transcription call
 //! (`codescribe_core::stt::transcribe_file_verdict` through the Whisper
 //! singleton) and reads the thread-local stage timing the instrumentation
 //! records: engine lock wait, cold model load, pure decode span.
 //!
 //! Usage:
-//!   CODESCRIBE_STT_ENGINE=candle cargo run --release --example final_pass_latency_baseline [wav ...]
+//!   cargo run --release --example final_pass_latency_baseline [wav ...]
 //!
 //! Default fixture sequence (cold → warm → long) when no args are given:
 //!   1. tests/assets/data_assets/01_no-to-dobra.wav      (cold: pays model load)

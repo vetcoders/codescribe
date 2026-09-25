@@ -9,13 +9,16 @@ use serde_json::Value;
 
 use super::settings::{FormattingPolicy, SettingsV2, UserSettings};
 
-/// Receipt values are limited to the two non-secret settings repaired here.
+/// Receipt values are limited to non-secret settings repaired here.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum RepairAction {
     FieldReset {
         field: String,
         from: Value,
         to: Value,
+    },
+    RetiredEngineSettingRemoved {
+        field: String,
     },
     FileRecreated {
         reason: String,
@@ -64,6 +67,7 @@ impl RepairReceipt {
                 matches!(
                     a,
                     RepairAction::FieldReset { .. }
+                        | RepairAction::RetiredEngineSettingRemoved { .. }
                         | RepairAction::FileRecreated { .. }
                         | RepairAction::SeededFromPack { .. }
                 )
@@ -184,6 +188,18 @@ pub(super) fn repair_settings(path: &Path, pack: Option<&Path>) -> RepairReceipt
         }
         if !matches!(value["schema_version"].as_u64(), Some(2 | 3)) {
             anyhow::bail!("unsupported settings schema; source left untouched");
+        }
+        if let Some(engine) = value
+            .pointer_mut("/speech/engine")
+            .and_then(Value::as_object_mut)
+        {
+            for key in ["stt_engine", "final_pass_mode", "layered_transcription"] {
+                if engine.remove(key).is_some() {
+                    receipt.actions.push(RepairAction::RetiredEngineSettingRemoved {
+                        field: format!("speech.engine.{key}"),
+                    });
+                }
+            }
         }
         if let Some(zoom) = value.pointer("/ui/chat_zoom")
             && !zoom.is_null()
@@ -391,6 +407,49 @@ mod tests {
         assert_eq!(value["future"]["custom"], "keep");
         assert_eq!(value["speech"]["formatting"]["level"], "smart");
         assert_eq!(repair_settings(&path, None), RepairReceipt::default());
+    }
+
+    #[test]
+    fn retired_engine_settings_are_removed_once_without_changing_mode() {
+        for retired_value in [
+            serde_json::json!("smart"),
+            serde_json::json!("off"),
+            serde_json::json!("phase1"),
+            serde_json::json!(42),
+            Value::Null,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("settings.json");
+            let original = serde_json::json!({
+                "schema_version": 3,
+                "speech": { "engine": {
+                    "asr_mode": "local_power",
+                    "stt_engine": retired_value,
+                    "final_pass_mode": retired_value,
+                    "layered_transcription": retired_value
+                }}
+            });
+            fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
+            let receipt = repair_settings(&path, None);
+            assert!(receipt.unrepairable.is_empty());
+            let repaired: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(repaired["speech"]["engine"]["asr_mode"], "local_power");
+            for key in ["stt_engine", "final_pass_mode", "layered_transcription"] {
+                assert!(repaired["speech"]["engine"].get(key).is_none());
+                assert!(receipt.actions.contains(
+                    &RepairAction::RetiredEngineSettingRemoved {
+                        field: format!("speech.engine.{key}"),
+                    }
+                ));
+            }
+            assert_eq!(receipt.actions.len(), 3);
+            let metadata = fs::metadata(&path).unwrap();
+            assert_eq!(repair_settings(&path, None), RepairReceipt::default());
+            assert_eq!(
+                fs::metadata(&path).unwrap().modified().unwrap(),
+                metadata.modified().unwrap()
+            );
+        }
     }
 
     #[cfg(unix)]

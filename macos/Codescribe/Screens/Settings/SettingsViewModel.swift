@@ -63,53 +63,25 @@ func formatActiveSTT(lastServing: LastServingVerdict?) -> String {
   }
 }
 
-/// Product truth for the local Whisper lane shown in Dictation settings.
-/// This is deliberately not a boolean: a persisted `phase1` token is only a
-/// configured request, while model validation decides whether the next take
-/// can actually use it.
+/// Readiness of the mode-selected local refinement lane and its diagnostic env override.
 enum LocalWhisperRuntimeState: Equatable {
   case notSelected
-  case directEngineReady
-  case directEngineNotReady
   case livePatchingConfigured
   case livePatchingNotReady
-  case livePatchingConfigurationMismatch
-}
-
-let localWhisperLivePatchingRuntimeValue = "phase1"
-
-func wholeSessionFinalPassSubtitle(asrModeId: String) -> String {
-  if asrModeId == "local_power" {
-    return
-      "Off. This controls only a full-file decode after Stop; live Whisper refinement continues during the take."
-  }
-  return
-    "Off. No full-file decode runs after Stop. Apple live remains the only transcription lane for this mode."
+  case degradedEnvOverride
 }
 
 func resolveLocalWhisperRuntimeState(
   asrModeId: String,
-  sttEngineId: String,
   layeredValue: String?,
   modelAvailable: Bool
 ) -> LocalWhisperRuntimeState {
   guard asrModeId == "local_power" else { return .notSelected }
-
-  if sttEngineId == "whisper" || sttEngineId == "candle" {
-    return modelAvailable ? .directEngineReady : .directEngineNotReady
+  let value = layeredValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  guard value == nil || value == "" || value == "phase1" || value == "1" else {
+    return .degradedEnvOverride
   }
-
-  // Runtime product policy treats an absent promoted key as ArmedDefault.
-  // Only an explicit phase1 token or absence can claim configured truth;
-  // explicit `off` and every unknown token are named configuration drift.
-  let normalizedLayeredValue = layeredValue?.lowercased()
-  guard
-    normalizedLayeredValue == nil || normalizedLayeredValue == localWhisperLivePatchingRuntimeValue
-  else {
-    return .livePatchingConfigurationMismatch
-  }
-  guard modelAvailable else { return .livePatchingNotReady }
-  return .livePatchingConfigured
+  return modelAvailable ? .livePatchingConfigured : .livePatchingNotReady
 }
 
 enum SettingsSectionAvailability: Equatable {
@@ -2014,79 +1986,7 @@ final class SettingsViewModel: ObservableObject {
     persist("CODESCRIBE_BUFFERED_INTERIM_SEC", String(format: "%.1f", value))
   }
 
-  // MARK: - STT engine / layered transcription (Engine panel controls)
-
-  /// Selected STT engine id ("auto" | "apple" | "whisper"); empty → product default Apple.
-  var sttEngineId: String {
-    let raw = (settings.sttEngine ?? "apple").lowercased()
-    switch raw {
-    case "auto", "apple", "whisper", "candle": return raw == "candle" ? "whisper" : raw
-    default: return "apple"
-    }
-  }
-
-  /// Display label for the current STT engine selection.
-  var sttEngineLabel: String {
-    switch sttEngineId {
-    case "apple": return "Apple (live)"
-    case "whisper", "candle": return "Whisper (Candle)"
-    case "auto": return "Auto (Apple-first)"
-    default: return "Apple (live)"
-    }
-  }
-
-  /// Honest dual-brain note when preference and Active STT last run diverge.
-  var sttEngineTruthNote: String? {
-    let pref = sttEngineId
-    let active = activeSTT.lowercased()
-    if active.contains("not yet") || active.isEmpty { return nil }
-    // Preference Apple but last run was Whisper recovery / file pass is OK
-    // to mention once when the chip is clearly whisper while user picked apple.
-    if pref == "apple", active.contains("whisper") {
-      return
-        "Preference: Apple live · last take used Whisper (final/recovery). Live partials stay Apple."
-    }
-    if pref == "whisper" || pref == "candle", active.contains("apple") {
-      return "Preference: Whisper · last take was Apple live — check env override or restart."
-    }
-    return nil
-  }
-
-  func setSttEngine(_ id: String) {
-    let normalized: String
-    switch id.lowercased() {
-    case "auto": normalized = "auto"
-    case "whisper", "candle": normalized = "whisper"
-    default: normalized = "apple"
-    }
-    settings.sttEngine = normalized
-    // Local Power has one product shape. Apple/Auto requires live local
-    // patching; direct Whisper does not run a second patcher beside itself.
-    // Persist both values atomically, then `persistMany` reloads the bridge
-    // snapshot so Settings cannot keep an optimistic state the runtime did not
-    // accept.
-    if asrModeId == "local_power" {
-      let layered =
-        normalized == "auto" || normalized == "apple"
-        ? localWhisperLivePatchingRuntimeValue : "off"
-      settings.layeredTranscription = layered
-      persistMany([
-        CsConfigEntry(key: "CODESCRIBE_STT_ENGINE", value: normalized),
-        CsConfigEntry(key: "CODESCRIBE_LAYERED_TRANSCRIPTION", value: layered),
-      ])
-      refreshWhisperModelStatus()
-    } else {
-      // Persist promotes to settings.json AND reconciles process env + .env
-      // (single brain — no CODESCRIBE_STT_ENGINE lottery).
-      persist("CODESCRIBE_STT_ENGINE", normalized)
-    }
-  }
-
-  func setFinalPassMode(_ id: String) {
-    _ = id
-    settings.finalPassMode = "off"
-    persist("FINAL_PASS_MODE", "off")
-  }
+  // MARK: - ASR mode
 
   /// Product ASR lane shown in Dictation. Cloud never displays without granted consent.
   var asrModeId: String {
@@ -2118,31 +2018,18 @@ final class SettingsViewModel: ObservableObject {
     switch id.lowercased() {
     case "local_power":
       settings.asrMode = "local_power"
-      let layered =
-        sttEngineId == "auto" || sttEngineId == "apple"
-        ? localWhisperLivePatchingRuntimeValue : "off"
-      settings.layeredTranscription = layered
-      persistMany([
-        CsConfigEntry(key: "CODESCRIBE_ASR_MODE", value: "local_power"),
-        CsConfigEntry(key: "CODESCRIBE_LAYERED_TRANSCRIPTION", value: layered),
-      ])
+      persist("CODESCRIBE_ASR_MODE", "local_power")
       refreshWhisperModelStatus()
     case "cloud":
       settings.asrMode = "cloud"
       settings.cloudConsent = "granted"
-      settings.layeredTranscription = "off"
       persistMany([
         CsConfigEntry(key: "CODESCRIBE_CLOUD_CONSENT", value: "granted"),
         CsConfigEntry(key: "CODESCRIBE_ASR_MODE", value: "cloud"),
-        CsConfigEntry(key: "CODESCRIBE_LAYERED_TRANSCRIPTION", value: "off"),
       ])
     default:
       settings.asrMode = "apple_only"
-      settings.layeredTranscription = "off"
-      persistMany([
-        CsConfigEntry(key: "CODESCRIBE_ASR_MODE", value: "apple_only"),
-        CsConfigEntry(key: "CODESCRIBE_LAYERED_TRANSCRIPTION", value: "off"),
-      ])
+      persist("CODESCRIBE_ASR_MODE", "apple_only")
     }
   }
 
@@ -2155,29 +2042,16 @@ final class SettingsViewModel: ObservableObject {
   var localWhisperRuntimeState: LocalWhisperRuntimeState {
     resolveLocalWhisperRuntimeState(
       asrModeId: asrModeId,
-      sttEngineId: sttEngineId,
       layeredValue: settings.layeredTranscription,
       modelAvailable: localWhisperStatus.available
     )
   }
 
-  /// Re-read both persisted arming truth and full model-bundle validation.
-  /// This is the repair/recheck action for external config drift; it never
-  /// paints an optimistic ON state.
+  /// Re-read the diagnostic env override and full model-bundle validation.
+  /// This recheck never paints an optimistic ON state.
   func recheckLocalWhisperRuntime() {
     guard let engine else { return }
     applyLoadedSettings(engine.loadSettings())
-    refreshWhisperModelStatus()
-  }
-
-  /// Repair only the named configuration mismatch. Missing/invalid weights are
-  /// handled by the model download surface, never by pretending Phase 1 is on.
-  func repairLocalWhisperLivePatching() {
-    guard asrModeId == "local_power", sttEngineId == "auto" || sttEngineId == "apple" else {
-      return
-    }
-    settings.layeredTranscription = localWhisperLivePatchingRuntimeValue
-    persist("CODESCRIBE_LAYERED_TRANSCRIPTION", localWhisperLivePatchingRuntimeValue)
     refreshWhisperModelStatus()
   }
 

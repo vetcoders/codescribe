@@ -341,23 +341,16 @@ export CODESCRIBE_E2E_STT=1
 export CODESCRIBE_E2E_AUDIO="$FIXTURE"
 export CODESCRIBE_E2E_CAPTURE_VIA_DEVICE=1
 
-# Engine: Apple live is the product case (same setup as make test-engine-apple).
-# ENGINE=candle skips the bridge and lets the default engine run.
-if [ "${ENGINE:-apple}" = "apple" ]; then
-  BRIDGE="target/release/codescribe-stt-bridge"
-  make "$BRIDGE" >/dev/null 2>&1 || fail "cannot build Apple STT bridge" 2
-  export CODESCRIBE_STT_ENGINE=apple
-  export CODESCRIBE_APPLE_STT_BRIDGE="$PWD/$BRIDGE"
-  # Outside Codescribe.app the terminal is TCC's responsible process and the
-  # bridge's own Speech grant is invisible. Disclaim makes the bridge
-  # self-responsible (see respawnSelfResponsibleIfRequested + make engine-auth).
-  export CODESCRIBE_BRIDGE_DISCLAIM=1
-fi
+# Apple live is the capture lane; ASR mode chooses whether Layer 1 refines it.
+BRIDGE="target/release/codescribe-stt-bridge"
+make "$BRIDGE" >/dev/null 2>&1 || fail "cannot build Apple STT bridge" 2
+export CODESCRIBE_ASR_MODE="${CODESCRIBE_ASR_MODE:-apple_only}"
+export CODESCRIBE_APPLE_STT_BRIDGE="$PWD/$BRIDGE"
+# Let the bridge own its Speech grant outside the app bundle.
+export CODESCRIBE_BRIDGE_DISCLAIM=1
 
-# Which compatibility override is this run measuring? The key is promoted to
-# settings.json, while process env still wins for this harness. Print the
-# explicit test input and let runtime receipts prove the lane actually armed.
-info "layered override: ${CODESCRIBE_LAYERED_TRANSCRIPTION:-<unset — product mode decides>}"
+# The test materializes this mode in its own temporary settings directory.
+info "ASR mode: $CODESCRIBE_ASR_MODE"
 
 # Pre-build so compile time cannot eat into anything timing-sensitive.
 cargo test --test e2e_overlay_delivery_parity --no-run >"$WORK/build.log" 2>&1 ||

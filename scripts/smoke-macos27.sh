@@ -252,11 +252,9 @@ else
   #    checked-in development license verifier. The literal `release` profile
   #    fails closed without the operator-owned licence key, which is a
   #    distribution contract, not something a latency probe should satisfy.
-  #  * `CODESCRIBE_STT_ENGINE=candle` — ~/.codescribe/.env is loaded by every
-  #    process that boots core, so without pinning, an operator's power-user
-  #    setting would silently decide which lane this row measures.
+  # The example calls the Whisper file-verdict path directly.
   elif env -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX \
-        CODESCRIBE_LOCAL_INSTALL=1 CODESCRIBE_STT_ENGINE=candle \
+        CODESCRIBE_LOCAL_INSTALL=1 \
         cargo run --profile local-release --quiet \
         --example final_pass_latency_baseline -- \
         "$FIXTURE" "$FIXTURE" > "$TMP_DIR/latency.log" 2>"$TMP_DIR/latency.err"; then

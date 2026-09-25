@@ -419,61 +419,48 @@ fn test_settings_full_round_trip() {
 
 #[test]
 #[serial]
-fn test_engine_tab_stt_engine_env_default() {
-    let previous = std::env::var("CODESCRIBE_STT_ENGINE").ok();
-    unsafe { std::env::remove_var("CODESCRIBE_STT_ENGINE") };
-    let engine = std::env::var("CODESCRIBE_STT_ENGINE").unwrap_or_else(|_| "auto".to_string());
-    assert_eq!(engine, "auto", "default STT engine policy should be auto");
-    match previous {
-        Some(value) => unsafe { std::env::set_var("CODESCRIBE_STT_ENGINE", value) },
-        None => unsafe { std::env::remove_var("CODESCRIBE_STT_ENGINE") },
-    }
-}
-
-#[test]
-#[serial]
-fn test_retired_onnx_setting_is_rejected_while_silero_remains_available() {
+fn retired_engine_settings_load_repairs_once_and_does_not_reseed() {
     let _tmp = setup_test_env();
     let path = UserSettings::settings_path();
-    fs::create_dir_all(path.parent().expect("settings parent")).expect("create settings parent");
-    fs::write(
-        &path,
-        r#"{
-  "schema_version": 3,
-  "speech": { "engine": { "stt_engine": "onnx" } }
-}"#,
-    )
-    .expect("write retired ONNX setting");
-
-    let mut settings = UserSettings::load();
-    assert_eq!(
-        settings.stt_engine.as_deref(),
-        Some("apple"),
-        "retired ONNX settings must resolve to the product default"
-    );
-    settings.set_string("CODESCRIBE_STT_ENGINE", "onnx");
-    assert_eq!(settings.stt_engine.as_deref(), Some("apple"));
-
-    let silero_surface = std::any::type_name::<codescribe_core::vad::SileroVad>();
-    assert!(silero_surface.ends_with("SileroVad"));
-    assert!(
-        codescribe_core::vad::embedded::is_embedded_available()
-            || codescribe_core::vad::user_model_path().exists(),
-        "Silero VAD must remain compiled and available after ONNX Whisper retirement"
-    );
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, r#"{"schema_version":3,"speech":{"engine":{
+        "asr_mode":"local_power","stt_engine":"whisper",
+        "final_pass_mode":"smart","layered_transcription":"off"
+    }}}"#).unwrap();
+    let first = UserSettings::load();
+    assert_eq!(first.asr_mode.as_deref(), Some("local_power"));
+    let bytes = fs::read(&path).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    for key in ["stt_engine", "final_pass_mode", "layered_transcription"] {
+        assert!(value["speech"]["engine"].get(key).is_none());
+    }
+    let metadata = fs::metadata(&path).unwrap();
+    let entries = fs::read_dir(path.parent().unwrap()).unwrap().count();
+    let second = UserSettings::load();
+    assert_eq!(first, second);
+    assert_eq!(bytes, fs::read(&path).unwrap());
+    let after = fs::metadata(&path).unwrap();
+    assert_eq!(metadata.modified().unwrap(), after.modified().unwrap());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // Every settings write replaces the inode atomically, including identical bytes.
+        assert_eq!(metadata.ino(), after.ino(), "second load must perform zero writes");
+    }
+    assert_eq!(entries, fs::read_dir(path.parent().unwrap()).unwrap().count());
 }
 
 #[test]
 #[serial]
-fn test_engine_tab_stt_engine_env_apple() {
-    let previous = std::env::var("CODESCRIBE_STT_ENGINE").ok();
-    unsafe { std::env::set_var("CODESCRIBE_STT_ENGINE", "apple") };
-    let engine = std::env::var("CODESCRIBE_STT_ENGINE").unwrap_or_else(|_| "candle".to_string());
-    assert_eq!(engine, "apple", "STT engine should reflect env var");
-    match previous {
-        Some(value) => unsafe { std::env::set_var("CODESCRIBE_STT_ENGINE", value) },
-        None => unsafe { std::env::remove_var("CODESCRIBE_STT_ENGINE") },
+fn retired_engine_writes_are_rejected_without_creating_files() {
+    let _tmp = setup_test_env();
+    let config = Config::default();
+    for key in ["CODESCRIBE_STT_ENGINE", "FINAL_PASS_MODE", "CODESCRIBE_FINAL_PASS_MODE"] {
+        assert!(config.save_to_env(key, "off").is_err());
+        assert!(config.save_to_env_many(&[("CODESCRIBE_ASR_MODE", "cloud"), (key, "off")]).is_err());
     }
+    assert!(!UserSettings::settings_path().exists());
+    assert!(!_tmp.path().join(".env").exists());
 }
 
 #[test]

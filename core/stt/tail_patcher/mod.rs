@@ -6,20 +6,12 @@
 //! produce **bounded** [`EngineEvent::ReplaceRange`] patches that fill in /
 //! correct only the tokens that differ.
 //!
-//! # Relationship to Smart final-pass (`FINAL_PASS_MODE`)
+//! # Product mode and diagnostic override
 //!
-//! **Orthogonal lifecycle controls — no silent coupling.**
-//!
-//! | Control | Env | Default | What it does |
-//! | --- | --- | --- | --- |
-//! | Final pass | `FINAL_PASS_MODE` | legacy | Normal stop does not run a full WAV pass; Retranscribe is explicit. |
-//! | Layered / Layer 1 | product mode + compatibility override | Local Power armed | During-hold, exact-span Whisper repair on the Apple progressive path. |
-//!
-//! - **Smart** = skip full stop re-pass when streaming completeness is
-//!   adjudicated Complete. It does **not** enable layered transcription.
-//! - **Off** = never full stop re-pass. It does **not** force Whisper at stop.
-//! - Local Power arms Layer 1 independently of final-pass state. `phase1`
-//!   remains a persisted compatibility token; explicit `off` is degraded.
+//! Local Power arms live refinement by default. The optional env-only
+//! `CODESCRIBE_LAYERED_TRANSCRIPTION` override can explicitly degrade that lane.
+//! Settings writes only ASR mode. Normal stop does not run a whole-file pass;
+//! Retranscribe remains an explicit file action.
 //!
 //! Product intent and runtime now agree on the Apple path: live patching is a
 //! required part of Local Power, while unfenced routes fail closed.
@@ -92,14 +84,9 @@ use tracing::info;
 
 use crate::pipeline::contracts::{EngineEvent, LayerSource};
 
-/// Compatibility override for the layered transcription pipeline.
-///
-/// `CODESCRIBE_LAYERED_TRANSCRIPTION=phase{1,2,3,4}` preserves older phase
-/// selection. Product-mode bootstrap owns the default: Local Power + unset is
-/// armed; explicit off or malformed input is a named degraded disposition.
-///
-/// **Not** `FINAL_PASS_MODE`: Smart final-pass never writes this flag. Kept
-/// here as the parser/constant owner; the key is promoted through settings.json.
+/// Diagnostic env override for local refinement.
+/// Local Power + unset is armed; explicit off or malformed input is degraded.
+/// This key is never persisted by Settings and has no effect on Cloud admission.
 pub const LAYERED_TRANSCRIPTION_ENV: &str = "CODESCRIBE_LAYERED_TRANSCRIPTION";
 
 /// Env override for [`TailPatchConfig::max_change_ratio`].
@@ -212,14 +199,14 @@ pub fn parse_layered_phase_value(raw: &str) -> Option<u8> {
 /// Active layered-transcription phase. Unset, explicit `off`/`0`/`false`, and
 /// unparseable garbage all fail closed to `None`.
 ///
-/// Independent of `FINAL_PASS_MODE` / Smart completeness skip.
+/// Product-mode bootstrap owns the default when no override is supplied.
 pub fn layered_phase() -> Option<u8> {
     let raw = std::env::var(LAYERED_TRANSCRIPTION_ENV).ok();
     layered_phase_from_raw(raw.as_deref())
 }
 
 /// Resolve the layered phase from an optional raw override without touching
-/// process-global environment state. `None` means no compatibility override;
+/// process-global environment state. `None` means no diagnostic override;
 /// recording bootstrap resolves the product-mode default.
 pub fn layered_phase_from_raw(raw: Option<&str>) -> Option<u8> {
     raw.and_then(parse_layered_phase_value)
@@ -1836,11 +1823,11 @@ mod tests {
         assert_eq!(parse_layered_phase_value("0"), None);
     }
 
-    /// FINAL_PASS_MODE vocabulary must never parse as a layered phase.
+    /// Unrelated mode vocabulary must never parse as a layered phase.
     #[test]
-    fn layered_phase_rejects_final_pass_mode_tokens() {
-        // Orthogonality: FINAL_PASS_MODE vocabulary must never enable Layer 1.
-        // If an operator (or a bug) copies smart/always/off into
+    fn layered_phase_rejects_unrelated_mode_tokens() {
+        // Unrelated mode vocabulary must never enable Layer 1.
+        // If a diagnostic env file copies smart/always/off into
         // CODESCRIBE_LAYERED_TRANSCRIPTION, treat as off — not as a phase.
         for token in ["smart", "always", "off", "auto", "on", "true", "yes"] {
             assert_eq!(

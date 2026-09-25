@@ -817,7 +817,6 @@ func codescribeDebugInfo(
     lines += [
       "configuration: resolved now; may include loader repairs; not proof of the active capture snapshot",
       "configured ASR mode: \(settings.asrMode ?? "not specified")",
-      "configured STT engine: \(settings.sttEngine ?? "not specified")",
       "configured input device: \(settings.audioInputDevice ?? "system default")",
       "formatting enabled: \(settings.aiFormattingEnabled)",
       "configured formatting policy: \(settings.formattingLevel ?? "not specified")",

@@ -355,7 +355,7 @@ final class OverlayState {
   private(set) var autoPasteControlAvailable = true
   /// Serving-engine label latched once per session. Rendering never performs
   /// settings I/O or a UniFFI read.
-  private(set) var engineChip = "local apple"
+  private(set) var engineChip = "not yet served"
   /// Lifecycle evidence that the final pass is active. It never selects a
   /// presentation phase; the reducer projection owns that field.
   var isFinalPass: Bool = false
@@ -1247,14 +1247,7 @@ final class OverlayState {
         return
       }
     }
-    let preference = CodescribeConfig().loadSettings().sttEngine?
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    switch preference?.lowercased() {
-    case "whisper", "candle": engineChip = "local whisper"
-    case "auto": engineChip = "auto · apple-first"
-    case let preference? where !preference.isEmpty: engineChip = preference
-    default: engineChip = "local apple"
-    }
+    engineChip = "not yet served"
   }
 
   /// Consume the canonical Rust indicator mode. Agent arm is a one-shot

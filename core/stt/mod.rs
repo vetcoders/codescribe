@@ -11,8 +11,7 @@
 //!   *emergency recovery* so a session never dies silently — never as a quiet
 //!   default.
 //! - **File final-pass** is Whisper only. [`transcribe_file_verdict`]
-//!   deliberately refuses the Apple file path even under
-//!   `CODESCRIBE_STT_ENGINE=apple`; measured on long Polish dictation, Apple's
+//!   deliberately refuses the Apple file path; measured on long Polish dictation, Apple's
 //!   URL recognizer collapses the take to a tail fragment.
 //!
 /// Bounded read-only view of active W2-04 Agent session-name leases.
@@ -125,10 +124,7 @@ enum SttEngine {
 
 /// Auto policy: Apple only when it can actually run, otherwise Candle.
 fn default_engine() -> SttEngine {
-    // AUTO only selects Apple when the SpeechAnalyzer bridge is actually
-    // launchable; otherwise the probe is wasted and the router silently falls
-    // back to Candle anyway (a misleading "Apple" selector). Explicit
-    // `CODESCRIBE_STT_ENGINE=apple` bypasses this and still probes + fails loudly.
+    // Probe runtime capability directly. There is no persisted engine selector.
     if apple_stt::is_runtime_available() && apple_stt::is_bridge_resolvable() {
         SttEngine::Apple
     } else {
@@ -271,7 +267,7 @@ pub fn init_active_engine() -> anyhow::Result<()> {
     }
 }
 
-/// File-level transcription verdict for **stop final-pass only**.
+/// File-level transcription verdict for explicit file actions.
 ///
 /// Product split (operator truth 2026-07-24, clips 01–04 + div0):
 /// - **Live** = Apple buffer / virtual-mic (`transcribe_live`, SFSpeechAudioBuffer).
@@ -281,8 +277,7 @@ pub fn init_active_engine() -> anyhow::Result<()> {
 ///   length regression because the fragment is slightly longer than the broken
 ///   live assembly — see data_assets/02 e2e (live 26c, Apple file 66c, human 600c+).
 ///
-/// When `CODESCRIBE_STT_ENGINE=apple`, live paths stay Apple-only; this function
-/// deliberately does **not** call `apple_stt::transcribe_file_verdict`.
+/// This function deliberately does not call `apple_stt::transcribe_file_verdict`.
 pub fn transcribe_file_verdict(
     path: &std::path::Path,
     language: Option<&str>,

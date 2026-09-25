@@ -656,15 +656,18 @@ to the resolved defects; this section is not a work queue.
 - `.env` may not remain a second independent writer.
 - UI readback uses the same effective value as recording start.
 - UI writes become visible to the next recording without relaunch.
-- `ASR mode`, `STT engine`, and `Layered` are distinct dimensions.
-- Local Power means local Layer 1 capability is intended.
-- Cloud means audio egress is consent-gated.
-- Apple Only means no Layer 1 provider.
-- `Final Pass off` concerns stop-path whole-file inference.
-- `Layered off` concerns during-hold refinement.
-- The two switches are orthogonal.
-- A stale `final_pass_mode=smart` token must not reactivate hated Full Pass.
-- A Layered toggle ON must be backed by an armed lane receipt.
+- `ASR mode` is the sole engine control: Apple only / Local power / Cloud.
+- Local Power arms local Layer 1 by default; Apple only selects no Layer 1 provider.
+- Cloud means audio egress is consent-gated and uses its own live endpoint/key checks.
+- `CODESCRIBE_LAYERED_TRANSCRIPTION` is an env-only diagnostic override for Local Power.
+  Explicit off or invalid input produces “Degraded (env override)” in Settings.
+  It cannot disarm Cloud or become a Settings write.
+- STT engine and whole-session Final Pass controls are retired. Repair removes
+  `stt_engine`, `final_pass_mode`, and `layered_transcription` once, with named receipts.
+  Subsequent loads do not recreate those keys or write an unchanged file.
+- Retranscribe remains an explicit file action; normal stop never runs a whole-file pass.
+- Live Whisper refinement is a read-only Ready / Not ready / Degraded status with Recheck.
+- Healthy local startup reports `reason="local_tail_patch_armed"`.
 - A missing model produces a visible not-ready/degraded state.
 - Installed model status comes from full validation, not file names.
 

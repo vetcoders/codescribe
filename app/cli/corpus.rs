@@ -54,15 +54,18 @@ use sha2::{Digest, Sha256};
 
 const REPORT_SCHEMA: &str = CORPUS_REPORT_SCHEMA;
 const AUDIO_EXTENSIONS: [&str; 3] = ["wav", "m4a", "mp3"];
-const CONTROLLED_ENV: [&str; 12] = [
+const RETIRED_SELECTOR_ENV: [&str; 4] = [
     "CODESCRIBE_STT_ENGINE",
+    "FINAL_PASS_MODE",
+    "CODESCRIBE_FINAL_PASS_MODE",
     "CODESCRIBE_LAYERED_TRANSCRIPTION",
+];
+const CONTROLLED_ENV: [&str; 9] = [
+    "CODESCRIBE_ASR_MODE",
     "STT_TAIL_PROVIDER",
     "CODESCRIBE_SILERO_FUSION",
     "CODESCRIBE_SILERO_FUSION_CONTEXT",
     "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED",
-    "FINAL_PASS_MODE",
-    "CODESCRIBE_FINAL_PASS_MODE",
     "CODESCRIBE_LOCAL_STT_FINAL_PASS",
     "CODESCRIBE_APPLE_STT_ALLOW_DOWNLOAD",
     "CODESCRIBE_APPLE_STT_BRIDGE",
@@ -244,6 +247,14 @@ impl ReplayProfile {
 
     const fn layered(self) -> bool {
         !matches!(self, Self::AppleLayer0)
+    }
+
+    const fn asr_mode(self) -> &'static str {
+        if self.layered() {
+            "local_power"
+        } else {
+            "apple_only"
+        }
     }
 
     const fn tail_provider(self) -> &'static str {
@@ -1030,6 +1041,7 @@ fn run_matrix(args: MatrixArgs, invocation: &Invocation) -> Result<()> {
             .arg("--apple-bridge")
             .arg(&args.apple_bridge)
             .env("CODESCRIBE_DATA_DIR", &runtime_dir)
+            .env("CODESCRIBE_ENV_PATH", runtime_dir.join("absent.env"))
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
@@ -1161,7 +1173,7 @@ fn configure_profile_environment(
     profile: ReplayProfile,
     apple_bridge: &Path,
 ) {
-    for key in CONTROLLED_ENV {
+    for key in CONTROLLED_ENV.into_iter().chain(RETIRED_SELECTOR_ENV) {
         command.env_remove(key);
     }
     if !matches!(profile, ReplayProfile::AppleLayer1Remote) {
@@ -1177,13 +1189,9 @@ fn configure_profile_environment(
     }
     command
         .env("CODESCRIBE_DISABLE_KEYCHAIN", "1")
-        .env("CODESCRIBE_STT_ENGINE", "apple")
+        .env("CODESCRIBE_ASR_MODE", profile.asr_mode())
         .env("CODESCRIBE_APPLE_STT_BRIDGE", apple_bridge)
         .env("CODESCRIBE_BRIDGE_DISCLAIM", "1")
-        .env(
-            "CODESCRIBE_LAYERED_TRANSCRIPTION",
-            if profile.layered() { "phase1" } else { "off" },
-        )
         .env("STT_TAIL_PROVIDER", profile.tail_provider())
         .env(
             "CODESCRIBE_SILERO_FUSION",
@@ -1192,14 +1200,6 @@ fn configure_profile_environment(
         .env("CODESCRIBE_SILERO_FUSION_CONTEXT", profile.fusion_context())
         .env("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED", "off")
         .env("CODESCRIBE_APPLE_STT_ALLOW_DOWNLOAD", "0")
-        .env(
-            "FINAL_PASS_MODE",
-            if matches!(profile, ReplayProfile::AppleLayer1LocalFinalPass) {
-                "always"
-            } else {
-                "off"
-            },
-        )
         .env(
             "CODESCRIBE_LOCAL_STT_FINAL_PASS",
             if matches!(profile, ReplayProfile::AppleLayer1LocalFinalPass) {
@@ -1234,26 +1234,18 @@ async fn run_worker(args: WorkerArgs) -> Result<()> {
         bail!("worker selected no recordings");
     }
 
-    let mut settings = UserSettings {
-        stt_engine: Some("apple".to_string()),
-        layered_transcription: Some(if args.profile.layered() {
-            "phase1".to_string()
-        } else {
-            "off".to_string()
-        }),
-        final_pass_mode: Some(
-            if matches!(args.profile, ReplayProfile::AppleLayer1LocalFinalPass) {
-                "always"
-            } else {
-                "off"
-            }
-            .to_string(),
-        ),
+    // Remote tail-provider profiles exercise the tail-patch transport, not CloudSession.
+    let settings = UserSettings {
+        asr_mode: Some(args.profile.asr_mode().to_string()),
         ..UserSettings::default()
     };
-    // The cloud product session is a separate gateway surface. Tail-patch
-    // provider profiles are controlled by the explicit process environment.
-    settings.asr_mode = Some("apple_only".to_string());
+    settings.save().context("save isolated worker ASR mode")?;
+    let snapshot = codescribe_core::config::Config::load_runtime_snapshot_without_keychain()
+        .map_err(|error| anyhow!("worker runtime snapshot refused: {error:?}"))?;
+    let (decision, receipt) = codescribe_core::asr_session::layer1_decision(&snapshot);
+    if receipt.asr_mode != args.profile.asr_mode() || decision.is_armed() != args.profile.layered() {
+        bail!("worker ASR mode did not reach the runtime decision: {}", receipt.reason);
+    }
 
     let output_root = args
         .out
@@ -1416,7 +1408,7 @@ async fn run_worker(args: WorkerArgs) -> Result<()> {
         mean_cer,
         mean_character_parity,
         input_hashes_unchanged,
-        settings_loaded: false,
+        settings_loaded: true,
         dotenv_loaded: false,
         keychain_disabled: true,
         apple_stt_bridge: fingerprint_file("apple_stt_bridge", &args.apple_bridge)?,
@@ -1655,12 +1647,13 @@ fn make_private_directory(path: &Path) -> Result<()> {
 }
 
 fn validate_worker_environment(profile: ReplayProfile, apple_bridge: &Path) -> Result<()> {
+    for key in RETIRED_SELECTOR_ENV {
+        if std::env::var_os(key).is_some() {
+            bail!("worker environment contains retired selector {key}");
+        }
+    }
     let expected = [
-        ("CODESCRIBE_STT_ENGINE", "apple"),
-        (
-            "CODESCRIBE_LAYERED_TRANSCRIPTION",
-            if profile.layered() { "phase1" } else { "off" },
-        ),
+        ("CODESCRIBE_ASR_MODE", profile.asr_mode()),
         ("STT_TAIL_PROVIDER", profile.tail_provider()),
         (
             "CODESCRIBE_SILERO_FUSION",
@@ -1682,7 +1675,14 @@ fn validate_worker_environment(profile: ReplayProfile, apple_bridge: &Path) -> R
     let data_dir = std::env::var_os("CODESCRIBE_DATA_DIR")
         .filter(|value| !value.is_empty())
         .ok_or_else(|| anyhow!("worker requires isolated CODESCRIBE_DATA_DIR"))?;
-    fs::create_dir_all(PathBuf::from(data_dir)).context("create isolated data directory")?;
+    let data_dir = PathBuf::from(data_dir);
+    let env_path = data_dir.join("absent.env");
+    if std::env::var_os("CODESCRIBE_ENV_PATH").as_deref() != Some(env_path.as_os_str())
+        || env_path.exists()
+    {
+        bail!("worker requires an absent env file inside its isolated data directory");
+    }
+    fs::create_dir_all(data_dir).context("create isolated data directory")?;
     Ok(())
 }
 
@@ -2147,6 +2147,56 @@ mod tests {
         .unwrap();
         value["corpus"] = serde_json::to_value(census).unwrap();
         serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn worker_profiles_pin_one_mode_and_reject_retired_selectors() {
+        let _serial = crate::test_env::data_dir_env_serial();
+        struct RestoreEnv(Vec<(std::ffi::OsString, Option<std::ffi::OsString>)>);
+        impl Drop for RestoreEnv {
+            fn drop(&mut self) {
+                for (key, value) in &self.0 {
+                    // SAFETY: the process-environment test lock remains held.
+                    unsafe {
+                        match value {
+                            Some(value) => std::env::set_var(key, value),
+                            None => std::env::remove_var(key),
+                        }
+                    }
+                }
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let bridge = root.path().join("bridge");
+        for profile in [ReplayProfile::AppleLayer0, ReplayProfile::AppleLayer1Inprocess] {
+            let mut command = ProcessCommand::new("unused-worker");
+            configure_profile_environment(&mut command, profile, &bridge);
+            command.env("CODESCRIBE_DATA_DIR", root.path());
+            command.env("CODESCRIBE_ENV_PATH", root.path().join("absent.env"));
+            let _restore = RestoreEnv(
+                command
+                    .get_envs()
+                    .map(|(key, _)| (key.to_owned(), std::env::var_os(key)))
+                    .collect(),
+            );
+            for (key, value) in command.get_envs() {
+                // SAFETY: all env mutation is serialized and restored before unlock.
+                unsafe {
+                    match value {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+            assert!(validate_worker_environment(profile, &bridge).is_ok());
+            for key in RETIRED_SELECTOR_ENV {
+                // SAFETY: this test owns the process-environment lock.
+                unsafe { std::env::set_var(key, "off") };
+                let error = validate_worker_environment(profile, &bridge).unwrap_err();
+                assert!(error.to_string().contains(key));
+                unsafe { std::env::remove_var(key) };
+            }
+        }
     }
 
     #[test]

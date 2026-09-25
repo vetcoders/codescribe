@@ -8,7 +8,7 @@
         start stop restart status logs logs-follow \
         bump bump-patch bump-minor bump-major version \
         lint format test test-quick test-e2e test-e2e-real test-e2e-roundtrip test-sse test-sse-release test-responses-live test-sse-heavy test-formatting test-structural-verifier test-transcript-bus-path test-all \
-        test-engine test-engine-apple test-engine-candle test-teacher \
+        test-engine test-engine-apple test-teacher \
         demo demo-raw demo-assistive check verify semgrep fix clean help corpus-census test-corpus-parity \
         dist-preflight dist-preflight-signed verify-canaries smoke-canaries \
         dmg dmg-signed release-standard release-full release-dmgs release-stable install-app-release notarize verify-dmg download-model download-e5 download-embedder ensure-models \
@@ -364,7 +364,6 @@ bump-major:
 # gate: test-engine class=operator ci=no -- live-assembly and final-boundary unit lanes with output
 # gate: test-engine-apple class=operator ci=no -- Apple live engine over BlackHole; needs the private fixture corpus
 # gate: test-engine-apple-channel class=operator ci=no -- Apple channel path from WAV; needs the private fixture corpus
-# gate: test-engine-candle class=operator ci=no -- candle/Metal engine lane; needs local models
 # gate: test-engine-parity class=operator ci=no -- Layer 0 parity bar vs the Apple reference; private corpus, host-local bench
 # gate: test-engine-parity-layered class=operator ci=no -- Layer 1 parity arm judged on structure; private corpus, host-local bench
 # gate: test-engine-parity-both class=operator ci=no -- runs both parity arms and prints the delta
@@ -608,7 +607,6 @@ test-engine:
 	@cargo test --test e2e_overlay_delivery_parity -- --nocapture
 	@echo "OK — freezed+append + single-final-tail fail bar green."
 	@echo "Apple live multi-utterance (slow):  make test-engine-apple"
-	@echo "Candle live multi-utterance:        make test-engine-candle"
 
 # Ensure Apple STT bridge binary exists (virtual-mic / AudioBuffer path).
 # The Info.plist section is REQUIRED, not cosmetic: TCC crashes a process that
@@ -679,17 +677,17 @@ engine-auth: $(ENGINE_BRIDGE)
 # pinned a lane" from "nobody asked". The operator's own `~/.codescribe/.env` is
 # is no longer an unpromoted injection path; the guard still rejects a caller
 # request that contradicts the recipe's explicit lane pin.
-ifneq ($(origin CODESCRIBE_LAYERED_TRANSCRIPTION),undefined)
-PARITY_LANE_REQUEST := $(CODESCRIBE_LAYERED_TRANSCRIPTION)
+ifneq ($(origin CODESCRIBE_ASR_MODE),undefined)
+PARITY_LANE_REQUEST := $(CODESCRIBE_ASR_MODE)
 endif
 
 # Refuse a run whose pin contradicts the request, instead of measuring the other
 # lane and reporting it as the caller's.
 #
-# This is review finding P1-01 made impossible. A dispatch verifier ran
-# `CODESCRIBE_LAYERED_TRANSCRIPTION=phase1 make test-engine-parity`; the recipe
-# pin silently won, Layer 0 was measured twice, and the layered arm was recorded
-# green while asserting nothing about Layer 1. The Rust-side guard
+# A contradictory request such as
+# `CODESCRIBE_ASR_MODE=local_power make test-engine-parity` must fail before
+# the recipe can replace it with Layer 0 and report the wrong measurement.
+# The Rust-side guard
 # (`measured_lane_matches_request`, tests/e2e_overlay_delivery_parity.rs) cannot
 # catch that shape: by the time the test runs, request and measurement agree —
 # they agree on the WRONG lane, because the intent was dropped one layer up,
@@ -697,7 +695,7 @@ endif
 # requested one.
 define parity_lane_refuse
 	@if [ -n "$(PARITY_LANE_REQUEST)" ] && [ "$(PARITY_LANE_REQUEST)" != "$(1)" ]; then \
-	  printf 'parity lane refused: you asked for CODESCRIBE_LAYERED_TRANSCRIPTION=%s, but `%s` pins the lane to %s.\n' \
+	  printf 'parity lane refused: you asked for CODESCRIBE_ASR_MODE=%s, but `%s` pins the lane to %s.\n' \
 	    '$(PARITY_LANE_REQUEST)' '$@' '$(1)' >&2; \
 	  printf 'The pin wins inside the recipe, so this run would measure %s and report that number as yours.\n' '$(1)' >&2; \
 	  printf 'Measure what you asked for:  make %s\n' '$(2)' >&2; \
@@ -707,8 +705,8 @@ endef
 
 .PHONY: test-engine-parity
 test-engine-parity: $(ENGINE_BRIDGE)
-	$(call parity_lane_refuse,off,test-engine-parity-layered)
-	@CODESCRIBE_LAYERED_TRANSCRIPTION=off \
+	$(call parity_lane_refuse,apple_only,test-engine-parity-layered)
+	@CODESCRIBE_ASR_MODE=apple_only \
 	 CAPTURE_TEST=e2e_apple_live_parity \
 	  ./scripts/e2e-blackhole-dictation.sh 05_apple-live-parity.wav
 
@@ -741,8 +739,8 @@ test-engine-parity: $(ENGINE_BRIDGE)
 # pair of runs is an observation, not a verdict.
 .PHONY: test-engine-parity-layered
 test-engine-parity-layered: $(ENGINE_BRIDGE)
-	$(call parity_lane_refuse,phase1,test-engine-parity)
-	@CODESCRIBE_LAYERED_TRANSCRIPTION=phase1 \
+	$(call parity_lane_refuse,local_power,test-engine-parity)
+	@CODESCRIBE_ASR_MODE=local_power \
 	 CAPTURE_TEST=e2e_apple_live_parity \
 	  ./scripts/e2e-blackhole-dictation.sh 05_apple-live-parity.wav
 
@@ -780,7 +778,7 @@ test-engine-parity-layered: $(ENGINE_BRIDGE)
 .PHONY: test-engine-parity-both
 test-engine-parity-both:
 	@if [ -n "$(PARITY_LANE_REQUEST)" ]; then \
-	  printf 'parity lane refused: this target runs BOTH lanes, so pinning CODESCRIBE_LAYERED_TRANSCRIPTION=%s cannot be honoured.\n' \
+	  printf 'parity lane refused: this target runs BOTH lanes, so pinning CODESCRIBE_ASR_MODE=%s cannot be honoured.\n' \
 	    '$(PARITY_LANE_REQUEST)' >&2; \
 	  printf 'Drop the pin (`make test-engine-parity-both`), or measure one lane with test-engine-parity / test-engine-parity-layered.\n' >&2; \
 	  exit 2; \
@@ -968,30 +966,9 @@ test-engine-apple-channel: $(ENGINE_BRIDGE)
 	echo "  RUST_LOG=$(ENGINE_RUST_LOG)  (override: ENGINE_RUST_LOG=warn make …)" | tee -a "$$LOG"; \
 	echo "  note: ~1–3 min/clip of Apple STT; heartbeats + tracing stream live" | tee -a "$$LOG"; \
 	$(ENV_LOAD); \
-	export CODESCRIBE_STT_ENGINE=apple; \
+	export CODESCRIBE_ASR_MODE=apple_only; \
 	export CODESCRIBE_APPLE_STT_BRIDGE="$(CURDIR)/$(ENGINE_BRIDGE)"; \
 	export CODESCRIBE_BRIDGE_DISCLAIM=1; \
-	export CODESCRIBE_E2E_STT=1; \
-	export RUST_LOG="$(ENGINE_RUST_LOG)"; \
-	export RUST_LOG_STYLE=always; \
-	if [[ "$(ENGINE_ALL_CLIPS)" == "1" ]]; then \
-	  export CODESCRIBE_E2E_ALL_CLIPS=1; \
-	  unset CODESCRIBE_E2E_AUDIO || true; \
-	else \
-	  export CODESCRIBE_E2E_AUDIO="$(ENGINE_CLIP)"; \
-	fi; \
-	$(ENGINE_CARGO_TEST_LIVE); \
-	if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
-	echo "Done. Log: $$LOG" | tee -a "$$LOG"
-
-# Same engine bar on Candle live (no Apple; useful CI / offline).
-test-engine-candle:
-	@$(TEST_SETUP); \
-	set -o pipefail; \
-	echo "=== Core engine Candle live (multi-utterance freezed+append) ===" | tee -a "$$LOG"; \
-	echo "  RUST_LOG=$(ENGINE_RUST_LOG)" | tee -a "$$LOG"; \
-	$(ENV_LOAD); \
-	export CODESCRIBE_STT_ENGINE=candle; \
 	export CODESCRIBE_E2E_STT=1; \
 	export RUST_LOG="$(ENGINE_RUST_LOG)"; \
 	export RUST_LOG_STYLE=always; \
@@ -1256,7 +1233,6 @@ help:
 	@printf '%s\n' '  make test-formatting Run AI formatting tests'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-engine' 'Core freezed+append unit bar (fast, no STT)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-engine-apple' 'Apple live multi-utterance e2e (ENGINE_CLIP / ENGINE_ALL_CLIPS=1)'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-engine-candle' 'Candle live multi-utterance e2e (same engine bar)'
 	@printf '%s\n' '  make test-engine-parity-both Both parity arms + delta (needs the private corpus)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'corpus-census' 'Inventory both private corpus roots; hashes/counts only'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-corpus-parity' 'Isolated production replay (profiles/runs/recordings are explicit vars)'

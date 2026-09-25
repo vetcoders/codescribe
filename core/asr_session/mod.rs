@@ -170,14 +170,6 @@ fn layer1_decision_with_factory(
             AudioEgressConsent::Unanswered => "missing",
         },
     };
-    let fallback = snapshot.local_tail_patch_decision();
-    if !fallback.is_armed() {
-        receipt.reason = match fallback.local_tail_patch_disposition() {
-            Some(LocalTailPatchDisposition::DegradedInvalidOverride) => "layered_invalid",
-            _ => "layered_off",
-        };
-        return (Layer1Decision::Disarmed, receipt);
-    }
     match refiner_for(&resolved) {
         RefinerMode::CloudSession => {
             // Keep the non-constructible witness at the actual factory seam.
@@ -198,11 +190,19 @@ fn layer1_decision_with_factory(
             }
         }
         RefinerMode::LocalHelper => {
-            // LocalHelperLauncher has no production implementation. The tail
-            // sidecar speaks a different protocol and is not an L1 helper.
+            // Only Local Power consumes the diagnostic local-lane override.
+            // Cloud admission and consent refusals have their own reasons.
+            let local = snapshot.local_tail_patch_decision();
+            if !local.is_armed() {
+                receipt.reason = match local.local_tail_patch_disposition() {
+                    Some(LocalTailPatchDisposition::DegradedInvalidOverride) => "layered_invalid",
+                    _ => "layered_off",
+                };
+                return (Layer1Decision::Disarmed, receipt);
+            }
             receipt.refiner = "local_tail_patch";
-            receipt.reason = "local_helper_unavailable";
-            (fallback, receipt)
+            receipt.reason = "local_tail_patch_armed";
+            (local, receipt)
         }
         RefinerMode::Off => {
             receipt.reason = match resolved.derivation {

@@ -68,7 +68,8 @@ measurement PoC (W4-A), not a shipped default.
 Normal stop performs no whole-file inference. It closes the Apple stream,
 drains already-admitted live observations within the bounded budget, seals the
 ledger, publishes the reducer projection, and delivers through the explicit
-route. `FINAL_PASS_MODE` and its alias remain migration tokens only. Explicit
+route. `FINAL_PASS_MODE` and its alias are retired; repair removes the persisted
+setting. Explicit
 Retranscribe is a separate operator action over a selected completed artifact;
 its proposal does not become live Transcript Bus truth automatically. Live
 Whisper repair is orthogonal and stays bounded to an authorized occurrence in

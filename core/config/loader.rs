@@ -27,7 +27,7 @@ use super::settings::{
     RuntimeLlmLaneKind, RuntimeLlmLanes, RuntimeSettingsSnapshot, RuntimeSnapshotParts,
     SILERO_FUSION_ENV, SettingsSnapshotDigest, SettingsSnapshotProvenance,
     SettingsSnapshotValidationError, UserSettings, normalize_agent_workspace_roots,
-    normalize_stt_engine, parse_agent_workspace_roots,
+    parse_agent_workspace_roots,
 };
 use super::types::{
     Config, DeferredInsertShortcut, Language, OverlayPositionMode, TranscriptSendMode,
@@ -394,11 +394,7 @@ impl Config {
         };
         let user_settings = &input.user_settings;
         let phase_override = input.env("CODESCRIBE_LAYERED_TRANSCRIPTION").ok();
-        let mut local_tail_patch = resolve_local_tail_patch(
-            phase_override
-                .as_deref()
-                .or(user_settings.layered_transcription.as_deref()),
-        );
+        let mut local_tail_patch = resolve_local_tail_patch(phase_override.as_deref());
         let tail_provider = match input.env(crate::stt::tail_provider::STT_TAIL_PROVIDER_ENV) {
             Ok(value) => crate::stt::tail_provider::TailProviderId::parse(&value).ok(),
             Err(VarError::NotPresent) => Some(crate::stt::tail_provider::TailProviderId::InProcess),
@@ -454,7 +450,7 @@ impl Config {
                 .as_bytes(),
         );
         let digest_material = format!(
-            "repair_sha256={repair_sha256}\n{digest_values:?}\n{user_settings:?}\n{provenance:?}\nformatting_policy={}\nseal_lane_armed={seal_lane_armed}\nlocal_tail_patch={local_tail_patch:?}\ntail_provider={tail_provider:?}\n{}\n{}\n{}",
+            "repair_sha256={repair_sha256}\n{digest_values:?}\n{user_settings:?}\n{provenance:?}\nformatting_policy={}\nseal_lane_armed={seal_lane_armed}\nlocal_tail_patch={local_tail_patch:?}\nlayered_override={phase_override:?}\ntail_provider={tail_provider:?}\n{}\n{}\n{}",
             formatting_policy.as_str(),
             llm_lanes.digest_material(),
             ai_execution.digest_material(),
@@ -473,6 +469,7 @@ impl Config {
             energy_calibration: input.energy_calibration,
             seal_lane_armed,
             local_tail_patch,
+            layered_transcription_override: phase_override,
             tail_provider,
         };
         let recovery = parts.clone();
@@ -488,6 +485,7 @@ impl Config {
             energy_calibration: parts.energy_calibration,
             seal_lane_armed: parts.seal_lane_armed,
             local_tail_patch: parts.local_tail_patch,
+            layered_transcription_override: parts.layered_transcription_override.clone(),
             tail_provider: parts.tail_provider,
         }) {
             Ok(snapshot) => snapshot,
@@ -1563,23 +1561,6 @@ impl Config {
             Self::config_init_set_env("BACKEND_MAX_UPLOAD_MB", v.to_string());
         }
 
-        // ── STT engine / final-pass (STT_CONTRACT single brain) ──
-        // Product rule: durable settings.json wins for live engine selection so a
-        // leftover CODESCRIBE_STT_ENGINE=auto in .env cannot lottery Apple death.
-        // CI/power users still override by writing settings or using setSttEngine.
-        if let Some(ref v) = settings.stt_engine {
-            Self::safe_set_env("CODESCRIBE_STT_ENGINE", v);
-        }
-        if let Some(ref v) = settings.final_pass_mode {
-            Self::safe_set_env("FINAL_PASS_MODE", v);
-            Self::safe_set_env("CODESCRIBE_FINAL_PASS_MODE", v);
-        }
-        // Promoted single-brain (2026-08-10): settings.json wins at boot, same
-        // as CODESCRIBE_STT_ENGINE — a leftover .env line must not lottery the
-        // Layered toggle back OFF.
-        if let Some(ref v) = settings.layered_transcription {
-            Self::safe_set_env("CODESCRIBE_LAYERED_TRANSCRIPTION", v);
-        }
         if Self::config_runtime_env_var("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED").is_err()
             && let Some(v) = settings.stt_initial_prompt_enabled
         {
@@ -1610,6 +1591,13 @@ impl Config {
     /// This is a persistence write only. Process-env seeding is restricted to
     /// bootstrap loads; live readers must reload the config/settings snapshot.
     pub fn save_to_env(&self, key: &str, value: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !matches!(
+                key,
+                "CODESCRIBE_STT_ENGINE" | "FINAL_PASS_MODE" | "CODESCRIBE_FINAL_PASS_MODE"
+            ),
+            "retired engine setting: {key}; use CODESCRIBE_ASR_MODE"
+        );
         let _data_io = super::storage_reset::begin_app_data_io()?;
         let _persistence = config_persistence_guard();
         let normalized_formatting = (key == "FORMATTING_LEVEL")
@@ -1686,17 +1674,6 @@ impl Config {
                     settings.set_string(key, value);
                 }
             }
-            // STT contract: settings write is product truth — pin process env +
-            // .env so boot cannot re-lottery via a stale CODESCRIBE_STT_ENGINE.
-            if matches!(
-                key,
-                "CODESCRIBE_STT_ENGINE"
-                    | "FINAL_PASS_MODE"
-                    | "CODESCRIBE_FINAL_PASS_MODE"
-                    | "CODESCRIBE_LAYERED_TRANSCRIPTION"
-            ) {
-                Self::reconcile_stt_runtime_key(key, value);
-            }
             return Ok(());
         }
 
@@ -1737,6 +1714,13 @@ impl Config {
         let mut env_path: Option<PathBuf> = None;
 
         for (key, value) in entries {
+            anyhow::ensure!(
+                !matches!(
+                    *key,
+                    "CODESCRIBE_STT_ENGINE" | "FINAL_PASS_MODE" | "CODESCRIBE_FINAL_PASS_MODE"
+                ),
+                "retired engine setting: {key}; use CODESCRIBE_ASR_MODE"
+            );
             if *key == "FORMATTING_LEVEL" {
                 FormattingPolicy::parse(value)?;
             }
@@ -1811,26 +1795,6 @@ impl Config {
                         if let Ok(arm) = value.parse::<crate::config::HoldArmModifier>() {
                             settings_ref.hold_arm_modifier = Some(arm.as_str().to_string());
                         }
-                    }
-                    "CODESCRIBE_STT_ENGINE" => {
-                        let normalized = normalize_stt_engine(value).ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "invalid STT engine {value:?}; expected auto, apple, whisper, or candle"
-                            )
-                        })?;
-                        settings_ref.stt_engine = Some(normalized.clone());
-                        Self::reconcile_stt_runtime_key(key, &normalized);
-                    }
-                    "FINAL_PASS_MODE" | "CODESCRIBE_FINAL_PASS_MODE" => {
-                        let normalized = value.trim().to_ascii_lowercase();
-                        if matches!(normalized.as_str(), "always" | "smart" | "off") {
-                            settings_ref.final_pass_mode = Some(normalized.clone());
-                            Self::reconcile_stt_runtime_key(key, &normalized);
-                        }
-                    }
-                    "CODESCRIBE_LAYERED_TRANSCRIPTION" => {
-                        settings_ref.layered_transcription = Some((*value).to_string());
-                        Self::reconcile_stt_runtime_key(key, value);
                     }
                     // C2: same validated writes as the single-key set_string
                     // path — a batch write must not bypass mode/consent/URL
@@ -2026,61 +1990,6 @@ impl Config {
             _ => return false,
         }
         true
-    }
-
-    /// Pin STT-related process env + ~/.codescribe/.env to the settings value.
-    ///
-    /// Product rule (STT_CONTRACT / W2-A): Settings UI is the single brain for
-    /// live engine selection. A leftover `CODESCRIBE_STT_ENGINE=auto` in `.env`
-    /// must not win over an explicit `speech.engine.stt_engine` write.
-    pub fn reconcile_stt_runtime_key(key: &str, value: &str) {
-        let normalized_engine = (key == "CODESCRIBE_STT_ENGINE")
-            .then(|| normalize_stt_engine(value))
-            .flatten();
-        if key == "CODESCRIBE_STT_ENGINE" && normalized_engine.is_none() {
-            warn!("Refused retired or unknown STT engine selector: {value}");
-            return;
-        }
-        let value = normalized_engine.as_deref().unwrap_or_else(|| value.trim());
-        if value.is_empty() {
-            return;
-        }
-        // Live process truth used by core/stt::selected_engine() on every call.
-        // Must bypass the bootstrap lock: UI writes happen after Config::load
-        // marked env seeding done. Intentional single-writer path (settings UI).
-        // SAFETY: same keys as boot seed; only called from save_to_env* on STT knobs.
-        unsafe {
-            std::env::set_var(key, value);
-            if key == "FINAL_PASS_MODE" {
-                std::env::set_var("CODESCRIBE_FINAL_PASS_MODE", value);
-            } else if key == "CODESCRIBE_FINAL_PASS_MODE" {
-                std::env::set_var("FINAL_PASS_MODE", value);
-            }
-        }
-
-        let env_path = Self::env_path();
-        let mut vars = if env_path.exists() {
-            Self::parse_env_file(&env_path).unwrap_or_default()
-        } else {
-            HashMap::new()
-        };
-        let before = vars.get(key).cloned();
-        vars.insert(key.to_string(), value.to_string());
-        if key == "FINAL_PASS_MODE" {
-            vars.insert("CODESCRIBE_FINAL_PASS_MODE".to_string(), value.to_string());
-        } else if key == "CODESCRIBE_FINAL_PASS_MODE" {
-            vars.insert("FINAL_PASS_MODE".to_string(), value.to_string());
-        }
-        if before.as_deref() != Some(value) {
-            if let Some(parent) = env_path.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            if let Err(e) = Self::write_env_file(&env_path, &vars) {
-                warn!("Failed to reconcile STT key {key} in .env: {e}");
-            } else {
-                info!("STT runtime reconciled {key}={value} (settings + process env + .env)");
-            }
-        }
     }
 
     /// Parse .env file into HashMap.
@@ -3986,6 +3895,30 @@ mod captured_startup_tests {
             },
         );
         input
+    }
+
+    #[test]
+    fn layered_override_is_env_only_and_frozen_in_the_snapshot() {
+        use crate::asr_session::recorder::{Layer1Decision, LocalTailPatchDisposition as D};
+        let mut input = inputs();
+        input.user_settings.asr_mode = Some("local_power".into());
+        let normal = Config::runtime_snapshot_from_captured(input.clone());
+        assert_eq!(normal.layered_transcription_override(), None);
+        assert!(matches!(
+            normal.local_tail_patch_decision(),
+            Layer1Decision::LocalTailPatch(D::ArmedDefault)
+        ));
+        input
+            .overrides
+            .insert("CODESCRIBE_LAYERED_TRANSCRIPTION".into(), Ok("off".into()));
+        let degraded = Config::runtime_snapshot_from_captured(input.clone());
+        input.overrides.clear();
+        assert_eq!(degraded.layered_transcription_override(), Some("off"));
+        assert!(matches!(
+            degraded.local_tail_patch_decision(),
+            Layer1Decision::LocalTailPatch(D::DegradedExplicitOff)
+        ));
+        assert_eq!(normal.layered_transcription_override(), None);
     }
 
     #[test]
