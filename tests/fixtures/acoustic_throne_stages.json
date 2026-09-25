@@ -846,11 +846,37 @@
                 "return None;",
                 "if !ledger.is_qualified(&occurrence) {",
                 "return None;",
-                "let receipt = ledger.admit(&observation, label);",
+                "let receipt = ledger.admit_pinned_label(&observation, label, words);",
                 "EngineEvent::LedgerMutation {",
                 "let closed = ledger.note_frontier_return(&occurrence, producer);",
                 "EngineEvent::LedgerSeal { receipt: seal }",
                 "Some(receipt)"
+              ]
+            },
+            {
+              "symbol": "admit_pinned_label",
+              "file": "core/pipeline/acoustic_ledger.rs",
+              "required_code": [
+                "if observation.producer != ObservationProducer::Apple",
+                "|| self.is_sealed(occurrence)",
+                "|| words.is_empty()",
+                "return self.admit(observation, label);",
+                "if end <= start",
+                "|| midpoint < occurrence.sample_start",
+                "|| midpoint >= occurrence.sample_end",
+                "return self.admit(observation, label);",
+                "slots.sort_by(|a, b| {",
+                ".any(|pair| pair[0].sample_end > pair[1].sample_start)",
+                "|| compose_label(&slots) != label",
+                "return self.admit(observation, label);",
+                "self.admit_with_slots(observation, label, Some(slots), false)"
+              ]
+            },
+            {
+              "symbol": "decide_observation",
+              "file": "core/pipeline/acoustic_ledger.rs",
+              "required_code": [
+                "if overlaps && !has_word_pins {"
               ]
             },
             {

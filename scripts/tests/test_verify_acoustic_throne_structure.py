@@ -2713,6 +2713,43 @@ class CurrentChainMutantTests(unittest.TestCase):
                     any("capture_to_ledger" in failure and symbol in failure
                         for failure in failures), (name, failures))
 
+    def test_pinned_admission_bypasses_are_rejected(self):
+        """Each pin bypass must fail at its own capture-to-ledger hop."""
+        self.assertEqual(self.positive_failures, [])
+        ledger = "core/pipeline/acoustic_ledger.rs"
+        apple = "core/pipeline/streaming/apple_live_session.rs"
+        cases = [
+            ("pins_admitted_without_composition_check", "admit_pinned_label", ledger,
+             "|| compose_label(&slots) != label", "|| false",
+             "is missing executable code"),
+            # Target the invalid-composition/overlap return, leaving the two
+            # earlier whole-label returns intact. They cannot discharge it.
+            ("invalid_pins_skip_whole_label_fallback", "admit_pinned_label", ledger,
+             "|| compose_label(&slots) != label\n        {\n"
+             "            return self.admit(observation, label);",
+             "|| compose_label(&slots) != label\n        {\n"
+             "            return self.admit_with_slots(observation, label, Some(slots), false);",
+             "has executable code out of required order"),
+            ("overlap_waived_without_pins", "decide_observation", ledger,
+             "if overlaps && !has_word_pins {", "if overlaps && false {",
+             "is missing executable code"),
+            # admit_with_slots is private to the ledger module. The callable
+            # bypass is whole-label admission, which discards the offered pins
+            # and never reaches their validation at the pinned entry point.
+            ("admission_bypasses_pin_validation", "admit_ledger_label", apple,
+             "ledger.admit_pinned_label(&observation, label, words)",
+             "ledger.admit(&observation, label)",
+             "is missing executable code"),
+        ]
+        for name, symbol, file, old, new, reason in cases:
+            with self.subTest(mutation=name):
+                failures = self.run_mutated(symbol, file, old, new)
+                self.assertEqual(len(failures), 1, (name, failures))
+                self.assertTrue(
+                    failures[0].startswith(
+                        f"corridor capture_to_ledger hop {symbol} {reason}"
+                    ), (name, failures))
+
     def test_retired_capture_names_are_absent_from_the_manifest(self):
         """The stale capture corridor named a predicate and an argument shape
         the product retired in the delegation refactor. Naming them again must
