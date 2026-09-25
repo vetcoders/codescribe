@@ -580,6 +580,8 @@ fn production_layer1_decision_follows_resolved_asr_mode() {
         );
         let mut lane = RecorderLayer1Lane::open(decision, &fake_input());
         lane.offer_pcm(&[0.1; 160]);
+        // Release this short fixture frame before observing provider delivery.
+        lane.flush_holdback();
         lane.poll();
         assert_eq!(lane.telemetry().frames_forwarded, u64::from(armed));
         assert_eq!(lane.telemetry().partials_applied, u64::from(armed));
@@ -877,6 +879,8 @@ fn production_layer1_cloud_forwards_native_pcm_over_real_websocket() {
     assert!(lane.is_live());
     // Native-rate 100 ms frame exceeds the old 16 kHz-only 3200-sample budget.
     lane.offer_pcm(&[0.1; 8_820]);
+    // Release this short fixture frame before observing provider delivery.
+    lane.flush_holdback();
     received_rx.recv_timeout(Duration::from_secs(5)).unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     while lane.telemetry().partials_applied == 0 && Instant::now() < deadline {
@@ -965,6 +969,8 @@ fn cloud_consent_arms_ws_provider_and_remote_tail_at_refine_endpoint() {
     assert!(!receipt.refiner.contains(refine));
     let mut lane = RecorderLayer1Lane::open(decision, &fake_input());
     lane.offer_pcm(&[0.1; 160]);
+    // Release this short fixture frame before observing provider delivery.
+    lane.flush_holdback();
     lane.poll();
     assert_eq!(lane.telemetry().frames_forwarded, 1);
     assert_eq!(lane.telemetry().partials_applied, 1);

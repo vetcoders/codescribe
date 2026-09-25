@@ -2057,12 +2057,24 @@ impl AppleSealState {
             return;
         }
         let sample_end = receipt.decision_sample;
+        let ledger = self
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let occurrences = self
             .cloud_uncommitted
             .iter()
-            .filter(|owner| owner.sample_end <= sample_end)
+            .filter(|owner| {
+                // The callback can close A after S; B's pre-pad can start
+                // before S. Only already-closed owners belong to this final.
+                owner.sample_start < sample_end
+                    && ledger
+                        .serial_of(owner)
+                        .is_some_and(|serial| serial.vad_closed())
+            })
             .cloned()
             .collect::<Vec<_>>();
+        drop(ledger);
         for occurrence in &occurrences {
             self.cloud_uncommitted.remove(occurrence);
         }
@@ -6788,61 +6800,81 @@ fn apple_stream_worker(
     // waiting for a completion that had already arrived for every job it sent.
     let mut tail_patch_timeout_residue = 0;
     let stop_deadline = local_execution.begin_drain(TAIL_PATCH_CLOSURE_TIMEOUT);
-    // The stop paste already fired from `finish_capture_after_seal`. This wait
-    // is the same bound the tail patch uses. A cloud final that arrives here is
-    // a revision; it does not hold the paste.
-    while !state.refinement_submitted.is_empty()
-        || !state.refinement_pending.is_empty()
-        || !state.cloud_inflight.is_empty()
+    if state.cloud_commit_tx.is_none()
+        && state.cloud_uncommitted.is_empty()
+        && state.cloud_commit_retry.is_empty()
+        && state.cloud_inflight.is_empty()
     {
-        let outstanding = state.tail_patch_awaiting_completion();
-        let cloud_outstanding = !state.cloud_inflight.is_empty();
-        if Instant::now() >= stop_deadline {
-            if outstanding > 0 || !state.refinement_pending.is_empty() {
+        while !state.refinement_submitted.is_empty() || !state.refinement_pending.is_empty() {
+            let outstanding = state.tail_patch_awaiting_completion();
+            if !state.stop_refinements_tick(&ev_tx, Instant::now(), stop_deadline) {
                 tail_patch_timeout_residue = outstanding;
-                state.return_outstanding_whisper_without_label(&ev_tx);
-            }
-            if cloud_outstanding {
-                state.return_outstanding_cloud(&ev_tx);
-            }
-            break;
-        }
-        if !state.refinement_submitted.is_empty() || !state.refinement_pending.is_empty() {
-            state.tick_refinements(&ev_tx, Instant::now());
-        }
-        if let Some(notices) = cloud_notice.as_ref() {
-            while let Ok(notice) = notices.try_recv() {
-                state.handle_cloud_notice(&ev_tx, notice);
-            }
-        }
-        if state.refinement_submitted.is_empty() && state.refinement_pending.is_empty() {
-            if state.cloud_inflight.is_empty() {
                 break;
             }
-            match cloud_notice
-                .as_ref()
-                .map(|notices| notices.recv_timeout(LIVE_WORKER_QUANTUM))
-            {
-                Some(Ok(notice)) => state.handle_cloud_notice(&ev_tx, notice),
-                Some(Err(std_mpsc::RecvTimeoutError::Timeout)) => continue,
-                Some(Err(std_mpsc::RecvTimeoutError::Disconnected)) | None => {
-                    state.return_outstanding_cloud(&ev_tx);
+            match tail_patch_done.recv_timeout(LIVE_WORKER_QUANTUM) {
+                Ok(completion) => state.complete_whisper_window(&ev_tx, completion, audio_secs),
+                Err(std_mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(error) => {
+                    warn!("tail-patch closure wait ended before all observations returned: {error}");
+                    tail_patch_timeout_residue = state.tail_patch_awaiting_completion();
+                    state.return_outstanding_whisper_without_label(&ev_tx);
                     break;
                 }
             }
-            continue;
         }
-        match tail_patch_done.recv_timeout(LIVE_WORKER_QUANTUM) {
-            Ok(completion) => state.complete_whisper_window(&ev_tx, completion, audio_secs),
-            Err(std_mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(error) => {
-                warn!("tail-patch closure wait ended before all observations returned: {error}");
-                tail_patch_timeout_residue = state.tail_patch_awaiting_completion();
-                state.return_outstanding_whisper_without_label(&ev_tx);
-                if !state.cloud_inflight.is_empty() {
-                    state.return_outstanding_cloud(&ev_tx);
-                }
+    } else {
+        // The stop paste already fired from `finish_capture_after_seal`. This wait
+        // is the same bound the tail patch uses. A cloud final that arrives here is
+        // a revision; it does not hold the paste.
+        while !state.refinement_submitted.is_empty()
+            || !state.refinement_pending.is_empty()
+            || !state.cloud_inflight.is_empty()
+        {
+            let outstanding = state.tail_patch_awaiting_completion();
+            let now = Instant::now();
+            if (!state.refinement_submitted.is_empty() || !state.refinement_pending.is_empty())
+                && !state.stop_refinements_tick(&ev_tx, now, stop_deadline)
+            {
+                tail_patch_timeout_residue = outstanding;
+            }
+            if now >= stop_deadline {
+                state.return_outstanding_cloud(&ev_tx);
                 break;
+            }
+            if let Some(notices) = cloud_notice.as_ref() {
+                while let Ok(notice) = notices.try_recv() {
+                    state.handle_cloud_notice(&ev_tx, notice);
+                }
+            }
+            if state.refinement_submitted.is_empty() && state.refinement_pending.is_empty() {
+                if state.cloud_inflight.is_empty() {
+                    break;
+                }
+                match cloud_notice
+                    .as_ref()
+                    .map(|notices| notices.recv_timeout(LIVE_WORKER_QUANTUM))
+                {
+                    Some(Ok(notice)) => state.handle_cloud_notice(&ev_tx, notice),
+                    Some(Err(std_mpsc::RecvTimeoutError::Timeout)) => continue,
+                    Some(Err(std_mpsc::RecvTimeoutError::Disconnected)) | None => {
+                        state.return_outstanding_cloud(&ev_tx);
+                        break;
+                    }
+                }
+                continue;
+            }
+            match tail_patch_done.recv_timeout(LIVE_WORKER_QUANTUM) {
+                Ok(completion) => state.complete_whisper_window(&ev_tx, completion, audio_secs),
+                Err(std_mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(error) => {
+                    warn!("tail-patch closure wait ended before all observations returned: {error}");
+                    tail_patch_timeout_residue = state.tail_patch_awaiting_completion();
+                    state.return_outstanding_whisper_without_label(&ev_tx);
+                    if !state.cloud_inflight.is_empty() {
+                        state.return_outstanding_cloud(&ev_tx);
+                    }
+                    break;
+                }
             }
         }
     }
@@ -14610,21 +14642,77 @@ mod rc_w2_test_rehab {
     }
 
     #[test]
-    fn owner_extending_past_the_decision_stays_tracked_for_the_next_range() {
+    fn just_closed_owner_past_the_decision_is_released_by_its_own_final() {
         let (tx, _rx) = mpsc::unbounded_channel();
         let (commit_tx, _commit_rx) = mpsc::channel(4);
         let mut state = state("callback-past-decision", 3.0);
         state.cloud_commit_tx = Some(commit_tx);
-        let owner = cloud_owner(&mut state, &tx, 1, 0.0, 1.6);
-        state.commit_cloud_close(&tx, silence_close(1.5));
-        assert!(state.cloud_inflight[0].occurrences.is_empty());
+        // S is 1.5 s; close_open at the callback head owns PCM through 1.6 s.
+        let mut boundaries = super::super::silero_fusion::UtteranceLedger::new();
+        boundaries.open_or_extend(&state.session_id, state.capture_epoch, 0, sample(1.0));
+        boundaries.close_open(sample(1.6));
+        assert!(reconcile_silero_ledger(&mut state, &tx, &boundaries, &[]));
+        let owner = OccurrenceIdentity::new(&state.session_id, 7, 0, sample(1.6));
         assert!(state.cloud_uncommitted.contains(&owner));
-        state.admit_cloud_final(&tx, cloud_notice_final("", &[], 0, sample(1.5)));
-        assert!(cloud_open(&state, &owner));
-        state.commit_cloud_close(&tx, silence_close(2.5));
+        state.commit_cloud_close(&tx, silence_close(1.5));
         assert_eq!(state.cloud_inflight[0].occurrences, vec![owner.clone()]);
-        state.admit_cloud_final(&tx, cloud_notice_final("", &[], sample(1.5), sample(2.5)));
+        assert!(!state.cloud_uncommitted.contains(&owner));
+        state.admit_cloud_final(&tx, cloud_notice_final("", &[], 0, sample(1.5)));
         assert!(!cloud_open(&state, &owner));
+        assert!(state.cloud_inflight.is_empty());
+    }
+
+    #[test]
+    fn open_padded_owner_before_s_waits_for_its_own_close_and_final() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, _commit_rx) = mpsc::channel(4);
+        let mut state = state("padded-open-owner", 3.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        let first = cloud_owner(&mut state, &tx, 1, 0.0, 1.6);
+        // B's pre-pad begins before S=1.5, but its physical extent is open.
+        let second = OccurrenceIdentity::new(&state.session_id, 7, sample(1.4), sample(2.4));
+        let calibration = state.energy_calibration.as_ref().unwrap();
+        let mut evidence = AcousticEvidence {
+            occurrence: second.clone(),
+            duration_ms: 1_000.0,
+            energy_integral: second.sample_len() as f64 * 0.25_f64.powi(2),
+            mean_rms_dbfs: 20.0 * 0.25_f64.log10(),
+            peak_dbfs: 20.0 * 0.25_f64.log10(),
+            vad_open_sample: Some(second.sample_start),
+            vad_close_sample: None,
+            evidence_calibration_version: calibration.version.clone(),
+        };
+        assert!(
+            state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .qualify(&evidence, calibration)
+                .is_qualified()
+        );
+        state.track_cloud_occurrence(&second);
+        state.commit_cloud_close(&tx, silence_close(1.5));
+        assert_eq!(state.cloud_inflight[0].occurrences, vec![first.clone()]);
+        assert!(state.cloud_uncommitted.contains(&second));
+        state.admit_cloud_final(&tx, cloud_notice_final("", &[], 0, sample(1.5)));
+        assert!(!cloud_open(&state, &first));
+        assert!(cloud_open(&state, &second));
+        // A later physical close qualifies the same identity, then its own
+        // silence commit takes the observer. Text never decides membership.
+        evidence.vad_close_sample = Some(second.sample_end);
+        assert!(
+            state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .qualify(&evidence, state.energy_calibration.as_ref().unwrap())
+                .is_qualified()
+        );
+        state.commit_cloud_close(&tx, silence_close(2.5));
+        assert_eq!(state.cloud_inflight[0].occurrences, vec![second.clone()]);
+        assert!(state.cloud_uncommitted.is_empty());
+        state.admit_cloud_final(&tx, cloud_notice_final("", &[], sample(1.5), sample(2.5)));
+        assert!(!cloud_open(&state, &second));
     }
 
     #[test]
@@ -16502,6 +16590,66 @@ mod live_refinement_admission_tests {
     }
 
     #[test]
+    fn local_power_stop_deadline_preserves_clock_residue_and_disposition() {
+        let (mut state, events, mut receiver, mut requests) = fixture(1);
+        reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
+        state.flush_layer1_coalesce(&events);
+        let request = requests.try_recv().unwrap();
+        let occurrence = request.member_occurrences[0].1.clone();
+        assert!(state.cloud_commit_tx.is_none());
+        assert!(state.cloud_uncommitted.is_empty());
+        assert!(state.cloud_inflight.is_empty());
+        let deadline = state.refinement_started + Duration::from_secs(5);
+        let outstanding = state.tail_patch_awaiting_completion();
+        assert_eq!(outstanding, 1);
+        let mut residue = 0;
+        let logged = refinement_log(|| {
+            if !state.stop_refinements_tick(&events, deadline, deadline) {
+                residue = outstanding;
+            }
+        });
+        assert_eq!(state.refinement_clock, deadline);
+        assert_eq!(residue, outstanding);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
+        let dispositions = logged
+            .lines()
+            .filter(|line| line.contains("disposition=live_refinement_stop_deadline"))
+            .collect::<Vec<_>>();
+        assert_eq!(dispositions.len(), 1, "{logged}");
+        let disposition = dispositions[0];
+        assert!(disposition.contains("elapsed_ms=5000 "), "{logged}");
+        assert!(disposition.contains("session=live-admission "), "{logged}");
+        assert!(disposition.contains("capture_epoch=7 "), "{logged}");
+        assert!(
+            disposition.contains(&format!("sample_start={} ", occurrence.sample_start)),
+            "{logged}"
+        );
+        assert!(
+            disposition.contains(&format!("sample_end={} ", occurrence.sample_end)),
+            "{logged}"
+        );
+        assert_eq!(
+            warnings(&mut receiver, RefinementFailure::StopDeadline.code()),
+            1
+        );
+        let receipt = tail_patch_receipt_after_stop(
+            true,
+            1,
+            Some(TailPatchWorkerAccounting {
+                applied_jobs: state.tail_patch_jobs_applied,
+                skipped_jobs: state.tail_patch_jobs_skipped,
+                timeout_residue: residue,
+            }),
+            SessionConservationReceipt::default(),
+        );
+        assert_eq!(receipt.applied, 0);
+        assert_eq!(receipt.skipped, 0);
+        assert_eq!(receipt.timed_out, 1);
+        assert_eq!(receipt.abandoned, 0);
+        assert_eq!(receipt.drain, TailPatchDrainDisposition::TimedOut);
+    }
+
+    #[test]
     fn tc3_stop_admits_real_inflight_job_before_deadline() {
         let (mut state, events, mut receiver, mut requests) = fixture(1);
         reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
@@ -16512,7 +16660,14 @@ mod live_refinement_admission_tests {
         let deadline = now + Duration::from_secs(5);
         assert!(state.stop_refinements_tick(&events, now, deadline));
         state.complete_whisper_window(&events, labelled_completion(&request), 20.0);
-        assert!(!state.stop_refinements_tick(&events, now + LIVE_WORKER_QUANTUM, deadline));
+        let outstanding = state.tail_patch_awaiting_completion();
+        let mut residue = 0;
+        let waiting = state.stop_refinements_tick(&events, now + LIVE_WORKER_QUANTUM, deadline);
+        if !waiting {
+            residue = outstanding;
+        }
+        assert!(!waiting);
+        assert_eq!(residue, 0);
         assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert_eq!(
             state.acoustic_ledger.lock().unwrap().text_of(&occurrence),
@@ -16528,7 +16683,7 @@ mod live_refinement_admission_tests {
             Some(TailPatchWorkerAccounting {
                 applied_jobs: state.tail_patch_jobs_applied,
                 skipped_jobs: state.tail_patch_jobs_skipped,
-                timeout_residue: state.tail_patch_awaiting_completion(),
+                timeout_residue: residue,
             }),
             SessionConservationReceipt::default(),
         );

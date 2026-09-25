@@ -1272,6 +1272,66 @@ mod tests {
     }
 
     #[test]
+    fn holdback_stays_bounded_under_stalled_provider() {
+        for (sample_rate, chunk_len) in [(16_000, 320), (44_100, 777), (88_200, 8_820)] {
+            let mut input = input();
+            input.sample_rate = sample_rate;
+            let provider = FakeAsrSessionProvider::new(RefinerMode::CloudSession)
+                .failing_pushes(AsrErrorKind::Overflow);
+            let mut lane =
+                RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(provider)), &input);
+            let keep = cloud_commit_holdback_samples(sample_rate);
+            let chunk = vec![0.1; chunk_len];
+            let mut offered_samples = 0;
+            let mut rejected_pushes = 0;
+            for _ in 0..(keep / chunk_len + OVERFLOW_DEGRADE_LIMIT as usize + 10) {
+                let was_live = lane.is_live();
+                let before = lane.held.len();
+                assert!(before <= keep);
+                // The only append adds one incoming chunk; release drains
+                // the excess before invoking even a stalled provider.
+                assert!(before + chunk.len() <= keep + chunk_len);
+                offered_samples += chunk.len();
+                let verdict = lane.offer_pcm(&chunk);
+                if was_live && offered_samples > keep {
+                    assert_eq!(verdict, FanOutVerdict::DroppedOverflow);
+                    rejected_pushes += 1;
+                } else if was_live {
+                    assert_eq!(verdict, FanOutVerdict::Forwarded);
+                    assert_eq!(lane.telemetry().overflow_frame_drops, 0);
+                } else {
+                    assert_eq!(verdict, FanOutVerdict::Inactive);
+                }
+                assert!(lane.held.len() <= keep);
+                assert_eq!(lane.telemetry().overflow_frame_drops, rejected_pushes);
+            }
+            assert_eq!(rejected_pushes, u64::from(OVERFLOW_DEGRADE_LIMIT));
+            assert_eq!(lane.telemetry().frames_forwarded, 0);
+            assert_eq!(
+                lane.state(),
+                Layer1LaneState::Degraded(Layer1DegradeReason::Overflow)
+            );
+            assert!(lane.held.is_empty());
+        }
+    }
+
+    #[test]
+    fn aged_audio_reaches_provider_without_flushing_holdback() {
+        let mut lane = RecorderLayer1Lane::open(armed(vec![partial(1, 1, "aged")]), &input());
+        let keep = cloud_commit_holdback_samples(lane.sample_rate);
+        lane.offer_pcm(&vec![0.1; keep]);
+        assert_eq!(lane.telemetry().frames_forwarded, 0);
+        assert_eq!(lane.pushed_samples(), 0);
+        assert_eq!(lane.offer_pcm(&[0.2; 320]), FanOutVerdict::Forwarded);
+        lane.poll();
+        assert_eq!(lane.pushed_samples(), 320);
+        assert_eq!(lane.telemetry().frames_forwarded, 1);
+        assert_eq!(lane.draft_text(1), Some("aged"));
+        assert_eq!(lane.held.len(), keep);
+        assert_eq!(&lane.held[keep - 320..], &[0.2; 320]);
+    }
+
+    #[test]
     fn commit_pushes_exactly_the_silero_close_then_commits() {
         let mut lane = RecorderLayer1Lane::open(armed(vec![]), &input());
         let close_at = cloud_commit_holdback_samples(lane.sample_rate) as u64 + 100;

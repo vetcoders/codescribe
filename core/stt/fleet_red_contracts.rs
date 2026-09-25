@@ -146,7 +146,9 @@ fn fleet_red_cloud_backpressure_degrades_to_apple_only() {
         locale: Some("pl-PL".to_string()),
         sample_rate: 16_000,
     };
-    let frame = [0.1f32; 320];
+    // Each offer exceeds the 500 ms hold-back at 16 kHz, so pressure reaches
+    // the provider through aged-audio release without an explicit flush.
+    let frame = [0.1f32; 8_320];
 
     // Arm 1 — sustained overflow. Every offer must return without surfacing an
     // error to capture, and the lane must degrade instead of blocking.
