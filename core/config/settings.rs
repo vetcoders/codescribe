@@ -3970,9 +3970,14 @@ mod tests {
         use std::os::unix::fs::MetadataExt;
 
         let _tmp = setup_isolated_data_dir();
-        assert_eq!(UserSettings::load().overlay_keep_visible_between_takes, None);
-        let mut settings = UserSettings::default();
-        settings.overlay_keep_visible_between_takes = Some(true);
+        assert_eq!(
+            UserSettings::load().overlay_keep_visible_between_takes,
+            None
+        );
+        let settings = UserSettings {
+            overlay_keep_visible_between_takes: Some(true),
+            ..UserSettings::default()
+        };
         settings.save().expect("persist overlay pin");
         let path = UserSettings::settings_path();
         let first = fs::read(&path).expect("read saved pin");
@@ -3980,10 +3985,19 @@ mod tests {
         let saved: serde_json::Value = serde_json::from_slice(&first).expect("parse saved pin");
         assert_eq!(saved["ui"]["overlay_keep_visible_between_takes"], true);
         assert!(saved.get("overlay_keep_visible_between_takes").is_none());
-        assert_eq!(UserSettings::load().overlay_keep_visible_between_takes, Some(true));
-        assert_eq!(UserSettings::load().overlay_keep_visible_between_takes, Some(true));
+        assert_eq!(
+            UserSettings::load().overlay_keep_visible_between_takes,
+            Some(true)
+        );
+        assert_eq!(
+            UserSettings::load().overlay_keep_visible_between_takes,
+            Some(true)
+        );
         assert_eq!(fs::read(&path).expect("read after second load"), first);
-        assert_eq!(fs::metadata(&path).expect("reloaded pin metadata").ino(), saved_inode);
+        assert_eq!(
+            fs::metadata(&path).expect("reloaded pin metadata").ino(),
+            saved_inode
+        );
     }
 
     /// Same section contract for the tray's starting lane.
