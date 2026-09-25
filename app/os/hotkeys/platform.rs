@@ -26,6 +26,21 @@ use super::detector::{
 use crossbeam_channel::Sender;
 use std::time::{Duration, Instant};
 
+/// Start intent must wake a pending stop before entering the FIFO dispatcher:
+/// that dispatcher may still be awaiting the previous take's stop future.
+#[cfg(any(target_os = "macos", test))]
+fn preempts_stop_paste(event: &HotkeyEvent) -> bool {
+    matches!(
+        event,
+        HotkeyEvent::Hold {
+            action: super::detector::HoldAction::Down,
+            ..
+        } | HotkeyEvent::ToggleNormal
+            | HotkeyEvent::ToggleRaw
+            | HotkeyEvent::ToggleAssistive
+    )
+}
+
 // --- macOS CGEventTap Implementation using raw bindings ---
 
 /// The real implementation: a session-level CGEventTap driven on its own
@@ -626,6 +641,9 @@ mod macos {
         };
 
         if let Some(hotkey_event) = state.detector.feed(input, runtime_config) {
+            if preempts_stop_paste(&hotkey_event) {
+                crate::controller::preempt_stop_paste_for_next_take();
+            }
             let _ = state.tx.send(hotkey_event);
         }
 
@@ -907,3 +925,36 @@ mod macos {
 }
 
 pub use macos::{HotkeyRuntime, disable, enable, is_enabled, start_listener};
+
+#[cfg(test)]
+mod stop_preemption_tests {
+    use super::*;
+    use crate::os::hotkeys::{HoldAction, HoldMode};
+
+    #[test]
+    fn next_take_intent_preempts_but_release_and_ui_actions_do_not() {
+        for event in [
+            HotkeyEvent::Hold {
+                action: HoldAction::Down,
+                mode: HoldMode::Raw,
+            },
+            HotkeyEvent::ToggleNormal,
+            HotkeyEvent::ToggleRaw,
+            HotkeyEvent::ToggleAssistive,
+        ] {
+            assert!(preempts_stop_paste(&event), "{event:?}");
+        }
+        for event in [
+            HotkeyEvent::Hold {
+                action: HoldAction::Up,
+                mode: HoldMode::Raw,
+            },
+            HotkeyEvent::HoldUpdate { mode: HoldMode::Raw },
+            HotkeyEvent::AttachSelection,
+            HotkeyEvent::ShowAgent,
+            HotkeyEvent::InsertHere,
+        ] {
+            assert!(!preempts_stop_paste(&event), "{event:?}");
+        }
+    }
+}
