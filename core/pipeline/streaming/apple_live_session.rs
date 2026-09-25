@@ -21538,8 +21538,10 @@ mod tc2_window_contract_tests {
                     event,
                     EngineEvent::LedgerMutation {
                         label,
+                        // AR-1b: a non-current late word is evidence at its own
+                        // pin under its own reason; admission is still refused.
                         receipt: MutationReceipt::KeepVisibleUnanchored {
-                            reason: NoAuthorityReason::NoRange,
+                            reason: NoAuthorityReason::LateAppleWordNotCurrent,
                             ..
                         },
                         ..
