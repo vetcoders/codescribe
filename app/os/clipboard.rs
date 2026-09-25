@@ -54,8 +54,6 @@ pub(crate) fn get_image_png_best_effort() -> Option<Vec<u8>> {
 const KEYCODE_V: CGKeyCode = 9;
 /// macOS virtual key code for 'C' key
 const KEYCODE_C: CGKeyCode = 8;
-/// macOS virtual key code for Right Arrow
-const KEYCODE_RIGHT_ARROW: CGKeyCode = 124;
 
 /// Delay in milliseconds before restoring the original clipboard content
 /// Can be overridden via RESTORE_CLIPBOARD_DELAY_MS environment variable
@@ -638,14 +636,21 @@ fn simulate_key_event(keycode: CGKeyCode, key_down: bool, flags: CGEventFlags) -
 ///
 /// This is thread-safe and doesn't use TSM APIs that crash on macOS 26.2.
 fn simulate_cmd_v() -> Result<()> {
+    post_paste_keys(simulate_key_event)
+}
+
+/// The complete synthetic key sequence for paste, with an injectable event sink.
+fn post_paste_keys(
+    mut post_key: impl FnMut(CGKeyCode, bool, CGEventFlags) -> Result<()>,
+) -> Result<()> {
     let cmd_flag = CGEventFlags::CGEventFlagCommand;
 
     // Key down: V with Cmd modifier
-    simulate_key_event(KEYCODE_V, true, cmd_flag)?;
+    post_key(KEYCODE_V, true, cmd_flag)?;
     thread::sleep(Duration::from_millis(10));
 
     // Key up: V with Cmd modifier
-    simulate_key_event(KEYCODE_V, false, cmd_flag)?;
+    post_key(KEYCODE_V, false, cmd_flag)?;
 
     Ok(())
 }
@@ -698,18 +703,6 @@ pub(crate) fn simulate_cmd_c() -> Result<()> {
 
     // Key up: C with Cmd modifier
     simulate_key_event(KEYCODE_C, false, cmd_flag)?;
-
-    Ok(())
-}
-
-/// Simulates Right Arrow keystroke using CGEvent
-fn simulate_right_arrow() -> Result<()> {
-    // Key down: Right Arrow (no modifiers)
-    simulate_key_event(KEYCODE_RIGHT_ARROW, true, CGEventFlags::empty())?;
-    thread::sleep(Duration::from_millis(5));
-
-    // Key up: Right Arrow
-    simulate_key_event(KEYCODE_RIGHT_ARROW, false, CGEventFlags::empty())?;
 
     Ok(())
 }
@@ -802,11 +795,8 @@ pub fn paste_text_smart(text: &str, restore: bool) -> Result<()> {
     // 4. Wait for paste to settle
     thread::sleep(Duration::from_millis(50));
 
-    // 5. Simulate Right Arrow to deselect pasted text
-    simulate_right_arrow().context("Failed to simulate Right Arrow")?;
-    debug!("Cleared selection (moved cursor to end)");
-
-    // 6. Optional: restore clipboard snapshot after delay
+    // The destination owns its selection after paste; post no additional keys.
+    // 5. Optional: restore clipboard snapshot after delay
     if let Some(snapshot) = snapshot {
         let delay = get_restore_delay();
         schedule_clipboard_restore(snapshot, paste_epoch, delay);
@@ -844,6 +834,61 @@ pub fn paste_and_restore(text: &str) -> Result<()> {
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    #[test]
+    fn paste_posts_only_cmd_v_down_and_up() {
+        let mut events = Vec::new();
+        post_paste_keys(|keycode, key_down, flags| {
+            events.push((keycode, key_down, flags));
+            Ok(())
+        })
+        .expect("paste key sequence");
+
+        assert_eq!(
+            events,
+            [
+                (9, true, CGEventFlags::CGEventFlagCommand),
+                (9, false, CGEventFlags::CGEventFlagCommand),
+            ]
+        );
+    }
+
+    #[test]
+    fn smart_paste_has_no_post_paste_key_step() {
+        let source = include_str!("clipboard.rs");
+        let paste = source
+            .split("pub fn paste_text_smart(")
+            .nth(1)
+            .expect("smart paste exists")
+            .split("pub fn paste_and_restore(")
+            .next()
+            .expect("smart paste body exists");
+        // Guard the caller too: a second simulation after Cmd+V was the bug.
+        assert_eq!(paste.matches("simulate_").count(), 1);
+        assert!(paste.contains("simulate_cmd_v()"));
+        assert!(!paste.contains(".post("));
+    }
+
+    #[test]
+    fn paste_propagates_key_post_failure_without_extra_keys() {
+        for failing_post in [1, 2] {
+            let mut events = Vec::new();
+            let result = post_paste_keys(|keycode, key_down, flags| {
+                events.push((keycode, key_down, flags));
+                if events.len() == failing_post {
+                    anyhow::bail!("key poster refused event");
+                }
+                Ok(())
+            });
+
+            assert_eq!(result.unwrap_err().to_string(), "key poster refused event");
+            let expected = [
+                (9, true, CGEventFlags::CGEventFlagCommand),
+                (9, false, CGEventFlags::CGEventFlagCommand),
+            ];
+            assert_eq!(events, expected[..failing_post]);
+        }
+    }
 
     #[test]
     fn stop_target_switch_during_wait_copies_every_word_without_posting_keys() {
