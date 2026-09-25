@@ -16301,15 +16301,14 @@ mod relay_l1_overlap_admission_tests {
             1,
             "completed jobs must permit one terminal ledger seal"
         );
-        assert!(events.iter().any(|event| matches!(
-            event,
-            EngineEvent::Warning { code, .. } if code == RefinementFailure::NoLabel.code()
-        )));
+        // EOF settles this frontier through the admission horizon, whose
+        // receipt is `admission_horizon_closed`; conservation names the tail
+        // refusal (HEAD's name for incomplete exclusive coverage). It is not a stop deadline.
         assert!(!events.iter().any(|event| matches!(
             event,
             EngineEvent::Warning { code, .. } if code == RefinementFailure::StopDeadline.code()
         )));
-        assert_conserved(&lane, Some("incomplete_exclusive_coverage"));
+        assert_conserved(&lane, Some("exclusive_tail_awaiting_whole_span"));
     }
 
     /// (iii) Two of three windows return, then stop drains the accumulator.
