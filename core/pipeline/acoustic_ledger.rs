@@ -4515,7 +4515,13 @@ mod tests {
     fn word_midpoint_in_member_gap_remains_unanchored() {
         let ledger = AcousticLedger::new();
         assert_eq!(
-            ledger.classify_overlap_pin(&occ(8_000, 12_000), 0, 40_000, &[occ(12_000, 30_000)], true),
+            ledger.classify_overlap_pin(
+                &occ(8_000, 12_000),
+                0,
+                40_000,
+                &[occ(12_000, 30_000)],
+                true
+            ),
             OverlapPinClass::Unanchored(NoAuthorityReason::OverlapWithoutWordPins),
         );
     }
@@ -4533,7 +4539,13 @@ mod tests {
             OverlapPinClass::Unanchored(NoAuthorityReason::OverlapWithoutWordPins),
         );
         assert_eq!(
-            ledger.classify_overlap_pin(&occ(14_000, 22_000), 0, 32_000, &[occ(0, 20_000), occ(16_000, 32_000)], true),
+            ledger.classify_overlap_pin(
+                &occ(14_000, 22_000),
+                0,
+                32_000,
+                &[occ(0, 20_000), occ(16_000, 32_000)],
+                true
+            ),
             OverlapPinClass::Unanchored(NoAuthorityReason::OverlapWithoutWordPins),
         );
     }

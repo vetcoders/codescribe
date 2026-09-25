@@ -207,14 +207,10 @@ mod tests {
     impl EnvSnapshot {
         fn capture() -> Self {
             Self(
-                [
-                    ENV_KEY,
-                    "CODESCRIBE_DATA_DIR",
-                    "CODESCRIBE_ENV_PATH",
-                ]
-                .into_iter()
-                .map(|key| (key, std::env::var_os(key)))
-                .collect(),
+                [ENV_KEY, "CODESCRIBE_DATA_DIR", "CODESCRIBE_ENV_PATH"]
+                    .into_iter()
+                    .map(|key| (key, std::env::var_os(key)))
+                    .collect(),
             )
         }
     }

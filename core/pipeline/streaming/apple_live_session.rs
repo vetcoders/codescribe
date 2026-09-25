@@ -15368,44 +15368,58 @@ mod relay_l1_overlap_admission_tests {
         let (occurrence, requests) = launch_long_span(&mut lane, Some("apple"));
         lane.state.complete_whisper_window(
             &lane.tx,
-            completion(&requests[0], vec![word_pin(session, "szew", 44_000, 51_000)]),
+            completion(
+                &requests[0],
+                vec![word_pin(session, "szew", 44_000, 51_000)],
+            ),
             9.5,
         );
         let _ = drain(&mut lane.rx);
         lane.state.complete_whisper_window(
             &lane.tx,
-            completion(&requests[1], vec![word_pin(session, "szyk", 45_000, 53_000)]),
+            completion(
+                &requests[1],
+                vec![word_pin(session, "szyk", 45_000, 53_000)],
+            ),
             9.5,
         );
         let events = drain(&mut lane.rx);
         assert!(!lane.state.whisper_replay_coverage.contains_key(&occurrence));
         assert!(!replay_refusal(&events, "szyk"));
-        assert!(lane.state.whisper_slices.get(&occurrence).is_some_and(|slices| {
-            slices.iter().any(|(_, _, text)| text == "szyk")
-        }));
+        assert!(
+            lane.state
+                .whisper_slices
+                .get(&occurrence)
+                .is_some_and(|slices| { slices.iter().any(|(_, _, text)| text == "szyk") })
+        );
     }
 
     #[test]
     fn stop_and_blocked_span_discard_replay_coverage() {
         let mut stopped = open("seam-stop-coverage");
         let (occurrence, _) = launch_long_span(&mut stopped, Some("apple"));
-        stopped.state.whisper_slices.insert(
-            occurrence.clone(),
-            vec![(44_000, 51_000, "szew".into())],
-        );
+        stopped
+            .state
+            .whisper_slices
+            .insert(occurrence.clone(), vec![(44_000, 51_000, "szew".into())]);
         stopped
             .state
             .whisper_replay_coverage
             .insert(occurrence.clone(), vec![(45_000, 53_000)]);
         stopped.state.refuse_incomplete_whisper_spans(&stopped.tx);
-        assert!(!stopped.state.whisper_replay_coverage.contains_key(&occurrence));
+        assert!(
+            !stopped
+                .state
+                .whisper_replay_coverage
+                .contains_key(&occurrence)
+        );
 
         let mut blocked = open("seam-blocked-coverage");
         let (occurrence, requests) = launch_long(&mut blocked, "apple");
-        blocked.state.whisper_slices.insert(
-            occurrence.clone(),
-            vec![(8_000, 40_000, "raz".into())],
-        );
+        blocked
+            .state
+            .whisper_slices
+            .insert(occurrence.clone(), vec![(8_000, 40_000, "raz".into())]);
         blocked
             .state
             .whisper_replay_coverage
@@ -15418,7 +15432,12 @@ mod relay_l1_overlap_admission_tests {
             ),
             8.0,
         );
-        assert!(!blocked.state.whisper_replay_coverage.contains_key(&occurrence));
+        assert!(
+            !blocked
+                .state
+                .whisper_replay_coverage
+                .contains_key(&occurrence)
+        );
     }
 
     #[test]
@@ -15426,10 +15445,9 @@ mod relay_l1_overlap_admission_tests {
         let session = "seam-clipped-coverage";
         let mut lane = open(session);
         let member = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, 52_000);
-        lane.state.whisper_slices.insert(
-            member.clone(),
-            vec![(44_000, 51_000, "szew".into())],
-        );
+        lane.state
+            .whisper_slices
+            .insert(member.clone(), vec![(44_000, 51_000, "szew".into())]);
         let routes = lane.state.route_overlap_pins(
             &lane.tx,
             2,
@@ -15460,10 +15478,10 @@ mod relay_l1_overlap_admission_tests {
             &[(96_768, 126_720), (132_000, 152_000), (160_000, 188_000)],
         );
         stage(&mut lane, 1, occurrence.clone(), "apple floor");
-        assert!(lane.state.enqueue_layer1_piece(
-            &lane.tx,
-            piece(1, &occurrence, "apple floor"),
-        ));
+        assert!(
+            lane.state
+                .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, "apple floor"),)
+        );
         close_lexicon(&mut lane, 1, &occurrence, "apple floor");
         let _ = drain(&mut lane.rx);
         let requests = take_requests(&mut lane.tail_rx);
