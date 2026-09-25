@@ -1590,6 +1590,37 @@ impl AcousticLedger {
         true
     }
 
+    /// Select one qualified midpoint owner when physical closures overlap.
+    /// An open owner precedes a sealed owner; equal seal states prefer the
+    /// later closure start. Equal starts use the shorter extent deterministically.
+    pub(crate) fn word_owner_index(
+        &self,
+        pin: &OccurrenceIdentity,
+        owners: &[OccurrenceIdentity],
+    ) -> Option<usize> {
+        if !pin.is_anchored() {
+            return None;
+        }
+        let midpoint = pin.sample_start + pin.sample_len() / 2;
+        owners
+            .iter()
+            .enumerate()
+            .filter(|(_, owner)| {
+                pin.same_capture(owner)
+                    && self.is_qualified(owner)
+                    && owner.sample_start <= midpoint
+                    && midpoint < owner.sample_end
+            })
+            .max_by_key(|(_, owner)| {
+                (
+                    !self.is_sealed(owner),
+                    owner.sample_start,
+                    std::cmp::Reverse(owner.sample_end),
+                )
+            })
+            .map(|(index, _)| index)
+    }
+
     /// Route word pins by midpoint to any supplied owner, including owners
     /// outside this window's member list. Outside the admit range is not by
     /// itself replay: the caller must prove matching normalized slot text and
@@ -1615,6 +1646,13 @@ impl AcousticLedger {
         if !open_members.iter().any(|member| pin.same_capture(member)) {
             return OverlapPinClass::Unanchored(NoAuthorityReason::NoRange);
         }
+        if word_grain
+            && let Some(member_index) = self.word_owner_index(pin, open_members)
+        {
+            return OverlapPinClass::ExclusiveTail { member_index };
+        }
+        // Unqualified geometry candidates have no ledger owner to break a tie.
+        // Keep their uniqueness check and the utterance-grain fence below.
         let inside_admit = if word_grain {
             word_midpoint_in_admit(pin, admit_start, admit_end)
         } else {

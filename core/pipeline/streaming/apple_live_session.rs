@@ -2362,13 +2362,9 @@ impl AppleSealState {
                         // PCM representative to replace a jittered copy that
                         // completed first. This never adds a second word slot.
                         if word_grain {
-                            let mid = pin.sample_start + pin.sample_len() / 2;
-                            if let Some((owner_index, owner)) =
-                                open_members.iter().enumerate().find(|(_, owner)| {
-                                    pin.same_capture(owner)
-                                        && owner.sample_start <= mid
-                                        && mid < owner.sample_end
-                                })
+                            if let Some((owner_index, owner)) = ledger
+                                .word_owner_index(&pin, &open_members)
+                                .map(|index| (index, &open_members[index]))
                                 && !ledger.is_sealed(owner)
                                 && ledger.matching_word_slot(owner, &pin, text, true)
                             {
@@ -3637,18 +3633,28 @@ fn admit_late_apple_words(
     current_slice: &[TranscriptSegment],
 ) {
     let owners = state.word_owners();
+    let owner_ranges = owners
+        .iter()
+        .map(|(_, owner)| owner.clone())
+        .collect::<Vec<_>>();
     let mut by_owner: BTreeMap<OccurrenceIdentity, Vec<(u64, u64, String)>> = BTreeMap::new();
     for word in words {
-        let mid = word.sample_start + word.sample_end.saturating_sub(word.sample_start) / 2;
-        let mut matches = owners
-            .iter()
-            .filter(|(_, owner)| owner.sample_start <= mid && mid < owner.sample_end);
-        match (matches.next(), matches.next()) {
-            (Some((_, owner)), None) => by_owner.entry(owner.clone()).or_default().push((
-                word.sample_start,
-                word.sample_end,
-                word.text.clone(),
-            )),
+        let pin = OccurrenceIdentity::new(
+            state.session_id.clone(),
+            state.capture_epoch,
+            word.sample_start,
+            word.sample_end,
+        );
+        let owner_index = state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .word_owner_index(&pin, &owner_ranges);
+        match owner_index {
+            Some(index) => by_owner
+                .entry(owner_ranges[index].clone())
+                .or_default()
+                .push((word.sample_start, word.sample_end, word.text.clone())),
             _ => state.unmatched_silero_words.push(word.clone()),
         }
     }
@@ -3932,30 +3938,34 @@ fn reconcile_silero_ledger(
                 (silero.range.sample_start, silero.range.sample_end)
             }
         };
-        // Once a physical closure has scheduled work, its identity is fixed.
-        // A later overlapping Silero closure may change the exclusive partition,
-        // but awaiting a horizon is not a request to plan that owner again.
-        let original = OccurrenceIdentity::from(&silero.range);
-        let assigned = state
-            .pending_events
-            .get(&utterance_id)
-            .map(|pending| pending.occurrence.clone())
-            .or_else(|| {
-                state
-                    .acoustic_ledger
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .frontier_of(&original)
-                    .map(|_| original.clone())
-            });
-        let occurrence = assigned.unwrap_or_else(|| {
-            OccurrenceIdentity::new(
-                state.session_id.clone(),
-                state.capture_epoch,
-                owned_start,
-                owned_end,
-            )
-        });
+        // A contained re-partition is already owned while its admission horizon
+        // remains open. This decision cannot mint identity or plan another job.
+        let contained_open_owner = {
+            let ledger = state
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            ledger.qualified_occurrences().any(|owner| {
+                owner.session == state.session_id
+                    && owner.capture_epoch == state.capture_epoch
+                    && ledger.frontier_of(owner).is_some()
+                    && !ledger.is_sealed(owner)
+                    && owner.sample_start <= owned_start
+                    && owned_end <= owner.sample_end
+                    && (owned_start, owned_end) != (owner.sample_start, owner.sample_end)
+            })
+        };
+        if contained_open_owner {
+            admit_late_apple_words(state, ev_tx, utterance_id, &words, disjoint);
+            state.reconciled_silero.insert(utterance_id);
+            continue;
+        }
+        let occurrence = OccurrenceIdentity::new(
+            state.session_id.clone(),
+            state.capture_epoch,
+            owned_start,
+            owned_end,
+        );
         let first_attempt = state
             .acoustic_ledger
             .lock()
@@ -17361,14 +17371,36 @@ mod tc2_window_contract_tests {
         assert!(!f.state.acoustic_ledger.lock().unwrap().is_sealed(&owner));
         let windows_before = f.state.windows_admitted;
         let mut reclosed = UtteranceLedger::new();
-        for (start, end) in [
-            (227_328, 510_464),
-            (2_132_992, 2_317_824),
-            (2_317_824, 2_378_240),
-        ] {
+        for (start, end) in [(227_328, 510_464), (2_132_992, 2_317_824)] {
             reclosed.open_or_extend(SESSION, 1, start, end);
             reclosed.close_open(end);
         }
+        // The contained re-close neither mints nor schedules. Its Apple word
+        // reaches the original horizon-open owner by midpoint.
+        assert!(reconcile_silero_ledger(
+            &mut f.state,
+            &f.events,
+            &reclosed,
+            &[apple_word("contained", 2_150_000, 2_154_000)],
+        ));
+        f.state.flush_layer1_coalesce(&f.events);
+        assert_eq!(f.state.windows_admitted, windows_before);
+        assert!(f.requests.try_recv().is_err());
+        assert_eq!(
+            f.state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .qualified_occurrences()
+                .count(),
+            2
+        );
+
+        // The neighbouring closure owns its full exclusive span at mint time,
+        // including the physical overlap with the earlier fixed identity.
+        let next_owner = OccurrenceIdentity::new(SESSION, 1, 2_317_824, 2_378_240);
+        reclosed.open_or_extend(SESSION, 1, next_owner.sample_start, next_owner.sample_end);
+        reclosed.close_open(next_owner.sample_end);
         assert!(reconcile_silero_ledger(
             &mut f.state,
             &f.events,
@@ -17376,20 +17408,192 @@ mod tc2_window_contract_tests {
             &[apple_word("late", 2_320_000, 2_324_000)],
         ));
         f.state.flush_layer1_coalesce(&f.events);
-        assert_eq!(f.state.windows_admitted, windows_before);
-        assert!(f.requests.try_recv().is_err());
+        let requests = std::iter::from_fn(|| f.requests.try_recv().ok()).collect::<Vec<_>>();
+        assert!(!requests.is_empty());
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.member_occurrences == vec![(3, next_owner.clone())])
+        );
+        assert_eq!(
+            f.state.windows_admitted,
+            windows_before + requests.len() as u64
+        );
         let ledger = f.state.acoustic_ledger.lock().unwrap();
         let owners = ledger.qualified_occurrences().collect::<Vec<_>>();
-        assert_eq!(owners.len(), 2);
+        assert_eq!(owners.len(), 3);
         assert!(owners.contains(&&owner));
+        assert!(owners.contains(&&next_owner));
+        let overlaps = owners
+            .iter()
+            .enumerate()
+            .flat_map(|(index, first)| {
+                owners.iter().skip(index + 1).filter_map(move |second| {
+                    let start = first.sample_start.max(second.sample_start);
+                    let end = first.sample_end.min(second.sample_end);
+                    (start < end).then_some((start, end))
+                })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(overlaps, vec![(2_317_824, 2_325_504)]);
+        assert_eq!(ledger.text_of(&owner), Some("anchor contained"));
+        assert_eq!(ledger.text_of(&next_owner), Some("late"));
         assert!(
-            owners
-                .windows(2)
-                .all(|pair| pair[0].sample_end <= pair[1].sample_start)
+            ledger
+                .frontier_of(&owner)
+                .unwrap()
+                .open_producers()
+                .contains(&LedgerObservationProducer::Whisper)
         );
-        assert_eq!(ledger.text_of(&owner), Some("anchor late"));
         assert!(!ledger.is_sealed(&owner));
         assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    /// ef1fa physical closures overlap at 508416..510464. Labels and PCM are
+    /// synthetic; both live-window and stop recovery must make the same choice.
+    #[test]
+    fn midpoint_in_closure_overlap_routes_to_exactly_one_owner() {
+        for (older_sealed, newer_sealed) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            for stop_recovery in [false, true] {
+                let mut f = fixture();
+                assert!(reconcile_silero_ledger(
+                    &mut f.state,
+                    &f.events,
+                    &f.physical,
+                    &[apple_word("older", 246_464, 262_784)],
+                ));
+                let newer = OccurrenceIdentity::new(SESSION, 1, 508_416, 743_424);
+                f.physical
+                    .open_or_extend(SESSION, 1, newer.sample_start, newer.sample_end);
+                f.physical.close_open(newer.sample_end);
+                assert!(reconcile_silero_ledger(
+                    &mut f.state,
+                    &f.events,
+                    &f.physical,
+                    &[apple_word("newer", 652_416, 659_136)],
+                ));
+                f.state.flush_layer1_coalesce(&f.events);
+                let requests =
+                    std::iter::from_fn(|| f.requests.try_recv().ok()).collect::<Vec<_>>();
+                let request = requests
+                    .iter()
+                    .find(|request| {
+                        request
+                            .member_occurrences
+                            .iter()
+                            .any(|(_, owner)| owner == &newer)
+                    })
+                    .unwrap();
+                for (id, owner, sealed) in [
+                    (1, &f.occurrence, older_sealed),
+                    (2, &newer, newer_sealed),
+                ] {
+                    if sealed {
+                        f.state
+                            .return_whisper_without_label(&f.events, id, owner);
+                        f.state.emit_pending_seal(&f.events, id);
+                    }
+                    assert_eq!(
+                        f.state.acoustic_ledger.lock().unwrap().is_sealed(owner),
+                        sealed
+                    );
+                }
+                let winner = if !older_sealed && newer_sealed {
+                    &f.occurrence
+                } else {
+                    &newer
+                };
+                let winner_sealed = older_sealed && newer_sealed;
+                while f.receiver.try_recv().is_ok() {}
+
+                admit_late_apple_words(
+                    &mut f.state,
+                    &f.events,
+                    30,
+                    &[FusionWord::from_timed(&pin(
+                        "apple_overlap", 508_800, 509_200,
+                    ))],
+                    &[apple_word("apple_overlap", 508_800, 509_200)],
+                );
+                let apple_events =
+                    std::iter::from_fn(|| f.receiver.try_recv().ok()).collect::<Vec<_>>();
+                let apple_owners = apple_events
+                    .iter()
+                    .filter_map(|event| match event {
+                        EngineEvent::LedgerMutation { observation, .. }
+                            if observation.producer == LedgerObservationProducer::Apple =>
+                        {
+                            Some(&observation.occurrence)
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(apple_owners, vec![winner]);
+                assert!(f.state.unmatched_silero_words.is_empty());
+
+                let returned =
+                    completion(request, vec![pin("whisper_overlap", 509_400, 509_800)]);
+                if stop_recovery {
+                    admit_debt_occurrence_recovery(
+                        &mut f.state,
+                        &f.events,
+                        &newer,
+                        returned.payload.as_ref().unwrap(),
+                    );
+                } else {
+                    f.state.complete_whisper_window(&f.events, returned, 15.5);
+                }
+                let whisper_events =
+                    std::iter::from_fn(|| f.receiver.try_recv().ok()).collect::<Vec<_>>();
+                let whisper_owners = whisper_events
+                    .iter()
+                    .filter_map(|event| match event {
+                        EngineEvent::LedgerMutation { observation, .. }
+                            if observation.producer == LedgerObservationProducer::Whisper =>
+                        {
+                            Some(&observation.occurrence)
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(whisper_owners, vec![winner]);
+                assert!(
+                    !apple_events.iter().chain(&whisper_events).any(|event| matches!(
+                        event, EngineEvent::Warning { code, .. } if code == "no_time_overlap"
+                    ))
+                );
+                assert_eq!(f.state.no_time_overlap_warnings, 0);
+                assert!(f.state.unmatched_silero_words.is_empty());
+                let ledger = f.state.acoustic_ledger.lock().unwrap();
+                for owner in [&f.occurrence, &newer] {
+                    for word in ["apple_overlap", "whisper_overlap"] {
+                        let count = ledger
+                            .slots_of(owner)
+                            .unwrap()
+                            .iter()
+                            .filter(|slot| slot.text == word)
+                            .count();
+                        assert_eq!(count, usize::from(owner == winner && !winner_sealed));
+                    }
+                }
+                if winner_sealed {
+                    assert!(apple_events.iter().any(|event| matches!(event,
+                        EngineEvent::LedgerMutation { receipt: MutationReceipt::KeepVisibleUnanchored {
+                            reason: NoAuthorityReason::LateAppleWordSealedOwner, ..
+                        }, .. }
+                    )));
+                    assert!(whisper_events.iter().any(|event| matches!(event,
+                        EngineEvent::LedgerMutation { receipt: MutationReceipt::KeepVisibleUnanchored {
+                            reason: NoAuthorityReason::LateWhisperWordSealedOwner, ..
+                        }, .. }
+                    )));
+                }
+                ledger.assert_slot_labels();
+                assert_eq!(ledger.conservation().residue(), 0);
+            }
+        }
     }
 
     #[test]
