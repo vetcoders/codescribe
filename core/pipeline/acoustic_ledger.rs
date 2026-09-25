@@ -346,10 +346,9 @@ impl RefuseReason {
 
 /// Where one timed pin sits relative to a window's exclusive admit range.
 ///
-/// The admit bounds are the window's non-overlapping remainder. A pin wholly
-/// inside that remainder and wholly inside one open member is the exclusive
-/// tail. A pin wholly outside it and already covered by a committed identity
-/// is replay. Anything else stays visible and gains no mutation right.
+/// The admit bounds are the window's non-overlapping remainder. Word pins
+/// belong to the window containing their midpoint; phrase pins retain whole
+/// range containment. A word still needs one open member to own its full span.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverlapPinClass {
     /// The pin's whole text belongs to this open member.
@@ -357,7 +356,7 @@ pub enum OverlapPinClass {
         /// Index into the open-member slice passed to the classifier.
         member_index: usize,
     },
-    /// Covered overlap. Refuse the pin; do not read its text.
+    /// A word belongs to another window or repeats an admitted Whisper pin.
     Replay,
     /// Read-only evidence. The reason says why it cannot mutate a neighbour.
     Unanchored(NoAuthorityReason),
@@ -1235,21 +1234,33 @@ impl AcousticLedger {
 
     /// Classify one timed pin against the window's exclusive admit range.
     ///
-    /// Text is not an argument. Coverage is containment on the PCM axis.
+    /// Text is not an argument. Word ownership uses the midpoint on the PCM
+    /// axis; member routing still requires containment in one occurrence.
     pub fn classify_overlap_pin(
         &self,
         pin: &OccurrenceIdentity,
         admit_start: u64,
         admit_end: u64,
         open_members: &[OccurrenceIdentity],
+        word_grain: bool,
     ) -> OverlapPinClass {
+        fn word_midpoint_in_admit(pin: &OccurrenceIdentity, start: u64, end: u64) -> bool {
+            let midpoint = pin.sample_start + pin.sample_len() / 2;
+            midpoint >= start && midpoint < end
+        }
+
         if !pin.is_anchored() {
             return OverlapPinClass::Unanchored(NoAuthorityReason::ZeroWidth);
         }
         if !open_members.iter().any(|member| pin.same_capture(member)) {
             return OverlapPinClass::Unanchored(NoAuthorityReason::NoRange);
         }
-        let inside_admit = pin.sample_start >= admit_start && pin.sample_end <= admit_end;
+        let inside_admit = if word_grain {
+            // Keep the ownership rule in one place for a future seam policy.
+            word_midpoint_in_admit(pin, admit_start, admit_end)
+        } else {
+            pin.sample_start >= admit_start && pin.sample_end <= admit_end
+        };
         if inside_admit {
             let mut owners = open_members.iter().enumerate().filter(|(_, member)| {
                 pin.sample_start >= member.sample_start && pin.sample_end <= member.sample_end
@@ -1260,6 +1271,9 @@ impl AcousticLedger {
                 return OverlapPinClass::ExclusiveTail { member_index };
             }
             return OverlapPinClass::Unanchored(NoAuthorityReason::OverlapWithoutWordPins);
+        }
+        if word_grain {
+            return OverlapPinClass::Replay;
         }
         let overlaps_admit = pin.sample_end > admit_start && pin.sample_start < admit_end;
         if !overlaps_admit {
@@ -4405,7 +4419,13 @@ mod tests {
         );
         let covered = occ(32_000, 48_000);
         assert_eq!(
-            ledger.classify_overlap_pin(&covered, 48_000, 72_000, std::slice::from_ref(&admitted),),
+            ledger.classify_overlap_pin(
+                &covered,
+                48_000,
+                72_000,
+                std::slice::from_ref(&admitted),
+                false,
+            ),
             OverlapPinClass::Replay
         );
         let different = ledger.refuse_replayed_range(
@@ -4425,6 +4445,45 @@ mod tests {
         let tally = ledger.conservation();
         assert_eq!(tally.observations_in, tally.receipts_out);
         assert_eq!(tally.occurrences_held, 1);
+    }
+
+    #[test]
+    fn word_midpoint_owns_seam_without_apple_range_replay() {
+        let mut ledger = AcousticLedger::new();
+        let member = occ(0, 96_000);
+        ledger.admit(&obs(ObservationProducer::Apple, 0, member.clone()), "apple");
+        let seam_word = occ(44_000, 51_000);
+        assert_eq!(
+            ledger.classify_overlap_pin(
+                &seam_word,
+                0,
+                48_000,
+                std::slice::from_ref(&member),
+                true,
+            ),
+            OverlapPinClass::ExclusiveTail { member_index: 0 },
+        );
+        assert_eq!(
+            ledger.classify_overlap_pin(
+                &seam_word,
+                48_000,
+                96_000,
+                std::slice::from_ref(&member),
+                true,
+            ),
+            OverlapPinClass::Replay,
+        );
+        let apple_held_word = occ(52_000, 60_000);
+        assert_eq!(
+            ledger.classify_overlap_pin(
+                &apple_held_word,
+                48_000,
+                96_000,
+                std::slice::from_ref(&member),
+                true,
+            ),
+            OverlapPinClass::ExclusiveTail { member_index: 0 },
+        );
     }
 
     /// Same-lane revision: Apple correcting its own final on its own range at a

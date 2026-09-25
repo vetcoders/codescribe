@@ -1687,25 +1687,45 @@ fn pin_intersects(pin: &OccurrenceIdentity, member: &OccurrenceIdentity) -> bool
     pin.sample_end > member.sample_start && pin.sample_start < member.sample_end
 }
 
-/// A word pin already stored as an exclusive slice of this member.
-///
-/// The slice is an admitted identity. A later window's copy of that range is
-/// replay, including when the copy sits outside the later window's admit.
+/// A word pin repeating a Whisper slice already admitted for this member.
+/// At least half of the shorter member-clipped span must overlap. This admits
+/// small timing jitter without treating the Apple-held member as a word pin.
 fn earlier_exclusive_slice_covers(
-    slices: &std::collections::BTreeMap<OccurrenceIdentity, Vec<(u64, u64, String)>>,
+    slices: &BTreeMap<OccurrenceIdentity, Vec<(u64, u64, String)>>,
     members: &[OccurrenceIdentity],
+    routes: &[MemberPinRoute],
     pin: &OccurrenceIdentity,
 ) -> bool {
-    members.iter().any(|member| {
+    fn duplicates(pin_start: u64, pin_end: u64, start: u64, end: u64) -> bool {
+        let overlap = pin_end.min(end).saturating_sub(pin_start.max(start));
+        let shorter = pin_end.saturating_sub(pin_start).min(end.saturating_sub(start));
+        shorter > 0 && overlap >= shorter / 2 + shorter % 2
+    }
+
+    members.iter().enumerate().any(|(index, member)| {
         pin.same_capture(member)
             && pin.sample_end > pin.sample_start
-            && pin.sample_start >= member.sample_start
-            && pin.sample_end <= member.sample_end
-            && slices.get(member).is_some_and(|ranges| {
-                ranges.iter().any(|(start, end, _)| {
-                    *end > *start && pin.sample_start >= *start && pin.sample_end <= *end
-                })
-            })
+            && {
+                let pin_start = pin.sample_start.max(member.sample_start);
+                let pin_end = pin.sample_end.min(member.sample_end);
+                slices
+                    .get(member)
+                    .is_some_and(|ranges| {
+                        ranges
+                            .iter()
+                            .any(|(start, end, _)| duplicates(pin_start, pin_end, *start, *end))
+                    })
+                    || routes.get(index).is_some_and(|route| {
+                        route.exclusive.iter().any(|prior| {
+                            duplicates(
+                                pin_start,
+                                pin_end,
+                                prior.pin.sample_start.max(member.sample_start),
+                                prior.pin.sample_end.min(member.sample_end),
+                            )
+                        })
+                    })
+            }
     })
 }
 
@@ -2298,13 +2318,18 @@ impl AppleSealState {
                     admit_sample_start,
                     admit_sample_end,
                     &open_members,
+                    word_grain,
                 );
-                // Step 4: a word whose range is already an admitted exclusive
-                // slice is replay, one pin at a time. It does not veto the
-                // member. The committed occurrence is not that identity: it is
-                // the span these pins are still proving.
+                // Only admitted Whisper word spans can prove a replay. An Apple
+                // label on the member cannot. Compare this window's earlier
+                // pins too, so one payload cannot duplicate a word.
                 if word_grain
-                    && earlier_exclusive_slice_covers(&self.whisper_slices, &open_members, &pin)
+                    && earlier_exclusive_slice_covers(
+                        &self.whisper_slices,
+                        &open_members,
+                        &routes,
+                        &pin,
+                    )
                 {
                     class = OverlapPinClass::Replay;
                 }
@@ -14392,14 +14417,10 @@ mod relay_l1_overlap_admission_tests {
         assert_conserved(&lane, Some("replayed_range_identity"));
     }
 
-    /// A word whose range crosses the prefix/remainder join stays one pin.
-    ///
-    /// Contract step 3: the straddle is unanchored and names its range.
-    /// Step 7 for word grain: it does not veto the exclusive pins, which join
-    /// the occurrence in PCM order. Utterance grain still addresses the whole
-    /// span or nothing.
+    /// A word returned only by the later window but owned by the earlier
+    /// window is replay. It does not veto the other exclusive pins.
     #[test]
-    fn word_pin_straddling_the_prefix_join_stays_visible_and_does_not_block() {
+    fn word_pin_owned_by_earlier_window_is_replay_and_does_not_block() {
         let mut lane = open("relay-word-straddle");
         let (occurrence, requests) = launch_long(&mut lane, "krawedz");
         let session = "relay-word-straddle";
@@ -14419,14 +14440,14 @@ mod relay_l1_overlap_admission_tests {
         }
         let warnings = warning_lines(&events);
         assert!(
-            unanchored_label(&events, "krawedz"),
-            "a word across the admit join stays whole and visible\n{warnings}"
+            replay_refusal(&events, "krawedz"),
+            "this copy's midpoint belongs to the earlier window\n{warnings}"
         );
         assert!(
             warnings.contains("segment 40000..52000")
                 && warnings.contains("occurrence [0..160000]")
-                && warnings.contains("ledger=overlap_without_word_pins"),
-            "the straddle names segment, occurrence, and ledger reason\n{warnings}"
+                && warnings.contains("ledger=replayed_range_identity"),
+            "the replay names segment, occurrence, and ledger reason\n{warnings}"
         );
         assert!(
             !named_refusal(&events, "intersecting_pin_not_exclusive"),
@@ -14964,13 +14985,103 @@ mod relay_l1_overlap_admission_tests {
         events
     }
 
+    fn play_seam_word(
+        second_copy: (u64, u64),
+        session: &str,
+    ) -> (Lane, OccurrenceIdentity, Vec<EngineEvent>) {
+        let mut lane = open(session);
+        record_voiced_spans(
+            &lane,
+            LONG_SAMPLES,
+            &[(44_000, 51_000), (70_000, 88_000), (100_000, 140_000)],
+        );
+        let (occurrence, requests) = launch_long_span(&mut lane, Some("apple"));
+        let windows = [
+            vec![word_pin(session, "szew", 44_000, 51_000)],
+            vec![
+                word_pin(session, "szew", second_copy.0, second_copy.1),
+                word_pin(session, "dalej", 70_000, 88_000),
+            ],
+            vec![word_pin(session, "koniec", 100_000, 140_000)],
+        ];
+        let mut events = Vec::new();
+        for (request, segments) in requests.iter().zip(windows) {
+            lane.state
+                .complete_whisper_window(&lane.tx, completion(request, segments), 9.5);
+            events.extend(drain(&mut lane.rx));
+        }
+        (lane, occurrence, events)
+    }
+
+    #[test]
+    fn seam_word_midpoint_in_first_window_is_admitted_once() {
+        let (lane, occurrence, events) = play_seam_word((44_000, 51_000), "seam-first");
+        let warnings = warning_lines(&events);
+        assert!(replay_refusal(&events, "szew"), "{warnings}");
+        assert!(
+            !warnings.contains("ledger=overlap_without_word_pins"),
+            "{warnings}"
+        );
+        assert_eq!(mutation_count(&events), 1);
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("szew dalej koniec")
+        );
+        assert_conserved(&lane, Some("replayed_range_identity"));
+    }
+
+    #[test]
+    fn seam_word_with_jitter_across_midpoints_is_admitted_once() {
+        let (lane, occurrence, events) = play_seam_word((45_000, 53_000), "seam-jitter");
+        assert!(replay_refusal(&events, "szew"));
+        assert_eq!(mutation_count(&events), 1);
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("szew dalej koniec")
+        );
+        assert_conserved(&lane, Some("replayed_range_identity"));
+    }
+
+    #[test]
+    fn apple_held_range_does_not_replay_an_owned_word() {
+        let mut lane = open("seam-apple-held");
+        let member = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, 152_000);
+        stage(&mut lane, 1, member.clone(), "apple");
+        let routes = lane.state.route_overlap_pins(
+            &lane.tx,
+            2,
+            48_000,
+            96_000,
+            &[(1, member)],
+            &[word_pin("seam-apple-held", "nowe", 60_000, 70_000)],
+        );
+        assert_eq!(routes[0].exclusive.len(), 1);
+        assert_eq!(routes[0].exclusive[0].text, "nowe");
+        assert!(!replay_refusal(&drain(&mut lane.rx), "nowe"));
+    }
+
+    #[test]
+    fn word_wholly_inside_admit_keeps_exclusive_tail_route() {
+        let mut lane = open("seam-normal");
+        let member = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 48_000, 96_000);
+        let routes = lane.state.route_overlap_pins(
+            &lane.tx,
+            2,
+            48_000,
+            96_000,
+            &[(1, member)],
+            &[word_pin("seam-normal", "zwykle", 60_000, 70_000)],
+        );
+        assert_eq!(routes[0].exclusive.len(), 1);
+        assert_eq!(routes[0].exclusive[0].text, "zwykle");
+        assert!(!routes[0].blocked);
+    }
+
     /// (a) Apple text debt, three step-1 windows, overlap duplicates, one
     /// word across a window edge.
     ///
-    /// Contract step 3: the straddling word is unanchored and names its range.
-    /// Step 4: a later pin wholly inside an earlier exclusive pin is
-    /// `replayed_range_identity` and does not block the member. Step 7: the
-    /// exclusive remainder joins once its pins cover the voiced hops.
+    /// A seam word owned by the second window enters its slice there; the
+    /// first window's copy is replay. Other duplicate pins remain replay.
     #[test]
     fn debt_long_occurrence_joins_exclusive_word_pins_around_a_straddle() {
         let session = "relay-debt-long";
@@ -14993,8 +15104,8 @@ mod relay_l1_overlap_admission_tests {
             "step 4: the later copy of an already admitted pin is replay\n{warnings}"
         );
         assert!(
-            unanchored_label(&events, "krawedz"),
-            "step 3: a word across the window edge stays unanchored\n{warnings}"
+            replay_refusal(&events, "krawedz"),
+            "the first window's copy belongs to the second window\n{warnings}"
         );
         assert!(
             warnings.contains("segment 47000..52000")
@@ -15002,8 +15113,8 @@ mod relay_l1_overlap_admission_tests {
                     "occurrence [{}..{}]",
                     occurrence.sample_start, occurrence.sample_end
                 ))
-                && warnings.contains("ledger=overlap_without_word_pins"),
-            "the straddle warning names segment, occurrence, and ledger reason\n{warnings}"
+                && warnings.contains("ledger=replayed_range_identity"),
+            "the replay warning names segment, occurrence, and ledger reason\n{warnings}"
         );
         assert_eq!(
             (
@@ -15016,7 +15127,7 @@ mod relay_l1_overlap_admission_tests {
         );
         assert_eq!(
             held_text(&lane, &occurrence).as_deref(),
-            Some("raz dwa trzy cztery")
+            Some("raz krawedz dwa trzy cztery")
         );
         assert!(
             !lane
@@ -15057,7 +15168,7 @@ mod relay_l1_overlap_admission_tests {
             replay_refusal(&events, "raz"),
             "the later copy of raz is replayed_range_identity\n{warnings}"
         );
-        assert!(unanchored_label(&events, "krawedz"), "{warnings}");
+        assert!(replay_refusal(&events, "krawedz"), "{warnings}");
         assert_eq!(
             (
                 lane.state.tail_patch_jobs_applied,
@@ -15069,7 +15180,7 @@ mod relay_l1_overlap_admission_tests {
         );
         assert_eq!(
             held_text(&lane, &occurrence).as_deref(),
-            Some("raz dwa trzy cztery")
+            Some("raz krawedz dwa trzy cztery")
         );
         assert_eq!(held_count(&lane), 1);
         assert_conserved(&lane, Some("replayed_range_identity"));
