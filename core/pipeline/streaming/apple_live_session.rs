@@ -12088,7 +12088,7 @@ mod rc_w2_test_rehab {
     }
 
     #[test]
-    fn whisper_label_is_rewritten_before_ledger_admission() {
+    fn whisper_observation_keeps_raw_label_until_lexicon_decision() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let dir = tempfile::tempdir().unwrap();
         let mut state = state("whisper-lexicon", 2.0);
@@ -12098,8 +12098,14 @@ mod rc_w2_test_rehab {
             .acoustic_ledger
             .lock()
             .unwrap()
-            .schedule_frontier(occurrence.clone(), [LedgerObservationProducer::Whisper]);
-        let receipt = admit_ledger_label(
+            .schedule_frontier(
+                occurrence.clone(),
+                [
+                    LedgerObservationProducer::Whisper,
+                    LedgerObservationProducer::Lexicon,
+                ],
+            );
+        let whisper_receipt = admit_ledger_label(
             &mut state,
             &tx,
             LabelAdmission {
@@ -12107,18 +12113,48 @@ mod rc_w2_test_rehab {
                     LedgerObservationProducer::Whisper,
                     1,
                     0,
-                    occurrence,
+                    occurrence.clone(),
                 ),
                 label: "accepromazyna",
                 energy: EnergyAdmission::RequireExistingQualification,
             },
         );
-        assert!(receipt.is_some_and(|receipt| receipt.grants_mutation()));
-        assert_eq!(document(&state), "Acepromazyna");
-        assert!(drain(&mut rx).iter().any(|event| matches!(event,
+        assert!(whisper_receipt.is_some_and(|receipt| receipt.grants_mutation()));
+        assert_eq!(document(&state), "accepromazyna");
+        let whisper_events = drain(&mut rx);
+        assert!(whisper_events.iter().any(|event| matches!(event,
             EngineEvent::LedgerMutation { observation, label, .. }
             if observation.producer == LedgerObservationProducer::Whisper
+                && observation.occurrence == occurrence
+                && label == "accepromazyna"
+        )));
+        assert!(!whisper_events.iter().any(|event| matches!(event,
+            EngineEvent::LedgerMutation { observation, .. }
+            if observation.producer == LedgerObservationProducer::Lexicon
+        )));
+
+        let lexicon_receipt = admit_ledger_label(
+            &mut state,
+            &tx,
+            LabelAdmission {
+                observation: LedgerObservationIdentity::new(
+                    LedgerObservationProducer::Lexicon,
+                    1,
+                    0,
+                    occurrence.clone(),
+                ),
+                label: "accepromazyna",
+                energy: EnergyAdmission::RequireExistingQualification,
+            },
+        );
+        assert!(lexicon_receipt.is_some_and(|receipt| receipt.grants_mutation()));
+        assert_eq!(document(&state), "Acepromazyna");
+        assert!(drain(&mut rx).iter().any(|event| matches!(event,
+            EngineEvent::LedgerMutation { observation, label, receipt }
+            if observation.producer == LedgerObservationProducer::Lexicon
+                && observation.occurrence == occurrence
                 && label == "Acepromazyna"
+                && receipt.grants_mutation()
         )));
     }
 
@@ -13786,6 +13822,125 @@ mod live_refinement_admission_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn apple_empty_whisper_completion_emits_raw_l1_then_lexicon_l2() {
+        let (mut state, events, mut receiver, mut requests) = fixture(1);
+        let dir = tempfile::tempdir().unwrap();
+        state.lexicon_custom_path = dir.path().join("lexicon.custom.jsonl");
+        reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
+        let request = requests.try_recv().expect("speech submits L1 without Apple words");
+        let occurrence = request.member_occurrences[0].1.clone();
+        assert_eq!(state.acoustic_ledger.lock().unwrap().text_of(&occurrence), None);
+
+        let mut completion = labelled_completion(&request);
+        let payload = completion.payload.as_mut().expect("L1 payload");
+        payload.text = "accepromazyna".into();
+        payload.segments[0].text = payload.text.clone();
+        while receiver.try_recv().is_ok() {}
+        state.complete_whisper_window(&events, completion, 20.0);
+
+        let mutations = std::iter::from_fn(|| receiver.try_recv().ok())
+            .filter_map(|event| match event {
+                EngineEvent::LedgerMutation {
+                    observation,
+                    label,
+                    receipt,
+                } if receipt.grants_mutation() => {
+                    Some((observation.producer, label, observation.occurrence))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            mutations,
+            vec![
+                (
+                    LedgerObservationProducer::Whisper,
+                    "accepromazyna".to_string(),
+                    occurrence.clone(),
+                ),
+                (
+                    LedgerObservationProducer::Lexicon,
+                    "Acepromazyna".to_string(),
+                    occurrence.clone(),
+                ),
+            ],
+            "L2 may correct L1 only as a distinct ledger decision on the same PCM occurrence"
+        );
+        assert_eq!(
+            state.acoustic_ledger.lock().unwrap().text_of(&occurrence),
+            Some("Acepromazyna")
+        );
+    }
+
+    #[test]
+    fn early_apple_lexicon_cannot_block_later_whisper_correction() {
+        let (mut state, events, mut receiver, mut requests) = fixture(1);
+        let dir = tempfile::tempdir().unwrap();
+        state.lexicon_custom_path = dir.path().join("lexicon.custom.jsonl");
+        let mut physical = UtteranceLedger::new();
+        physical.open_or_extend("live-admission", 7, 0, 2_600);
+        physical.close_open(2_600);
+        reconcile_silero_ledger(
+            &mut state,
+            &events,
+            &physical,
+            &[TranscriptSegment {
+                text: "accepromazyna".into(),
+                start_ts: 0.0,
+                end_ts: 0.2,
+            }],
+        );
+        state.flush_layer1_coalesce(&events);
+        let request = requests.try_recv().expect("Apple-labelled speech still submits L1");
+        let occurrence = request.member_occurrences[0].1.clone();
+        assert_eq!(
+            state.acoustic_ledger.lock().unwrap().text_of(&occurrence),
+            Some("Acepromazyna"),
+            "Apple's early L2 spelling correction is the precondition"
+        );
+
+        let mut completion = labelled_completion(&request);
+        let payload = completion.payload.as_mut().expect("L1 payload");
+        payload.text = "accepromazyna i dawkowanie".into();
+        payload.segments[0].text = payload.text.clone();
+        while receiver.try_recv().is_ok() {}
+        state.complete_whisper_window(&events, completion, 20.0);
+
+        let mutations = std::iter::from_fn(|| receiver.try_recv().ok())
+            .filter_map(|event| match event {
+                EngineEvent::LedgerMutation {
+                    observation,
+                    label,
+                    receipt,
+                } if receipt.grants_mutation() => {
+                    Some((observation.producer, label, observation.occurrence))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            mutations,
+            vec![
+                (
+                    LedgerObservationProducer::Whisper,
+                    "accepromazyna i dawkowanie".to_string(),
+                    occurrence.clone(),
+                ),
+                (
+                    LedgerObservationProducer::Lexicon,
+                    "Acepromazyna i dawkowanie".to_string(),
+                    occurrence.clone(),
+                ),
+            ],
+            "L1 must recover words from the same PCM despite an earlier Apple-only L2 spelling pass"
+        );
+        assert_eq!(
+            state.acoustic_ledger.lock().unwrap().text_of(&occurrence),
+            Some("Acepromazyna i dawkowanie")
+        );
     }
 
     #[test]
