@@ -545,6 +545,27 @@ impl SileroIngress {
         )
     }
 
+    /// Latest real raw Silero speech-end edge for this observed capture.
+    /// Unlike the open range's cursor-clamped end, this boundary was emitted
+    /// by VAD and may release a short residual L1 observation before Stop.
+    /// Invalid or discontinuous capture cannot supply a closure receipt.
+    pub fn raw_speech_closed_through(&self) -> Option<(CaptureEvidenceIdentity, u64)> {
+        if !self.vad_available()
+            || self.observed_samples == 0
+            || self.first_invalid_sample.is_some()
+            || self.discontinuous
+        {
+            return None;
+        }
+        let observed = self.observed_samples();
+        self.speech
+            .closed
+            .last()
+            .map(|(_, end)| *end)
+            .filter(|end| *end <= observed)
+            .map(|end| (self.evidence_identity(), end))
+    }
+
     /// Seal-time speech ranges: threshold crossings, padded by
     /// [`ACOUSTIC_SPEECH_PAD_SECS`] and merged across gaps up to
     /// [`ACOUSTIC_SPEECH_MERGE_GAP_SECS`], on this session's identity.
@@ -1905,13 +1926,21 @@ mod tests {
         assert_eq!(raw.ranges()[0].capture_epoch, 3);
         assert_eq!(raw.ranges()[0].sample_start, 2_000);
         assert_eq!(raw.ranges()[0].sample_end, 4_000);
+        assert_eq!(
+            ingress.raw_speech_closed_through(),
+            Some((CaptureEvidenceIdentity::new("extent", 3), 4_000))
+        );
         assert!(evidence.ranges()[0].sample_start < raw.ranges()[0].sample_start);
         assert!(evidence.ranges()[0].sample_end > raw.ranges()[0].sample_end);
         let mut clock = super::super::layer1_window::OpenSpeechWindowClock::new(
             raw.identity().clone(),
         );
-        assert!(clock.next(&evidence, 16_000, true).is_none());
-        let offered = clock.next(&raw, 16_000, true).unwrap();
+        assert!(clock
+            .next(&evidence, 16_000, ingress.raw_speech_closed_through(), false)
+            .is_none());
+        let offered = clock
+            .next(&raw, 16_000, ingress.raw_speech_closed_through(), false)
+            .unwrap();
         assert_eq!(offered.admit_sample_start, 2_000);
         assert_eq!(offered.admit_sample_end, 4_000);
         ingress.speech.open(7_000);
@@ -1919,6 +1948,11 @@ mod tests {
         let clamped = ingress.raw_speech_evidence();
         assert_eq!(clamped.ranges().last().unwrap().sample_start, 7_000);
         assert_eq!(clamped.ranges().last().unwrap().sample_end, 8_000);
+        assert_eq!(
+            ingress.raw_speech_closed_through(),
+            None,
+            "a future speech-end beyond observed PCM cannot release an L1 tail"
+        );
 
         // A chunk that skips ahead leaves audio this observer never heard.
         ingress.note_observed_pcm(4_000, 24_000);
@@ -1940,6 +1974,7 @@ mod tests {
             }
         );
         assert!(ingress.raw_speech_evidence().ranges().is_empty());
+        assert_eq!(ingress.raw_speech_closed_through(), None);
     }
 
     /// rc-w3-acoustic-validity: invalid PCM reaching the VAD is unmeasured, not
