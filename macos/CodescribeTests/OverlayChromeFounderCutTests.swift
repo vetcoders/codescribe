@@ -675,7 +675,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let source = try overlaySource()
     let canvas = try section(of: source, from: "private func canvasStack", to: "/// 1px separator")
     let capsule = try section(
-      of: canvas, from: "HStack(spacing: 2)", to: ".padding(.vertical, actions.phase == .open ? 2 : 0)")
+      of: canvas, from: "HStack(spacing: 2)",
+      to: ".padding(.vertical, actions.phase == .open ? 2 : 0)")
     XCTAssertTrue(capsule.contains("if actions.phase == .open {\n            intentRail"))
     XCTAssertEqual(
       canvas.components(separatedBy: "\n").filter {
@@ -795,7 +796,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let chrome = try section(
       of: source, from: "private func canvasStack", to: "/// 1px separator")
     XCTAssertTrue(
-      chrome.contains("minWidth: OverlayResizeChrome.actionsWidth(narrow: actions.phase != .hover)"))
+      chrome.contains("minWidth: OverlayResizeChrome.actionsWidth(narrow: actions.phase != .hover)")
+    )
     XCTAssertTrue(chrome.contains("height: OverlayResizeChrome.actionsHeight"))
     XCTAssertTrue(chrome.contains(".padding(.bottom, OverlayResizeChrome.actionsBottomInset)"))
     XCTAssertTrue(chrome.contains("width: OverlayResizeChrome.gripSize.width"))
