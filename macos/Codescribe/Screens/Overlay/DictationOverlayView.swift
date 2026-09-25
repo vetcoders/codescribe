@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 // Slim evidence-first dictation overlay.
@@ -23,6 +24,7 @@ struct DictationOverlayView: View {
   @State private var actions = OverlayActionsPresentation()
   @State private var narrowActions = false
   @State private var pointerInsideOverlay = false
+  @State private var overlayVisible = false
   @Bindable var state: OverlayState
 
   // Geometry constants local to this surface. The window is user-resizable;
@@ -234,6 +236,17 @@ struct DictationOverlayView: View {
     // OverlayResizeHitTests.testHeaderIsAWindowDragHandleAcrossItsWidth.
     .background { OverlayWindowDragRegion(identifier: "overlay-header-drag-region") }
     .modifier(OverlayHeaderChrome(palette: palette))
+    // The cached panel survives orderOut. Observe its window outside
+    // ViewThatFits so hidden header candidates cannot compete for visibility.
+    .background {
+      OverlayRenderVisibility { visible in
+        guard overlayVisible != visible else { return }
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { overlayVisible = visible }
+      }
+      .frame(width: 0, height: 0)
+    }
   }
 
   private var fullHeader: some View { justifiedHeader(compact: false) }
@@ -385,8 +398,8 @@ struct DictationOverlayView: View {
   /// the stamp so the displayed value is the session's true length.
   @ViewBuilder
   private var sessionTimer: some View {
-    if state.showsSessionTimer {
-      TimelineView(.periodic(from: .now, by: 1)) { _ in
+    if state.showsSessionTimer && !state.isCollapsed && overlayVisible {
+      TimelineView(.animation(minimumInterval: 1, paused: state.sessionTimerPaused)) { _ in
         Text(state.sessionTimerText)
           .csMono(11, .semibold)
           .foregroundStyle(palette.mutedText.color)
@@ -464,7 +477,7 @@ struct DictationOverlayView: View {
         // The decorative caret yields to the real insertion point while the
         // canvas is being edited.
         if !state.isEditingTranscript {
-          BlinkingCaret()
+          BlinkingCaret(animating: overlayVisible && state.animatesTranscriptCaret)
             .padding(.trailing, 3)
             .allowsHitTesting(false)
         }
@@ -638,6 +651,54 @@ struct DictationOverlayView: View {
     if label.contains("apple") { return CSColor.oliveLight }
     if label.contains("whisper") { return CSColor.olive }
     return CSColor.amber
+  }
+}
+
+/// Only reports the hosting window's visibility; it owns no capture state.
+private struct OverlayRenderVisibility: NSViewRepresentable {
+  let onChange: (Bool) -> Void
+
+  func makeNSView(context: Context) -> VisibilityView {
+    let view = VisibilityView()
+    view.onChange = onChange
+    return view
+  }
+
+  func updateNSView(_ nsView: VisibilityView, context: Context) {
+    nsView.onChange = onChange
+  }
+
+  static func dismantleNSView(_ nsView: VisibilityView, coordinator: ()) {
+    NotificationCenter.default.removeObserver(nsView)
+    nsView.onChange = nil
+  }
+
+  final class VisibilityView: NSView {
+    var onChange: ((Bool) -> Void)?
+
+    override func viewDidMoveToWindow() {
+      super.viewDidMoveToWindow()
+      NotificationCenter.default.removeObserver(self)
+      if let window {
+        NotificationCenter.default.addObserver(
+          self, selector: #selector(visibilityChanged(_:)),
+          name: NSWindow.didChangeOcclusionStateNotification, object: window)
+      }
+      publishVisibility()
+    }
+
+    @objc private func visibilityChanged(_ notification: Notification) {
+      publishVisibility()
+    }
+
+    private func publishVisibility() {
+      // Window attachment can happen during a SwiftUI update. Read the current
+      // window on the next actor turn, so an old notification cannot revive it.
+      Task { @MainActor [weak self] in
+        guard let self else { return }
+        onChange?(window?.isVisible == true && window?.occlusionState.contains(.visible) == true)
+      }
+    }
   }
 }
 

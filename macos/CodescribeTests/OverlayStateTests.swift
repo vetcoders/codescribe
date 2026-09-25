@@ -757,11 +757,13 @@ final class OverlayStateTests: XCTestCase {
     let state = OverlayState(nowProvider: { clock.now })
     XCTAssertNil(state.elapsedCaptureSeconds())
     XCTAssertEqual(state.sessionTimerText, "00:00")
+    XCTAssertTrue(state.sessionTimerPaused)
 
     clock.now = 100
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
     XCTAssertEqual(state.elapsedCaptureSeconds(), 0)
+    XCTAssertFalse(state.sessionTimerPaused)
 
     clock.now = 165
     XCTAssertEqual(state.elapsedCaptureSeconds(), 65)
@@ -769,6 +771,7 @@ final class OverlayStateTests: XCTestCase {
 
     // Native finalising freezes the clock — the final pass must not tick.
     state.handleRecordingFinalising()
+    XCTAssertTrue(state.sessionTimerPaused)
     clock.now = 200
     XCTAssertEqual(state.elapsedCaptureSeconds(), 65)
     state.finishControllerRecording()
@@ -779,9 +782,73 @@ final class OverlayStateTests: XCTestCase {
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
     XCTAssertEqual(state.elapsedCaptureSeconds(), 0)
+    XCTAssertFalse(state.sessionTimerPaused)
     clock.now = 3900
     XCTAssertEqual(state.sessionTimerText, "1:00:00")
     XCTAssertTrue(state.showsSessionTimer)
+  }
+
+  // IDLE-1: authored under W1; execution belongs to the integrator after close.
+  func testCaretActivityStopsWithCaptureEvenWhenProjectionStillSaysListening() {
+    let state = OverlayState()
+    state.toggleCollapsed()
+    XCTAssertFalse(state.animatesTranscriptCaret)
+    state.handleRecordingPreparing()
+    XCTAssertFalse(state.animatesTranscriptCaret, "Warmup has no live audio yet")
+    state.handleRecordingStarted()
+    XCTAssertTrue(state.animatesTranscriptCaret)
+
+    state.toggleCollapsed()
+    XCTAssertFalse(state.animatesTranscriptCaret, "Clipped content stays mounted")
+    state.toggleCollapsed()
+    XCTAssertTrue(state.animatesTranscriptCaret)
+
+    projectText("streaming", to: state, phase: "finalizing")
+    state.handleRecordingFinalising()
+    XCTAssertTrue(state.animatesTranscriptCaret, "Final text can still stream")
+    XCTAssertTrue(state.sessionTimerPaused, "Capture duration is already frozen")
+
+    state.finishControllerRecording()
+    XCTAssertFalse(state.animatesTranscriptCaret)
+    XCTAssertTrue(state.sessionTimerPaused)
+
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    XCTAssertTrue(state.animatesTranscriptCaret, "The next take restarts motion")
+    XCTAssertFalse(state.sessionTimerPaused)
+    state.finishControllerRecording()
+    XCTAssertEqual(state.mode, .listening)
+    XCTAssertFalse(state.animatesTranscriptCaret, "A stale phase is not live capture")
+  }
+
+  func testTerminalOverlayPhasesNeverKeepCaretOrTimerRunning() {
+    for phase in ["formatted", "no_speech", "error", "coverage_refused"] {
+      let clock = OverlayStateTestClock()
+      let state = OverlayState(nowProvider: { clock.now })
+      state.toggleCollapsed()
+      state.handleRecordingPreparing()
+      state.handleRecordingStarted()
+      XCTAssertTrue(state.animatesTranscriptCaret)
+      clock.now += 12
+      projectText("kept words", to: state, phase: phase, terminal: true)
+
+      XCTAssertFalse(state.animatesTranscriptCaret, phase)
+      XCTAssertTrue(state.sessionTimerPaused, phase)
+      XCTAssertTrue(state.showsSessionTimer, "Frozen duration remains readable")
+      let frozen = state.sessionTimerText
+      clock.now += 10
+      XCTAssertEqual(state.sessionTimerText, frozen, phase)
+    }
+  }
+
+  func testErrorBeforeTerminalProjectionStopsIdleRenderActivity() {
+    let state = OverlayState()
+    state.toggleCollapsed()
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    state.handleError(message: "Capture failed")
+    XCTAssertFalse(state.animatesTranscriptCaret)
+    XCTAssertTrue(state.sessionTimerPaused)
   }
 
   func testCanvasPreservesEmptyAndExactEngineTextWithoutLifecyclePlaceholders() {

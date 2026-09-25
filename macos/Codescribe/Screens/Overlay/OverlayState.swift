@@ -733,6 +733,18 @@ final class OverlayState {
     captureStartedAtUptime != nil
   }
 
+  /// Presentation activity only; capture and reducer receipts retain ownership.
+  /// A stopped capture can still carry a listening projection until its seal.
+  var animatesTranscriptCaret: Bool {
+    !isCollapsed && !isEditingTranscript && !terminal && presentationStatus == nil
+      && recording && (statusRippling || (mode == .finalizing && transcribing))
+  }
+
+  /// Frozen durations stay readable without scheduling another render tick.
+  var sessionTimerPaused: Bool {
+    !showsSessionTimer || captureEndedAtUptime != nil
+  }
+
   /// Exact engine text shared by the canvas, sizing, copy, and delivery.
   var activeText: String {
     formattedText
