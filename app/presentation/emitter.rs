@@ -3469,7 +3469,7 @@ mod tests {
         assert!(rows.contains("\"seal_coverage\""));
         let ended_at = rows
             .lines()
-            .position(|row| row.contains("\"reducer_action\":\"session_ended\""))
+            .position(|row| row.contains("\"status\":\"session_ended\""))
             .expect("refused lifecycle row is published");
         let first_edit_after_end = rows
             .lines()
