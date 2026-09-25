@@ -22,6 +22,7 @@ struct DictationOverlayView: View {
   @State private var closeDotHovered = false
   @State private var actions = OverlayActionsPresentation()
   @State private var narrowActions = false
+  @State private var pointerInsideOverlay = false
   @Bindable var state: OverlayState
 
   // Geometry constants local to this surface. The window is user-resizable;
@@ -76,6 +77,7 @@ struct DictationOverlayView: View {
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous))
     .animation(reduceMotion ? nil : CSMotion.floatIn, value: state.toast)
     .onHover { inside in
+      pointerInsideOverlay = inside
       state.setPointerHovering(inside)
     }
     .onAppear {
@@ -127,7 +129,9 @@ struct DictationOverlayView: View {
             .font(.system(size: 11, weight: .medium))
             .foregroundStyle(palette.primaryText.color)
             .padding(.horizontal, 10)
-            .frame(minHeight: 24)
+            .frame(
+              width: OverlayResizeChrome.actionsWidth(narrow: narrowActions),
+              height: OverlayResizeChrome.actionsHeight)
             .background(.regularMaterial, in: Capsule())
             .overlay { Capsule().strokeBorder(palette.border.color, lineWidth: 1) }
             .contentShape(Capsule())
@@ -141,12 +145,47 @@ struct DictationOverlayView: View {
         }
         .fixedSize(horizontal: true, vertical: true)
         .padding(.horizontal, 8)
-        .padding(.bottom, 8)
         .contentShape(Rectangle())
         .onHover { hovering in
           actions.pointerInside = hovering
         }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: actionsVisible)
+        .padding(.bottom, OverlayResizeChrome.actionsBottomInset)
+      }
+    }
+    .overlay(alignment: .bottom) {
+      if !state.isCollapsed {
+        // The container claims this entire bar and its vertical margin before
+        // SwiftUI hit testing, then tracks .bottom with the edge resize cursor.
+        Capsule()
+          .fill(palette.primaryText.color.opacity(0.3))
+          .frame(width: OverlayResizeChrome.gripSize.width, height: OverlayResizeChrome.gripSize.height)
+          .padding(.bottom, OverlayResizeChrome.gripBottomInset)
+          .allowsHitTesting(false)
+          .accessibilityHidden(true)
+      }
+    }
+    .overlay {
+      if !state.isCollapsed {
+        HStack {
+          Capsule().frame(width: 3, height: 28)
+          Spacer()
+          Capsule().frame(width: 3, height: 28)
+        }
+        .foregroundStyle(palette.primaryText.color)
+        .padding(.horizontal, 5)
+        .opacity(OverlayResizeChrome.sideIndicatorOpacity(pointerInside: pointerInsideOverlay))
+        .animation(
+          OverlayResizeChrome.sideIndicatorAnimation(reduceMotion: reduceMotion),
+          value: pointerInsideOverlay)
+        .transaction { transaction in
+          if reduceMotion {
+            transaction.animation = nil
+            transaction.disablesAnimations = true
+          }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
       }
     }
     .onGeometryChange(for: Bool.self) { geometry in
