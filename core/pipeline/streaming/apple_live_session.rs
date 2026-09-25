@@ -16401,3 +16401,201 @@ mod relay_l1_overlap_admission_tests {
         assert_conserved(&lane, Some("sealed_replay"));
     }
 }
+
+/// T-C2r contract falsifiers, authored before the admission cut and unrun in W1.
+/// Coordinates come from take ef1fa240; lexical labels and PCM amplitudes below
+/// are synthetic. No acoustic or transcription quality is asserted by a fixture.
+#[cfg(test)]
+mod tc2_window_contract_tests {
+    use super::super::silero_fusion::UtteranceLedger;
+    use super::*;
+    use crate::pipeline::acoustic_ledger::SlotWitness;
+    use crate::stt::tail_provider::{
+        TailEvidenceSource, TailEvidenceStability, TailProviderEvidence, TailProviderId,
+        TailSegmentGrain, TailTimingQuality,
+    };
+
+    const SESSION: &str = "ef1fa240-window-contract";
+    const RATE: u32 = 48_000;
+
+    struct Fixture {
+        state: AppleSealState,
+        physical: UtteranceLedger,
+        events: mpsc::UnboundedSender<EngineEvent>,
+        receiver: mpsc::UnboundedReceiver<EngineEvent>,
+        requests: mpsc::Receiver<TailPatchRequest>,
+        occurrence: OccurrenceIdentity,
+    }
+
+    fn fixture() -> Fixture {
+        let (events, receiver) = mpsc::unbounded_channel();
+        let (sender, requests) = mpsc::channel(8);
+        let mut state = AppleSealState::new_with_tail_patch_for_session(
+            RATE,
+            SESSION.into(),
+            1,
+            sender,
+            Arc::new(Mutex::new(AcousticLedger::new())),
+            Some(EnergyCalibration {
+                version: "tc2-physical-geometry".into(),
+                min_energy_integral: 1.0,
+                min_valley_samples: 1,
+            }),
+        );
+        state.whisper_context_window_sec = 8.0;
+        state.audio.push(&vec![0.2; 743_424]);
+        let mut physical = UtteranceLedger::new();
+        physical.open_or_extend(SESSION, 1, 227_328, 510_464);
+        physical.close_open(510_464);
+        assert!(reconcile_silero_ledger(&mut state, &events, &physical, &[]));
+        let occurrence = OccurrenceIdentity::new(SESSION, 1, 227_328, 510_464);
+        {
+            let ledger = state.acoustic_ledger.lock().unwrap();
+            assert!(ledger.is_qualified(&occurrence));
+            assert!(ledger.text_of(&occurrence).is_none());
+            assert!(!ledger.is_sealed(&occurrence));
+            assert_eq!(
+                ledger.frontier_of(&occurrence).unwrap().open_producers(),
+                vec![LedgerObservationProducer::Whisper]
+            );
+        }
+        Fixture { state, physical, events, receiver, requests, occurrence }
+    }
+
+    fn pin(text: &str, start: u64, end: u64) -> TimedTailSegment {
+        TimedTailSegment {
+            grain: TailSegmentGrain::Word,
+            text: text.into(),
+            range: TailSampleRange {
+                session: SESSION.into(),
+                capture_epoch: 1,
+                sample_start: start,
+                sample_end: end,
+            },
+        }
+    }
+
+    fn completion(request: &TailPatchRequest, segments: Vec<TimedTailSegment>) -> TailPatchCompletion {
+        TailPatchCompletion {
+            utterance_id: request.utterance_id,
+            request_identity: Some(request.provider_request.identity.clone()),
+            payload: Some(TailProviderPayload {
+                identity: request.provider_request.identity.clone(),
+                text: segments.iter().map(|pin| pin.text.as_str()).collect::<Vec<_>>().join(" "),
+                segments,
+                avg_logprob: Some(-0.2),
+                compression_ratio: Some(1.0),
+                provider_id: TailProviderId::Fake,
+                elapsed_ms: 1,
+                evidence: TailProviderEvidence {
+                    segment_grain: TailSegmentGrain::Word,
+                    source: TailEvidenceSource::Whisper,
+                    revision: Some("tc2-real-geometry-synthetic-labels".into()),
+                    stability: TailEvidenceStability::Final,
+                    timing_quality: TailTimingQuality::ExactSampleRange,
+                    avg_logprob: Some(-0.2),
+                },
+            }),
+            member_occurrences: request.member_occurrences.clone(),
+        }
+    }
+
+    fn assert_words(fixture: &Fixture, expected: &str) {
+        let ledger = fixture.state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&fixture.occurrence), Some(expected));
+        ledger.assert_slot_labels();
+        for slot in ledger.slots_of(&fixture.occurrence).unwrap() {
+            assert_eq!(slot.witness, SlotWitness::Unwitnessed);
+        }
+        assert!(!ledger.frontier_of(&fixture.occurrence).unwrap().open_producers()
+            .contains(&LedgerObservationProducer::Whisper));
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    /// RED contract 1: request 2's two completions, then a future request's pad.
+    /// The third job does not even exist when request 2's last window completes.
+    /// Waiting only for currently submitted jobs cannot protect this owner.
+    #[test]
+    fn ef1fa_long_occurrence_admits_each_window_and_future_pad() {
+        let mut f = fixture();
+        let first = f.requests.try_recv().unwrap();
+        let second = f.requests.try_recv().unwrap();
+        assert!(f.requests.try_recv().is_err());
+        assert_eq!(first.provider_request.identity.range.sample_start, 0);
+        assert_eq!(first.provider_request.identity.range.sample_end, 419_328);
+        assert_eq!(second.provider_request.identity.range.sample_start, 126_464);
+        assert_eq!(second.provider_request.identity.range.sample_end, 510_464);
+        f.state.complete_whisper_window(&f.events, completion(&first, vec![
+            pin("alpha", 246_464, 262_784),
+            pin("beta", 262_784, 284_864),
+        ]), 8.8);
+        assert_words(&f, "alpha beta");
+        f.state.complete_whisper_window(&f.events, completion(&second, vec![
+            pin("alpha", 246_464, 262_784),
+            pin("gamma", 382_080, 418_560),
+        ]), 10.7);
+        assert_words(&f, "alpha beta gamma");
+        let after_second = std::iter::from_fn(|| f.receiver.try_recv().ok()).collect::<Vec<_>>();
+        assert!(after_second.iter().any(|event| matches!(event,
+            EngineEvent::LedgerMutation {
+                label, receipt: MutationReceipt::Refuse { reason: RefuseReason::ReplayedRangeIdentity, .. }, ..
+            } if label == "alpha"
+        )));
+
+        // Next physical closure and its context pad, from the same take.
+        f.physical.open_or_extend(SESSION, 1, 508_416, 743_424);
+        f.physical.close_open(743_424);
+        assert!(reconcile_silero_ledger(&mut f.state, &f.events, &f.physical, &[]));
+        let third = f.requests.try_recv().unwrap();
+        assert_eq!(third.provider_request.identity.range.sample_start, 268_416);
+        assert_eq!(third.provider_request.identity.range.sample_end, 700_416);
+        assert!(!third.member_occurrences.iter().any(|(_, owner)| owner == &f.occurrence));
+        f.state.complete_whisper_window(&f.events, completion(&third, vec![
+            pin("gamma", 384_576, 400_896),
+            pin("delta", 434_496, 470_976),
+            pin("epsilon", 652_416, 659_136),
+        ]), 14.6);
+        assert_words(&f, "alpha beta gamma delta");
+        let after_third = std::iter::from_fn(|| f.receiver.try_recv().ok()).collect::<Vec<_>>();
+        assert!(!after_third.iter().any(|event| matches!(event,
+            EngineEvent::LedgerMutation { label, receipt: MutationReceipt::Refuse { .. }, .. }
+                | EngineEvent::LedgerMutation { label, receipt: MutationReceipt::KeepVisibleUnanchored { .. }, .. }
+                if label == "delta"
+        )));
+    }
+
+    /// Characterizes the existing closing seam without changing the job map.
+    /// A direct per-window admission would take this path on its first return.
+    #[test]
+    fn first_label_closes_the_only_whisper_frontier_and_later_words_hit_the_seal() {
+        let mut f = fixture();
+        let first = LedgerObservationIdentity::new(
+            LedgerObservationProducer::Whisper, 2, 0, f.occurrence.clone(),
+        );
+        assert!(admit_ledger_label(&mut f.state, &f.events, LabelAdmission {
+            observation: first,
+            label: "alpha",
+            energy: EnergyAdmission::RequireExistingQualification,
+        }).unwrap().grants_mutation());
+        let seal = {
+            let mut ledger = f.state.acoustic_ledger.lock().unwrap();
+            ledger.assert_slot_labels();
+            assert!(ledger.frontier_of(&f.occurrence).unwrap().is_closed());
+            assert!(!ledger.schedule_observer(f.occurrence.clone(), LedgerObservationProducer::Whisper));
+            ledger.seal_of(&f.occurrence).unwrap().clone()
+        };
+        let second = LedgerObservationIdentity::new(
+            LedgerObservationProducer::Whisper, 3, 1, f.occurrence.clone(),
+        );
+        assert!(matches!(admit_ledger_label(&mut f.state, &f.events, LabelAdmission {
+            observation: second,
+            label: "alpha delta",
+            energy: EnergyAdmission::RequireExistingQualification,
+        }), Some(MutationReceipt::Refuse { reason: RefuseReason::SealedReplay, .. })));
+        let ledger = f.state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&f.occurrence), Some("alpha"));
+        assert_eq!(ledger.seal_of(&f.occurrence), Some(&seal));
+        ledger.assert_slot_labels();
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+}
