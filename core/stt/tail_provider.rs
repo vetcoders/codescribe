@@ -1987,8 +1987,7 @@ mod tests {
         body: &str,
         request: &TailProviderRequest,
     ) -> (Vec<TimedTailSegment>, TailSegmentGrain) {
-        let response: RemoteTailResponse =
-            serde_json::from_str(body).expect("remote verbose_json");
+        let response: RemoteTailResponse = serde_json::from_str(body).expect("remote verbose_json");
         remote_tail_segments(&response, request)
     }
 
@@ -2178,10 +2177,7 @@ mod tests {
     fn words_without_duration_stay_phrase_grain() {
         let request = cloud_window(0, 16_000);
         let (segments, grain) = admit(
-            &phrase_body(
-                r#"[{"word":"raz","start":0.0,"end":0.25}]"#,
-                "null",
-            ),
+            &phrase_body(r#"[{"word":"raz","start":0.0,"end":0.25}]"#, "null"),
             &request,
         );
         assert_eq!(grain, TailSegmentGrain::Phrase);

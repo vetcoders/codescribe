@@ -11680,8 +11680,7 @@ mod rc_w2_test_rehab {
     #[test]
     fn layer1_stop_warns_once_for_collected_finals() {
         use crate::asr_session::{
-            AsrSessionEvent, FakeAsrSessionProvider, Layer1Decision, RefinerMode,
-            TranscriptEvent,
+            AsrSessionEvent, FakeAsrSessionProvider, Layer1Decision, RefinerMode, TranscriptEvent,
         };
 
         for refiner in [RefinerMode::CloudSession, RefinerMode::LocalHelper] {
@@ -11753,8 +11752,7 @@ mod rc_w2_test_rehab {
     #[test]
     fn layer1_stop_without_finals_is_silent() {
         use crate::asr_session::{
-            AsrSessionEvent, FakeAsrSessionProvider, Layer1Decision, RefinerMode,
-            TranscriptEvent,
+            AsrSessionEvent, FakeAsrSessionProvider, Layer1Decision, RefinerMode, TranscriptEvent,
         };
 
         let sink = RecordingSink::default();
@@ -11773,8 +11771,7 @@ mod rc_w2_test_rehab {
                 range: None,
             })],
         );
-        let mut lane =
-            RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(provider)), &input);
+        let mut lane = RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(provider)), &input);
         let layer1_refiner = lane.refiner_mode();
         let outcome = lane.stop();
         let counts = outcome.telemetry();
