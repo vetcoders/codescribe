@@ -1285,20 +1285,9 @@ impl AcousticLedger {
             return OverlapPinClass::Unanchored(NoAuthorityReason::OverlapWithoutWordPins);
         }
         if word_grain {
-            let midpoint = pin.sample_start + pin.sample_len() / 2;
-            let owners = open_members
-                .iter()
-                .filter(|member| {
-                    pin.same_capture(member)
-                        && midpoint >= member.sample_start
-                        && midpoint < member.sample_end
-                })
-                .count();
-            return if owners == 1 {
-                OverlapPinClass::Replay
-            } else {
-                OverlapPinClass::Unanchored(NoAuthorityReason::OverlapWithoutWordPins)
-            };
+            // Outside this window's admit range a word belongs to another
+            // window: a replay here, whatever member its midpoint falls in.
+            return OverlapPinClass::Replay;
         }
         let overlaps_admit = pin.sample_end > admit_start && pin.sample_start < admit_end;
         if !overlaps_admit {
