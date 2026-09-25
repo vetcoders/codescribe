@@ -1309,6 +1309,36 @@ mod tests {
         assert!(clamped.sample_end.saturating_sub(clamped.sample_start) < 4 * rate);
     }
 
+    /// Relay clips an L1 observation to admitted speech evidence. A minimum
+    /// decoder length cannot turn unrelated speech and the intervening silence
+    /// into context for a short tail merely to reach four seconds.
+    #[test]
+    fn min_context_must_not_cross_long_silence_fence() {
+        let rate = 48_000u64;
+        let tail_end = 609_280u64;
+        let tail_start = tail_end - (0.31_f32 * rate as f32).round() as u64;
+        let previous_end = tail_start - (LONG_SILENCE_FENCE_SECS * rate as f32).round() as u64;
+        let tail = range(tail_start, tail_end);
+        let bounds = ContextBounds {
+            long_silence_fence: tail_start,
+            capture_end: tail_end,
+            previous_utterance_end: Some(previous_end),
+            next_utterance_start: None,
+        };
+        let admitted = bound_context_range(
+            &tail,
+            FusionContextMode::SymmetricPad,
+            (DEFAULT_SYMMETRIC_PAD_SECS * rate as f32).round() as u64,
+            &bounds,
+        );
+
+        let request = decode_window_with_min_context(&tail, &admitted, 4 * rate, 0, 0);
+        assert_eq!(request.sample_start, tail_start);
+        assert_eq!(request.sample_end, tail_end);
+        assert!(request.sample_start > previous_end);
+        assert!(request.sample_end - request.sample_start < 4 * rate);
+    }
+
     /// The default cut reaches both ways. 400 ms at 16 kHz is 6 400 samples;
     /// nothing in the way means the decoder hears the run-up and the run-out.
     #[test]

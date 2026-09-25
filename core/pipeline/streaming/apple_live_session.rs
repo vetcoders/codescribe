@@ -10421,6 +10421,50 @@ mod rc_w2_acoustic_tests {
     }
 
     #[test]
+    fn terminal_repair_requests_only_measured_speech() {
+        let mut state = two_bursts("terminal-speech-fence");
+        let speech = coverage_speech_evidence(&state).ranges().to_vec();
+        assert_eq!(speech.len(), 2);
+        assert!(
+            speech[0].sample_end < speech[1].sample_start,
+            "the fixture must contain a measured silence fence"
+        );
+        let expected = speech.clone();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&requests);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let execution = LocalExecutionOwner::default();
+        let _receipt = repair_terminal_seal_coverage_with(
+            &mut state,
+            &tx,
+            Some("pl"),
+            &execution,
+            move |request, pcm, control| {
+                control.check()?;
+                request.validate_pcm(pcm)?;
+                observed
+                    .lock()
+                    .unwrap()
+                    .push(request.identity.range.clone());
+                let gap = expected
+                    .iter()
+                    .find(|gap| gap.sample_end == request.identity.range.sample_end)
+                    .expect("each request must end at a measured speech gap");
+                let mut payload = gap_payload(request);
+                payload.segments[0].range = gap.clone();
+                Ok(payload)
+            },
+        );
+        let requests = requests.lock().unwrap();
+        for request in requests.iter() {
+            assert!(
+                speech.contains(request),
+                "terminal Whisper must not backfill silence or a previous occurrence merely to reach four seconds: {request:?}"
+            );
+        }
+    }
+
+    #[test]
     fn multigap_expiry_uses_one_budget_and_cannot_publish_late_native_success() {
         let mut state = two_bursts("expired-repair");
         let expected_ranges = coverage_speech_evidence(&state).ranges().to_vec();
@@ -12064,6 +12108,195 @@ mod rc_w2_acoustic_tests {
                 .map(str::to_owned),
             Some("ICX".to_string())
         );
+    }
+
+    /// The live request must not turn a prior utterance and a long silent gap
+    /// into L1 context for a short, separately admitted speech tail.
+    #[test]
+    fn live_flush_context_does_not_replay_prior_speech_across_silence() {
+        let session = "live-speech-fence";
+        let mut state = AppleSealState::new_for_session(RATE, session.into(), 0);
+        state.energy_calibration = Some(EnergyCalibration::new("synthetic", 1.0, 1));
+        state.whisper_context_window_sec = 4.0;
+        let tail_start = at(4.69);
+        let tail_end = at(5.0);
+        let mut pcm = vec![0.0_f32; tail_end as usize];
+        pcm[at(1.0) as usize..at(2.0) as usize].fill(0.25);
+        pcm[tail_start as usize..tail_end as usize].fill(0.25);
+        state.audio.push(&pcm);
+
+        let mut ingress = SileroIngress::new(RATE, session, state.capture_epoch);
+        ingress.note_observed_pcm(tail_end, tail_end);
+        ingress.observe_boundaries(&[
+            crossing(VadBoundaryKind::SpeechStart, at(1.0)),
+            crossing(VadBoundaryKind::SpeechEnd, at(2.0)),
+            crossing(VadBoundaryKind::SpeechStart, tail_start),
+            crossing(VadBoundaryKind::SpeechEnd, tail_end),
+        ]);
+        ingress.observe(Some((0, tail_end)), true, tail_end);
+        state.fusion = Some(ingress);
+
+        let tail = state
+            .window_by_samples(tail_start, tail_end)
+            .expect("short tail PCM");
+        let occurrence =
+            OccurrenceIdentity::new(session, state.capture_epoch, tail_start, tail_end);
+        let mut flush = CoalesceFlush {
+            audio: tail.samples,
+            committed_text: String::new(),
+            member_ids: vec![(1, 5.0)],
+            member_occurrences: vec![(1, occurrence.clone())],
+            neighbour_context: String::new(),
+            sample_start: tail_start,
+            sample_end: tail_end,
+            admit_sample_start: tail_start,
+            admit_sample_end: tail_end,
+            primary_utterance_id: 1,
+        };
+
+        state.extend_flush_context(&mut flush);
+        assert_eq!(flush.sample_start, tail_start);
+        assert_eq!(flush.sample_end, tail_end);
+        assert_eq!(flush.audio.len(), (tail_end - tail_start) as usize);
+        assert!(flush.audio.iter().all(|sample| *sample == 0.25));
+
+        // Apple committed no words for this tail. A phrase-grain Whisper
+        // observation over the exact proven speech must still label it.
+        let calibration = state.energy_calibration.clone().unwrap();
+        let energy_integral = f64::from(0.25_f32).powi(2) * (tail_end - tail_start) as f64;
+        {
+            let mut ledger = state.acoustic_ledger.lock().unwrap();
+            assert!(
+                ledger
+                    .qualify(
+                        &AcousticEvidence {
+                            occurrence: occurrence.clone(),
+                            duration_ms: 310.0,
+                            energy_integral,
+                            mean_rms_dbfs: -12.0,
+                            peak_dbfs: -12.0,
+                            vad_open_sample: Some(tail_start),
+                            vad_close_sample: Some(tail_end),
+                            evidence_calibration_version: calibration.version.clone(),
+                        },
+                        &calibration,
+                    )
+                    .is_qualified()
+            );
+            ledger.schedule_frontier(occurrence.clone(), vec![LedgerObservationProducer::Whisper]);
+        }
+        state.pending_events.insert(
+            1,
+            PendingAppleSeal {
+                occurrence: occurrence.clone(),
+                raw_text: String::new(),
+                layer1_baseline: String::new(),
+                start_ts: tail_start as f32 / RATE as f32,
+                end_ts: tail_end as f32 / RATE as f32,
+                segments: Vec::new(),
+            },
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tail_tx, mut tail_rx) = mpsc::channel(4);
+        state.tail_patch = Some(tail_tx);
+        assert!(state.queue_layer1_flush(&tx, flush));
+        let request = tail_rx.try_recv().expect("short speech-tail request");
+        assert_eq!(
+            request.provider_request.identity.range.sample_start,
+            tail_start
+        );
+        assert_eq!(request.provider_request.identity.range.sample_end, tail_end);
+        assert_eq!(request.admit_sample_start, tail_start);
+        assert_eq!(request.admit_sample_end, tail_end);
+        let payload = TailProviderPayload {
+            identity: request.provider_request.identity.clone(),
+            text: "ogon".into(),
+            segments: vec![TimedTailSegment {
+                grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
+                text: "ogon".into(),
+                range: request.provider_request.identity.range.clone(),
+            }],
+            avg_logprob: Some(-0.2),
+            compression_ratio: Some(1.1),
+            provider_id: crate::stt::tail_provider::TailProviderId::Fake,
+            elapsed_ms: 1,
+            evidence: crate::stt::tail_provider::TailProviderEvidence {
+                segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
+                source: crate::stt::tail_provider::TailEvidenceSource::Whisper,
+                revision: Some("speech-fence".into()),
+                stability: crate::stt::tail_provider::TailEvidenceStability::Final,
+                timing_quality: crate::stt::tail_provider::TailTimingQuality::Synthetic,
+                avg_logprob: Some(-0.2),
+            },
+        };
+        state.complete_whisper_window(
+            &tx,
+            TailPatchCompletion {
+                utterance_id: 1,
+                request_identity: Some(request.provider_request.identity.clone()),
+                payload: Some(payload),
+                member_occurrences: vec![(1, occurrence.clone())],
+            },
+            5.0,
+        );
+        assert_eq!(
+            state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .text_of(&occurrence)
+                .map(str::to_owned),
+            Some("ogon".to_string()),
+            "an Apple-empty speech tail must remain recoverable at phrase grain"
+        );
+        while let Ok(event) = rx.try_recv() {
+            if let EngineEvent::LedgerMutation { observation, .. } = event {
+                assert_eq!(
+                    observation.occurrence, occurrence,
+                    "earlier speech and silence must not gain a mutation"
+                );
+            }
+        }
+    }
+
+    /// Retained PCM is not an acoustic witness. Without a measured speech
+    /// range, the live path may offer its owned tail but may not invent a
+    /// four-second L1 observation by replaying earlier, unproven samples.
+    #[test]
+    fn live_flush_context_requires_speech_evidence_before_backfill() {
+        let session = "unobserved-context";
+        let mut state = AppleSealState::new_for_session(RATE, session.into(), 0);
+        state.whisper_context_window_sec = 4.0;
+        let tail_start = at(4.69);
+        let tail_end = at(5.0);
+        let mut pcm = vec![0.0_f32; tail_end as usize];
+        pcm[at(1.0) as usize..at(2.0) as usize].fill(0.25);
+        pcm[tail_start as usize..tail_end as usize].fill(0.25);
+        state.audio.push(&pcm);
+        assert!(
+            !coverage_speech_evidence(&state).is_observed(),
+            "this fixture must have no authenticated acoustic observer"
+        );
+        let tail = state
+            .window_by_samples(tail_start, tail_end)
+            .expect("retained tail PCM");
+        let occurrence = OccurrenceIdentity::new(session, 0, tail_start, tail_end);
+        let mut flush = CoalesceFlush {
+            audio: tail.samples,
+            committed_text: String::new(),
+            member_ids: vec![(1, 5.0)],
+            member_occurrences: vec![(1, occurrence)],
+            neighbour_context: String::new(),
+            sample_start: tail_start,
+            sample_end: tail_end,
+            admit_sample_start: tail_start,
+            admit_sample_end: tail_end,
+            primary_utterance_id: 1,
+        };
+        state.extend_flush_context(&mut flush);
+        assert_eq!(flush.sample_start, tail_start);
+        assert_eq!(flush.sample_end, tail_end);
+        assert_eq!(flush.audio.len(), (tail_end - tail_start) as usize);
     }
 }
 
