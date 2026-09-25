@@ -2657,6 +2657,12 @@ impl RecordingController {
         let admitted_into_words = missing_words.iter()
             .filter(|word| word.reason.starts_with("admitted_into occurrence="))
             .count();
+        let closed_by_final_words = missing_words.iter()
+            .filter(|word| word.reason.starts_with("closed_by_final phrase=")).count();
+        let retained_as_evidence_words = missing_words.iter()
+            .filter(|word| word.reason.starts_with("retained_as_evidence occurrence=")).count();
+        let untimed_final_phrase_arrivals = canvas.map(|canvas| &canvas.untimed_final_phrases);
+        let untimed_final_phrases = untimed_final_phrase_arrivals.map_or(0, Vec::len);
         let moved_to_pending_words = missing_words.iter()
             .filter(|word| word.reason == "moved_to pending").count();
         let moved_to_unmatched_words = missing_words.iter()
@@ -2704,6 +2710,10 @@ impl RecordingController {
             painted_words_at_snapshot,
             superseded_by_partial_words,
             admitted_into_words,
+            closed_by_final_words,
+            retained_as_evidence_words,
+            untimed_final_phrases,
+            untimed_final_phrase_arrivals = ?untimed_final_phrase_arrivals,
             moved_to_pending_words,
             moved_to_unmatched_words,
             untimed_final_words,
@@ -6415,10 +6425,23 @@ mod refusal_recovery_tests {
         use codescribe_core::pipeline::contracts::{UnadmittedAppleWord, UnadmittedAppleWordSource};
         EngineEvent::UnadmittedAppleWords {
             revision: 1,
+            closed_phrases: Default::default(),
             words: text.split_whitespace().map(|word| UnadmittedAppleWord {
                 text: word.into(), sample_start: 0, sample_end: 16_000,
-                source: UnadmittedAppleWordSource::OpenPartial { rev: 1 },
+                source: UnadmittedAppleWordSource::OpenPartial { rev: 1, phrase_id: 1 },
             }).collect(),
+        }
+    }
+
+    fn stop_closed_phrase(words: usize) -> EngineEvent {
+        use codescribe_core::pipeline::contracts::{ApplePhraseOutcome, ClosedApplePhrase};
+        EngineEvent::UnadmittedAppleWords {
+            revision: 2, words: Vec::new(),
+            closed_phrases: std::collections::BTreeMap::from([(1, ClosedApplePhrase {
+                arrival_index: 0,
+                outcomes: std::collections::BTreeMap::from([(ApplePhraseOutcome::Admitted, words)]),
+                was_untimed: false,
+            })]),
         }
     }
 
@@ -6566,6 +6589,7 @@ mod refusal_recovery_tests {
             async {
                 tokio::time::sleep(Duration::from_secs(5)).await;
                 take.emitter.on_event(&mutation);
+                take.emitter.on_event(&stop_closed_phrase(3));
                 take.emitter.on_event(&EngineEvent::PreviewDisposition {
                     superseded_through_rev: 1,
                     final_disposition:
@@ -6669,7 +6693,7 @@ mod refusal_recovery_tests {
         .unwrap();
     }
 
-    // A shorter final accounts for stopped words through committed PCM coverage.
+    // A shorter final accounts for stopped words through the phrase closure.
     #[tokio::test(start_paused = true)]
     async fn shorter_revision_accounts_for_each_admitted_visible_word() {
         let take = take(State::RecHold, false).await;
@@ -6679,6 +6703,7 @@ mod refusal_recovery_tests {
         let at_stop = take.emitter.begin_stop_canvas().unwrap();
         let mutation = stop_mutation(&mut take.ledger.lock().unwrap(), "shorter");
         take.emitter.on_event(&mutation);
+        take.emitter.on_event(&stop_closed_phrase(1));
         take.emitter.on_event(&EngineEvent::PreviewDisposition {
             superseded_through_rev: 1,
             final_disposition:
@@ -6710,8 +6735,8 @@ mod refusal_recovery_tests {
         assert!(receipts.text().contains("stop_paste_lost_visible_words"));
         assert!(receipts.text().contains("painted_words_at_stop=3"));
         assert!(receipts.text().contains("paste_words=1"));
-        assert!(receipts.text().contains("admitted_into occurrence="));
-        assert!(receipts.text().contains("admitted_into_words=3"));
+        assert!(receipts.text().contains("closed_by_final phrase=1 outcomes=admitted=1"));
+        assert!(receipts.text().contains("closed_by_final_words=3"));
         assert!(receipts.text().contains("superseded_by_partial_words=0"));
         assert!(receipts.text().contains("covered_by_committed_words=0"));
         assert!(receipts.text().contains("unaccounted=0"));

@@ -689,6 +689,7 @@ mod tests {
     fn apple_mirror_cannot_cross_ipc_or_serde_boundary() {
         let event = EngineEvent::UnadmittedAppleWords {
             revision: 1,
+            closed_phrases: Default::default(),
             words: vec![crate::pipeline::contracts::UnadmittedAppleWord {
                 text: "private words".into(), sample_start: 0, sample_end: 16_000,
                 source: crate::pipeline::contracts::UnadmittedAppleWordSource::Unmatched,

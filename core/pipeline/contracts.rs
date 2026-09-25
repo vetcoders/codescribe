@@ -580,6 +580,7 @@ pub trait DeltaSink: Send + Sync {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnadmittedAppleWord {
     pub text: String,
+    /// PCM range for Pending/Unmatched; receipt-only pin for phrase sources.
     pub sample_start: u64,
     pub sample_end: u64,
     pub source: UnadmittedAppleWordSource,
@@ -587,10 +588,51 @@ pub struct UnadmittedAppleWord {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnadmittedAppleWordSource {
-    OpenPartial { rev: u64 },
+    OpenPartial { rev: u64, phrase_id: u64 },
     Pending { utterance_id: u64 },
     Unmatched,
-    RefusedUntimed,
+    RefusedUntimed { phrase_id: u64 },
+}
+
+/// The result of one closing seal, counted in words, never inferred from a pin.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClosedApplePhrase {
+    /// Zero-based position among this take's closed phrases. Re-seals keep it.
+    pub arrival_index: usize,
+    pub outcomes: std::collections::BTreeMap<ApplePhraseOutcome, usize>,
+    /// Retained for the delivery order watch even if timing arrives later.
+    pub was_untimed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ApplePhraseOutcome {
+    Admitted,
+    Pending,
+    Unmatched,
+    Untimed,
+    Replay,
+    NoChange,
+}
+
+impl ApplePhraseOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Admitted => "admitted",
+            Self::Pending => "pending",
+            Self::Unmatched => "unmatched",
+            Self::Untimed => "untimed",
+            Self::Replay => "replay",
+            Self::NoChange => "no_change",
+        }
+    }
+}
+
+impl ClosedApplePhrase {
+    pub fn describe_outcomes(&self) -> String {
+        self.outcomes.iter().map(|(outcome, count)| {
+            format!("{}={count}", outcome.as_str())
+        }).collect::<Vec<_>>().join(",")
+    }
 }
 
 /// Provider that measured a sideband observation.
@@ -845,13 +887,14 @@ pub enum EngineEvent {
         pin: PreviewPin,
     },
 
-    /// Complete replacement of Apple's unadmitted state, in capture sample units.
+    /// Complete replacement of Apple's held words and closed-phrase results.
     /// Ledger publication precedes removal from this mirror; live-finals receipt
     /// follows it. Consumers never merge snapshots or replay dispositions.
     #[serde(skip)]
     UnadmittedAppleWords {
         revision: u64,
         words: Vec<UnadmittedAppleWord>,
+        closed_phrases: std::collections::BTreeMap<u64, ClosedApplePhrase>,
     },
 
     /// Receipt of phrase adjudication. Observers may log and count it, but it
