@@ -2654,10 +2654,15 @@ impl RecordingController {
             .iter()
             .filter(|word| word.reason.starts_with("superseded_by_partial rev="))
             .count();
-        let superseded_by_final_words = missing_words
-            .iter()
-            .filter(|word| word.reason.starts_with("superseded_by_final rev="))
+        let admitted_into_words = missing_words.iter()
+            .filter(|word| word.reason.starts_with("admitted_into occurrence="))
             .count();
+        let moved_to_pending_words = missing_words.iter()
+            .filter(|word| word.reason == "moved_to pending").count();
+        let moved_to_unmatched_words = missing_words.iter()
+            .filter(|word| word.reason == "moved_to unmatched").count();
+        let untimed_final_words = canvas.map_or(0, |canvas| canvas.untimed_final_words)
+            .max(painted_at_stop.as_ref().map_or(0, |canvas| canvas.untimed_final_words));
         let covered_by_committed_words = missing_words
             .iter()
             .filter(|word| word.reason.starts_with("covered_by_committed occurrence="))
@@ -2698,7 +2703,10 @@ impl RecordingController {
             painted_words_at_stop,
             painted_words_at_snapshot,
             superseded_by_partial_words,
-            superseded_by_final_words,
+            admitted_into_words,
+            moved_to_pending_words,
+            moved_to_unmatched_words,
+            untimed_final_words,
             covered_by_committed_words,
             relabeled_in_place_words,
             reshaped_in_place_words,
@@ -6404,17 +6412,13 @@ mod refusal_recovery_tests {
     }
 
     fn stop_preview(text: &str) -> EngineEvent {
-        EngineEvent::Preview {
-            rev: 1,
-            text: text.into(),
-            pin: codescribe_core::pipeline::contracts::PreviewPin::open_occurrence(
-                TailSampleRange {
-                    session: TAKE.into(),
-                    capture_epoch: 7,
-                    sample_start: 0,
-                    sample_end: 16_000,
-                },
-            ),
+        use codescribe_core::pipeline::contracts::{UnadmittedAppleWord, UnadmittedAppleWordSource};
+        EngineEvent::UnadmittedAppleWords {
+            revision: 1,
+            words: text.split_whitespace().map(|word| UnadmittedAppleWord {
+                text: word.into(), sample_start: 0, sample_end: 16_000,
+                source: UnadmittedAppleWordSource::OpenPartial { rev: 1 },
+            }).collect(),
         }
     }
 
@@ -6486,16 +6490,11 @@ mod refusal_recovery_tests {
     async fn preview_only_timeout_pastes_raw_once_at_eight_seconds() {
         let take = take(State::RecHold, false).await;
         take.emitter.on_capture_opened(TAKE, 7);
-        take.emitter.on_event(&EngineEvent::Preview {
-            rev: 1,
-            text: "ok wyślij".into(),
-            pin: codescribe_core::pipeline::contracts::PreviewPin::from_segments(TailSampleRange {
-                session: TAKE.into(),
-                capture_epoch: 7,
-                sample_start: 0,
-                sample_end: 0,
-            }),
-        });
+        let mut mirror = stop_preview("ok wyślij");
+        if let EngineEvent::UnadmittedAppleWords { words, .. } = &mut mirror {
+            for word in words { word.sample_end = 0; }
+        }
+        take.emitter.on_event(&mirror);
         let receipts = StopReceiptLog::default();
         let _trace = receipts.subscribe();
         let (ack_tx, ack_rx) = tokio::sync::oneshot::channel::<()>();
@@ -6670,9 +6669,9 @@ mod refusal_recovery_tests {
         .unwrap();
     }
 
-    // A shorter final may remove words only with the phrase's typed receipt.
+    // A shorter final accounts for stopped words through committed PCM coverage.
     #[tokio::test(start_paused = true)]
-    async fn shorter_revision_accounts_for_each_superseded_visible_word() {
+    async fn shorter_revision_accounts_for_each_admitted_visible_word() {
         let take = take(State::RecHold, false).await;
         take.emitter.on_capture_opened(TAKE, 7);
         take.emitter.set_literal_delivery(true);
@@ -6711,8 +6710,8 @@ mod refusal_recovery_tests {
         assert!(receipts.text().contains("stop_paste_lost_visible_words"));
         assert!(receipts.text().contains("painted_words_at_stop=3"));
         assert!(receipts.text().contains("paste_words=1"));
-        assert!(receipts.text().contains("superseded_by_final rev=1"));
-        assert!(receipts.text().contains("superseded_by_final_words=3"));
+        assert!(receipts.text().contains("admitted_into occurrence="));
+        assert!(receipts.text().contains("admitted_into_words=3"));
         assert!(receipts.text().contains("superseded_by_partial_words=0"));
         assert!(receipts.text().contains("covered_by_committed_words=0"));
         assert!(receipts.text().contains("unaccounted=0"));

@@ -170,7 +170,8 @@ impl TryFrom<&EngineEvent> for EngineEventWire {
             | EngineEvent::SpeechIntegrity { .. }
             | EngineEvent::OccurrenceLabelProposal { .. }
             | EngineEvent::ContextMarker { .. }
-            | EngineEvent::PreviewDisposition { .. } => {
+            | EngineEvent::PreviewDisposition { .. }
+            | EngineEvent::UnadmittedAppleWords { .. } => {
                 return Err(IpcIneligibleEngineEvent);
             }
             EngineEvent::VadStart { speech_prob, ts_ms } => Self::VadStart {
@@ -682,6 +683,19 @@ mod tests {
                 "expected error to mention rejected variant `{variant}`, got: {err_text}"
             );
         }
+    }
+
+    #[test]
+    fn apple_mirror_cannot_cross_ipc_or_serde_boundary() {
+        let event = EngineEvent::UnadmittedAppleWords {
+            revision: 1,
+            words: vec![crate::pipeline::contracts::UnadmittedAppleWord {
+                text: "private words".into(), sample_start: 0, sample_end: 16_000,
+                source: crate::pipeline::contracts::UnadmittedAppleWordSource::Unmatched,
+            }],
+        };
+        assert!(matches!(EngineEventWire::try_from(&event), Err(IpcIneligibleEngineEvent)));
+        assert!(serde_json::to_value(&event).is_err());
     }
 
     /// Ledger receipts stay on the in-process fanout; ordinary telemetry still

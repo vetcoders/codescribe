@@ -575,6 +575,24 @@ pub trait DeltaSink: Send + Sync {
 // Engine events (intent layer)
 // ═══════════════════════════════════════════════════════════
 
+/// A word still owned by the Apple pipeline, outside committed occurrences.
+/// This is process-local paint state; it grants no ledger authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnadmittedAppleWord {
+    pub text: String,
+    pub sample_start: u64,
+    pub sample_end: u64,
+    pub source: UnadmittedAppleWordSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnadmittedAppleWordSource {
+    OpenPartial { rev: u64 },
+    Pending { utterance_id: u64 },
+    Unmatched,
+    RefusedUntimed,
+}
+
 /// Provider that measured a sideband observation.
 ///
 /// This is deliberately typed rather than a free-form label: consumers may
@@ -827,9 +845,17 @@ pub enum EngineEvent {
         pin: PreviewPin,
     },
 
-    /// End of the current recognizer phrase, after its ledger decisions.
-    /// Every final supersedes that phrase's previews. Refused labels remain
-    /// visible as evidence, without changing the ledger's admission decision.
+    /// Complete replacement of Apple's unadmitted state, in capture sample units.
+    /// Ledger publication precedes removal from this mirror; live-finals receipt
+    /// follows it. Consumers never merge snapshots or replay dispositions.
+    #[serde(skip)]
+    UnadmittedAppleWords {
+        revision: u64,
+        words: Vec<UnadmittedAppleWord>,
+    },
+
+    /// Receipt of phrase adjudication. Observers may log and count it, but it
+    /// never retracts paint or supplies words to the document.
     #[serde(skip)]
     PreviewDisposition {
         superseded_through_rev: u64,

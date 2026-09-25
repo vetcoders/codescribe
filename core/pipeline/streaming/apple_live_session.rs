@@ -72,7 +72,7 @@ use crate::pipeline::acoustic_ledger::{
 };
 use crate::pipeline::contracts::{
     EngineEvent, EventSink, PreviewPin, SessionConservationReceipt, SpeechIntegrity,
-    SpeechIntegrityPhase, TranscriptSegment,
+    SpeechIntegrityPhase, TranscriptSegment, UnadmittedAppleWord, UnadmittedAppleWordSource,
 };
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
 use crate::stt::tail_patcher::{SkipReasonCode, TailPatchConfig, TailPatchOutcome};
@@ -1687,6 +1687,10 @@ struct AppleSealState {
     utterance_id: u64,
     open_partial: String,
     open_partial_segments: Vec<TranscriptSegment>,
+    open_partial_pin: u64,
+    refused_untimed_words: BTreeMap<(u64, u64), Vec<UnadmittedAppleWord>>,
+    unadmitted_revision: u64,
+    published_unadmitted_words: Vec<UnadmittedAppleWord>,
     sealed_count: u64,
     filtered_empty_drops: u64,
     lexicon_custom_path: PathBuf,
@@ -1884,6 +1888,78 @@ fn pin_intersects(pin: &OccurrenceIdentity, member: &OccurrenceIdentity) -> bool
 }
 
 impl AppleSealState {
+    /// Replace the presentation mirror from the worker's actual held words.
+    /// Call only after the ledger events for the same transition were sent.
+    fn publish_unadmitted_words(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
+        let committed = {
+            let ledger = self
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            ledger
+                .occurrences()
+                .filter(|occurrence| {
+                    occurrence.session == self.session_id
+                        && occurrence.capture_epoch == self.capture_epoch
+                })
+                .map(|occurrence| (occurrence.sample_start, occurrence.sample_end))
+                .collect::<Vec<_>>()
+        };
+        self.refused_untimed_words.retain(|&(pin, _), _| {
+            !committed.iter().any(|&(start, end)| start <= pin && pin < end)
+        });
+        let mut words = Vec::new();
+        let partial = apple_segments_on_pcm_clock(self, &self.open_partial_segments);
+        if partial.is_empty() {
+            words.extend(self.open_partial.split_whitespace().map(|text| UnadmittedAppleWord {
+                text: text.to_string(),
+                sample_start: self.open_partial_pin,
+                sample_end: self.open_partial_pin,
+                source: UnadmittedAppleWordSource::OpenPartial { rev: self.preview_rev },
+            }));
+        } else {
+            words.extend(partial.into_iter().map(|word| UnadmittedAppleWord {
+                text: word.text,
+                sample_start: word.range.sample_start,
+                sample_end: word.range.sample_end,
+                source: UnadmittedAppleWordSource::OpenPartial { rev: self.preview_rev },
+            }));
+        }
+        for (&utterance_id, pending) in &self.pending_silero_words {
+            words.extend(pending.iter().map(|word| UnadmittedAppleWord {
+                text: word.text.clone(),
+                sample_start: word.sample_start,
+                sample_end: word.sample_end,
+                source: UnadmittedAppleWordSource::Pending { utterance_id },
+            }));
+        }
+        words.extend(self.unmatched_silero_words.iter().map(|word| UnadmittedAppleWord {
+            text: word.text.clone(),
+            sample_start: word.sample_start,
+            sample_end: word.sample_end,
+            source: UnadmittedAppleWordSource::Unmatched,
+        }));
+        words.extend(self.refused_untimed_words.values().flatten().cloned());
+        // A partial can still be open when a periodic seal admits its words.
+        // Exclude admitted midpoints from the mirror without changing the
+        // recognizer's partial or the fusion queues used for admission.
+        words.retain(|word| {
+            let midpoint =
+                word.sample_start + word.sample_end.saturating_sub(word.sample_start) / 2;
+            !committed.iter().any(|&(start, end)| start <= midpoint && midpoint < end)
+        });
+        words.sort_by_key(|word| (word.sample_start, word.sample_end));
+        if words == self.published_unadmitted_words {
+            return;
+        }
+        self.unadmitted_revision = self.unadmitted_revision.saturating_add(1);
+        self.published_unadmitted_words = words.clone();
+        let _ = ev_tx.send(EngineEvent::UnadmittedAppleWords {
+            revision: self.unadmitted_revision,
+            words,
+        });
+    }
+
     /// Current partial or accepted capture label; a refused raw callback alone
     /// must not release an empty stop before finish can supply usable text.
     fn has_stop_canvas_text(&self) -> bool {
@@ -1986,6 +2062,10 @@ impl AppleSealState {
             utterance_id: 0,
             open_partial: String::new(),
             open_partial_segments: Vec::new(),
+            open_partial_pin: 0,
+            refused_untimed_words: BTreeMap::new(),
+            unadmitted_revision: 0,
+            published_unadmitted_words: Vec::new(),
             sealed_count: 0,
             filtered_empty_drops: 0,
             lexicon_custom_path: crate::config::Config::config_dir().join("lexicon.custom.jsonl"),
@@ -4254,7 +4334,9 @@ fn seal_sliced_by_silero(
     state.silero_slice_revision = Some((utterances.len(), utterances.last().cloned()));
     state.silero_slice_words = disjoint.to_vec();
     let ledger = fusion.ledger().clone();
-    reconcile_silero_ledger(state, ev_tx, &ledger, disjoint)
+    let consumed = reconcile_silero_ledger(state, ev_tx, &ledger, disjoint);
+    state.publish_unadmitted_words(ev_tx);
+    consumed
 }
 
 /// PCM each closed utterance owns once boundary overlaps are given to the
@@ -6002,10 +6084,25 @@ fn seal_utterance_final(
     // earlier coordinates. The legacy cursor must not discard them first.
     if state.fusion_seal_armed {
         if segments.is_empty() {
+            // A final and its trailing summary describe the same open phrase.
+            // Replace that phrase's held words, preserving repeated words and
+            // independent phrases even when their zero-width pins coincide.
+            state.refused_untimed_words.insert(
+                (state.open_partial_pin, state.preview_rev),
+                raw.split_whitespace()
+                    .map(|text| UnadmittedAppleWord {
+                        text: text.to_string(),
+                        sample_start: state.open_partial_pin,
+                        sample_end: state.open_partial_pin,
+                        source: UnadmittedAppleWordSource::RefusedUntimed,
+                    })
+                    .collect(),
+            );
             let _ = ev_tx.send(EngineEvent::Warning {
                 code: "apple_final_without_pcm_timing".into(),
                 message: "untimed Apple text cannot create an occurrence".into(),
             });
+            state.publish_unadmitted_words(ev_tx);
             return false;
         }
         seal_sliced_by_silero(state, ev_tx, &segments);
@@ -6220,6 +6317,7 @@ fn seal_utterance_final(
     }
 
     state.emit_pending_seal(ev_tx, utterance_id);
+    state.publish_unadmitted_words(ev_tx);
     true
 }
 
@@ -6444,8 +6542,9 @@ fn seal_open_partial(
         return;
     }
     let segments = std::mem::take(&mut state.open_partial_segments);
-    seal_utterance_final(state, ev_tx, &open, segments, audio_secs);
     state.open_partial.clear();
+    seal_utterance_final(state, ev_tx, &open, segments, audio_secs);
+    state.publish_unadmitted_words(ev_tx);
 }
 
 /// Finish the recognizer after the worker's stop seal. The async arm drains
@@ -6475,6 +6574,7 @@ fn finish_capture_after_seal(
     };
     emit_stream_events(trailing, ev_tx, state, audio_secs);
     close_residue(state);
+    state.publish_unadmitted_words(ev_tx);
     state.stop_trailing_finish = false;
     if let Some(acknowledgement) = acknowledgement {
         let _ = acknowledgement.send(());
@@ -6960,6 +7060,7 @@ fn apple_stream_worker(
         Some(_) => false,
         None => true,
     };
+    state.publish_unadmitted_words(&ev_tx);
     if live_finals_complete && apple_final_received {
         let _ = live_finals_admitted.send(());
     } else {
@@ -7108,6 +7209,7 @@ fn apple_stream_worker(
     if let Some(owner) = consultation.as_mut() {
         owner.settle(&state, &ev_tx, samples_seen);
     }
+    state.publish_unadmitted_words(&ev_tx);
     let seal_coverage = publish_terminal_coverage(&state, &ev_tx);
     state.emit_speech_integrity(&ev_tx);
     info!(
@@ -7261,7 +7363,6 @@ fn phrase_final_disposition(
     Vec<crate::pipeline::contracts::RefusedPreviewEvidence>,
 ) {
     use crate::pipeline::contracts::{PreviewFinalDisposition, RefusedPreviewEvidence};
-    let mut admitted = false;
     let mut kept_unanchored = false;
     let mut refusal = None;
     let mut refused_evidence = Vec::new();
@@ -7274,9 +7375,7 @@ fn phrase_final_disposition(
             } if observation.producer == LedgerObservationProducer::Apple => match receipt {
                 MutationReceipt::Insert { .. }
                 | MutationReceipt::Correct { .. }
-                | MutationReceipt::Preserve { .. } => {
-                    admitted = true;
-                }
+                | MutationReceipt::Preserve { .. } => {}
                 MutationReceipt::KeepVisibleUnanchored { .. } => kept_unanchored = true,
                 MutationReceipt::Refuse { occurrence, reason } => {
                     let reason = reason.as_str().to_string();
@@ -7296,10 +7395,8 @@ fn phrase_final_disposition(
     }
     // Refused slices carry only their own label. Replaying the whole final
     // here would duplicate any sibling slice already visible in the canvas.
-    if !admitted && !kept_unanchored && refused_evidence.is_empty() {
-        let reason = refusal
-            .get_or_insert_with(|| "apple_final_without_visible_receipt".to_string())
-            .clone();
+    if let Some(reason) = refusal.as_ref().filter(|_| refused_evidence.is_empty()) {
+        let reason = reason.clone();
         refused_evidence.push(RefusedPreviewEvidence {
             range: None,
             text: final_text.to_string(),
@@ -7372,8 +7469,8 @@ fn emit_stream_events(
                         "apple_lifecycle: freeze open partial before restart partial"
                     );
                     let frozen_segments = std::mem::take(&mut state.open_partial_segments);
-                    seal_utterance_final(state, ev_tx, &frozen, frozen_segments, audio_secs);
                     state.open_partial.clear();
+                    seal_utterance_final(state, ev_tx, &frozen, frozen_segments, audio_secs);
                 }
                 // The preview paints where its words sit on the capture
                 // counter. Segments give word grain. A segment-less partial
@@ -7414,6 +7511,7 @@ fn emit_stream_events(
                 // canvas, and correcting them would make the lexicon rewrite
                 // flicker letter by letter while the phrase is still forming.
                 state.open_partial = text.clone();
+                state.open_partial_pin = pin.range.sample_start;
                 state.open_partial_segments = segments;
                 state.preview_rev = state.preview_rev.saturating_add(1);
                 let _ = ev_tx.send(EngineEvent::Preview {
@@ -7449,14 +7547,17 @@ fn emit_stream_events(
                 }
                 let (final_disposition, refused_evidence) =
                     phrase_final_disposition(&phrase_events, &text);
+                let has_receipt = !phrase_events.is_empty() || superseded_through_rev != 0;
                 for event in phrase_events {
                     let _ = ev_tx.send(event);
                 }
-                let _ = ev_tx.send(EngineEvent::PreviewDisposition {
-                    superseded_through_rev,
-                    final_disposition,
-                    refused_evidence,
-                });
+                if has_receipt {
+                    let _ = ev_tx.send(EngineEvent::PreviewDisposition {
+                        superseded_through_rev,
+                        final_disposition,
+                        refused_evidence,
+                    });
+                }
                 info!(
                     audio_secs,
                     committed,
@@ -7499,6 +7600,7 @@ fn emit_stream_events(
             }
         }
     }
+    state.publish_unadmitted_words(ev_tx);
 }
 
 /// C13/C13A lifecycle falsifiers kept active without reviving the stale legacy
@@ -7843,24 +7945,11 @@ mod c13a_lifecycle_tests {
     }
 
     #[test]
-    fn final_without_any_visible_receipt_retains_its_own_text() {
-        use crate::pipeline::contracts::{PreviewFinalDisposition, RefusedPreviewEvidence};
+    fn final_without_visible_receipts_does_not_invent_refused_text() {
+        use crate::pipeline::contracts::PreviewFinalDisposition;
         let (disposition, evidence) = phrase_final_disposition(&[], "final text without receipt");
-        let reason = "apple_final_without_visible_receipt".to_string();
-        assert_eq!(
-            disposition,
-            PreviewFinalDisposition::Refused {
-                reason: reason.clone()
-            }
-        );
-        assert_eq!(
-            evidence,
-            vec![RefusedPreviewEvidence {
-                range: None,
-                text: "final text without receipt".into(),
-                reason,
-            }]
-        );
+        assert_eq!(disposition, PreviewFinalDisposition::Admitted);
+        assert!(evidence.is_empty());
     }
 
     fn stage_pending_occurrence(
@@ -13206,6 +13295,235 @@ mod rc_w2_test_rehab {
     }
 
     #[test]
+    fn mirror_replaces_all_held_sources_and_is_silent_when_unchanged() {
+        let mut state = state("mirror-sources", 4.0);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        state.publish_unadmitted_words(&tx);
+        assert!(drain(&mut rx).is_empty());
+        state.open_partial = "open".into();
+        state.open_partial_segments = vec![segment("open", 0.0, 0.5)];
+        state.preview_rev = 1;
+        state.pending_silero_words.insert(9, vec![FusionWord {
+            text: "pending".into(),
+            sample_start: sample(1.0),
+            sample_end: sample(1.5),
+        }]);
+        state.unmatched_silero_words.push(FusionWord {
+            text: "unmatched".into(),
+            sample_start: sample(2.0),
+            sample_end: sample(2.5),
+        });
+        state.refused_untimed_words.insert((sample(3.0), 1), vec![UnadmittedAppleWord {
+            text: "untimed".into(),
+            sample_start: sample(3.0),
+            sample_end: sample(3.0),
+            source: UnadmittedAppleWordSource::RefusedUntimed,
+        }]);
+        state.publish_unadmitted_words(&tx);
+        let events = drain(&mut rx);
+        let [EngineEvent::UnadmittedAppleWords { revision, words }] = events.as_slice() else {
+            panic!("one complete mirror expected: {events:?}");
+        };
+        assert_eq!(*revision, 1);
+        assert_eq!(words.iter().map(|word| word.text.as_str()).collect::<Vec<_>>(),
+            vec!["open", "pending", "unmatched", "untimed"]);
+        assert!(matches!(words[0].source, UnadmittedAppleWordSource::OpenPartial { rev: 1 }));
+        assert!(matches!(words[1].source, UnadmittedAppleWordSource::Pending { utterance_id: 9 }));
+        assert!(matches!(words[2].source, UnadmittedAppleWordSource::Unmatched));
+        assert!(matches!(words[3].source, UnadmittedAppleWordSource::RefusedUntimed));
+        state.publish_unadmitted_words(&tx);
+        assert!(drain(&mut rx).is_empty());
+        state.pending_silero_words.clear();
+        state.publish_unadmitted_words(&tx);
+        let events = drain(&mut rx);
+        let [EngineEvent::UnadmittedAppleWords { revision: 2, words }] = events.as_slice() else {
+            panic!("replacement mirror expected: {events:?}");
+        };
+        assert_eq!(words.len(), 3);
+        assert!(words.iter().all(|word| word.text != "pending"));
+    }
+
+    #[test]
+    fn mixed_admitted_and_unmatched_final_publishes_the_unmatched_word() {
+        let mut state = physical_state("mirror-mixed", 3.0, &[(0.0, 1.0)]);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        emit(&mut state, &tx, vec![segment("admitted", 0.0, 0.8), segment("unmatched", 2.0, 2.5)]);
+        assert_eq!(document(&state), "admitted");
+        let events = drain(&mut rx);
+        let words = events.iter().find_map(|event| match event {
+            EngineEvent::UnadmittedAppleWords { words, .. } => Some(words),
+            _ => None,
+        }).expect("mixed final mirror");
+        assert_eq!(words.len(), 1);
+        assert_eq!(words[0].text, "unmatched");
+        assert!(matches!(words[0].source, UnadmittedAppleWordSource::Unmatched));
+    }
+
+    #[test]
+    fn admitted_words_publish_ledger_then_mirror_then_phrase_receipt() {
+        let mut state = physical_state("mirror-order", 1.0, &[(0.0, 1.0)]);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        emit_stream_events(vec![LiveStreamEvent::Partial {
+            text: "Iwo".into(),
+            segments: vec![segment("Iwo", 0.0, 0.8)],
+        }], &tx, &mut state, 1.0);
+        let mut held = drain(&mut rx).into_iter().find_map(|event| match event {
+            EngineEvent::UnadmittedAppleWords { words, .. } => Some(words),
+            _ => None,
+        }).expect("partial mirror");
+        emit(&mut state, &tx, vec![segment("Iwo", 0.0, 0.8)]);
+        let events = drain(&mut rx);
+        let ledger_at = events.iter().position(|event| matches!(event,
+            EngineEvent::LedgerMutation { receipt, .. } if receipt.grants_mutation()
+        )).expect("ledger publication");
+        let mirror_at = events.iter().position(|event| matches!(event,
+            EngineEvent::UnadmittedAppleWords { words, .. } if words.is_empty()
+        )).expect("empty mirror after admission");
+        let receipt_at = events.iter().position(|event| matches!(event,
+            EngineEvent::PreviewDisposition { .. }
+        )).expect("phrase receipt");
+        assert!(ledger_at < mirror_at && mirror_at < receipt_at);
+        let mut committed = Vec::new();
+        for event in events {
+            match event {
+                EngineEvent::LedgerMutation { observation, receipt, .. } if receipt.grants_mutation() => {
+                    if !committed.contains(&observation.occurrence) {
+                        committed.push(observation.occurrence);
+                    }
+                }
+                EngineEvent::UnadmittedAppleWords { words, .. } => held = words,
+                _ => {}
+            }
+            let visible = committed.len() + held.iter().filter(|word| {
+                let mid = word.sample_start + word.sample_end.saturating_sub(word.sample_start) / 2;
+                !committed.iter().any(|range| range.sample_start <= mid && mid < range.sample_end)
+            }).count();
+            assert_eq!(visible, 1, "every intermediate read keeps exactly one Iwo");
+        }
+    }
+
+    /// Boundary acceptance requirement: expected RED by source inspection.
+    /// W1 leaves qualification policy unchanged and does not execute this test.
+    #[test]
+    fn qualification_refusal_must_keep_timed_apple_words_in_mirror() {
+        let mut state = physical_state("mirror-qualification-refusal", 1.0, &[]);
+        state.energy_calibration = None;
+        state.fusion.as_mut().unwrap().observe(
+            Some((sample(0.0), sample(1.0))),
+            false,
+            sample(1.0),
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        emit(&mut state, &tx, vec![segment("Iwo", 0.0, 0.8)]);
+        assert!(state.published_unadmitted_words.iter().any(|word| {
+            word.text == "Iwo"
+                && matches!(word.source, UnadmittedAppleWordSource::Pending { .. })
+        }));
+        drain(&mut rx);
+
+        state.fusion.as_mut().unwrap().observe(None, true, sample(1.0));
+        seal_sliced_by_silero(&mut state, &tx, &[]);
+        let events = drain(&mut rx);
+        let kept_in_ledger = events.iter().any(|event| matches!(event,
+            EngineEvent::LedgerMutation {
+                receipt: MutationReceipt::KeepVisibleUnanchored { label, .. }, ..
+            } if label.split_whitespace().any(|word| word == "Iwo")
+        ));
+        assert!(
+            state.published_unadmitted_words.iter().any(|word| word.text == "Iwo")
+                || document(&state).split_whitespace().any(|word| word == "Iwo")
+                || kept_in_ledger,
+            "qualification refusal must retain the pending Apple word in paint state"
+        );
+    }
+
+    #[test]
+    fn periodic_seal_removes_admitted_words_from_mirror_while_partial_stays_open() {
+        let mut state = physical_state("mirror-periodic-seal", 1.0, &[(0.0, 1.0)]);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let segments = vec![segment("Iwo", 0.0, 0.8)];
+        emit_stream_events(
+            vec![LiveStreamEvent::Partial {
+                text: "Iwo".into(),
+                segments: segments.clone(),
+            }],
+            &tx,
+            &mut state,
+            1.0,
+        );
+        assert!(drain(&mut rx).iter().any(|event| matches!(event,
+            EngineEvent::UnadmittedAppleWords { words, .. } if words.len() == 1
+        )));
+        assert!(seal_sliced_by_silero(&mut state, &tx, &segments));
+        assert_eq!(state.open_partial, "Iwo");
+        assert_eq!(state.open_partial_segments.len(), 1);
+        assert_eq!(document(&state), "Iwo");
+        let events = drain(&mut rx);
+        let ledger_at = events.iter().position(|event| matches!(event,
+            EngineEvent::LedgerMutation { receipt, .. } if receipt.grants_mutation()
+        )).expect("ledger publication");
+        let mirror_at = events.iter().position(|event| matches!(event,
+            EngineEvent::UnadmittedAppleWords { words, .. } if words.is_empty()
+        )).expect("admitted partial must leave the mirror");
+        assert!(ledger_at < mirror_at);
+        state.publish_unadmitted_words(&tx);
+        assert!(drain(&mut rx).is_empty(), "unchanged open partial stays excluded");
+    }
+
+    #[test]
+    fn untimed_final_is_mirrored_until_a_committed_occurrence_covers_its_pin() {
+        let mut state = physical_state("mirror-untimed", 1.0, &[(0.0, 1.0)]);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        emit_stream_events(vec![LiveStreamEvent::Partial {
+            text: "Iwo".into(), segments: Vec::new(),
+        }], &tx, &mut state, 1.0);
+        drain(&mut rx);
+        emit_stream_events(vec![LiveStreamEvent::PhraseFinal {
+            text: "Iwo".into(), segments: Vec::new(),
+        }], &tx, &mut state, 1.0);
+        let events = drain(&mut rx);
+        let words = events.iter().find_map(|event| match event {
+            EngineEvent::UnadmittedAppleWords { words, .. } => Some(words),
+            _ => None,
+        }).expect("untimed mirror");
+        assert_eq!(words.len(), 1);
+        assert_eq!(words[0].sample_start, words[0].sample_end);
+        assert!(matches!(words[0].source, UnadmittedAppleWordSource::RefusedUntimed));
+        assert!(document(&state).is_empty());
+        emit(&mut state, &tx, vec![segment("Iwo", 0.0, 0.8)]);
+        assert_eq!(document(&state), "Iwo");
+        assert!(state.refused_untimed_words.is_empty());
+        assert!(drain(&mut rx).iter().any(|event| matches!(event,
+            EngineEvent::UnadmittedAppleWords { words, .. } if words.is_empty()
+        )));
+    }
+
+    #[test]
+    fn untimed_final_and_summary_replace_one_phrase_without_deduplicating_words() {
+        let mut state = physical_state("untimed-summary", 1.0, &[]);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        emit_stream_events(vec![
+            LiveStreamEvent::Partial { text: "Iwo Iwo".into(), segments: Vec::new() },
+            LiveStreamEvent::PhraseFinal { text: "Iwo Iwo".into(), segments: Vec::new() },
+            LiveStreamEvent::Summary {
+                text: "Iwo Iwo".into(), segments: Vec::new(), ok: true, error: None,
+            },
+        ], &tx, &mut state, 1.0);
+        let mirrors = drain(&mut rx).into_iter().filter_map(|event| match event {
+            EngineEvent::UnadmittedAppleWords { words, .. } => Some(words),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(mirrors.len(), 1, "summary leaves the held phrase unchanged");
+        assert_eq!(mirrors[0].len(), 2, "two spoken words survive at one untimed pin");
+        emit_stream_events(vec![
+            LiveStreamEvent::Partial { text: "Iwo".into(), segments: Vec::new() },
+            LiveStreamEvent::PhraseFinal { text: "Iwo".into(), segments: Vec::new() },
+        ], &tx, &mut state, 1.0);
+        assert_eq!(state.refused_untimed_words.len(), 2, "new phrase keeps its own words");
+        assert_eq!(state.published_unadmitted_words.len(), 3);
+    }
+
+    #[test]
     fn armed_epoch_close_summary_does_not_readmit_retimed_words() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let (tail_tx, _tail_rx) = mpsc::channel(1);
@@ -14255,8 +14573,8 @@ mod rc_w2_test_rehab {
     }
 
     #[test]
-    fn apple_seal_lexicon_leaves_previews_raw() {
-        with_lexicon_fixture("apple_seal_lexicon_leaves_previews_raw", || {
+    fn apple_seal_lexicon_leaves_preview_and_mirror_raw() {
+        with_lexicon_fixture("apple_seal_lexicon_leaves_preview_and_mirror_raw", || {
             let (tx, mut rx) = mpsc::unbounded_channel();
             let mut state = state("raw-lexicon-preview", 1.0);
             emit_stream_events(
@@ -14271,6 +14589,10 @@ mod rc_w2_test_rehab {
             assert!(
                 matches!(rx.try_recv().unwrap(), EngineEvent::Preview { text, .. } if text == "uruchom doker")
             );
+            assert!(matches!(rx.try_recv().unwrap(),
+                EngineEvent::UnadmittedAppleWords { words, .. }
+                    if words.len() == 1 && words[0].text == "uruchom doker"
+            ));
             assert!(rx.try_recv().is_err());
             assert!(document(&state).is_empty());
             assert_eq!(state.sealed_count, 0);
