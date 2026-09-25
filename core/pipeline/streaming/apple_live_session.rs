@@ -17612,8 +17612,11 @@ mod tc2_window_contract_tests {
                             && word.range.sample_end <= range.sample_end
                     })
                     .collect();
-                    f.state
-                        .complete_whisper_window(&f.events, completion(&request, segments), 15.5);
+                    f.state.complete_whisper_window(
+                        &f.events,
+                        completion(&request, segments),
+                        15.5,
+                    );
                 }
                 assert!(f.state.refinement_submitted.is_empty());
                 assert!(f.state.refinement_pending.is_empty());
