@@ -408,7 +408,10 @@ impl ModelManager {
         }
 
         // 4. Fallback: ~/.codescribe/models/ (lowercase!)
-        let user_models = super::Config::config_dir().join("models");
+        // Anchored to HOME, not CODESCRIBE_DATA_DIR: an isolated data dir
+        // (read-only CLI decodes, parity) must still find the installed model.
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let user_models = PathBuf::from(&home).join(".codescribe/models");
         fs::create_dir_all(&user_models).context("Failed to create user models directory")?;
         Ok(user_models)
     }
@@ -1113,6 +1116,28 @@ mod tests {
             assert!(models.contains(&name.to_string()));
             assert!(manager.check_model_exists(name));
         }
+    }
+
+    /// An isolated data dir isolates data, not the installed model: the
+    /// fallback tier stays under HOME and nothing is created in the data dir.
+    #[test]
+    #[serial]
+    fn isolated_data_dir_still_resolves_models_under_home() {
+        let temp_dir = TempDir::new().unwrap();
+        let home = temp_dir.path().join("home");
+        let data_dir = temp_dir.path().join("isolated-data");
+        fs::create_dir_all(&data_dir).unwrap();
+        let installed = home.join(".codescribe/models");
+        create_complete_whisper_model(&installed.join(DEFAULT_MODEL));
+
+        let _home = EnvGuard::set("HOME", &home);
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &data_dir);
+        let _models_dir = EnvGuard::unset("CODESCRIBE_MODELS_DIR");
+
+        let manager = ModelManager::new().unwrap();
+        assert_eq!(manager.models_dir(), installed.as_path());
+        assert!(manager.check_model_exists(DEFAULT_MODEL));
+        assert!(!data_dir.join("models").exists());
     }
 
     /// A leading `~/` in the supported models-root override resolves via HOME.
