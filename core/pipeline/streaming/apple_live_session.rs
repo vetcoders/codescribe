@@ -15165,7 +15165,7 @@ mod relay_l1_overlap_admission_tests {
     }
 
     /// The replayed copy deliberately extends over unvoiced samples.
-    /// Coverage by its extent is out of scope for T-C.
+    /// Whether its extent may count toward hop coverage is deferred to T-C.
     #[test]
     fn seam_word_with_case_and_punctuation_change_is_admitted_once() {
         let session = "seam-normalized-word";
