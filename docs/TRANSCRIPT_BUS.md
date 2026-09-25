@@ -151,6 +151,10 @@ contains:
 - exact occurrence identity: session, capture epoch, sample start, sample end;
 - the matching acoustic serial plus word-evidence, layer-decision, seal, and
   manual-edit receipts copied from the ledger-owned reducer entry;
+- the serial's optional `vad_open_sample` and `vad_close_sample` as measured.
+  An open live occurrence has no close boundary; the Bus and Swift bridge keep
+  that field absent instead of substituting the occurrence/window end. Older
+  numeric boundary fields decode as present values;
 - optional per-entry `presentation_receipt` for new **and retained** Light+
   shapes, separate from acoustic decisions and human-edit receipts. It carries
   receipt/provenance/session, source and resulting revision, occurrence PCM

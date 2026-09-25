@@ -473,8 +473,8 @@ fn validate_oracle_trace(trace: &PublishedBusTrace, expected: usize) -> Result<(
         }
         if receipt.sample_start != event.sample_start
             || receipt.sample_end != event.sample_end
-            || receipt.vad_open_sample != event.sample_start
-            || receipt.vad_close_sample != event.sample_end
+            || receipt.vad_open_sample != Some(event.sample_start)
+            || receipt.vad_close_sample != Some(event.sample_end)
         {
             failures.push(format!(
                 "word {ordinal} lacks exact PCM/VAD coverage in Bus evidence"
@@ -678,7 +678,7 @@ fn p0_b_oracle_fails_closed_for_all_required_negative_controls() {
     );
 
     let mut no_vad_close = events.clone();
-    no_vad_close[0].acoustic_receipts[0].vad_close_sample = 0;
+    no_vad_close[0].acoustic_receipts[0].vad_close_sample = None;
     let no_vad_close = trace_from_evidence(&no_vad_close);
     assert!(
         validate_oracle_trace(&no_vad_close, 5)

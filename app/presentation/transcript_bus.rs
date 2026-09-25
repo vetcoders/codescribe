@@ -140,8 +140,12 @@ pub struct ProjectedAcousticReceipt {
     pub energy_integral: f64,
     pub mean_rms_dbfs: f32,
     pub peak_dbfs: f32,
-    pub vad_open_sample: u64,
-    pub vad_close_sample: u64,
+    /// An open live occurrence has no measured VAD close yet. The Bus must not
+    /// substitute the right edge of an L1 observation for that missing edge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vad_open_sample: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vad_close_sample: Option<u64>,
     pub evidence_calibration_version: String,
     /// Canonical, immutable encodings minted by the acoustic ledger.
     pub word_evidence_receipts: Vec<String>,
@@ -820,12 +824,8 @@ impl TranscriptBus {
             energy_integral: serial.energy_integral,
             mean_rms_dbfs: serial.mean_rms_dbfs as f32,
             peak_dbfs: serial.peak_dbfs as f32,
-            vad_open_sample: serial
-                .vad_open_sample
-                .unwrap_or(serial.occurrence.sample_start),
-            vad_close_sample: serial
-                .vad_close_sample
-                .unwrap_or(serial.occurrence.sample_end),
+            vad_open_sample: serial.vad_open_sample,
+            vad_close_sample: serial.vad_close_sample,
             evidence_calibration_version: serial.evidence_calibration_version.clone(),
             word_evidence_receipts,
             layer_decision_receipts,
@@ -1528,6 +1528,39 @@ mod tests {
             super::super::transcript_bus_maintenance::compact_bus(&path, 14, false).unwrap();
         assert_eq!(report.evidence_rows_dropped, 1);
         assert_eq!(document_history_at(&path, "old-take").unwrap(), before);
+    }
+
+    #[test]
+    fn open_serial_projection_does_not_invent_vad_boundaries() {
+        let occurrence = OccurrenceIdentity::new("open-l1", 7, 10, 4_010);
+        let evidence = AcousticEvidence {
+            occurrence: occurrence.clone(),
+            duration_ms: 4_000.0,
+            energy_integral: 100.0,
+            mean_rms_dbfs: -20.0,
+            peak_dbfs: -10.0,
+            vad_open_sample: Some(10),
+            vad_close_sample: None,
+            evidence_calibration_version: "open-l1".into(),
+        };
+        let serial = AcousticSerial::mint(&evidence);
+        let projected = TranscriptBus::project_serial(&serial, vec![], vec![], None, None, None);
+        assert_eq!(projected.vad_open_sample, Some(10));
+        assert_eq!(projected.vad_close_sample, None);
+        let json = serde_json::to_string(&projected).unwrap();
+        assert!(!json.contains("vad_close_sample"));
+        assert_eq!(
+            serde_json::from_str::<ProjectedAcousticReceipt>(&json).unwrap(),
+            projected
+        );
+
+        let closed = AcousticSerial::mint(&AcousticEvidence {
+            vad_close_sample: Some(6_080),
+            ..evidence
+        });
+        let projected = TranscriptBus::project_serial(&closed, vec![], vec![], None, None, None);
+        assert_eq!(projected.vad_close_sample, Some(6_080));
+        assert_eq!(projected.sample_end, occurrence.sample_end);
     }
 
     #[derive(Default)]

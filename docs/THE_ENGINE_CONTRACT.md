@@ -36,6 +36,7 @@ This is a band, not a queue of correctors. Ban is **per layer, per span**. The l
 
 - **Apple** draws now (thin, sharp pencil). Its text is a fast hypothesis pinned to PCM time, not a protected word floor.
 - **Whisper** enters the buffer on **~4 s observations with ~1 s overlap**, bounded by available speech evidence. Never full audio in the automatic pipeline (`full_file_pass = button_only_proposal`). It may fill omissions or replace weaker Apple wording inside the same proven span. It must not hallucinate into silence or rebuild the session from zero.
+- An L1 subspan can publish a ledger-admitted word while its Silero speech region is still open. Its acoustic serial then records no VAD close and remains the immutable citation for that word. A later measured close is a separate, identity-bound ledger receipt; it never overwrites the issued serial or invents a close at the observation-window edge. Only that real close plus a returned observer frontier can permit the subspan's seal.
 - **Lexicon / Light+** are L2 and tune deterministically after Whisper settles. Light+ is currently wired on progressive seals and as the delivery floor.
 - **Responses formatter** is L3 (`previous_response_id`). It has a trash bucket: it may throw away approved verbal debris, but it may not rearrange the plate.
 - **Human** may edit the delivered canvas immediately; after seal, the human remains the last revision authority.
