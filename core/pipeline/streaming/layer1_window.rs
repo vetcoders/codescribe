@@ -17,9 +17,10 @@ use super::silero_fusion::SILERO_RAW_BOUNDARIES_PRODUCER;
 ///
 /// The request may repeat PCM for decoder context, but only the exclusive admit
 /// range can later label an occurrence. This is deliberately a capture range,
-/// not an `OccurrenceIdentity`: the latter is minted only after the physical
-/// Silero extent closes. A caller must bind the returned observation to that
-/// eventual exact identity before admitting any text to the ledger.
+/// not an `OccurrenceIdentity`: the larger Silero region may still extend.
+/// The caller may bind to an already immutable speech subspan while that
+/// region remains open, or stage the result until its exact identity is known.
+/// It must never mint a provisional end that will be reminted on growth.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenSpeechWindow {
     pub request_range: TailSampleRange,
