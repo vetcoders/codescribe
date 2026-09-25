@@ -13032,6 +13032,7 @@ mod rc_w2_test_rehab {
                 state.complete_whisper_window(
                     &tx,
                     TailPatchCompletion {
+                        submission_sequence: request.submission_sequence,
                         utterance_id: request.utterance_id,
                         request_identity: Some(request.provider_request.identity),
                         member_occurrences: request.member_occurrences,
