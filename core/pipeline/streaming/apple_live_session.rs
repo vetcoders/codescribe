@@ -1610,6 +1610,8 @@ struct AppleSealState {
     /// Silero only appends utterances and extends/closes its last range.
     /// Keep the last slice input so unchanged ticks do not clone/scan words.
     silero_slice_revision: Option<(usize, Option<super::silero_fusion::SileroUtterance>)>,
+    /// Exact callback input at the slice fence, independent of rewritten labels.
+    silero_slice_words: Vec<TranscriptSegment>,
     reconciled_silero: BTreeSet<u64>,
     /// Shared one-throne ledger.
     acoustic_ledger: Arc<Mutex<AcousticLedger>>,
@@ -1798,6 +1800,7 @@ impl AppleSealState {
             warned_unmatched_words: BTreeSet::new(),
             no_time_overlap_warnings: 0,
             silero_slice_revision: None,
+            silero_slice_words: Vec::new(),
             reconciled_silero: BTreeSet::new(),
             acoustic_ledger: Arc::new(Mutex::new(AcousticLedger::new())),
             energy_calibration: None,
@@ -1865,7 +1868,7 @@ impl AppleSealState {
     ) -> bool {
         // An armed lane is not a scheduled observer. Apple-only occurrences
         // must never acquire a Whisper frontier just to report that no lane exists.
-        if self.tail_patch.is_none() {
+        if self.tail_patch.is_none() && !self.refinement_lane_lost {
             return false;
         }
         let utterance_id = piece.utterance_id;
@@ -3510,6 +3513,31 @@ fn seal_sliced_by_silero(
         return false;
     };
     let utterances = fusion.ledger().utterances();
+    // Only an identical, already reconciled callback is silent. A new Apple
+    // observation over consumed audio must still publish its refusal receipt.
+    if !disjoint.is_empty()
+        && state.silero_slice_words.len() == disjoint.len()
+        && state
+            .silero_slice_words
+            .iter()
+            .zip(disjoint)
+            .all(|(prior, current)| {
+                prior.text == current.text
+                    && prior.start_ts == current.start_ts
+                    && prior.end_ts == current.end_ts
+            })
+        && utterances.iter().all(|utterance| {
+            utterance.closed && state.reconciled_silero.contains(&utterance.id)
+        })
+        && state
+            .silero_slice_revision
+            .as_ref()
+            .is_some_and(|(len, last)| {
+                *len == utterances.len() && last.as_ref() == utterances.last()
+            })
+    {
+        return true;
+    }
     if disjoint.is_empty()
         && state
             .silero_slice_revision
@@ -3524,6 +3552,7 @@ fn seal_sliced_by_silero(
     // A newly opened, extended or closed range must still retry the leftovers
     // and reconcile pending words, including the terminal flush.
     state.silero_slice_revision = Some((utterances.len(), utterances.last().cloned()));
+    state.silero_slice_words = disjoint.to_vec();
     let ledger = fusion.ledger().clone();
     reconcile_silero_ledger(state, ev_tx, &ledger, disjoint)
 }
@@ -3662,27 +3691,24 @@ fn admit_late_apple_words(
                 });
                 continue;
             }
-            if ledger.matching_word_slot(&owner, &pin, &text, false) {
-                // The ledger retains a named replay receipt. Repeating an
-                // unchanged fusion slice does not republish reducer events.
-                ledger.refuse_replayed_range(&observation, &text);
-                continue;
-            }
-            let stale_apple_span = !ledger.is_sealed(&owner)
-                && ledger.slots_of(&owner).is_some_and(|slots| {
-                    slots.iter().any(|slot| {
-                        matches!(
-                            slot.producer,
-                            LedgerObservationProducer::Apple | LedgerObservationProducer::Lexicon
-                        ) && slot.sample_start == start
-                            && slot.sample_end == end
-                    })
-                });
-            if stale_apple_span {
-                // A local generation orders receipts; it does not turn changed
-                // text over an already consumed Apple span into new speech.
-                let receipt =
-                    ledger.refuse_replacement(&observation, &text, RefuseReason::SealedReplay);
+            let consumed_span = ledger.slots_of(&owner).is_some_and(|slots| {
+                slots.iter().any(|slot| {
+                    let overlap = end
+                        .min(slot.sample_end)
+                        .saturating_sub(start.max(slot.sample_start));
+                    let shorter =
+                        (end - start).min(slot.sample_end.saturating_sub(slot.sample_start));
+                    shorter > 0 && overlap >= shorter / 2 + shorter % 2
+                })
+            });
+            if consumed_span {
+                // Rewording consumed PCM is not new speech, regardless of the
+                // slot's producer or whether its owner has already sealed.
+                let receipt = if ledger.matching_word_slot(&owner, &pin, &text, false) {
+                    ledger.refuse_replayed_range(&observation, &text)
+                } else {
+                    ledger.refuse_replacement(&observation, &text, RefuseReason::SealedReplay)
+                };
                 let _ = ev_tx.send(EngineEvent::LedgerMutation {
                     observation,
                     label: text,
@@ -12063,6 +12089,49 @@ mod rc_w2_test_rehab {
         );
     }
 
+    #[test]
+    fn late_apple_restatement_over_lexicon_respelled_open_slot_is_refused_by_range() {
+        with_lexicon_fixture(
+            "late_apple_restatement_over_lexicon_respelled_open_slot_is_refused_by_range",
+            || {
+                let (tx, mut rx) = mpsc::unbounded_channel();
+                let (sender, _requests) = mpsc::channel(8);
+                let mut state = physical_state("rewritten-open", 3.0, &[(0.0, 2.0)]);
+                state.tail_patch = Some(sender);
+                let words = vec![segment("uruchom doker", 0.0, 2.0)];
+                emit(&mut state, &tx, words.clone());
+                let owner = OccurrenceIdentity::new("rewritten-open", 7, 0, sample(2.0));
+                let before = {
+                    let ledger = state.acoustic_ledger.lock().unwrap();
+                    assert!(!ledger.is_sealed(&owner));
+                    assert_eq!(ledger.text_of(&owner), Some("uruchom Docker"));
+                    ledger.slots_of(&owner).unwrap().to_vec()
+                };
+                drain(&mut rx);
+                let replay = FusionWord {
+                    text: "uruchom doker".into(),
+                    sample_start: 0,
+                    sample_end: sample(2.0),
+                };
+                admit_late_apple_words(&mut state, &tx, 2, &[replay], &words);
+                assert!(drain(&mut rx).iter().any(|event| matches!(
+                    event,
+                    EngineEvent::LedgerMutation {
+                        receipt: MutationReceipt::Refuse {
+                            reason: RefuseReason::SealedReplay,
+                            ..
+                        },
+                        ..
+                    }
+                )));
+                let ledger = state.acoustic_ledger.lock().unwrap();
+                assert_eq!(ledger.slots_of(&owner).unwrap(), before.as_slice());
+                assert_eq!(ledger.text_of(&owner), Some("uruchom Docker"));
+                assert!(!ledger.is_sealed(&owner));
+            },
+        );
+    }
+
     /// The old explicit empty Preview event belongs to presentation. Here the
     /// current owner clears its volatile state and emits no duplicate final.
     #[test]
@@ -17183,6 +17252,144 @@ mod tc2_window_contract_tests {
             start_ts: start as f32 / RATE as f32,
             end_ts: end as f32 / RATE as f32,
         }
+    }
+
+    #[test]
+    fn late_apple_range_refusals_publish_for_open_and_sealed_whisper_slots() {
+        for sealed in [false, true] {
+            let mut f = fixture();
+            while let Ok(request) = f.requests.try_recv() {
+                f.state.complete_whisper_window(
+                    &f.events,
+                    completion(&request, vec![pin("Alpha,", 246_464, 262_784)]),
+                    10.7,
+                );
+            }
+            if sealed {
+                f.state.close_admission_horizon(&f.events, 510_464);
+            }
+            let before = f
+                .state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .slots_of(&f.occurrence)
+                .unwrap()
+                .to_vec();
+            for (text, reason) in [
+                ("alpha", RefuseReason::ReplayedRangeIdentity),
+                ("changed", RefuseReason::SealedReplay),
+            ] {
+                while f.receiver.try_recv().is_ok() {}
+                let word = FusionWord::from_timed(&pin(text, 248_000, 266_000));
+                admit_late_apple_words(
+                    &mut f.state,
+                    &f.events,
+                    2,
+                    &[word],
+                    &[apple_word(text, 248_000, 266_000)],
+                );
+                let events = std::iter::from_fn(|| f.receiver.try_recv().ok()).collect::<Vec<_>>();
+                assert_eq!(events.len(), 1);
+                assert!(matches!(
+                    &events[0],
+                    EngineEvent::LedgerMutation {
+                        receipt: MutationReceipt::Refuse { reason: actual, .. },
+                        ..
+                    } if actual == &reason
+                ));
+                let ledger = f.state.acoustic_ledger.lock().unwrap();
+                assert_eq!(ledger.slots_of(&f.occurrence).unwrap(), before.as_slice());
+                assert_eq!(ledger.text_of(&f.occurrence), Some("Alpha,"));
+                assert_eq!(ledger.is_sealed(&f.occurrence), sealed);
+            }
+        }
+    }
+
+    #[test]
+    fn fresh_physical_ledger_utterance_ids_do_not_alias_occurrence_identity() {
+        let mut f = fixture();
+        let held = OccurrenceIdentity::new(SESSION, 1, 56_832, 222_208);
+        let mut second = UtteranceLedger::new();
+        second.open_or_extend(SESSION, 1, held.sample_start, held.sample_end);
+        second.close_open(held.sample_end);
+        assert_eq!(f.physical.utterances()[0].id, second.utterances()[0].id);
+        assert!(reconcile_silero_ledger(
+            &mut f.state,
+            &f.events,
+            &second,
+            &[apple_word("held", 58_000, 70_000)],
+        ));
+        let ledger = f.state.acoustic_ledger.lock().unwrap();
+        assert!(ledger.is_qualified(&held));
+        assert!(ledger.is_qualified(&f.occurrence));
+        assert_eq!(ledger.qualified_occurrences().count(), 2);
+        assert_eq!(ledger.text_of(&held), Some("held"));
+        assert_eq!(ledger.text_of(&f.occurrence), None);
+    }
+
+    #[test]
+    fn horizon_open_owner_survives_partition_change_with_one_identity() {
+        let mut f = fixture();
+        f.state.audio.push(&vec![0.2; 2_000_000]);
+        let owner = OccurrenceIdentity::new(SESSION, 1, 2_132_992, 2_325_504);
+        f.physical
+            .open_or_extend(SESSION, 1, owner.sample_start, owner.sample_end);
+        f.physical.close_open(owner.sample_end);
+        assert!(reconcile_silero_ledger(
+            &mut f.state,
+            &f.events,
+            &f.physical,
+            &[],
+        ));
+        while let Ok(request) = f.requests.try_recv() {
+            let word = if request
+                .member_occurrences
+                .iter()
+                .any(|(_, range)| range == &owner)
+            {
+                pin("anchor", 2_140_000, 2_148_000)
+            } else {
+                pin("debt", 246_464, 262_784)
+            };
+            f.state.complete_whisper_window(
+                &f.events,
+                completion(&request, vec![word]),
+                50.0,
+            );
+        }
+        assert!(!f.state.acoustic_ledger.lock().unwrap().is_sealed(&owner));
+        let windows_before = f.state.windows_admitted;
+        let mut reclosed = UtteranceLedger::new();
+        for (start, end) in [
+            (227_328, 510_464),
+            (2_132_992, 2_317_824),
+            (2_317_824, 2_378_240),
+        ] {
+            reclosed.open_or_extend(SESSION, 1, start, end);
+            reclosed.close_open(end);
+        }
+        assert!(reconcile_silero_ledger(
+            &mut f.state,
+            &f.events,
+            &reclosed,
+            &[apple_word("late", 2_320_000, 2_324_000)],
+        ));
+        f.state.flush_layer1_coalesce(&f.events);
+        assert_eq!(f.state.windows_admitted, windows_before);
+        assert!(f.requests.try_recv().is_err());
+        let ledger = f.state.acoustic_ledger.lock().unwrap();
+        let owners = ledger.qualified_occurrences().collect::<Vec<_>>();
+        assert_eq!(owners.len(), 2);
+        assert!(owners.contains(&&owner));
+        assert!(
+            owners
+                .windows(2)
+                .all(|pair| pair[0].sample_end <= pair[1].sample_start)
+        );
+        assert_eq!(ledger.text_of(&owner), Some("anchor late"));
+        assert!(!ledger.is_sealed(&owner));
+        assert_eq!(ledger.conservation().residue(), 0);
     }
 
     #[test]
