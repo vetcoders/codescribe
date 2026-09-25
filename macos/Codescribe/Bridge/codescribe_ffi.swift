@@ -2378,6 +2378,13 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
      */
     func commitFormatterRevision(sessionId: String, sourceRevision: UInt64) async throws  -> CsUserRevisionResult
 
+    /**
+     * Request a terminal formatter revision with an optional one-shot level.
+     * A missing level uses Settings. An unavailable level is refused, never
+     * persisted or silently replaced with the configured level.
+     */
+    func commitFormatterRevisionAtLevel(sessionId: String, sourceRevision: UInt64, level: String?) async throws  -> CsUserRevisionResult
+
     func commitRetranscribeRevision(sessionId: String, sourceRevision: UInt64, renderedText: String) async throws  -> CsUserRevisionResult
 
     /**
@@ -2800,6 +2807,28 @@ open func commitFormatterRevision(sessionId: String, sourceRevision: UInt64)asyn
                 uniffi_codescribe_ffi_fn_method_codescribehotkeys_commit_formatter_revision(
                     self.uniffiCloneHandle(),
                     FfiConverterString.lower(sessionId),FfiConverterUInt64.lower(sourceRevision)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeCsUserRevisionResult_lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+
+    /**
+     * Request a terminal formatter revision with an optional one-shot level.
+     * A missing level uses Settings. An unavailable level is refused, never
+     * persisted or silently replaced with the configured level.
+     */
+open func commitFormatterRevisionAtLevel(sessionId: String, sourceRevision: UInt64, level: String?)async throws  -> CsUserRevisionResult  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_commit_formatter_revision_at_level(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(sessionId),FfiConverterUInt64.lower(sourceRevision),FfiConverterOptionString.lower(level)
                 )
             },
             pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
@@ -14401,6 +14430,14 @@ public enum CsTranscriptDelivery: Equatable, Hashable {
      * No sink took the text; it stays recoverable.
      */
     case retained
+    /**
+     * The text was copied to the clipboard without posting a paste.
+     */
+    case copiedToClipboard
+    /**
+     * The text is armed for a later explicit insert, not pasted yet.
+     */
+    case deferredInsertArmed
 
 
 
@@ -14428,6 +14465,10 @@ public struct FfiConverterTypeCsTranscriptDelivery: FfiConverterRustBuffer {
 
         case 4: return .retained
 
+        case 5: return .copiedToClipboard
+
+        case 6: return .deferredInsertArmed
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -14450,6 +14491,14 @@ public struct FfiConverterTypeCsTranscriptDelivery: FfiConverterRustBuffer {
 
         case .retained:
             writeInt(&buf, Int32(4))
+
+
+        case .copiedToClipboard:
+            writeInt(&buf, Int32(5))
+
+
+        case .deferredInsertArmed:
+            writeInt(&buf, Int32(6))
 
         }
     }
@@ -16627,6 +16676,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_commit_formatter_revision() != 59971) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_commit_formatter_revision_at_level() != 38537) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_commit_retranscribe_revision() != 61135) {
