@@ -206,10 +206,17 @@ mod tests {
 
     impl EnvSnapshot {
         fn capture() -> Self {
-            Self([ENV_KEY, "CODESCRIBE_DATA_DIR", "CODESCRIBE_ENV_PATH", "HOME"]
+            Self(
+                [
+                    ENV_KEY,
+                    "CODESCRIBE_DATA_DIR",
+                    "CODESCRIBE_ENV_PATH",
+                    "HOME",
+                ]
                 .into_iter()
                 .map(|key| (key, std::env::var_os(key)))
-                .collect())
+                .collect(),
+            )
         }
     }
 
@@ -339,7 +346,6 @@ mod tests {
         assert!(paths.wav.metadata().expect("meta").len() > 0);
         assert_eq!(fs::read_to_string(&paths.txt).expect("read txt"), delivered);
         assert!(wav_sample_count(&paths.wav).expect("samples") > 0);
-
     }
 
     /// Default-off never creates the inbox tree or pair files.
@@ -362,7 +368,6 @@ mod tests {
             !temp.path().join("qube_inbox").exists(),
             "default-off must not create qube_inbox"
         );
-
     }
 
     /// Header-only / zero-sample WAV is skipped even when donor is on.

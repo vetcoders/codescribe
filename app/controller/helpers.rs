@@ -974,7 +974,8 @@ where
         // lease guards the installer, never the conversation.
         #[cfg(test)]
         let lease_path = std::env::temp_dir().join(format!(
-            "codescribe-agent-turn-test-{}.lock", std::process::id()
+            "codescribe-agent-turn-test-{}.lock",
+            std::process::id()
         ));
         #[cfg(test)]
         let lease = codescribe_core::config::acquire_agent_turn_lease_at(&lease_path);

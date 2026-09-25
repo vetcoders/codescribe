@@ -10,8 +10,14 @@ fn startup_returns_while_compaction_thread_is_held_at_entry() {
     impl Drop for Restore {
         fn drop(&mut self) {
             unsafe {
-                match &self.0 { Some(value) => std::env::set_var("HOME", value), None => std::env::remove_var("HOME") }
-                match &self.1 { Some(value) => std::env::set_var("CODESCRIBE_TEST_ISOLATION", value), None => std::env::remove_var("CODESCRIBE_TEST_ISOLATION") }
+                match &self.0 {
+                    Some(value) => std::env::set_var("HOME", value),
+                    None => std::env::remove_var("HOME"),
+                }
+                match &self.1 {
+                    Some(value) => std::env::set_var("CODESCRIBE_TEST_ISOLATION", value),
+                    None => std::env::remove_var("CODESCRIBE_TEST_ISOLATION"),
+                }
             }
         }
     }
@@ -35,7 +41,11 @@ fn startup_returns_while_compaction_thread_is_held_at_entry() {
     .unwrap();
 
     assert_eq!(snapshot.state, "running");
-    assert!(home.path().join(".codescribe/install-runtime.lock").exists());
+    assert!(
+        home.path()
+            .join(".codescribe/install-runtime.lock")
+            .exists()
+    );
     entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
     assert!(
         matches!(finished_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),

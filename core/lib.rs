@@ -48,8 +48,6 @@ pub mod attachment;
 pub mod audio;
 /// Persistent user settings with the tiered config truth model.
 pub mod config;
-/// Test-process write fence for Codescribe-owned filesystem operations.
-pub mod test_isolation;
 /// External content connectors that produce attachment payloads.
 pub mod connectors;
 /// Full-duplex Moshi conversational AI (voice turn management).
@@ -86,6 +84,8 @@ pub mod runtime;
 pub mod state;
 /// Speech-to-text engine router (Candle and Apple live backends).
 pub mod stt;
+/// Test-process write fence for Codescribe-owned filesystem operations.
+pub mod test_isolation;
 /// Transcript tagging helpers for paste-delivery wrappers.
 pub mod transcript_tagging;
 /// Local CSM-1B text-to-speech synthesis surface.
