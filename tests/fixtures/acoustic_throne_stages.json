@@ -951,9 +951,16 @@
               "minimum_count": 1
             },
             {
-              "callee": "seal_utterance_final",
+              "callee": "close_apple_phrase",
               "callee_file": "core/pipeline/streaming/apple_live_session.rs",
               "caller": "emit_stream_events",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "seal_utterance_final",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "close_apple_phrase",
               "caller_file": "core/pipeline/streaming/apple_live_session.rs",
               "minimum_count": 1
             },
