@@ -3799,7 +3799,10 @@ mod tests {
             "CODESCRIBE_FINAL_PASS_MODE",
             "CODESCRIBE_LAYERED_TRANSCRIPTION",
         ] {
-            assert!(!is_promoted_key(key), "{key} must not be persisted as product intent");
+            assert!(
+                !is_promoted_key(key),
+                "{key} must not be persisted as product intent"
+            );
         }
     }
 

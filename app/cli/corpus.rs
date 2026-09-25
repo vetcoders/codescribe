@@ -1243,8 +1243,12 @@ async fn run_worker(args: WorkerArgs) -> Result<()> {
     let snapshot = codescribe_core::config::Config::load_runtime_snapshot_without_keychain()
         .map_err(|error| anyhow!("worker runtime snapshot refused: {error:?}"))?;
     let (decision, receipt) = codescribe_core::asr_session::layer1_decision(&snapshot);
-    if receipt.asr_mode != args.profile.asr_mode() || decision.is_armed() != args.profile.layered() {
-        bail!("worker ASR mode did not reach the runtime decision: {}", receipt.reason);
+    if receipt.asr_mode != args.profile.asr_mode() || decision.is_armed() != args.profile.layered()
+    {
+        bail!(
+            "worker ASR mode did not reach the runtime decision: {}",
+            receipt.reason
+        );
     }
 
     let output_root = args
@@ -2168,7 +2172,10 @@ mod tests {
         }
         let root = tempfile::tempdir().unwrap();
         let bridge = root.path().join("bridge");
-        for profile in [ReplayProfile::AppleLayer0, ReplayProfile::AppleLayer1Inprocess] {
+        for profile in [
+            ReplayProfile::AppleLayer0,
+            ReplayProfile::AppleLayer1Inprocess,
+        ] {
             let mut command = ProcessCommand::new("unused-worker");
             configure_profile_environment(&mut command, profile, &bridge);
             command.env("CODESCRIBE_DATA_DIR", root.path());

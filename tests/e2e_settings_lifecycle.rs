@@ -423,10 +423,14 @@ fn retired_engine_settings_load_repairs_once_and_does_not_reseed() {
     let _tmp = setup_test_env();
     let path = UserSettings::settings_path();
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(&path, r#"{"schema_version":3,"speech":{"engine":{
+    fs::write(
+        &path,
+        r#"{"schema_version":3,"speech":{"engine":{
         "asr_mode":"local_power","stt_engine":"whisper",
         "final_pass_mode":"smart","layered_transcription":"off"
-    }}}"#).unwrap();
+    }}}"#,
+    )
+    .unwrap();
     let first = UserSettings::load();
     assert_eq!(first.asr_mode.as_deref(), Some("local_power"));
     let bytes = fs::read(&path).unwrap();
@@ -445,9 +449,16 @@ fn retired_engine_settings_load_repairs_once_and_does_not_reseed() {
     {
         use std::os::unix::fs::MetadataExt;
         // Every settings write replaces the inode atomically, including identical bytes.
-        assert_eq!(metadata.ino(), after.ino(), "second load must perform zero writes");
+        assert_eq!(
+            metadata.ino(),
+            after.ino(),
+            "second load must perform zero writes"
+        );
     }
-    assert_eq!(entries, fs::read_dir(path.parent().unwrap()).unwrap().count());
+    assert_eq!(
+        entries,
+        fs::read_dir(path.parent().unwrap()).unwrap().count()
+    );
 }
 
 #[test]
@@ -455,9 +466,17 @@ fn retired_engine_settings_load_repairs_once_and_does_not_reseed() {
 fn retired_engine_writes_are_rejected_without_creating_files() {
     let _tmp = setup_test_env();
     let config = Config::default();
-    for key in ["CODESCRIBE_STT_ENGINE", "FINAL_PASS_MODE", "CODESCRIBE_FINAL_PASS_MODE"] {
+    for key in [
+        "CODESCRIBE_STT_ENGINE",
+        "FINAL_PASS_MODE",
+        "CODESCRIBE_FINAL_PASS_MODE",
+    ] {
         assert!(config.save_to_env(key, "off").is_err());
-        assert!(config.save_to_env_many(&[("CODESCRIBE_ASR_MODE", "cloud"), (key, "off")]).is_err());
+        assert!(
+            config
+                .save_to_env_many(&[("CODESCRIBE_ASR_MODE", "cloud"), (key, "off")])
+                .is_err()
+        );
     }
     assert!(!UserSettings::settings_path().exists());
     assert!(!_tmp.path().join(".env").exists());

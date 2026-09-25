@@ -631,7 +631,11 @@ fn cloud_layer_ignores_local_override_and_reports_missing_live_configuration() {
             (None, None, "live_endpoint_missing"),
             (Some(""), Some(""), "live_endpoint_missing"),
             (Some("wss://gateway.invalid/live"), None, "live_key_missing"),
-            (Some("wss://gateway.invalid/live"), Some(""), "live_key_missing"),
+            (
+                Some("wss://gateway.invalid/live"),
+                Some(""),
+                "live_key_missing",
+            ),
             (
                 Some("wss://gateway.invalid/live"),
                 Some("fixture-live-key"),
@@ -648,10 +652,9 @@ fn cloud_layer_ignores_local_override_and_reports_missing_live_configuration() {
             input.user_settings.cloud_consent = Some("granted".into());
             input.values.stt_live_endpoint = endpoint.map(str::to_owned);
             input.values.stt_live_api_key = key.map(str::to_owned);
-            input.overrides.insert(
-                "CODESCRIBE_LAYERED_TRANSCRIPTION".into(),
-                Ok(phase.into()),
-            );
+            input
+                .overrides
+                .insert("CODESCRIBE_LAYERED_TRANSCRIPTION".into(), Ok(phase.into()));
             let snapshot = Config::runtime_snapshot_from_captured(input);
             let (decision, receipt) = super::layer1_decision(&snapshot);
             assert_eq!(receipt.reason, expected, "phase={phase}");

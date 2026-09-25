@@ -1058,7 +1058,10 @@ async fn run_one_clip(clip: &Path, language: Option<String>) {
         }
     });
     let events = codescribe_core::audio::streaming_recorder::replay_production_session(
-        &samples, sample_rate, language.clone(), &isolated.settings,
+        &samples,
+        sample_rate,
+        language.clone(),
+        &isolated.settings,
     )
     .await
     .unwrap_or_else(|e| panic!("live session on {}: {e}", clip.display()))

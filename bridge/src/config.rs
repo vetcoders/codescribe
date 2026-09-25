@@ -3826,17 +3826,21 @@ mod settings_snapshot_tests {
         assert_eq!(projected.asr_mode.as_deref(), Some("local_power"));
         assert_eq!(projected.layered_transcription, None);
 
-        input.overrides.insert(
-            "CODESCRIBE_LAYERED_TRANSCRIPTION".into(),
-            Ok("off".into()),
-        );
+        input
+            .overrides
+            .insert("CODESCRIBE_LAYERED_TRANSCRIPTION".into(), Ok("off".into()));
         let degraded = Config::runtime_snapshot_from_captured(input);
         let _changed = EnvGuard::set("CODESCRIBE_LAYERED_TRANSCRIPTION", "phase1");
         assert_eq!(
-            CsSettings::from_runtime_snapshot(&degraded).layered_transcription.as_deref(),
+            CsSettings::from_runtime_snapshot(&degraded)
+                .layered_transcription
+                .as_deref(),
             Some("off")
         );
-        assert_eq!(CsSettings::from_runtime_snapshot(&normal).layered_transcription, None);
+        assert_eq!(
+            CsSettings::from_runtime_snapshot(&normal).layered_transcription,
+            None
+        );
     }
 
     /// C15D falsifier (source-level; W2 does not execute): Settings UI projection

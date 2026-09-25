@@ -10,8 +10,8 @@ pub struct IsolatedAsrSettings {
 impl IsolatedAsrSettings {
     /// Call before starting workers; run one real-audio test per process.
     pub fn from_requested_mode() -> Self {
-        let mode = std::env::var("CODESCRIBE_ASR_MODE")
-            .unwrap_or_else(|_| "apple_only".to_string());
+        let mode =
+            std::env::var("CODESCRIBE_ASR_MODE").unwrap_or_else(|_| "apple_only".to_string());
         assert!(matches!(mode.as_str(), "apple_only" | "local_power"));
         // Preserve measured calibration bytes, never invent a capture profile.
         let calibration_path = codescribe_core::config::energy_calibration_path();
@@ -42,13 +42,20 @@ impl IsolatedAsrSettings {
             std::fs::write(codescribe_core::config::energy_calibration_path(), bytes)
                 .expect("copy measured calibration into isolated runtime");
         }
-        isolated.settings.save().expect("save isolated ASR settings");
+        isolated
+            .settings
+            .save()
+            .expect("save isolated ASR settings");
         let snapshot = Config::load_runtime_snapshot_without_keychain().expect("ASR snapshot");
         let (_, receipt) = codescribe_core::asr_session::layer1_decision(&snapshot);
         assert_eq!(receipt.asr_mode, mode);
         assert_eq!(
             receipt.refiner,
-            if mode == "apple_only" { "off" } else { "local_tail_patch" }
+            if mode == "apple_only" {
+                "off"
+            } else {
+                "local_tail_patch"
+            }
         );
         isolated
     }

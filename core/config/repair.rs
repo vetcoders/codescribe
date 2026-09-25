@@ -195,9 +195,11 @@ pub(super) fn repair_settings(path: &Path, pack: Option<&Path>) -> RepairReceipt
         {
             for key in ["stt_engine", "final_pass_mode", "layered_transcription"] {
                 if engine.remove(key).is_some() {
-                    receipt.actions.push(RepairAction::RetiredEngineSettingRemoved {
-                        field: format!("speech.engine.{key}"),
-                    });
+                    receipt
+                        .actions
+                        .push(RepairAction::RetiredEngineSettingRemoved {
+                            field: format!("speech.engine.{key}"),
+                        });
                 }
             }
         }
@@ -436,11 +438,13 @@ mod tests {
             assert_eq!(repaired["speech"]["engine"]["asr_mode"], "local_power");
             for key in ["stt_engine", "final_pass_mode", "layered_transcription"] {
                 assert!(repaired["speech"]["engine"].get(key).is_none());
-                assert!(receipt.actions.contains(
-                    &RepairAction::RetiredEngineSettingRemoved {
-                        field: format!("speech.engine.{key}"),
-                    }
-                ));
+                assert!(
+                    receipt
+                        .actions
+                        .contains(&RepairAction::RetiredEngineSettingRemoved {
+                            field: format!("speech.engine.{key}"),
+                        })
+                );
             }
             assert_eq!(receipt.actions.len(), 3);
             let metadata = fs::metadata(&path).unwrap();
