@@ -2788,6 +2788,11 @@ impl RecordingController {
         let canvas = snapshot.as_ref();
         let text = canvas.map_or("", |canvas| canvas.text.as_str());
         let preview_words = canvas.map_or(0, |canvas| canvas.preview_only_words);
+        // Absent optional fields preserve the settled receipt for takes without
+        // late Apple evidence. Read the same frozen canvas used by the sink.
+        let late_apple_counts = canvas
+            .map(VisibleCanvasSnapshot::late_apple_word_counts)
+            .filter(|&(pasted, covered)| pasted != 0 || covered != 0);
         let paste_words = text.split_whitespace().count();
         let painted_words_at_snapshot = canvas.map_or(0, |canvas| canvas.visible_words.len());
         let missing_words = painted_at_stop
@@ -2900,6 +2905,8 @@ impl RecordingController {
             reducer_revision = canvas.map(|canvas| canvas.revision),
             preview_only_words = preview_words,
             preview_words_in_paste = preview_words,
+            late_apple_words_pasted = late_apple_counts.map(|(pasted, _)| pasted),
+            late_apple_words_covered_by_slot = late_apple_counts.map(|(_, covered)| covered),
             paste_words,
             paste_periods = text.chars().filter(|ch| *ch == '.').count(),
             paste_commas = text.chars().filter(|ch| *ch == ',').count(),
@@ -7035,6 +7042,172 @@ mod refusal_recovery_tests {
                 expected
             );
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stopped_late_apple_receipt_uses_the_frozen_canvas() {
+        use codescribe_core::pipeline::acoustic_ledger::NoAuthorityReason;
+
+        let take = take(State::RecHold, false).await;
+        take.emitter.on_capture_opened(TAKE, 7);
+        take.emitter.set_literal_delivery(true);
+        let mutation = stop_mutation(&mut take.ledger.lock().unwrap(), "document");
+        take.emitter.on_event(&mutation);
+        let late_word = |start, end, request, text: &str| {
+            let observation = ObservationIdentity::new(
+                ObservationProducer::Apple,
+                request,
+                request,
+                OccurrenceIdentity::new(TAKE, 7, start, end),
+            );
+            let receipt = take.ledger.lock().unwrap().keep_visible_unanchored(
+                &observation,
+                text,
+                NoAuthorityReason::LateAppleWordNotCurrent,
+            );
+            take.emitter.on_event(&EngineEvent::LedgerMutation {
+                observation,
+                label: text.into(),
+                receipt,
+            });
+        };
+        late_word(2_000, 4_000, 2, "alpha");
+        late_word(8_000, 10_000, 3, "beta");
+        let observation = ObservationIdentity::new(
+            ObservationProducer::Whisper,
+            4,
+            4,
+            OccurrenceIdentity::new(TAKE, 7, 0, 16_000),
+        );
+        let receipt = take
+            .ledger
+            .lock()
+            .unwrap()
+            .admit_word_slots(&observation, &[(9_000, 10_000, "heard".into())]);
+        take.emitter.on_event(&EngineEvent::LedgerMutation {
+            observation,
+            label: String::new(),
+            receipt,
+        });
+        let frozen = take.emitter.begin_stop_canvas().unwrap();
+        assert_eq!(frozen.late_apple_word_counts(), (1, 1));
+        assert!(frozen.text.split_whitespace().any(|word| word == "alpha"));
+        assert!(!frozen.text.split_whitespace().any(|word| word == "beta"));
+        let expected_paste = frozen.text.clone();
+        let wait = StopCanvasWait {
+            snapshot: Some(frozen.clone()),
+            stop_final_wait_ms: 0,
+            stop_final_timeout: false,
+            live_finals_admitted: true,
+            painted_at_stop: Some(frozen),
+            preempted: false,
+            armed_order: true,
+        };
+        let receipts = StopReceiptLog::default();
+        let _trace = receipts.subscribe();
+        let calls = AtomicUsize::new(0);
+        let settled = take
+            .controller
+            .settle_frozen_canvas_at_stop(
+                Some(TAKE),
+                Some(&take.emitter),
+                wait,
+                std::time::Instant::now(),
+                |text| {
+                    assert_eq!(text, expected_paste);
+                    // New evidence during delivery must not change this receipt.
+                    late_word(12_000, 14_000, 5, "gamma");
+                    assert_eq!(
+                        take.emitter
+                            .visible_canvas_snapshot()
+                            .unwrap()
+                            .late_apple_word_counts(),
+                        (2, 1)
+                    );
+                    stop_sink(&take.controller, text, &calls)
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(settled, TranscriptDelivery::SinkAccepted);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(take.ledger.lock().unwrap().len(), 1);
+        let log = receipts.text();
+        let mut settled_lines = log
+            .lines()
+            .filter(|line| line.contains("stop canvas delivery settled"));
+        let line = settled_lines.next().expect("settled receipt");
+        assert!(settled_lines.next().is_none());
+        assert!(line.contains("late_apple_words_pasted=1 "));
+        assert!(line.contains("late_apple_words_covered_by_slot=1 "));
+        assert!(line.contains("delivery=\"pasted\""));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stopped_receipt_without_late_apple_keeps_base_bytes() {
+        let take = take(State::RecHold, false).await;
+        take.emitter.on_capture_opened(TAKE, 7);
+        take.emitter.on_event(&stop_preview("one two"));
+        let frozen = take.emitter.begin_stop_canvas().unwrap();
+        assert_eq!(frozen.late_apple_word_counts(), (0, 0));
+        let revision = frozen.revision;
+        let wait = StopCanvasWait {
+            snapshot: Some(frozen.clone()),
+            stop_final_wait_ms: 2_000,
+            stop_final_timeout: true,
+            live_finals_admitted: false,
+            painted_at_stop: Some(frozen),
+            preempted: false,
+            armed_order: true,
+        };
+        let receipts = StopReceiptLog::default();
+        let _trace = receipts.subscribe();
+        take.controller
+            .settle_frozen_canvas_at_stop(
+                Some(TAKE),
+                Some(&take.emitter),
+                wait,
+                std::time::Instant::now(),
+                |text| async move {
+                    assert_eq!(text, "one two");
+                    Ok(TranscriptDelivery::SinkAccepted)
+                },
+            )
+            .await
+            .unwrap();
+        let log = receipts.text();
+        let mut settled_lines = log
+            .lines()
+            .filter(|line| line.contains("stop canvas delivery settled"));
+        let line = settled_lines.next().expect("settled receipt");
+        assert!(settled_lines.next().is_none());
+        // fd916e2c7's receipt field order and bytes for this fixture. Only the
+        // wall-clock duration varies; preserve its captured value verbatim.
+        let (prefix, fields) = line.split_once("stop_to_delivery_ms=").unwrap();
+        let target = module_path!()
+            .strip_suffix("::refusal_recovery_tests")
+            .unwrap();
+        assert_eq!(prefix, format!(" INFO {target}: stop canvas delivery settled "));
+        let elapsed = fields.split_whitespace().next().unwrap();
+        assert!(elapsed.parse::<u128>().is_ok());
+        let expected = format!(
+            concat!(
+                "{}stop_to_delivery_ms={} delivery=\"pasted\" ",
+                "stop_final_wait_ms=2000 stop_final_timeout=true live_finals_admitted=false ",
+                "painted_words_at_stop=2 painted_words_at_snapshot=2 ",
+                "superseded_by_partial_words=0 admitted_into_words=0 closed_by_final_words=0 ",
+                "retained_as_evidence_words=0 untimed_final_phrases=0 ",
+                "untimed_final_phrase_arrivals=Some([]) moved_to_pending_words=0 ",
+                "moved_to_unmatched_words=0 untimed_final_words=0 covered_by_committed_words=0 ",
+                "relabeled_in_place_words=0 reshaped_in_place_words=0 unaccounted=0 ",
+                "armed_order=true light_plus=\"skipped_preview\" capture_epoch=7 reducer_revision={} ",
+                "preview_only_words=2 preview_words_in_paste=2 paste_words=2 ",
+                "paste_periods=0 paste_commas=0 paste_qe=0"
+            ),
+            prefix, elapsed, revision
+        );
+        assert_eq!(line.as_bytes(), expected.as_bytes());
+        assert!(!line.contains("late_apple_words_"));
     }
 
     /// No live final, no committed document. This exercises
