@@ -223,6 +223,7 @@ struct HoldStartSession {
     session_id: Arc<RwLock<Option<String>>>,
     active_transcript_bus: Arc<RwLock<Option<Arc<TranscriptBus>>>>,
     active_presentation: Arc<RwLock<Option<Arc<PresentationEmitter>>>>,
+    active_stop_receipt: Arc<RwLock<Arc<std::sync::Mutex<LateFinalReceipt>>>>,
     assistive_context: Arc<RwLock<Option<AssistiveContext>>>,
     pre_overlay_frontmost_app: Arc<RwLock<Option<String>>>,
     event_broadcast: broadcast::Sender<IpcEvent>,
@@ -237,6 +238,7 @@ struct HoldStartSession {
 /// Naming this boundary keeps structural inspection exact while both handles
 /// continue to refer to one `PresentationEmitter` instance.
 struct RecordingEventPipeline {
+    stop_receipt: Arc<std::sync::Mutex<LateFinalReceipt>>,
     event_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink>,
     presentation: Arc<PresentationEmitter>,
 }
@@ -707,13 +709,108 @@ impl StopPasteWaitControl {
     }
 }
 
+/// Receipt-only join of stop settlement and the first post-bound live final.
+/// Owned by the take's event sink, including when that sink drains after retirement.
+#[derive(Default)]
+struct LateFinalReceipt {
+    take_id: Option<String>,
+    stopped_at: Option<tokio::time::Instant>,
+    pasted: Option<String>,
+    final_arrival: Option<(String, u128)>,
+    closed: bool,
+}
+
+impl LateFinalReceipt {
+    fn begin(&mut self, take_id: Option<&str>, stopped_at: tokio::time::Instant) {
+        self.take_id = take_id.map(str::to_owned);
+        self.stopped_at = Some(stopped_at);
+    }
+
+    fn settle(&mut self, take_id: Option<&str>, timed_out: bool, pasted: &str) {
+        if self.closed || self.take_id.as_deref() != take_id {
+            return;
+        }
+        if !timed_out {
+            self.closed = true;
+            self.final_arrival = None;
+            return;
+        }
+        self.pasted = Some(pasted.to_owned());
+        self.emit_if_ready();
+    }
+
+    fn observe(&mut self, event: &EngineEvent) {
+        if self.closed || self.final_arrival.is_some() {
+            return;
+        }
+        let EngineEvent::UtteranceFinal { text, .. } = event else {
+            return;
+        };
+        let Some(stopped_at) = self.stopped_at else {
+            return;
+        };
+        let elapsed = stopped_at.elapsed();
+        if elapsed < STOP_FINAL_BOUND {
+            return;
+        }
+        self.final_arrival = Some((text.clone(), elapsed.as_millis()));
+        self.emit_if_ready();
+    }
+
+    fn emit_if_ready(&mut self) {
+        let (Some(pasted), Some((final_text, elapsed)), Some(take_id)) =
+            (&self.pasted, &self.final_arrival, &self.take_id)
+        else {
+            return;
+        };
+        let missing = late_final_missing_words(pasted, final_text);
+        info!(
+            take_id = %take_id,
+            late_final_words_after_bound = missing,
+            late_final_after_bound_ms = *elapsed,
+            "stop canvas late final receipt"
+        );
+        self.closed = true;
+        self.pasted = None;
+        self.final_arrival = None;
+    }
+}
+
+/// Count unmatched final words using an ordered, multiplicity-preserving match.
+/// Use the same outward marker stripping as paste; case and punctuation remain
+/// significant. LCS avoids turning one insertion into a cascade of mismatches.
+fn late_final_missing_words(pasted: &str, final_text: &str) -> usize {
+    let pasted = context_bucket::strip_markers_for_delivery(pasted);
+    let final_text = context_bucket::strip_markers_for_delivery(final_text);
+    let words: Vec<_> = final_text.split_whitespace().collect();
+    let mut matched = vec![0_usize; words.len() + 1];
+    for pasted_word in pasted.split_whitespace() {
+        let mut diagonal = 0;
+        for (index, final_word) in words.iter().enumerate() {
+            let previous = matched[index + 1];
+            matched[index + 1] = if pasted_word == *final_word {
+                diagonal + 1
+            } else {
+                matched[index + 1].max(matched[index])
+            };
+            diagonal = previous;
+        }
+    }
+    words.len() - matched[words.len()]
+}
+
 struct TakeExternalEventSink {
+    stop_receipt: Arc<std::sync::Mutex<LateFinalReceipt>>,
     presentation: Arc<PresentationEmitter>,
     sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink>,
 }
 
 impl codescribe_core::pipeline::contracts::EventSink for TakeExternalEventSink {
     fn on_event(&self, event: &EngineEvent) {
+        self.stop_receipt
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .observe(event);
         self.presentation
             .with_active_presentation(|| self.sink.on_event(event));
     }
@@ -1078,6 +1175,7 @@ pub struct RecordingController {
     /// the exact reducer/ledger pair that authored the visible projection.
     /// Replaced atomically when the next take installs its own authority.
     active_presentation: Arc<RwLock<Option<Arc<PresentationEmitter>>>>,
+    active_stop_receipt: Arc<RwLock<Arc<std::sync::Mutex<LateFinalReceipt>>>>,
 
     /// Max conversation survives capture teardown; microphone lifetime is not
     /// conversation lifetime. No chat selection or OS focus changes this slot.
@@ -1363,6 +1461,9 @@ impl RecordingController {
             session_id: Arc::new(RwLock::new(None)),
             active_transcript_bus: Arc::new(RwLock::new(None)),
             active_presentation: Arc::new(RwLock::new(None)),
+            active_stop_receipt: Arc::new(RwLock::new(Arc::new(std::sync::Mutex::new(
+                LateFinalReceipt::default(),
+            )))),
             max_consultation: Mutex::new(None),
             max_approvals: Arc::default(),
             hold_start_task: Arc::new(Mutex::new(None)),
@@ -2371,6 +2472,12 @@ impl RecordingController {
         // receiver is waiting for this controller operation to finish.
         let preemption = StopPasteWaitRegistration::new();
         let target = clipboard::StopPasteTarget::capture();
+        self.active_stop_receipt
+            .read()
+            .await
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .begin(take_id, tokio::time::Instant::from_std(stopped_at));
         let painted_at_stop = self
             .active_presentation
             .read()
@@ -2747,6 +2854,20 @@ impl RecordingController {
             paste_qe = text.chars().filter(|ch| matches!(ch, '?' | '!')).count(),
             "stop canvas delivery settled"
         );
+        self.active_stop_receipt
+            .read()
+            .await
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .settle(
+                take_id,
+                stop_final_timeout,
+                if delivery == TranscriptDelivery::SinkAccepted {
+                    text
+                } else {
+                    ""
+                },
+            );
         Ok(delivery)
     }
 
@@ -3524,7 +3645,9 @@ impl RecordingController {
             Arc::new(helpers::IpcBroadcastSink::new(event_broadcast));
         let delivery_tag_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
             delivery_tagger;
+        let stop_receipt = Arc::new(std::sync::Mutex::new(LateFinalReceipt::default()));
         let external_sink = Arc::new(TakeExternalEventSink {
+            stop_receipt: Arc::clone(&stop_receipt),
             presentation: Arc::clone(&presentation),
             sink: Arc::new(codescribe_core::pipeline::sinks::FanoutEventSink::new(
                 vec![ipc_sink, delivery_tag_sink],
@@ -3534,6 +3657,7 @@ impl RecordingController {
             vec![presentation_sink, external_sink],
         ));
         RecordingEventPipeline {
+            stop_receipt,
             event_sink,
             presentation,
         }
@@ -3600,7 +3724,7 @@ impl RecordingController {
         event_broadcast: broadcast::Sender<IpcEvent>,
         transcript_bus: Option<Arc<TranscriptBus>>,
         delivery_tagger: Arc<TranscriptDeliveryTagger>,
-    ) -> Arc<PresentationEmitter> {
+    ) -> RecordingEventPipeline {
         Self::configure_level_broadcast(recorder, event_broadcast.clone());
         let acoustic_ledger = recorder.acoustic_ledger_handle();
         let pipeline = Self::build_recording_event_sink(
@@ -3614,8 +3738,8 @@ impl RecordingController {
             acoustic_ledger,
             delivery_tagger,
         );
-        recorder.set_event_sink(Some(pipeline.event_sink));
-        pipeline.presentation
+        recorder.set_event_sink(Some(Arc::clone(&pipeline.event_sink)));
+        pipeline
     }
 
     /// Wire level metering and the event sink for a toggle / hands-off session,
@@ -3627,7 +3751,7 @@ impl RecordingController {
         event_broadcast: broadcast::Sender<IpcEvent>,
         transcript_bus: Option<Arc<TranscriptBus>>,
         delivery_tagger: Arc<TranscriptDeliveryTagger>,
-    ) -> Arc<PresentationEmitter> {
+    ) -> RecordingEventPipeline {
         // Hands-off is ONE continuous recorder session (ADR 2026-05-28 Faza 1).
         // Normal hands-off uses cumulative SessionRendered deltas in the transcription overlay.
         //
@@ -3648,8 +3772,8 @@ impl RecordingController {
             acoustic_ledger,
             delivery_tagger,
         );
-        recorder.set_event_sink(Some(pipeline.event_sink));
-        pipeline.presentation
+        recorder.set_event_sink(Some(Arc::clone(&pipeline.event_sink)));
+        pipeline
     }
 
     /// Handle hotkey event - main entry point for state machine
@@ -4430,6 +4554,7 @@ impl RecordingController {
             session_id: Arc::clone(&self.session_id),
             active_transcript_bus: Arc::clone(&self.active_transcript_bus),
             active_presentation: Arc::clone(&self.active_presentation),
+            active_stop_receipt: Arc::clone(&self.active_stop_receipt),
             assistive_context: Arc::clone(&self.assistive_context),
             pre_overlay_frontmost_app: Arc::clone(&self.pre_overlay_frontmost_app),
             event_broadcast: event_broadcast.clone(),
@@ -4646,15 +4771,18 @@ impl RecordingController {
 
             // Runtime pipeline is always event-based. Hold mode has no utterance callback;
             // text is finalized on key-up in `finish_recording`.
-            let presentation = Self::configure_hold_event_sink(
+            let pipeline = Self::configure_hold_event_sink(
                 rec,
                 is_assistive || overlay_enabled,
                 event_broadcast.clone(),
                 transcript_bus.clone(),
                 Arc::clone(&hold_session.delivery_tagger),
             );
-            presentation.set_literal_delivery(*hold_session.force_raw_mode.read().await);
-            *hold_session.active_presentation.write().await = Some(presentation);
+            pipeline
+                .presentation
+                .set_literal_delivery(*hold_session.force_raw_mode.read().await);
+            *hold_session.active_stop_receipt.write().await = pipeline.stop_receipt;
+            *hold_session.active_presentation.write().await = Some(pipeline.presentation);
             if !cfg!(test) {
                 let language_hint = language.whisper_hint().map(str::to_string);
                 // Audio-first cold start: do not preflight Whisper here. The
@@ -4668,16 +4796,18 @@ impl RecordingController {
                             warn!("Hold-start stale-recorder recovery failed: {stop_err}");
                         }
                         Self::clear_recorder_callbacks(rec);
-                        let presentation = Self::configure_hold_event_sink(
+                        let pipeline = Self::configure_hold_event_sink(
                             rec,
                             is_assistive || overlay_enabled,
                             event_broadcast.clone(),
                             transcript_bus.clone(),
                             Arc::clone(&hold_session.delivery_tagger),
                         );
-                        presentation
+                        pipeline
+                            .presentation
                             .set_literal_delivery(*hold_session.force_raw_mode.read().await);
-                        *hold_session.active_presentation.write().await = Some(presentation);
+                        *hold_session.active_stop_receipt.write().await = pipeline.stop_receipt;
+                        *hold_session.active_presentation.write().await = Some(pipeline.presentation);
                         let retry_result = rec.start_event_session(language_hint).await;
                         if let Err(retry_err) = retry_result {
                             error!("Failed to start recorder after recovery: {retry_err}");
@@ -4948,7 +5078,7 @@ impl RecordingController {
         .map(Arc::new);
 
         // Runtime pipeline is always event-based.
-        let presentation = Self::configure_toggle_event_sink(
+        let pipeline = Self::configure_toggle_event_sink(
             recorder,
             overlay_enabled,
             is_assistive,
@@ -4956,8 +5086,11 @@ impl RecordingController {
             transcript_bus.clone(),
             Arc::clone(&self.delivery_tagger),
         );
-        presentation.set_literal_delivery(*self.force_raw_mode.read().await);
-        *self.active_presentation.write().await = Some(presentation);
+        pipeline
+            .presentation
+            .set_literal_delivery(*self.force_raw_mode.read().await);
+        *self.active_stop_receipt.write().await = pipeline.stop_receipt;
+        *self.active_presentation.write().await = Some(pipeline.presentation);
         // Skip actual audio stream in tests (no CoreAudio device needed)
         let language_hint = language.whisper_hint().map(str::to_string);
         // Audio-first cold start: do not preflight Whisper here. The recorder
@@ -4971,7 +5104,7 @@ impl RecordingController {
                     warn!("Toggle stale-recorder recovery failed: {stop_err}");
                 }
                 Self::clear_recorder_callbacks(recorder);
-                let presentation = Self::configure_toggle_event_sink(
+                let pipeline = Self::configure_toggle_event_sink(
                     recorder,
                     overlay_enabled,
                     is_assistive,
@@ -4979,8 +5112,11 @@ impl RecordingController {
                     transcript_bus.clone(),
                     Arc::clone(&self.delivery_tagger),
                 );
-                presentation.set_literal_delivery(*self.force_raw_mode.read().await);
-                *self.active_presentation.write().await = Some(presentation);
+                pipeline
+                    .presentation
+                    .set_literal_delivery(*self.force_raw_mode.read().await);
+                *self.active_stop_receipt.write().await = pipeline.stop_receipt;
+                *self.active_presentation.write().await = Some(pipeline.presentation);
                 if let Err(retry_err) = recorder.start_event_session(language_hint).await {
                     drop(recorder_guard);
                     self.reset_session_after_start_failure("Toggle-start retry")
@@ -6536,6 +6672,196 @@ mod refusal_recovery_tests {
                 },
             )
             .await
+    }
+
+    fn stop_live_final(text: &str) -> EngineEvent {
+        EngineEvent::UtteranceFinal {
+            utterance_id: 1,
+            text: text.into(),
+            raw_text: text.into(),
+            start_ts: 0.0,
+            end_ts: 1.0,
+            segments: Vec::new(),
+            vad_speech_pct: None,
+            avg_logprob: None,
+            compression_ratio: None,
+            confidence_flags: Vec::new(),
+        }
+    }
+
+    async fn check_late_final_receipt(
+        final_text: Option<&str>,
+        in_bound: bool,
+        during_sink: bool,
+        expected_missing: Option<usize>,
+    ) {
+        let take = take(State::RecHold, false).await;
+        let pipeline = RecordingController::build_recording_event_sink(
+            Arc::new(Mutex::new(String::new())),
+            RecordingEventSinkOptions {
+                preview_deltas_enabled: false,
+                sentence_pause_sec: 0.0,
+            },
+            take.controller.event_broadcast.clone(),
+            Some(Arc::clone(&take.bus)),
+            Some(Arc::clone(&take.ledger)),
+            Arc::clone(&take.controller.delivery_tagger),
+        );
+        *take.controller.active_stop_receipt.write().await = Arc::clone(&pipeline.stop_receipt);
+        pipeline.presentation.on_capture_opened(TAKE, 7);
+        pipeline.presentation.set_literal_delivery(true);
+        pipeline.event_sink.on_event(&stop_preview("one two"));
+        let stopped_at = tokio::time::Instant::now();
+        pipeline
+            .stop_receipt
+            .lock()
+            .unwrap()
+            .begin(Some(TAKE), stopped_at);
+        let receipts = StopReceiptLog::default();
+        let _trace = receipts.subscribe();
+        let publish_final = || {
+            if let Some(text) = final_text {
+                let mutation = stop_mutation(&mut take.ledger.lock().unwrap(), text);
+                pipeline.event_sink.on_event(&mutation);
+                pipeline
+                    .event_sink
+                    .on_event(&stop_closed_phrase(text.split_whitespace().count()));
+                pipeline.event_sink.on_event(&stop_live_final(text));
+            }
+        };
+        let wait = await_live_finals_for_delivery(
+            async {
+                if in_bound {
+                    tokio::time::sleep(STOP_FINAL_BOUND / 2).await;
+                    publish_final();
+                    true
+                } else {
+                    std::future::pending::<bool>().await
+                }
+            },
+            || pipeline.presentation.visible_canvas_snapshot(),
+            stopped_at,
+            pipeline.presentation.visible_canvas_snapshot(),
+            true,
+            None,
+        )
+        .await;
+        assert_eq!(wait.stop_final_timeout, !in_bound);
+        let calls = AtomicUsize::new(0);
+        let settled = take
+            .controller
+            .settle_frozen_canvas_at_stop(
+                Some(TAKE),
+                Some(&pipeline.presentation),
+                wait,
+                stopped_at.into_std(),
+                |text| {
+                    let controller = &take.controller;
+                    let calls = &calls;
+                    let publish_final = &publish_final;
+                    let receipts = &receipts;
+                    async move {
+                        if during_sink {
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            publish_final();
+                            assert!(!receipts.text().contains("late_final_words_after_bound="));
+                        }
+                        stop_sink(controller, text, calls).await
+                    }
+                },
+            )
+            .await
+            .unwrap();
+        if !in_bound && !during_sink {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            publish_final();
+        }
+        if let Some(text) = final_text {
+            // A duplicate event and a later final must not produce another line.
+            pipeline.event_sink.on_event(&stop_live_final(text));
+            pipeline.event_sink.on_event(&stop_live_final("another final"));
+            assert!(
+                pipeline
+                    .presentation
+                    .visible_canvas_snapshot()
+                    .unwrap()
+                    .text
+                    .contains(text)
+            );
+        }
+        deliver_terminal_unless_settled(Some(settled), || async {
+            panic!("late final attempted a second paste")
+        })
+        .await
+        .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let log = receipts.text();
+        let lines: Vec<_> = log
+            .lines()
+            .filter(|line| line.contains("late_final_words_after_bound="))
+            .collect();
+        if let Some(expected) = expected_missing {
+            assert_eq!(lines.len(), 1, "{log}");
+            assert!(lines[0].contains(&format!("late_final_words_after_bound={expected}")));
+            assert!(lines[0].contains(&format!(
+                "late_final_after_bound_ms={}",
+                (STOP_FINAL_BOUND + Duration::from_secs(1)).as_millis(),
+            )));
+            assert!(lines[0].contains(&format!("take_id={TAKE}")));
+            assert!(!lines[0].contains("one two"));
+            assert!(!lines[0].contains("three four"));
+        } else {
+            assert!(lines.is_empty(), "{log}");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn late_final_counts_two_new_words_without_a_second_paste() {
+        check_late_final_receipt(Some("one two three four"), false, false, Some(2)).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn late_final_emits_zero_when_the_paste_already_has_its_words() {
+        check_late_final_receipt(Some("one two"), false, false, Some(0)).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn in_bound_final_emits_no_late_receipt() {
+        check_late_final_receipt(Some("one two three four"), true, false, None).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timeout_without_a_final_emits_no_late_receipt() {
+        check_late_final_receipt(None, false, false, None).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn final_racing_the_sink_joins_the_settlement_once() {
+        check_late_final_receipt(Some("one two three four"), false, true, Some(2)).await;
+    }
+
+    #[test]
+    fn late_word_comparison_preserves_order_case_punctuation_and_multiplicity() {
+        assert_eq!(
+            late_final_missing_words("Iwo Iwo Iwo Iwo Iwo", "Iwo Iwo Iwo Iwo Iwo"),
+            0
+        );
+        assert_eq!(
+            late_final_missing_words("Iwo Iwo Iwo", "Iwo Iwo Iwo Iwo Iwo"),
+            2
+        );
+        assert_eq!(
+            late_final_missing_words("one two", "new one middle two tail"),
+            3
+        );
+        assert_eq!(late_final_missing_words("one two", "two one"), 1);
+        assert_eq!(late_final_missing_words("One two.", "one two"), 2);
+        assert_eq!(
+            late_final_missing_words(" one  {selection_1} two\n", "one\ttwo"),
+            0
+        );
+        assert_eq!(late_final_missing_words("", "one two"), 2);
+        assert_eq!(late_final_missing_words("one two", ""), 0);
     }
 
     /// No live final, no committed document. This exercises
