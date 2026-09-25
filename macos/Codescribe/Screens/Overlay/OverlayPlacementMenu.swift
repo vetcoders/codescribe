@@ -77,7 +77,8 @@ struct OverlayPlacementMenu: View {
     .accessibilityLabel("Position overlay")
     .accessibilityValue(
       (state.keepVisibleBetweenTakes ? "Pinned, " : "")
-        + (state.freeMotion ? "Free motion" : state.placementAnchor.label))
+        + (state.freeMotion ? "Free motion" : state.placementAnchor.label)
+    )
     .accessibilityHint("Choose a screen anchor or allow free dragging")
     .accessibilityIdentifier("overlay-placement-menu")
   }

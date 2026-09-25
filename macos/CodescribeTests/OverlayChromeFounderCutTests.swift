@@ -236,7 +236,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(close.contains(".scaleEffect(closeDotHovered"))
     let scale = try XCTUnwrap(close.range(of: ".scaleEffect(")?.lowerBound)
     let hitShape = try XCTUnwrap(close.range(of: ".contentShape(")?.lowerBound)
-    XCTAssertLessThan(scale, hitShape, "Hover growth must not change the button's layout or hit shape")
+    XCTAssertLessThan(
+      scale, hitShape, "Hover growth must not change the button's layout or hit shape")
     XCTAssertTrue(close.contains(".onHover { closeDotHovered = $0 }"))
     XCTAssertTrue(close.contains(".contentShape(Circle().inset(by: compact ? -9.375 : -8.5))"))
     XCTAssertFalse(close.contains(".frame("), "A frame would move the dot")

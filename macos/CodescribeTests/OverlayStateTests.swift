@@ -3411,14 +3411,16 @@ final class OverlayStateTests: XCTestCase {
   func testPinnedCloseHidesPanelAndNextDictationShowsItWithoutUnpinning() {
     let engine = OverlayStateTestEngine()
     let state = OverlayState()
-    state.engine = engine
-    state.setKeepVisibleBetweenTakes(true)
     let panel = NSPanel()
     var shows = 0
     var hides = 0
     let controller = makeRoutedController(
       state: state, overlayEnabled: true, assistive: false, panel: panel,
       frontCount: { shows += 1 }, outCount: { hides += 1 })
+    // The controller's init attaches its own (nil) engine and re-reads the pin,
+    // as AppModel does with the real engine; pin only after that attach.
+    state.engine = engine
+    state.setKeepVisibleBetweenTakes(true)
     state.onClose = { controller.hide() }
 
     state.handleRecordingPreparing()
