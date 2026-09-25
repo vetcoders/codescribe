@@ -450,7 +450,7 @@ category = "stt"
 description = "Whisper transcription language hint. auto leaves detection to Whisper and applies on the next capture."
 
 [vars.WHISPER_CONTEXT_WINDOW_SEC]
-default = "4.0"
+default = "8.0"
 type = "f32"
 reload = "hot"
 category = "stt"

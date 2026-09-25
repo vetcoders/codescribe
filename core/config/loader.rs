@@ -3634,6 +3634,31 @@ mod tests {
 
     #[test]
     #[serial]
+    fn unrelated_promoted_save_materializes_missing_context_values() {
+        let _tmp = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        fs::write(&path, r#"{"schema_version":3,"speech":{"engine":{}}}"#)
+            .expect("seed settings without context values");
+
+        Config::default()
+            .save_to_env_many(&[("TOGGLE_SILENCE_SEC", "3.0")])
+            .expect("save unrelated promoted setting");
+
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).expect("read saved settings"))
+                .expect("parse saved settings");
+        assert_eq!(
+            saved.pointer("/speech/engine/whisper_context_window_sec"),
+            Some(&serde_json::json!(8.0))
+        );
+        assert_eq!(
+            saved.pointer("/speech/engine/light_plus_sentence_pause_sec"),
+            Some(&serde_json::json!(0.7))
+        );
+    }
+
+    #[test]
+    #[serial]
     fn light_plus_sentence_pause_round_trips_and_env_wins() {
         let _tmp = setup_isolated_data_dir();
         let previous = std::env::var("LIGHT_PLUS_SENTENCE_PAUSE_SEC").ok();

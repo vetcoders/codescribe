@@ -1708,8 +1708,14 @@ impl UserSettings {
                     live_transcription_endpoint: self.stt_live_endpoint.clone(),
                     cloud_max_upload_mb: self.backend_max_upload_mb,
                     whisper_model: self.whisper_model.clone(),
-                    whisper_context_window_sec: self.whisper_context_window_sec,
-                    light_plus_sentence_pause_sec: self.light_plus_sentence_pause_sec,
+                    whisper_context_window_sec: Some(
+                        self.whisper_context_window_sec
+                            .unwrap_or_else(super::default_whisper_context_window_sec),
+                    ),
+                    light_plus_sentence_pause_sec: Some(
+                        self.light_plus_sentence_pause_sec
+                            .unwrap_or_else(super::default_light_plus_sentence_pause_sec),
+                    ),
                     stt_engine: self.stt_engine.clone(),
                     final_pass_mode: self.final_pass_mode.clone(),
                     layered_transcription: self.layered_transcription.clone(),
@@ -3031,6 +3037,80 @@ mod tests {
             std::env::remove_var("TOGGLE_TRIGGER");
         }
         tmp
+    }
+
+    #[test]
+    #[serial]
+    fn missing_window_and_pause_materialize_on_next_save() {
+        let _tmp = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        fs::write(&path, r#"{"schema_version":3,"speech":{"engine":{}}}"#)
+            .expect("seed settings without the two values");
+
+        let loaded = UserSettings::load();
+        loaded.save().expect("save existing settings");
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).expect("read saved settings"))
+                .expect("parse saved settings");
+        assert_eq!(
+            saved.pointer("/speech/engine/whisper_context_window_sec"),
+            Some(&serde_json::json!(8.0))
+        );
+        assert_eq!(
+            saved.pointer("/speech/engine/light_plus_sentence_pause_sec"),
+            Some(&serde_json::json!(0.7))
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn existing_window_value_survives_load_and_save() {
+        let _tmp = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        fs::write(
+            &path,
+            r#"{"schema_version":3,"speech":{"engine":{"whisper_context_window_sec":6.0}}}"#,
+        )
+        .expect("seed settings with explicit context window");
+
+        UserSettings::load().save().expect("save existing settings");
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).expect("read saved settings"))
+                .expect("parse saved settings");
+        assert_eq!(
+            saved.pointer("/speech/engine/whisper_context_window_sec"),
+            Some(&serde_json::json!(6.0))
+        );
+        assert_eq!(
+            saved.pointer("/speech/engine/light_plus_sentence_pause_sec"),
+            Some(&serde_json::json!(0.7))
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn two_loads_of_unchanged_settings_do_not_write() {
+        let _tmp = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        fs::write(&path, r#"{"schema_version":3,"speech":{"engine":{}}}"#)
+            .expect("seed settings without context values");
+        let before = fs::read(&path).expect("read original bytes");
+        let modified = fs::metadata(&path)
+            .expect("original metadata")
+            .modified()
+            .unwrap();
+
+        let _ = UserSettings::load();
+        let _ = UserSettings::load();
+
+        assert_eq!(fs::read(&path).expect("read after loads"), before);
+        assert_eq!(
+            fs::metadata(&path)
+                .expect("metadata after loads")
+                .modified()
+                .unwrap(),
+            modified
+        );
     }
 
     #[test]

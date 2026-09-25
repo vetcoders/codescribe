@@ -124,7 +124,7 @@ mod tests {
         assert!(!config.transcript_tagging_enabled);
         assert_eq!(config.double_tap_interval_ms, 200);
         assert_eq!(config.toggle_silence_sec, 5.0);
-        assert_eq!(config.whisper_context_window_sec, 4.0);
+        assert_eq!(config.whisper_context_window_sec, 8.0);
         assert!(config.show_dock_icon);
         assert_eq!(config.local_model, models::DEFAULT_MODEL);
     }
