@@ -467,6 +467,13 @@ impl std::error::Error for IncrementalShapingRefusal {}
 /// the committed words, and the reducer drops it instead of rendering a lie.
 type ShapedPresentation = IncrementalShapingReceipt;
 
+/// Exact canvas dispatched for paint, including its non-authoritative words.
+#[derive(Debug, Default)]
+struct PaintedCanvas {
+    text: String,
+    preview_only_words: usize,
+}
+
 /// The one committed Rust document plus explicitly non-authoritative UI paint.
 /// Only `document_by_occurrence` can produce a committed revision. The preview
 /// field is volatile, has no occurrence identity, and is discarded at terminal
@@ -484,6 +491,8 @@ pub struct TranscriptReducer {
     consultation_presentations: Vec<ConsultationPresentationReceipt>,
     revision: u64,
     ephemeral_preview: String,
+    /// Updated only by a paint command; unpublished reducer changes stay invisible.
+    last_painted_canvas: PaintedCanvas,
     latest_seal_coverage: Option<SealCoverageReceipt>,
     latest_comparison: Option<TranscriptComparisonReceipt>,
     context_markers: Vec<DocumentContextMarker>,
@@ -640,6 +649,19 @@ impl TranscriptReducer {
             append_exact_fragment(&mut rendered, label);
         }
         rendered
+    }
+
+    fn visible_unanchored_words(&self) -> usize {
+        self.unanchored_evidence
+            .iter()
+            .filter(|(occurrence, _)| {
+                !self
+                    .document_by_occurrence
+                    .keys()
+                    .any(|committed| range_within(occurrence, committed))
+            })
+            .map(|(_, (label, _))| label.split_whitespace().count())
+            .sum()
     }
 
     /// Every unanchored text of one capture in PCM order, for the paint beside
@@ -1445,6 +1467,8 @@ pub struct PresentationEmitter {
     /// floor, exactly as the pre-ledger controller gated it.
     literal_delivery: std::sync::atomic::AtomicBool,
     sentence_pause_sec: f32,
+    #[cfg(test)]
+    paint_commands: std::sync::Mutex<Vec<String>>,
 }
 
 impl PresentationEmitter {
@@ -1461,25 +1485,12 @@ impl PresentationEmitter {
             .session_state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let text = reducer.ephemeral_visual_text();
-        let unanchored_words = reducer
-            .unanchored_evidence
-            .iter()
-            .filter(|(occurrence, _)| {
-                !reducer
-                    .document_by_occurrence
-                    .keys()
-                    .any(|committed| range_within(occurrence, committed))
-            })
-            .map(|(_, (label, _))| label.split_whitespace().count())
-            .sum::<usize>();
         Some(VisibleCanvasSnapshot {
             session_id: session_id.clone(),
             capture_epoch: *capture_epoch,
             revision: reducer.revision,
-            text,
-            preview_only_words: reducer.ephemeral_preview.split_whitespace().count()
-                + unanchored_words,
+            text: reducer.last_painted_canvas.text.clone(),
+            preview_only_words: reducer.last_painted_canvas.preview_only_words,
             has_committed_document: !reducer.document_by_occurrence.is_empty(),
             qualified_occurrences: ledger.as_ref().map_or(0, |ledger| {
                 ledger
@@ -1608,6 +1619,8 @@ impl PresentationEmitter {
             cursor_integrity: std::sync::Mutex::new(None),
             cursor_tail: std::sync::Mutex::new(String::new()),
             cursor_unanchored_preview: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            paint_commands: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -1729,10 +1742,21 @@ impl PresentationEmitter {
     }
 
     /// Send a command to the emitter worker (non-blocking, ordered).
-    fn send_cmd(&self, cmd: EmitterCmd) {
+    fn send_cmd(&self, cmd: EmitterCmd, preview_only_words: usize) {
         match &cmd {
-            EmitterCmd::PublishCommittedRevision { paint, .. } => self.paint_cursor(paint),
-            EmitterCmd::PaintEphemeralPreview(text) => self.paint_cursor(text),
+            EmitterCmd::PublishCommittedRevision { paint, .. }
+            | EmitterCmd::PaintEphemeralPreview(paint) => {
+                self.session_state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .last_painted_canvas = PaintedCanvas {
+                    text: paint.clone(),
+                    preview_only_words,
+                };
+                #[cfg(test)]
+                self.paint_commands.lock().unwrap().push(paint.clone());
+                self.paint_cursor(paint);
+            }
             EmitterCmd::Finish => {}
         }
         if let Ok(guard) = self.cmd_tx.lock()
@@ -1784,12 +1808,17 @@ impl PresentationEmitter {
 
     /// Paint the visible projection. Delivery receives only the committed text.
     fn send_committed_paint(&self, delivery: String) {
-        let paint = self
-            .session_state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .visible_projection();
-        self.send_cmd(EmitterCmd::PublishCommittedRevision { paint, delivery });
+        let (paint, preview_only_words) = {
+            let state = self
+                .session_state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            (state.visible_projection(), state.visible_unanchored_words())
+        };
+        self.send_cmd(
+            EmitterCmd::PublishCommittedRevision { paint, delivery },
+            preview_only_words,
+        );
     }
 
     /// Accept one explicit overlay revision intent against the retained terminal
@@ -2170,11 +2199,15 @@ impl EventSink for PresentationEmitter {
                     .is_some_and(|id| id.starts_with("light-plus-"));
                 let revision = state.apply_ledger_mutation(&ledger, observation, receipt);
                 let visible = state.visible_projection();
+                let preview_only_words = state.visible_unanchored_words();
                 drop(state);
                 if unanchored {
                     drop(ledger);
                     if !visible.trim().is_empty() {
-                        self.send_cmd(EmitterCmd::PaintEphemeralPreview(visible));
+                        self.send_cmd(
+                            EmitterCmd::PaintEphemeralPreview(visible),
+                            preview_only_words,
+                        );
                     }
                     return;
                 }
@@ -2193,10 +2226,13 @@ impl EventSink for PresentationEmitter {
                             }
                         }
                     }
-                    self.send_cmd(EmitterCmd::PublishCommittedRevision {
-                        paint: visible,
-                        delivery: revision.rendered_text,
-                    });
+                    self.send_cmd(
+                        EmitterCmd::PublishCommittedRevision {
+                            paint: visible,
+                            delivery: revision.rendered_text,
+                        },
+                        preview_only_words,
+                    );
                     if was_stop_revision {
                         self.mint_light_plus_revision(&mut ledger);
                     } else {
@@ -2395,7 +2431,7 @@ impl EventSink for PresentationEmitter {
                         state.clear_ephemeral_preview();
                         state.committed_rendered_text()
                     };
-                    self.send_cmd(EmitterCmd::PaintEphemeralPreview(canonical));
+                    self.send_cmd(EmitterCmd::PaintEphemeralPreview(canonical), 0);
                     self.repaint_cursor();
                     return;
                 }
@@ -2404,12 +2440,19 @@ impl EventSink for PresentationEmitter {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner()) = None;
                 self.repaint_cursor();
-                let visual_text = {
+                let (visual_text, preview_only_words) = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.set_ephemeral_preview(text);
-                    state.ephemeral_visual_text()
+                    (
+                        state.ephemeral_visual_text(),
+                        state.visible_unanchored_words()
+                            + state.ephemeral_preview.split_whitespace().count(),
+                    )
                 };
-                self.send_cmd(EmitterCmd::PaintEphemeralPreview(visual_text));
+                self.send_cmd(
+                    EmitterCmd::PaintEphemeralPreview(visual_text),
+                    preview_only_words,
+                );
             }
             EngineEvent::UtteranceFinal { utterance_id, .. } => {
                 debug!(
@@ -2430,13 +2473,16 @@ impl EventSink for PresentationEmitter {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner()) = None;
                 self.repaint_cursor();
-                let canonical_text = {
+                let (canonical_text, preview_only_words) = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.mark_terminal_lifecycle();
                     state.clear_ephemeral_preview();
-                    state.visible_projection()
+                    (state.visible_projection(), state.visible_unanchored_words())
                 };
-                self.send_cmd(EmitterCmd::PaintEphemeralPreview(canonical_text));
+                self.send_cmd(
+                    EmitterCmd::PaintEphemeralPreview(canonical_text),
+                    preview_only_words,
+                );
                 info!("Engine reported no speech: {}", reason);
             }
             EngineEvent::Drop { kind, text, reason } => {
@@ -2476,12 +2522,15 @@ impl EventSink for PresentationEmitter {
                     partial_coalesced_count,
                     partial_dropped_count,
                 );
-                let canonical_text = {
+                let (canonical_text, preview_only_words) = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.clear_ephemeral_preview();
-                    state.visible_projection()
+                    (state.visible_projection(), state.visible_unanchored_words())
                 };
-                self.send_cmd(EmitterCmd::PaintEphemeralPreview(canonical_text));
+                self.send_cmd(
+                    EmitterCmd::PaintEphemeralPreview(canonical_text),
+                    preview_only_words,
+                );
                 // Capture is over, but terminal presentation authority stays
                 // alive for an explicit overlay revision. The controller
                 // replaces or drops it at the next take; `finish()` is for an
@@ -2496,13 +2545,16 @@ impl EventSink for PresentationEmitter {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner()) = None;
                 self.repaint_cursor();
-                let canonical_text = {
+                let (canonical_text, preview_only_words) = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.mark_terminal_lifecycle();
                     state.clear_ephemeral_preview();
-                    state.visible_projection()
+                    (state.visible_projection(), state.visible_unanchored_words())
                 };
-                self.send_cmd(EmitterCmd::PaintEphemeralPreview(canonical_text));
+                self.send_cmd(
+                    EmitterCmd::PaintEphemeralPreview(canonical_text),
+                    preview_only_words,
+                );
                 // Lifecycle end closes edit admission independently of the
                 // seal verdict. Light+ is idempotent: a document the terminal
                 // seal already shaped yields no second intent.
@@ -3345,7 +3397,11 @@ mod tests {
             emitter.on_event(&mutation);
         }
         emitter.on_event(&preview(3, "Iwo"));
-        assert_eq!(emitter.visible_canvas_snapshot().unwrap().text, "Iwo Iwo");
+        // Stop paste v2 (R3): the open third word is overlay-visible at stop,
+        // but only as preview, without occurrence authority.
+        let open = emitter.visible_canvas_snapshot().unwrap();
+        assert_eq!(open.text, "Iwo Iwo Iwo");
+        assert_eq!(open.preview_only_words, 1);
         let last = {
             let mut ledger = ledger.lock().unwrap();
             admitted_mutation(
@@ -3357,6 +3413,7 @@ mod tests {
         };
         emitter.on_event(&last);
         let frozen = emitter.visible_canvas_snapshot().unwrap();
+        assert_eq!(frozen.preview_only_words, 0);
         assert_eq!(
             frozen.text, "Iwo Iwo Iwo",
             "last occurrence missing at stop"
@@ -3379,7 +3436,12 @@ mod tests {
         );
         emitter.on_capture_opened("take", 7);
         emitter.on_event(&preview(1, "last words"));
-        assert!(emitter.visible_canvas_snapshot().unwrap().text.is_empty());
+        // Stop paste v2 (R3): preview-only words are visible at stop, with no
+        // committed document behind them.
+        let open = emitter.visible_canvas_snapshot().unwrap();
+        assert_eq!(open.text, "last words");
+        assert_eq!(open.preview_only_words, 2);
+        assert!(!open.has_committed_document);
         let last = {
             let mut ledger = ledger.lock().unwrap();
             admitted_mutation(
@@ -3391,8 +3453,193 @@ mod tests {
         };
         emitter.on_event(&last);
         let frozen = emitter.visible_canvas_snapshot().unwrap();
+        assert_eq!(frozen.preview_only_words, 0);
         assert_eq!(frozen.text, "Last words");
         assert_eq!(frozen.revision, 2);
+        emitter.finish().await;
+    }
+
+    #[tokio::test]
+    async fn stop_snapshot_equals_the_last_overlay_paint() {
+        let delivery = Arc::new(Mutex::new(String::new()));
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let mut emitter = PresentationEmitter::new_with_authority(
+            Arc::clone(&delivery),
+            None,
+            None,
+            None,
+            Some(Arc::clone(&ledger)),
+            None,
+        );
+        emitter.on_capture_opened("take", 7);
+        let mut paint_count = 0;
+        let mut assert_paint = |expected_text: &str, expected_preview_words: usize| {
+            let frozen = emitter.visible_canvas_snapshot().unwrap();
+            let paints = emitter.paint_commands.lock().unwrap();
+            assert!(paints.len() > paint_count, "event must dispatch a paint");
+            paint_count = paints.len();
+            assert_eq!(&frozen.text, paints.last().unwrap());
+            assert_eq!(frozen.text, expected_text);
+            assert_eq!(frozen.preview_only_words, expected_preview_words);
+        };
+
+        // Longer than the compact cursor's five-word tail: compare full paints.
+        emitter.on_event(&preview(1, "One two three four five six"));
+        assert_paint("One two three four five six", 6);
+
+        let first = admitted_mutation(
+            &mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("take", 7, 0, 16_000),
+            1,
+            "One two three four five six",
+        );
+        emitter.on_event(&first);
+        assert_paint("One two three four five six", 0);
+
+        emitter.on_event(&preview(2, "open tail"));
+        assert_paint("One two three four five six open tail", 2);
+
+        let tail = OccurrenceIdentity::new("take", 7, 16_000, 32_000);
+        let observation = ObservationIdentity::new(ObservationProducer::Apple, 2, 0, tail.clone());
+        let receipt = ledger.lock().unwrap().keep_visible_unanchored(
+            &observation,
+            "unanchored words",
+            codescribe_core::pipeline::acoustic_ledger::NoAuthorityReason::NoRange,
+        );
+        emitter.on_event(&EngineEvent::LedgerMutation {
+            observation,
+            label: "unanchored words".into(),
+            receipt,
+        });
+        assert_paint("One two three four five six unanchored words", 2);
+
+        let last = admitted_mutation(&mut ledger.lock().unwrap(), tail, 3, "settled tail");
+        emitter.on_event(&last);
+        assert_paint("One two three four five six settled tail", 0);
+        emitter.finish().await;
+        assert_eq!(
+            delivery.lock().await.as_str(),
+            "One two three four five six settled tail"
+        );
+    }
+
+    #[tokio::test]
+    async fn mutation_without_paint_keeps_the_preview_in_the_stop_snapshot() {
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let mut emitter = PresentationEmitter::new_with_authority(
+            Arc::new(Mutex::new(String::new())),
+            None,
+            None,
+            None,
+            Some(Arc::clone(&ledger)),
+            None,
+        );
+        emitter.on_capture_opened("take", 7);
+        let occurrence = OccurrenceIdentity::new("take", 7, 0, 16_000);
+        let first = admitted_mutation(&mut ledger.lock().unwrap(), occurrence.clone(), 1, "Iwo");
+        emitter.on_event(&first);
+        let seal = {
+            let mut ledger = ledger.lock().unwrap();
+            ledger.schedule_frontier(occurrence.clone(), [ObservationProducer::Apple]);
+            assert!(ledger.note_frontier_return(&occurrence, ObservationProducer::Apple));
+            ledger.seal(&occurrence).unwrap().clone()
+        };
+        emitter.on_event(&EngineEvent::LedgerSeal { receipt: seal });
+        emitter.on_event(&EngineEvent::Preview {
+            rev: 2,
+            text: "next words".into(),
+            pin: PreviewPin::open_occurrence(TailSampleRange {
+                session: "take".into(),
+                capture_epoch: 7,
+                sample_start: 16_000,
+                sample_end: 32_000,
+            }),
+        });
+        let before = emitter.visible_canvas_snapshot().unwrap();
+        assert_eq!(before.text, "Iwo next words");
+        assert_eq!(before.preview_only_words, 2);
+        let paint_count = emitter.paint_commands.lock().unwrap().len();
+
+        // A late machine observation over a sealed occurrence has no mutation
+        // authority. This is a ledger-issued refusal, not injected reducer state.
+        let observation = ObservationIdentity::new(ObservationProducer::Apple, 2, 1, occurrence);
+        let receipt = ledger.lock().unwrap().admit(&observation, "changed words");
+        assert!(!receipt.grants_mutation());
+        assert!(!matches!(
+            receipt,
+            MutationReceipt::KeepVisibleUnanchored { .. }
+        ));
+        emitter.on_event(&EngineEvent::LedgerMutation {
+            observation,
+            label: "changed words".into(),
+            receipt,
+        });
+        assert_eq!(emitter.paint_commands.lock().unwrap().len(), paint_count);
+        let after = emitter.visible_canvas_snapshot().unwrap();
+        assert_eq!(after, before);
+        assert_eq!(
+            &after.text,
+            emitter.paint_commands.lock().unwrap().last().unwrap()
+        );
+        emitter.finish().await;
+    }
+
+    #[tokio::test]
+    async fn stop_snapshot_zero_width_paint_excludes_unanchored_words() {
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let mut emitter = PresentationEmitter::new_with_authority(
+            Arc::new(Mutex::new(String::new())),
+            None,
+            None,
+            None,
+            Some(Arc::clone(&ledger)),
+            None,
+        );
+        emitter.on_capture_opened("take", 7);
+        let first = admitted_mutation(
+            &mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("take", 7, 0, 16_000),
+            1,
+            "Iwo",
+        );
+        emitter.on_event(&first);
+        let observation = ObservationIdentity::new(
+            ObservationProducer::Apple,
+            2,
+            0,
+            OccurrenceIdentity::new("take", 7, 16_000, 32_000),
+        );
+        let receipt = ledger.lock().unwrap().keep_visible_unanchored(
+            &observation,
+            "unanchored words",
+            codescribe_core::pipeline::acoustic_ledger::NoAuthorityReason::NoRange,
+        );
+        emitter.on_event(&EngineEvent::LedgerMutation {
+            observation,
+            label: "unanchored words".into(),
+            receipt,
+        });
+        assert_eq!(
+            emitter.visible_canvas_snapshot().unwrap().preview_only_words,
+            2
+        );
+        emitter.on_event(&EngineEvent::Preview {
+            rev: 3,
+            text: "side evidence".into(),
+            pin: PreviewPin::from_segments(TailSampleRange {
+                session: "take".into(),
+                capture_epoch: 7,
+                sample_start: 32_000,
+                sample_end: 32_000,
+            }),
+        });
+        let frozen = emitter.visible_canvas_snapshot().unwrap();
+        assert_eq!(
+            &frozen.text,
+            emitter.paint_commands.lock().unwrap().last().unwrap()
+        );
+        assert_eq!(frozen.text, "Iwo");
+        assert_eq!(frozen.preview_only_words, 0);
         emitter.finish().await;
     }
 
