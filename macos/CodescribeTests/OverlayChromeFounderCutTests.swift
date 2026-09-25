@@ -4,8 +4,8 @@ import XCTest
 @testable import Codescribe
 
 /// Founder cut 2026-09-08 19:18 for the overlay header: the brand dot is the
-/// close control, Auto Paste is toggled from the
-/// header, and no phase capsule ("listening" pill) renders anywhere.
+/// close control, Auto Paste is toggled from the header, and no phase capsule
+/// ("listening" pill) renders anywhere.
 ///
 /// The accepted chrome (agy, `b9c7e8f47`) builds these controls as SwiftUI
 /// `Button`s. SwiftUI does not project its accessibility subtree into the
@@ -170,15 +170,19 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     return view.subviews.lazy.compactMap { self.findTranscript(in: $0) }.first
   }
 
-  func testHeaderCloseHasVisibleGlyph() throws {
+  func testHeaderCloseMarkIsOnTheBrandDot() throws {
     try withPanel(state: .previewListening()) { panel, root in
       let elements = accessibilityTree(root)
       XCTAssertFalse(elements.isEmpty, "The rendered accessibility hierarchy must be observable")
-      for element in elements where element.accessibilityRole() == .image {
-        XCTAssertFalse((element.accessibilityLabel() ?? "").contains("xmark"))
-      }
-      let source = try overlaySource()
-      XCTAssertTrue(source.contains("Text(\"×\")"))
+      let header = try headerSource(overlaySource())
+      let close = try section(
+        of: header, from: "Button {\n          state.relayIntent(.close)",
+        to: "Text(\"codescribe\")")
+      XCTAssertTrue(close.contains("ZStack {"))
+      XCTAssertTrue(close.contains("ModeDot(color: palette.statusToken(for: state.mode).color"))
+      XCTAssertTrue(close.contains("Image(systemName: \"xmark\")"))
+      XCTAssertTrue(close.contains(".accessibilityHidden(true)"))
+      XCTAssertFalse(header.contains("Text(\"×\")"), "The mark must not be a sibling glyph")
       XCTAssertNotNil(panel.contentView)
     }
   }
@@ -192,8 +196,11 @@ final class OverlayChromeFounderCutTests: XCTestCase {
 
     let source = try overlaySource()
     let header = try headerSource(source)
+    let close = try section(
+      of: header, from: "Button {\n          state.relayIntent(.close)",
+      to: "Text(\"codescribe\")")
     XCTAssertTrue(
-      header.contains("state.relayIntent(.close)"),
+      close.contains("state.relayIntent(.close)"),
       "The brand dot must relay the close intent")
     XCTAssertTrue(
       header.contains(".accessibilityIdentifier(\"overlay-brand-close-dot\")"),
@@ -201,9 +208,14 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(
       header.contains(".accessibilityLabel(OverlayIntent.close.accessibilityLabel)"))
     XCTAssertTrue(
-      header.contains("ModeDot(color: palette.statusToken(for: state.mode).color"),
-      "The close control retains the brand status dot")
-    XCTAssertTrue(header.contains("Text(\"×\")"))
+      close.contains("ModeDot(color: palette.statusToken(for: state.mode).color"),
+      "The close control is the brand status dot")
+    XCTAssertEqual(header.components(separatedBy: "state.relayIntent(.close)").count - 1, 1)
+    XCTAssertEqual(header.components(separatedBy: "overlay-brand-close-dot").count - 1, 1)
+    XCTAssertTrue(close.contains(".frame(minWidth: 24, minHeight: 24)"))
+    XCTAssertTrue(close.contains(".contentShape(Rectangle())"))
+    XCTAssertTrue(header.contains("Text(\"codescribe\")"))
+    XCTAssertTrue(header.contains(".allowsHitTesting(false)"))
     // The brand block sits on an inert drag region so the dot answers clicks,
     // not window drags (Founder 19:18: the dot next to codescribe closes).
     XCTAssertTrue(header.contains("overlay-header-inert-drag-region"))

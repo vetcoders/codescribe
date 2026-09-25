@@ -15,11 +15,21 @@ final class OverlayChromeV3Tests: XCTestCase {
       encoding: .utf8)
     let header = try XCTUnwrap(source.range(of: "private func justifiedHeader(compact: Bool)"))
     let tail = String(source[header.lowerBound...].prefix(1_300))
-    XCTAssertTrue(tail.contains("Text(\"×\")"), "Close must have a visible glyph")
+    let button = try XCTUnwrap(tail.range(of: "Button {\n          state.relayIntent(.close)"))
+    let wordmark = try XCTUnwrap(tail.range(of: "Text(\"codescribe\")"))
+    XCTAssertLessThan(button.lowerBound, wordmark.lowerBound)
+    let close = String(tail[button.lowerBound..<wordmark.lowerBound])
+    XCTAssertTrue(close.contains("ZStack {"))
+    XCTAssertTrue(
+      close.contains(
+        "ModeDot(color: palette.statusToken(for: state.mode).color, size: compact ? 9 : 12)"))
+    XCTAssertTrue(close.contains("Image(systemName: \"xmark\")"))
+    XCTAssertTrue(close.contains(".frame(minWidth: 24, minHeight: 24)"))
+    XCTAssertFalse(tail.contains("Text(\"×\")"))
     XCTAssertTrue(tail.contains(".accessibilityLabel(OverlayIntent.close.accessibilityLabel)"))
-    XCTAssertEqual(OverlayIntent.close.accessibilityLabel, "Close overlay")
     for scale in [TextScaleController.minScale, CGFloat(1)] {
-      XCTAssertGreaterThanOrEqual(14 * scale, 11)
+      XCTAssertEqual(OverlayIntent.close.accessibilityLabel, "Close overlay", "scale \(scale)")
+      XCTAssertEqual(TextScaleController.clamp(scale), scale)
     }
   }
 

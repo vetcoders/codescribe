@@ -193,20 +193,15 @@ struct DictationOverlayView: View {
   private func justifiedHeader(compact: Bool) -> some View {
     HStack(spacing: compact ? 6 : 10) {
       HStack(spacing: 5) {
-        Text("codescribe")
-          .font(CSFont.ui(compact ? 12 : 15, .bold))
-          .tracking(-0.3)
-          .foregroundStyle(palette.primaryText.color)
-          .allowsHitTesting(false)
-
         Button {
           state.relayIntent(.close)
         } label: {
-          HStack(spacing: 3) {
-            ModeDot(color: palette.statusToken(for: state.mode).color, size: 7)
-            Text("×")
-              .csFont(16, .medium)
-              .foregroundStyle(palette.primaryText.color)
+          ZStack {
+            ModeDot(color: palette.statusToken(for: state.mode).color, size: compact ? 9 : 12)
+            Image(systemName: "xmark")
+              .font(.system(size: compact ? 5 : 7, weight: .semibold))
+              .foregroundStyle(palette.desktopBackground.color)
+              .accessibilityHidden(true)
           }
           .frame(minWidth: 24, minHeight: 24)
           .contentShape(Rectangle())
@@ -215,6 +210,12 @@ struct DictationOverlayView: View {
         .help(OverlayIntent.close.helpText)
         .accessibilityLabel(OverlayIntent.close.accessibilityLabel)
         .accessibilityIdentifier("overlay-brand-close-dot")
+
+        Text("codescribe")
+          .font(CSFont.ui(compact ? 12 : 15, .bold))
+          .tracking(-0.3)
+          .foregroundStyle(palette.primaryText.color)
+          .allowsHitTesting(false)
       }
       .fixedSize()
       .accessibilityElement(children: .contain)
