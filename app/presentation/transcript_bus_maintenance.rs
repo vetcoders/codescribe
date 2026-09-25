@@ -37,18 +37,42 @@ use anyhow::{Context, Result};
 /// worth the risk of rewriting a file another process may be appending to.
 pub const COMPACTION_THRESHOLD_BYTES: u64 = 128 * 1024 * 1024;
 
-/// Default evidence retention. Deliberately generous: the cost of keeping
-/// evidence a few days too long is disk, and the cost of dropping it a day too
-/// early is a diagnosis that can no longer be made. `status` prints what
-/// shorter windows would reclaim so the operator can choose a sharper one.
-pub const DEFAULT_EVIDENCE_RETENTION_DAYS: u32 = 14;
+/// Age compaction is a power-user opt-in. An absent or zero value leaves the
+/// Bus untouched; the explicit CLI command has its own retention argument.
+pub fn evidence_retention_days() -> Option<u32> {
+    let process = std::env::var("BUS_EVIDENCE_RETENTION_DAYS").ok();
+    let file = if process.is_none() {
+        let path = codescribe_core::config::Config::env_path();
+        codescribe_core::config::Config::parse_env_file(&path)
+            .ok()
+            .and_then(|vars| vars.get("BUS_EVIDENCE_RETENTION_DAYS").cloned())
+    } else {
+        None
+    };
+    parse_evidence_retention_days(process.as_deref().or(file.as_deref()))
+}
 
-/// Read the canonical Settings value for a new compaction pass.
-pub fn evidence_retention_days() -> u32 {
-    codescribe_core::config::UserSettings::load()
-        .evidence_retention_days
-        .unwrap_or(DEFAULT_EVIDENCE_RETENTION_DAYS)
-        .clamp(1, 3650)
+fn parse_evidence_retention_days(raw: Option<&str>) -> Option<u32> {
+    raw.and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|days| *days > 0)
+        .map(|days| days.min(3650))
+}
+
+/// Gate before opening or scanning the Bus. Both app triggers use this owner.
+pub fn compact_bus_if_enabled(path: &Path, trigger: &str) -> Result<Option<CompactionReport>> {
+    compact_bus_if_enabled_with(path, trigger, evidence_retention_days(), compact_bus_owned)
+}
+
+fn compact_bus_if_enabled_with(
+    path: &Path,
+    trigger: &str,
+    days: Option<u32>,
+    compact: impl FnOnce(&Path, u32, &str) -> Result<Option<CompactionReport>>,
+) -> Result<Option<CompactionReport>> {
+    match days {
+        Some(days) => compact(path, days, trigger),
+        None => Ok(None),
+    }
 }
 
 /// Windows offered in the status preview, in days.
@@ -625,6 +649,7 @@ fn compact_bus_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn app_append_survives_compaction_and_remains_on_visible_path() {
@@ -865,6 +890,73 @@ mod tests {
         let before = std::fs::read(&path).unwrap();
         assert!(compact_bus_owned(&path, 14, "idle").unwrap().is_none());
         assert_eq!(std::fs::read(&path).unwrap(), before);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unset_retention_trigger_performs_zero_bus_reads() {
+        let reads = std::cell::Cell::new(0);
+        let path = Path::new("/no-bus-open-for-disabled-compaction");
+        for raw in [None, Some(""), Some("0"), Some("invalid")] {
+            let days = parse_evidence_retention_days(raw);
+            let result = compact_bus_if_enabled_with(path, "startup", days, |_, _, _| {
+                reads.set(reads.get() + 1);
+                unreachable!("disabled trigger must not reach the Bus")
+            })
+            .unwrap();
+            assert!(result.is_none());
+        }
+        assert_eq!(reads.get(), 0);
+    }
+
+    #[test]
+    #[serial]
+    fn env_file_enables_retention_and_process_zero_disables_it() {
+        let dir = temp("retention-env");
+        let env_path = dir.join("settings.env");
+        std::fs::write(&env_path, "BUS_EVIDENCE_RETENTION_DAYS=7\n").unwrap();
+        let previous_path = std::env::var("CODESCRIBE_ENV_PATH").ok();
+        let previous_days = std::env::var("BUS_EVIDENCE_RETENTION_DAYS").ok();
+        unsafe {
+            std::env::set_var("CODESCRIBE_ENV_PATH", &env_path);
+            std::env::remove_var("BUS_EVIDENCE_RETENTION_DAYS");
+        }
+        assert_eq!(evidence_retention_days(), Some(7));
+        unsafe { std::env::set_var("BUS_EVIDENCE_RETENTION_DAYS", "0") };
+        assert_eq!(evidence_retention_days(), None);
+        unsafe {
+            match previous_path {
+                Some(path) => std::env::set_var("CODESCRIBE_ENV_PATH", path),
+                None => std::env::remove_var("CODESCRIBE_ENV_PATH"),
+            }
+            match previous_days {
+                Some(days) => std::env::set_var("BUS_EVIDENCE_RETENTION_DAYS", days),
+                None => std::env::remove_var("BUS_EVIDENCE_RETENTION_DAYS"),
+            }
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn configured_retention_compacts_with_selected_day_count() {
+        let dir = temp("configured-retention");
+        let path = write_bus(
+            &dir,
+            &[
+                r#"{"schema":"codescribe.transcript.v1","emitted_at":"2020-01-01T00:00:00Z"}"#,
+                r#"{"schema":"codescribe.transcript-evidence.v1","emitted_at":"2020-01-01T00:00:00Z"}"#,
+            ],
+        );
+        let days = parse_evidence_retention_days(Some("7"));
+        let report = compact_bus_if_enabled_with(&path, "startup", days, |path, days, trigger| {
+            assert_eq!(days, 7);
+            compact_bus_owned_once(path, days, trigger, 1, || {})
+        })
+        .unwrap()
+        .expect("compaction report");
+        assert!(report.applied);
+        assert_eq!(report.evidence_rows_dropped, 1);
+        assert!(report.rows_read > 0);
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -182,9 +182,6 @@ pub fn parse_agent_workspace_roots(value: &str) -> Vec<String> {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(default)]
 pub struct UserSettings {
-    /// Bus evidence lifetime. Delivery rows remain permanent.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub evidence_retention_days: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub whisper_language: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -320,6 +317,8 @@ pub struct UserSettings {
     pub qube_donor: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_enter_sends: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_auto_send: Option<bool>,
     /// First-run operating lane chosen during onboarding ("basic" | "agentic").
     /// `None` means "not yet chosen" — callers treat that as the safe Basic lane.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1316,6 +1315,8 @@ struct InteractionV2 {
     send_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     agent_enter_sends: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_auto_send: Option<bool>,
     /// User-owned automatic delivery policy shared by Hold and hands-free
     /// dictation. Assistive and safety vetoes are enforced by the controller.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1543,8 +1544,6 @@ struct FeaturesV2 {
 #[serde(default)]
 struct SystemV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
-    evidence_retention_days: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     start_at_login: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     qube_daemon_autostart: Option<bool>,
@@ -1638,6 +1637,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "START_AT_LOGIN",
     "QUBE_DAEMON_AUTOSTART",
     "AGENT_ENTER_SENDS",
+    "AGENT_AUTO_SEND",
     "ONBOARDING_MODE",
     "AGENT_WORKSPACE_ROOTS",
     // Voice Lab survivors
@@ -1692,6 +1692,7 @@ impl UserSettings {
                 mode_bindings: Some(normalized_mode_bindings),
                 send_mode: self.transcript_send_mode.clone(),
                 agent_enter_sends: self.agent_enter_sends,
+                agent_auto_send: Some(self.agent_auto_send.unwrap_or(false)),
                 auto_paste_enabled: self.auto_paste_enabled,
                 deferred_insert_shortcut: self.deferred_insert_shortcut.clone(),
                 restore_clipboard: self.restore_clipboard,
@@ -1770,7 +1771,6 @@ impl UserSettings {
                 quick_notes_save_only: self.quick_notes_save_only,
             }),
             system: Some(SystemV2 {
-                evidence_retention_days: self.evidence_retention_days,
                 start_at_login: self.start_at_login,
                 qube_daemon_autostart: self.qube_daemon_autostart,
                 qube_donor: self.qube_donor.clone(),
@@ -1997,6 +1997,7 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.xai_oauth_client_id.clone()),
             agent_enter_sends: v2.interaction.as_ref().and_then(|i| i.agent_enter_sends),
+            agent_auto_send: v2.interaction.as_ref().and_then(|i| i.agent_auto_send),
             buffer_delay_ms: v2
                 .speech
                 .as_ref()
@@ -2081,7 +2082,6 @@ impl UserSettings {
                 .system
                 .as_ref()
                 .and_then(|s| s.cloud_audio_egress_consent_at.clone()),
-            evidence_retention_days: v2.system.as_ref().and_then(|s| s.evidence_retention_days),
             agent_permissions: v2.agent.as_ref().and_then(|a| a.permissions.clone()),
             agent_capabilities: v2.agent.as_ref().and_then(|a| a.capabilities.clone()),
         }
@@ -2549,7 +2549,11 @@ impl UserSettings {
             )?;
             changed |=
                 remove_json_keys_at(&mut value, &["agent"], &["permissions", "capabilities"])?;
-            changed |= remove_json_keys_at(&mut value, &["interaction"], &["agent_enter_sends"])?;
+            changed |= remove_json_keys_at(
+                &mut value,
+                &["interaction"],
+                &["agent_enter_sends", "agent_auto_send"],
+            )?;
 
             let after: SettingsV2 = serde_json::from_value(value.clone())?;
             Self::validate_v2(&after)?;
@@ -2568,6 +2572,7 @@ impl UserSettings {
                     "agent_permissions",
                     "agent_capabilities",
                     "agent_enter_sends",
+                    "agent_auto_send",
                 ],
             )?;
             let _: Self = serde_json::from_value(value.clone())?;
@@ -2912,6 +2917,7 @@ impl UserSettings {
             "START_AT_LOGIN" => self.start_at_login = Some(value),
             "QUBE_DAEMON_AUTOSTART" => self.qube_daemon_autostart = Some(value),
             "AGENT_ENTER_SENDS" => self.agent_enter_sends = Some(value),
+            "AGENT_AUTO_SEND" => self.agent_auto_send = Some(value),
             "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED" => {
                 self.stt_initial_prompt_enabled = Some(value)
             }
@@ -3015,14 +3021,39 @@ mod tests {
 
     #[test]
     #[serial]
-    fn evidence_retention_days_round_trips_through_settings_json() {
+    fn retired_bus_retention_key_is_ignored_on_load() {
         let _tmp = setup_isolated_data_dir();
-        let settings = UserSettings {
-            evidence_retention_days: Some(21),
-            ..UserSettings::default()
-        };
-        settings.save().unwrap();
-        assert_eq!(UserSettings::load().evidence_retention_days, Some(21));
+        let path = UserSettings::settings_path();
+        fs::write(&path, r#"{"schema_version":3,"system":{"evidence_retention_days":21}}"#)
+            .expect("seed old settings");
+        let loaded = UserSettings::load();
+        loaded.save().expect("save canonical settings");
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).expect("read settings"))
+                .expect("parse settings");
+        assert!(saved.pointer("/system/evidence_retention_days").is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn agent_auto_send_defaults_off_and_materializes_on_save() {
+        let _tmp = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        fs::write(&path, r#"{"schema_version":3,"interaction":{}}"#)
+            .expect("seed settings without auto-send");
+        let mut settings = UserSettings::load();
+        assert_eq!(settings.agent_auto_send, None);
+        settings.save().expect("materialize opt-in default");
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).expect("read settings"))
+                .expect("parse settings");
+        assert_eq!(
+            saved.pointer("/interaction/agent_auto_send"),
+            Some(&serde_json::json!(false))
+        );
+
+        settings.set_bool("AGENT_AUTO_SEND", true);
+        assert_eq!(UserSettings::load().agent_auto_send, Some(true));
     }
 
     /// Redirect the data dir to a fresh temp directory and clear the legacy

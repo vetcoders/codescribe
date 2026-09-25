@@ -38,26 +38,6 @@ use directories::BaseDirs;
 
 use crate::{CsError, CsLanguage, application_runtime};
 
-/// User-selected acoustic evidence lifetime; delivery history is unaffected.
-#[uniffi::export]
-pub fn evidence_retention_days() -> u32 {
-    codescribe::presentation::transcript_bus_maintenance::evidence_retention_days()
-}
-
-#[uniffi::export]
-pub fn set_evidence_retention_days(days: u32) -> Result<(), CsError> {
-    if !(1..=3650).contains(&days) {
-        return Err(CsError::Config {
-            msg: "Evidence retention must be between 1 and 3650 days".into(),
-        });
-    }
-    let mut settings = UserSettings::load();
-    settings.evidence_retention_days = Some(days);
-    settings.save().map_err(|error| CsError::Config {
-        msg: error.to_string(),
-    })
-}
-
 /// Read the launch repair receipt without loading settings again.
 #[uniffi::export]
 pub fn config_repair_summary() -> Option<String> {
@@ -173,6 +153,7 @@ pub struct CsSettings {
     // ── System / agent ──
     pub start_at_login: bool,
     pub agent_enter_sends: bool,
+    pub agent_auto_send: bool,
     pub dump_audio_logs: bool,
     // ── Persisted lane selection and engine settings ──
     /// Lane = full ProviderRef (vendor ID or `custom:<slug>`) + model; provider first.
@@ -271,6 +252,7 @@ impl CsSettings {
             restore_clipboard_delay_ms: config.restore_clipboard_delay_ms,
             start_at_login: config.start_at_login,
             agent_enter_sends: config.agent_enter_sends,
+            agent_auto_send: config.agent_auto_send,
             dump_audio_logs: config.dump_audio_logs,
             // Editable Settings fields prefer persisted intent from the same
             // seal so a fresh UI write is visible; sealed lanes fill gaps when
@@ -1795,6 +1777,7 @@ fn agent_env_keys() -> &'static [&'static str] {
         "LLM_XAI_OAUTH_CLIENT_ID",
         "AGENT_WORKSPACE_ROOTS",
         "AGENT_ENTER_SENDS",
+        "AGENT_AUTO_SEND",
     ]
 }
 

@@ -1583,6 +1583,20 @@ reload = "restart"
 category = "assistive"
 description = "When true, Enter sends the agent message (Shift+Enter for newline). When false, Enter inserts newline (Cmd+Enter sends)."
 
+[vars.AGENT_AUTO_SEND]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "assistive"
+description = "Opt in to sending an untouched Agent transcript after the five-second terminal countdown. Settings owns the persisted choice; .env or process env overrides it."
+
+[vars.BUS_EVIDENCE_RETENTION_DAYS]
+default = "0"
+type = "u32"
+reload = "restart"
+category = "storage"
+description = "Power-user age compaction for acoustic Bus evidence. A positive day count enables startup and idle passes; unset or zero leaves evidence intact. Delivery rows remain permanent."
+
 [vars.AGENT_WORKSPACE_ROOTS]
 default = "~/.codescribe"
 type = "string"

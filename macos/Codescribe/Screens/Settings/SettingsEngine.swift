@@ -791,6 +791,7 @@ extension CsSettings {
     restoreClipboardDelayMs: 200,
     startAtLogin: false,
     agentEnterSends: true,
+    agentAutoSend: false,
     dumpAudioLogs: false,
     // Contract §C: lane = provider ref + model; no endpoint fields on CsSettings.
     llmFormattingProvider: "openai-responses",

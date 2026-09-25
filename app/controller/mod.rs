@@ -2706,10 +2706,9 @@ impl RecordingController {
         self.set_state(State::Idle).await;
         let path = crate::presentation::transcript_bus::transcript_bus_path();
         tokio::task::spawn_blocking(move || {
-            let days = crate::presentation::transcript_bus_maintenance::evidence_retention_days();
-            if let Err(error) = crate::presentation::transcript_bus_maintenance::compact_bus_owned(
-                &path, days, "idle",
-            ) {
+            if let Err(error) =
+                crate::presentation::transcript_bus_maintenance::compact_bus_if_enabled(&path, "idle")
+            {
                 warn!(%error, "idle bus compaction unavailable");
             }
         });

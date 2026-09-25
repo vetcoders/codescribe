@@ -613,15 +613,19 @@ final class OverlayState {
   private(set) var autoHideDeadline: TimeInterval?
   private var isPointerHovering = false
   private let nowProvider: () -> TimeInterval
-  /// Single source of truth for the Founder-dictated terminal lifetime.
-  /// Five seconds is the comfortable end of the requested 3–5 second range.
+  private let autoSendEnabled: () -> Bool
+  /// Terminal countdown for non-Agent outcomes and opted-in Agent delivery.
   static let autoHideDelaySeconds: TimeInterval = 5
 
-  init(nowProvider: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+  init(
+    nowProvider: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+    autoSendEnabled: @escaping () -> Bool = { CodescribeConfig().loadSettings().agentAutoSend }
+  ) {
     let channel = AsyncStream<OverlayListenerEvent>.makeStream()
     eventStream = channel.stream
     listener = DictationListener(continuation: channel.continuation)
     self.nowProvider = nowProvider
+    self.autoSendEnabled = autoSendEnabled
     eventTask = Task { @MainActor [weak self, eventStream] in
       for await event in eventStream {
         guard let self else { return }
@@ -1647,6 +1651,10 @@ final class OverlayState {
       cancelAutoHide()
       return
     }
+    if agentSessionArmed && !autoSendEnabled() {
+      cancelAutoHide()
+      return
+    }
     // Refused coverage keeps recovery visible. The one exception is an armed
     // Agent take with untouched final words: its deadline sends through the
     // existing permission gate, without claiming an acoustic seal.
@@ -1683,6 +1691,10 @@ final class OverlayState {
     guard generation == captureGeneration else { return }
     autoHideTask = nil
     if agentSessionArmed && !agentFinalTranscriptAppeared {
+      cancelAutoHide()
+      return
+    }
+    if agentSessionArmed && !autoSendEnabled() {
       cancelAutoHide()
       return
     }

@@ -612,6 +612,9 @@ pub struct Config {
     /// When false, Enter inserts newline (Cmd+Enter sends).
     #[serde(default = "default_agent_enter_sends")]
     pub agent_enter_sends: bool,
+    /// Send an untouched Agent transcript after the terminal countdown.
+    #[serde(default)]
+    pub agent_auto_send: bool,
     // ===== Debugging =====
     /// Whether to dump raw audio files to logs/audio directory
     #[serde(default = "default_dump_audio_logs")]
@@ -667,6 +670,7 @@ impl Default for Config {
             restore_clipboard_delay_ms: default_restore_clipboard_delay_ms(),
             start_at_login: false,
             agent_enter_sends: default_agent_enter_sends(),
+            agent_auto_send: false,
             dump_audio_logs: default_dump_audio_logs(),
         }
     }

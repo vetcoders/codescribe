@@ -342,7 +342,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case .creator: return ["setup", "onboarding", "permissions", "quick start", "language"]
     case .shortcuts: return ["hotkey", "keyboard", "shortcut", "trigger", "hold", "toggle"]
     case .keys: return ["api key", "provider", "openai", "anthropic", "endpoint", "model", "token"]
-    case .agent: return ["mcp", "tools", "workspace", "permissions", "server"]
+    case .agent: return ["mcp", "tools", "workspace", "permissions", "server", "auto-send"]
     case .engine:
       return ["stt", "whisper", "apple", "speech", "transcription", "asr", "cloud", "consent"]
     case .audio: return ["microphone", "mikrofon", "input", "device", "levels"]
@@ -1698,6 +1698,10 @@ final class SettingsViewModel: ObservableObject {
   func setFormattingEnabled(_ on: Bool) {
     settings.aiFormattingEnabled = on
     persist("AI_FORMATTING_ENABLED", on ? "1" : "0")
+  }
+
+  func setAgentAutoSend(_ on: Bool) {
+    persist("AGENT_AUTO_SEND", on ? "1" : "0")
   }
 
   func setFormattingLevel(_ level: String) {

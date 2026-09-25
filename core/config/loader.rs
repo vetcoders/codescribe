@@ -835,6 +835,15 @@ impl Config {
         // Apply user settings first (lowest priority after defaults)
         config.apply_user_settings(&user_settings);
 
+        // The explicit Agent auto-send opt-in may come from .env. Process env
+        // still wins in load_from_env below.
+        if let Some(value) = file_env_vars
+            .as_ref()
+            .and_then(|vars| vars.get("AGENT_AUTO_SEND"))
+        {
+            config.agent_auto_send = matches!(value.as_str(), "1" | "true" | "yes" | "on");
+        }
+
         // Hold-indicator controls remain existing power-user `.env` keys (no
         // settings.json schema or migration). Re-read just these two values on
         // every snapshot so Settings/tray writes hot-apply after process-env
@@ -1152,6 +1161,9 @@ impl Config {
         }
         if let Ok(val) = Self::config_runtime_env_var("AGENT_ENTER_SENDS") {
             self.agent_enter_sends = matches!(val.as_str(), "1" | "true" | "yes" | "on");
+        }
+        if let Ok(val) = Self::config_runtime_env_var("AGENT_AUTO_SEND") {
+            self.agent_auto_send = matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
         if let Ok(val) = Self::config_runtime_env_var("SOUND_NAME") {
             self.sound_name = val;
@@ -1513,6 +1525,11 @@ impl Config {
         {
             self.agent_enter_sends = v;
         }
+        if Self::config_runtime_env_var("AGENT_AUTO_SEND").is_err()
+            && let Some(v) = settings.agent_auto_send
+        {
+            self.agent_auto_send = v;
+        }
 
         // ── Voice Lab survivors (runtime env vars, not Config struct fields) ──
         if Self::config_runtime_env_var("CODESCRIBE_BUFFER_DELAY_MS").is_err()
@@ -1654,6 +1671,7 @@ impl Config {
                 | "START_AT_LOGIN"
                 | "QUBE_DAEMON_AUTOSTART"
                 | "AGENT_ENTER_SENDS"
+                | "AGENT_AUTO_SEND"
                 | "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED"
                 | "HOLD_INDICATOR"
                 | "RESTORE_CLIPBOARD"
@@ -1913,6 +1931,7 @@ impl Config {
                     | "START_AT_LOGIN"
                     | "QUBE_DAEMON_AUTOSTART"
                     | "AGENT_ENTER_SENDS"
+                    | "AGENT_AUTO_SEND"
                     | "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED"
                     | "HOLD_INDICATOR"
                     | "RESTORE_CLIPBOARD"
@@ -1941,6 +1960,7 @@ impl Config {
                                 settings_ref.qube_daemon_autostart = Some(bv)
                             }
                             "AGENT_ENTER_SENDS" => settings_ref.agent_enter_sends = Some(bv),
+                            "AGENT_AUTO_SEND" => settings_ref.agent_auto_send = Some(bv),
                             "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED" => {
                                 settings_ref.stt_initial_prompt_enabled = Some(bv)
                             }
@@ -3630,6 +3650,35 @@ mod tests {
         );
 
         restore_env_for_test("WHISPER_CONTEXT_WINDOW_SEC", previous);
+    }
+
+    #[test]
+    #[serial]
+    fn agent_auto_send_setting_round_trips_and_env_wins() {
+        let _tmp = setup_isolated_data_dir();
+        let previous = std::env::var("AGENT_AUTO_SEND").ok();
+        let previous_env_path = std::env::var("CODESCRIBE_ENV_PATH").ok();
+        remove_env_for_test("AGENT_AUTO_SEND");
+        remove_env_for_test("CODESCRIBE_ENV_PATH");
+        assert!(!Config::load().agent_auto_send);
+
+        Config::default()
+            .save_to_env("AGENT_AUTO_SEND", "1")
+            .expect("persist opt-in");
+        assert_eq!(UserSettings::load().agent_auto_send, Some(true));
+        assert!(Config::load().agent_auto_send);
+
+        let env_path = _tmp.path().join("agent-auto-send.env");
+        fs::write(&env_path, "AGENT_AUTO_SEND=0\n").expect("write file override");
+        unsafe { std::env::set_var("CODESCRIBE_ENV_PATH", &env_path) };
+        assert!(!Config::load().agent_auto_send);
+
+        unsafe { std::env::set_var("AGENT_AUTO_SEND", "1") };
+        assert!(Config::load().agent_auto_send);
+        unsafe { std::env::set_var("AGENT_AUTO_SEND", "0") };
+        assert!(!Config::load().agent_auto_send);
+        restore_env_for_test("AGENT_AUTO_SEND", previous);
+        restore_env_for_test("CODESCRIBE_ENV_PATH", previous_env_path);
     }
 
     #[test]

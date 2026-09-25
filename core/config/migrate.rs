@@ -156,6 +156,9 @@ pub fn migrate_if_needed(
     if let Some(v) = migrated_value(file_env, "AGENT_ENTER_SENDS") {
         settings.agent_enter_sends = Some(v == "1" || v.eq_ignore_ascii_case("true"));
     }
+    if let Some(v) = migrated_value(file_env, "AGENT_AUTO_SEND") {
+        settings.agent_auto_send = Some(v == "1" || v.eq_ignore_ascii_case("true"));
+    }
 
     // Migrate numeric settings
     if let Some(v) = migrated_value(file_env, "HOLD_START_DELAY_MS")

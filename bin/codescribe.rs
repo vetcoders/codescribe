@@ -121,7 +121,7 @@ enum BusAction {
     /// than overwrite rows appended during the rewrite.
     Compact {
         /// Evidence retention in days
-        #[arg(long, default_value_t = codescribe::presentation::transcript_bus_maintenance::DEFAULT_EVIDENCE_RETENTION_DAYS)]
+        #[arg(long, default_value_t = 14)]
         evidence_older_than: u32,
         /// Report what would be dropped without rewriting the bus
         #[arg(long)]

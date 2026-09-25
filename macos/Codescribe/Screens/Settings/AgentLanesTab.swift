@@ -10,6 +10,21 @@ struct AgentLanesTab: View {
     VStack(alignment: .leading, spacing: 0) {
       LLMLanesSection(model: model)
 
+      SettingsSectionLabel("Transcript delivery")
+        .padding(.top, CSSpace.section)
+      SettingsControlRow(
+        title: "Auto-send to Agent",
+        subtitle: "Send an untouched transcript 5 seconds after the take ends."
+      ) {
+        Toggle("", isOn: Binding(
+          get: { model.settings.agentAutoSend },
+          set: { model.setAgentAutoSend($0) }
+        ))
+        .toggleStyle(.switch)
+        .labelsHidden()
+        .tint(CSColor.chromeAccent)
+      }
+
       SettingsSectionLabel("Resolved runtime truth")
         .padding(.top, CSSpace.section)
 

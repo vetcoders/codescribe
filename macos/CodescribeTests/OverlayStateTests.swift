@@ -619,7 +619,7 @@ final class OverlayStateTests: XCTestCase {
     for receiverKind in ["missing", "refused", "admitted", "parked", "empty"] {
       let clock = OverlayStateTestClock()
       let engine = OverlayStateTestEngine()
-      let state = OverlayState(nowProvider: { clock.now })
+      let state = OverlayState(nowProvider: { clock.now }, autoSendEnabled: { true })
       state.engine = engine
       state.applyIndicatorMode(.assistive)
       state.handleRecordingStarted()
@@ -1674,10 +1674,34 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(closeCount, 2, "explicit close intent stays immediate")
   }
 
+  func testAgentAutoSendDefaultsOffAndKeepsTranscriptForExplicitSend() async {
+    let clock = OverlayStateTestClock()
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState(nowProvider: { clock.now }, autoSendEnabled: { false })
+    state.engine = engine
+    state.applyIndicatorMode(.assistive)
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    projectText("kept for review", to: state, terminal: true)
+    state.finishControllerRecording()
+    XCTAssertNil(state.autoHideDeadline)
+
+    clock.now = 5
+    state.fireAutoHideNowForTests(armedDeadline: 5)
+    await Task.yield()
+    XCTAssertTrue(engine.sentAssistiveTexts.isEmpty)
+    XCTAssertEqual(state.activeText, "kept for review")
+    XCTAssertNil(state.autoHideDeadline)
+
+    let delivery = state.sendToAgent()
+    await delivery?.value
+    XCTAssertEqual(engine.sentAssistiveTexts, ["kept for review"])
+  }
+
   func testUntouchedAgentFinalAutoSendsAtDeadline() async {
     let clock = OverlayStateTestClock()
     let engine = OverlayStateTestEngine()
-    let state = OverlayState(nowProvider: { clock.now })
+    let state = OverlayState(nowProvider: { clock.now }, autoSendEnabled: { true })
     state.engine = engine
     state.applyIndicatorMode(.assistive)
     state.handleRecordingPreparing()
@@ -1690,13 +1714,14 @@ final class OverlayStateTests: XCTestCase {
     clock.now = 5
     state.fireAutoHideNowForTests()
     await fulfillment(of: [delivered], timeout: 1)
+    state.fireAutoHideNowForTests()
     XCTAssertEqual(engine.sentAssistiveTexts, ["untouched final"])
   }
 
   func testUntouchedRefusedAgentTakeAutoSendsOnceAtDeadline() async {
     let clock = OverlayStateTestClock()
     let engine = OverlayStateTestEngine()
-    let state = OverlayState(nowProvider: { clock.now })
+    let state = OverlayState(nowProvider: { clock.now }, autoSendEnabled: { true })
     state.engine = engine
     state.applyIndicatorMode(.assistive)
     state.handleRecordingPreparing()
@@ -1716,7 +1741,7 @@ final class OverlayStateTests: XCTestCase {
   func testEditingRefusedAgentTakeCancelsAutoSend() async {
     let clock = OverlayStateTestClock()
     let engine = OverlayStateTestEngine()
-    let state = OverlayState(nowProvider: { clock.now })
+    let state = OverlayState(nowProvider: { clock.now }, autoSendEnabled: { true })
     state.engine = engine
     state.applyIndicatorMode(.assistive)
     state.handleRecordingPreparing()
@@ -1792,7 +1817,7 @@ final class OverlayStateTests: XCTestCase {
   func testAgentDeadlineRequiresProjectedSendPermission() async {
     let clock = OverlayStateTestClock()
     let engine = OverlayStateTestEngine()
-    let state = OverlayState(nowProvider: { clock.now })
+    let state = OverlayState(nowProvider: { clock.now }, autoSendEnabled: { true })
     state.engine = engine
     state.applyIndicatorMode(.assistive)
     state.handleRecordingPreparing()
@@ -1815,7 +1840,7 @@ final class OverlayStateTests: XCTestCase {
   func testAgentReviewCancelsAutoSendAfterFocusExitButAllowsExplicitSend() async {
     let clock = OverlayStateTestClock()
     let engine = OverlayStateTestEngine()
-    let state = OverlayState(nowProvider: { clock.now })
+    let state = OverlayState(nowProvider: { clock.now }, autoSendEnabled: { true })
     state.engine = engine
     state.applyIndicatorMode(.assistive)
     state.handleRecordingPreparing()
@@ -1921,7 +1946,7 @@ final class OverlayStateTests: XCTestCase {
   func testLatestAgentProjectionAutoSendsAtDeadline() async {
     let clock = OverlayStateTestClock()
     let engine = OverlayStateTestEngine()
-    let state = OverlayState(nowProvider: { clock.now })
+    let state = OverlayState(nowProvider: { clock.now }, autoSendEnabled: { true })
     state.engine = engine
     state.applyIndicatorMode(.assistive)
     state.handleRecordingPreparing()

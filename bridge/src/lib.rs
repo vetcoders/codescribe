@@ -104,10 +104,9 @@ impl std::error::Error for CsError {}
 pub fn start_application_runtime() -> Result<CsApplicationRuntimeSnapshot, CsError> {
     start_application_runtime_with_compaction(|| {
         let path = codescribe::presentation::transcript_bus::transcript_bus_path();
-        let days = codescribe::presentation::transcript_bus_maintenance::evidence_retention_days();
         if let Err(error) =
-            codescribe::presentation::transcript_bus_maintenance::compact_bus_owned(
-                &path, days, "startup",
+            codescribe::presentation::transcript_bus_maintenance::compact_bus_if_enabled(
+                &path, "startup",
             )
         {
             tracing::warn!(%error, "startup bus compaction unavailable");

@@ -6,7 +6,6 @@ struct DictationWhisperModelTab: View {
   @ObservedObject var model: SettingsViewModel
   @State private var storedModels: [CsModelDirectory] = []
   @State private var storageError: String?
-  @State private var retentionDays = 14
 
   var body: some View {
     let status = model.localWhisperStatus
@@ -62,23 +61,6 @@ struct DictationWhisperModelTab: View {
       }
 
       SettingsSectionLabel("Data footprint")
-      SettingsControlRow(
-        title: "Bus evidence retention",
-        subtitle: "Old acoustic evidence expires; delivery history stays."
-      ) {
-        HStack {
-          Stepper("\(retentionDays) days", value: $retentionDays, in: 1...3650)
-          Button("Save") {
-            do {
-              try setEvidenceRetentionDays(days: UInt32(retentionDays))
-              storageError = nil
-            } catch {
-              storageError = error.localizedDescription
-            }
-          }
-          .buttonStyle(.bordered)
-        }
-      }
       ForEach(storedModels, id: \.name) { directory in
         SettingsControlRow(
           title: directory.name,
@@ -103,7 +85,6 @@ struct DictationWhisperModelTab: View {
       }
     }
     .onAppear {
-      retentionDays = Int(evidenceRetentionDays())
       refreshStoredModels()
     }
   }
