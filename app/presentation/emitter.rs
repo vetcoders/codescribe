@@ -3620,7 +3620,10 @@ mod tests {
             receipt,
         });
         assert_eq!(
-            emitter.visible_canvas_snapshot().unwrap().preview_only_words,
+            emitter
+                .visible_canvas_snapshot()
+                .unwrap()
+                .preview_only_words,
             2
         );
         emitter.on_event(&EngineEvent::Preview {
