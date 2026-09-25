@@ -683,6 +683,16 @@ mod tests {
         assert_eq!(clock.next(&speech, 1_000, false), Some(offered));
     }
 
+    #[test]
+    fn measured_silent_tail_does_not_become_decoder_audio() {
+        let mut clock = OpenSpeechWindowClock::new(CaptureEvidenceIdentity::new("take", 7));
+        let speech_then_silence = measured_speech("take", 7, 9_000, &[(0, 4_000)]);
+        let window = clock.next(&speech_then_silence, 1_000, true).unwrap();
+        assert_eq!(window.request_range.sample_end, 4_000);
+        assert!(clock.ack_queued(&window));
+        assert!(clock.next(&speech_then_silence, 1_000, true).is_none());
+    }
+
     fn piece(id: u64, text: &str, start_ts: f32, end_ts: f32, segs: usize) -> CoalescedPiece {
         let rate = 16_000u64;
         CoalescedPiece {
