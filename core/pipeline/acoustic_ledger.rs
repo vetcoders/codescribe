@@ -1379,6 +1379,16 @@ impl AcousticLedger {
             return refuse(AdmissionRefusal::VadDidNotOpen);
         }
         let serial = AcousticSerial::mint(evidence);
+        if let Some(existing) = self.evidence.get(&occurrence) {
+            return if existing == &serial {
+                AdmissionReceipt::Qualified {
+                    occurrence,
+                    serial: existing.clone(),
+                }
+            } else {
+                refuse(AdmissionRefusal::ConflictingSerial)
+            };
+        }
         self.evidence.insert(occurrence.clone(), serial.clone());
         AdmissionReceipt::Qualified { occurrence, serial }
     }
@@ -2391,6 +2401,9 @@ pub enum AdmissionRefusal {
     /// caller is judging it with. Comparing them would silently change the
     /// meaning of the floor.
     CalibrationMismatch,
+    /// This occurrence already has a different serial. A later VAD close
+    /// cannot rewrite evidence cited by an earlier live document revision.
+    ConflictingSerial,
 }
 
 impl AdmissionRefusal {
@@ -2401,6 +2414,7 @@ impl AdmissionRefusal {
             Self::BelowCalibratedEnergy => "below_calibrated_energy",
             Self::VadDidNotOpen => "vad_did_not_open",
             Self::CalibrationMismatch => "calibration_mismatch",
+            Self::ConflictingSerial => "conflicting_serial",
         }
     }
 }
@@ -3568,12 +3582,23 @@ mod tests {
         let before = ledger.compose(&occurrence).expect("the live word is signed");
         let serial_before = ledger.serial_of(&occurrence).unwrap().clone();
         assert!(!serial_before.vad_closed());
+        assert_eq!(
+            ledger.qualify(&open_evidence, &calibration).serial(),
+            Some(&serial_before),
+            "repeating identical evidence remains idempotent"
+        );
 
         let closing_evidence = AcousticEvidence {
             vad_close_sample: Some(20_000),
             ..open_evidence
         };
-        let _ = ledger.qualify(&closing_evidence, &calibration);
+        assert_eq!(
+            ledger.qualify(&closing_evidence, &calibration),
+            AdmissionReceipt::Refused {
+                occurrence: occurrence.clone(),
+                reason: AdmissionRefusal::ConflictingSerial,
+            }
+        );
         assert_eq!(ledger.serial_of(&occurrence), Some(&serial_before));
         assert_eq!(ledger.compose(&occurrence), Ok(before));
     }
