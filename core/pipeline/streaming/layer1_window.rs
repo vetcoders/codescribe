@@ -793,6 +793,32 @@ mod tests {
     }
 
     #[test]
+    fn later_unavailable_pcm_revokes_pending_l1_offer() {
+        for availability in [
+            AcousticAvailability::InvalidMeasurement {
+                valid_samples: 4_000,
+            },
+            AcousticAvailability::Discontinuous {
+                observed_samples: 4_000,
+            },
+        ] {
+            let mut clock = OpenSpeechWindowClock::new(CaptureEvidenceIdentity::new("take", 7));
+            let speech = measured_speech("take", 7, 4_000, &[(0, 4_000)]);
+            let offered = clock.next(&speech, 1_000, None, false).unwrap();
+            let unavailable = AcousticSpeechEvidence::unavailable(
+                CaptureEvidenceIdentity::new("take", 7),
+                SILERO_RAW_BOUNDARIES_PRODUCER,
+                availability,
+            );
+            assert!(clock.next(&unavailable, 1_000, None, false).is_none());
+            assert!(
+                !clock.ack_queued(&offered),
+                "whole-take measurement refusal must invalidate a prior pending offer: {availability:?}"
+            );
+        }
+    }
+
+    #[test]
     fn capture_energy_is_not_a_silero_boundary_observer() {
         let mut clock = OpenSpeechWindowClock::new(CaptureEvidenceIdentity::new("take", 7));
         let energy = AcousticSpeechEvidence::measured(
