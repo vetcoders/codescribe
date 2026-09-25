@@ -282,12 +282,18 @@ pub enum NoAuthorityReason {
     /// The pin is an exclusive tail, but the occurrence's whole span is not
     /// proven, so the text stays visible and does not replace the span.
     ExclusiveTailAwaitingWholeSpan,
+    /// A re-close supplied a word after its immutable owner sealed.
+    LateWhisperWordSealedOwner,
+    /// Apple supplied a word after its immutable owner sealed.
+    LateAppleWordSealedOwner,
 }
 
 impl NoAuthorityReason {
     /// Stable label for receipts and logs.
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::LateWhisperWordSealedOwner => "late_whisper_word_sealed_owner",
+            Self::LateAppleWordSealedOwner => "late_apple_word_sealed_owner",
             Self::ZeroWidth => "zero_width",
             Self::NoRange => "no_range",
             Self::OverlapWithoutWordPins => "overlap_without_word_pins",
@@ -314,9 +320,8 @@ pub enum RefuseReason {
     /// A pin intersects the occurrence and is not an exclusive tail, so the
     /// whole span stays as it is.
     IntersectingPinNotExclusive,
-    /// Stop drained the accumulator before exclusive admit ranges covered the
-    /// occurrence. No partial label is written.
-    IncompleteExclusiveCoverage,
+    /// An Apple slot was replaced by heard Whisper words.
+    ReplacedByWhisper,
     /// A clock-lie span kept its own text and was asked to replace a neighbour.
     ClockLie,
     /// Stop asked for this uncovered PCM and no wholly contained segment was
@@ -336,7 +341,7 @@ impl RefuseReason {
             Self::EmptyLabel => "empty_label",
             Self::ReplayedRangeIdentity => "replayed_range_identity",
             Self::IntersectingPinNotExclusive => "intersecting_pin_not_exclusive",
-            Self::IncompleteExclusiveCoverage => "incomplete_exclusive_coverage",
+            Self::ReplacedByWhisper => "replaced_by_whisper",
             Self::ClockLie => "clock_lie",
             Self::UnrecoveredSpeech => "unrecovered_speech",
             Self::NoVoicedHopInPin => "no_voiced_hop_in_pin",
@@ -461,6 +466,18 @@ pub struct WordSlot {
     pub observation: ObservationIdentity,
     /// Speech witness status for this slot.
     pub witness: SlotWitness,
+}
+
+pub(crate) fn same_word_pin(
+    start: u64, end: u64, text: &str,
+    prior_start: u64, prior_end: u64, prior_text: &str,
+) -> bool {
+    let overlap = end.min(prior_end).saturating_sub(start.max(prior_start));
+    let shorter = end.saturating_sub(start).min(prior_end.saturating_sub(prior_start));
+    let normalize = |word: &str| word.trim_matches(|ch: char| !ch.is_alphanumeric()).to_lowercase();
+    let normalized = normalize(text);
+    shorter > 0 && overlap >= shorter / 2 + shorter % 2
+        && !normalized.is_empty() && normalized == normalize(prior_text)
 }
 
 fn compose_label(slots: &[WordSlot]) -> String {
@@ -667,6 +684,111 @@ impl AcousticLedger {
         held.slots = slots;
         held.recompose();
         true
+    }
+
+    /// Allocate a new generation of this occurrence's producer, independently
+    /// of provider completion order. The producer's first request stays stable.
+    pub(crate) fn next_word_observation(
+        &self,
+        producer: ObservationProducer,
+        request: u64,
+        occurrence: &OccurrenceIdentity,
+    ) -> ObservationIdentity {
+        let prior = self.answered.iter().filter(|prior| {
+            prior.producer == producer && &prior.occurrence == occurrence
+        }).max_by_key(|prior| prior.generation);
+        ObservationIdentity::new(
+            producer,
+            prior.map_or(request, |prior| prior.request),
+            prior.map_or(0, |prior| prior.generation.checked_add(1).expect("word generation exhausted")),
+            occurrence.clone(),
+        )
+    }
+
+    /// A replay requires both geometric overlap (at least half the shorter
+    /// clipped slot) and equal normalized text. An occurrence label is not
+    /// evidence that every pin in its range was heard.
+    pub(crate) fn matching_word_slot(
+        &self,
+        owner: &OccurrenceIdentity,
+        pin: &OccurrenceIdentity,
+        text: &str,
+    ) -> bool {
+        self.slots_of(owner).is_some_and(|slots| slots.iter().any(|slot| {
+            same_word_pin(
+                pin.sample_start.max(owner.sample_start), pin.sample_end.min(owner.sample_end), text,
+                slot.sample_start, slot.sample_end, &slot.text,
+            )
+        }))
+    }
+
+    /// Merge word evidence on its owner. Heard span is the union of pin ranges,
+    /// never a coverage gate. Whisper replaces Apple slots by midpoint; Apple
+    /// may fill ranges not already held by Whisper. Finality fences stay in the
+    /// same admission path used by whole-label producer generations.
+    pub(crate) fn admit_word_slots(
+        &mut self,
+        observation: &ObservationIdentity,
+        words: &[(u64, u64, String)],
+    ) -> MutationReceipt {
+        let owner = &observation.occurrence;
+        if self.is_sealed(owner) {
+            let reason = if observation.producer == ObservationProducer::Whisper {
+                NoAuthorityReason::LateWhisperWordSealedOwner
+            } else {
+                NoAuthorityReason::LateAppleWordSealedOwner
+            };
+            let text = words.iter().map(|(_, _, text)| text.as_str()).collect::<Vec<_>>().join(" ");
+            return self.keep_visible_unanchored(observation, &text, reason);
+        }
+        let mut incoming = Vec::new();
+        for (start, end, text) in words {
+            let midpoint = start.saturating_add(end.saturating_sub(*start) / 2);
+            if end <= start || midpoint < owner.sample_start || midpoint >= owner.sample_end {
+                return self.keep_visible_unanchored(observation, text, NoAuthorityReason::NoRange);
+            }
+            if !text.trim().is_empty() {
+                incoming.push(WordSlot {
+                    sample_start: (*start).max(owner.sample_start),
+                    sample_end: (*end).min(owner.sample_end),
+                    text: text.clone(), producer: observation.producer,
+                    observation: observation.clone(), witness: SlotWitness::Unwitnessed,
+                });
+            }
+        }
+        let previous = self.slots_of(owner).unwrap_or(&[]).to_vec();
+        if observation.producer == ObservationProducer::Apple {
+            incoming.retain(|word| !previous.iter().any(|slot| {
+                (slot.producer == ObservationProducer::Whisper
+                    && slot.sample_end > word.sample_start && slot.sample_start < word.sample_end)
+                    || same_word_pin(word.sample_start, word.sample_end, &word.text,
+                        slot.sample_start, slot.sample_end, &slot.text)
+            }));
+        }
+        if incoming.is_empty() {
+            let label = self.text_of(owner).unwrap_or("").to_string();
+            return self.admit(observation, &label);
+        }
+        let heard = |slot: &WordSlot| {
+            let mid = slot.sample_start + (slot.sample_end - slot.sample_start) / 2;
+            incoming.iter().any(|word| word.sample_start <= mid && mid < word.sample_end)
+        };
+        let removed = previous.iter().filter(|slot| {
+            observation.producer == ObservationProducer::Whisper
+                && matches!(slot.producer, ObservationProducer::Apple | ObservationProducer::Lexicon)
+                && heard(slot)
+        }).cloned().collect::<Vec<_>>();
+        let mut slots = previous.into_iter().filter(|slot| !removed.contains(slot)).collect::<Vec<_>>();
+        slots.extend(incoming);
+        slots.sort_by_key(|slot| (slot.sample_start, slot.sample_end));
+        let label = compose_label(&slots);
+        let receipt = self.admit_with_slots(observation, &label, Some(slots));
+        if receipt.grants_mutation() || matches!(receipt, MutationReceipt::Preserve { .. }) {
+            for slot in removed {
+                self.refuse_replacement(&slot.observation, &slot.text, RefuseReason::ReplacedByWhisper);
+            }
+        }
+        receipt
     }
 
     #[cfg(test)]
@@ -1018,6 +1140,15 @@ impl AcousticLedger {
     /// Every call also appends exactly one [`LayerDecisionReceipt`], so the
     /// per-layer history can never fall behind the decisions it describes.
     pub fn admit(&mut self, observation: &ObservationIdentity, text: &str) -> MutationReceipt {
+        self.admit_with_slots(observation, text, None)
+    }
+
+    fn admit_with_slots(
+        &mut self,
+        observation: &ObservationIdentity,
+        text: &str,
+        slots: Option<Vec<WordSlot>>,
+    ) -> MutationReceipt {
         self.offered_observations += 1;
         let authorized_recovery = !text.trim().is_empty()
             && matches!(
@@ -1028,11 +1159,19 @@ impl AcousticLedger {
                 .committed
                 .get(&observation.occurrence)
                 .is_none_or(|held| {
-                    observation.producer.authority_rank() > held.producer.authority_rank()
+                    slots.is_some()
+                        || observation.producer.authority_rank() > held.producer.authority_rank()
                         || (observation.producer == held.producer
                             && observation.generation > held.generation)
                 });
-        let decision = self.decide_observation(observation, text);
+        let decision = self.decide_observation(observation, text, slots.is_some());
+        if (decision.grants_mutation() || matches!(decision, MutationReceipt::Preserve { .. }))
+            && let Some(slots) = slots
+            && let Some(held) = self.committed.get_mut(&observation.occurrence)
+        {
+            held.slots = slots;
+            held.recompose();
+        }
         self.record_layer_decision(observation, text, &decision);
         if authorized_recovery
             && (decision.grants_mutation() || matches!(decision, MutationReceipt::Preserve { .. }))
@@ -1047,6 +1186,7 @@ impl AcousticLedger {
         &mut self,
         observation: &ObservationIdentity,
         text: &str,
+        slot_revision: bool,
     ) -> MutationReceipt {
         // An observation that names no audio may be shown but may not act. It
         // is NOT written to the ledger: a zero-width prior that entered the map
@@ -1143,7 +1283,9 @@ impl AcousticLedger {
                     held_by: held.producer,
                 };
             }
-            if outranks || same_lane_revision {
+            if outranks || same_lane_revision
+                || (slot_revision && observation.producer != held.producer)
+            {
                 if self.clock_lie_blocks_neighbour_replacement(&observation.occurrence) {
                     return MutationReceipt::Refuse {
                         occurrence: observation.occurrence.clone(),
@@ -1349,16 +1491,12 @@ impl AcousticLedger {
         true
     }
 
-    /// Classify one timed pin against the window's exclusive admit range.
-    ///
-    /// Word grain: a word belongs to the window whose admit range holds its
-    /// midpoint (T-A), and to the open member whose range holds its midpoint.
-    /// The member need not contain the whole pin; clip the pin to that member
-    /// wherever its extent is used, while keeping the full word text. A part
-    /// inside another open member lends only hop coverage, never text. A
-    /// midpoint in no member, or in overlapping members, remains unanchored.
-    /// Utterance grain is unchanged: the whole pin must fit the admit range
-    /// and exactly one member.
+    /// Route word pins by midpoint to any supplied owner, including owners
+    /// outside this window's member list. Outside the admit range is not by
+    /// itself replay: the caller must prove matching normalized slot text and
+    /// overlap of at least half the shorter owner-clipped span. Sealed owners
+    /// remain routable so their late words receive visible K5 receipts.
+    /// Utterance grain retains whole-range containment and range replay.
     pub fn classify_overlap_pin(
         &self,
         pin: &OccurrenceIdentity,
@@ -1383,7 +1521,7 @@ impl AcousticLedger {
         } else {
             pin.sample_start >= admit_start && pin.sample_end <= admit_end
         };
-        if inside_admit {
+        if word_grain || inside_admit {
             let midpoint = pin.sample_start + pin.sample_len() / 2;
             let mut owners = open_members.iter().enumerate().filter(|(_, member)| {
                 pin.same_capture(member)
@@ -1400,11 +1538,6 @@ impl AcousticLedger {
                 return OverlapPinClass::ExclusiveTail { member_index };
             }
             return OverlapPinClass::Unanchored(NoAuthorityReason::OverlapWithoutWordPins);
-        }
-        if word_grain {
-            // Outside this window's admit range a word belongs to another
-            // window: a replay here, whatever member its midpoint falls in.
-            return OverlapPinClass::Replay;
         }
         let overlaps_admit = pin.sample_end > admit_start && pin.sample_start < admit_end;
         if !overlaps_admit {
@@ -4697,7 +4830,7 @@ mod tests {
                 std::slice::from_ref(&member),
                 true,
             ),
-            OverlapPinClass::Replay,
+            OverlapPinClass::ExclusiveTail { member_index: 0 },
         );
         let apple_held_word = occ(52_000, 60_000);
         assert_eq!(
@@ -4765,6 +4898,32 @@ mod tests {
             ),
             OverlapPinClass::Unanchored(NoAuthorityReason::OverlapWithoutWordPins),
         );
+    }
+
+    #[test]
+    fn partial_whisper_coverage_replaces_only_heard_apple_slots() {
+        let mut ledger = AcousticLedger::new();
+        let owner = occ(0, 240_000);
+        let apple = obs(ObservationProducer::Apple, 0, owner.clone());
+        ledger.admit(&apple, "a b c d e");
+        assert!(ledger.pin_word_ranges(&apple, &[
+            (0, 48_000, "a".into()), (48_000, 96_000, "b".into()),
+            (96_000, 144_000, "c".into()), (144_000, 192_000, "d".into()),
+            (192_000, 240_000, "e".into()),
+        ]));
+        let whisper = obs(ObservationProducer::Whisper, 1, owner.clone());
+        assert!(ledger.admit_word_slots(&whisper, &[
+            (0, 48_000, "A".into()), (48_000, 96_000, "B".into()),
+            (96_000, 144_000, "C".into()), (144_000, 192_000, "D".into()),
+        ]).grants_mutation());
+        assert_eq!(ledger.text_of(&owner), Some("A B C D e"));
+        assert_eq!(ledger.layer_trail().iter().filter(|r| matches!(r.decision,
+            MutationReceipt::Refuse { reason: RefuseReason::ReplacedByWhisper, .. }
+        ) && r.observation == apple).count(), 4);
+        assert_eq!(ledger.conservation().residue(), 0);
+        ledger.assert_slot_labels();
+        assert!(ledger.slots_of(&owner).unwrap().iter()
+            .all(|slot| slot.witness == SlotWitness::Unwitnessed));
     }
 
     /// Same-lane revision: Apple correcting its own final on its own range at a
