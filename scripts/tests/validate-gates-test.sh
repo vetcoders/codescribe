@@ -251,16 +251,16 @@ sys.exit(0)
         passed += 1
         print(f'PASS verify-wiring-{harness_exit}: make exit={result.returncode}', flush=True)
 
-    # Reuse all 32 scenarios, then independently inspect their recorded order.
+    # Reuse all 36 scenarios, then independently inspect their recorded order.
     swift_evidence = evidence / 'swift-path'
     result = subprocess.run(['/bin/bash', str(source / 'scripts/tests/test-swift-target-root-test.sh'),
                              str(source), str(swift_evidence)], text=True, capture_output=True)
     (evidence / 'swift-path.stdout').write_text(result.stdout)
     (evidence / 'swift-path.stderr').write_text(result.stderr)
     (evidence / 'swift-path.exit').write_text(str(result.returncode) + '\n')
-    assert result.returncode == 0 and 'scenarios=32 passed=32 failed=0' in result.stdout, result
+    assert result.returncode == 0 and 'scenarios=36 passed=36 failed=0' in result.stdout, result
     receipts = list(swift_evidence.glob('*.json'))
-    assert len(receipts) == 32, len(receipts)
+    assert len(receipts) == 36, len(receipts)
     for path in receipts:
         receipt = json.loads(path.read_text())
         names = [c['tool'] for c in receipt['calls'] if 'selected' not in c]
@@ -274,7 +274,7 @@ sys.exit(0)
             assert 'xcodegen' in names and 'xcodebuild' not in names, names
         if path.stem.endswith('-metadata-error'):
             assert 'cargo' in names and not set(names) & {'xcodegen', 'xcodebuild'}, names
-    passed += 32
-    print('PASS real Make/helper: 32 scenarios plus event-order/short-circuit assertions', flush=True)
+    passed += 36
+    print('PASS real Make/helper: 36 scenarios plus event-order/short-circuit assertions', flush=True)
 print(f'validate-gates-test: scenarios={passed} passed={passed} failed=0')
 PY
