@@ -14489,6 +14489,58 @@ mod relay_l1_overlap_admission_tests {
         (occurrences, requests)
     }
 
+    /// Apple is a fast label on PCM, not a protected word floor. A stronger
+    /// L1 observation of the same physical span may replace its wording; the
+    /// ledger must keep the one occurrence and its original acoustic serial.
+    #[test]
+    fn same_pcm_whisper_replaces_apple_without_word_protection() {
+        let mut lane = open("relay-apple-unprotected");
+        let occurrence = OccurrenceIdentity::new("relay-apple-unprotected", 1, 0, 24_000);
+        stage(&mut lane, 1, occurrence.clone(), "pas");
+        let serial_before = lane
+            .state
+            .acoustic_ledger
+            .lock()
+            .expect("ledger")
+            .serial_of(&occurrence)
+            .expect("Apple label is grounded in measured PCM")
+            .clone();
+        assert!(
+            lane.state
+                .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, "pas"))
+        );
+        assert!(lane.state.flush_layer1_coalesce(&lane.tx));
+        close_lexicon(&mut lane, 1, &occurrence, "pas");
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].member_occurrences[0].1, occurrence);
+        requests[0]
+            .provider_request
+            .validate_pcm(&requests[0].audio)
+            .expect("L1 must hear the exact owned samples");
+
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![segment("relay-apple-unprotected", "partial passes", 0, 24_000)],
+            ),
+            1.5,
+        );
+        let events = drain(&mut lane.rx);
+        assert_eq!(mutation_count(&events), 1, "Apple words are not a floor");
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("partial passes")
+        );
+        assert_eq!(held_count(&lane), 1, "L1 must not mint a duplicate owner");
+        let ledger = lane.state.acoustic_ledger.lock().expect("ledger");
+        assert_eq!(ledger.serial_of(&occurrence), Some(&serial_before));
+        drop(ledger);
+        assert_conserved(&lane, None);
+    }
+
     /// (a) One phrase pin across a long-occurrence slice boundary.
     ///
     /// Contract: step 3 (unanchored, never dropped), founding invariant
