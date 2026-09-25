@@ -3919,6 +3919,26 @@ fn reconcile_silero_ledger(
         } else {
             None
         };
+        if apple_admitted
+            .as_ref()
+            .is_some_and(MutationReceipt::grants_mutation)
+        {
+            let observation = LedgerObservationIdentity::new(
+                LedgerObservationProducer::Apple,
+                utterance_id,
+                0,
+                occurrence.clone(),
+            );
+            let word_ranges = words
+                .iter()
+                .map(|word| (word.sample_start, word.sample_end, word.text.clone()))
+                .collect::<Vec<_>>();
+            state
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .pin_word_ranges(&observation, &word_ranges);
+        }
         state.pending_events.insert(
             utterance_id,
             PendingAppleSeal {

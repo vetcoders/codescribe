@@ -439,13 +439,75 @@ impl MutationReceipt {
     }
 }
 
+/// Speech witness attached to a word slot. Verdicts are a separate cut.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotWitness {
+    /// No witness verdict has been issued; absence never authorizes deletion.
+    Unwitnessed,
+}
+
+/// Ordered lexical evidence inside one physically owned occurrence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WordSlot {
+    /// First owned sample attributed to this word.
+    pub sample_start: u64,
+    /// One past the last owned sample attributed to this word.
+    pub sample_end: u64,
+    /// Surface text, never an occurrence identity.
+    pub text: String,
+    /// Producer that supplied the word.
+    pub producer: ObservationProducer,
+    /// Observation that supplied the word.
+    pub observation: ObservationIdentity,
+    /// Speech witness status for this slot.
+    pub witness: SlotWitness,
+}
+
+fn compose_label(slots: &[WordSlot]) -> String {
+    slots
+        .iter()
+        .map(|slot| slot.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// What the ledger remembers about a committed occurrence.
 #[derive(Debug, Clone)]
 struct CommittedObservation {
     producer: ObservationProducer,
     request: u64,
     generation: u64,
-    text: String,
+    slots: Vec<WordSlot>,
+    /// Read memo. Only `recompose` writes it, always from the slots.
+    label: String,
+}
+
+impl CommittedObservation {
+    fn from_label(observation: &ObservationIdentity, text: &str) -> Self {
+        let mut held = Self {
+            producer: observation.producer,
+            request: observation.request,
+            generation: observation.generation,
+            slots: vec![WordSlot {
+                sample_start: observation.occurrence.sample_start,
+                sample_end: observation.occurrence.sample_end,
+                text: text.to_string(),
+                producer: observation.producer,
+                observation: observation.clone(),
+                witness: SlotWitness::Unwitnessed,
+            }],
+            label: String::new(),
+        };
+        held.recompose();
+        held
+    }
+
+    fn recompose(&mut self) {
+        self.slots
+            .sort_by_key(|slot| (slot.sample_start, slot.sample_end));
+        self.label = compose_label(&self.slots);
+        debug_assert_eq!(self.label, compose_label(&self.slots));
+    }
 }
 
 /// Conservation accounting over one admission batch.
@@ -541,7 +603,77 @@ impl AcousticLedger {
     pub fn text_of(&self, occurrence: &OccurrenceIdentity) -> Option<&str> {
         self.committed
             .get(occurrence)
-            .map(|held| held.text.as_str())
+            .map(|held| held.label.as_str())
+    }
+
+    /// Read-only word evidence for one occurrence.
+    pub fn slots_of(&self, occurrence: &OccurrenceIdentity) -> Option<&[WordSlot]> {
+        self.committed
+            .get(occurrence)
+            .map(|held| held.slots.as_slice())
+    }
+
+    /// Attach exact Apple word ranges to the observation just admitted.
+    /// This may refine timing only: the recomposed label must be identical,
+    /// the observation must still own the text, and seals are immutable.
+    /// Invalid or absent word timing leaves the single whole-occurrence slot.
+    pub(crate) fn pin_word_ranges(
+        &mut self,
+        observation: &ObservationIdentity,
+        words: &[(u64, u64, String)],
+    ) -> bool {
+        let occurrence = &observation.occurrence;
+        if observation.producer != ObservationProducer::Apple
+            || self.is_sealed(occurrence)
+            || words.is_empty()
+        {
+            return false;
+        }
+        let Some(held) = self.committed.get_mut(occurrence) else {
+            return false;
+        };
+        if held.producer != observation.producer
+            || held.request != observation.request
+            || held.generation != observation.generation
+        {
+            return false;
+        }
+        let mut slots = Vec::with_capacity(words.len());
+        for (start, end, text) in words {
+            let midpoint = start.saturating_add(end.saturating_sub(*start) / 2);
+            if end <= start
+                || midpoint < occurrence.sample_start
+                || midpoint >= occurrence.sample_end
+            {
+                return false;
+            }
+            slots.push(WordSlot {
+                sample_start: (*start).max(occurrence.sample_start),
+                sample_end: (*end).min(occurrence.sample_end),
+                text: text.clone(),
+                producer: observation.producer,
+                observation: observation.clone(),
+                witness: SlotWitness::Unwitnessed,
+            });
+        }
+        slots.sort_by_key(|slot| (slot.sample_start, slot.sample_end));
+        if slots
+            .windows(2)
+            .any(|pair| pair[0].sample_end > pair[1].sample_start)
+            || compose_label(&slots) != held.label
+        {
+            return false;
+        }
+        held.slots = slots;
+        held.recompose();
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn assert_slot_labels(&self) {
+        for held in self.committed.values() {
+            assert_eq!(held.label, compose_label(&held.slots));
+        }
     }
 
     /// Occurrences held, in capture order.
@@ -554,7 +686,7 @@ impl AcousticLedger {
     pub fn rendered_text(&self) -> String {
         self.committed
             .values()
-            .map(|held| held.text.trim())
+            .map(|held| held.label.trim())
             .filter(|text| !text.is_empty())
             .collect::<Vec<_>>()
             .join(" ")
@@ -956,7 +1088,7 @@ impl AcousticLedger {
             let held = self.committed.get(&observation.occurrence).cloned();
             let superseded_label = held
                 .as_ref()
-                .map(|previous| previous.text.clone())
+                .map(|previous| previous.label.clone())
                 .unwrap_or_default();
             let from = held
                 .as_ref()
@@ -967,12 +1099,7 @@ impl AcousticLedger {
             self.note_covered_span(&observation.occurrence);
             self.committed.insert(
                 observation.occurrence.clone(),
-                CommittedObservation {
-                    producer: ObservationProducer::ManualHuman,
-                    request: observation.request,
-                    generation: observation.generation,
-                    text: text.to_string(),
-                },
+                CommittedObservation::from_label(observation, text),
             );
             self.manual_edits.push(ManualEditReceipt {
                 receipt_id: format!(
@@ -1010,7 +1137,7 @@ impl AcousticLedger {
             let outranks = observation.producer.authority_rank() > held.producer.authority_rank();
             let same_lane_revision =
                 observation.producer == held.producer && observation.generation > held.generation;
-            if held.text == text {
+            if held.label == text {
                 return MutationReceipt::Preserve {
                     occurrence: observation.occurrence.clone(),
                     held_by: held.producer,
@@ -1026,12 +1153,7 @@ impl AcousticLedger {
                 self.note_covered_span(&observation.occurrence);
                 self.committed.insert(
                     observation.occurrence.clone(),
-                    CommittedObservation {
-                        producer: observation.producer,
-                        request: observation.request,
-                        generation: observation.generation,
-                        text: text.to_string(),
-                    },
+                    CommittedObservation::from_label(observation, text),
                 );
                 return MutationReceipt::Correct {
                     occurrence: observation.occurrence.clone(),
@@ -1070,12 +1192,7 @@ impl AcousticLedger {
         self.note_covered_span(&observation.occurrence);
         self.committed.insert(
             observation.occurrence.clone(),
-            CommittedObservation {
-                producer: observation.producer,
-                request: observation.request,
-                generation: observation.generation,
-                text: text.to_string(),
-            },
+            CommittedObservation::from_label(observation, text),
         );
         MutationReceipt::Insert {
             occurrence: observation.occurrence.clone(),
@@ -2156,24 +2273,27 @@ impl AcousticLedger {
                 .evidence
                 .get(occurrence)
                 .ok_or(EvidenceRefusal::OccurrenceNotQualified)?;
-            let observation = ObservationIdentity::new(
-                held.producer,
-                held.request,
-                held.generation,
-                occurrence.clone(),
-            );
             let before = tokens.len();
-            // The ordinal is observation-local by definition: it says where the
-            // token sat inside the label its producer emitted, not where it sat
-            // in the document. Document order is the composition's own order.
-            for (ordinal, word) in held.text.split_whitespace().enumerate() {
-                tokens.push(WordEvidenceReceipt::cite(
-                    word,
-                    ordinal,
-                    &observation,
-                    vec![serial.clone()],
-                    Some((occurrence.sample_start, occurrence.sample_end)),
-                )?);
+            let mut observation_ordinals: Vec<(ObservationIdentity, usize)> = Vec::new();
+            for slot in &held.slots {
+                let position = observation_ordinals
+                    .iter()
+                    .position(|(observation, _)| observation == &slot.observation)
+                    .unwrap_or_else(|| {
+                        observation_ordinals.push((slot.observation.clone(), 0));
+                        observation_ordinals.len() - 1
+                    });
+                let ordinal = &mut observation_ordinals[position].1;
+                for word in slot.text.split_whitespace() {
+                    tokens.push(WordEvidenceReceipt::cite(
+                        word,
+                        *ordinal,
+                        &slot.observation,
+                        vec![serial.clone()],
+                        Some((slot.sample_start, slot.sample_end)),
+                    )?);
+                    *ordinal += 1;
+                }
             }
             if tokens.len() == before {
                 return Err(EvidenceRefusal::EmptyToken);
@@ -3552,6 +3672,79 @@ mod tests {
         assert!(ledger.qualify(&evidence, &calibration).is_qualified());
         ledger.schedule_frontier(occurrence.clone(), [ObservationProducer::Whisper]);
         (ledger, occurrence)
+    }
+
+    #[test]
+    fn word_slots_compose_with_their_own_ranges_and_one_occurrence_serial() {
+        let (mut ledger, occurrence) = whisper_only_qualified_ledger();
+        let observation = obs(ObservationProducer::Apple, 0, occurrence.clone());
+        assert!(ledger.admit(&observation, "Iwo znowu").is_insert());
+        assert!(ledger.pin_word_ranges(
+            &observation,
+            &[(1_000, 5_000, "Iwo".into()), (8_000, 14_000, "znowu".into())],
+        ));
+        ledger.assert_slot_labels();
+        assert_eq!(ledger.text_of(&occurrence), Some("Iwo znowu"));
+        let composed = ledger.compose(&occurrence).expect("qualified words");
+        assert_eq!(composed.tokens.iter().map(|token| token.token.as_str()).collect::<Vec<_>>(), vec!["Iwo", "znowu"]);
+        assert_eq!(composed.tokens[0].token_sample_start, Some(1_000));
+        assert_eq!(composed.tokens[0].token_sample_end, Some(5_000));
+        assert_eq!(composed.tokens[1].token_sample_start, Some(8_000));
+        assert_eq!(composed.tokens[1].token_sample_end, Some(14_000));
+        for slot in ledger.slots_of(&occurrence).unwrap() {
+            assert_eq!(slot.observation, observation);
+            assert_eq!(slot.witness, SlotWitness::Unwitnessed);
+        }
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    #[test]
+    fn derived_slot_label_survives_correction_preservation_refusal_and_human_edit() {
+        let (mut ledger, occurrence) = whisper_only_qualified_ledger();
+        let apple = obs(ObservationProducer::Apple, 0, occurrence.clone());
+        assert!(ledger.admit(&apple, "  Iwo  ").is_insert());
+        ledger.assert_slot_labels();
+        assert_eq!(ledger.text_of(&occurrence), Some("  Iwo  "));
+        let whisper = obs(ObservationProducer::Whisper, 1, occurrence.clone());
+        assert!(ledger.admit(&whisper, "Iwo wraca").is_correct());
+        ledger.assert_slot_labels();
+        assert!(matches!(
+            ledger.admit(&obs(ObservationProducer::Lexicon, 2, occurrence.clone()), "Iwo wraca"),
+            MutationReceipt::Preserve { .. }
+        ));
+        ledger.assert_slot_labels();
+        ledger.note_frontier_return(&occurrence, ObservationProducer::Whisper);
+        ledger.seal(&occurrence).unwrap();
+        assert!(matches!(
+            ledger.admit(&obs(ObservationProducer::Apple, 3, occurrence.clone()), "zmiana"),
+            MutationReceipt::Refuse { reason: RefuseReason::SealedReplay, .. }
+        ));
+        ledger.assert_slot_labels();
+        assert!(ledger.admit(
+            &obs(ObservationProducer::ManualHuman, 4, occurrence.clone()), "Iwo zostaje"
+        ).is_correct());
+        ledger.assert_slot_labels();
+        let slots = ledger.slots_of(&occurrence).unwrap();
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].sample_start, occurrence.sample_start);
+        assert_eq!(slots[0].sample_end, occurrence.sample_end);
+        assert_eq!(slots[0].producer, ObservationProducer::ManualHuman);
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    #[test]
+    fn word_ranges_cannot_rewrite_a_label_or_a_sealed_occurrence() {
+        let (mut ledger, occurrence) = whisper_only_qualified_ledger();
+        let observation = obs(ObservationProducer::Apple, 0, occurrence.clone());
+        ledger.admit(&observation, "Iwo");
+        assert!(!ledger.pin_word_ranges(&observation, &[(0, 8_000, "inne".into())]));
+        assert!(ledger.pin_word_ranges(&observation, &[(1_000, 8_000, "Iwo".into())]));
+        ledger.assert_slot_labels();
+        ledger.note_frontier_return(&occurrence, ObservationProducer::Whisper);
+        ledger.seal(&occurrence).unwrap();
+        assert!(!ledger.pin_word_ranges(&observation, &[(2_000, 9_000, "Iwo".into())]));
+        ledger.assert_slot_labels();
+        assert_eq!(ledger.slots_of(&occurrence).unwrap()[0].sample_start, 1_000);
     }
 
     fn debt_speech() -> AcousticSpeechEvidence {
