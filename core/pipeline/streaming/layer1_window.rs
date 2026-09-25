@@ -102,7 +102,10 @@ impl OpenSpeechWindowClock {
             if admit_start >= range_end {
                 continue;
             }
-            let request_start = if self.queued_through.is_some_and(|end| end > range.sample_start) {
+            let request_start = if self
+                .queued_through
+                .is_some_and(|end| end > range.sample_start)
+            {
                 admit_start.saturating_sub(overlap).max(range.sample_start)
             } else {
                 range.sample_start
@@ -617,11 +620,20 @@ mod tests {
         let five_seconds = measured_speech("take", 7, 5_000, &[(0, 5_000)]);
         let first = clock.next(&five_seconds, 1_000, None, false).unwrap();
         assert_eq!(
-            (first.request_range.sample_start, first.request_range.sample_end),
+            (
+                first.request_range.sample_start,
+                first.request_range.sample_end
+            ),
             (0, 4_000)
         );
-        assert_eq!((first.admit_sample_start, first.admit_sample_end), (0, 4_000));
-        assert_eq!(clock.next(&five_seconds, 1_000, None, false), Some(first.clone()));
+        assert_eq!(
+            (first.admit_sample_start, first.admit_sample_end),
+            (0, 4_000)
+        );
+        assert_eq!(
+            clock.next(&five_seconds, 1_000, None, false),
+            Some(first.clone())
+        );
         assert!(!clock.ack_queued(&OpenSpeechWindow {
             admit_sample_end: 3_000,
             ..first.clone()
@@ -632,7 +644,10 @@ mod tests {
         let eight_seconds = measured_speech("take", 7, 8_000, &[(0, 8_000)]);
         let second = clock.next(&eight_seconds, 1_000, None, false).unwrap();
         assert_eq!(
-            (second.request_range.sample_start, second.request_range.sample_end),
+            (
+                second.request_range.sample_start,
+                second.request_range.sample_end
+            ),
             (3_000, 7_000)
         );
         assert_eq!(
@@ -644,10 +659,16 @@ mod tests {
 
         let last = clock.next(&eight_seconds, 1_000, None, true).unwrap();
         assert_eq!(
-            (last.request_range.sample_start, last.request_range.sample_end),
+            (
+                last.request_range.sample_start,
+                last.request_range.sample_end
+            ),
             (6_000, 8_000)
         );
-        assert_eq!((last.admit_sample_start, last.admit_sample_end), (7_000, 8_000));
+        assert_eq!(
+            (last.admit_sample_start, last.admit_sample_end),
+            (7_000, 8_000)
+        );
         assert!(clock.ack_queued(&last));
         assert!(clock.next(&eight_seconds, 1_000, None, true).is_none());
     }
@@ -664,7 +685,10 @@ mod tests {
             .next(&first_evidence, 1_000, None, false)
             .expect("four seconds of open speech must offer L1 before Apple final");
         assert_eq!(
-            (first.request_range.sample_start, first.request_range.sample_end),
+            (
+                first.request_range.sample_start,
+                first.request_range.sample_end
+            ),
             (0, 4_000)
         );
 
@@ -683,19 +707,31 @@ mod tests {
             .next(&later_island, 1_000, real_close.clone(), false)
             .expect("the retained tail follows only after the first offer is accepted");
         assert_eq!(
-            (second.request_range.sample_start, second.request_range.sample_end),
+            (
+                second.request_range.sample_start,
+                second.request_range.sample_end
+            ),
             (3_000, 7_000)
         );
-        assert_eq!((second.admit_sample_start, second.admit_sample_end), (4_000, 7_000));
+        assert_eq!(
+            (second.admit_sample_start, second.admit_sample_end),
+            (4_000, 7_000)
+        );
         assert!(clock.ack_queued(&second));
         let tail = clock
             .next(&later_island, 1_000, real_close, false)
             .expect("the measured close releases the last exclusive speech tail");
         assert_eq!(
-            (tail.request_range.sample_start, tail.request_range.sample_end),
+            (
+                tail.request_range.sample_start,
+                tail.request_range.sample_end
+            ),
             (6_000, 7_500)
         );
-        assert_eq!((tail.admit_sample_start, tail.admit_sample_end), (7_000, 7_500));
+        assert_eq!(
+            (tail.admit_sample_start, tail.admit_sample_end),
+            (7_000, 7_500)
+        );
         assert!(clock.ack_queued(&tail));
     }
 
@@ -715,14 +751,16 @@ mod tests {
                 .is_none(),
             "a boundary beyond observed PCM is not measured"
         );
-        assert!(clock
-            .next(
-                &short_speech,
-                1_000,
-                Some((CaptureEvidenceIdentity::new("foreign", 7), 3_000)),
-                false,
-            )
-            .is_none());
+        assert!(
+            clock
+                .next(
+                    &short_speech,
+                    1_000,
+                    Some((CaptureEvidenceIdentity::new("foreign", 7), 3_000)),
+                    false,
+                )
+                .is_none()
+        );
 
         let tail = clock
             .next(
@@ -733,19 +771,27 @@ mod tests {
             )
             .expect("Silero's real speech-end must release the short final island");
         assert_eq!(
-            (tail.request_range.sample_start, tail.request_range.sample_end),
+            (
+                tail.request_range.sample_start,
+                tail.request_range.sample_end
+            ),
             (1_000, 3_000)
         );
-        assert_eq!((tail.admit_sample_start, tail.admit_sample_end), (1_000, 3_000));
+        assert_eq!(
+            (tail.admit_sample_start, tail.admit_sample_end),
+            (1_000, 3_000)
+        );
         assert!(clock.ack_queued(&tail));
-        assert!(clock
-            .next(
-                &short_speech,
-                1_000,
-                Some((CaptureEvidenceIdentity::new("take", 7), 3_000)),
-                false,
-            )
-            .is_none());
+        assert!(
+            clock
+                .next(
+                    &short_speech,
+                    1_000,
+                    Some((CaptureEvidenceIdentity::new("take", 7), 3_000)),
+                    false,
+                )
+                .is_none()
+        );
     }
 
     #[test]
@@ -761,7 +807,10 @@ mod tests {
             offers
                 .iter()
                 .map(|window| {
-                    (window.request_range.sample_start, window.request_range.sample_end)
+                    (
+                        window.request_range.sample_start,
+                        window.request_range.sample_end,
+                    )
                 })
                 .collect::<Vec<_>>(),
             vec![(0, 4_000), (3_000, 4_500), (6_000, 10_000), (9_000, 11_000)]
@@ -771,7 +820,12 @@ mod tests {
                 .iter()
                 .map(|window| (window.admit_sample_start, window.admit_sample_end))
                 .collect::<Vec<_>>(),
-            vec![(0, 4_000), (4_000, 4_500), (6_000, 10_000), (10_000, 11_000)]
+            vec![
+                (0, 4_000),
+                (4_000, 4_500),
+                (6_000, 10_000),
+                (10_000, 11_000)
+            ]
         );
     }
 
@@ -786,7 +840,9 @@ mod tests {
         let unavailable = AcousticSpeechEvidence::unavailable(
             CaptureEvidenceIdentity::new("take", 7),
             SILERO_RAW_BOUNDARIES_PRODUCER,
-            AcousticAvailability::Discontinuous { observed_samples: 5_000 },
+            AcousticAvailability::Discontinuous {
+                observed_samples: 5_000,
+            },
         );
         assert!(clock.next(&unavailable, 1_000, None, false).is_none());
         assert_eq!(clock.next(&speech, 1_000, None, false), Some(offered));
@@ -863,7 +919,11 @@ mod tests {
         let window = clock.next(&speech_then_silence, 1_000, None, true).unwrap();
         assert_eq!(window.request_range.sample_end, 4_000);
         assert!(clock.ack_queued(&window));
-        assert!(clock.next(&speech_then_silence, 1_000, None, true).is_none());
+        assert!(
+            clock
+                .next(&speech_then_silence, 1_000, None, true)
+                .is_none()
+        );
     }
 
     fn piece(id: u64, text: &str, start_ts: f32, end_ts: f32, segs: usize) -> CoalescedPiece {

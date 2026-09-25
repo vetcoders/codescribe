@@ -1932,12 +1932,18 @@ mod tests {
         );
         assert!(evidence.ranges()[0].sample_start < raw.ranges()[0].sample_start);
         assert!(evidence.ranges()[0].sample_end > raw.ranges()[0].sample_end);
-        let mut clock = super::super::layer1_window::OpenSpeechWindowClock::new(
-            raw.identity().clone(),
+        let mut clock =
+            super::super::layer1_window::OpenSpeechWindowClock::new(raw.identity().clone());
+        assert!(
+            clock
+                .next(
+                    &evidence,
+                    16_000,
+                    ingress.raw_speech_closed_through(),
+                    false
+                )
+                .is_none()
         );
-        assert!(clock
-            .next(&evidence, 16_000, ingress.raw_speech_closed_through(), false)
-            .is_none());
         let offered = clock
             .next(&raw, 16_000, ingress.raw_speech_closed_through(), false)
             .unwrap();
