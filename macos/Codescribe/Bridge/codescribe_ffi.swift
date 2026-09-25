@@ -11030,18 +11030,6 @@ public struct CsSettings: Equatable, Hashable {
     public var localModel: String
     public var sttFileEndpoint: String?
     public var sttLiveEndpoint: String?
-    /**
-     * STT engine selection (`CODESCRIBE_STT_ENGINE`): `"auto"` | `"apple"` |
-     * `"whisper"`. `None` means the built-in auto policy. Written back via
-     * `update_config` with the same key (promoted → settings.json).
-     */
-    public var sttEngine: String?
-    /**
-     * Legacy stop-file-pass token (`FINAL_PASS_MODE`). Runtime ignores it
-     * on stop; Settings no longer exposes Always/Smart/Off. Persist `off`
-     * if a value must still be written.
-     */
-    public var finalPassMode: String?
     public var restoreClipboard: Bool
     public var restoreClipboardDelayMs: UInt64
     public var startAtLogin: Bool
@@ -11058,9 +11046,8 @@ public struct CsSettings: Equatable, Hashable {
     public var formattingLevel: String?
     public var whisperModel: String?
     /**
-     * Layered incremental transcription phase (`CODESCRIBE_LAYERED_TRANSCRIPTION`):
-     * `"phase1"` | `"off"` (anything non-phase means OFF). Written back via
-     * `update_config` with the same key (promoted → settings.json).
+     * Read-only diagnostic env override captured by the runtime snapshot.
+     * ASR mode owns the default; Settings never writes this value.
      */
     public var layeredTranscription: String?
     /**
@@ -11112,24 +11099,13 @@ public struct CsSettings: Equatable, Hashable {
          */transcriptSendMode: String, transcriptTaggingEnabled: Bool, transcriptTagTemplate: String, aiMaxTokens: Int32, aiAssistiveMaxTokens: Int32, showTrayGlyph: Bool, showDockIcon: Bool, transcriptionOverlayEnabled: Bool, holdIndicator: Bool, holdBadgeSize: UInt32, holdBadgeOffsetX: Int32, holdBadgeOffsetY: Int32,
         /**
          * `OverlayPositionMode::as_str()` — `"snapped_top_right"` / `"custom"`.
-         */overlayPositionMode: String, overlayCustomX: Double?, overlayCustomY: Double?, beepOnStart: Bool, soundName: String, soundVolume: Float, audioInputDevice: String?, historyEnabled: Bool, quickNotesEnabled: Bool, quickNotesSaveOnly: Bool, useLocalStt: Bool, localModel: String, sttFileEndpoint: String?, sttLiveEndpoint: String?,
-        /**
-         * STT engine selection (`CODESCRIBE_STT_ENGINE`): `"auto"` | `"apple"` |
-         * `"whisper"`. `None` means the built-in auto policy. Written back via
-         * `update_config` with the same key (promoted → settings.json).
-         */sttEngine: String?,
-        /**
-         * Legacy stop-file-pass token (`FINAL_PASS_MODE`). Runtime ignores it
-         * on stop; Settings no longer exposes Always/Smart/Off. Persist `off`
-         * if a value must still be written.
-         */finalPassMode: String?, restoreClipboard: Bool, restoreClipboardDelayMs: UInt64, startAtLogin: Bool, agentEnterSends: Bool, agentAutoSend: Bool, dumpAudioLogs: Bool,
+         */overlayPositionMode: String, overlayCustomX: Double?, overlayCustomY: Double?, beepOnStart: Bool, soundName: String, soundVolume: Float, audioInputDevice: String?, historyEnabled: Bool, quickNotesEnabled: Bool, quickNotesSaveOnly: Bool, useLocalStt: Bool, localModel: String, sttFileEndpoint: String?, sttLiveEndpoint: String?, restoreClipboard: Bool, restoreClipboardDelayMs: UInt64, startAtLogin: Bool, agentEnterSends: Bool, agentAutoSend: Bool, dumpAudioLogs: Bool,
         /**
          * Lane = full ProviderRef (vendor ID or `custom:<slug>`) + model; provider first.
          */llmFormattingProvider: String?, llmFormattingModel: String?, llmAssistiveProvider: String?, llmAssistiveModel: String?, formattingLevel: String?, whisperModel: String?,
         /**
-         * Layered incremental transcription phase (`CODESCRIBE_LAYERED_TRANSCRIPTION`):
-         * `"phase1"` | `"off"` (anything non-phase means OFF). Written back via
-         * `update_config` with the same key (promoted → settings.json).
+         * Read-only diagnostic env override captured by the runtime snapshot.
+         * ASR mode owns the default; Settings never writes this value.
          */layeredTranscription: String?,
         /**
          * Workspace root directories the agent scans (`list_projects` tool) to
@@ -11187,8 +11163,6 @@ public struct CsSettings: Equatable, Hashable {
         self.localModel = localModel
         self.sttFileEndpoint = sttFileEndpoint
         self.sttLiveEndpoint = sttLiveEndpoint
-        self.sttEngine = sttEngine
-        self.finalPassMode = finalPassMode
         self.restoreClipboard = restoreClipboard
         self.restoreClipboardDelayMs = restoreClipboardDelayMs
         self.startAtLogin = startAtLogin
@@ -11263,8 +11237,6 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 localModel: FfiConverterString.read(from: &buf),
                 sttFileEndpoint: FfiConverterOptionString.read(from: &buf),
                 sttLiveEndpoint: FfiConverterOptionString.read(from: &buf),
-                sttEngine: FfiConverterOptionString.read(from: &buf),
-                finalPassMode: FfiConverterOptionString.read(from: &buf),
                 restoreClipboard: FfiConverterBool.read(from: &buf),
                 restoreClipboardDelayMs: FfiConverterUInt64.read(from: &buf),
                 startAtLogin: FfiConverterBool.read(from: &buf),
@@ -11327,8 +11299,6 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterString.write(value.localModel, into: &buf)
         FfiConverterOptionString.write(value.sttFileEndpoint, into: &buf)
         FfiConverterOptionString.write(value.sttLiveEndpoint, into: &buf)
-        FfiConverterOptionString.write(value.sttEngine, into: &buf)
-        FfiConverterOptionString.write(value.finalPassMode, into: &buf)
         FfiConverterBool.write(value.restoreClipboard, into: &buf)
         FfiConverterUInt64.write(value.restoreClipboardDelayMs, into: &buf)
         FfiConverterBool.write(value.startAtLogin, into: &buf)
