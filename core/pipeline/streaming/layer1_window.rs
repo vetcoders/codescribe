@@ -652,6 +652,53 @@ mod tests {
         assert!(clock.next(&eight_seconds, 1_000, None, true).is_none());
     }
 
+    /// A saturated L1 queue is not an acknowledgement. Growth, a real
+    /// SpeechEnd, and even the next speech island must not make the clock
+    /// skip the first offer or silently grant its PCM to a later request.
+    #[test]
+    fn full_queue_keeps_open_speech_offer_across_growth_and_close() {
+        let capture = CaptureEvidenceIdentity::new("take", 7);
+        let mut clock = OpenSpeechWindowClock::new(capture.clone());
+        let first_evidence = measured_speech("take", 7, 4_000, &[(0, 4_000)]);
+        let first = clock
+            .next(&first_evidence, 1_000, None, false)
+            .expect("four seconds of open speech must offer L1 before Apple final");
+        assert_eq!(
+            (first.request_range.sample_start, first.request_range.sample_end),
+            (0, 4_000)
+        );
+
+        let grown = measured_speech("take", 7, 7_500, &[(0, 7_500)]);
+        assert_eq!(clock.next(&grown, 1_000, None, false), Some(first.clone()));
+        let later_island = measured_speech("take", 7, 10_000, &[(0, 7_500), (9_000, 10_000)]);
+        let real_close = Some((capture, 7_500));
+        assert_eq!(
+            clock.next(&later_island, 1_000, real_close.clone(), false),
+            Some(first.clone()),
+            "queue backpressure must retain the exact unacknowledged PCM offer"
+        );
+
+        assert!(clock.ack_queued(&first));
+        let second = clock
+            .next(&later_island, 1_000, real_close.clone(), false)
+            .expect("the retained tail follows only after the first offer is accepted");
+        assert_eq!(
+            (second.request_range.sample_start, second.request_range.sample_end),
+            (3_000, 7_000)
+        );
+        assert_eq!((second.admit_sample_start, second.admit_sample_end), (4_000, 7_000));
+        assert!(clock.ack_queued(&second));
+        let tail = clock
+            .next(&later_island, 1_000, real_close, false)
+            .expect("the measured close releases the last exclusive speech tail");
+        assert_eq!(
+            (tail.request_range.sample_start, tail.request_range.sample_end),
+            (6_000, 7_500)
+        );
+        assert_eq!((tail.admit_sample_start, tail.admit_sample_end), (7_000, 7_500));
+        assert!(clock.ack_queued(&tail));
+    }
+
     #[test]
     fn measured_speech_end_releases_a_short_l1_tail_without_stopping_capture() {
         let mut clock = OpenSpeechWindowClock::new(CaptureEvidenceIdentity::new("take", 7));
