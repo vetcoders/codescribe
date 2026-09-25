@@ -14531,6 +14531,27 @@ mod relay_l1_overlap_admission_tests {
         let events = drain(&mut lane.rx);
         assert_eq!(mutation_count(&events), 1, "Apple words are not a floor");
         assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    EngineEvent::LedgerMutation {
+                        observation,
+                        label,
+                        receipt: MutationReceipt::Correct {
+                            occurrence: corrected,
+                            from: ObservationProducer::Apple,
+                            to: ObservationProducer::Whisper,
+                        },
+                    } if &observation.occurrence == &occurrence
+                        && corrected == &occurrence
+                        && label == "partial passes"
+                ))
+                .count(),
+            1,
+            "the ledger must correct Apple's label on the original PCM owner"
+        );
+        assert_eq!(
             held_text(&lane, &occurrence).as_deref(),
             Some("partial passes")
         );
