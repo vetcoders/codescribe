@@ -145,6 +145,22 @@ final class AgentVoiceTargetTests: XCTestCase {
     XCTAssertEqual(f.store.threads.filter(\.isMaxConsultation).count, 1)
   }
 
+  func testExplicitSeedPublishesOnceAndLaterSelectionStillPublishes() {
+    let recent = row("t_recent", updated: 5)
+    let next = row("t_next", updated: 1)
+    let engine = RoutingEngine()
+    let store = AgentChatStore(
+      engine: engine, threads: [row("t_max", updated: 10, mode: "max"), next, recent])
+    defer { store.invalidate() }
+
+    XCTAssertEqual(store.selectedThreadID, recent.id)
+    XCTAssertEqual(engine.targets, ["t_recent"])
+
+    store.select(next.id)
+
+    XCTAssertEqual(engine.targets, ["t_recent", "t_next"])
+  }
+
   func testDeletingSelectedAgentSkipsMaxAtTopOfIndex() throws {
     let selected = row("t_selected", updated: 8)
     let f = fixture([

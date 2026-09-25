@@ -612,8 +612,8 @@ final class AgentChatStore: ObservableObject {
   @Published var threads: [ChatThread]
   @Published var selectedThreadID: UUID? {
     // Agent selections re-route the voice-assistive lane; browsing a Max
-    // consultation leaves the bound Agent conversation alone. Observers do not
-    // fire during init — the seeding path publishes once explicitly.
+    // consultation leaves the bound Agent conversation alone. Init seeds the
+    // backing storage directly and publishes once explicitly.
     //
     // This is also the single seam where the composer changes hands. Every way
     // the selection can move — `select`, `newThread`, `delete`, a search or
@@ -1303,9 +1303,9 @@ final class AgentChatStore: ObservableObject {
     }
     self.threads = seeded
     self.threadSearchError = initialThreadError
-    self.selectedThreadID = ChatThread.preferredAgentThread(in: seeded)?.id
-    // didSet does not fire inside init — publish the seed selection once so
-    // the assistive lane routes to what the rail shows from the first frame.
+    self._selectedThreadID = Published(initialValue: ChatThread.preferredAgentThread(in: seeded)?.id)
+    // Seed the backing storage without invoking the wrapped property's didSet,
+    // then publish once so the assistive lane matches the rail's first frame.
     // The composition handoff is deliberately not replayed here: a new store
     // has an empty composer and no stored composition, so there is no previous
     // owner to park and nothing to restore.
