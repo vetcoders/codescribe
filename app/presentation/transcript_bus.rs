@@ -879,6 +879,18 @@ impl TranscriptBus {
             .writer
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        // A document rewrite does not reverse the acoustic verdict of a
+        // refused take. Keep it visible on every subsequent Bus row.
+        let phase = if is_user_revision
+            && writer
+                .last_projection
+                .as_ref()
+                .is_some_and(|event| event.phase == TranscriptProjectionPhase::CoverageRefused)
+        {
+            TranscriptProjectionPhase::CoverageRefused
+        } else {
+            phase
+        };
         if writer
             .last_projection
             .as_ref()

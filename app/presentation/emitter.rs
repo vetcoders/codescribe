@@ -489,7 +489,9 @@ pub struct TranscriptReducer {
     context_markers: Vec<DocumentContextMarker>,
     manual_rendered_text: Option<String>,
     manual_document_revision_receipt: Option<String>,
+    /// Lifecycle ended; independent of whether the ledger issued a terminal seal.
     terminal: bool,
+    terminal_sealed: bool,
     observed_seals: std::collections::BTreeSet<String>,
     applied_observations: Vec<ObservationIdentity>,
     /// Read-only overlap evidence, keyed by the pin's PCM range. It is painted
@@ -813,7 +815,7 @@ impl TranscriptReducer {
         self.observed_seals.insert(receipt.receipt_id.clone());
         let terminal = !receipt.is_occurrence_seal();
         if terminal {
-            self.terminal = true;
+            self.terminal_sealed = true;
         }
         Some(self.revision_for_action(ReducerAction::RecordLedgerSeal {
             occurrence,
@@ -823,7 +825,7 @@ impl TranscriptReducer {
     }
 
     /// Commit a whole-document user edit without fabricating per-word acoustic
-    /// ownership. The ledger authenticates the exact sealed source occurrence
+    /// ownership. The ledger authenticates the exact committed source occurrence
     /// set, then this reducer mints the only new document revision.
     pub fn apply_user_revision(
         &mut self,
@@ -869,7 +871,7 @@ impl TranscriptReducer {
         ledger: &mut AcousticLedger,
         input: ConsultationPresentationInput<'_>,
     ) -> Result<TranscriptRevision, UserRevisionRefusal> {
-        if self.terminal {
+        if self.terminal || self.terminal_sealed {
             return Err(UserRevisionRefusal::LedgerRefusal(
                 "consultation_capture_already_terminal",
             ));
@@ -1145,8 +1147,8 @@ impl TranscriptReducer {
     }
 
     /// Mark terminal review lifecycle without text or a new reducer revision.
-    /// Ledger seal scope independently opens terminal CAS before this event;
-    /// cardinality has no finality meaning. Edit admission still checks seals.
+    /// A seal verdict is independent of this lifecycle end. Cardinality has no
+    /// finality meaning; a user revision may follow a refused terminal seal.
     fn mark_terminal_lifecycle(&mut self) {
         self.terminal = true;
         self.unanchored_evidence.clear();
@@ -2123,11 +2125,10 @@ impl EventSink for PresentationEmitter {
                     .session_state
                     .lock()
                     .unwrap_or_else(|error| error.into_inner());
-                let was_stop_revision = !state.terminal
-                    && state
-                        .manual_document_revision_receipt
-                        .as_deref()
-                        .is_some_and(|id| id.starts_with("light-plus-"));
+                let was_stop_revision = state
+                    .manual_document_revision_receipt
+                    .as_deref()
+                    .is_some_and(|id| id.starts_with("light-plus-"));
                 let revision = state.apply_ledger_mutation(&ledger, observation, receipt);
                 let visible = state.visible_projection();
                 drop(state);
@@ -2463,11 +2464,9 @@ impl EventSink for PresentationEmitter {
                     state.visible_projection()
                 };
                 self.send_cmd(EmitterCmd::PaintEphemeralPreview(canonical_text));
-                // Lifecycle end is the second Light+ gate: a one-occurrence
-                // session's whole-session seal is indistinguishable from its
-                // sole occurrence seal, so the reducer becomes terminal only
-                // here. Idempotent — a document the terminal seal already
-                // shaped yields no intent, so nothing is minted twice.
+                // Lifecycle end closes edit admission independently of the
+                // seal verdict. Light+ is idempotent: a document the terminal
+                // seal already shaped yields no second intent.
                 if let Some(ledger) = &self.acoustic_ledger {
                     let mut ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
                     self.mint_light_plus_revision(&mut ledger);
@@ -2495,7 +2494,7 @@ mod tests {
     use codescribe_core::pipeline::acoustic_ledger::{
         AcousticEvidence, AcousticLedger, ConsultationPresentationInput,
         DocumentRevisionProvenance, EnergyCalibration, IncrementalShapingReceipt, MutationReceipt,
-        ObservationIdentity, ObservationProducer, OccurrenceIdentity,
+        ObservationIdentity, ObservationProducer, OccurrenceIdentity, SealRefusal,
     };
     use codescribe_core::pipeline::contracts::{
         AnnotationKind, DeltaSink, EngineEvent, EventSink, LayerSource, LayerSummary, PreviewPin,
@@ -3328,7 +3327,7 @@ mod tests {
     /// `user-edit` ledger receipt, the Bus persists it after microphone
     /// lifecycle end, and replay returns the same terminal bytes.
     #[tokio::test]
-    async fn explicit_retranscribe_commits_after_refused_terminal_seal() {
+    async fn explicit_revisions_commit_after_refused_terminal_seal() {
         let temp = tempfile::tempdir().unwrap();
         let bus = Arc::new(
             TranscriptBus::open_at(
@@ -3361,6 +3360,46 @@ mod tests {
             None,
         );
         emitter.on_event(&mutation);
+        let coverage = {
+            use codescribe_core::audio::capture_receipt::{
+                AcousticAvailability, AcousticSpeechEvidence, CaptureEvidenceIdentity,
+            };
+            let mut ledger = ledger.lock().unwrap();
+            let receipt = ledger.assess_seal_coverage(
+                "refused-take",
+                7,
+                &AcousticSpeechEvidence::measured(
+                    CaptureEvidenceIdentity::new("refused-take", 7),
+                    "capture_energy",
+                    AcousticAvailability::Observed {
+                        observed_samples: 48_000,
+                    },
+                    vec![TailSampleRange {
+                        session: "refused-take".into(),
+                        capture_epoch: 7,
+                        sample_start: 0,
+                        sample_end: 48_000,
+                    }],
+                ),
+                8_000,
+            );
+            assert!(!receipt.status.is_complete());
+            assert!(ledger.record_seal_coverage(receipt.clone()));
+            assert_eq!(
+                ledger.seal_terminal("refused-take", 7),
+                Err(SealRefusal::CoverageIncomplete)
+            );
+            receipt
+        };
+        emitter.on_event(&EngineEvent::SealCoverage {
+            receipt: coverage,
+            comparison: None,
+        });
+        let open_revision = emitter.session_state.lock().unwrap().revision;
+        assert_eq!(
+            emitter.terminal_revision_source("refused-take", open_revision),
+            Err(UserRevisionRefusal::NotTerminal),
+        );
         emitter.on_event(&EngineEvent::SessionFinalised {
             session_id: "refused-take".to_string(),
             layer_summary: LayerSummary::default(),
@@ -3377,21 +3416,75 @@ mod tests {
                 TranscriptDelivery::Retained,
             )
             .unwrap();
+        let first = crate::presentation::transcript_bus::document_history_at(
+            &temp.path().join("refused.jsonl"),
+            "refused-take",
+        )
+        .unwrap()
+        .first()
+        .unwrap()
+        .clone();
+        let formatted = emitter
+            .apply_formatter_revision(
+                "refused-take".to_string(),
+                terminal.reducer_revision,
+                AiFormatResult {
+                    text: "Druga wersja".to_string(),
+                    reasoning_text: None,
+                    status: AiFormatStatus::Applied,
+                },
+            )
+            .expect("formatter result needs lifecycle end, not a seal");
+        assert!(formatted.provenance_receipt.starts_with("formatter-"));
         let edit = UserRevisionIntent {
             session_id: "refused-take".to_string(),
-            source_revision: terminal.reducer_revision,
-            rendered_text: "Nowa wersja".to_string(),
+            source_revision: formatted.revision,
+            rendered_text: first.rendered_text.clone(),
             provenance: DocumentRevisionProvenance::UserEdit,
         };
-        assert!(emitter.apply_user_revision(edit.clone()).is_err());
+        let user_edit = emitter
+            .apply_user_revision(edit.clone())
+            .expect("history restore needs lifecycle end, not a seal");
+        assert_eq!(user_edit.rendered_text, first.rendered_text);
+        assert!(user_edit.provenance_receipt.starts_with("user-edit-"));
         let committed = emitter
             .apply_user_revision(UserRevisionIntent {
+                source_revision: user_edit.revision,
+                rendered_text: "Trzecia wersja".to_string(),
                 provenance: DocumentRevisionProvenance::Retranscribe,
                 ..edit
             })
             .expect("explicit button pass revises the refused take");
-        assert_eq!(committed.rendered_text, "Nowa wersja");
+        assert_eq!(committed.rendered_text, "Trzecia wersja");
         assert!(committed.provenance_receipt.starts_with("retranscribe-"));
+        assert!(ledger
+            .lock()
+            .unwrap()
+            .terminal_finality("refused-take", 7)
+            .into_refusal()
+            .is_some());
+        let rows = std::fs::read_to_string(temp.path().join("refused.jsonl")).unwrap();
+        assert!(rows.contains("\"phase\":\"coverage_refused\""));
+        assert!(rows.contains("\"reducer_action\":\"apply_manual_edit\""));
+        assert!(rows.contains("\"seal_coverage\""));
+        for row in rows
+            .lines()
+            .filter(|row| row.contains("\"reducer_action\":\"apply_manual_edit\""))
+        {
+            assert!(row.contains("\"phase\":\"coverage_refused\""));
+            assert!(row.contains("\"seal_receipt\":null"));
+        }
+        assert_eq!(
+            crate::presentation::transcript_bus::document_history_at(
+                &temp.path().join("refused.jsonl"),
+                "refused-take"
+            )
+            .unwrap()
+            .last()
+            .unwrap()
+            .rendered_text,
+            "Trzecia wersja"
+        );
         emitter.finish().await;
     }
 
@@ -4882,9 +4975,9 @@ mod tests {
     }
 
     /// Recovery falsifier: a real terminal is not identified by cardinality.
-    /// UNRUN under W2; both receipt scope and pre-lifecycle CAS are exercised.
+    /// UNRUN under W2; receipt scope cannot end lifecycle or open edit CAS.
     #[tokio::test]
-    async fn a_single_occurrence_terminal_opens_the_current_shaped_cas_source() {
+    async fn a_single_occurrence_seal_does_not_open_cas_before_lifecycle_end() {
         let mut take = live_take("single-terminal");
         let occurrence = OccurrenceIdentity::new("single-terminal", 19, 0, 16_000);
         take.admit(&occurrence, 1, "jedno zdanie");
@@ -4911,8 +5004,8 @@ mod tests {
         assert_eq!(
             take.emitter
                 .terminal_revision_source("single-terminal", revision),
-            Ok("Jedno zdanie.".to_string()),
-            "genuine terminal CAS opens before lifecycle end"
+            Err(UserRevisionRefusal::NotTerminal),
+            "a terminal seal alone cannot end the lifecycle"
         );
         let callbacks = take.projected.lock().unwrap().len();
         take.emitter
@@ -4942,6 +5035,23 @@ mod tests {
             Ok("Jedno zdanie.".to_string()),
             "one occurrence must permit the same authenticated terminal CAS as two"
         );
+    }
+
+    #[tokio::test]
+    async fn late_ledger_words_after_lifecycle_end_still_commit() {
+        let mut take = live_take("late-l1");
+        let first = OccurrenceIdentity::new("late-l1", 19, 0, 16_000);
+        let second = OccurrenceIdentity::new("late-l1", 19, 16_000, 32_000);
+        take.admit(&first, 1, "pierwsze zdanie");
+        take.emitter.on_event(&EngineEvent::SessionFinalised {
+            session_id: "late-l1".to_string(),
+            layer_summary: LayerSummary::default(),
+        });
+        let before = take.emitter.session_state.lock().unwrap().revision;
+        take.admit(&second, 2, "drugie zdanie");
+        take.emitter.finish().await;
+        assert!(take.emitter.session_state.lock().unwrap().revision > before);
+        assert!(take.delivery.lock().await.contains("drugie zdanie"));
     }
 
     /// Acceptance: Stop delivers the current canonical shaped document exactly

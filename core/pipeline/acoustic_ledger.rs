@@ -1734,11 +1734,11 @@ impl AcousticLedger {
         &self.manual_edits
     }
 
-    /// Authenticate one provenance-bearing rewrite of the complete sealed document.
+    /// Authenticate one provenance-bearing rewrite of the complete document.
     ///
     /// A whole-document edit cannot honestly be divided back into occurrence
     /// labels without a new word-to-PCM alignment pass. This receipt therefore
-    /// binds the edited bytes to the exact sealed occurrence set and source
+    /// binds the edited bytes to the exact committed occurrence set and source
     /// reducer revision, while leaving every acoustic occurrence and token
     /// receipt immutable. The transcript reducer remains the document author.
     pub fn record_manual_document_revision(
@@ -1765,12 +1765,9 @@ impl AcousticLedger {
         if source_occurrences.iter().any(|occurrence| {
             occurrence.session != session_id
                 || !self.is_qualified(occurrence)
-                || (provenance != DocumentRevisionProvenance::Retranscribe
-                    && provenance != DocumentRevisionProvenance::LightPlus
-                    && !self.is_sealed(occurrence))
                 || !self.committed.contains_key(occurrence)
         }) {
-            return Err("manual_document_occurrence_not_sealed");
+            return Err("manual_document_occurrence_not_committed");
         }
 
         let source_seal_receipts = source_occurrences
@@ -2815,9 +2812,9 @@ impl DocumentRevisionProvenance {
     }
 }
 
-/// Provenance for an explicit rewrite of a complete sealed transcript.
+/// Provenance for an explicit rewrite of a complete committed transcript.
 ///
-/// The receipt names every source occurrence and seal but deliberately carries
+/// The receipt names every source occurrence and any issued seal but carries
 /// no fabricated per-word alignment for the replacement text. It is append-only
 /// evidence consumed by the Rust transcript reducer and its Bus projection.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2826,7 +2823,7 @@ pub struct ManualDocumentRevisionReceipt {
     pub receipt_id: String,
     /// Stable origin label for quality capture and external observers.
     pub provenance: String,
-    /// Recording session whose sealed document was revised.
+    /// Recording session whose committed document was revised.
     pub session_id: String,
     /// Reducer revision the user actually edited.
     pub source_revision: u64,
@@ -2834,7 +2831,7 @@ pub struct ManualDocumentRevisionReceipt {
     pub revision: u64,
     /// Exact occurrence identities that made up the source document.
     pub source_occurrences: Vec<OccurrenceIdentity>,
-    /// Seals proving those source occurrences were terminal before the edit.
+    /// Issued occurrence seals, if any; absence never claims acoustic finality.
     pub source_seal_receipts: Vec<String>,
     /// Complete user-authored replacement bytes.
     pub rendered_text: String,
