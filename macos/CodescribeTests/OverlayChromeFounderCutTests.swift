@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 
 @testable import Codescribe
@@ -377,7 +378,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     state.handleRecordingPreparing()
     XCTAssertTrue(state.hasRecoverableSupersededWork)
     try withPanel(state: state, width: 320) { _, root in
-      func element(_ identifier: String) -> (any NSAccessibilityProtocol)? {
+      @MainActor func element(_ identifier: String) -> (any NSAccessibilityProtocol)? {
         accessibilityTree(root).first { $0.accessibilityIdentifier() == identifier }
       }
       let cap = try XCTUnwrap(element("overlay-tools-handle"))
@@ -394,9 +395,11 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       XCTAssertNil(element("overlay-intent-dock"))
       state.finishControllerRecording()
     }
-    let host = NSHostingView(
-      rootView: DictationOverlayView(state: .previewFormatted())
-        .environment(\.accessibilityVoiceOverEnabled, true))
+    // `accessibilityVoiceOverEnabled` is read-only in the environment, so the
+    // test cannot switch VoiceOver on. The overlay no longer reads it, so
+    // VoiceOver cannot mount the tools; the default render is the proof.
+    XCTAssertFalse(try overlaySource().contains("accessibilityVoiceOverEnabled"))
+    let host = NSHostingView(rootView: DictationOverlayView(state: .previewFormatted()))
     host.frame = CGRect(x: 0, y: 0, width: 320, height: 280)
     settle(host)
     XCTAssertFalse(
@@ -441,7 +444,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   func testTakeStartAndCollapseRemoveMountedTools() throws {
     let state = OverlayState.previewFormatted()
     try withPanel(state: state) { _, root in
-      func pressCap() throws {
+      @MainActor func pressCap() throws {
         let cap = try XCTUnwrap(
           accessibilityTree(root).first {
             $0.accessibilityIdentifier() == "overlay-tools-handle"
@@ -449,7 +452,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         XCTAssertTrue(cap.accessibilityPerformPress())
         settle(root)
       }
-      func hasTools() -> Bool {
+      @MainActor func hasTools() -> Bool {
         accessibilityTree(root).contains { $0.accessibilityIdentifier() == "overlay-intent-dock" }
       }
       try pressCap()
@@ -508,7 +511,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     state.handleRecordingFinalising()
     let words = state.canvasText
     try withPanel(state: state) { panel, root in
-      func noticeExists() -> Bool {
+      @MainActor func noticeExists() -> Bool {
         accessibilityTree(root).contains { $0.accessibilityIdentifier() == "overlay-finishing" }
       }
       XCTAssertTrue(noticeExists())
