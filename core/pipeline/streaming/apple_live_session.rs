@@ -3632,12 +3632,8 @@ fn admit_late_apple_words(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut novel = Vec::new();
         for (start, end, text) in words {
-            let pin = OccurrenceIdentity::new(
-                owner.session.clone(),
-                owner.capture_epoch,
-                start,
-                end,
-            );
+            let pin =
+                OccurrenceIdentity::new(owner.session.clone(), owner.capture_epoch, start, end);
             let observation =
                 ledger.next_word_observation(LedgerObservationProducer::Apple, request, &owner);
             let exact_current = start < end
@@ -3657,11 +3653,8 @@ fn admit_late_apple_words(
                         && segment.text == text
                 });
             if !exact_current {
-                let receipt = ledger.keep_visible_unanchored(
-                    &observation,
-                    &text,
-                    NoAuthorityReason::NoRange,
-                );
+                let receipt =
+                    ledger.keep_visible_unanchored(&observation, &text, NoAuthorityReason::NoRange);
                 let _ = ev_tx.send(EngineEvent::LedgerMutation {
                     observation,
                     label: text,
@@ -3681,17 +3674,15 @@ fn admit_late_apple_words(
                         matches!(
                             slot.producer,
                             LedgerObservationProducer::Apple | LedgerObservationProducer::Lexicon
-                        ) && slot.sample_start == start && slot.sample_end == end
+                        ) && slot.sample_start == start
+                            && slot.sample_end == end
                     })
                 });
             if stale_apple_span {
                 // A local generation orders receipts; it does not turn changed
                 // text over an already consumed Apple span into new speech.
-                let receipt = ledger.refuse_replacement(
-                    &observation,
-                    &text,
-                    RefuseReason::SealedReplay,
-                );
+                let receipt =
+                    ledger.refuse_replacement(&observation, &text, RefuseReason::SealedReplay);
                 let _ = ev_tx.send(EngineEvent::LedgerMutation {
                     observation,
                     label: text,
@@ -12561,10 +12552,11 @@ mod rc_w2_test_rehab {
         let mut state = state("armed-unscheduled", 2.0);
         state.tail_patch = Some(tail_tx);
         let owner = qualify(&mut state, 0.0, 1.0);
-        state.acoustic_ledger.lock().unwrap().schedule_frontier(
-            owner.clone(),
-            [LedgerObservationProducer::Apple],
-        );
+        state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .schedule_frontier(owner.clone(), [LedgerObservationProducer::Apple]);
         assert!(
             admit_ledger_label(
                 &mut state,
@@ -12625,7 +12617,11 @@ mod rc_w2_test_rehab {
                 .unwrap()
                 .to_vec();
             drain(&mut rx);
-            emit(&mut state, &tx, vec![segment("alpha beta revised", 0.0, 2.0)]);
+            emit(
+                &mut state,
+                &tx,
+                vec![segment("alpha beta revised", 0.0, 2.0)],
+            );
             let ledger = state.acoustic_ledger.lock().unwrap();
             assert_eq!(ledger.text_of(&owner), Some("alpha beta"));
             assert_eq!(ledger.slots_of(&owner).unwrap(), before.as_slice());
@@ -12636,13 +12632,21 @@ mod rc_w2_test_rehab {
                     if label == "alpha beta revised" =>
                 {
                     if armed {
-                        matches!(receipt, MutationReceipt::Refuse {
-                            reason: RefuseReason::SealedReplay, ..
-                        })
+                        matches!(
+                            receipt,
+                            MutationReceipt::Refuse {
+                                reason: RefuseReason::SealedReplay,
+                                ..
+                            }
+                        )
                     } else {
-                        matches!(receipt, MutationReceipt::KeepVisibleUnanchored {
-                            reason: NoAuthorityReason::LateAppleWordSealedOwner, ..
-                        })
+                        matches!(
+                            receipt,
+                            MutationReceipt::KeepVisibleUnanchored {
+                                reason: NoAuthorityReason::LateAppleWordSealedOwner,
+                                ..
+                            }
+                        )
                     }
                 }
                 _ => false,
@@ -16844,7 +16848,11 @@ mod tc2_window_contract_tests {
         for defect in ["stale", "negative", "nonfinite", "past_capture", "straddle"] {
             let mut f = fixture();
             let start = 434_496;
-            let end = if defect == "straddle" { 520_000 } else { 470_976 };
+            let end = if defect == "straddle" {
+                520_000
+            } else {
+                470_976
+            };
             let word = FusionWord::from_timed(&pin("late", start, end));
             let mut current = vec![apple_word("late", start, end)];
             match defect {
@@ -16852,7 +16860,7 @@ mod tc2_window_contract_tests {
                 "negative" => current[0].start_ts = -1.0,
                 "nonfinite" => current[0].start_ts = f32::NAN,
                 "past_capture" => current[0].end_ts = 20.0,
-                "straddle" => {},
+                "straddle" => {}
                 _ => unreachable!(),
             }
             while f.receiver.try_recv().is_ok() {}
@@ -16861,17 +16869,20 @@ mod tc2_window_contract_tests {
             assert_eq!(ledger.text_of(&f.occurrence), None, "{defect}");
             assert_eq!(ledger.conservation().residue(), 0, "{defect}");
             drop(ledger);
-            assert!(std::iter::from_fn(|| f.receiver.try_recv().ok()).any(|event| matches!(
-                event,
-                EngineEvent::LedgerMutation {
-                    label,
-                    receipt: MutationReceipt::KeepVisibleUnanchored {
-                        reason: NoAuthorityReason::NoRange,
+            assert!(
+                std::iter::from_fn(|| f.receiver.try_recv().ok()).any(|event| matches!(
+                    event,
+                    EngineEvent::LedgerMutation {
+                        label,
+                        receipt: MutationReceipt::KeepVisibleUnanchored {
+                            reason: NoAuthorityReason::NoRange,
+                            ..
+                        },
                         ..
-                    },
-                    ..
-                } if label == "late"
-            )), "{defect}");
+                    } if label == "late"
+                )),
+                "{defect}"
+            );
         }
     }
 
