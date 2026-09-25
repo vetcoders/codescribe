@@ -37,7 +37,10 @@ final class OverlayResizeHitTests: XCTestCase {
     root.layoutSubtreeIfNeeded()
 
     let edgePoints = [
-      ("bottom-grip", NSPoint(x: root.bounds.midX, y: OverlayResizeChrome.gripRect(in: root.bounds).midY)),
+      (
+        "bottom-grip",
+        NSPoint(x: root.bounds.midX, y: OverlayResizeChrome.gripRect(in: root.bounds).midY)
+      ),
       ("left-edge", NSPoint(x: 6, y: root.bounds.midY)),
       ("right-edge", NSPoint(x: root.bounds.maxX - 6, y: root.bounds.midY)),
       ("bottom-right-corner", NSPoint(x: root.bounds.maxX - 6, y: 6)),
