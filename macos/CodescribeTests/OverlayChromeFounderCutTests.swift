@@ -420,7 +420,56 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertEqual(OverlayActionsPresentation().phase, .idle)
   }
 
-  func testOpenRowKeepsEightToolsAndRecordingKeepsItsThreeTools() throws {
+  func testAaMenuOffersOnlySmartAndMaxWithSettingsPrimaryAction() throws {
+    let source = try railSource()
+    let menu = try section(of: source, from: "private var formatMenu", to: "private var formatHelp")
+    let choices = try section(of: menu, from: "Menu {", to: "} label: {")
+    XCTAssertTrue(
+      choices.contains("Text(\"Settings: \\(formatLevel.visibleName)\")\n        .disabled(true)"))
+    XCTAssertEqual(choices.components(separatedBy: "Button(").count - 1, 2)
+    XCTAssertTrue(choices.contains("Button(\"Smart\") { formatOnce(.smart) }"))
+    XCTAssertTrue(choices.contains("Button(\"Max\") { formatOnce(.max) }"))
+    for forbidden in ["Correction", ".correction", "ForEach", "Picker", "checkmark", "Binding"] {
+      XCTAssertFalse(choices.contains(forbidden), forbidden)
+    }
+    XCTAssertTrue(menu.contains("} primaryAction: {\n      dispatch(.format)"))
+    XCTAssertTrue(menu.contains(".menuIndicator(.visible)"))
+    XCTAssertTrue(menu.contains(".help(formatHelp)"))
+    XCTAssertTrue(menu.contains(".accessibilityHint(formatHelp)"))
+    XCTAssertTrue(menu.contains(".accessibilityIdentifier(\"overlay-intent-format\")"))
+    XCTAssertFalse(source.contains("overlay-format-level-picker"))
+    XCTAssertFalse(source.contains("onFormatLevel"))
+    let wiring = try overlaySource()
+    XCTAssertTrue(wiring.contains("onFormatOnce: { state.formatTranscript(at: $0) }"))
+    XCTAssertTrue(wiring.contains("formatLevel: state.autoFormatLevel"))
+    XCTAssertTrue(wiring.contains("onIntent: state.relayIntent"))
+    for level in FormattingPolicyOption.allCases {
+      let rail = OverlayIntentRail(
+        phase: "formatted", intents: [.format], palette: .dark, formatLevel: level,
+        onIntent: { _ in })
+      XCTAssertEqual(
+        rail.caption(for: "format"),
+        "Format (Settings: \(level.visibleName)) · menu: Smart or Max once")
+    }
+  }
+
+  func testNoOverlayFileCanWriteTheSettingsFormattingLevel() throws {
+    let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+      .deletingLastPathComponent().appendingPathComponent("Codescribe/Screens/Overlay")
+    let files = try FileManager.default.contentsOfDirectory(
+      at: directory, includingPropertiesForKeys: nil).filter { $0.pathExtension == "swift" }
+    XCTAssertFalse(files.isEmpty)
+    for file in files {
+      let source = try String(contentsOf: file, encoding: .utf8)
+      XCTAssertFalse(source.contains("setAutoFormatLevel"), file.lastPathComponent)
+    }
+    let rail = try railSource()
+    for forbidden in ["UserDefaults", "@AppStorage", "setSetting", "setConfig"] {
+      XCTAssertFalse(rail.contains(forbidden), forbidden)
+    }
+  }
+
+  func testOpenRowKeepsSevenToolsAndRecordingKeepsItsThreeTools() throws {
     let source = try railSource()
     let row = try section(of: source, from: "var body: some View", to: ".buttonStyle(.plain)")
     XCTAssertTrue(row.contains("if historyAvailable {\n        historyMenu"))
@@ -434,9 +483,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(retranscribe.contains("retranscribeMenu"))
     let format = try section(
       of: row, from: "} else if intent == .format {", to: "} else if intent != .close")
-    XCTAssertTrue(format.contains("formatLevelMenu"))
-    XCTAssertTrue(format.contains("OverlayDockButton("))
-    XCTAssertTrue(format.contains("identifier: \"overlay-intent-\\(intent.rawValue)\""))
+    XCTAssertTrue(format.contains("formatMenu"))
+    XCTAssertFalse(format.contains("OverlayDockButton("))
     let buttons = try XCTUnwrap(
       row.range(
         of:
@@ -447,11 +495,11 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       row[buttons.upperBound...].contains("identifier: \"overlay-intent-\\(intent.rawValue)\""))
     let menus = [
       "overlay-history-menu": try section(
-        of: source, from: "private var historyMenu", to: "private var formatLevelMenu"),
+        of: source, from: "private var historyMenu", to: "private var formatMenu"),
       "overlay-previous-take-menu": try section(
         of: source, from: "private var previousTakeMenu", to: "private var historyMenu"),
-      "overlay-format-level-picker": try section(
-        of: source, from: "private var formatLevelMenu", to: "private func setHovered"),
+      "overlay-intent-format": try section(
+        of: source, from: "private var formatMenu", to: "private func setHovered"),
     ]
     let retranscribeMenu = try section(
       of: source, from: "private var retranscribeMenu", to: "private var previousTakeMenu")
@@ -467,7 +515,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         ], true,
         [
           "overlay-history-menu", "overlay-previous-take-menu", "overlay-intent-insert-paste",
-          "overlay-intent-copy", "overlay-intent-retranscribe", "overlay-format-level-picker",
+          "overlay-intent-copy", "overlay-intent-retranscribe",
           "overlay-intent-format", "overlay-intent-send-to-agent",
         ]
       ),
@@ -493,11 +541,12 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         }
       }
       XCTAssertEqual(
-        rail.intents.contains(.format), history, "Only the formatted row has a level picker")
+        rail.intents.contains(.format), history, "Only the formatted row has the Aa menu")
       XCTAssertFalse(row.contains("\"overlay-intent-close\""))
       XCTAssertTrue(
         rail.intents.contains(.close), "The guarded row excludes close even when projected")
-      XCTAssertEqual(identifiers.count, history ? 8 : 3)
+      XCTAssertEqual(identifiers.count, history ? 7 : 3)
+      XCTAssertFalse(identifiers.contains("overlay-format-level-picker"))
     }
   }
 
@@ -551,7 +600,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     for intent in OverlayIntent.allCases where intent != .close {
       XCTAssertFalse(rail.caption(for: intent.rawValue)?.isEmpty ?? true, intent.rawValue)
     }
-    for control in ["history", "previous-take", "format-level"] {
+    for control in ["history", "previous-take"] {
       XCTAssertFalse(rail.caption(for: control)?.isEmpty ?? true)
     }
     XCTAssertNotEqual(rail.caption(for: "history"), rail.caption(for: "previous-take"))
@@ -894,7 +943,6 @@ private final class OverlayChromePolicyEngine: DictationEngine {
     writes.append(enabled)
     self.enabled = enabled
   }
-  func setAutoFormatLevel(_ level: FormattingPolicyOption) {}
   func commitUserRevision(
     sessionId: String, sourceRevision: UInt64, renderedText: String
   ) async throws -> CsUserRevisionResult { throw CocoaError(.featureUnsupported) }

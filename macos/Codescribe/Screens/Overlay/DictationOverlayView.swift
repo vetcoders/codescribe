@@ -58,7 +58,7 @@ struct DictationOverlayView: View {
           onRetranscribe: { state.retranscribe(pass: $0) },
           onRestore: state.restoreDocumentRevision,
           onHistoryRequest: state.loadDocumentHistory,
-          onFormatLevel: state.setAutoFormatLevel,
+          onFormatOnce: { state.formatTranscript(at: $0) },
           onFocusChange: { if $0 { actions.interact() } },
           onDismiss: { actions.dismiss() },
           onInteraction: { actions.interact() }

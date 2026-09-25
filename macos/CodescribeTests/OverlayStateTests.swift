@@ -50,8 +50,6 @@ private final class OverlayStateTestEngine: DictationEngine {
     pinWrites.append(enabled)
     return true
   }
-  var persistFormatLevelWrites = true
-  var formatLevelWrites: [FormattingPolicyOption] = []
   var policyReadCount = 0
   var sentAssistiveTexts: [String] = []
   var assistiveSendResult = true
@@ -145,14 +143,6 @@ private final class OverlayStateTestEngine: DictationEngine {
     persistedPolicy = OverlayPolicySnapshot(
       autoPasteEnabled: enabled,
       autoFormatLevel: persistedPolicy.autoFormatLevel
-    )
-  }
-  func setAutoFormatLevel(_ level: FormattingPolicyOption) {
-    formatLevelWrites.append(level)
-    guard persistFormatLevelWrites else { return }
-    persistedPolicy = OverlayPolicySnapshot(
-      autoPasteEnabled: persistedPolicy.autoPasteEnabled,
-      autoFormatLevel: level
     )
   }
   func pasteText(text: String) async throws -> CsPasteResult {
@@ -1773,28 +1763,6 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(closeCount, 1, "a clean canvas re-arms the usual countdown")
   }
 
-  func testAutoFormatLevelWriteRefreshesFromEngineTruthWithoutOptimisticSwap() {
-    for persists in [true, false] {
-      let state = OverlayState()
-      let engine = OverlayStateTestEngine()
-      engine.persistedPolicy = OverlayPolicySnapshot(
-        autoPasteEnabled: true,
-        autoFormatLevel: .off
-      )
-      engine.persistFormatLevelWrites = persists
-      state.engine = engine
-      state.handleRecordingPreparing()
-      XCTAssertEqual(state.autoFormatLevel, .off)
-
-      state.setAutoFormatLevel(.smart)
-
-      XCTAssertEqual(engine.formatLevelWrites, [.smart])
-      XCTAssertEqual(state.autoFormatLevel, persists ? .smart : .off)
-      XCTAssertEqual(engine.policyReadCount, 2, "level repaints from a fresh engine read")
-      XCTAssertTrue(state.autoPasteEnabled)
-    }
-  }
-
   func testOneShotFormatterForwardsEveryLevelWithoutWritingSettings() async {
     for level in FormattingPolicyOption.allCases {
       let state = OverlayState()
@@ -1816,7 +1784,6 @@ final class OverlayStateTests: XCTestCase {
       XCTAssertEqual(
         engine.formatterRequests,
         [.init(sessionId: "one-shot", sourceRevision: 11, level: level)])
-      XCTAssertTrue(engine.formatLevelWrites.isEmpty)
       XCTAssertEqual(engine.persistedPolicy.autoFormatLevel, .smart)
       XCTAssertEqual(state.autoFormatLevel, .smart)
       XCTAssertEqual(state.formattedText, "source words for one-shot formatting")

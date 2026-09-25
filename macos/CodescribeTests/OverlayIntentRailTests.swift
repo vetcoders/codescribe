@@ -11,10 +11,10 @@ private final class OverlayIntentBoundaryEngine: DictationEngine {
   var onFormatter: (() -> Void)?
   var onCopyTagged: (() -> Void)?
   var copiedTaggedText: String?
-  var formatterRequests: [(sessionId: String, sourceRevision: UInt64)] = []
+  var formatterRequests:
+    [(sessionId: String, sourceRevision: UInt64, level: FormattingPolicyOption?)] = []
   var formatterFailure: Error?
   var policy = OverlayPolicySnapshot(autoPasteEnabled: true, autoFormatLevel: .correction)
-  var formatLevelWrites: [FormattingPolicyOption] = []
 
   func setListener(_ listener: CsTranscriptionListener) {}
   func startRecording(language: CsLanguage?) async throws {}
@@ -33,8 +33,7 @@ private final class OverlayIntentBoundaryEngine: DictationEngine {
   func commitFormatterRevision(
     sessionId: String, sourceRevision: UInt64, level: FormattingPolicyOption?
   ) async throws -> CsUserRevisionResult {
-    XCTAssertNil(level)
-    formatterRequests.append((sessionId, sourceRevision))
+    formatterRequests.append((sessionId, sourceRevision, level))
     onFormatter?()
     if let formatterFailure { throw formatterFailure }
     return CsUserRevisionResult(
@@ -50,11 +49,6 @@ private final class OverlayIntentBoundaryEngine: DictationEngine {
   func isModelLoaded() -> Bool { true }
   func currentOverlayPolicy() -> OverlayPolicySnapshot? { policy }
   func setAutoPasteEnabled(_ enabled: Bool) {}
-  func setAutoFormatLevel(_ level: FormattingPolicyOption) {
-    formatLevelWrites.append(level)
-    policy = OverlayPolicySnapshot(
-      autoPasteEnabled: policy.autoPasteEnabled, autoFormatLevel: level)
-  }
   func pasteText(text: String) async throws -> CsPasteResult { pasteResult() }
   func deferText(text: String) async throws -> CsPasteResult { pasteResult() }
   func copyTaggedTranscript(text: String) async throws {
@@ -181,6 +175,7 @@ final class OverlayIntentRailTests: XCTestCase {
     XCTAssertEqual(engine.formatterRequests.count, 1)
     XCTAssertEqual(engine.formatterRequests[0].sessionId, "intent-rail-fixture")
     XCTAssertEqual(engine.formatterRequests[0].sourceRevision, 1)
+    XCTAssertNil(engine.formatterRequests[0].level)
     XCTAssertTrue(state.formatterCommitPending, "FFI acknowledgement is not projection")
     XCTAssertNil(state.formatterError)
   }
@@ -205,24 +200,59 @@ final class OverlayIntentRailTests: XCTestCase {
     XCTAssertTrue(state.formatterError?.contains("NotTerminal") == true)
   }
 
-  func testLevelPickerKeepsSettingsWriteAndAaKeepsFormatterRequest() async {
+  func testFormatMenuChoicesForwardOnceAndLeaveSettingsUnchanged() async {
+    for level in [FormattingPolicyOption.smart, .max] {
+      let state = projectedState(
+        phase: "formatted", text: "final", canPaste: true, canInsert: true,
+        canCopy: true, canRetranscribe: true, canFormat: true, terminal: true)
+      let engine = OverlayIntentBoundaryEngine()
+      state.engine = engine
+      let settingsBefore = engine.policy
+      let displayedLevelBefore = state.autoFormatLevel
+      var interactions = 0
+      let rail = OverlayIntentRail(
+        phase: state.statusText, intents: OverlayIntentRail.projectedIntents(for: state),
+        palette: .dark, formatLevel: state.autoFormatLevel, onIntent: state.relayIntent,
+        onFormatOnce: { state.formatTranscript(at: $0) },
+        onInteraction: { interactions += 1 })
+      let formatted = expectation(description: "menu choice formats once")
+      engine.onFormatter = { formatted.fulfill() }
+
+      rail.formatOnce(level)
+      await fulfillment(of: [formatted], timeout: 1)
+
+      XCTAssertEqual(engine.formatterRequests.count, 1)
+      XCTAssertEqual(engine.formatterRequests.first?.level, level)
+      XCTAssertEqual(engine.formatterRequests.first?.sessionId, "intent-rail-fixture")
+      XCTAssertEqual(engine.formatterRequests.first?.sourceRevision, 1)
+      XCTAssertEqual(engine.policy, settingsBefore)
+      XCTAssertEqual(state.autoFormatLevel, displayedLevelBefore)
+      XCTAssertEqual(rail.formatLevel, displayedLevelBefore)
+      XCTAssertEqual(interactions, 1)
+    }
+  }
+
+  func testAaPrimaryActionUsesSettingsWithoutAnOverride() async {
     let state = projectedState(
       phase: "formatted", text: "final", canPaste: true, canInsert: true,
       canCopy: true, canRetranscribe: true, canFormat: true, terminal: true)
     let engine = OverlayIntentBoundaryEngine()
+    engine.policy = OverlayPolicySnapshot(autoPasteEnabled: true, autoFormatLevel: .smart)
     state.engine = engine
+    let settingsBefore = engine.policy
     let rail = OverlayIntentRail(
       phase: state.statusText, intents: OverlayIntentRail.projectedIntents(for: state),
-      palette: .dark, onIntent: state.relayIntent, onFormatLevel: state.setAutoFormatLevel)
-    rail.onFormatLevel(.smart)
-    XCTAssertEqual(engine.formatLevelWrites, [.smart])
-    XCTAssertTrue(engine.formatterRequests.isEmpty, "The deferred one-shot menu is not implemented")
-    let formatted = expectation(description: "Aa retains the existing formatter route")
+      palette: .dark, formatLevel: .smart, onIntent: state.relayIntent,
+      onFormatOnce: { _ in XCTFail("Primary action must not choose a one-shot level") })
+    let formatted = expectation(description: "Aa uses Settings")
     engine.onFormatter = { formatted.fulfill() }
+
     rail.dispatch(.format)
     await fulfillment(of: [formatted], timeout: 1)
+
     XCTAssertEqual(engine.formatterRequests.count, 1)
-    XCTAssertEqual(engine.formatLevelWrites, [.smart])
+    XCTAssertNil(engine.formatterRequests.first?.level)
+    XCTAssertEqual(engine.policy, settingsBefore)
   }
 
   func testFloatingActionsKeepProjectedOrderWithCloseInHeader() {
@@ -273,7 +303,7 @@ final class OverlayIntentRailTests: XCTestCase {
     let engine = OverlayIntentBoundaryEngine()
     state.engine = engine
     // Retranscribe is opt-in with a Local / Cloud pick. Its route must not
-    // change the level selected by the separate Settings-backed picker.
+    // change the formatting level stored in Settings.
     let rail = OverlayIntentRail(
       phase: state.statusText,
       intents: OverlayIntentRail.projectedIntents(for: state),
@@ -294,8 +324,8 @@ final class OverlayIntentRailTests: XCTestCase {
     rail.dispatch(.retranscribe)
     await fulfillment(of: [local], timeout: 1)
     XCTAssertEqual(engine.receivedTranscribePath, "hq:/tmp/overlay-intent-boundary.wav")
-    XCTAssertTrue(
-      engine.formatLevelWrites.isEmpty, "retranscribe never writes the formatting level")
+    XCTAssertEqual(
+      engine.policy.autoFormatLevel, .correction, "retranscribe never writes the formatting level")
   }
 
   func testEveryIntentHasVoiceOverCopyAndRailReportsProjectedPhase() {
@@ -421,7 +451,7 @@ final class OverlayIntentRailTests: XCTestCase {
     XCTAssertFalse(recovered.hasRecoverableSupersededWork)
     XCTAssertNil(recovered.recoveryFailure)
     XCTAssertTrue(engine.formatterRequests.isEmpty, "recovery is not a reducer path")
-    XCTAssertTrue(engine.formatLevelWrites.isEmpty)
+    XCTAssertEqual(engine.policy.autoFormatLevel, .correction)
     XCTAssertFalse(recovered.isEditingTranscript, "recovery takes no focus")
 
     let discarded = stateWithOneRetainedEdit()
@@ -687,7 +717,7 @@ final class OverlayIntentRailTests: XCTestCase {
     XCTAssertEqual(state.latestTranscriptProjection?.reducerAction, "intent_rail_fixture")
     XCTAssertTrue(
       engine.formatterRequests.isEmpty, "copy recovery must not create a revision or seal")
-    XCTAssertTrue(engine.formatLevelWrites.isEmpty)
+    XCTAssertEqual(engine.policy.autoFormatLevel, .correction)
   }
 
   /// Unacknowledged superseded work still LEADS the rail on a refused take.

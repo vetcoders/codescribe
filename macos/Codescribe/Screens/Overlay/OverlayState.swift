@@ -47,7 +47,6 @@ protocol DictationEngine: AnyObject {
   func isModelLoaded() -> Bool
   func currentOverlayPolicy() -> OverlayPolicySnapshot?
   func setAutoPasteEnabled(_ enabled: Bool)
-  func setAutoFormatLevel(_ level: FormattingPolicyOption)
   func overlayExpandedByDefault() -> Bool
   func setOverlayExpandedByDefault(_ enabled: Bool) -> Bool
   func overlayKeepVisibleBetweenTakes() -> Bool
@@ -1235,15 +1234,6 @@ final class OverlayState {
 
   func setAutoPasteControlAvailable(_ available: Bool) {
     autoPasteControlAvailable = available
-  }
-
-  /// Same seam as auto-paste: write through the engine's config owner, then
-  /// re-read durable truth. The picker never paints an optimistic level.
-  func setAutoFormatLevel(_ level: FormattingPolicyOption) {
-    guard let engine else { return }
-    engine.setAutoFormatLevel(level)
-    refreshOverlayPolicyTruth()
-    restartAutoHideCountdown()
   }
 
   func close() {
@@ -2897,9 +2887,6 @@ final class ControllerDictationEngine: DictationEngine {
   }
   func setOverlayKeepVisibleBetweenTakes(_ enabled: Bool) -> Bool {
     config.setOverlayKeepVisibleBetweenTakes(enabled: enabled)
-  }
-  func setAutoFormatLevel(_ level: FormattingPolicyOption) {
-    _ = try? config.setAutoFormatLevel(level: level.rawValue)
   }
   func pasteText(text: String) async throws -> CsPasteResult {
     try await hotkeys.pasteText(text: text)

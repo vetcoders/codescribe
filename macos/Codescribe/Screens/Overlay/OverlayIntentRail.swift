@@ -110,7 +110,7 @@ struct OverlayIntentRail: View {
   let onRetranscribe: (OverlayRetranscribePass) -> Void
   let onRestore: (UInt64) -> Void
   let onHistoryRequest: () -> Void
-  let onFormatLevel: (FormattingPolicyOption) -> Void
+  let onFormatOnce: (FormattingPolicyOption) -> Void
 
   init(
     phase: String,
@@ -127,7 +127,7 @@ struct OverlayIntentRail: View {
     onRetranscribe: @escaping (OverlayRetranscribePass) -> Void = { _ in },
     onRestore: @escaping (UInt64) -> Void = { _ in },
     onHistoryRequest: @escaping () -> Void = {},
-    onFormatLevel: @escaping (FormattingPolicyOption) -> Void = { _ in },
+    onFormatOnce: @escaping (FormattingPolicyOption) -> Void = { _ in },
     onFocusChange: @escaping (Bool) -> Void = { _ in },
     onDismiss: @escaping () -> Void = {},
     onInteraction: @escaping () -> Void = {}
@@ -149,7 +149,7 @@ struct OverlayIntentRail: View {
     self.onRetranscribe = onRetranscribe
     self.onRestore = onRestore
     self.onHistoryRequest = onHistoryRequest
-    self.onFormatLevel = onFormatLevel
+    self.onFormatOnce = onFormatOnce
   }
 
   var body: some View {
@@ -170,20 +170,9 @@ struct OverlayIntentRail: View {
             .focused($focusedControl, equals: intent.rawValue)
             .onHover { setHovered(intent.rawValue, inside: $0) }
         } else if intent == .format {
-          formatLevelMenu
-            .focused($focusedControl, equals: "format-level")
-            .onHover { setHovered("format-level", inside: $0) }
-          OverlayDockButton(
-            title: intent.accessibilityLabel,
-            systemImage: intent.systemImage,
-            hint: intent.accessibilityHint,
-            identifier: "overlay-intent-\(intent.rawValue)",
-            palette: palette
-          ) {
-            dispatch(intent)
-          }
-          .focused($focusedControl, equals: intent.rawValue)
-          .onHover { setHovered(intent.rawValue, inside: $0) }
+          formatMenu
+            .focused($focusedControl, equals: intent.rawValue)
+            .onHover { setHovered(intent.rawValue, inside: $0) }
         } else if intent != .close && intent != .recoverSuperseded && intent != .discardSuperseded {
           OverlayDockButton(
             title: intent.accessibilityLabel,
@@ -273,8 +262,7 @@ struct OverlayIntentRail: View {
   }
 
   /// Retranscribe is opt-in with the pass picked here: Full HQ (local
-  /// Whisper file pass) or Cloud. The adjacent level picker keeps its existing
-  /// Settings behavior until per-request formatting is available.
+  /// Whisper file pass) or Cloud.
   private var retranscribeMenu: some View {
     Menu {
       ForEach(OverlayRetranscribePass.allCases) { pass in
@@ -362,31 +350,35 @@ struct OverlayIntentRail: View {
     .accessibilityIdentifier("overlay-history-menu")
   }
 
-  private var formatLevelMenu: some View {
+  private var formatMenu: some View {
     Menu {
-      ForEach(FormattingPolicyOption.editablePrompts) { level in
-        Button {
-          onInteraction()
-          onFormatLevel(level)
-        } label: {
-          if level == formatLevel { Image(systemName: "checkmark") }
-          Text(level.visibleName)
-        }
-        .accessibilityIdentifier("overlay-format-level-\(level.rawValue)")
-      }
+      Text("Settings: \(formatLevel.visibleName)")
+        .disabled(true)
+      Divider()
+      Button("Smart") { formatOnce(.smart) }
+        .accessibilityIdentifier("overlay-format-level-smart")
+      Button("Max") { formatOnce(.max) }
+        .accessibilityIdentifier("overlay-format-level-max")
     } label: {
-      Text(formatLevel.visibleName)
-        .csMono(10, .medium)
-        .lineLimit(1)
-        .minimumScaleFactor(0.7)
-        .frame(width: 60, height: 24)
+      Label(OverlayIntent.format.accessibilityLabel, systemImage: OverlayIntent.format.systemImage)
+        .labelStyle(.iconOnly)
+        .frame(width: 24, height: 24)
+        .contentShape(RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous))
+        .foregroundStyle(palette.primaryText.color)
+    } primaryAction: {
+      dispatch(.format)
     }
     .menuStyle(.button)
     .buttonStyle(.plain)
-    .menuIndicator(.hidden)
-    .help("Choose Correction, Smart, or Max formatting")
-    .accessibilityLabel("Formatter level")
-    .accessibilityIdentifier("overlay-format-level-picker")
+    .menuIndicator(.visible)
+    .help(formatHelp)
+    .accessibilityLabel(OverlayIntent.format.accessibilityLabel)
+    .accessibilityHint(formatHelp)
+    .accessibilityIdentifier("overlay-intent-format")
+  }
+
+  private var formatHelp: String {
+    "Format (Settings: \(formatLevel.visibleName)) · menu: Smart or Max once"
   }
 
   private func setHovered(_ control: String, inside: Bool) {
@@ -402,7 +394,7 @@ struct OverlayIntentRail: View {
     switch control {
     case "history": "History: earlier revisions"
     case "previous-take": "Previous take: copy or discard"
-    case "format-level": "Choose Correction, Smart, or Max formatting"
+    case "format": formatHelp
     case .some(let identifier): OverlayIntent(rawValue: identifier)?.accessibilityLabel
     case .none: nil
     }
@@ -505,6 +497,11 @@ struct OverlayIntentRail: View {
   func retranscribe(_ pass: OverlayRetranscribePass) {
     onInteraction()
     onRetranscribe(pass)
+  }
+
+  func formatOnce(_ level: FormattingPolicyOption) {
+    onInteraction()
+    onFormatOnce(level)
   }
 }
 
