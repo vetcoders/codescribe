@@ -420,16 +420,22 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertEqual(OverlayActionsPresentation().phase, .idle)
   }
 
-  func testAaMenuOffersOnlySmartAndMaxWithSettingsPrimaryAction() throws {
+  func testAaMenuOffersCorrectionSmartAndMaxWithSettingsPrimaryAction() throws {
     let source = try railSource()
     let menu = try section(of: source, from: "private var formatMenu", to: "private var formatHelp")
     let choices = try section(of: menu, from: "Menu {", to: "} label: {")
     XCTAssertTrue(
       choices.contains("Text(\"Settings: \\(formatLevel.visibleName)\")\n        .disabled(true)"))
-    XCTAssertEqual(choices.components(separatedBy: "Button(").count - 1, 2)
+    XCTAssertEqual(choices.components(separatedBy: "Button(").count - 1, 3)
+    XCTAssertTrue(choices.contains("Button(\"Correction\") { formatOnce(.correction) }"))
     XCTAssertTrue(choices.contains("Button(\"Smart\") { formatOnce(.smart) }"))
     XCTAssertTrue(choices.contains("Button(\"Max\") { formatOnce(.max) }"))
-    for forbidden in ["Correction", ".correction", "ForEach", "Picker", "checkmark", "Binding"] {
+    let correction = try XCTUnwrap(choices.range(of: "Button(\"Correction\")"))
+    let smart = try XCTUnwrap(choices.range(of: "Button(\"Smart\")"))
+    let max = try XCTUnwrap(choices.range(of: "Button(\"Max\")"))
+    XCTAssertLessThan(correction.lowerBound, smart.lowerBound)
+    XCTAssertLessThan(smart.lowerBound, max.lowerBound)
+    for forbidden in ["\"Off\"", ".off", "ForEach", "Picker", "checkmark", "Binding"] {
       XCTAssertFalse(choices.contains(forbidden), forbidden)
     }
     XCTAssertTrue(menu.contains("} primaryAction: {\n      dispatch(.format)"))
@@ -449,7 +455,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         onIntent: { _ in })
       XCTAssertEqual(
         rail.caption(for: "format"),
-        "Format (Settings: \(level.visibleName)) · menu: Smart or Max once")
+        "Format (Settings: \(level.visibleName)) · menu: Correction, Smart or Max once")
     }
   }
 

@@ -355,6 +355,8 @@ struct OverlayIntentRail: View {
       Text("Settings: \(formatLevel.visibleName)")
         .disabled(true)
       Divider()
+      Button("Correction") { formatOnce(.correction) }
+        .accessibilityIdentifier("overlay-format-level-correction")
       Button("Smart") { formatOnce(.smart) }
         .accessibilityIdentifier("overlay-format-level-smart")
       Button("Max") { formatOnce(.max) }
@@ -378,7 +380,7 @@ struct OverlayIntentRail: View {
   }
 
   private var formatHelp: String {
-    "Format (Settings: \(formatLevel.visibleName)) · menu: Smart or Max once"
+    "Format (Settings: \(formatLevel.visibleName)) · menu: Correction, Smart or Max once"
   }
 
   private func setHovered(_ control: String, inside: Bool) {

@@ -201,7 +201,7 @@ final class OverlayIntentRailTests: XCTestCase {
   }
 
   func testFormatMenuChoicesForwardOnceAndLeaveSettingsUnchanged() async {
-    for level in [FormattingPolicyOption.smart, .max] {
+    for level in [FormattingPolicyOption.correction, .smart, .max] {
       let state = projectedState(
         phase: "formatted", text: "final", canPaste: true, canInsert: true,
         canCopy: true, canRetranscribe: true, canFormat: true, terminal: true)
