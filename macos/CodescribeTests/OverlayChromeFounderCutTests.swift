@@ -298,7 +298,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let source = try overlaySource()
     let tools = try section(of: source, from: "HStack(spacing: 2)", to: "/// 1px separator")
     XCTAssertTrue(tools.contains("if actions.phase == .open {\n            intentRail"))
-    XCTAssertTrue(tools.contains("if actions.phase == .hover { Text(\"Actions…\") }"))
+    XCTAssertTrue(tools.contains("OverlayActionsPresentation.pillLabel("))
+    XCTAssertTrue(tools.contains("phase: actions.phase, notice: state.toast"))
     XCTAssertTrue(tools.contains("actions.toggle()"))
     XCTAssertTrue(tools.contains(".onHover { actions.pointerChanged($0) }"))
     XCTAssertTrue(tools.contains(".focusable()"))
@@ -383,7 +384,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(tools.contains("if actions.phase == .open {\n            intentRail"))
     XCTAssertTrue(source.contains("intents: OverlayIntentRail.projectedIntents(for: state)"))
     let rail = try section(
-      of: railSource(), from: "var body: some View", to: "private var engineChip")
+      of: railSource(), from: "var body: some View", to: "private var retranscribeMenu")
     XCTAssertTrue(rail.contains(".accessibilityIdentifier(\"overlay-intent-dock\")"))
     XCTAssertTrue(
       rail.contains(
@@ -598,6 +599,103 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertEqual(actions.phase, .idle)
   }
 
+  func testCaptionSlotPrioritizesToolThenNoticeThenDimmedEngine() {
+    let cases: [(String?, String?, String?, String?, Bool?)] = [
+      ("Copy", "Copied", "Whisper", "Copy", false),
+      (nil, "Copied", "Whisper", "Copied", false),
+      (nil, nil, "Whisper", "Whisper", true),
+      (nil, nil, nil, nil, nil),
+      ("", "Copied", "Whisper", "Copied", false),
+      ("", "", "Whisper", "Whisper", true),
+      ("", "", "", nil, nil),
+    ]
+    for (hovered, notice, engine, text, dimmed) in cases {
+      let slot = OverlayActionsPresentation.captionSlot(
+        hovered: hovered, notice: notice, engineLabel: engine)
+      XCTAssertEqual(slot?.text, text)
+      XCTAssertEqual(slot?.dimmed, dimmed)
+    }
+  }
+
+  func testClosedPillNoticeOutranksHoverWithoutOpeningOrSchedulingHide() {
+    var actions = OverlayActionsPresentation()
+    XCTAssertNil(OverlayActionsPresentation.pillLabel(phase: actions.phase, notice: nil))
+    for hovering in [false, true] {
+      actions.pointerChanged(hovering)
+      let phase = actions.phase
+      XCTAssertEqual(
+        OverlayActionsPresentation.pillLabel(phase: phase, notice: "Copied"), "Copied")
+      for notice in [nil, ""] as [String?] {
+        XCTAssertEqual(
+          OverlayActionsPresentation.pillLabel(phase: phase, notice: notice),
+          hovering ? "Actions…" : nil)
+      }
+      XCTAssertEqual(actions.phase, hovering ? .hover : .idle)
+      XCTAssertNil(actions.hideDeadline)
+    }
+    actions.toggle()
+    XCTAssertEqual(actions.phase, .open)
+    XCTAssertNil(OverlayActionsPresentation.pillLabel(phase: actions.phase, notice: "Copied"))
+    XCTAssertNil(actions.hideDeadline, "A notice must not start a deadline under the pointer")
+    actions.pointerChanged(false)
+    let deadline = actions.hideDeadline
+    XCTAssertNotNil(deadline)
+    _ = OverlayActionsPresentation.pillLabel(phase: actions.phase, notice: "Format failed")
+    XCTAssertEqual(actions.hideDeadline, deadline, "Notice rendering must not restart auto-hide")
+  }
+
+  func testCaptionNoticeAndEngineRenderInsideTheToolRowWithoutAFloatingCard() throws {
+    let source = try railSource()
+    let body = try section(
+      of: source, from: "var body: some View {\n    HStack", to: "/// Retranscribe")
+    let row = try section(of: body, from: "HStack(spacing: 2)", to: ".buttonStyle(.plain)")
+    XCTAssertTrue(row.contains("OverlayActionsPresentation.captionSlot("))
+    XCTAssertTrue(row.contains("hovered: caption(for: hoveredControl ?? focusedControl)"))
+    XCTAssertTrue(row.contains("notice: footerNotice, engineLabel: footerEngineLabel"))
+    XCTAssertTrue(row.contains("Text(slot.text)"))
+    XCTAssertTrue(row.contains("slot.dimmed ? palette.mutedText.color : palette.primaryText.color"))
+    XCTAssertTrue(row.contains(".lineLimit(1)"))
+    XCTAssertTrue(row.contains(".truncationMode(.tail)"))
+    XCTAssertTrue(row.contains(".frame(maxWidth: 200, alignment: .leading)"))
+    XCTAssertTrue(row.contains(".layoutPriority(-1)"))
+    XCTAssertTrue(row.contains(".allowsHitTesting(false)"))
+    XCTAssertTrue(row.contains(".accessibilityIdentifier(\"overlay-tool-caption\")"))
+    XCTAssertTrue(body.contains(".fixedSize(horizontal: false, vertical: true)"))
+    for forbidden in [
+      ".overlay", ".background", ".offset", ".padding(.bottom", "OverlayActionsSurface",
+    ] {
+      XCTAssertFalse(body.contains(forbidden), forbidden)
+    }
+    for forbidden in [".frame(width: 264)", "engineChip", "footerNoticeText", "footerEngineDot"] {
+      XCTAssertFalse(source.contains(forbidden), forbidden)
+    }
+  }
+
+  func testOpenRailMountsOnlyInsideTheCapCapsuleAndClosedNoticeUsesItsLabel() throws {
+    let source = try overlaySource()
+    let canvas = try section(of: source, from: "private func canvasStack", to: "/// 1px separator")
+    let capsule = try section(
+      of: canvas, from: "HStack(spacing: 2)", to: ".padding(.vertical, actions.phase == .open ? 2 : 0)")
+    XCTAssertTrue(capsule.contains("if actions.phase == .open {\n            intentRail"))
+    XCTAssertEqual(
+      canvas.components(separatedBy: "\n").filter {
+        $0.trimmingCharacters(in: .whitespaces) == "intentRail"
+      }.count, 1)
+    XCTAssertTrue(capsule.contains("OverlayActionsPresentation.pillLabel("))
+    XCTAssertTrue(capsule.contains("phase: actions.phase, notice: state.toast"))
+    XCTAssertTrue(capsule.contains("Text(label)"))
+    XCTAssertTrue(capsule.contains(".lineLimit(1)"))
+    XCTAssertTrue(capsule.contains(".truncationMode(.tail)"))
+    XCTAssertTrue(capsule.contains(".frame(maxWidth: 200, alignment: .leading)"))
+    XCTAssertTrue(capsule.contains(".frame(height: OverlayResizeChrome.actionsHeight)"))
+    XCTAssertEqual(canvas.components(separatedBy: ".modifier(OverlayActionsSurface").count - 1, 1)
+    XCTAssertTrue(canvas.contains(".padding(.bottom, OverlayResizeChrome.actionsBottomInset)"))
+    XCTAssertFalse(canvas.contains(".onChange(of: state.toast)"))
+    XCTAssertFalse(canvas.contains(".task(id: state.toast)"))
+    XCTAssertTrue(source.contains("footerNotice: state.toast"))
+    XCTAssertTrue(source.contains("footerEngineLabel: state.footerEngineLabel"))
+  }
+
   func testEveryToolHasACaptionAndDispatchResetsInteraction() {
     var interactions = 0
     var dispatched: [OverlayIntent] = []
@@ -697,7 +795,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let chrome = try section(
       of: source, from: "private func canvasStack", to: "/// 1px separator")
     XCTAssertTrue(
-      chrome.contains("width: OverlayResizeChrome.actionsWidth(narrow: actions.phase != .hover)"))
+      chrome.contains("minWidth: OverlayResizeChrome.actionsWidth(narrow: actions.phase != .hover)"))
     XCTAssertTrue(chrome.contains("height: OverlayResizeChrome.actionsHeight"))
     XCTAssertTrue(chrome.contains(".padding(.bottom, OverlayResizeChrome.actionsBottomInset)"))
     XCTAssertTrue(chrome.contains("width: OverlayResizeChrome.gripSize.width"))

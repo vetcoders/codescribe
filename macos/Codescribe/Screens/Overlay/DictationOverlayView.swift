@@ -49,7 +49,6 @@ struct DictationOverlayView: View {
           palette: palette,
           footerEngineLabel: state.footerEngineLabel,
           footerNotice: state.toast,
-          footerEngineDot: footerEngineDot,
           history: state.documentHistory,
           historyAvailable: state.terminal,
           currentRevision: state.revision,
@@ -129,14 +128,21 @@ struct DictationOverlayView: View {
           } label: {
             HStack(spacing: 4) {
               Image(systemName: OverlayControlSymbols.actions)
-              if actions.phase == .hover { Text("Actions…") }
+              if let label = OverlayActionsPresentation.pillLabel(
+                phase: actions.phase, notice: state.toast)
+              {
+                Text(label)
+                  .lineLimit(1)
+                  .truncationMode(.tail)
+                  .frame(maxWidth: 200, alignment: .leading)
+              }
             }
             .font(.system(size: 11, weight: .medium))
             .foregroundStyle(palette.primaryText.color)
-            .frame(
-              width: OverlayResizeChrome.actionsWidth(narrow: actions.phase != .hover),
-              height: OverlayResizeChrome.actionsHeight
-            )
+            .padding(.horizontal, 10)
+            .frame(minWidth: OverlayResizeChrome.actionsWidth(narrow: actions.phase != .hover))
+            .frame(height: OverlayResizeChrome.actionsHeight)
+            .fixedSize(horizontal: true, vertical: true)
             .contentShape(Capsule())
             .overlay(alignment: .topTrailing) {
               if state.hasRecoverableSupersededWork && actions.phase != .open {
@@ -166,7 +172,7 @@ struct DictationOverlayView: View {
           }
         }
         .padding(.vertical, actions.phase == .open ? 2 : 0)
-        .fixedSize(horizontal: true, vertical: true)
+        .fixedSize(horizontal: false, vertical: true)
         .modifier(OverlayActionsSurface(palette: palette))
         .contentShape(Capsule())
         .onHover { actions.pointerChanged($0) }
@@ -681,13 +687,6 @@ struct DictationOverlayView: View {
     .frame(maxWidth: .infinity, minHeight: bodyMinHeight, alignment: .leading)
     .accessibilityElement(children: .combine)
     .accessibilityIdentifier("overlay-presentation-status")
-  }
-
-  private var footerEngineDot: Color {
-    let label = state.footerEngineLabel.lowercased()
-    if label.contains("apple") { return CSColor.oliveLight }
-    if label.contains("whisper") { return CSColor.olive }
-    return CSColor.amber
   }
 }
 

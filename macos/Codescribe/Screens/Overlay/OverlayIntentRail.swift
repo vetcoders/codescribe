@@ -46,6 +46,21 @@ struct OverlayActionsPresentation {
 
   mutating func reset() { self = Self() }
 
+  static func captionSlot(
+    hovered: String?, notice: String?, engineLabel: String?
+  ) -> (text: String, dimmed: Bool)? {
+    if let hovered, !hovered.isEmpty { return (hovered, false) }
+    if let notice, !notice.isEmpty { return (notice, false) }
+    if let engineLabel, !engineLabel.isEmpty { return (engineLabel, true) }
+    return nil
+  }
+
+  static func pillLabel(phase: Phase, notice: String?) -> String? {
+    guard phase != .open else { return nil }
+    if let notice, !notice.isEmpty { return notice }
+    return phase == .hover ? "Actions…" : nil
+  }
+
   static func finishingLabel(mode: OverlayMode, transcribing: Bool, terminal: Bool) -> String? {
     !terminal && (transcribing || mode == .finalizing) ? "Finishing…" : nil
   }
@@ -87,8 +102,8 @@ enum OverlayDockVisuals {
 }
 
 /// The overlay's sole action surface. The reducer owns action availability;
-/// this view only renders the projected commands, the engine chip, the
-/// transient notice and formatting level floating over the transcript.
+/// this view renders projected commands and one trailing caption slot inside
+/// the capsule supplied by the parent.
 @MainActor
 struct OverlayIntentRail: View {
   @FocusState private var focusedControl: String?
@@ -101,7 +116,6 @@ struct OverlayIntentRail: View {
   let palette: OverlayAppearancePalette
   let footerEngineLabel: String
   let footerNotice: String?
-  let footerEngineDot: Color
   let history: [CsDocumentHistoryEntry]
   let historyAvailable: Bool
   let currentRevision: UInt64
@@ -118,7 +132,6 @@ struct OverlayIntentRail: View {
     palette: OverlayAppearancePalette,
     footerEngineLabel: String = "",
     footerNotice: String? = nil,
-    footerEngineDot: Color = .clear,
     history: [CsDocumentHistoryEntry] = [],
     historyAvailable: Bool? = nil,
     currentRevision: UInt64 = 0,
@@ -140,7 +153,6 @@ struct OverlayIntentRail: View {
     self.palette = palette
     self.footerEngineLabel = footerEngineLabel
     self.footerNotice = footerNotice
-    self.footerEngineDot = footerEngineDot
     self.history = history
     self.historyAvailable = historyAvailable ?? !history.isEmpty
     self.currentRevision = currentRevision
@@ -187,35 +199,25 @@ struct OverlayIntentRail: View {
           .onHover { setHovered(intent.rawValue, inside: $0) }
         }
       }
+      // Keep discovery in-panel: native tooltips may be suppressed while inactive.
+      if let slot = OverlayActionsPresentation.captionSlot(
+        hovered: caption(for: hoveredControl ?? focusedControl),
+        notice: footerNotice, engineLabel: footerEngineLabel)
+      {
+        Text(slot.text)
+          .csMono(10, .medium)
+          .foregroundStyle(slot.dimmed ? palette.mutedText.color : palette.primaryText.color)
+          .lineLimit(1)
+          .truncationMode(.tail)
+          .padding(.horizontal, 4)
+          .frame(maxWidth: 200, alignment: .leading)
+          .layoutPriority(-1)
+          .allowsHitTesting(false)
+          .accessibilityIdentifier("overlay-tool-caption")
+      }
     }
     .buttonStyle(.plain)
-    .fixedSize(horizontal: true, vertical: true)
-    .overlay(alignment: .bottom) {
-      // AppKit tooltip suppression in an inactive accessory app's non-activating
-      // panel is suspected, not established by repo evidence. Paint captions in
-      // the panel so discovery does not depend on that tooltip path; keep .help.
-      VStack(spacing: 2) {
-        HStack(spacing: CSSpace.xs) {
-          engineChip
-          footerNoticeText
-        }
-        if let caption = caption(for: hoveredControl ?? focusedControl) {
-          Text(caption)
-            .csMono(10, .medium)
-            .foregroundStyle(palette.primaryText.color)
-            .lineLimit(2)
-            .multilineTextAlignment(.center)
-            .accessibilityIdentifier("overlay-tool-caption")
-        }
-      }
-      .padding(.horizontal, 8)
-      .padding(.vertical, 3)
-      .frame(width: 264)
-      .modifier(OverlayActionsSurface(palette: palette))
-      .fixedSize(horizontal: false, vertical: true)
-      .padding(.bottom, 32)
-      .allowsHitTesting(false)
-    }
+    .fixedSize(horizontal: false, vertical: true)
     .onChange(of: focusedControl) { _, control in
       onFocusChange(control != nil)
       if control != nil { onInteraction() }
@@ -229,36 +231,6 @@ struct OverlayIntentRail: View {
     .accessibilityLabel("Overlay actions")
     .accessibilityValue(Self.accessibilityValue(for: phase))
     .accessibilityIdentifier("overlay-intent-dock")
-  }
-
-  /// Serving-engine evidence, inert. Truncates first when the window sits at
-  /// its 320 pt floor so the commands never do.
-  private var engineChip: some View {
-    HStack(spacing: CSSpace.xxs) {
-      Text("●")
-        .foregroundStyle(footerEngineDot)
-      Text(footerEngineLabel)
-        .foregroundStyle(palette.mutedText.color)
-        .lineLimit(1)
-        .truncationMode(.tail)
-    }
-    .csMono(10, .medium)
-    .layoutPriority(-1)
-    .allowsHitTesting(false)
-    .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("overlay-footer-engine")
-  }
-
-  @ViewBuilder
-  private var footerNoticeText: some View {
-    if let footerNotice, !footerNotice.isEmpty {
-      Text(footerNotice)
-        .csMono(10, .medium)
-        .foregroundStyle(palette.mutedText.color)
-        .lineLimit(1)
-        .truncationMode(.tail)
-        .accessibilityIdentifier("overlay-footer-notice")
-    }
   }
 
   /// Retranscribe is opt-in with the pass picked here: Full HQ (local
