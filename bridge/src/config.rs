@@ -699,8 +699,10 @@ impl CodescribeConfig {
         Ok(CsSettings::from_runtime_snapshot(&runtime))
     }
 
-    /// Show the transcript at take start unless the user explicitly opted out.
+    /// Read the presentation preference from the canonical settings snapshot.
     pub fn overlay_expanded_by_default(&self) -> bool {
+        // Show the transcript at take start unless the user explicitly opted
+        // out. The doc line above is part of the UniFFI checksum: keep it.
         match Config::load_runtime_snapshot_without_keychain() {
             Ok(snapshot) => snapshot
                 .user_settings()
