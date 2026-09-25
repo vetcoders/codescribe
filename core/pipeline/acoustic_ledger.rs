@@ -1412,9 +1412,6 @@ impl AcousticLedger {
             .evidence
             .get(occurrence)
             .ok_or(VadClosureRefusal::NotQualified)?;
-        if self.seals.contains_key(occurrence) {
-            return Err(VadClosureRefusal::AlreadySealed);
-        }
         if serial.vad_closed() {
             return Err(VadClosureRefusal::AlreadyClosed);
         }
@@ -1439,6 +1436,9 @@ impl AcousticLedger {
             } else {
                 Err(VadClosureRefusal::ConflictingClose)
             };
+        }
+        if self.seals.contains_key(occurrence) {
+            return Err(VadClosureRefusal::AlreadySealed);
         }
         let receipt = VadClosureReceipt {
             occurrence: occurrence.clone(),
@@ -3767,7 +3767,12 @@ mod tests {
         let coverage = ledger.assess_seal_coverage("s1", 1, &debt_speech(), 0);
         assert!(ledger.record_seal_coverage(coverage));
         let terminal = ledger.seal_terminal("s1", 1).unwrap();
-        assert_eq!(terminal.vad_closures, vec![close]);
+        assert_eq!(terminal.vad_closures, vec![close.clone()]);
+        assert_eq!(
+            ledger.record_vad_close(&closing_evidence, &calibration),
+            Ok(close),
+            "a replayed close cannot alter an already-issued seal"
+        );
     }
 
     #[test]
