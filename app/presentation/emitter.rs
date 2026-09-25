@@ -608,27 +608,6 @@ fn append_exact_fragment(rendered: &mut String, fragment: &str) {
     rendered.push_str(fragment);
 }
 
-/// Trim a fragment's outer edges. Interior whitespace and newlines survive —
-/// the renderer receives markdown, so collapsing them would flatten structure.
-fn normalize_transcript_fragment(text: &str) -> String {
-    text.trim().to_string()
-}
-
-/// Append a fragment to the rendered buffer, inserting a single separating
-/// space only when one is actually needed. Empty fragments are skipped, so a
-/// blank preview cannot leave trailing whitespace on the canvas.
-fn append_rendered_fragment(rendered: &mut String, fragment: &str) {
-    let normalized = normalize_transcript_fragment(fragment);
-    if normalized.is_empty() {
-        return;
-    }
-
-    if !rendered.is_empty() && !rendered.ends_with(char::is_whitespace) {
-        rendered.push(' ');
-    }
-    rendered.push_str(&normalized);
-}
-
 impl TranscriptReducer {
     fn encode_serial(serial: &AcousticSerial) -> String {
         format!(
