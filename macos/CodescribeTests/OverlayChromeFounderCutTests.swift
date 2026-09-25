@@ -231,7 +231,12 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertEqual(header.components(separatedBy: "overlay-brand-close-dot").count - 1, 1)
     // The dot keeps its pre-b83e95538 place: the hit target grows through the
     // content shape, never through a frame that shifts the dot or the wordmark.
-    XCTAssertTrue(close.contains("size: closeDotHovered ? (compact ? 7.5 : 10) : (compact ? 5.25 : 7)"))
+    XCTAssertTrue(close.contains("size: compact ? 5.25 : 7"))
+    XCTAssertFalse(close.contains("size: closeDotHovered"))
+    XCTAssertTrue(close.contains(".scaleEffect(closeDotHovered"))
+    let scale = try XCTUnwrap(close.range(of: ".scaleEffect(")?.lowerBound)
+    let hitShape = try XCTUnwrap(close.range(of: ".contentShape(")?.lowerBound)
+    XCTAssertLessThan(scale, hitShape, "Hover growth must not change the button's layout or hit shape")
     XCTAssertTrue(close.contains(".onHover { closeDotHovered = $0 }"))
     XCTAssertTrue(close.contains(".contentShape(Circle().inset(by: compact ? -9.375 : -8.5))"))
     XCTAssertFalse(close.contains(".frame("), "A frame would move the dot")

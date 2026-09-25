@@ -199,7 +199,7 @@ struct DictationOverlayView: View {
         } label: {
           ModeDot(
             color: palette.statusToken(for: state.mode).color,
-            size: closeDotHovered ? (compact ? 7.5 : 10) : (compact ? 5.25 : 7)
+            size: compact ? 5.25 : 7
           )
           .overlay {
             if closeDotHovered {
@@ -208,6 +208,7 @@ struct DictationOverlayView: View {
                 .accessibilityHidden(true)
             }
           }
+          .scaleEffect(closeDotHovered ? 10.0 / 7.0 : 1)
           // 24 pt hit target without moving the dot: the shape reaches past the
           // circle, the layout keeps the pre-b83e95538 position (Founder, 25 IX).
           .contentShape(Circle().inset(by: compact ? -9.375 : -8.5))
