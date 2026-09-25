@@ -7,44 +7,66 @@ struct OverlayDockLayout: Equatable {
   var visibleIntents: [OverlayIntent] { projectedIntents.filter { $0 != .close } }
 }
 
-enum OverlayChromeVisibility {
-  /// Hover, focus and VoiceOver reveal chrome; an explicit Actions pin or
-  /// retained work keeps it reachable after the pointer leaves.
-  ///
-  /// Unacknowledged superseded work has to be reachable without the user first
-  /// guessing to hover a panel that is currently showing a NEW take. Revealing
-  /// the rail exposes the labelled recover/discard commands only — never the
-  /// previous words, which stay off the canvas.
-  static func actionsVisible(
-    pointerInside: Bool,
-    keyboardFocus: Bool,
-    voiceOver: Bool,
-    retainedWork: Bool = false,
-    pinned: Bool = false
-  ) -> Bool {
-    pointerInside || keyboardFocus || voiceOver || retainedWork || pinned
-  }
-}
-
-/// View-owned chrome state. Neither pinning nor dismissing changes the document.
+/// The overlay needs a quiet text-only state; tools are transient. Retained work
+/// is a badge, never a reveal trigger. This state has no document authority.
 struct OverlayActionsPresentation {
-  var pointerInside = false
-  var keyboardFocus = false
-  private(set) var isPinned = false
+  enum Phase: Equatable { case idle, hover, open }
+  private(set) var phase: Phase = .idle
+  private(set) var pointerInside = false
+  private(set) var hideDeadline: ContinuousClock.Instant?
 
-  mutating func togglePin() { isPinned.toggle() }
+  mutating func pointerChanged(_ inside: Bool, at now: ContinuousClock.Instant = .now) {
+    pointerInside = inside
+    if phase != .open { phase = inside ? .hover : .idle }
+    interact(at: now)
+  }
+
+  mutating func toggle(at now: ContinuousClock.Instant = .now) {
+    if phase == .open {
+      dismiss()
+    } else {
+      phase = .open
+      interact(at: now)
+    }
+  }
+
+  mutating func interact(at now: ContinuousClock.Instant = .now) {
+    hideDeadline = phase == .open && !pointerInside ? now.advanced(by: .seconds(3)) : nil
+  }
+
+  mutating func expire(at now: ContinuousClock.Instant = .now) {
+    guard phase == .open, !pointerInside, let hideDeadline, now >= hideDeadline else { return }
+    dismiss()
+  }
 
   mutating func dismiss() {
-    isPinned = false
-    keyboardFocus = false
+    phase = .idle
+    hideDeadline = nil
   }
 
   mutating func reset() { self = Self() }
 
-  func isVisible(voiceOver: Bool = false, retainedWork: Bool = false) -> Bool {
-    OverlayChromeVisibility.actionsVisible(
-      pointerInside: pointerInside, keyboardFocus: keyboardFocus, voiceOver: voiceOver,
-      retainedWork: retainedWork, pinned: isPinned)
+  static func finishingLabel(mode: OverlayMode, transcribing: Bool, terminal: Bool) -> String? {
+    !terminal && (transcribing || mode == .finalizing) ? "Finishing…" : nil
+  }
+}
+
+/// One capsule for the cap and tools. An opaque palette token replaces material
+/// when transparency is reduced; no glass reaches the resize band's hit region.
+struct OverlayActionsSurface: ViewModifier {
+  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+  let palette: OverlayAppearancePalette
+
+  func body(content: Content) -> some View {
+    content
+      .background {
+        if reduceTransparency {
+          Capsule().fill(palette.desktopBackground.color)
+        } else {
+          Capsule().fill(.regularMaterial)
+        }
+      }
+      .overlay { Capsule().strokeBorder(palette.border.color, lineWidth: 1) }
   }
 }
 
@@ -53,8 +75,8 @@ enum OverlayControlSymbols {
   static let history = "clock.arrow.circlepath"
   static let previousTake = "tray.and.arrow.up"
   static let actions = "ellipsis"
-  static let autoPasteOff = "doc.on.clipboard"
-  static let autoPasteOn = "doc.on.clipboard.fill"
+  static let autoPasteOff = "arrow.down.to.line"
+  static let autoPasteOn = "arrow.down.to.line.compact"
   static let placement = "location.viewfinder"
 }
 
@@ -70,8 +92,10 @@ enum OverlayDockVisuals {
 @MainActor
 struct OverlayIntentRail: View {
   @FocusState private var focusedControl: String?
+  @State private var hoveredControl: String?
   let onFocusChange: (Bool) -> Void
   let onDismiss: () -> Void
+  let onInteraction: () -> Void
   let phase: String
   let intents: [OverlayIntent]
   let palette: OverlayAppearancePalette
@@ -105,10 +129,12 @@ struct OverlayIntentRail: View {
     onHistoryRequest: @escaping () -> Void = {},
     onFormatLevel: @escaping (FormattingPolicyOption) -> Void = { _ in },
     onFocusChange: @escaping (Bool) -> Void = { _ in },
-    onDismiss: @escaping () -> Void = {}
+    onDismiss: @escaping () -> Void = {},
+    onInteraction: @escaping () -> Void = {}
   ) {
     self.onFocusChange = onFocusChange
     self.onDismiss = onDismiss
+    self.onInteraction = onInteraction
     self.phase = phase
     self.intents = intents
     self.palette = palette
@@ -127,62 +153,85 @@ struct OverlayIntentRail: View {
   }
 
   var body: some View {
-    VStack(spacing: 4) {
-      HStack(spacing: CSSpace.xs) {
-        engineChip
-        footerNoticeText
+    HStack(spacing: 2) {
+      if historyAvailable {
+        historyMenu
+          .focused($focusedControl, equals: "history")
+          .onHover { setHovered("history", inside: $0) }
+      }
+      if intents.contains(.recoverSuperseded) || intents.contains(.discardSuperseded) {
+        previousTakeMenu
+          .focused($focusedControl, equals: "previous-take")
+          .onHover { setHovered("previous-take", inside: $0) }
+      }
+      ForEach(intents, id: \.self) { intent in
+        if intent == .retranscribe {
+          retranscribeMenu
+            .focused($focusedControl, equals: intent.rawValue)
+            .onHover { setHovered(intent.rawValue, inside: $0) }
+        } else if intent == .format {
+          formatLevelMenu
+            .focused($focusedControl, equals: "format-level")
+            .onHover { setHovered("format-level", inside: $0) }
+          OverlayDockButton(
+            title: intent.accessibilityLabel,
+            systemImage: intent.systemImage,
+            hint: intent.accessibilityHint,
+            identifier: "overlay-intent-\(intent.rawValue)",
+            palette: palette
+          ) {
+            dispatch(intent)
+          }
+          .focused($focusedControl, equals: intent.rawValue)
+          .onHover { setHovered(intent.rawValue, inside: $0) }
+        } else if intent != .close && intent != .recoverSuperseded && intent != .discardSuperseded
+        {
+          OverlayDockButton(
+            title: intent.accessibilityLabel,
+            systemImage: intent.systemImage,
+            hint: intent.accessibilityHint,
+            identifier: "overlay-intent-\(intent.rawValue)",
+            palette: palette
+          ) {
+            dispatch(intent)
+          }
+          .focused($focusedControl, equals: intent.rawValue)
+          .onHover { setHovered(intent.rawValue, inside: $0) }
+        }
+      }
+    }
+    .buttonStyle(.plain)
+    .fixedSize(horizontal: true, vertical: true)
+    .overlay(alignment: .bottom) {
+      // AppKit tooltip suppression in an inactive accessory app's non-activating
+      // panel is suspected, not established by repo evidence. Paint captions in
+      // the panel so discovery does not depend on that tooltip path; keep .help.
+      VStack(spacing: 2) {
+        HStack(spacing: CSSpace.xs) {
+          engineChip
+          footerNoticeText
+        }
+        if let caption = caption(for: hoveredControl ?? focusedControl) {
+          Text(caption)
+            .csMono(10, .medium)
+            .foregroundStyle(palette.primaryText.color)
+            .lineLimit(2)
+            .multilineTextAlignment(.center)
+            .accessibilityIdentifier("overlay-tool-caption")
+        }
       }
       .padding(.horizontal, 8)
-      .background(.regularMaterial, in: Capsule())
-      HStack(spacing: 4) {
-        if historyAvailable {
-          historyMenu
-            .focused($focusedControl, equals: "history")
-        }
-        if intents.contains(.recoverSuperseded) || intents.contains(.discardSuperseded) {
-          previousTakeMenu
-            .focused($focusedControl, equals: "previous-take")
-        }
-        ForEach(intents, id: \.self) { intent in
-          if intent == .retranscribe {
-            retranscribeMenu
-              .focused($focusedControl, equals: intent.rawValue)
-          } else if intent == .format {
-            formatLevelMenu
-              .focused($focusedControl, equals: "format-level")
-            OverlayDockButton(
-              title: intent.accessibilityLabel,
-              systemImage: intent.systemImage,
-              hint: intent.accessibilityHint,
-              identifier: "overlay-intent-\(intent.rawValue)",
-              palette: palette
-            ) {
-              dispatch(intent)
-            }
-            .focused($focusedControl, equals: intent.rawValue)
-          } else if intent != .close && intent != .recoverSuperseded && intent != .discardSuperseded
-          {
-            OverlayDockButton(
-              title: intent.accessibilityLabel,
-              systemImage: intent.systemImage,
-              hint: intent.accessibilityHint,
-              identifier: "overlay-intent-\(intent.rawValue)",
-              palette: palette
-            ) {
-              dispatch(intent)
-            }
-            .focused($focusedControl, equals: intent.rawValue)
-          }
-        }
-      }
-      .padding(6)
-      .buttonStyle(.plain)
-      .background(.regularMaterial, in: Capsule())
-      .overlay { Capsule().strokeBorder(palette.border.color, lineWidth: 1) }
+      .padding(.vertical, 3)
+      .frame(width: 264)
+      .modifier(OverlayActionsSurface(palette: palette))
+      .fixedSize(horizontal: false, vertical: true)
+      .padding(.bottom, 32)
+      .allowsHitTesting(false)
     }
-    .fixedSize(horizontal: false, vertical: true)
-    .frame(maxWidth: .infinity, alignment: .center)
-    .onChange(of: focusedControl) { _, control in onFocusChange(control != nil) }
+    .onChange(of: focusedControl) { _, control in
+      onFocusChange(control != nil)
+      if control != nil { onInteraction() }
+    }
     .onExitCommand {
       focusedControl = nil
       onFocusChange(false)
@@ -225,8 +274,8 @@ struct OverlayIntentRail: View {
   }
 
   /// Retranscribe is opt-in with the pass picked here: Full HQ (local
-  /// Whisper file pass) or Cloud. The formatting level is not overlay chrome;
-  /// the operator sets it in the tray quick settings (Founder 2026-09-09).
+  /// Whisper file pass) or Cloud. The adjacent level picker keeps its existing
+  /// Settings behavior until per-request formatting is available.
   private var retranscribeMenu: some View {
     Menu {
       ForEach(OverlayRetranscribePass.allCases) { pass in
@@ -240,7 +289,7 @@ struct OverlayIntentRail: View {
         systemImage: OverlayIntent.retranscribe.systemImage
       )
       .labelStyle(.iconOnly)
-      .frame(width: 32, height: 28)
+      .frame(width: 24, height: 24)
       .contentShape(RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous))
       .foregroundStyle(palette.primaryText.color)
     }
@@ -272,7 +321,7 @@ struct OverlayIntentRail: View {
     } label: {
       Label("Previous take", systemImage: OverlayControlSymbols.previousTake)
         .labelStyle(.iconOnly)
-        .frame(width: 32, height: 28)
+        .frame(width: 24, height: 24)
     }
     .menuStyle(.button)
     .buttonStyle(.plain)
@@ -285,10 +334,14 @@ struct OverlayIntentRail: View {
 
   private var historyMenu: some View {
     Menu {
-      Button("Refresh transcript history") { onHistoryRequest() }
-        .accessibilityIdentifier("overlay-history-refresh")
+      Button("Refresh transcript history") {
+        onInteraction()
+        onHistoryRequest()
+      }
+      .accessibilityIdentifier("overlay-history-refresh")
       ForEach(history, id: \.revision) { entry in
         Button {
+          onInteraction()
           onRestore(entry.revision)
         } label: {
           Text("Revision \(entry.revision) · \(entry.provenance) · \(entry.emittedAt)")
@@ -300,7 +353,7 @@ struct OverlayIntentRail: View {
     } label: {
       Label("Transcript history", systemImage: OverlayControlSymbols.history)
         .labelStyle(.iconOnly)
-        .frame(width: 32, height: 28)
+        .frame(width: 24, height: 24)
     }
     .menuStyle(.button)
     .buttonStyle(.plain)
@@ -314,6 +367,7 @@ struct OverlayIntentRail: View {
     Menu {
       ForEach(FormattingPolicyOption.editablePrompts) { level in
         Button {
+          onInteraction()
           onFormatLevel(level)
         } label: {
           if level == formatLevel { Image(systemName: "checkmark") }
@@ -324,7 +378,9 @@ struct OverlayIntentRail: View {
     } label: {
       Text(formatLevel.visibleName)
         .csMono(10, .medium)
-        .frame(minWidth: 52, minHeight: 28)
+        .lineLimit(1)
+        .minimumScaleFactor(0.7)
+        .frame(width: 60, height: 24)
     }
     .menuStyle(.button)
     .buttonStyle(.plain)
@@ -332,6 +388,25 @@ struct OverlayIntentRail: View {
     .help("Choose Correction, Smart, or Max formatting")
     .accessibilityLabel("Formatter level")
     .accessibilityIdentifier("overlay-format-level-picker")
+  }
+
+  private func setHovered(_ control: String, inside: Bool) {
+    if inside {
+      hoveredControl = control
+      onInteraction()
+    } else if hoveredControl == control {
+      hoveredControl = nil
+    }
+  }
+
+  func caption(for control: String?) -> String? {
+    switch control {
+    case "history": "History: earlier revisions"
+    case "previous-take": "Previous take: copy or discard"
+    case "format-level": "Choose Correction, Smart, or Max formatting"
+    case .some(let identifier): OverlayIntent(rawValue: identifier)?.accessibilityLabel
+    case .none: nil
+    }
   }
 
   static func projectedIntents(for state: OverlayState) -> [OverlayIntent] {
@@ -424,10 +499,12 @@ struct OverlayIntentRail: View {
   }
 
   func dispatch(_ intent: OverlayIntent) {
+    onInteraction()
     onIntent(intent)
   }
 
   func retranscribe(_ pass: OverlayRetranscribePass) {
+    onInteraction()
     onRetranscribe(pass)
   }
 }
@@ -447,7 +524,7 @@ private struct OverlayDockButton: View {
     Button(title, systemImage: systemImage, action: action)
       .buttonStyle(.plain)
       .labelStyle(.iconOnly)
-      .frame(width: 32, height: 28)
+      .frame(width: 24, height: 24)
       .contentShape(RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous))
       .foregroundStyle(palette.primaryText.color)
       .background {

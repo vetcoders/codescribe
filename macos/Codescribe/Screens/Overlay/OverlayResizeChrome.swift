@@ -16,8 +16,8 @@ enum OverlayResizeChrome {
       width: gripSize.width, height: gripSize.height)
   }
 
-  static func actionsRect(in bounds: CGRect) -> CGRect {
-    let width = actionsWidth(narrow: bounds.width <= 360)
+  static func actionsRect(in bounds: CGRect, hovering: Bool = false) -> CGRect {
+    let width = actionsWidth(narrow: !hovering)
     return CGRect(
       x: bounds.midX - width / 2, y: bounds.minY + actionsBottomInset,
       width: width, height: actionsHeight)

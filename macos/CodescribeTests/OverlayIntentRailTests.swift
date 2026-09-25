@@ -205,6 +205,26 @@ final class OverlayIntentRailTests: XCTestCase {
     XCTAssertTrue(state.formatterError?.contains("NotTerminal") == true)
   }
 
+  func testLevelPickerKeepsSettingsWriteAndAaKeepsFormatterRequest() async {
+    let state = projectedState(
+      phase: "formatted", text: "final", canPaste: true, canInsert: true,
+      canCopy: true, canRetranscribe: true, canFormat: true, terminal: true)
+    let engine = OverlayIntentBoundaryEngine()
+    state.engine = engine
+    let rail = OverlayIntentRail(
+      phase: state.statusText, intents: OverlayIntentRail.projectedIntents(for: state),
+      palette: .dark, onIntent: state.relayIntent, onFormatLevel: state.setAutoFormatLevel)
+    rail.onFormatLevel(.smart)
+    XCTAssertEqual(engine.formatLevelWrites, [.smart])
+    XCTAssertTrue(engine.formatterRequests.isEmpty, "The deferred one-shot menu is not implemented")
+    let formatted = expectation(description: "Aa retains the existing formatter route")
+    engine.onFormatter = { formatted.fulfill() }
+    rail.dispatch(.format)
+    await fulfillment(of: [formatted], timeout: 1)
+    XCTAssertEqual(engine.formatterRequests.count, 1)
+    XCTAssertEqual(engine.formatLevelWrites, [.smart])
+  }
+
   func testFloatingActionsKeepProjectedOrderWithCloseInHeader() {
     let intents: [OverlayIntent] = [
       .insertPaste, .copy, .retranscribe, .format, .close,
@@ -252,8 +272,8 @@ final class OverlayIntentRailTests: XCTestCase {
     )
     let engine = OverlayIntentBoundaryEngine()
     state.engine = engine
-    // Founder 2026-09-09: the formatting level is tray quick-settings chrome,
-    // never a dock control; Retranscribe is opt-in with a Local / Cloud pick.
+    // Retranscribe is opt-in with a Local / Cloud pick. Its route must not
+    // change the level selected by the separate Settings-backed picker.
     let rail = OverlayIntentRail(
       phase: state.statusText,
       intents: OverlayIntentRail.projectedIntents(for: state),
@@ -274,7 +294,7 @@ final class OverlayIntentRailTests: XCTestCase {
     rail.dispatch(.retranscribe)
     await fulfillment(of: [local], timeout: 1)
     XCTAssertEqual(engine.receivedTranscribePath, "hq:/tmp/overlay-intent-boundary.wav")
-    XCTAssertTrue(engine.formatLevelWrites.isEmpty, "the dock never writes the formatting level")
+    XCTAssertTrue(engine.formatLevelWrites.isEmpty, "retranscribe never writes the formatting level")
   }
 
   func testEveryIntentHasVoiceOverCopyAndRailReportsProjectedPhase() {
@@ -350,14 +370,10 @@ final class OverlayIntentRailTests: XCTestCase {
       OverlayIntentRail.projectedIntents(for: retained),
       [.recoverSuperseded, .discardSuperseded, .finish, .close])
 
-    // And the ephemeral chrome reveals itself, so discovery does not depend on
-    // the user guessing to hover a panel that is showing a NEW take.
-    XCTAssertTrue(
-      OverlayChromeVisibility.actionsVisible(
-        pointerInside: false, keyboardFocus: false, voiceOver: false, retainedWork: true))
-    XCTAssertFalse(
-      OverlayChromeVisibility.actionsVisible(
-        pointerInside: false, keyboardFocus: false, voiceOver: false, retainedWork: false))
+    // Retained work still projects recovery, but it does not open the tools.
+    let actions = OverlayActionsPresentation()
+    XCTAssertEqual(actions.phase, .idle)
+    XCTAssertTrue(retained.hasRecoverableSupersededWork)
   }
 
   /// The rail's own dispatch route reaches the retention owner, and the

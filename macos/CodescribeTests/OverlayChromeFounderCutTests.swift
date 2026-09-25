@@ -292,78 +292,245 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     }
   }
 
-  func testActionsControlPinsWithoutChangingCanvasHoverOrDocumentOwnership() throws {
+  // UX35C-a contracts, authored under W1; execution belongs to the integrator.
+  func testActionsAreInsertedOnlyAfterActivationAndHaveNoPinState() throws {
     let source = try overlaySource()
-    XCTAssertTrue(source.contains("overlay-tools-handle"))
-    XCTAssertTrue(source.contains("overlay-collapse-toggle"))
-    let tools = try section(
-      of: source, from: "VStack(spacing: 2)", to: "private var actionsVisible")
-    XCTAssertTrue(tools.contains(".fixedSize(horizontal: true, vertical: true)"))
-    XCTAssertTrue(tools.contains("actions.pointerInside = hovering"))
-    XCTAssertTrue(tools.contains("actions.togglePin()"))
-    XCTAssertTrue(tools.contains("Image(systemName: OverlayControlSymbols.actions)"))
-    XCTAssertTrue(tools.contains("if !narrowActions { Text(\"Actions\") }"))
-    XCTAssertTrue(tools.contains("geometry.size.width <= 360"))
-    XCTAssertTrue(tools.contains(".accessibilityLabel(\"Actions\")"))
-    XCTAssertTrue(tools.contains("actions.isPinned ? \"Pinned\" : \"Hidden\""))
-    let hover = try section(of: tools, from: ".onHover { hovering in", to: ".animation(")
-    XCTAssertFalse(hover.contains("reset()"))
-    XCTAssertFalse(hover.contains("dismiss()"))
+    let tools = try section(of: source, from: "HStack(spacing: 2)", to: "/// 1px separator")
+    XCTAssertTrue(tools.contains("if actions.phase == .open {\n            intentRail"))
+    XCTAssertTrue(tools.contains("if actions.phase == .hover { Text(\"Actions…\") }"))
+    XCTAssertTrue(tools.contains("actions.toggle()"))
+    XCTAssertTrue(tools.contains(".onHover { actions.pointerChanged($0) }"))
+    XCTAssertTrue(tools.contains(".focusable()"))
+    XCTAssertTrue(tools.contains("actions.phase == .open ? \"Open\" : \"Collapsed\""))
+    XCTAssertTrue(tools.contains("overlay-retained-work-badge"))
+    XCTAssertFalse(source.contains("togglePin"))
+    XCTAssertFalse(source.contains("isPinned"))
+    XCTAssertFalse(source.contains("voiceOverEnabled"))
+    XCTAssertTrue(tools.contains(".onExitCommand { actions.dismiss() }"))
     XCTAssertTrue(tools.contains("if collapsed { actions.reset() }"))
-    XCTAssertTrue(tools.contains(".onChange(of: state.captureGeneration)"))
-    XCTAssertTrue(source.contains("retainedWork: state.hasRecoverableSupersededWork"))
-    let stateSource = try self.source(at: "Codescribe/Screens/Overlay/OverlayState.swift")
-    XCTAssertFalse(stateSource.contains("@ObservationIgnored private(set) var captureGeneration"))
-    let rail = try railSource()
-    XCTAssertTrue(rail.contains(".onExitCommand {"))
-    XCTAssertTrue(rail.contains("focusedControl = nil"))
-    XCTAssertTrue(rail.contains("onDismiss()"))
-    XCTAssertTrue(source.contains("onDismiss: { actions.dismiss() }"))
-    XCTAssertFalse(source.contains("NSApp.isFullKeyboardAccessEnabled"))
-    XCTAssertFalse(
-      source.contains("pointerInside = inside"), "Whole canvas hover must not reveal tools")
-    XCTAssertFalse(
-      OverlayChromeVisibility.actionsVisible(
-        pointerInside: false, keyboardFocus: false, voiceOver: false))
+    XCTAssertTrue(tools.contains(".onChange(of: state.captureGeneration) { _, _ in actions.reset() }"))
+    XCTAssertTrue(tools.contains(".task(id: actions.hideDeadline)"))
+    XCTAssertTrue(tools.contains("guard !Task.isCancelled else { return }"))
   }
 
-  func testActionsPinSurvivesPointerExitAndEndsOnSecondClickEscapeOrReset() {
+  func testActionsExpireThreeSecondsAfterLastOutsideInteraction() {
+    let start = ContinuousClock.now
     var actions = OverlayActionsPresentation()
-    XCTAssertFalse(actions.isVisible())
-    actions.pointerInside = true
-    XCTAssertTrue(actions.isVisible(), "Hover remains ephemeral")
-    actions.togglePin()
-    actions.pointerInside = false
-    XCTAssertTrue(actions.isPinned)
-    XCTAssertTrue(actions.isVisible())
-    actions.togglePin()
-    XCTAssertFalse(actions.isPinned)
-    XCTAssertFalse(actions.isVisible())
+    actions.toggle(at: start)
+    actions.expire(at: start.advanced(by: .milliseconds(2999)))
+    XCTAssertEqual(actions.phase, .open)
+    actions.expire(at: start.advanced(by: .seconds(3)))
+    XCTAssertEqual(actions.phase, .idle)
+    XCTAssertNil(actions.hideDeadline)
 
-    actions.togglePin()
-    actions.keyboardFocus = true
+    actions.toggle(at: start)
+    actions.interact(at: start.advanced(by: .milliseconds(2500)))
+    actions.expire(at: start.advanced(by: .seconds(4)))
+    XCTAssertEqual(actions.phase, .open, "A tool click renews the deadline")
+    actions.expire(at: start.advanced(by: .milliseconds(5500)))
+    XCTAssertEqual(actions.phase, .idle)
+  }
+
+  func testPointerInsideCancelsDeadlineAndExitStartsFreshGracePeriod() {
+    let start = ContinuousClock.now
+    var actions = OverlayActionsPresentation()
+    actions.toggle(at: start)
+    actions.pointerChanged(true, at: start.advanced(by: .seconds(2)))
+    XCTAssertNil(actions.hideDeadline)
+    actions.expire(at: start.advanced(by: .seconds(10)))
+    XCTAssertEqual(actions.phase, .open)
+    actions.pointerChanged(false, at: start.advanced(by: .seconds(10)))
+    actions.expire(at: start.advanced(by: .seconds(12)))
+    XCTAssertEqual(actions.phase, .open)
+    actions.expire(at: start.advanced(by: .seconds(13)))
+    XCTAssertEqual(actions.phase, .idle)
+  }
+
+  func testLeadingCapEscapeAndLifecycleResetCloseWithoutHoverReopeningTools() {
+    var actions = OverlayActionsPresentation()
+    actions.pointerChanged(true)
+    actions.toggle()
+    XCTAssertEqual(actions.phase, .open)
+    actions.toggle()
+    XCTAssertEqual(actions.phase, .idle)
+    actions.pointerChanged(false)
+    actions.pointerChanged(true)
+    XCTAssertEqual(actions.phase, .hover)
+    actions.toggle()
     actions.dismiss()
-    XCTAssertFalse(actions.isPinned)
-    XCTAssertFalse(actions.isVisible())
-
+    XCTAssertEqual(actions.phase, .idle)
     for _ in 0..<2 {
-      // Both new-capture and collapse observers use this same reset.
-      actions.togglePin()
-      actions.pointerInside = true
-      actions.keyboardFocus = true
+      actions.toggle()
       actions.reset()
-      XCTAssertFalse(actions.isPinned)
-      XCTAssertFalse(actions.isVisible())
+      XCTAssertEqual(actions.phase, .idle)
+      XCTAssertFalse(actions.pointerInside)
+      XCTAssertNil(actions.hideDeadline)
     }
-    XCTAssertTrue(actions.isVisible(retainedWork: true))
-    XCTAssertTrue(actions.isVisible(voiceOver: true))
+  }
+
+  func testIdleRetainedTakeAndVoiceOverDoNotMountToolsThenCapOpensAndCloses() throws {
+    let state = OverlayState.previewFormatted()
+    state.beginTranscriptEdit()
+    state.updateRevisionDraft("Retained edit")
+    state.endTranscriptEdit()
+    state.handleRecordingPreparing()
+    XCTAssertTrue(state.hasRecoverableSupersededWork)
+    try withPanel(state: state, width: 320) { _, root in
+      func element(_ identifier: String) -> (any NSAccessibilityProtocol)? {
+        accessibilityTree(root).first { $0.accessibilityIdentifier() == identifier }
+      }
+      let cap = try XCTUnwrap(element("overlay-tools-handle"))
+      XCTAssertEqual(cap.accessibilityValue() as? String, "Collapsed")
+      XCTAssertNil(element("overlay-intent-dock"))
+      XCTAssertNil(element("overlay-previous-take-menu"))
+      XCTAssertTrue(cap.accessibilityPerformPress())
+      settle(root)
+      XCTAssertNotNil(element("overlay-intent-dock"))
+      XCTAssertNotNil(element("overlay-previous-take-menu"))
+      XCTAssertNotNil(element("overlay-intent-finish"))
+      XCTAssertTrue(try XCTUnwrap(element("overlay-tools-handle")).accessibilityPerformPress())
+      settle(root)
+      XCTAssertNil(element("overlay-intent-dock"))
+      state.finishControllerRecording()
+    }
+    let host = NSHostingView(
+      rootView: DictationOverlayView(state: .previewFormatted())
+        .environment(\.accessibilityVoiceOverEnabled, true))
+    host.frame = CGRect(x: 0, y: 0, width: 320, height: 280)
+    settle(host)
+    XCTAssertFalse(accessibilityTree(host).contains {
+      $0.accessibilityIdentifier() == "overlay-intent-dock"
+    })
+  }
+
+  func testOpenRowKeepsEightToolsAndRecordingKeepsItsThreeTools() throws {
+    let rows: [(String, [OverlayIntent], Bool, [String])] = [
+      ("formatted", [.recoverSuperseded, .discardSuperseded, .insertPaste, .copy,
+        .retranscribe, .format, .sendToAgent, .close], true,
+       ["overlay-history-menu", "overlay-previous-take-menu", "overlay-intent-insert-paste",
+        "overlay-intent-copy", "overlay-intent-retranscribe", "overlay-format-level-picker",
+        "overlay-intent-format", "overlay-intent-send-to-agent"]),
+      ("listening", [.recoverSuperseded, .discardSuperseded, .finish, .copy, .close], false,
+       ["overlay-previous-take-menu", "overlay-intent-finish", "overlay-intent-copy"]),
+    ]
+    for (phase, intents, history, identifiers) in rows {
+      let rail = OverlayIntentRail(
+        phase: phase, intents: intents, palette: .dark, historyAvailable: history,
+        onIntent: { _ in })
+      let host = NSHostingView(rootView: rail)
+      host.frame = CGRect(x: 0, y: 0, width: 280, height: 80)
+      settle(host)
+      let rendered = Set(accessibilityTree(host).compactMap { $0.accessibilityIdentifier() })
+      for identifier in identifiers { XCTAssertTrue(rendered.contains(identifier), identifier) }
+      XCTAssertFalse(rendered.contains("overlay-intent-close"))
+      XCTAssertEqual(identifiers.count, history ? 8 : 3)
+    }
+  }
+
+  func testTakeStartAndCollapseRemoveMountedTools() throws {
+    let state = OverlayState.previewFormatted()
+    try withPanel(state: state) { _, root in
+      func pressCap() throws {
+        let cap = try XCTUnwrap(accessibilityTree(root).first {
+          $0.accessibilityIdentifier() == "overlay-tools-handle"
+        })
+        XCTAssertTrue(cap.accessibilityPerformPress())
+        settle(root)
+      }
+      func hasTools() -> Bool {
+        accessibilityTree(root).contains { $0.accessibilityIdentifier() == "overlay-intent-dock" }
+      }
+      try pressCap()
+      XCTAssertTrue(hasTools())
+      state.handleRecordingPreparing()
+      settle(root)
+      XCTAssertFalse(hasTools())
+      try pressCap()
+      XCTAssertTrue(hasTools())
+      state.toggleCollapsed()
+      settle(root)
+      XCTAssertFalse(hasTools())
+      state.toggleCollapsed()
+      settle(root)
+      XCTAssertFalse(hasTools())
+      state.finishControllerRecording()
+    }
+  }
+
+  func testEveryToolHasACaptionAndDispatchResetsInteraction() {
+    var interactions = 0
+    var dispatched: [OverlayIntent] = []
+    let rail = OverlayIntentRail(
+      phase: "formatted", intents: OverlayIntent.allCases, palette: .dark,
+      onIntent: { dispatched.append($0) }, onInteraction: { interactions += 1 })
+    for intent in OverlayIntent.allCases where intent != .close {
+      XCTAssertFalse(rail.caption(for: intent.rawValue)?.isEmpty ?? true, intent.rawValue)
+    }
+    for control in ["history", "previous-take", "format-level"] {
+      XCTAssertFalse(rail.caption(for: control)?.isEmpty ?? true)
+    }
+    XCTAssertNotEqual(rail.caption(for: "history"), rail.caption(for: "previous-take"))
+    rail.dispatch(.copy)
+    XCTAssertEqual(dispatched, [.copy])
+    XCTAssertEqual(interactions, 1)
+    rail.retranscribe(.fullHq)
+    XCTAssertEqual(interactions, 2)
+  }
+
+  func testReducedMotionAndTransparencyApplyToTheEntireActionsSurface() throws {
+    let source = try overlaySource()
+    let tools = try section(of: source, from: "HStack(spacing: 2)", to: "/// 1px separator")
+    XCTAssertTrue(tools.contains(".animation(reduceMotion ? nil :"))
+    XCTAssertTrue(tools.contains("transaction.animation = nil"))
+    XCTAssertTrue(tools.contains("transaction.disablesAnimations = true"))
+    let material = try section(
+      of: railSource(), from: "struct OverlayActionsSurface", to: "/// Symbols shared")
+    XCTAssertTrue(material.contains("if reduceTransparency"))
+    XCTAssertTrue(material.contains("Capsule().fill(palette.desktopBackground.color)"))
+    XCTAssertTrue(material.contains("} else {\n          Capsule().fill(.regularMaterial)"))
+  }
+
+  func testFinishingNoticeSurvivesFoldWithoutChangingBarHeight() throws {
+    let state = OverlayState.previewListening()
+    state.handleRecordingStarted()
+    state.handleRecordingFinalising()
+    let words = state.canvasText
+    try withPanel(state: state) { panel, root in
+      func noticeExists() -> Bool {
+        accessibilityTree(root).contains { $0.accessibilityIdentifier() == "overlay-finishing" }
+      }
+      XCTAssertTrue(noticeExists())
+      state.toggleCollapsed()
+      settle(root)
+      XCTAssertTrue(noticeExists())
+      XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight, accuracy: 0.5)
+      XCTAssertEqual(state.canvasText, words)
+      state.finishControllerRecording()
+    }
+  }
+
+  func testFinishingFollowsStopLifecycleAndTerminalReceiptWithoutADuration() {
+    let state = OverlayState.previewListening()
+    state.handleRecordingStarted()
+    XCTAssertNil(OverlayActionsPresentation.finishingLabel(
+      mode: state.mode, transcribing: state.transcribing, terminal: state.terminal))
+    state.handleRecordingFinalising()
+    XCTAssertEqual(OverlayActionsPresentation.finishingLabel(
+      mode: state.mode, transcribing: state.transcribing, terminal: state.terminal), "Finishing…")
+    state.finishControllerRecording()
+    XCTAssertNil(OverlayActionsPresentation.finishingLabel(
+      mode: .formatted, transcribing: state.transcribing, terminal: true))
+    XCTAssertEqual(OverlayActionsPresentation.finishingLabel(
+      mode: .finalizing, transcribing: false, terminal: false), "Finishing…")
+    XCTAssertNil(OverlayActionsPresentation.finishingLabel(
+      mode: .finalizing, transcribing: true, terminal: true))
   }
 
   func testResizeChromeUsesTheGeometryContractsWithoutAddingSwiftUIHitTargets() throws {
     let source = try overlaySource()
     let chrome = try section(
-      of: source, from: "private func canvasStack", to: "private var actionsVisible")
-    XCTAssertTrue(chrome.contains("width: OverlayResizeChrome.actionsWidth(narrow: narrowActions)"))
+      of: source, from: "private func canvasStack", to: "/// 1px separator")
+    XCTAssertTrue(chrome.contains("width: OverlayResizeChrome.actionsWidth(narrow: actions.phase != .hover)"))
     XCTAssertTrue(chrome.contains("height: OverlayResizeChrome.actionsHeight"))
     XCTAssertTrue(chrome.contains(".padding(.bottom, OverlayResizeChrome.actionsBottomInset)"))
     XCTAssertTrue(chrome.contains("width: OverlayResizeChrome.gripSize.width"))
@@ -373,8 +540,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(chrome.contains("sideIndicatorAnimation(reduceMotion: reduceMotion)"))
     XCTAssertTrue(chrome.contains("transaction.disablesAnimations = true"))
     XCTAssertTrue(source.contains("pointerInsideOverlay = inside"))
-    XCTAssertEqual(chrome.components(separatedBy: ".allowsHitTesting(false)").count - 1, 2)
-    XCTAssertEqual(chrome.components(separatedBy: ".accessibilityHidden(true)").count - 1, 2)
+    XCTAssertEqual(chrome.components(separatedBy: ".allowsHitTesting(false)").count - 1, 4)
+    XCTAssertEqual(chrome.components(separatedBy: ".accessibilityHidden(true)").count - 1, 3)
     XCTAssertFalse(chrome.contains("DragGesture"))
   }
 

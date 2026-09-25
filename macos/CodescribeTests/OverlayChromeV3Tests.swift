@@ -34,25 +34,22 @@ final class OverlayChromeV3Tests: XCTestCase {
     }
   }
 
-  func testPointerEntryAndExitRevealWithoutAReservedDock() {
-    XCTAssertFalse(
-      OverlayChromeVisibility.actionsVisible(
-        pointerInside: false, keyboardFocus: false, voiceOver: false))
-    XCTAssertTrue(
-      OverlayChromeVisibility.actionsVisible(
-        pointerInside: true, keyboardFocus: false, voiceOver: false))
-    XCTAssertFalse(
-      OverlayChromeVisibility.actionsVisible(
-        pointerInside: false, keyboardFocus: false, voiceOver: false))
+  func testPointerEntryAndExitOnlyRevealTheActionsLabel() {
+    var actions = OverlayActionsPresentation()
+    XCTAssertEqual(actions.phase, .idle)
+    actions.pointerChanged(true)
+    XCTAssertEqual(actions.phase, .hover)
+    actions.pointerChanged(false)
+    XCTAssertEqual(actions.phase, .idle)
   }
 
-  func testKeyboardAndVoiceOverKeepActionsVisibleWithoutPointer() {
-    XCTAssertTrue(
-      OverlayChromeVisibility.actionsVisible(
-        pointerInside: false, keyboardFocus: true, voiceOver: false))
-    XCTAssertTrue(
-      OverlayChromeVisibility.actionsVisible(
-        pointerInside: false, keyboardFocus: false, voiceOver: true))
+  func testKeyboardActivationOpensActionsWithoutPointer() {
+    var actions = OverlayActionsPresentation()
+    actions.toggle()
+    XCTAssertEqual(actions.phase, .open)
+    XCTAssertNotNil(actions.hideDeadline)
+    actions.dismiss()
+    XCTAssertEqual(actions.phase, .idle)
   }
 
   func testCloseUsesProductionIntentRoute() {

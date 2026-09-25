@@ -18,11 +18,10 @@ import SwiftUI
 struct DictationOverlayView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.colorScheme) private var colorScheme
-  @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
   @AppStorage(DictationOverlayGate.labModeDefaultsKey) private var labMode = false
   @State private var closeDotHovered = false
   @State private var actions = OverlayActionsPresentation()
-  @State private var narrowActions = false
+  @FocusState private var actionsFocused: Bool
   @State private var pointerInsideOverlay = false
   @State private var overlayVisible = false
   @Bindable var state: OverlayState
@@ -60,8 +59,9 @@ struct DictationOverlayView: View {
           onRestore: state.restoreDocumentRevision,
           onHistoryRequest: state.loadDocumentHistory,
           onFormatLevel: state.setAutoFormatLevel,
-          onFocusChange: { actions.keyboardFocus = $0 },
-          onDismiss: { actions.dismiss() }
+          onFocusChange: { if $0 { actions.interact() } },
+          onDismiss: { actions.dismiss() },
+          onInteraction: { actions.interact() }
         )
       )
     }
@@ -104,6 +104,16 @@ struct DictationOverlayView: View {
     VStack(spacing: 0) {
       header
       hairline(0.06)
+      if !state.isCollapsed,
+        let label = OverlayActionsPresentation.finishingLabel(
+          mode: state.mode, transcribing: state.transcribing, terminal: state.terminal)
+      {
+        Text(label)
+          .csMono(10, .medium)
+          .foregroundStyle(palette.processingStatus.color)
+          .accessibilityIdentifier("overlay-finishing")
+          .allowsHitTesting(false)
+      }
       bodySection
         .frame(height: state.isCollapsed ? 0 : nil)
         .clipped()
@@ -113,47 +123,85 @@ struct DictationOverlayView: View {
     }
     .overlay(alignment: .bottom) {
       if !state.isCollapsed {
-        VStack(spacing: 2) {
-          intentRail
-            .opacity(actionsVisible ? 1 : 0)
-            .frame(height: actionsVisible ? nil : 0)
-            .clipped()
-            .allowsHitTesting(actionsVisible)
-            .accessibilityHidden(!actionsVisible)
-            .accessibilityIdentifier("overlay-actions-ephemeral")
+        HStack(spacing: 2) {
           Button {
-            actions.togglePin()
+            actions.toggle()
           } label: {
             HStack(spacing: 4) {
               Image(systemName: OverlayControlSymbols.actions)
-              if !narrowActions { Text("Actions") }
+              if actions.phase == .hover { Text("Actions…") }
             }
             .font(.system(size: 11, weight: .medium))
             .foregroundStyle(palette.primaryText.color)
-            .padding(.horizontal, 10)
             .frame(
-              width: OverlayResizeChrome.actionsWidth(narrow: narrowActions),
+              width: OverlayResizeChrome.actionsWidth(narrow: actions.phase != .hover),
               height: OverlayResizeChrome.actionsHeight
             )
-            .background(.regularMaterial, in: Capsule())
-            .overlay { Capsule().strokeBorder(palette.border.color, lineWidth: 1) }
             .contentShape(Capsule())
+            .overlay(alignment: .topTrailing) {
+              if state.hasRecoverableSupersededWork && actions.phase != .open {
+                Circle()
+                  .fill(palette.processingStatus.color)
+                  .frame(width: 5, height: 5)
+                  .accessibilityHidden(true)
+                  .accessibilityIdentifier("overlay-retained-work-badge")
+              }
+            }
           }
           .buttonStyle(.plain)
-          .onExitCommand { actions.dismiss() }
-          .help(actions.isPinned ? "Unpin actions" : "Pin actions open")
+          .focusable()
+          .focused($actionsFocused)
+          .help(actions.phase == .open ? "Hide actions" : "Show actions")
           .accessibilityLabel("Actions")
-          .accessibilityValue(actions.isPinned ? "Pinned" : "Hidden")
+          .accessibilityValue(actions.phase == .open ? "Open" : "Collapsed")
+          .accessibilityHint(
+            state.hasRecoverableSupersededWork
+              ? "Previous take available. Open actions to copy or discard it."
+              : "Show or hide transcript tools")
           .accessibilityIdentifier("overlay-tools-handle")
+          if actions.phase == .open {
+            intentRail
+              .padding(.trailing, 4)
+          }
         }
+        .padding(.vertical, actions.phase == .open ? 2 : 0)
         .fixedSize(horizontal: true, vertical: true)
-        .padding(.horizontal, 8)
-        .contentShape(Rectangle())
-        .onHover { hovering in
-          actions.pointerInside = hovering
+        .modifier(OverlayActionsSurface(palette: palette))
+        .contentShape(Capsule())
+        .onHover { actions.pointerChanged($0) }
+        .onChange(of: actionsFocused) { _, focused in
+          if focused { actions.interact() }
         }
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: actionsVisible)
+        .onExitCommand { actions.dismiss() }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: actions.phase)
+        .transaction { transaction in
+          if reduceMotion {
+            transaction.animation = nil
+            transaction.disablesAnimations = true
+          }
+        }
+        .task(id: actions.hideDeadline) {
+          guard let deadline = actions.hideDeadline else { return }
+          do {
+            try await ContinuousClock().sleep(until: deadline)
+          } catch { return }
+          guard !Task.isCancelled else { return }
+          actions.expire()
+        }
         .padding(.bottom, OverlayResizeChrome.actionsBottomInset)
+      } else if let label = OverlayActionsPresentation.finishingLabel(
+        mode: state.mode, transcribing: state.transcribing, terminal: state.terminal)
+      {
+        // The folded bar keeps its height; the passive wait label uses its
+        // bottom center without touching the header timer or capture state.
+        Text(label)
+          .csMono(10, .medium)
+          .foregroundStyle(palette.processingStatus.color)
+          .padding(.horizontal, 4)
+          .background(palette.desktopBackground.color, in: Capsule())
+          .padding(.bottom, 2)
+          .accessibilityIdentifier("overlay-finishing")
+          .allowsHitTesting(false)
       }
     }
     .overlay(alignment: .bottom) {
@@ -194,22 +242,10 @@ struct DictationOverlayView: View {
         .accessibilityHidden(true)
       }
     }
-    .onGeometryChange(for: Bool.self) { geometry in
-      geometry.size.width <= 360
-    } action: {
-      narrowActions = $0
-    }
     .onChange(of: state.isCollapsed) { _, collapsed in
       if collapsed { actions.reset() }
     }
     .onChange(of: state.captureGeneration) { _, _ in actions.reset() }
-  }
-
-  private var actionsVisible: Bool {
-    actions.isVisible(
-      voiceOver: voiceOverEnabled,
-      retainedWork: state.hasRecoverableSupersededWork
-    )
   }
 
   /// 1px separator matching the mock's hairline borders.
