@@ -24,7 +24,10 @@ mod defaults;
 pub use defaults::{
     default_light_plus_sentence_pause_sec, normalize_light_plus_sentence_pause_sec,
 };
-pub use defaults::{default_whisper_context_window_sec, normalize_whisper_context_window_sec};
+pub use defaults::{
+    DEFAULT_CLOUD_REFINE_ENDPOINT, default_cloud_refine_endpoint,
+    default_whisper_context_window_sec, normalize_whisper_context_window_sec,
+};
 /// Measured, versioned acoustic calibration artifact (the `EnergyCalibration`
 /// source of the runtime settings throne).
 pub mod energy_calibration;
@@ -69,8 +72,8 @@ pub use types::{
 };
 // Language re-exported for external consumers (GUI apps)
 pub use cloud_asr::{
-    AsrProductMode, AudioEgressConsent, ConsentSource, GatewayMintError, GatewaySessionMint,
-    ModeDerivation, ResolvedAsrMode, resolve_asr_product_mode,
+    AsrProductMode, AudioEgressConsent, CloudRefineAdmission, ConsentSource, GatewayMintError,
+    GatewaySessionMint, ModeDerivation, ResolvedAsrMode, resolve_asr_product_mode,
 };
 pub use energy_calibration::{
     ENERGY_CALIBRATION_FILE_NAME, ENERGY_CALIBRATION_SCHEMA, EnergyCalibrationArtifact,

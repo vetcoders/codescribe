@@ -91,7 +91,7 @@ pub use recorder::{
     FanOutVerdict, LAYER1_DEGRADED_WARNING_CODE, Layer1Decision, Layer1DegradeReason,
     Layer1LaneState, Layer1LaneTelemetry, Layer1SessionOutcome, LocalTailPatchDisposition,
     RecorderLayer1Lane, RecorderLifecycleEvent, RecorderLifecycleEvents, RecorderLifecycleHandle,
-    apply_recorder_lifecycle_event, recorder_lifecycle_channel,
+    TailPatchTransport, apply_recorder_lifecycle_event, recorder_lifecycle_channel,
 };
 
 /// Content-free recording-start decision. Endpoints and credentials never
@@ -178,9 +178,33 @@ fn layer1_decision_with_factory(
                 .and_then(|authorization| cloud_factory(snapshot, authorization));
             match provider {
                 Ok(provider) => {
-                    receipt.refiner = "cloud_session";
+                    let transport = TailPatchTransport::from_provider_token(
+                        snapshot.tail_provider().map(|provider| provider.as_str()),
+                    );
+                    // An invalid `STT_TAIL_PROVIDER` freezes `None`. The Apple
+                    // session would then `unwrap_or(InProcess)`. Leave the tail
+                    // unarmed in that case so a bad override cannot start local
+                    // weights beside CLOUD. Absent env is already `Remote`.
+                    let tail = if snapshot.tail_provider().is_some() {
+                        LocalTailPatchDisposition::ArmedDefault
+                    } else {
+                        LocalTailPatchDisposition::NotApplicable
+                    };
+                    receipt.refiner = if tail.is_armed() {
+                        transport.cloud_refiner()
+                    } else {
+                        "cloud_session"
+                    };
                     receipt.reason = "cloud_ready";
-                    (Layer1Decision::Armed(provider), receipt)
+                    (
+                        Layer1Decision::Cloud {
+                            provider,
+                            tail,
+                            transport,
+                            refine_endpoint: snapshot.values().cloud_refine_endpoint().to_string(),
+                        },
+                        receipt,
+                    )
                 }
                 Err(reason) => {
                     receipt.reason = reason;

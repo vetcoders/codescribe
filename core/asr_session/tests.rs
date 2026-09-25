@@ -501,7 +501,7 @@ impl Drop for Layer1TestEnv {
 #[test]
 #[serial_test::serial]
 fn production_layer1_decision_follows_resolved_asr_mode() {
-    use super::{Layer1Decision, RecorderLayer1Lane};
+    use super::{Layer1Decision, LocalTailPatchDisposition, RecorderLayer1Lane, TailPatchTransport};
     use crate::config::{Config, UserSettings};
 
     let root = tempfile::tempdir().unwrap();
@@ -542,7 +542,18 @@ fn production_layer1_decision_follows_resolved_asr_mode() {
                 )))
             });
         assert_eq!(factory_calls, usize::from(armed));
-        assert_eq!(matches!(&decision, Layer1Decision::Armed(_)), armed);
+        assert_eq!(matches!(&decision, Layer1Decision::Cloud { .. }), armed);
+        if armed {
+            // This harness sets STT_TAIL_PROVIDER=inprocess, so the env wins.
+            assert!(matches!(
+                &decision,
+                Layer1Decision::Cloud {
+                    tail: LocalTailPatchDisposition::ArmedDefault,
+                    transport: TailPatchTransport::InProcess,
+                    ..
+                }
+            ));
+        }
         assert_eq!(receipt.reason, expected_reason);
         assert_eq!(
             receipt.consent,
@@ -555,7 +566,7 @@ fn production_layer1_decision_follows_resolved_asr_mode() {
         assert_eq!(
             receipt.refiner,
             if armed {
-                "cloud_session"
+                TailPatchTransport::InProcess.cloud_refiner()
             } else if mode == "local_power" {
                 "local_tail_patch"
             } else {
@@ -571,7 +582,7 @@ fn production_layer1_decision_follows_resolved_asr_mode() {
         // The public production entrypoint must share the same policy and
         // construct a dormant real provider, without connecting in this test.
         let (production, production_receipt) = super::layer1_decision(&snapshot);
-        assert_eq!(matches!(production, Layer1Decision::Armed(_)), armed);
+        assert_eq!(matches!(production, Layer1Decision::Cloud { .. }), armed);
         assert_eq!(production_receipt, receipt);
     }
 }
@@ -619,6 +630,12 @@ impl Layer1TestEnv {
         self.saved.push((key, std::env::var_os(key)));
         // SAFETY: callers hold the suite's serial environment lock.
         unsafe { std::env::set_var(key, value) };
+    }
+
+    fn clear(&mut self, key: &'static str) {
+        self.saved.push((key, std::env::var_os(key)));
+        // SAFETY: callers hold the suite's serial environment lock.
+        unsafe { std::env::remove_var(key) };
     }
 }
 
@@ -695,7 +712,7 @@ fn local_power_mode_alone_arms_tail_patch_and_env_off_degrades() {
 #[test]
 #[serial_test::serial]
 fn production_layer1_refusals_never_construct_a_cloud_provider() {
-    use super::Layer1Decision;
+    use super::{Layer1Decision, TailPatchTransport};
     use crate::config::{Config, UserSettings};
 
     let root = tempfile::tempdir().unwrap();
@@ -741,14 +758,24 @@ fn production_layer1_refusals_never_construct_a_cloud_provider() {
     environment.set("STT_LIVE_ENDPOINT", "not-a-websocket");
     environment.set("STT_LIVE_API_KEY", "");
     let (decision, receipt) = super::layer1_decision(&snapshot);
-    assert!(matches!(decision, Layer1Decision::Armed(_)));
+    assert!(matches!(
+        decision,
+        Layer1Decision::Cloud {
+            transport: TailPatchTransport::InProcess,
+            ..
+        }
+    ));
+    assert_eq!(
+        receipt.refiner,
+        TailPatchTransport::InProcess.cloud_refiner()
+    );
     assert_eq!(receipt.reason, "cloud_ready");
 }
 
 #[test]
 #[serial_test::serial]
 fn production_layer1_cloud_forwards_native_pcm_over_real_websocket() {
-    use super::{Layer1Decision, RecorderLayer1Lane};
+    use super::{Layer1Decision, RecorderLayer1Lane, TailPatchTransport};
     use crate::config::{Config, UserSettings};
     use std::time::{Duration, Instant};
     use tokio_tungstenite::tungstenite::Message;
@@ -775,8 +802,17 @@ fn production_layer1_cloud_forwards_native_pcm_over_real_websocket() {
     .unwrap();
     let snapshot = Config::load_runtime_snapshot_without_keychain().unwrap();
     let (decision, receipt) = super::layer1_decision(&snapshot);
-    assert!(matches!(decision, Layer1Decision::Armed(_)));
-    assert_eq!(receipt.refiner, "cloud_session");
+    assert!(matches!(
+        decision,
+        Layer1Decision::Cloud {
+            transport: TailPatchTransport::InProcess,
+            ..
+        }
+    ));
+    assert_eq!(
+        receipt.refiner,
+        TailPatchTransport::InProcess.cloud_refiner()
+    );
 
     let (received_tx, received_rx) = std::sync::mpsc::channel();
     let server = std::thread::spawn(move || {
@@ -850,4 +886,185 @@ fn production_layer1_cloud_forwards_native_pcm_over_real_websocket() {
     assert_eq!(outcome.telemetry().partials_applied, 1);
     assert_eq!(outcome.degrade_reason(), None);
     server.join().unwrap();
+}
+
+/// CLOUD plus granted consent arms the live provider and a remote tail patch
+/// at the refine endpoint. `STT_TAIL_PROVIDER` is absent, so it does not win.
+#[test]
+#[serial_test::serial]
+fn cloud_consent_arms_ws_provider_and_remote_tail_at_refine_endpoint() {
+    use super::{Layer1Decision, LocalTailPatchDisposition, RecorderLayer1Lane, TailPatchTransport};
+    use crate::config::{Config, UserSettings};
+    use crate::stt::tail_provider::TailProviderId;
+
+    let root = tempfile::tempdir().unwrap();
+    let mut environment = Layer1TestEnv::new(root.path());
+    environment.clear("STT_TAIL_PROVIDER");
+    let file_lane = "https://ndjson.invalid/v1/audio/transcribe:stream";
+    let refine = "https://refine.invalid/v1/audio/transcriptions";
+    UserSettings {
+        asr_mode: Some("cloud".into()),
+        cloud_consent: Some("granted".into()),
+        stt_live_endpoint: Some("wss://gateway.invalid/live".into()),
+        stt_file_endpoint: Some(file_lane.into()),
+        stt_cloud_refine_endpoint: Some(refine.into()),
+        ..Default::default()
+    }
+    .save()
+    .unwrap();
+    let snapshot = Config::load_runtime_snapshot_without_keychain().unwrap();
+    assert_eq!(snapshot.tail_provider(), Some(TailProviderId::Remote));
+    assert_eq!(snapshot.values().stt_file_endpoint.as_deref(), Some(file_lane));
+    assert_eq!(snapshot.values().cloud_refine_endpoint(), refine);
+    assert!(snapshot.values().cloud_refine_selected);
+    let admission = snapshot
+        .values()
+        .cloud_tail_refine()
+        .expect("consented cloud selects the refine lane");
+    assert_eq!(admission.endpoint, refine);
+    assert_eq!(admission.api_key, "fixture-live-key");
+    assert!(!format!("{admission:?}").contains("fixture-live-key"));
+
+    let (decision, receipt) = super::layer1_decision_with_factory(&snapshot, |_, _| {
+        Ok(Box::new(FakeAsrSessionProvider::with_script(
+            RefinerMode::CloudSession,
+            vec![partial(1, 1, "live fixture")],
+        )))
+    });
+    match &decision {
+        Layer1Decision::Cloud {
+            tail,
+            transport,
+            refine_endpoint,
+            ..
+        } => {
+            assert_eq!(*tail, LocalTailPatchDisposition::ArmedDefault);
+            assert_eq!(*transport, TailPatchTransport::Remote);
+            assert_eq!(refine_endpoint, refine);
+        }
+        other => panic!("expected both lanes, got {other:?}"),
+    }
+    assert_eq!(
+        decision.local_tail_patch_disposition(),
+        Some(LocalTailPatchDisposition::ArmedDefault)
+    );
+    assert_eq!(receipt.asr_mode, "cloud");
+    assert_eq!(receipt.refiner, "cloud_session+remote_tail_patch");
+    assert_eq!(receipt.reason, "cloud_ready");
+    assert_eq!(receipt.consent, "granted");
+    assert!(!receipt.refiner.contains(refine));
+    let mut lane = RecorderLayer1Lane::open(decision, &fake_input());
+    lane.offer_pcm(&[0.1; 160]);
+    lane.poll();
+    assert_eq!(lane.telemetry().frames_forwarded, 1);
+    assert_eq!(lane.telemetry().partials_applied, 1);
+}
+
+/// Absent env on local power stays InProcess and does not construct a provider.
+#[test]
+#[serial_test::serial]
+fn local_power_without_tail_env_stays_in_process_without_ws() {
+    use super::Layer1Decision;
+    use crate::config::{Config, UserSettings};
+    use crate::stt::tail_provider::TailProviderId;
+
+    let root = tempfile::tempdir().unwrap();
+    let mut environment = Layer1TestEnv::new(root.path());
+    environment.clear("STT_TAIL_PROVIDER");
+    environment.clear("CODESCRIBE_LAYERED_TRANSCRIPTION");
+    UserSettings {
+        asr_mode: Some("local_power".into()),
+        ..Default::default()
+    }
+    .save()
+    .unwrap();
+    let snapshot = Config::load_runtime_snapshot_without_keychain().unwrap();
+    let (decision, receipt) = super::layer1_decision_with_factory(&snapshot, |_, _| {
+        panic!("local power must not construct a cloud provider")
+    });
+    assert!(matches!(
+        decision,
+        Layer1Decision::LocalTailPatch(super::LocalTailPatchDisposition::ArmedDefault)
+    ));
+    assert!(
+        decision
+            .local_tail_patch_disposition()
+            .is_some_and(|disposition| disposition.is_armed())
+    );
+    assert_eq!(snapshot.tail_provider(), Some(TailProviderId::InProcess));
+    assert!(!snapshot.values().cloud_refine_selected);
+    assert_eq!(receipt.refiner, "local_tail_patch");
+    assert_eq!(receipt.reason, "local_tail_patch_armed");
+}
+
+/// `STT_TAIL_PROVIDER` beats the CLOUD remote default and the settings endpoint.
+#[test]
+#[serial_test::serial]
+fn stt_tail_provider_env_wins_over_cloud_remote_default() {
+    use super::{Layer1Decision, TailPatchTransport};
+    use crate::config::{Config, UserSettings};
+    use crate::stt::tail_provider::TailProviderId;
+
+    let root = tempfile::tempdir().unwrap();
+    let mut environment = Layer1TestEnv::new(root.path());
+    environment.set("STT_TAIL_PROVIDER", "sidecar");
+    UserSettings {
+        asr_mode: Some("cloud".into()),
+        cloud_consent: Some("granted".into()),
+        stt_live_endpoint: Some("wss://gateway.invalid/live".into()),
+        stt_cloud_refine_endpoint: Some("https://refine.invalid/v1/audio/transcriptions".into()),
+        ..Default::default()
+    }
+    .save()
+    .unwrap();
+    let snapshot = Config::load_runtime_snapshot_without_keychain().unwrap();
+    assert_eq!(snapshot.tail_provider(), Some(TailProviderId::Sidecar));
+    let (decision, receipt) = super::layer1_decision_with_factory(&snapshot, |_, _| {
+        Ok(Box::new(FakeAsrSessionProvider::with_script(
+            RefinerMode::CloudSession,
+            Vec::new(),
+        )))
+    });
+    assert!(matches!(
+        decision,
+        Layer1Decision::Cloud {
+            transport: TailPatchTransport::Sidecar,
+            ..
+        }
+    ));
+    assert_eq!(receipt.refiner, "cloud_session+sidecar_tail_patch");
+}
+
+/// Missing or denied consent stays Disarmed and does not select the refine lane.
+#[test]
+#[serial_test::serial]
+fn cloud_without_consent_stays_disarmed_and_does_not_select_remote_tail() {
+    use super::Layer1Decision;
+    use crate::config::{Config, UserSettings};
+    use crate::stt::tail_provider::TailProviderId;
+
+    let root = tempfile::tempdir().unwrap();
+    let mut environment = Layer1TestEnv::new(root.path());
+    environment.clear("STT_TAIL_PROVIDER");
+    for consent in [None, Some("denied")] {
+        UserSettings {
+            asr_mode: Some("cloud".into()),
+            cloud_consent: consent.map(str::to_owned),
+            stt_cloud_refine_endpoint: Some(
+                "https://refine.invalid/v1/audio/transcriptions".into(),
+            ),
+            ..Default::default()
+        }
+        .save()
+        .unwrap();
+        let snapshot = Config::load_runtime_snapshot_without_keychain().unwrap();
+        let (decision, receipt) = super::layer1_decision_with_factory(&snapshot, |_, _| {
+            panic!("refused consent reached cloud construction")
+        });
+        assert!(matches!(decision, Layer1Decision::Disarmed));
+        assert!(decision.local_tail_patch_disposition().is_none());
+        assert!(!snapshot.values().cloud_refine_selected);
+        assert_ne!(snapshot.tail_provider(), Some(TailProviderId::Remote));
+        assert_eq!(receipt.refiner, "off");
+    }
 }

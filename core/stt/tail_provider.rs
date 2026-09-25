@@ -1121,10 +1121,14 @@ impl RemoteTailProvider {
 
     fn from_config() -> Result<Self> {
         let config = crate::config::Config::load();
-        let (endpoint, api_key) = config
-            .stt_lane(super::SttLane::File)
-            .map(|row| (row.endpoint, row.api_key.unwrap_or_default()))
-            .unwrap_or_else(|| (DEFAULT_LOCAL_REMOTE_ENDPOINT.to_string(), String::new()));
+        let (endpoint, api_key) = if let Some(admission) = config.cloud_tail_refine() {
+            (admission.endpoint, admission.api_key)
+        } else {
+            config
+                .stt_lane(super::SttLane::File)
+                .map(|row| (row.endpoint, row.api_key.unwrap_or_default()))
+                .unwrap_or_else(|| (DEFAULT_LOCAL_REMOTE_ENDPOINT.to_string(), String::new()))
+        };
         Self::new(endpoint, api_key)
     }
 }

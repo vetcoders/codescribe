@@ -395,8 +395,16 @@ impl Config {
         let user_settings = &input.user_settings;
         let phase_override = input.env("CODESCRIBE_LAYERED_TRANSCRIPTION").ok();
         let mut local_tail_patch = resolve_local_tail_patch(phase_override.as_deref());
+        // `STT_TAIL_PROVIDER` still wins. Absent env keeps InProcess for every
+        // mode except resolved Cloud, which already means consent was granted.
         let tail_provider = match input.env(crate::stt::tail_provider::STT_TAIL_PROVIDER_ENV) {
             Ok(value) => crate::stt::tail_provider::TailProviderId::parse(&value).ok(),
+            Err(VarError::NotPresent)
+                if user_settings.resolved_asr_mode().mode
+                    == super::cloud_asr::AsrProductMode::Cloud =>
+            {
+                Some(crate::stt::tail_provider::TailProviderId::Remote)
+            }
             Err(VarError::NotPresent) => Some(crate::stt::tail_provider::TailProviderId::InProcess),
             Err(_) => None,
         };
@@ -1461,6 +1469,9 @@ impl Config {
                 *target = value.clone();
             }
         }
+        self.stt_cloud_refine_endpoint = settings.cloud_refine_endpoint_or_default();
+        self.cloud_refine_selected =
+            settings.resolved_asr_mode().mode == super::cloud_asr::AsrProductMode::Cloud;
 
         // Transcript send mode
         apply_parsed_if_no_env!(

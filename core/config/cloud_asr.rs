@@ -319,6 +319,57 @@ impl GatewaySessionMint {
     }
 }
 
+/// Endpoint plus credential for one CLOUD multipart tail patch.
+///
+/// The key is `Config::stt_live_api_key`, the same field the live WebSocket
+/// lane passes to `GatewayConnection`. Debug redacts the key.
+pub struct CloudRefineAdmission {
+    pub endpoint: String,
+    pub api_key: String,
+}
+
+impl fmt::Debug for CloudRefineAdmission {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CloudRefineAdmission")
+            .field("endpoint", &self.endpoint)
+            .field("api_key_present", &!self.api_key.trim().is_empty())
+            .finish()
+    }
+}
+
+impl PartialEq for CloudRefineAdmission {
+    fn eq(&self, other: &Self) -> bool {
+        self.endpoint == other.endpoint && self.api_key == other.api_key
+    }
+}
+
+impl Eq for CloudRefineAdmission {}
+
+impl super::Config {
+    /// Resolved refine endpoint. Empty storage uses the shipped default.
+    pub fn cloud_refine_endpoint(&self) -> &str {
+        let endpoint = self.stt_cloud_refine_endpoint.trim();
+        if endpoint.is_empty() {
+            super::defaults::DEFAULT_CLOUD_REFINE_ENDPOINT
+        } else {
+            endpoint
+        }
+    }
+
+    /// CLOUD tail-patch admission. `None` unless the product mode resolved to
+    /// Cloud, which [`resolve_asr_product_mode`] allows only with granted consent.
+    /// The credential is the live lane key, never the file-upload lane key.
+    pub fn cloud_tail_refine(&self) -> Option<CloudRefineAdmission> {
+        if !self.cloud_refine_selected {
+            return None;
+        }
+        Some(CloudRefineAdmission {
+            endpoint: self.cloud_refine_endpoint().to_string(),
+            api_key: self.stt_live_api_key.clone().unwrap_or_default(),
+        })
+    }
+}
+
 /// Resolution matrix, wire parsing, and mint-endpoint validation contracts.
 #[cfg(test)]
 mod tests {
@@ -505,5 +556,35 @@ mod tests {
                 "endpoint {url:?} must be refused"
             );
         }
+    }
+
+    /// The refine accessor uses the live-lane key and the refine endpoint.
+    /// An unselected cloud mode returns nothing, even when a file key is set.
+    #[test]
+    fn cloud_tail_refine_uses_live_key_and_refine_endpoint() {
+        use super::super::defaults::DEFAULT_CLOUD_REFINE_ENDPOINT;
+        use super::super::Config;
+
+        let idle = Config {
+            stt_file_api_key: Some("file-key".into()),
+            stt_file_endpoint: Some("https://ndjson.invalid/v1/audio/transcribe:stream".into()),
+            stt_live_api_key: Some("live-key".into()),
+            ..Config::default()
+        };
+        assert!(idle.cloud_tail_refine().is_none());
+
+        let selected = Config {
+            cloud_refine_selected: true,
+            stt_cloud_refine_endpoint: String::new(),
+            stt_live_api_key: Some("live-key".into()),
+            stt_file_api_key: Some("file-key".into()),
+            ..Config::default()
+        };
+        let admission = selected.cloud_tail_refine().expect("cloud selected");
+        assert_eq!(admission.endpoint, DEFAULT_CLOUD_REFINE_ENDPOINT);
+        assert_eq!(admission.api_key, "live-key");
+        let formatted = format!("{admission:?}");
+        assert!(!formatted.contains("live-key"));
+        assert!(formatted.contains("api_key_present"));
     }
 }

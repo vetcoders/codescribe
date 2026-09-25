@@ -38,6 +38,17 @@ pub fn default_whisper_context_window_sec() -> f32 {
     8.0
 }
 
+/// OpenAI-compatible multipart endpoint for CLOUD tail patches.
+///
+/// Distinct from the file-upload lane. The Founder's file endpoint may be an
+/// NDJSON stream; this default is the REST `verbose_json` transcriptions path.
+pub const DEFAULT_CLOUD_REFINE_ENDPOINT: &str =
+    "https://api.libraxis.cloud/v1/audio/transcriptions";
+
+pub fn default_cloud_refine_endpoint() -> String {
+    DEFAULT_CLOUD_REFINE_ENDPOINT.to_string()
+}
+
 /// Lowest Settings value for [`default_whisper_context_window_sec`].
 pub fn min_whisper_context_window_sec() -> f32 {
     0.5

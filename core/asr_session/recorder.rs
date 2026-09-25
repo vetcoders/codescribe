@@ -117,12 +117,65 @@ pub fn recorder_lifecycle_channel() -> (RecorderLifecycleHandle, RecorderLifecyc
     )
 }
 
+/// Transport token carried with a CLOUD decision.
+///
+/// This is not a second provider selector. The session still reads
+/// `RuntimeSettingsSnapshot::tail_provider`; the decision copies that frozen
+/// choice so a receipt can name both lanes without an stt import.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TailPatchTransport {
+    /// Local-power default, and any explicit `inprocess` env override.
+    InProcess,
+    /// Sidecar selected by `STT_TAIL_PROVIDER`.
+    Sidecar,
+    /// CLOUD default when `STT_TAIL_PROVIDER` is absent: multipart HTTP.
+    Remote,
+    /// Test double selected by `STT_TAIL_PROVIDER`.
+    Fake,
+}
+
+impl TailPatchTransport {
+    /// Stable token shared with `TailProviderId::as_str`.
+    pub const fn as_token(self) -> &'static str {
+        match self {
+            Self::InProcess => "inprocess",
+            Self::Sidecar => "sidecar",
+            Self::Remote => "remote",
+            Self::Fake => "fake",
+        }
+    }
+
+    /// Receipt/log refiner for a live session plus this tail transport.
+    pub const fn cloud_refiner(self) -> &'static str {
+        match self {
+            Self::Remote => "cloud_session+remote_tail_patch",
+            Self::InProcess => "cloud_session+inprocess_tail_patch",
+            Self::Sidecar => "cloud_session+sidecar_tail_patch",
+            Self::Fake => "cloud_session+fake_tail_patch",
+        }
+    }
+
+    /// Map the frozen provider token. Unknown tokens follow the session's
+    /// `unwrap_or(InProcess)` so the receipt names the lane the session runs.
+    pub fn from_provider_token(token: Option<&str>) -> Self {
+        match token {
+            Some("remote") => Self::Remote,
+            Some("sidecar") => Self::Sidecar,
+            Some("fake") => Self::Fake,
+            Some("inprocess") | None => Self::InProcess,
+            Some(_) => Self::InProcess,
+        }
+    }
+}
+
 /// The injected, already-authorized Layer 1 decision a recording starts with.
 ///
 /// Construction and consent are deliberately *not* this module's business: the
 /// settings/consent owner builds the provider and hands the finished decision
 /// in. A recording that receives [`Self::Disarmed`] is the normal product —
 /// not an error, and never a trigger for loading anything heavier.
+/// [`Self::LocalTailPatch`] alone is still local power. [`Self::Cloud`] is the
+/// consented CLOUD cut: the live provider and an armed tail disposition.
 pub enum Layer1Decision {
     /// No Layer 1 refiner for this recording. Canvas plus lexicon, complete.
     Disarmed,
@@ -130,8 +183,23 @@ pub enum Layer1Decision {
     /// recording. This is deliberately a recording-start decision, not a
     /// second environment read inside the Apple session.
     LocalTailPatch(LocalTailPatchDisposition),
-    /// An already-authorized provider, ready to open.
+    /// An already-authorized provider, ready to open. No tail disposition.
     Armed(Box<dyn AsrSessionProvider + Send>),
+    /// Consented CLOUD: live provider plus the tail-patch disposition.
+    ///
+    /// The Apple session reads [`Self::local_tail_patch_disposition`] before
+    /// [`RecorderLayer1Lane::open`] consumes this value. `open` starts only
+    /// the provider; the tail lane stays with the session.
+    Cloud {
+        /// Live WebSocket provider, already authorized.
+        provider: Box<dyn AsrSessionProvider + Send>,
+        /// Tail disposition. Only armed values are visible to the session.
+        tail: LocalTailPatchDisposition,
+        /// Transport copied from the frozen snapshot provider id.
+        transport: TailPatchTransport,
+        /// Refine endpoint copied from settings. Omitted from receipts.
+        refine_endpoint: String,
+    },
 }
 
 impl Layer1Decision {
@@ -140,6 +208,7 @@ impl Layer1Decision {
         matches!(
             self,
             Self::Armed(_)
+                | Self::Cloud { .. }
                 | Self::LocalTailPatch(
                     LocalTailPatchDisposition::ArmedDefault
                         | LocalTailPatchDisposition::ArmedPhase(_)
@@ -147,12 +216,16 @@ impl Layer1Decision {
         )
     }
 
-    /// Recording-start local tail-patch disposition, when local power was the
-    /// selected product mode.
+    /// Recording-start tail-patch disposition.
+    ///
+    /// [`Self::LocalTailPatch`] returns its disposition unchanged.
+    /// [`Self::Cloud`] returns the disposition only when it is armed, which is
+    /// what the Apple session uses to start the tail lane beside the provider.
     pub fn local_tail_patch_disposition(&self) -> Option<LocalTailPatchDisposition> {
         match self {
             Self::LocalTailPatch(disposition) => Some(*disposition),
-            Self::Disarmed | Self::Armed(_) => None,
+            Self::Cloud { tail, .. } if tail.is_armed() => Some(*tail),
+            Self::Cloud { .. } | Self::Disarmed | Self::Armed(_) => None,
         }
     }
 }
@@ -215,6 +288,17 @@ impl fmt::Debug for Layer1Decision {
             Self::Armed(provider) => f
                 .debug_struct("Layer1Decision::Armed")
                 .field("mode", &provider.mode().as_token())
+                .finish(),
+            Self::Cloud {
+                provider,
+                tail,
+                transport,
+                refine_endpoint: _,
+            } => f
+                .debug_struct("Layer1Decision::Cloud")
+                .field("mode", &provider.mode().as_token())
+                .field("tail", &tail.as_token())
+                .field("transport", &transport.as_token())
                 .finish(),
         }
     }
@@ -381,7 +465,8 @@ impl RecorderLayer1Lane {
         };
         match decision {
             Layer1Decision::Disarmed | Layer1Decision::LocalTailPatch(_) => lane,
-            Layer1Decision::Armed(mut provider) => {
+            Layer1Decision::Armed(provider) | Layer1Decision::Cloud { provider, .. } => {
+                let mut provider = provider;
                 match provider.open(input) {
                     Ok(()) => {
                         info!(

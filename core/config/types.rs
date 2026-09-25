@@ -584,6 +584,13 @@ pub struct Config {
     pub stt_file_api_key: Option<String>,
     pub stt_live_endpoint: Option<String>,
     pub stt_live_api_key: Option<String>,
+    /// CLOUD multipart refine endpoint. Always present; never the file lane.
+    #[serde(default = "default_cloud_refine_endpoint")]
+    pub stt_cloud_refine_endpoint: String,
+    /// True when [`super::cloud_asr::resolve_asr_product_mode`] resolved Cloud,
+    /// which already requires granted audio-egress consent.
+    #[serde(default)]
+    pub cloud_refine_selected: bool,
 
     /// Opt-in Whisper domain-vocabulary initial prompt.
     ///
@@ -666,6 +673,8 @@ impl Default for Config {
             stt_initial_prompt_enabled: default_stt_initial_prompt_enabled(),
             stt_file_api_key: None,
             stt_live_api_key: None,
+            stt_cloud_refine_endpoint: default_cloud_refine_endpoint(),
+            cloud_refine_selected: false,
             restore_clipboard: default_restore_clipboard(),
             restore_clipboard_delay_ms: default_restore_clipboard_delay_ms(),
             start_at_login: false,

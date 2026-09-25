@@ -369,6 +369,10 @@ pub struct UserSettings {
     /// user-info and query material. `None` means "not configured".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub asr_gateway_url: Option<String>,
+    /// CLOUD multipart refine endpoint. `None` means the shipped REST default.
+    /// This is not `stt_file_endpoint` / `file_transcription_endpoint`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stt_cloud_refine_endpoint: Option<String>,
 
     // ── Agent workspace ──
     /// Workspace root directories the agent scans (`list_projects`) to resolve a
@@ -1381,6 +1385,9 @@ struct SpeechEngineV2 {
     file_transcription_endpoint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     live_transcription_endpoint: Option<String>,
+    /// OpenAI-compatible multipart refine URL. Always written on save.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cloud_refine_endpoint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cloud_max_upload_mb: Option<u64>,
     // De-ghosted (2026-05-30): Whisper model id (distinct from local_model_id path).
@@ -1674,6 +1681,7 @@ impl UserSettings {
                     local_model_id: self.local_model.clone(),
                     file_transcription_endpoint: self.stt_file_endpoint.clone(),
                     live_transcription_endpoint: self.stt_live_endpoint.clone(),
+                    cloud_refine_endpoint: Some(self.cloud_refine_endpoint_or_default()),
                     cloud_max_upload_mb: self.backend_max_upload_mb,
                     whisper_model: self.whisper_model.clone(),
                     whisper_context_window_sec: Some(
@@ -1925,6 +1933,11 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.engine.as_ref())
                 .and_then(|e| e.live_transcription_endpoint.clone()),
+            stt_cloud_refine_endpoint: v2
+                .speech
+                .as_ref()
+                .and_then(|s| s.engine.as_ref())
+                .and_then(|e| e.cloud_refine_endpoint.clone()),
             transcript_send_mode: v2.interaction.as_ref().and_then(|i| i.send_mode.clone()),
             audio_input_device: v2.audio.as_ref().and_then(|a| a.input_device_id.clone()),
             seal_lane_armed: v2
@@ -2799,6 +2812,16 @@ impl UserSettings {
             }
         }
         self.save_if_changed(&before, "set_string", key);
+    }
+
+    /// Refine endpoint stored for this intent, or the shipped REST default.
+    pub fn cloud_refine_endpoint_or_default(&self) -> String {
+        self.stt_cloud_refine_endpoint
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(super::defaults::default_cloud_refine_endpoint)
     }
 
     /// Resolve the effective Layer 1 product mode from this settings snapshot.
@@ -4114,6 +4137,83 @@ mod tests {
         let _tmp = setup_isolated_data_dir();
         let settings = UserSettings::default();
         assert_eq!(settings.onboarding_mode, None);
+    }
+
+    /// A fresh settings file always contains the refine endpoint at its default.
+    /// A file lane already stored in the same engine section is left as written.
+    #[test]
+    #[serial]
+    fn fresh_settings_write_cloud_refine_endpoint_and_keep_existing_lanes() {
+        use super::super::defaults::DEFAULT_CLOUD_REFINE_ENDPOINT;
+
+        let _tmp = setup_isolated_data_dir();
+        let file_lane = "https://files.example/v1/audio/transcribe:stream";
+        let live_lane = "wss://live.example/v1/audio/transcribe";
+        UserSettings {
+            stt_file_endpoint: Some(file_lane.into()),
+            stt_live_endpoint: Some(live_lane.into()),
+            asr_mode: Some("apple_only".into()),
+            ..UserSettings::default()
+        }
+        .save()
+        .expect("save fresh settings");
+        let persisted: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(UserSettings::settings_path()).expect("read fresh settings"),
+        )
+        .expect("parse fresh settings");
+        assert_eq!(persisted["schema_version"].as_u64(), Some(3));
+        assert_eq!(
+            persisted["speech"]["engine"]["file_transcription_endpoint"],
+            file_lane
+        );
+        assert_eq!(
+            persisted["speech"]["engine"]["live_transcription_endpoint"],
+            live_lane
+        );
+        assert_eq!(persisted["speech"]["engine"]["asr_mode"], "apple_only");
+        assert_eq!(
+            persisted["speech"]["engine"]["cloud_refine_endpoint"],
+            DEFAULT_CLOUD_REFINE_ENDPOINT
+        );
+        assert!(
+            persisted["speech"]["engine"]["whisper_context_window_sec"].is_number(),
+            "existing complete keys stay on the fresh file"
+        );
+
+        fs::write(
+            UserSettings::settings_path(),
+            r#"{"schema_version":3,"speech":{"engine":{"file_transcription_endpoint":"https://files.example/kept","asr_mode":"apple_only","live_transcription_endpoint":"wss://live.example/kept"}}}"#,
+        )
+        .expect("write settings without the refine key");
+        let loaded = UserSettings::load();
+        assert_eq!(
+            loaded.stt_file_endpoint.as_deref(),
+            Some("https://files.example/kept")
+        );
+        assert_eq!(
+            loaded.stt_live_endpoint.as_deref(),
+            Some("wss://live.example/kept")
+        );
+        assert_eq!(loaded.asr_mode.as_deref(), Some("apple_only"));
+        assert!(loaded.stt_cloud_refine_endpoint.is_none());
+        loaded.save().expect("save backfilled refine endpoint");
+        let again: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(UserSettings::settings_path()).expect("read backfilled settings"),
+        )
+        .expect("parse backfilled settings");
+        assert_eq!(
+            again["speech"]["engine"]["file_transcription_endpoint"],
+            "https://files.example/kept"
+        );
+        assert_eq!(
+            again["speech"]["engine"]["live_transcription_endpoint"],
+            "wss://live.example/kept"
+        );
+        assert_eq!(again["speech"]["engine"]["asr_mode"], "apple_only");
+        assert_eq!(
+            again["speech"]["engine"]["cloud_refine_endpoint"],
+            DEFAULT_CLOUD_REFINE_ENDPOINT
+        );
     }
 
     /// A rebind is readable back through the same accessor the runtime uses.
