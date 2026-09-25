@@ -257,7 +257,7 @@ fn recovery_closed_occurrence_submits_owned_tail_job() {
     assert_eq!(job.audio.len(), 32_000);
     assert_eq!(job.provider_request.identity.range.sample_start, 0);
     assert_eq!(job.provider_request.identity.range.sample_end, 32_000);
-    assert_eq!(state.tail_patch_awaiting_completion, 1);
+    assert_eq!(state.tail_patch_awaiting_completion(), 1);
 }
 
 #[test]

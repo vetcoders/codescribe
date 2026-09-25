@@ -509,6 +509,8 @@ fn legacy_char_diff_receipt(
 
 /// One sealed utterance handed from the worker thread to the async Layer 1 lane.
 struct TailPatchRequest {
+    /// Worker-owned submission identity; zero is reserved for unsent work.
+    submission_sequence: u64,
     utterance_id: u64,
     /// Byte-identical to the emitted `UtteranceFinal.text` — the string every
     /// `ReplaceRange` char offset is computed against.
@@ -567,6 +569,8 @@ impl RefinementFailure {
 
 /// Whisper closure returned to the worker that owns Apple + seal state.
 struct TailPatchCompletion {
+    /// Worker-owned submission identity; zero is reserved for unsent work.
+    submission_sequence: u64,
     utterance_id: u64,
     request_identity: Option<TailRequestIdentity>,
     payload: Option<TailProviderPayload>,
@@ -575,6 +579,8 @@ struct TailPatchCompletion {
 
 /// In-flight Layer 1 job identity, including the coalesce map.
 struct TailPatchInFlight {
+    /// Worker-owned submission identity; zero is reserved for unsent work.
+    submission_sequence: u64,
     utterance_id: u64,
     request_identity: TailRequestIdentity,
     admit_sample_start: u64,
@@ -707,13 +713,14 @@ impl AppleTailPatchLane {
         inflight: Option<TailPatchInFlight>,
         result: Result<TailPatchJobResult>,
     ) -> TailPatchCompletion {
-        let (fallback_id, request_identity, member_occurrences) = match inflight {
+        let (submission_sequence, fallback_id, request_identity, member_occurrences) = match inflight {
             Some(job) => (
+                job.submission_sequence,
                 job.utterance_id,
                 Some(job.request_identity),
                 job.member_occurrences,
             ),
-            None => (0, None, Vec::new()),
+            None => (0, 0, None, Vec::new()),
         };
         match result {
             Ok(job) => {
@@ -731,6 +738,7 @@ impl AppleTailPatchLane {
                      occurrence admission"
                 );
                 TailPatchCompletion {
+                    submission_sequence,
                     utterance_id: job.utterance_id,
                     request_identity,
                     payload: Some(job.payload),
@@ -745,6 +753,7 @@ impl AppleTailPatchLane {
                     "Layer 1 provider job failed; Apple text is preserved: {error}"
                 );
                 TailPatchCompletion {
+                    submission_sequence,
                     utterance_id: fallback_id,
                     request_identity,
                     payload: None,
@@ -1255,6 +1264,7 @@ pub(crate) async fn apple_stream_transcription_session(
                 );
                 tail_patch_submitted = tail_patch_submitted.saturating_add(1);
                 let inflight = TailPatchInFlight {
+                    submission_sequence: req.submission_sequence,
                     utterance_id: req.utterance_id,
                     request_identity: req.provider_request.identity.clone(),
                     admit_sample_start: req.admit_sample_start,
@@ -1542,7 +1552,9 @@ struct AppleSealState {
     /// Sealed fragments waiting to share one Whisper window (~5 segments).
     layer1_coalesce: Layer1Coalesce,
     refinement_pending: VecDeque<TailPatchRequest>,
-    refinement_submitted: BTreeMap<(u64, u64, u64), TailPatchInFlight>,
+    refinement_submitted: BTreeMap<(u64, u64, u64, u64), TailPatchInFlight>,
+    /// Incremented only after queue acceptance; never reused within this session.
+    last_submission_sequence: u64,
     /// Exclusive Whisper text for an occurrence sliced across windows.
     /// Admitted once, when exclusive slices and coverage-only ranges account
     /// for its voiced hops.
@@ -1557,11 +1569,6 @@ struct AppleSealState {
     refinement_started: Instant,
     /// Seals whose tail-patch request found the queue full (F1 backpressure).
     tail_patch_backpressure_drops: u64,
-    /// Requests accepted by the Layer 1 queue that have not reported back yet.
-    /// This — not the pending-seal queue — is what the end-of-session closure
-    /// loop waits on: a span can also be held by the Apple volatile window, and
-    /// no Whisper completion will ever clear that gate.
-    tail_patch_awaiting_completion: u64,
     /// Occurrence formatter hand-off. Presence means the frozen snapshot
     /// permits jobs; it is not itself a scheduled ledger return.
     formatter: Option<mpsc::Sender<FormatterRequest>>,
@@ -1617,8 +1624,9 @@ struct AppleSealState {
     capture_energy: CaptureEnergyOwner,
 }
 
-fn inflight_key(identity: &TailRequestIdentity) -> (u64, u64, u64) {
+fn inflight_key(submission_sequence: u64, identity: &TailRequestIdentity) -> (u64, u64, u64, u64) {
     (
+        submission_sequence,
         identity.request_id,
         identity.range.sample_start,
         identity.range.sample_end,
@@ -1862,6 +1870,7 @@ impl AppleSealState {
             layer1_coalesce: Layer1Coalesce::default(),
             refinement_pending: VecDeque::new(),
             refinement_submitted: BTreeMap::new(),
+            last_submission_sequence: 0,
             whisper_slices: BTreeMap::new(),
             whisper_replay_coverage: BTreeMap::new(),
             whisper_span_refused: BTreeSet::new(),
@@ -1869,7 +1878,6 @@ impl AppleSealState {
             refinement_lane_lost: false,
             refinement_started: Instant::now(),
             tail_patch_backpressure_drops: 0,
-            tail_patch_awaiting_completion: 0,
             formatter: None,
             formatter_in_flight: BTreeSet::new(),
             formatter_awaiting_completion: 0,
@@ -2118,6 +2126,7 @@ impl AppleSealState {
             return false;
         }
         let request = TailPatchRequest {
+            submission_sequence: 0,
             utterance_id: flush.primary_utterance_id,
             committed_text: flush.committed_text,
             neighbour_context: flush.neighbour_context,
@@ -2222,16 +2231,27 @@ impl AppleSealState {
         self.emit_pending_seal(ev_tx, id);
     }
 
+    /// Outstanding provider work has one owner: the registered submissions.
+    /// Pending seals can instead be held by Apple and do not imply a decode.
+    fn tail_patch_awaiting_completion(&self) -> u64 {
+        self.refinement_submitted.len() as u64
+    }
+
     /// One bounded nonblocking attempt per pending request, stopping at pressure.
     fn retry_refinements(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
-        while let Some(request) = self.refinement_pending.pop_front() {
+        while let Some(mut request) = self.refinement_pending.pop_front() {
             let Some(sender) = self.tail_patch.as_ref() else {
                 for (id, occurrence) in &request.member_occurrences {
                     self.fail_refinement(ev_tx, *id, occurrence, RefinementFailure::LaneGone);
                 }
                 continue;
             };
+            request.submission_sequence = self
+                .last_submission_sequence
+                .checked_add(1)
+                .expect("Whisper submission sequence exhausted");
             let inflight = TailPatchInFlight {
+                submission_sequence: request.submission_sequence,
                 utterance_id: request.utterance_id,
                 request_identity: request.provider_request.identity.clone(),
                 admit_sample_start: request.admit_sample_start,
@@ -2243,10 +2263,10 @@ impl AppleSealState {
                     for (_, occurrence) in &inflight.member_occurrences {
                         self.refinement_receipt(occurrence, "submitted");
                     }
-                    let key = inflight_key(&inflight.request_identity);
+                    // A checked, session-monotonic sequence makes live-key reuse impossible.
+                    self.last_submission_sequence = inflight.submission_sequence;
+                    let key = inflight_key(inflight.submission_sequence, &inflight.request_identity);
                     self.refinement_submitted.insert(key, inflight);
-                    self.tail_patch_awaiting_completion =
-                        self.tail_patch_awaiting_completion.saturating_add(1);
                 }
                 Err(mpsc::error::TrySendError::Full(request)) => {
                     self.refinement_pending.push_front(request);
@@ -2281,13 +2301,16 @@ impl AppleSealState {
         now: Instant,
         deadline: Instant,
     ) -> bool {
+        if self.refinement_submitted.is_empty() && self.refinement_pending.is_empty() {
+            return false;
+        }
         if now >= deadline {
             self.refinement_clock = now;
             self.return_outstanding_whisper_without_label(ev_tx);
             return false;
         }
         self.tick_refinements(ev_tx, now);
-        self.tail_patch_awaiting_completion > 0 || !self.refinement_pending.is_empty()
+        !self.refinement_submitted.is_empty() || !self.refinement_pending.is_empty()
     }
 
     fn new_with_tail_patch_for_session(
@@ -2599,12 +2622,15 @@ impl AppleSealState {
         _now_secs: f32,
     ) {
         let TailPatchCompletion {
+            submission_sequence,
             utterance_id,
             request_identity,
             payload,
             member_occurrences,
         } = completion;
-        let job_key = request_identity.as_ref().map(inflight_key);
+        let job_key = request_identity
+            .as_ref()
+            .map(|identity| inflight_key(submission_sequence, identity));
         let matched = job_key.as_ref().is_some_and(|key| {
             self.refinement_submitted.get(key).is_some_and(|job| {
                 job.utterance_id == utterance_id
@@ -2613,6 +2639,17 @@ impl AppleSealState {
             })
         });
         if !matched {
+            info!(
+                submission_sequence,
+                utterance_id,
+                request_id = ?request_identity.as_ref().map(|identity| identity.request_id),
+                session = ?request_identity.as_ref().map(|identity| identity.range.session.as_str()),
+                capture_epoch = ?request_identity.as_ref().map(|identity| identity.range.capture_epoch),
+                sample_start = ?request_identity.as_ref().map(|identity| identity.range.sample_start),
+                sample_end = ?request_identity.as_ref().map(|identity| identity.range.sample_end),
+                disposition = "unmatched_completion",
+                "live_refinement"
+            );
             return;
         }
         let job = self
@@ -2621,7 +2658,6 @@ impl AppleSealState {
             .expect("matched job");
         let admit_sample_start = job.admit_sample_start;
         let admit_sample_end = job.admit_sample_end;
-        self.tail_patch_awaiting_completion = self.tail_patch_awaiting_completion.saturating_sub(1);
         let exact_open_members = member_occurrences
             .iter()
             .filter(|(member_id, occurrence)| {
@@ -3018,7 +3054,6 @@ impl AppleSealState {
         self.refinement_pending.clear();
         self.refinement_submitted.clear();
         self.layer1_coalesce.force_flush();
-        self.tail_patch_awaiting_completion = 0;
     }
 
     fn refuse_tail_patch(
@@ -5798,8 +5833,8 @@ fn apple_stream_worker(
     // waiting for a completion that had already arrived for every job it sent.
     let mut tail_patch_timeout_residue = 0;
     let stop_deadline = local_execution.begin_drain(TAIL_PATCH_CLOSURE_TIMEOUT);
-    while state.tail_patch_awaiting_completion > 0 || !state.refinement_pending.is_empty() {
-        let outstanding = state.tail_patch_awaiting_completion;
+    while !state.refinement_submitted.is_empty() || !state.refinement_pending.is_empty() {
+        let outstanding = state.tail_patch_awaiting_completion();
         if !state.stop_refinements_tick(&ev_tx, Instant::now(), stop_deadline) {
             tail_patch_timeout_residue = outstanding;
             break;
@@ -5809,7 +5844,7 @@ fn apple_stream_worker(
             Err(std_mpsc::RecvTimeoutError::Timeout) => continue,
             Err(error) => {
                 warn!("tail-patch closure wait ended before all observations returned: {error}");
-                tail_patch_timeout_residue = state.tail_patch_awaiting_completion;
+                tail_patch_timeout_residue = state.tail_patch_awaiting_completion();
                 state.return_outstanding_whisper_without_label(&ev_tx);
                 break;
             }
@@ -6390,6 +6425,7 @@ mod c13a_lifecycle_tests {
 
     fn no_payload_completion(request: &TailPatchRequest) -> TailPatchCompletion {
         TailPatchCompletion {
+            submission_sequence: request.submission_sequence,
             utterance_id: request.utterance_id,
             request_identity: Some(request.provider_request.identity.clone()),
             payload: None,
@@ -6888,7 +6924,7 @@ mod c13a_lifecycle_tests {
         assert!(state.flush_layer1_coalesce(&tx));
         let request = tail_rx.try_recv().expect("one exact coalesced request");
         assert_eq!(request.member_occurrences.len(), 2);
-        assert_eq!(state.tail_patch_awaiting_completion, 1);
+        assert_eq!(state.tail_patch_awaiting_completion(), 1);
         while event_rx.try_recv().is_ok() {}
 
         state.complete_whisper_window(&tx, no_payload_completion(&request), 2.0);
@@ -6935,10 +6971,10 @@ mod c13a_lifecycle_tests {
         assert_eq!(ledger.text_of(&second), Some("Iwo"));
         drop(ledger);
         assert!(state.pending_events.is_empty());
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
 
         state.complete_whisper_window(&tx, no_payload_completion(&request), 2.0);
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert!(event_rx.try_recv().is_err(), "replay emits no second seal");
     }
 
@@ -7024,6 +7060,7 @@ mod c13a_lifecycle_tests {
         state.complete_whisper_window(
             &tx,
             TailPatchCompletion {
+                submission_sequence: request.submission_sequence,
                 utterance_id: request.utterance_id,
                 request_identity: Some(identity),
                 payload: Some(payload),
@@ -7168,7 +7205,7 @@ mod c13a_lifecycle_tests {
         }
         drop(ledger);
         assert!(state.pending_events.is_empty());
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
         let events = std::iter::from_fn(|| event_rx.try_recv().ok()).collect::<Vec<_>>();
         assert_eq!(
             events
@@ -7213,13 +7250,13 @@ mod c13a_lifecycle_tests {
         assert!(state.flush_layer1_coalesce(&tx));
         let second_request = tail_rx.try_recv().expect("second accepted job");
         assert_eq!(second_request.member_occurrences, vec![(2, second.clone())]);
-        assert_eq!(state.tail_patch_awaiting_completion, 2);
+        assert_eq!(state.tail_patch_awaiting_completion(), 2);
 
         state.complete_whisper_window(&tx, no_payload_completion(&first_request), 3.0);
-        assert_eq!(state.tail_patch_awaiting_completion, 1);
+        assert_eq!(state.tail_patch_awaiting_completion(), 1);
         state.complete_whisper_window(&tx, no_payload_completion(&first_request), 3.0);
         assert_eq!(
-            state.tail_patch_awaiting_completion, 1,
+            state.tail_patch_awaiting_completion(), 1,
             "replayed A cannot consume B's accepted job debt"
         );
         assert!(
@@ -7236,7 +7273,7 @@ mod c13a_lifecycle_tests {
 
         state.return_outstanding_whisper_without_label(&tx);
         state.seal_remaining_at_session_end(&tx);
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert!(
             state
                 .acoustic_ledger
@@ -7712,9 +7749,23 @@ mod tests {
         let timed = OccurrenceIdentity::new("timed-out", 1, 0, 16_000);
         stage_pending_occurrence(&mut timed_out, &tx, 1, timed.clone(), "Iwo");
         launch_whisper_and_return_lexicon(&mut timed_out, &tx, 1, &timed, "Iwo");
-        timed_out.tail_patch_awaiting_completion = 1;
+        let (tail_tx, _tail_rx) = mpsc::channel(1);
+        timed_out.tail_patch = Some(tail_tx);
+        assert!(timed_out.queue_layer1_flush(&tx, CoalesceFlush {
+            audio: vec![0.5; 16_000],
+            committed_text: "Iwo".into(),
+            member_ids: vec![(1, 1.0)],
+            member_occurrences: vec![(1, timed.clone())],
+            neighbour_context: String::new(),
+            sample_start: 0,
+            sample_end: 16_000,
+            admit_sample_start: 0,
+            admit_sample_end: 16_000,
+            primary_utterance_id: 1,
+        }));
+        assert_eq!(timed_out.tail_patch_awaiting_completion(), 1);
         timed_out.return_outstanding_whisper_without_label(&tx);
-        assert_eq!(timed_out.tail_patch_awaiting_completion, 0);
+        assert_eq!(timed_out.tail_patch_awaiting_completion(), 0);
         assert!(
             timed_out
                 .acoustic_ledger
@@ -7815,6 +7866,7 @@ mod tests {
         );
         let completion = lane.finish_for_worker(
             Some(TailPatchInFlight {
+                submission_sequence: 1,
                 utterance_id: 1,
                 covered_through_secs: 2.0,
                 request_identity: TailRequestIdentity {
@@ -7863,6 +7915,7 @@ mod tests {
         );
         let rejected = lane.finish_for_worker(
             Some(TailPatchInFlight {
+                submission_sequence: 2,
                 utterance_id: 2,
                 covered_through_secs: 3.0,
                 request_identity: TailRequestIdentity {
@@ -7938,13 +7991,14 @@ mod tests {
         let req = tp_rx
             .try_recv()
             .expect("sealed utterance enqueues a request");
-        assert_eq!(state.tail_patch_awaiting_completion, 1);
+        assert_eq!(state.tail_patch_awaiting_completion(), 1);
 
         // Close the job on a clock that is still inside the span's volatile
         // window — the exact shape the old exit condition could not express.
         state.complete_whisper_window(
             &tx,
             TailPatchCompletion {
+                submission_sequence: req.submission_sequence,
                 utterance_id: req.utterance_id,
                 covered_through_secs: req.covered_through_secs,
                 request_identity: Some(req.provider_request.identity.clone()),
@@ -7960,7 +8014,7 @@ mod tests {
         );
 
         assert_eq!(
-            state.tail_patch_awaiting_completion, 0,
+            state.tail_patch_awaiting_completion(), 0,
             "every job reported back — the stop path owes no further wait"
         );
         assert_eq!(state.tail_patch_jobs_applied, 0);
@@ -10441,7 +10495,7 @@ mod rc_w2_acoustic_tests {
             .unwrap();
         let identity = request.provider_request.identity.clone();
         assert_eq!(state.refinement_submitted.len(), 1);
-        assert_eq!(state.tail_patch_awaiting_completion, 1);
+        assert_eq!(state.tail_patch_awaiting_completion(), 1);
 
         let payload = TailProviderPayload {
             identity: identity.clone(),
@@ -10469,6 +10523,7 @@ mod rc_w2_acoustic_tests {
             AppleTailPatchLane::new(RATE, None, crate::stt::tail_provider::TailProviderId::Fake);
         let completion = lane.finish_for_worker(
             Some(TailPatchInFlight {
+                submission_sequence: request.submission_sequence,
                 utterance_id: 9,
                 request_identity: identity,
                 admit_sample_start: occurrence.sample_start,
@@ -11298,6 +11353,7 @@ mod rc_w2_acoustic_tests {
         state.complete_whisper_window(
             &tx,
             TailPatchCompletion {
+                submission_sequence: request.submission_sequence,
                 utterance_id: 1,
                 request_identity: Some(request.provider_request.identity.clone()),
                 payload: Some(payload),
@@ -12223,10 +12279,11 @@ mod rc_w2_test_rehab {
                 OccurrenceIdentity::new("exact-tail", 7, sample(0.5), sample(2.0))
             )]
         );
-        assert_eq!(state.tail_patch_awaiting_completion, 1);
+        assert_eq!(state.tail_patch_awaiting_completion(), 1);
         state.complete_whisper_window(
             &tx,
             TailPatchCompletion {
+                submission_sequence: request.submission_sequence,
                 utterance_id: request.utterance_id,
                 request_identity: Some(request.provider_request.identity),
                 member_occurrences: request.member_occurrences,
@@ -12234,7 +12291,7 @@ mod rc_w2_test_rehab {
             },
             6.0,
         );
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert_eq!(state.tail_patch_jobs_skipped, 1);
         assert_eq!(raw_finals(&drain(&mut rx)), vec!["uruchom doker"]);
     }
@@ -12267,7 +12324,7 @@ mod rc_w2_test_rehab {
         assert!(!state.flush_layer1_coalesce(&tx));
         assert!(tail_rx.try_recv().is_err());
         assert_eq!(state.unresolved_windows, 1);
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert_eq!(state.sealed_count, 0, "unqualified text cannot seal");
         assert!(document(&state).is_empty());
         assert!(raw_finals(&drain(&mut rx)).is_empty());
@@ -12283,7 +12340,7 @@ mod rc_w2_test_rehab {
         );
         emit(&mut state, &tx, vec![segment("uruchom doker", 0.5, 2.0)]);
         assert!(!state.flush_layer1_coalesce(&tx));
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert_eq!(state.tail_patch_backpressure_drops, 0);
         assert_eq!(state.sealed_count, 1);
         assert_eq!(raw_finals(&drain(&mut rx)), vec!["uruchom doker"]);
@@ -12306,7 +12363,7 @@ mod rc_w2_test_rehab {
             );
         }
         state.flush_layer1_coalesce(&tx);
-        assert_eq!(state.tail_patch_awaiting_completion, 1);
+        assert_eq!(state.tail_patch_awaiting_completion(), 1);
         // Ten physical occurrences remain conserved: one in transport, eight
         // retained exact jobs, and one explicit capacity failure. The old
         // nine-drop policy is replaced, not excused with a weaker assertion.
@@ -12328,6 +12385,7 @@ mod rc_w2_test_rehab {
             state.complete_whisper_window(
                 &tx,
                 TailPatchCompletion {
+                    submission_sequence: request.submission_sequence,
                     utterance_id: request.utterance_id,
                     request_identity: Some(request.provider_request.identity),
                     member_occurrences: request.member_occurrences,
@@ -12339,7 +12397,7 @@ mod rc_w2_test_rehab {
         }
         assert_eq!(submitted.len(), 9);
         assert!(state.refinement_pending.is_empty());
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert_eq!(state.sealed_count, 1);
         assert_eq!(raw_finals(&drain(&mut rx)).len(), 1);
         {
@@ -12621,6 +12679,7 @@ mod live_refinement_admission_tests {
 
     fn finish(request: &TailPatchRequest) -> TailPatchCompletion {
         TailPatchCompletion {
+            submission_sequence: request.submission_sequence,
             utterance_id: request.utterance_id,
             request_identity: Some(request.provider_request.identity.clone()),
             payload: None,
@@ -12916,7 +12975,7 @@ mod live_refinement_admission_tests {
                         .is_empty()
                 );
                 drop(ledger);
-                assert_eq!(state.tail_patch_awaiting_completion, 0);
+                assert_eq!(state.tail_patch_awaiting_completion(), 0);
                 assert!(state.refinement_submitted.is_empty());
                 let emitted = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
                 assert_eq!(
@@ -12982,7 +13041,7 @@ mod live_refinement_admission_tests {
                 _ => unreachable!(),
             }
             state.complete_whisper_window(&events, completion, 20.0);
-            assert_eq!(state.tail_patch_awaiting_completion, 1, "{defect}");
+            assert_eq!(state.tail_patch_awaiting_completion(), 1, "{defect}");
             assert_eq!(state.refinement_submitted.len(), 1);
             assert!(state.pending_events.contains_key(&request.utterance_id));
             let ledger = state.acoustic_ledger.lock().unwrap();
@@ -13004,7 +13063,7 @@ mod live_refinement_admission_tests {
             Some("hello")
         );
         assert!(state.acoustic_ledger.lock().unwrap().is_sealed(occurrence));
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert!(state.refinement_submitted.is_empty());
         let emitted = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
         assert_eq!(
@@ -13050,7 +13109,7 @@ mod live_refinement_admission_tests {
         while receiver.try_recv().is_ok() {}
         state.complete_whisper_window(&events, labelled_completion(&unsolicited), 20.0);
         assert!(receiver.try_recv().is_err());
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert!(state.refinement_submitted.is_empty());
         assert!(!state.layer1_coalesce.is_empty());
         let ledger = state.acoustic_ledger.lock().unwrap();
@@ -13105,7 +13164,7 @@ mod live_refinement_admission_tests {
                     .is_empty()
             );
             drop(ledger);
-            assert_eq!(state.tail_patch_awaiting_completion, 0);
+            assert_eq!(state.tail_patch_awaiting_completion(), 0);
             assert!(state.refinement_submitted.is_empty());
             let emitted = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
             assert!(!emitted.iter().any(|event| matches!(event,
@@ -13234,7 +13293,7 @@ mod live_refinement_admission_tests {
         assert_eq!(ledger.text_of(&occurrence), Some("hello"));
         assert!(ledger.is_sealed(&occurrence));
         assert_eq!(state.tail_patch_jobs_applied, 1);
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
         let seal = ledger.seal_of(&occurrence).unwrap().clone();
         drop(ledger);
         let emitted = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
@@ -13301,7 +13360,7 @@ mod live_refinement_admission_tests {
             1
         );
         assert_eq!(state.sealed_count, 1);
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert!(requests.try_recv().is_err());
     }
 
@@ -13395,7 +13454,7 @@ mod live_refinement_admission_tests {
             "same occurrence never decodes twice"
         );
         assert_eq!(state.tail_patch_jobs_skipped, 1);
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert_eq!(
             state.window_by_samples(0, 400).unwrap().samples,
             vec![0.25; 400]
@@ -13522,7 +13581,7 @@ mod live_refinement_admission_tests {
         assert_eq!(ids, BTreeSet::from([1, 2, 3]));
         assert!(state.refinement_pending.is_empty());
         assert!(state.refinement_submitted.is_empty());
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
     }
 
     #[test]
@@ -13564,7 +13623,7 @@ mod live_refinement_admission_tests {
             0
         );
         assert!(state.refinement_pending.is_empty());
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
     }
 
     #[test]
@@ -13611,6 +13670,247 @@ mod live_refinement_admission_tests {
         );
     }
 
+    // The take's 48 kHz geometry deliberately reuses request 10 and its window.
+    fn tc3_stage_member(state: &mut AppleSealState, occurrence: &OccurrenceIdentity) {
+        let calibration = state.energy_calibration.clone().unwrap();
+        let mut ledger = state.acoustic_ledger.lock().unwrap();
+        assert!(ledger.qualify(
+            &AcousticEvidence {
+                occurrence: occurrence.clone(),
+                duration_ms: occurrence.sample_len() as f64 / 48.0,
+                energy_integral: occurrence.sample_len() as f64 * 0.0625,
+                mean_rms_dbfs: -12.0,
+                peak_dbfs: -12.0,
+                vad_open_sample: Some(occurrence.sample_start),
+                vad_close_sample: Some(occurrence.sample_end),
+                evidence_calibration_version: calibration.version.clone(),
+            },
+            &calibration,
+        ).is_qualified());
+        ledger.schedule_frontier(occurrence.clone(), vec![LedgerObservationProducer::Whisper]);
+        drop(ledger);
+        state.pending_events.insert(10, PendingAppleSeal {
+            occurrence: occurrence.clone(),
+            raw_text: String::new(),
+            layer1_baseline: String::new(),
+            start_ts: occurrence.sample_start as f32 / 48_000.0,
+            end_ts: occurrence.sample_end as f32 / 48_000.0,
+            segments: Vec::new(),
+        });
+    }
+
+    fn tc3_submit_window(
+        state: &mut AppleSealState,
+        events: &mpsc::UnboundedSender<EngineEvent>,
+        requests: &mut mpsc::Receiver<TailPatchRequest>,
+        occurrence: &OccurrenceIdentity,
+        start: u64,
+        end: u64,
+    ) -> TailPatchRequest {
+        assert!(state.queue_layer1_flush(events, CoalesceFlush {
+            audio: vec![0.25; (end - start) as usize],
+            committed_text: String::new(),
+            member_ids: vec![(10, occurrence.sample_end as f32 / 48_000.0)],
+            member_occurrences: vec![(10, occurrence.clone())],
+            neighbour_context: String::new(),
+            sample_start: start,
+            sample_end: end,
+            admit_sample_start: occurrence.sample_start,
+            admit_sample_end: occurrence.sample_end,
+            primary_utterance_id: 10,
+        }));
+        let request = requests.try_recv().expect("accepted submission");
+        assert_eq!(request.provider_request.identity.request_id, 10);
+        assert_eq!(request.provider_request.identity.range.sample_start, start);
+        assert_eq!(request.provider_request.identity.range.sample_end, end);
+        request
+    }
+
+    fn tc3_duplicate_geometry(order: [usize; 3]) -> (
+        AppleSealState,
+        mpsc::UnboundedSender<EngineEvent>,
+        mpsc::UnboundedReceiver<EngineEvent>,
+    ) {
+        let (events, receiver) = mpsc::unbounded_channel();
+        let (sender, mut requests) = mpsc::channel(3);
+        let mut state = AppleSealState::new_with_tail_patch_for_session(
+            48_000, "ef1fa240".into(), 7, sender,
+            Arc::new(Mutex::new(AcousticLedger::new())),
+            Some(EnergyCalibration {
+                version: "tc3-owned-pcm".into(),
+                min_energy_integral: 1.0,
+                min_valley_samples: 1,
+            }),
+        );
+        state.whisper_context_window_sec = 0.0;
+        let old = OccurrenceIdentity::new("ef1fa240", 7, 2_132_992, 2_325_504);
+        tc3_stage_member(&mut state, &old);
+        let first = tc3_submit_window(
+            &mut state, &events, &mut requests, &old, 1_941_504, 2_325_504,
+        );
+        // Re-close the physical member while the first decode is outstanding.
+        state.return_whisper_without_label(&events, 10, &old);
+        let current = OccurrenceIdentity::new("ef1fa240", 7, 2_132_992, 2_317_824);
+        tc3_stage_member(&mut state, &current);
+        let second = tc3_submit_window(
+            &mut state, &events, &mut requests, &current, 1_885_824, 2_317_824,
+        );
+        let third = tc3_submit_window(
+            &mut state, &events, &mut requests, &current, 1_941_504, 2_325_504,
+        );
+        assert_eq!(first.provider_request.identity, third.provider_request.identity);
+        assert!(first.submission_sequence < second.submission_sequence);
+        assert!(second.submission_sequence < third.submission_sequence);
+        assert_eq!(state.refinement_submitted.len(), 3);
+        assert_eq!(state.tail_patch_awaiting_completion(), 3);
+        let submitted = [first, second, third];
+        for (finished, index) in order.into_iter().enumerate() {
+            let logged = refinement_log(|| {
+                state.complete_whisper_window(&events, labelled_completion(&submitted[index]), 50.0);
+            });
+            assert!(!logged.contains("unmatched_completion"), "{logged}");
+            if index == 0 {
+                assert!(logged.contains("stale_completion"), "{logged}");
+            }
+            assert_eq!(state.tail_patch_awaiting_completion(), (2 - finished) as u64);
+            assert_eq!(state.refinement_submitted.len(), 2 - finished);
+            assert_eq!(state.tail_patch_jobs_applied + state.tail_patch_jobs_skipped,
+                (finished + 1) as u64, "every matched decode must reach a terminal bucket");
+        }
+        assert!(state.refinement_submitted.is_empty());
+        assert!(state.refinement_pending.is_empty());
+        assert_eq!(state.acoustic_ledger.lock().unwrap().text_of(&current), Some("hello"));
+        let receipt = tail_patch_receipt_after_stop(true, 3, Some(TailPatchWorkerAccounting {
+            applied_jobs: state.tail_patch_jobs_applied,
+            skipped_jobs: state.tail_patch_jobs_skipped,
+            timeout_residue: state.tail_patch_awaiting_completion(),
+        }), SessionConservationReceipt::default());
+        assert_eq!(receipt.timed_out, 0);
+        assert_eq!(receipt.abandoned, 0);
+        assert_eq!(receipt.drain, TailPatchDrainDisposition::Completed);
+        (state, events, receiver)
+    }
+
+    #[test]
+    fn tc3_duplicate_identity_completes_in_submission_order() {
+        tc3_duplicate_geometry([0, 1, 2]);
+    }
+
+    #[test]
+    fn tc3_duplicate_identity_completes_out_of_order() {
+        tc3_duplicate_geometry([2, 0, 1]);
+    }
+
+    #[test]
+    fn tc3_empty_stop_drain_returns_on_first_tick() {
+        let (mut state, events, mut receiver) = tc3_duplicate_geometry([0, 1, 2]);
+        let now = Instant::now();
+        let logged = refinement_log(|| {
+            assert!(!state.stop_refinements_tick(&events, now, now + Duration::from_secs(5)));
+            assert!(!state.stop_refinements_tick(&events, now, now));
+        });
+        assert!(!logged.contains("live_refinement_stop_deadline"), "{logged}");
+        assert_eq!(warnings(&mut receiver, RefinementFailure::StopDeadline.code()), 0);
+    }
+
+    #[test]
+    fn tc3_stop_admits_real_inflight_job_before_deadline() {
+        let (mut state, events, mut receiver, mut requests) = fixture(1);
+        reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
+        state.flush_layer1_coalesce(&events);
+        let request = requests.try_recv().unwrap();
+        let occurrence = request.member_occurrences[0].1.clone();
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(5);
+        assert!(state.stop_refinements_tick(&events, now, deadline));
+        state.complete_whisper_window(&events, labelled_completion(&request), 20.0);
+        assert!(!state.stop_refinements_tick(&events, now + LIVE_WORKER_QUANTUM, deadline));
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
+        assert_eq!(state.acoustic_ledger.lock().unwrap().text_of(&occurrence), Some("hello"));
+        assert_eq!(warnings(&mut receiver, RefinementFailure::StopDeadline.code()), 0);
+        let receipt = tail_patch_receipt_after_stop(true, 1, Some(TailPatchWorkerAccounting {
+            applied_jobs: state.tail_patch_jobs_applied,
+            skipped_jobs: state.tail_patch_jobs_skipped,
+            timeout_residue: state.tail_patch_awaiting_completion(),
+        }), SessionConservationReceipt::default());
+        assert_eq!(receipt.applied, 1);
+        assert_eq!(receipt.timed_out, 0);
+        assert_eq!(receipt.drain, TailPatchDrainDisposition::Completed);
+    }
+
+    #[test]
+    fn tc3_unmatched_completion_reports_without_consuming_work() {
+        let (mut state, events, _receiver, mut requests) = fixture(1);
+        reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
+        state.flush_layer1_coalesce(&events);
+        let request = requests.try_recv().unwrap();
+        for defect in ["submission", "request", "missing_identity"] {
+            let mut completion = labelled_completion(&request);
+            match defect {
+                "submission" => completion.submission_sequence += 1,
+                "request" => completion.request_identity.as_mut().unwrap().request_id += 100,
+                _ => completion.request_identity = None,
+            }
+            let logged = refinement_log(|| {
+                state.complete_whisper_window(&events, completion, 20.0);
+            });
+            assert!(logged.contains("unmatched_completion"), "{defect}: {logged}");
+            for field in ["submission_sequence=", "request_id=", "sample_start=", "sample_end="] {
+                assert!(logged.contains(field), "{defect}: {logged}");
+            }
+            assert_eq!(state.tail_patch_awaiting_completion(), 1);
+            assert_eq!(state.refinement_submitted.len(), 1);
+            assert_eq!(state.tail_patch_jobs_applied + state.tail_patch_jobs_skipped, 0);
+        }
+        state.complete_whisper_window(&events, labelled_completion(&request), 20.0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
+        assert_eq!(state.tail_patch_jobs_applied, 1);
+    }
+
+    #[test]
+    fn tc3_async_completion_echoes_submission() {
+        for succeeds in [false, true] {
+            let (mut state, events, _receiver, mut requests) = fixture(1);
+            reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
+            state.flush_layer1_coalesce(&events);
+            let request = requests.try_recv().unwrap();
+            let inflight = TailPatchInFlight {
+                submission_sequence: request.submission_sequence,
+                utterance_id: request.utterance_id,
+                request_identity: request.provider_request.identity.clone(),
+                admit_sample_start: request.admit_sample_start,
+                admit_sample_end: request.admit_sample_end,
+                member_occurrences: request.member_occurrences.clone(),
+            };
+            let result = if succeeds {
+                Ok(TailPatchJobResult {
+                    utterance_id: request.utterance_id,
+                    outcome: TailPatchOutcome::NoChange,
+                    payload: labelled_completion(&request).payload.unwrap(),
+                })
+            } else {
+                Err(anyhow::anyhow!("synthetic provider failure"))
+            };
+            let mut lane = AppleTailPatchLane::new(
+                RATE,
+                None,
+                crate::stt::tail_provider::TailProviderId::Fake,
+            );
+            let completion = lane.finish_for_worker(Some(inflight), result);
+            let (sender, receiver) = std_mpsc::channel();
+            assert!(lane.forward_completion_to_worker(&sender, completion));
+            let returned = receiver.try_recv().unwrap();
+            assert_eq!(returned.submission_sequence, request.submission_sequence);
+            assert_eq!(returned.request_identity, Some(request.provider_request.identity));
+            assert_eq!(returned.member_occurrences, request.member_occurrences);
+            assert_eq!(returned.payload.is_some(), succeeds);
+            state.complete_whisper_window(&events, returned, 20.0);
+            assert_eq!(state.tail_patch_awaiting_completion(), 0);
+            assert_eq!(state.tail_patch_jobs_applied, u64::from(succeeds));
+            assert_eq!(state.tail_patch_jobs_skipped, u64::from(!succeeds));
+        }
+    }
+
     #[test]
     fn stale_completion_cannot_return_the_current_observer() {
         let (mut state, events, _receiver, mut requests) = fixture(1);
@@ -13620,11 +13920,11 @@ mod live_refinement_admission_tests {
         let mut stale = finish(&request);
         stale.request_identity.as_mut().unwrap().range.capture_epoch += 1;
         state.complete_whisper_window(&events, stale, 20.0);
-        assert_eq!(state.tail_patch_awaiting_completion, 1);
+        assert_eq!(state.tail_patch_awaiting_completion(), 1);
         assert_eq!(state.refinement_submitted.len(), 1);
         state.complete_whisper_window(&events, finish(&request), 20.0);
         state.complete_whisper_window(&events, finish(&request), 20.0);
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert_eq!(state.tail_patch_jobs_skipped, 1);
     }
 
@@ -13637,7 +13937,7 @@ mod live_refinement_admission_tests {
         reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
         state.flush_layer1_coalesce(&events);
         let request = requests.try_recv().expect("one submitted window");
-        assert_eq!(state.tail_patch_awaiting_completion, 1);
+        assert_eq!(state.tail_patch_awaiting_completion(), 1);
         let (member_id, occurrence) = request.member_occurrences[0].clone();
         state.fail_refinement(
             &events,
@@ -13662,7 +13962,7 @@ mod live_refinement_admission_tests {
             state.complete_whisper_window(&events, labelled_completion(&request), 20.0);
         });
 
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert!(state.refinement_submitted.is_empty());
         assert_eq!(state.tail_patch_jobs_applied, 0);
         assert_eq!(
@@ -13751,7 +14051,7 @@ mod live_refinement_admission_tests {
             );
             assert!(state.refinement_pending.is_empty());
             assert!(state.refinement_submitted.is_empty());
-            assert_eq!(state.tail_patch_awaiting_completion, 0);
+            assert_eq!(state.tail_patch_awaiting_completion(), 0);
             state.seal_remaining_at_session_end(&events);
             let mut ledger = state.acoustic_ledger.lock().unwrap();
             let refusal = ledger
@@ -13984,6 +14284,7 @@ mod relay_l1_overlap_admission_tests {
             crate::stt::tail_provider::TailSegmentGrain::Phrase
         };
         TailPatchCompletion {
+            submission_sequence: request.submission_sequence,
             utterance_id: request.utterance_id,
             request_identity: Some(request.provider_request.identity.clone()),
             payload: Some(TailProviderPayload {
