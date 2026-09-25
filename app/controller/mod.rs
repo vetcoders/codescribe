@@ -6591,7 +6591,11 @@ mod refusal_recovery_tests {
         assert!(receipts.text().contains("light_plus=\"skipped_preview\""));
         assert!(receipts.text().contains("stop_final_timeout=true"));
         assert!(receipts.text().contains("preview_words_in_paste=2"));
-        assert!(receipts.text().contains("stop_final_wait_ms=8000"));
+        assert!(
+            receipts
+                .text()
+                .contains(&format!("stop_final_wait_ms={bound_ms}"))
+        );
         assert!(receipts.text().contains("painted_words_at_stop=2"));
         assert!(receipts.text().contains("painted_words_at_snapshot=2"));
         assert!(!receipts.text().contains("stop_paste_lost_visible_words"));
@@ -6603,9 +6607,10 @@ mod refusal_recovery_tests {
         drop(ack_tx);
     }
 
-    /// First words arrive with the live final. Delivery never waits for repair.
+    /// First words arrive with a live final inside the stop bound. Delivery
+    /// never waits for repair.
     #[tokio::test(start_paused = true)]
-    async fn armed_ack_does_not_paste_before_the_five_second_apple_final() {
+    async fn armed_ack_does_not_paste_before_an_in_bound_apple_final() {
         let take = take(State::RecToggle, false).await;
         take.emitter.on_capture_opened(TAKE, 7);
         take.emitter.set_literal_delivery(true);
@@ -6619,9 +6624,10 @@ mod refusal_recovery_tests {
         let terminal_tail = tokio::spawn(async {
             tokio::time::sleep(Duration::from_secs(20)).await;
         });
+        let final_at = STOP_FINAL_BOUND - Duration::from_millis(500);
         let wait = await_live_finals_for_delivery(
             async {
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                tokio::time::sleep(final_at).await;
                 take.emitter.on_event(&mutation);
                 take.emitter.on_event(&stop_closed_phrase(3));
                 take.emitter.on_event(&EngineEvent::PreviewDisposition {
@@ -6642,7 +6648,7 @@ mod refusal_recovery_tests {
             None,
         )
         .await;
-        assert_eq!(wait.stop_final_wait_ms, 5_000);
+        assert_eq!(wait.stop_final_wait_ms, final_at.as_millis());
         assert_eq!(wait.snapshot.as_ref().unwrap().text, "last complete words");
         assert!(wait.live_finals_admitted);
         assert!(!wait.stop_final_timeout);
@@ -6660,7 +6666,11 @@ mod refusal_recovery_tests {
             .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert!(!terminal_tail.is_finished());
-        assert!(receipts.text().contains("stop_final_wait_ms=5000"));
+        assert!(
+            receipts
+                .text()
+                .contains(&format!("stop_final_wait_ms={}", final_at.as_millis()))
+        );
         assert!(receipts.text().contains("stop_final_timeout=false"));
         assert!(receipts.text().contains("paste_words=3"));
         terminal_tail.await.unwrap();
