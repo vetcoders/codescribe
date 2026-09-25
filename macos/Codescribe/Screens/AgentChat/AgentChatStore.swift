@@ -400,6 +400,18 @@ struct ChatThread: Identifiable {
   var updatedAt: Date? = nil  // nil (local-only draft) groups under Today
   var model: String? = nil
   var totalTokens: UInt64? = nil
+  var mode: String = "agent"
+  var tags: [String] = []
+
+  var isMaxConsultation: Bool {
+    mode == "max" || tags.contains("max-consultation")
+  }
+
+  static func preferredAgentThread(in threads: [ChatThread]) -> ChatThread? {
+    threads.filter { !$0.isMaxConsultation }
+      .sorted { ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast) }
+      .first
+  }
 }
 
 /// Shared Swift-side title guard for coordinator results, manual renames, and
@@ -599,8 +611,8 @@ protocol ComposerDictating: AnyObject {
 final class AgentChatStore: ObservableObject {
   @Published var threads: [ChatThread]
   @Published var selectedThreadID: UUID? {
-    // Every selection change re-routes the voice-assistive lane to the thread
-    // the user is looking at (operator contract 2026-08-13). Observers do not
+    // Agent selections re-route the voice-assistive lane; browsing a Max
+    // consultation leaves the bound Agent conversation alone. Observers do not
     // fire during init — the seeding path publishes once explicitly.
     //
     // This is also the single seam where the composer changes hands. Every way
@@ -732,7 +744,9 @@ final class AgentChatStore: ObservableObject {
     let destination =
       threads.first { $0.id == threadID }
       ?? threadsBeforeSearch?.first { $0.id == threadID }
-    engine?.setAssistiveTargetThread(backendId: destination?.backendId)
+    if destination?.isMaxConsultation != true {
+      engine?.setAssistiveTargetThread(backendId: destination?.backendId)
+    }
     return requestID
   }
 
@@ -1265,7 +1279,7 @@ final class AgentChatStore: ObservableObject {
     self.voiceTurnCanceller = voiceTurnCanceller
     self.licenseService = licenseService
 
-    let seeded: [ChatThread]
+    var seeded: [ChatThread]
     var deferredIndexLoad = false
     var initialThreadError: String?
     if let threads {
@@ -1284,9 +1298,12 @@ final class AgentChatStore: ObservableObject {
     } else {
       seeded = Self.seedThreads()  // no provider → mock seed
     }
+    if !seeded.isEmpty, ChatThread.preferredAgentThread(in: seeded) == nil {
+      seeded.insert(ChatThread(title: "New thread", meta: "now"), at: 0)
+    }
     self.threads = seeded
     self.threadSearchError = initialThreadError
-    self.selectedThreadID = seeded.first?.id
+    self.selectedThreadID = ChatThread.preferredAgentThread(in: seeded)?.id
     // didSet does not fire inside init — publish the seed selection once so
     // the assistive lane routes to what the rail shows from the first frame.
     // The composition handoff is deliberately not replayed here: a new store
@@ -1298,7 +1315,7 @@ final class AgentChatStore: ObservableObject {
       self.pendingToolApprovals.removeAll { $0.id == request.id }
       self.pendingToolApprovals.append(request)
     }
-    if !deferredIndexLoad, let first = seeded.first { loadMessagesIfNeeded(first.id) }
+    if !deferredIndexLoad, let selectedThreadID { loadMessagesIfNeeded(selectedThreadID) }
     beginObservingExternalThreadChanges()
     if deferredIndexLoad {
       scheduleInitialThreadIndexLoad()
@@ -1386,6 +1403,7 @@ final class AgentChatStore: ObservableObject {
   /// binding a draft to a freshly minted backend id, and the resync when the
   /// session ends.
   private func publishAssistiveTarget(force: Bool = false) {
+    guard currentThread?.isMaxConsultation != true else { return }
     guard force || dictationThreadID == nil else { return }
     engine?.setAssistiveTargetThread(backendId: currentThread?.backendId)
   }
@@ -1443,6 +1461,14 @@ final class AgentChatStore: ObservableObject {
     threads.insert(t, at: 0)
     selectedThreadID = t.id
     threadListRevision &+= 1
+  }
+
+  private func selectPreferredAgentThread() {
+    if let thread = ChatThread.preferredAgentThread(in: threads) {
+      selectedThreadID = thread.id
+    } else {
+      newThread()
+    }
   }
 
   func refreshThreads() {
@@ -1702,7 +1728,7 @@ final class AgentChatStore: ObservableObject {
     threadsBeforeSearch?.removeAll { $0.id == thread.id }
     threadListRevision &+= 1
     if selectedThreadID == thread.id {
-      selectedThreadID = threads.first?.id
+      selectPreferredAgentThread()
       if let selectedThreadID { loadMessagesIfNeeded(selectedThreadID) }
     }
     if threads.isEmpty {
@@ -3007,6 +3033,7 @@ final class AgentChatStore: ObservableObject {
       l.id == r.id && l.backendId == r.backendId && l.title == r.title
         && l.meta == r.meta && l.isFavorite == r.isFavorite
         && l.isRestored == r.isRestored
+        && l.mode == r.mode && l.tags == r.tags
     }
   }
 
@@ -3034,6 +3061,9 @@ final class AgentChatStore: ObservableObject {
       existing.meta = remote.meta
       existing.isRestored = remote.isRestored
       existing.isFavorite = remote.isFavorite
+      existing.mode = remote.mode
+      existing.tags = remote.tags
+      existing.updatedAt = remote.updatedAt
       return existing
     }
 
@@ -3076,10 +3106,12 @@ final class AgentChatStore: ObservableObject {
     // completed backend is only a fallback after an explicit removal path.
     if let previousSelectedID, threads.contains(where: { $0.id == previousSelectedID }) {
       selectedThreadID = previousSelectedID
-    } else if let backendId, let match = threads.first(where: { $0.backendId == backendId }) {
+    } else if let backendId,
+      let match = threads.first(where: { $0.backendId == backendId && !$0.isMaxConsultation })
+    {
       selectedThreadID = match.id
     } else {
-      selectedThreadID = threads.first?.id
+      selectPreferredAgentThread()
     }
     if let selectedThreadID { loadMessagesIfNeeded(selectedThreadID) }
   }

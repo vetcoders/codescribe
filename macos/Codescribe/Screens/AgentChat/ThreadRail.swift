@@ -64,13 +64,28 @@ struct ThreadRail: View {
 
       ScrollView {
         LazyVStack(spacing: 6) {
-          ForEach(filteredThreads) { thread in
-            let title = ThreadRowTitle.displayTitle(for: thread)
-            let isActive = thread.id == store.selectedThreadID
-            Button {
-              store.select(thread.id)
-            } label: {
-              Text(ThreadRowTitle.compactMonogram(for: thread))
+          ForEach(sectionedThreads, id: \.section) { group in
+            if group.section == .maxConsultations {
+              Divider().padding(.horizontal, 6)
+              Image(systemName: "sparkles")
+                .font(CSFont.ui(9, .semibold))
+                .foregroundStyle(CSColor.textFaintAlt)
+                .help(group.section.title)
+                .accessibilityLabel(group.section.title)
+            }
+            ForEach(group.threads) { thread in
+              let title = ThreadRowTitle.displayTitle(for: thread)
+              let isActive = thread.id == store.selectedThreadID
+              Button {
+                store.select(thread.id)
+              } label: {
+                Group {
+                  if thread.isMaxConsultation {
+                    Image(systemName: "sparkles")
+                  } else {
+                    Text(ThreadRowTitle.compactMonogram(for: thread))
+                  }
+                }
                 .font(CSFont.ui(11, .semibold))
                 .foregroundStyle(
                   isActive ? CSColor.chromeAccent : CSColor.textMuted
@@ -96,11 +111,12 @@ struct ThreadRail: View {
                     )
                 )
                 .contentShape(Rectangle())
+              }
+              .csFocusRing()
+              .help(title)
+              .accessibilityLabel(title)
+              .accessibilityAddTraits(isActive ? [.isSelected] : [])
             }
-            .csFocusRing()
-            .help(title)
-            .accessibilityLabel(title)
-            .accessibilityAddTraits(isActive ? [.isSelected] : [])
           }
         }
         .padding(.vertical, 4)
@@ -263,19 +279,9 @@ struct ThreadRail: View {
     }
   }
 
-  /// Groups the (already search-filtered) threads into recency sections,
-  /// preserving the store's updated-desc order inside each group. Local-only
-  /// drafts carry no `updatedAt` and group under Today.
+  /// Agent recency sections precede the separate Max consultation section.
   private var sectionedThreads: [(section: ThreadSection, threads: [ChatThread])] {
-    let now = Date()
-    var groups: [ThreadSection: [ChatThread]] = [:]
-    for thread in filteredThreads {
-      groups[ThreadSection.section(for: thread.updatedAt ?? now, now: now), default: []]
-        .append(thread)
-    }
-    return ThreadSection.allCases.compactMap { section in
-      groups[section].map { (section, $0) }
-    }
+    ThreadSection.railGroups(filteredThreads)
   }
 
   // MARK: Rename (inline edit)
@@ -363,6 +369,12 @@ private struct ThreadRow: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 4) {
       HStack(spacing: 7) {
+        if thread.isMaxConsultation {
+          Image(systemName: "sparkles")
+            .font(CSFont.ui(11, .semibold))
+            .foregroundStyle(CSColor.textMuted)
+            .accessibilityLabel("Max consultation")
+        }
         if isActive {
           Circle().fill(CSColor.chromeAccent).frame(width: 6, height: 6)
         }
@@ -459,9 +471,9 @@ enum ModelTag {
 
 // MARK: - Recency sections (pure, unit-tested)
 
-/// Time buckets for the rail's section headers, ordered newest-first.
+/// Agent recency buckets followed by the Max consultation section.
 enum ThreadSection: CaseIterable, Hashable {
-  case today, yesterday, thisWeek, older
+  case today, yesterday, thisWeek, older, maxConsultations
 
   var title: String {
     switch self {
@@ -469,6 +481,23 @@ enum ThreadSection: CaseIterable, Hashable {
     case .yesterday: "Yesterday"
     case .thisWeek: "This week"
     case .older: "Older"
+    case .maxConsultations: "Max consultations"
+    }
+  }
+
+  static func railGroups(
+    _ threads: [ChatThread], now: Date = Date(), calendar: Calendar = .current
+  ) -> [(section: ThreadSection, threads: [ChatThread])] {
+    var groups: [ThreadSection: [ChatThread]] = [:]
+    for thread in threads {
+      let section: ThreadSection =
+        thread.isMaxConsultation
+        ? .maxConsultations
+        : Self.section(for: thread.updatedAt ?? now, now: now, calendar: calendar)
+      groups[section, default: []].append(thread)
+    }
+    return allCases.compactMap { section in
+      groups[section].map { (section, $0) }
     }
   }
 
@@ -558,7 +587,7 @@ enum ThreadRailMeta {
       return "yesterday"
     case .today:
       return string(from: date, via: todayFormatter, calendar: calendar)
-    case .thisWeek, .older:
+    case .thisWeek, .older, .maxConsultations:
       return string(from: date, via: monthDayFormatter, calendar: calendar)
     }
   }

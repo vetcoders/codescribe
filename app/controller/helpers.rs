@@ -19,7 +19,7 @@ use codescribe_core::agent::ToolRegistry;
 use codescribe_core::agent::{
     AgentSession, AgentUiEvent, ContentBlock, ImageAttachment, Message, StreamOptions,
     ThreadDeliveryGateway, ThreadDeliveryInput, ThreadDeliveryReceipt, ThreadDeliverySource,
-    ThreadMessage, ThreadStore,
+    ThreadIndex, ThreadMessage, ThreadStore,
 };
 use codescribe_core::config::{
     Config, RuntimeLlmLane, RuntimeSettingsSnapshot, SettingsSnapshotDigest,
@@ -367,16 +367,40 @@ impl AgentRuntimeState {
         }
     }
 
-    /// Rebind the assistive conversation to the UI-selected thread (operator
-    /// contract 2026-08-13: dictation routes to the thread the user is looking
-    /// at; a new thread is only ever minted by an explicit "+ New thread").
+    /// Rebind the assistive conversation to an Agent thread. Max consultations
+    /// can be browsed in the UI but never replace the voice conversation.
     ///
     /// Dropping the runtime on a change deliberately reuses the degrade→rejoin
     /// machinery: the next `ensure_runtime` rebuilds onto the new identity and
     /// rehydrates its persisted history. `None` clears the identity so the next
     /// send mints a fresh thread. Same-target calls are no-ops — the live
     /// runtime and its in-memory history stay untouched.
-    fn retarget_thread(&mut self, target: Option<String>) {
+    fn retarget_thread(&mut self, target: Option<String>, store: &ThreadStore) {
+        if let Some(id) = target.as_deref() {
+            let index = match ThreadIndex::load_or_create(store.threads_dir()) {
+                Ok(index) => index,
+                Err(_) => {
+                    warn!(
+                        reason = "thread_summary_unavailable",
+                        thread = id,
+                        "assistive_retarget_refused"
+                    );
+                    return;
+                }
+            };
+            if index.data().threads.iter().any(|summary| {
+                summary.id == id
+                    && (summary.mode == "max"
+                        || summary.tags.iter().any(|tag| tag == "max-consultation"))
+            }) {
+                info!(
+                    reason = "max_consultation",
+                    thread = id,
+                    "assistive_retarget_refused"
+                );
+                return;
+            }
+        }
         if self.thread_store_id == target {
             return;
         }
@@ -1153,13 +1177,25 @@ async fn run_agent_send(
     );
     let agent_result = {
         let mut guard = runtime_state.lock().await;
-        // Route to the thread the user is looking at (operator contract
-        // 2026-08-13). No published selection keeps the bound conversation.
+        // Only Agent summaries may retarget voice. No published selection
+        // keeps the bound conversation.
         let fresh_mint_requested = match assistive_target_thread() {
             Some(target) => {
                 let fresh = target.is_none();
-                guard.retarget_thread(target);
-                fresh
+                match ThreadStore::new() {
+                    Ok(store) => {
+                        guard.retarget_thread(target, &store);
+                        fresh
+                    }
+                    Err(_) => {
+                        warn!(
+                            reason = "thread_store_unavailable",
+                            thread = target.as_deref().unwrap_or("<fresh>"),
+                            "assistive_retarget_refused"
+                        );
+                        false
+                    }
+                }
             }
             None => false,
         };
@@ -1271,39 +1307,141 @@ mod tests {
     /// re-apply the target on every turn.
     #[test]
     fn retarget_thread_rebinds_on_change_and_noops_on_same() {
+        let tmp = tempfile::TempDir::new().expect("temp directory");
+        let store = ThreadStore::new_in(tmp.path().join("threads")).expect("thread store");
         let mut state = AgentRuntimeState {
-            runtime: None,
+            runtime: Some(seed_completed_runtime("thread-a")),
             thread_store_id: Some("thread-a".to_string()),
             runtime_degraded: false,
         };
 
-        state.retarget_thread(Some("thread-a".to_string()));
+        state.retarget_thread(Some("thread-a".to_string()), &store);
         assert_eq!(state.thread_store_id.as_deref(), Some("thread-a"));
-
-        state.retarget_thread(Some("thread-b".to_string()));
         assert_eq!(
-            state.thread_store_id.as_deref(),
-            Some("thread-b"),
-            "a changed selection must adopt the new identity"
+            state.runtime.as_ref().unwrap().session.thread_id(),
+            Some("resp_seed")
         );
-        assert!(
-            state.runtime.is_none(),
-            "rebind goes through the rejoin machinery (runtime dropped)"
-        );
+
+        state.retarget_thread(Some("thread-b".to_string()), &store);
+        assert_eq!(state.thread_store_id.as_deref(), Some("thread-b"));
+        assert!(state.runtime.is_none(), "an Agent rebind drops the runtime");
     }
 
-    /// A `None` target is the explicit "+ New thread": the durable identity is
-    /// cleared so the next send mints a fresh thread instead of continuing the
-    /// previous conversation.
+    /// A new thread clears the identity even when no summary has been persisted.
     #[test]
     fn retarget_thread_none_clears_identity_for_a_fresh_mint() {
+        let tmp = tempfile::TempDir::new().expect("temp directory");
+        let store = ThreadStore::new_in(tmp.path().join("threads")).expect("thread store");
         let mut state = AgentRuntimeState {
-            runtime: None,
+            runtime: Some(seed_completed_runtime("thread-a")),
             thread_store_id: Some("thread-a".to_string()),
             runtime_degraded: false,
         };
-        state.retarget_thread(None);
+        state.retarget_thread(None, &store);
         assert!(state.thread_store_id.is_none());
+        assert!(state.runtime.is_none());
+    }
+
+    /// Either persisted marker refuses a Max target before any state mutation.
+    /// The id is deliberately neutral: identity spelling is not classification.
+    #[test]
+    fn assistive_retarget_refuses_max_consultations_without_mutation() {
+        for (mode, tags) in [
+            ("max", vec!["agent".to_string()]),
+            (
+                "agent",
+                vec!["agent".to_string(), "max-consultation".to_string()],
+            ),
+        ] {
+            let tmp = tempfile::TempDir::new().expect("temp directory");
+            let store = ThreadStore::new_in(tmp.path().join("threads")).expect("thread store");
+            let thread = codescribe_core::agent::Thread {
+                id: "t_neutral".to_string(),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                title: "Private consultation title".to_string(),
+                title_is_custom: true,
+                title_is_generated: false,
+                mode: mode.to_string(),
+                tags,
+                notes: Vec::new(),
+                messages: Vec::new(),
+                summary: None,
+                total_tokens: None,
+                provider: "test".to_string(),
+                model: "test".to_string(),
+            };
+            store
+                .save_thread(&thread)
+                .expect("persist summary through store");
+            let mut runtime = seed_completed_runtime("thread-a");
+            runtime.reset_chain_on_next_send = true;
+            let before_messages = runtime.session.messages().to_vec();
+            let before_digest = runtime.settings_snapshot_digest.clone();
+            let mut state = AgentRuntimeState {
+                runtime: Some(runtime),
+                thread_store_id: Some("thread-a".to_string()),
+                runtime_degraded: true,
+            };
+            let log_path = tmp.path().join("retarget.log");
+            let log = std::fs::File::create(&log_path).expect("log file");
+            let subscriber = tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::TRACE)
+                .with_ansi(false)
+                .with_writer(move || log.try_clone().expect("log handle"))
+                .finish();
+            tracing::subscriber::with_default(subscriber, || {
+                state.retarget_thread(Some(thread.id.clone()), &store);
+            });
+
+            assert_eq!(state.thread_store_id.as_deref(), Some("thread-a"));
+            assert!(state.runtime_degraded);
+            let kept = state.runtime.as_ref().expect("runtime must survive refusal");
+            assert_eq!(kept.thread_store_id, "thread-a");
+            assert_eq!(kept.session.messages(), before_messages.as_slice());
+            assert_eq!(kept.session.thread_id(), Some("resp_seed"));
+            assert_eq!(kept.settings_snapshot_digest, before_digest);
+            assert!(kept.reset_chain_on_next_send);
+            let receipt = std::fs::read_to_string(log_path).expect("retarget receipt");
+            assert!(receipt.contains("assistive_retarget_refused"));
+            assert!(receipt.contains("reason=\"max_consultation\""));
+            assert!(receipt.contains("thread=\"t_neutral\""));
+            assert!(!receipt.contains(&thread.title));
+
+            // With no previous conversation, refusal leaves the state unassigned.
+            let mut unassigned = AgentRuntimeState::default();
+            unassigned.retarget_thread(Some(thread.id.clone()), &store);
+            assert!(unassigned.thread_store_id.is_none());
+            assert!(unassigned.runtime.is_none());
+
+            // The very same id is admitted once the store classifies it as Agent.
+            let mut agent = thread;
+            agent.mode = "agent".to_string();
+            agent.tags = vec!["agent".to_string()];
+            store.save_thread(&agent).expect("persist Agent summary");
+            state.retarget_thread(Some(agent.id), &store);
+            assert_eq!(state.thread_store_id.as_deref(), Some("t_neutral"));
+            assert!(state.runtime.is_none());
+        }
+    }
+
+    /// An unreadable summary cannot authorize dropping the bound conversation.
+    #[test]
+    fn retarget_thread_keeps_runtime_when_index_is_unreadable() {
+        let tmp = tempfile::TempDir::new().expect("temp directory");
+        let store = ThreadStore::new_in(tmp.path().join("threads")).expect("thread store");
+        std::fs::write(store.threads_dir().join("index.json"), b"{").expect("corrupt index");
+        let mut state = AgentRuntimeState {
+            runtime: Some(seed_completed_runtime("thread-a")),
+            thread_store_id: Some("thread-a".to_string()),
+            runtime_degraded: false,
+        };
+        state.retarget_thread(Some("t_unknown".to_string()), &store);
+        assert_eq!(state.thread_store_id.as_deref(), Some("thread-a"));
+        assert_eq!(
+            state.runtime.as_ref().unwrap().session.thread_id(),
+            Some("resp_seed")
+        );
     }
 
     // ── Collapsible Tool Evidence: friendly tool-name mapping ───────────────
