@@ -730,6 +730,15 @@ pub struct SpeechIntegrity {
     pub phase: SpeechIntegrityPhase,
 }
 
+/// The phrase lifecycle's account of the final that replaced a preview.
+/// This grants no acoustic or document authority of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreviewFinalDisposition {
+    Admitted,
+    KeptUnanchored,
+    Refused { reason: String },
+}
+
 /// Events emitted by the transcription engine.
 ///
 /// These are semantic events — the engine communicates what happened
@@ -806,6 +815,14 @@ pub enum EngineEvent {
         rev: u64,
         text: String,
         pin: PreviewPin,
+    },
+
+    /// End of the current recognizer phrase, after its ledger decisions.
+    /// Only admitted or visibly retained finals supersede that phrase's previews.
+    #[serde(skip)]
+    PreviewDisposition {
+        superseded_through_rev: u64,
+        final_disposition: PreviewFinalDisposition,
     },
 
     /// Correction — re-transcription of accumulated audio improved previous output.

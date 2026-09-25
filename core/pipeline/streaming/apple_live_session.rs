@@ -7251,6 +7251,53 @@ fn phrase_retention_reason(prev: &str, next: &str) -> Option<&'static str> {
     })
 }
 
+/// Read the phrase's actual Apple receipts; a successful seal function call
+/// alone is not evidence that its words were admitted or kept visible.
+fn phrase_final_disposition(
+    events: &[EngineEvent],
+) -> crate::pipeline::contracts::PreviewFinalDisposition {
+    use crate::pipeline::contracts::PreviewFinalDisposition;
+    let mut admitted = false;
+    let mut kept_unanchored = false;
+    let mut refusal = None;
+    for event in events {
+        match event {
+            EngineEvent::LedgerMutation { observation, receipt, .. }
+                if observation.producer == LedgerObservationProducer::Apple =>
+            {
+                match receipt {
+                    MutationReceipt::Insert { .. } | MutationReceipt::Correct { .. } => {
+                        admitted = true;
+                    }
+                    MutationReceipt::KeepVisibleUnanchored { .. } => kept_unanchored = true,
+                    MutationReceipt::Refuse { reason, .. } => {
+                        refusal = Some(reason.as_str().to_string());
+                    }
+                    MutationReceipt::Preserve { .. } => {
+                        refusal = Some("apple_final_preserved_existing_label".to_string());
+                    }
+                }
+            }
+            EngineEvent::Warning { code, .. } if code == "apple_final_without_pcm_timing" => {
+                refusal = Some(code.clone());
+            }
+            _ => {}
+        }
+    }
+    // A partly refused phrase cannot retract the preview of its missing part.
+    if let Some(reason) = refusal {
+        PreviewFinalDisposition::Refused { reason }
+    } else if kept_unanchored {
+        PreviewFinalDisposition::KeptUnanchored
+    } else if admitted {
+        PreviewFinalDisposition::Admitted
+    } else {
+        PreviewFinalDisposition::Refused {
+            reason: "apple_final_without_visible_receipt".to_string(),
+        }
+    }
+}
+
 /// Map one poll's worth of bridge events onto `EngineEvent`s, sealing where the
 /// stream says a phrase closed.
 ///
@@ -7366,9 +7413,30 @@ fn emit_stream_events(
                     text_chars = text.len(),
                     "apple_lifecycle: phrase final received"
                 );
+                let superseded_through_rev = if state.open_partial.is_empty() {
+                    0
+                } else {
+                    state.preview_rev
+                };
                 state.open_partial.clear();
                 state.open_partial_segments.clear();
-                let committed = seal_utterance_final(state, ev_tx, &text, segments, audio_secs);
+                // Observe exactly this phrase's seal receipts without changing
+                // admission, occurrence identity, or the order of publications.
+                let (phrase_tx, mut phrase_rx) = mpsc::unbounded_channel();
+                let committed =
+                    seal_utterance_final(state, &phrase_tx, &text, segments, audio_secs);
+                let mut phrase_events = Vec::new();
+                while let Ok(event) = phrase_rx.try_recv() {
+                    phrase_events.push(event);
+                }
+                let final_disposition = phrase_final_disposition(&phrase_events);
+                for event in phrase_events {
+                    let _ = ev_tx.send(event);
+                }
+                let _ = ev_tx.send(EngineEvent::PreviewDisposition {
+                    superseded_through_rev,
+                    final_disposition,
+                });
                 info!(
                     audio_secs,
                     committed,
@@ -7580,6 +7648,40 @@ mod c13a_lifecycle_tests {
 
     fn state_for_session(session_id: &str) -> AppleSealState {
         AppleSealState::new_for_session(TEST_SAMPLE_RATE, session_id.to_string(), 1)
+    }
+
+    #[test]
+    fn every_untimed_phrase_final_emits_a_typed_refusal_for_its_preview_revision() {
+        use crate::pipeline::contracts::PreviewFinalDisposition;
+        let mut state = state_for_session("phrase-disposition");
+        state.fusion_seal_armed = true;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        for rev in 1..=2 {
+            emit_stream_events(vec![
+                LiveStreamEvent::Partial { text: "Iwo".into(), segments: Vec::new() },
+                LiveStreamEvent::PhraseFinal { text: "Iwo".into(), segments: Vec::new() },
+            ], &tx, &mut state, 1.0);
+            let mut dispositions = Vec::new();
+            while let Ok(event) = rx.try_recv() {
+                if let EngineEvent::PreviewDisposition {
+                    superseded_through_rev, final_disposition,
+                } = event {
+                    dispositions.push((superseded_through_rev, final_disposition));
+                }
+            }
+            assert_eq!(dispositions, vec![(rev, PreviewFinalDisposition::Refused {
+                reason: "apple_final_without_pcm_timing".into(),
+            })]);
+        }
+        emit_stream_events(vec![LiveStreamEvent::PhraseFinal {
+            text: "another final without a preview".into(), segments: Vec::new(),
+        }], &tx, &mut state, 1.0);
+        while let Ok(event) = rx.try_recv() {
+            if let EngineEvent::PreviewDisposition { superseded_through_rev, .. } = event {
+                assert_eq!(superseded_through_rev, 0,
+                    "a final without a current preview cannot claim an earlier phrase");
+            }
+        }
     }
 
     fn stage_pending_occurrence(

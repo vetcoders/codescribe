@@ -642,12 +642,91 @@ fn refused_take_archive(
 // Refinement, archive and formatter work never own this deadline.
 const STOP_FINAL_BOUND: Duration = Duration::from_secs(8);
 
+/// A next-start request interrupts only the live-final wait, never capture.
+/// The global weak slot lets the event tap wake a stop even while its serial
+/// receiver is still awaiting that stop. Registration owns the signal lifetime.
+#[derive(Default)]
+struct StopPasteWaitControl {
+    preempted: AtomicBool,
+    wake: tokio::sync::Notify,
+}
+
+static STOP_PASTE_WAIT: std::sync::Mutex<Option<std::sync::Weak<StopPasteWaitControl>>> =
+    std::sync::Mutex::new(None);
+
+pub(crate) fn preempt_stop_paste_for_next_take() -> bool {
+    let slot = STOP_PASTE_WAIT.lock().unwrap_or_else(|error| error.into_inner());
+    let Some(control) = slot.as_ref().and_then(std::sync::Weak::upgrade) else {
+        return false;
+    };
+    control.preempted.store(true, Ordering::SeqCst);
+    control.wake.notify_one();
+    true
+}
+
+struct StopPasteWaitRegistration(Arc<StopPasteWaitControl>);
+
+impl StopPasteWaitRegistration {
+    fn new() -> Self {
+        let control = Arc::new(StopPasteWaitControl::default());
+        *STOP_PASTE_WAIT.lock().unwrap_or_else(|error| error.into_inner()) =
+            Some(Arc::downgrade(&control));
+        Self(control)
+    }
+
+    fn close(&self) -> bool {
+        let mut slot = STOP_PASTE_WAIT.lock().unwrap_or_else(|error| error.into_inner());
+        if slot.as_ref().is_some_and(|current| current.ptr_eq(&Arc::downgrade(&self.0))) {
+            *slot = None;
+        }
+        self.0.preempted.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for StopPasteWaitRegistration {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
+impl StopPasteWaitControl {
+    async fn requested(&self) {
+        if !self.preempted.load(Ordering::SeqCst) {
+            self.wake.notified().await;
+        }
+    }
+}
+
+struct TakeExternalEventSink {
+    presentation: Arc<PresentationEmitter>,
+    sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink>,
+}
+
+impl codescribe_core::pipeline::contracts::EventSink for TakeExternalEventSink {
+    fn on_event(&self, event: &EngineEvent) {
+        self.presentation.with_active_presentation(|| self.sink.on_event(event));
+    }
+}
+
+struct StopCanvasRequest {
+    stopped_at: std::time::Instant,
+    painted_at_stop: Option<VisibleCanvasSnapshot>,
+    target: clipboard::StopPasteTarget,
+    preemption: StopPasteWaitRegistration,
+}
+
+struct StopCanvasDelivery {
+    delivery: Result<Option<TranscriptDelivery>>,
+    preempted: bool,
+}
+
 struct StopCanvasWait {
     snapshot: Option<VisibleCanvasSnapshot>,
     stop_final_wait_ms: u128,
     stop_final_timeout: bool,
     live_finals_admitted: bool,
-    painted_words_at_stop: usize,
+    painted_at_stop: Option<VisibleCanvasSnapshot>,
+    preempted: bool,
     armed_order: bool,
 }
 
@@ -655,18 +734,29 @@ async fn await_live_finals_for_delivery(
     finals: impl std::future::Future<Output = bool>,
     snapshot: impl Fn() -> Option<VisibleCanvasSnapshot>,
     stopped_at: tokio::time::Instant,
-    painted_words_at_stop: usize,
+    painted_at_stop: Option<VisibleCanvasSnapshot>,
     armed_order: bool,
+    preemption: Option<&StopPasteWaitControl>,
 ) -> StopCanvasWait {
-    let settled = tokio::time::timeout_at(stopped_at + STOP_FINAL_BOUND, finals).await;
-    // A lost lane releases the wait immediately; it is not a successful final.
-    // The worker owns that distinction, never a controller text heuristic.
+    let preempt = async {
+        match preemption {
+            Some(control) => control.requested().await,
+            None => std::future::pending::<()>().await,
+        }
+    };
+    let (settled, preempted) = tokio::select! {
+        biased;
+        () = preempt => (None, true),
+        result = tokio::time::timeout_at(stopped_at + STOP_FINAL_BOUND, finals) =>
+            (Some(result), false),
+    };
     StopCanvasWait {
         snapshot: snapshot(),
         stop_final_wait_ms: stopped_at.elapsed().as_millis(),
-        stop_final_timeout: settled.is_err(),
-        live_finals_admitted: matches!(settled, Ok(true)),
-        painted_words_at_stop,
+        stop_final_timeout: preempted || matches!(settled, Some(Err(_))),
+        live_finals_admitted: matches!(settled, Some(Ok(true))),
+        painted_at_stop,
+        preempted,
         armed_order,
     }
 }
@@ -1000,6 +1090,7 @@ pub struct RecordingController {
     /// Registration never suspends while holding this lock. Contention refuses
     /// admission immediately; no cleanup task is spawned without being tracked.
     capture_settlement: std::sync::Mutex<Option<CaptureSettlement>>,
+    closed_capture_tails: std::sync::Mutex<Vec<JoinHandle<()>>>,
     #[cfg(test)]
     settlement_observer: std::sync::Mutex<Option<mpsc::UnboundedSender<CaptureSettlementStage>>>,
 
@@ -1269,6 +1360,7 @@ impl RecordingController {
             serial_lock: Arc::new(Mutex::new(())),
             shutdown_requested: Arc::new(AtomicBool::new(false)),
             capture_settlement: std::sync::Mutex::new(None),
+            closed_capture_tails: std::sync::Mutex::new(Vec::new()),
             #[cfg(test)]
             settlement_observer: std::sync::Mutex::new(None),
             delivery_disposition: Arc::new(RwLock::new(TranscriptDelivery::Unattempted)),
@@ -2259,20 +2351,33 @@ impl RecordingController {
         .await
     }
 
+    async fn begin_stop_paste(
+        &self,
+        take_id: Option<&str>,
+        stopped_at: std::time::Instant,
+    ) -> StopCanvasRequest {
+        // Register before any await: the tap can interrupt even if its serial
+        // receiver is waiting for this controller operation to finish.
+        let preemption = StopPasteWaitRegistration::new();
+        let target = clipboard::StopPasteTarget::capture();
+        let painted_at_stop = self.active_presentation.read().await.as_ref()
+            .and_then(|emitter| emitter.begin_stop_canvas())
+            .filter(|canvas| Some(canvas.session_id.as_str()) == take_id);
+        StopCanvasRequest { stopped_at, painted_at_stop, target, preemption }
+    }
+
     /// Settle the painted live finals before archive and terminal refinement drain.
-    /// `None` belongs only to a composer turn, whose delivery remains terminal.
     async fn deliver_frozen_canvas_at_stop(
         &self,
         recorder: &mut StreamingRecorder,
         take_id: Option<&str>,
         intent: (bool, bool, CaptureTurnIntent),
-        stop_start: std::time::Instant,
-        painted_words_at_stop: usize,
-    ) -> Result<Option<TranscriptDelivery>> {
+        stop: StopCanvasRequest,
+    ) -> StopCanvasDelivery {
         let (assistive, force_ai, capture_turn) = intent;
         let presentation = self.active_presentation.read().await.clone();
         let armed_order = recorder.seal_lane_armed();
-        let wait = await_live_finals_for_delivery(
+        let mut wait = await_live_finals_for_delivery(
             async {
                 let admitted = recorder.wait_live_finals_admitted().await;
                 match presentation.as_ref() {
@@ -2280,39 +2385,113 @@ impl RecordingController {
                     None => admitted,
                 }
             },
-            || {
-                presentation
-                    .as_ref()
-                    .and_then(|emitter| emitter.finish_stop_canvas())
-                    .filter(|canvas| Some(canvas.session_id.as_str()) == take_id)
-            },
-            tokio::time::Instant::from_std(stop_start),
-            painted_words_at_stop,
+            || presentation.as_ref()
+                .and_then(|emitter| emitter.finish_stop_canvas())
+                .filter(|canvas| Some(canvas.session_id.as_str()) == take_id),
+            tokio::time::Instant::from_std(stop.stopped_at),
+            stop.painted_at_stop,
             armed_order,
-        )
-        .await;
-        if take_delivers_to_composer(capture_turn) {
-            return Ok(None);
+            Some(&stop.preemption.0),
+        ).await;
+        // Closing and requesting share one lock. A next-start that races the
+        // final's ready tick wins until settlement closes this registration.
+        wait.preempted |= stop.preemption.close();
+        wait.stop_final_timeout |= wait.preempted;
+        if wait.preempted {
+            wait.live_finals_admitted = false;
         }
-        self.settle_frozen_canvas_at_stop(
+        let preempted = wait.preempted;
+        if take_delivers_to_composer(capture_turn) {
+            return StopCanvasDelivery { delivery: Ok(None), preempted: false };
+        }
+        let config = self.get_config().await;
+        let delivery = self.settle_frozen_canvas_at_stop(
             take_id,
             presentation.as_deref(),
             wait,
-            stop_start,
+            stop.stopped_at,
             |text| async move {
-                self.deliver_stop_transcript(
-                    take_id,
-                    &text,
-                    assistive,
-                    force_ai,
-                    capture_turn,
-                    false,
-                )
-                .await
+                self.deliver_stop_transcript_with_sink(
+                    take_id, &text, (assistive, force_ai, capture_turn, false), &config,
+                    |route, payload, target_app| async move {
+                        if route == DeliveryRoute::DeferredInsert && !preempted {
+                            return self.arm_overlay_text(&payload, target_app, Some("Codescribe".into())).await;
+                        }
+                        let delivery = if preempted || !clipboard::synthetic_paste_preflight().can_post_events() {
+                            clipboard::set_clipboard(&payload)?;
+                            OverlayPasteDelivery::CopiedToClipboard
+                        } else {
+                            match clipboard::paste_to_stop_target(&payload, &stop.target)? {
+                                clipboard::StopPasteDelivery::Pasted => OverlayPasteDelivery::Pasted,
+                                clipboard::StopPasteDelivery::CopiedTargetChanged => OverlayPasteDelivery::CopiedToClipboard,
+                            }
+                        };
+                        Ok(OverlayPasteResult {
+                            delivery,
+                            // Automatic stop uses the retained AX identity;
+                            // the capture-start app label is not this target.
+                            target_app_name: None,
+                            frontmost_app_name: crate::os::selection::current_frontmost_app_name(),
+                            deferred_insert_shortcut: None,
+                            deferred_insert_failure: None,
+                        })
+                    },
+                ).await
             },
-        )
-        .await
-        .map(Some)
+        ).await.map(Some);
+        StopCanvasDelivery { delivery, preempted }
+    }
+
+    /// The microphone is already closed and the old paste is already settled.
+    /// Move that recorder's remaining drain into a tracked, take-owned tail.
+    /// It retains audio and Bus finality but has no authority over the next UI.
+    async fn detach_preempted_stop(
+        &self,
+        slot: &mut Option<StreamingRecorder>,
+        take_id: Option<&str>,
+        was_active: bool,
+    ) -> Result<()> {
+        let recorder = Self::recorder_from_guard_mut(slot, "Preempted stop")?;
+        anyhow::ensure!(!recorder.recorder.is_active(), "preemption requires closed capture");
+        let replacement = StreamingRecorder::with_config(recorder.recorder.config.clone())?;
+        if let Some(emitter) = self.active_presentation.read().await.as_ref() {
+            emitter.retire_presentation();
+        }
+        recorder.set_level_callback(None);
+        let mut recorder = slot.replace(replacement).expect("recorder checked above");
+        let bus = self.active_transcript_bus.write().await.take();
+        let take_id = take_id.map(str::to_owned);
+        let delivery = *self.delivery_disposition.read().await;
+        let task = tokio::spawn(async move {
+            let stopped = stop_recorder_for_terminal(&mut recorder, take_id.as_deref(), Some(was_active)).await;
+            Self::clear_recorder_callbacks(&mut recorder);
+            let reason = match &stopped {
+                Ok((text, path)) => {
+                    if let Some(path) = path.as_deref() {
+                        retain_session_audio(take_id.as_deref(), path,
+                            codescribe_core::state::SessionTranscriptArchive::from_committed(text));
+                    }
+                    TranscriptSessionEndReason::Completed
+                }
+                Err(error) if error.is::<TerminalSealRefused>() => TranscriptSessionEndReason::CoverageRefused,
+                Err(error) => {
+                    warn!(take_id = ?take_id, %error, "preempted take terminal drain failed");
+                    TranscriptSessionEndReason::TranscriptionFailed
+                }
+            };
+            if let Some(bus) = bus {
+                let wav_exists = retainable_session_id(take_id.as_deref())
+                    .and_then(|id| session_audio_path(&Config::config_dir(), id))
+                    .is_some_and(|path| path.is_file());
+                // Deliberately no UI broadcast: this terminal evidence belongs
+                // to the retired take, not to the new capture's overlay.
+                bus.publish_ended_with_delivery_text(reason, wav_exists, delivery, None);
+            }
+        });
+        let mut tails = self.closed_capture_tails.lock().unwrap_or_else(|error| error.into_inner());
+        tails.retain(|task| !task.is_finished());
+        tails.push(task);
+        Ok(())
     }
 
     /// The sole stop settlement, with the destination effect injected for
@@ -2335,10 +2514,15 @@ impl RecordingController {
             stop_final_wait_ms,
             stop_final_timeout,
             live_finals_admitted,
-            painted_words_at_stop,
+            painted_at_stop,
+            preempted,
             armed_order,
         } = wait;
         let snapshot = snapshot.filter(|canvas| Some(canvas.session_id.as_str()) == take_id);
+        let painted_words_at_stop = painted_at_stop.as_ref().map_or(0, |canvas| canvas.text.split_whitespace().count());
+        if preempted {
+            info!(take_id, "stop_paste_preempted_by_next_take");
+        }
         let (delivery, snapshot, light_plus) = match snapshot {
             Some(snapshot) if !snapshot.text.trim().is_empty() => {
                 let presentation = presentation
@@ -2377,14 +2561,24 @@ impl RecordingController {
         let preview_words = canvas.map_or(0, |canvas| canvas.preview_only_words);
         let paste_words = text.split_whitespace().count();
         let painted_words_at_snapshot = paste_words;
-        if paste_words < painted_words_at_stop {
-            warn!(
-                take_id,
-                paste_words,
-                painted_words_at_stop,
-                painted_words_at_snapshot,
-                "stop_paste_lost_visible_words"
-            );
+        let missing_words = painted_at_stop.as_ref().map_or_else(Vec::new, |before| {
+            match canvas {
+                Some(after) => before.missing_words_from(after),
+                None => before.visible_words.iter().map(|word| {
+                    crate::presentation::emitter::MissingVisibleWord {
+                        word: word.word.clone(), reason: "unaccounted".into(),
+                    }
+                }).collect(),
+            }
+        });
+        if !missing_words.is_empty() {
+            let unaccounted = missing_words.iter().filter(|word| word.reason == "unaccounted").count();
+            warn!(take_id, paste_words, painted_words_at_stop, painted_words_at_snapshot,
+                missing_words = ?missing_words, unaccounted, defect = unaccounted > 0,
+                "stop_paste_lost_visible_words");
+            if unaccounted > 0 {
+                error!(take_id, missing_words = ?missing_words, "stop_paste_visible_word_defect");
+            }
         }
         info!(
             stop_to_delivery_ms = stop_start.elapsed().as_millis(),
@@ -3179,8 +3373,14 @@ impl RecordingController {
             Arc::new(helpers::IpcBroadcastSink::new(event_broadcast));
         let delivery_tag_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
             delivery_tagger;
+        let external_sink = Arc::new(TakeExternalEventSink {
+            presentation: Arc::clone(&presentation),
+            sink: Arc::new(codescribe_core::pipeline::sinks::FanoutEventSink::new(
+                vec![ipc_sink, delivery_tag_sink],
+            )),
+        });
         let event_sink = Arc::new(codescribe_core::pipeline::sinks::FanoutEventSink::new(
-            vec![presentation_sink, ipc_sink, delivery_tag_sink],
+            vec![presentation_sink, external_sink],
         ));
         RecordingEventPipeline {
             event_sink,
@@ -3315,6 +3515,14 @@ impl RecordingController {
     /// - **Toggle + force_ai=true**: force AI formatting (normal hands-off)
     /// - **Toggle + assistive=true**: force Assistive hands-off
     pub async fn handle_hotkey_event(self: &Arc<Self>, event: HotkeyInput) -> Result<()> {
+        let next_start = matches!((event.key_type, event.action),
+            (HotkeyType::Hold, HotkeyAction::Down) | (HotkeyType::Toggle, HotkeyAction::Press));
+        if next_start && preempt_stop_paste_for_next_take() {
+            // The old owner copies and retires before this gesture may open a
+            // microphone or capture a new target. Its slow drain is detached.
+            let settled = self.serial_lock.lock().await;
+            drop(settled);
+        }
         // Stop gestures enter before mode updates: a RAW toggle during hold
         // must not rewrite the take's destination while asking to end it.
         let stop_gesture = {
@@ -4384,6 +4592,7 @@ impl RecordingController {
         is_assistive: bool,
         capture_turn: CaptureTurnIntent,
     ) -> Result<CaptureAdmission> {
+        preempt_stop_paste_for_next_take();
         // Acquire serial lock to prevent race conditions
         let _guard = self.serial_lock.lock().await;
 
@@ -4730,6 +4939,7 @@ impl RecordingController {
             *self.session_id.write().await = Some(format!("{session_id}{STOPPING_SUFFIX}"));
         }
 
+        let stop = self.begin_stop_paste(session_id_snapshot.as_deref(), stop_start).await;
         self.set_state(State::Busy).await;
         self.show_processing_badge_if_enabled().await;
 
@@ -4756,24 +4966,20 @@ impl RecordingController {
             info!("stop_toggle_inner: PHASE 2 — closing capture before delivery");
             // The live slot is `{uuid}:stopping` here. File-lane identity is
             // the Bus uuid snapped before that rewrite.
-            let painted_words_at_stop = self
-                .active_presentation
-                .read()
-                .await
-                .as_ref()
-                .and_then(|emitter| emitter.begin_stop_canvas())
-                .filter(|canvas| Some(canvas.session_id.as_str()) == session_id_snapshot.as_deref())
-                .map_or(0, |canvas| canvas.text.split_whitespace().count());
             let was_active = recorder.close_capture().await;
-            let initial_delivery = self
+            let StopCanvasDelivery { delivery: initial_delivery, preempted } = self
                 .deliver_frozen_canvas_at_stop(
                     recorder,
                     session_id_snapshot.as_deref(),
                     (assistive, force_ai, capture_turn),
-                    stop_start,
-                    painted_words_at_stop,
+                    stop,
                 )
                 .await;
+            if preempted {
+                self.detach_preempted_stop(&mut recorder_guard, session_id_snapshot.as_deref(), was_active).await?;
+                initial_delivery?;
+                return Ok(ProcessRecordingOutcome::default());
+            }
             let stopped =
                 stop_recorder_for_terminal(recorder, session_id_snapshot.as_deref(), Some(was_active)).await;
             rec_stop_secs = phase2.elapsed().as_secs_f64();
@@ -4917,6 +5123,12 @@ impl RecordingController {
             .as_ref()
             .is_some_and(|op| !op.task.is_finished() || op.result.borrow().is_none())
         {
+            return false;
+        }
+        let Ok(tails) = self.closed_capture_tails.try_lock() else {
+            return false;
+        };
+        if tails.iter().any(|task| !task.is_finished()) {
             return false;
         }
         let Ok(_serial) = self.serial_lock.try_lock() else {
@@ -5263,6 +5475,7 @@ impl RecordingController {
 
     /// Only the capture settlement task calls this with serial_lock held.
     async fn finish_recording_locked(&self) -> Result<()> {
+        let stop_start = std::time::Instant::now();
         let current_state = *self.state.read().await;
 
         // Ignore if we're not recording
@@ -5276,6 +5489,8 @@ impl RecordingController {
 
         info!("Finishing recording (state={})", current_state);
 
+        let stop_take_id = self.session_id.read().await.clone();
+        let stop = self.begin_stop_paste(stop_take_id.as_deref(), stop_start).await;
         // Transition to BUSY
         debug!("STATE TRANSITION: {} → BUSY", current_state);
         self.set_state(State::Busy).await;
@@ -5289,7 +5504,7 @@ impl RecordingController {
         let force_ai = *self.force_ai_mode.read().await;
 
         let result = self
-            .process_recording(session_id, assistive, hold_mode, force_raw, force_ai)
+            .process_recording(session_id, assistive, hold_mode, force_raw, force_ai, stop)
             .await;
 
         self.reset_finished_recording_state(&result).await;
@@ -5313,6 +5528,7 @@ impl RecordingController {
         hold_mode: HoldMode,
         force_raw: bool,
         force_ai: bool,
+        stop: StopCanvasRequest,
     ) -> Result<ProcessRecordingOutcome> {
         if cfg!(test) {
             info!(
@@ -5330,25 +5546,20 @@ impl RecordingController {
         let mut recorder_guard = self.recorder.lock().await;
         let recorder = Self::recorder_from_guard_mut(&mut recorder_guard, "Process-recording")?;
         let serving_engine = recorder.streaming_engine_label();
-        let stop_start = std::time::Instant::now();
-        let painted_words_at_stop = self
-            .active_presentation
-            .read()
-            .await
-            .as_ref()
-            .and_then(|emitter| emitter.begin_stop_canvas())
-            .filter(|canvas| Some(canvas.session_id.as_str()) == take_id.as_deref())
-            .map_or(0, |canvas| canvas.text.split_whitespace().count());
         let was_active = recorder.close_capture().await;
-        let initial_delivery = self
+        let StopCanvasDelivery { delivery: initial_delivery, preempted } = self
             .deliver_frozen_canvas_at_stop(
                 recorder,
                 take_id.as_deref(),
                 (assistive, force_ai, CaptureTurnIntent::HandsFree),
-                stop_start,
-                painted_words_at_stop,
+                stop,
             )
             .await;
+        if preempted {
+            self.detach_preempted_stop(&mut recorder_guard, take_id.as_deref(), was_active).await?;
+            initial_delivery?;
+            return Ok(ProcessRecordingOutcome::default());
+        }
         let stopped =
             stop_recorder_for_terminal(recorder, take_id.as_deref(), Some(was_active)).await;
         Self::clear_recorder_callbacks(recorder);
@@ -6165,13 +6376,9 @@ mod refusal_recovery_tests {
             async { ack_rx.await.is_ok() },
             || take.emitter.visible_canvas_snapshot(),
             tokio::time::Instant::now(),
-            take.emitter
-                .visible_canvas_snapshot()
-                .unwrap()
-                .text
-                .split_whitespace()
-                .count(),
+            take.emitter.visible_canvas_snapshot(),
             true,
+            None,
         )
         .await;
         assert!((8_000..=8_050).contains(&wait.stop_final_wait_ms));
@@ -6240,13 +6447,9 @@ mod refusal_recovery_tests {
             },
             || take.emitter.visible_canvas_snapshot(),
             tokio::time::Instant::now(),
-            take.emitter
-                .visible_canvas_snapshot()
-                .unwrap()
-                .text
-                .split_whitespace()
-                .count(),
+            take.emitter.visible_canvas_snapshot(),
             true,
+            None,
         )
         .await;
         assert_eq!(wait.stop_final_wait_ms, 5_000);
@@ -6292,13 +6495,9 @@ mod refusal_recovery_tests {
             std::future::pending(),
             || take.emitter.visible_canvas_snapshot(),
             tokio::time::Instant::now(),
-            take.emitter
-                .visible_canvas_snapshot()
-                .unwrap()
-                .text
-                .split_whitespace()
-                .count(),
+            take.emitter.visible_canvas_snapshot(),
             true,
+            None,
         )
         .await;
         assert!((8_000..=8_050).contains(&wait.stop_final_wait_ms));
@@ -6338,11 +6537,9 @@ mod refusal_recovery_tests {
         .unwrap();
     }
 
-    // Boundary witness: a later committed revision can still replace an
-    // anchored preview with fewer words. Detect it; do not invent a merge of
-    // labels to claim conservation without occurrence replacement evidence.
+    // A shorter final may remove words only with the phrase's typed receipt.
     #[tokio::test(start_paused = true)]
-    async fn shorter_revision_reports_unresolved_visible_word_loss() {
+    async fn shorter_revision_accounts_for_each_superseded_visible_word() {
         let take = take(State::RecHold, false).await;
         take.emitter.on_capture_opened(TAKE, 7);
         take.emitter.set_literal_delivery(true);
@@ -6350,14 +6547,19 @@ mod refusal_recovery_tests {
         let at_stop = take.emitter.begin_stop_canvas().unwrap();
         let mutation = stop_mutation(&mut take.ledger.lock().unwrap(), "shorter");
         take.emitter.on_event(&mutation);
+        take.emitter.on_event(&EngineEvent::PreviewDisposition {
+            superseded_through_rev: 1,
+            final_disposition: codescribe_core::pipeline::contracts::PreviewFinalDisposition::Admitted,
+        });
         let receipts = StopReceiptLog::default();
         let _trace = receipts.subscribe();
         let wait = await_live_finals_for_delivery(
             async { true },
             || take.emitter.finish_stop_canvas(),
             tokio::time::Instant::now(),
-            at_stop.text.split_whitespace().count(),
+            Some(at_stop),
             true,
+            None,
         )
         .await;
         let calls = AtomicUsize::new(0);
@@ -6374,6 +6576,9 @@ mod refusal_recovery_tests {
         assert!(receipts.text().contains("stop_paste_lost_visible_words"));
         assert!(receipts.text().contains("painted_words_at_stop=3"));
         assert!(receipts.text().contains("paste_words=1"));
+        assert!(receipts.text().contains("superseded_by_final rev=1"));
+        assert!(receipts.text().contains("unaccounted=0"));
+        assert!(!receipts.text().contains("stop_paste_visible_word_defect"));
     }
 
     #[tokio::test(start_paused = true)]
@@ -6384,8 +6589,9 @@ mod refusal_recovery_tests {
             std::future::pending(),
             || None,
             stopped_at,
-            0,
+            None,
             true,
+            None,
         )
         .await;
         assert_eq!(wait.stop_final_wait_ms, 8_000);
@@ -6401,13 +6607,104 @@ mod refusal_recovery_tests {
             async { receiver.await.is_ok() },
             || None,
             tokio::time::Instant::now(),
-            0,
+            None,
             true,
+            None,
         )
         .await;
         assert_eq!(wait.stop_final_wait_ms, 0);
         assert!(!wait.stop_final_timeout);
         assert!(!wait.live_finals_admitted);
+    }
+
+    /// Both races run through the live wait, settlement, retirement and new
+    /// admission. The tail delay and OS sink are the only injected effects.
+    #[tokio::test(start_paused = true)]
+    async fn next_take_preempts_pending_or_same_tick_final_once() {
+        for final_same_tick in [false, true] {
+            let take = take(State::Busy, false).await;
+            take.emitter.on_capture_opened(TAKE, 7);
+            take.emitter.set_literal_delivery(true);
+            take.emitter.on_event(&stop_preview("painted pending words"));
+            let before = take.emitter.begin_stop_canvas();
+            let control = StopPasteWaitControl::default();
+            let receipts = StopReceiptLog::default();
+            let _trace = receipts.subscribe();
+            let stopped_at = tokio::time::Instant::now();
+            let request_start = async {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                control.preempted.store(true, Ordering::SeqCst);
+                control.wake.notify_one();
+            };
+            let waiting = await_live_finals_for_delivery(
+                async {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    if !final_same_tick {
+                        std::future::pending::<()>().await;
+                    }
+                    true
+                },
+                || take.emitter.finish_stop_canvas(),
+                stopped_at, before, true, Some(&control),
+            );
+            // Poll the new-start request first when both timers become ready.
+            let (_, wait) = tokio::join!(biased; request_start, waiting);
+            assert!(wait.preempted);
+            assert!(wait.stop_final_timeout);
+            assert_eq!(wait.stop_final_wait_ms, 2_000);
+            let calls = AtomicUsize::new(0);
+            let serial = take.controller.serial_lock.lock().await;
+            let settled = take.controller.settle_frozen_canvas_at_stop(
+                Some(TAKE), Some(&take.emitter), wait, std::time::Instant::now(),
+                |text| stop_sink(&take.controller, text, &calls),
+            ).await.unwrap();
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            take.emitter.retire_presentation();
+            let late_ui = AtomicUsize::new(0);
+            take.emitter.with_active_presentation(|| { late_ui.fetch_add(1, Ordering::SeqCst); });
+            assert_eq!(late_ui.load(Ordering::SeqCst), 0);
+            // Pending archive ownership is observable but does not serialize
+            // capture admission. No old tail may acquire controller state.
+            let tail = tokio::spawn(async { tokio::time::sleep(Duration::from_secs(20)).await; });
+            take.controller.closed_capture_tails.lock().unwrap().push(tail);
+            take.controller.reset_finished_recording_state(&Ok(ProcessRecordingOutcome::default())).await;
+            drop(serial);
+            let admitted = take.controller.start_toggle_recording(false, CaptureTurnIntent::HandsFree).await.unwrap();
+            assert!(matches!(admitted, CaptureAdmission::Admitted(_)));
+            assert_eq!(take.controller.current_state().await, State::RecToggle);
+            assert_eq!(stopped_at.elapsed(), Duration::from_secs(2));
+            assert!(!take.controller.closed_capture_tails.lock().unwrap()[0].is_finished());
+            assert_eq!(receipts.text().matches("stop_paste_preempted_by_next_take").count(), 1);
+            deliver_terminal_unless_settled(Some(settled), || async {
+                panic!("retired take attempted delivery inside the next take")
+            }).await.unwrap();
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            let tails = std::mem::take(&mut *take.controller.closed_capture_tails.lock().unwrap());
+            for task in tails { task.await.unwrap(); }
+        }
+    }
+
+    #[tokio::test]
+    async fn retired_pipeline_drains_text_without_ipc_or_new_take_paint() {
+        let buffer = Arc::new(Mutex::new(String::new()));
+        let ledger = Arc::new(std::sync::Mutex::new(AcousticLedger::new()));
+        let (events, mut receiver) = broadcast::channel(32);
+        let pipeline = RecordingController::build_recording_event_sink(
+            Arc::clone(&buffer),
+            RecordingEventSinkOptions { preview_deltas_enabled: false, sentence_pause_sec: 0.7 },
+            events, None, Some(Arc::clone(&ledger)), Arc::default(),
+        );
+        pipeline.event_sink.on_capture_opened(TAKE, 7);
+        while receiver.try_recv().is_ok() {}
+        pipeline.presentation.retire_presentation();
+        let final_event = stop_mutation(&mut ledger.lock().unwrap(), "late archive words");
+        pipeline.event_sink.on_event(&final_event);
+        pipeline.event_sink.on_event(&EngineEvent::Warning {
+            code: "retired-test".into(), message: "must remain off the next take UI".into(),
+        });
+        assert!(pipeline.presentation.wait_paint_published().await);
+        assert_eq!(*buffer.lock().await, "late archive words");
+        assert!(matches!(receiver.try_recv(), Err(broadcast::error::TryRecvError::Empty)));
     }
 
     /// Both stop sites use the same terminal settlement on their Ok and Err

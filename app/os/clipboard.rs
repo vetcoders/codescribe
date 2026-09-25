@@ -197,6 +197,199 @@ pub(crate) fn synthetic_paste_preflight() -> SyntheticPastePreflight {
     }
 }
 
+/// STOP-owned destination identity. It outlives hold-key release and the final wait.
+#[derive(Debug)]
+pub(crate) struct StopPasteTarget {
+    #[cfg(target_os = "macos")]
+    identity: Option<stop_target_identity::Identity>,
+}
+
+impl StopPasteTarget {
+    /// Capture both the foreground process and its focused accessibility element.
+    pub(crate) fn capture() -> Self {
+        Self {
+            #[cfg(target_os = "macos")]
+            identity: stop_target_identity::Identity::capture(),
+        }
+    }
+
+    fn still_focused(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            self.identity.as_ref().is_some_and(|expected| {
+                stop_target_identity::Identity::capture()
+                    .as_ref()
+                    .is_some_and(|current| expected.same_target(current))
+            })
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod stop_target_identity {
+    use core_foundation::base::TCFType;
+    use core_foundation::string::CFString;
+    use objc::runtime::Class;
+    use objc::{msg_send, sel, sel_impl};
+    use std::ffi::c_void;
+    use std::ptr::NonNull;
+
+    #[link(name = "ApplicationServices", kind = "framework")]
+    unsafe extern "C" {
+        fn AXUIElementCreateApplication(pid: i32) -> *mut c_void;
+        fn AXUIElementCopyAttributeValue(
+            element: *mut c_void,
+            attribute: *const c_void,
+            value: *mut *mut c_void,
+        ) -> i32;
+        fn AXUIElementGetPid(element: *mut c_void, pid: *mut i32) -> i32;
+        fn AXUIElementSetMessagingTimeout(element: *mut c_void, seconds: f32) -> i32;
+        fn CFRelease(value: *const c_void);
+        fn CFEqual(left: *const c_void, right: *const c_void) -> u8;
+    }
+
+    /// Retained AX object identity; no selection text or display label is identity.
+    #[derive(Debug)]
+    pub(super) struct Identity {
+        pid: i32,
+        element: NonNull<c_void>,
+    }
+
+    // SAFETY: this owns a retained, immutable AX handle. It never exposes the
+    // pointer or mutates the element; CF equality and release are thread safe.
+    // AX handles represent remote UI objects and are not AppKit view objects.
+    unsafe impl Send for Identity {}
+    // SAFETY: shared access performs only CFEqual on retained immutable handles.
+    unsafe impl Sync for Identity {}
+
+    impl Drop for Identity {
+        fn drop(&mut self) {
+            // SAFETY: capture owns exactly one Copy-rule reference.
+            unsafe { CFRelease(self.element.as_ptr()) };
+        }
+    }
+
+    fn frontmost_pid() -> Option<i32> {
+        // SAFETY: NSWorkspace and NSRunningApplication accessors are read-only;
+        // returned objects are borrowed for this call and no pointer escapes.
+        unsafe {
+            let class = Class::get("NSWorkspace")?;
+            let workspace: *mut objc::runtime::Object = msg_send![class, sharedWorkspace];
+            if workspace.is_null() {
+                return None;
+            }
+            let app: *mut objc::runtime::Object = msg_send![workspace, frontmostApplication];
+            if app.is_null() {
+                return None;
+            }
+            let pid: i32 = msg_send![app, processIdentifier];
+            (pid > 0).then_some(pid)
+        }
+    }
+
+    impl Identity {
+        pub(super) fn capture() -> Option<Self> {
+            let pid = frontmost_pid()?;
+            // SAFETY: both AX Create/Copy results are owned and released exactly
+            // once. Output pointers are valid; failed reads never become identity.
+            unsafe {
+                let application = NonNull::new(AXUIElementCreateApplication(pid))?;
+                // A stalled app must not add the default AX RPC timeout to the
+                // stop-final wait. An unreadable target resolves to clipboard.
+                if AXUIElementSetMessagingTimeout(application.as_ptr(), 0.05) != 0 {
+                    CFRelease(application.as_ptr());
+                    return None;
+                }
+                let attribute = CFString::new("AXFocusedUIElement");
+                let mut element = std::ptr::null_mut();
+                let result = AXUIElementCopyAttributeValue(
+                    application.as_ptr(),
+                    attribute.as_concrete_TypeRef().cast(),
+                    &mut element,
+                );
+                CFRelease(application.as_ptr());
+                let element = NonNull::new(element)?;
+                let identity = Self { pid, element };
+                let mut element_pid = 0;
+                if result != 0
+                    || AXUIElementGetPid(element.as_ptr(), &mut element_pid) != 0
+                    || element_pid != pid
+                    || frontmost_pid() != Some(pid)
+                {
+                    return None;
+                }
+                Some(identity)
+            }
+        }
+
+        pub(super) fn same_target(&self, current: &Self) -> bool {
+            self.pid == current.pid
+                // SAFETY: both objects retain their Copy-rule AX reference.
+                && unsafe { CFEqual(self.element.as_ptr(), current.element.as_ptr()) != 0 }
+        }
+    }
+}
+
+/// Delivery truth for the retained STOP target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StopPasteDelivery {
+    Pasted,
+    CopiedTargetChanged,
+}
+
+/// Clipboard replacement precedes the final identity check. No keyboard event
+/// or delayed restore is allowed when that check cannot confirm the STOP target.
+fn write_stop_paste(
+    text: &str,
+    write: impl FnOnce(&str) -> Result<u64>,
+    target_matches: impl FnOnce() -> bool,
+    post_paste: impl FnOnce() -> Result<()>,
+    target_changed: impl FnOnce(),
+) -> Result<(StopPasteDelivery, u64)> {
+    let epoch = write(text)?;
+    if !target_matches() {
+        target_changed();
+        return Ok((StopPasteDelivery::CopiedTargetChanged, epoch));
+    }
+    post_paste()?;
+    Ok((StopPasteDelivery::Pasted, epoch))
+}
+
+/// Paste only into the destination retained at STOP. A changed or unreadable
+/// destination keeps the entire text on the clipboard and reports copied state.
+pub(crate) fn paste_to_stop_target(
+    text: &str,
+    target: &StopPasteTarget,
+) -> Result<StopPasteDelivery> {
+    let snapshot = ClipboardSnapshot::capture().ok();
+    let (outcome, epoch) = write_stop_paste(
+        text,
+        set_clipboard_with_epoch,
+        || target.still_focused(),
+        simulate_cmd_v,
+        || {
+            warn!(
+                event = "stop_paste_target_changed",
+                action = "copied",
+                text_bytes = text.len(),
+                "stop_paste_target_changed"
+            );
+        },
+    )?;
+    if outcome == StopPasteDelivery::Pasted {
+        // Do not emit a delayed Right Arrow into a destination that may have
+        // changed since Cmd+V. The target owns its post-paste selection behavior.
+        if let Some(snapshot) = snapshot {
+            schedule_clipboard_restore(snapshot, epoch, get_restore_delay());
+        }
+    }
+    Ok(outcome)
+}
+
 /// Gets the clipboard restore delay from environment or uses default
 fn get_restore_delay() -> Duration {
     let delay_ms = std::env::var("RESTORE_CLIPBOARD_DELAY_MS")
@@ -585,6 +778,99 @@ pub fn paste_and_restore(text: &str) -> Result<()> {
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    #[test]
+    fn stop_target_switch_during_wait_copies_every_word_without_posting_keys() {
+        use std::cell::{Cell, RefCell};
+
+        let stopped_at = Instant::now();
+        let target_at_stop = (17, "editor one");
+        let switched_at = stopped_at + Duration::from_secs(2);
+        let paste_at = stopped_at + Duration::from_secs(8);
+        let text = "committed words [untimed preview words]";
+        // Also cover a focus move between elements of the same process and an
+        // unreadable AX target. Neither proves the original caret still owns V.
+        for target_after_switch in [Some((28, "editor two")), Some((17, "editor two")), None] {
+            let clipboard = RefCell::new(String::from("old clipboard"));
+            let key_posts = Cell::new(0);
+            let receipts = RefCell::new(Vec::new());
+            let (outcome, _) = write_stop_paste(
+                text,
+                |complete| {
+                    *clipboard.borrow_mut() = complete.to_string();
+                    Ok(42)
+                },
+                || {
+                    let current = if paste_at >= switched_at {
+                        target_after_switch
+                    } else {
+                        Some(target_at_stop)
+                    };
+                    current == Some(target_at_stop)
+                },
+                || {
+                    key_posts.set(key_posts.get() + 1);
+                    Ok(())
+                },
+                || receipts.borrow_mut().push("stop_paste_target_changed"),
+            )
+            .expect("copy complete stop text");
+            assert_eq!(outcome, StopPasteDelivery::CopiedTargetChanged);
+            assert_eq!(*clipboard.borrow(), text);
+            assert_eq!(key_posts.get(), 0);
+            assert_eq!(*receipts.borrow(), ["stop_paste_target_changed"]);
+        }
+    }
+
+    #[test]
+    fn stop_target_is_checked_after_clipboard_write_and_before_any_key() {
+        use std::cell::{Cell, RefCell};
+
+        let target_matches = Cell::new(true);
+        let actions = RefCell::new(Vec::new());
+        let (outcome, _) = write_stop_paste(
+            "all words",
+            |_| {
+                actions.borrow_mut().push("clipboard");
+                // Target can change during clipboard work, after the wait ended.
+                target_matches.set(false);
+                Ok(7)
+            },
+            || {
+                actions.borrow_mut().push("target");
+                target_matches.get()
+            },
+            || {
+                actions.borrow_mut().push("key");
+                Ok(())
+            },
+            || actions.borrow_mut().push("receipt"),
+        )
+        .expect("changed target copy");
+        assert_eq!(outcome, StopPasteDelivery::CopiedTargetChanged);
+        assert_eq!(*actions.borrow(), ["clipboard", "target", "receipt"]);
+    }
+
+    #[test]
+    fn unchanged_stop_target_posts_paste_once_and_returns_restore_epoch() {
+        use std::cell::Cell;
+
+        let key_posts = Cell::new(0);
+        let (outcome, epoch) = write_stop_paste(
+            "complete text",
+            |_| Ok(19),
+            || true,
+            || {
+                key_posts.set(key_posts.get() + 1);
+                Ok(())
+            },
+            || panic!("unchanged target must not emit changed receipt"),
+        )
+        .expect("paste unchanged target");
+        assert_eq!(outcome, StopPasteDelivery::Pasted);
+        assert_eq!(epoch, 19);
+        assert_eq!(key_posts.get(), 1);
+    }
 
     /// Round-trip plain text through set_clipboard / get_clipboard when available.
     #[test]
