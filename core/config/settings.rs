@@ -1002,8 +1002,10 @@ impl RuntimeAiExecution {
 ///
 /// Hot edits create a *new* snapshot for the next recording session. An
 /// in-flight take keeps this value and every AI retry/request fact it selected.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RuntimeSettingsSnapshot {
+    // Retain the original resolver inputs without exposing credentials in Debug.
+    captured_inputs: std::sync::Arc<super::loader::CapturedRuntimeInputs>,
     /// Resolved runtime values after defaults + allowed env overlays.
     values: Config,
     repair_receipt: super::repair::RepairReceipt,
@@ -1035,10 +1037,35 @@ pub struct RuntimeSettingsSnapshot {
     tail_provider: Option<crate::stt::tail_provider::TailProviderId>,
 }
 
+impl std::fmt::Debug for RuntimeSettingsSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Captured inputs include credentials and unselected prompt content.
+        f.debug_struct("RuntimeSettingsSnapshot")
+            .field("values", &self.values)
+            .field("repair_receipt", &self.repair_receipt)
+            .field("user_settings", &self.user_settings)
+            .field("llm_lanes", &self.llm_lanes)
+            .field("formatting_policy", &self.formatting_policy)
+            .field("ai_execution", &self.ai_execution)
+            .field("provenance", &self.provenance)
+            .field("digest", &self.digest)
+            .field("energy_calibration", &self.energy_calibration)
+            .field("seal_lane_armed", &self.seal_lane_armed)
+            .field("local_tail_patch", &self.local_tail_patch)
+            .field(
+                "layered_transcription_override",
+                &self.layered_transcription_override,
+            )
+            .field("tail_provider", &self.tail_provider)
+            .finish()
+    }
+}
+
 /// Everything one loader pass resolved, handed to [`RuntimeSettingsSnapshot::seal_loaded`]
 /// as a unit so no part can be sealed from a different pass.
 #[derive(Clone)]
 pub(crate) struct RuntimeSnapshotParts {
+    pub(crate) captured_inputs: std::sync::Arc<super::loader::CapturedRuntimeInputs>,
     pub(crate) repair_receipt: super::repair::RepairReceipt,
     pub(crate) values: Config,
     pub(crate) user_settings: UserSettings,
@@ -1061,6 +1088,7 @@ impl RuntimeSettingsSnapshot {
         parts: RuntimeSnapshotParts,
     ) -> Result<Self, SettingsSnapshotValidationError> {
         let RuntimeSnapshotParts {
+            captured_inputs,
             repair_receipt,
             values,
             user_settings,
@@ -1077,6 +1105,7 @@ impl RuntimeSettingsSnapshot {
         } = parts;
         SettingsSnapshotValidation::admit(&values, &provenance, &digest)?;
         Ok(Self {
+            captured_inputs,
             repair_receipt,
             values,
             user_settings,
@@ -1108,6 +1137,7 @@ impl RuntimeSettingsSnapshot {
             });
         parts.seal_lane_armed = false;
         let RuntimeSnapshotParts {
+            captured_inputs,
             repair_receipt,
             values,
             user_settings,
@@ -1123,6 +1153,7 @@ impl RuntimeSettingsSnapshot {
             tail_provider,
         } = parts;
         Self {
+            captured_inputs,
             repair_receipt,
             values,
             user_settings,
@@ -1177,6 +1208,17 @@ impl RuntimeSettingsSnapshot {
     /// Effective per-take formatter policy from the immutable settings throne.
     pub const fn formatting_policy(&self) -> FormattingPolicy {
         self.formatting_policy
+    }
+
+    /// Resolve a one-request formatting level entirely from captured inputs.
+    /// The source snapshot and its persisted Settings remain untouched.
+    pub fn with_formatting_level(&self, level: FormattingPolicy) -> Self {
+        let mut input = self.captured_inputs.as_ref().clone();
+        input.user_settings.formatting_level = Some(level.as_str().to_string());
+        // An explicit request outranks the captured launch override only here.
+        input.overrides.remove("FORMATTING_LEVEL");
+        input.env_overlay_keys.retain(|key| key != "FORMATTING_LEVEL");
+        Config::runtime_snapshot_from_captured(input)
     }
 
     /// Borrow the AI execution facts sealed for this exact generation.
@@ -4543,6 +4585,61 @@ mod captured_sealer_tests {
     use crate::config::{CapturedRuntimeInputs, StartupAcquisitionProbe};
 
     #[test]
+    fn one_shot_levels_reseal_captured_prompts_and_digest() {
+        let probe = StartupAcquisitionProbe::forbid();
+        let mut inputs = CapturedRuntimeInputs::defaults_at(PathBuf::from("/fixture/request"), 42);
+        inputs.user_settings.formatting_level = Some("smart".to_string());
+        inputs.settings_bytes = Some(b"{\"formatting_level\":\"smart\"}".to_vec());
+        inputs.prompts.max.content = "Captured Max prompt".to_string();
+        inputs.prompts.max.tuning = Some("Captured tuning".to_string());
+        // A one-shot choice wins even when the launch captured another level.
+        inputs
+            .overrides
+            .insert("FORMATTING_LEVEL".into(), Ok("correction".into()));
+        inputs.env_overlay_keys.push("FORMATTING_LEVEL".into());
+        let settings = Config::runtime_snapshot_from_captured(inputs.clone());
+        let original_digest = settings.digest().clone();
+        let original_execution = settings.ai_execution().clone();
+        // Unselected captured prompt content must not enter diagnostic output.
+        assert!(!format!("{settings:?}").contains("Captured Max prompt"));
+
+        for level in FormattingPolicy::ALL {
+            let request = settings.with_formatting_level(level);
+            let mut expected_inputs = inputs.clone();
+            expected_inputs.user_settings.formatting_level = Some(level.as_str().to_string());
+            expected_inputs.overrides.remove("FORMATTING_LEVEL");
+            expected_inputs.env_overlay_keys.clear();
+            let expected = Config::runtime_snapshot_from_captured(expected_inputs);
+            assert_eq!(request.formatting_policy(), level);
+            assert_eq!(request.ai_execution(), expected.ai_execution());
+            assert_eq!(request.digest(), expected.digest());
+            assert_eq!(
+                request.provenance().settings_json_sha256,
+                settings.provenance().settings_json_sha256
+            );
+            assert_eq!(request.provenance().loaded_at_unix_ms, 42);
+            assert_eq!(settings.digest(), &original_digest);
+            assert_eq!(settings.ai_execution(), &original_execution);
+            assert_eq!(settings.formatting_policy(), FormattingPolicy::Correction);
+            assert_eq!(
+                settings.user_settings().formatting_level.as_deref(),
+                Some("smart")
+            );
+        }
+        let max = settings.with_formatting_level(FormattingPolicy::Max);
+        assert_eq!(
+            max.ai_execution()
+                .formatter()
+                .formatting_prompt()
+                .unwrap()
+                .composed_content(),
+            "Captured Max prompt\n\nCaptured tuning"
+        );
+        assert_ne!(max.digest(), settings.digest());
+        assert!(probe.attempts().is_empty());
+    }
+
+    #[test]
     fn sole_sealer_keeps_nonempty_digest_check_and_explicit_refusal_path() {
         let probe = StartupAcquisitionProbe::forbid();
         let root = PathBuf::from("/fixture/sealer");
@@ -4551,6 +4648,7 @@ mod captured_sealer_tests {
             42,
         ));
         let parts = RuntimeSnapshotParts {
+            captured_inputs: snapshot.captured_inputs,
             repair_receipt: snapshot.repair_receipt,
             values: snapshot.values,
             user_settings: snapshot.user_settings,

@@ -374,6 +374,7 @@ impl Config {
     pub fn runtime_snapshot_from_captured(
         mut input: CapturedRuntimeInputs,
     ) -> RuntimeSettingsSnapshot {
+        let captured_inputs = std::sync::Arc::new(input.clone());
         let (seal_lane_armed, seal_lane_env_override) = Self::resolve_seal_lane_armed(&input);
         if seal_lane_env_override {
             input.env_overlay_keys.push(SILERO_FUSION_ENV.to_string());
@@ -466,6 +467,7 @@ impl Config {
         );
         let digest = SettingsSnapshotDigest::from_hex(sha256_hex(digest_material.as_bytes()));
         let parts = RuntimeSnapshotParts {
+            captured_inputs,
             repair_receipt: input.repair_receipt,
             values: input.values,
             user_settings: input.user_settings,
@@ -482,6 +484,7 @@ impl Config {
         };
         let recovery = parts.clone();
         match RuntimeSettingsSnapshot::seal_loaded(RuntimeSnapshotParts {
+            captured_inputs: parts.captured_inputs,
             repair_receipt: parts.repair_receipt,
             values: parts.values,
             user_settings: parts.user_settings,

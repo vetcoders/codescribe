@@ -124,14 +124,6 @@ fn formatter_revision_level(
 ) -> Result<(FormattingPolicy, &'static str)> {
     let configured = settings.formatting_policy();
     let selected = requested.unwrap_or(configured);
-    // The core formatter consumes a sealed policy and its matching prompt.
-    // Refuse a differing request until that owner accepts a request-level policy.
-    anyhow::ensure!(
-        selected == configured,
-        "one-shot formatting at {} is unavailable: the formatter snapshot is sealed at {}",
-        selected.as_str(),
-        configured.as_str()
-    );
     Ok((
         selected,
         if requested.is_some() { "request" } else { "settings" },
@@ -1719,7 +1711,7 @@ impl RecordingController {
         let source = presentation
             .terminal_revision_source(&session_id, source_revision)
             .map_err(anyhow::Error::new)?;
-        let runtime_settings = self.runtime_settings_arc().await;
+        let runtime_settings = self.formatter_revision_settings(requested_level).await;
         let (format_level, level_source) =
             formatter_revision_level(requested_level, runtime_settings.as_ref())?;
         let language = runtime_settings.values().whisper_language;
@@ -1759,6 +1751,17 @@ impl RecordingController {
             .map_err(anyhow::Error::new)?;
         log_formatter_revision(&receipt, format_level, level_source);
         Ok(receipt)
+    }
+
+    async fn formatter_revision_settings(
+        &self,
+        requested_level: Option<FormattingPolicy>,
+    ) -> Arc<RuntimeSettingsSnapshot> {
+        let settings = self.runtime_settings_arc().await;
+        match requested_level {
+            Some(level) => Arc::new(settings.with_formatting_level(level)),
+            None => settings,
+        }
     }
 
     /// Forward one host sleep/wake boundary to the active recording session.
@@ -9869,6 +9872,66 @@ mod formatter_revision_request_tests {
         // Expected RED until the core formatter can consume a request policy
         // and its matching prompt without changing the settings snapshot.
         assert_eq!(selected.unwrap(), (FormattingPolicy::Max, "request"));
+    }
+
+    #[tokio::test]
+    async fn max_request_snapshot_keeps_controller_settings() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("settings.json");
+        let original = b"{\"formatting_level\":\"smart\"}\n";
+        std::fs::write(&path, original).unwrap();
+        let settings = snapshot(root.path(), FormattingPolicy::Smart);
+        let probe = codescribe_core::config::StartupAcquisitionProbe::forbid();
+        let controller = RecordingController::from_startup_inputs(
+            settings,
+            ControllerStartupResources::inert(),
+            root.path(),
+        );
+        let before = controller.runtime_settings_arc().await;
+        let request = controller
+            .formatter_revision_settings(Some(FormattingPolicy::Max))
+            .await;
+        assert_eq!(request.formatting_policy(), FormattingPolicy::Max);
+        assert_eq!(
+            request
+                .ai_execution()
+                .formatter()
+                .formatting_prompt()
+                .unwrap()
+                .composed_content(),
+            codescribe_core::config::DEFAULT_MAX_FORMATTING_PROMPT
+        );
+        assert_ne!(request.digest(), before.digest());
+        let after = controller.runtime_settings_arc().await;
+        assert!(Arc::ptr_eq(&before, &after));
+        assert_eq!(after.formatting_policy(), FormattingPolicy::Smart);
+        assert_eq!(
+            after
+                .ai_execution()
+                .formatter()
+                .formatting_prompt()
+                .unwrap()
+                .composed_content(),
+            codescribe_core::config::DEFAULT_SMART_FORMATTING_PROMPT
+        );
+        assert_eq!(std::fs::read(path).unwrap(), original);
+        assert!(probe.attempts().is_empty());
+    }
+
+    #[tokio::test]
+    async fn absent_request_reuses_controller_snapshot() {
+        let root = tempfile::tempdir().unwrap();
+        for level in FormattingPolicy::ALL {
+            let controller = RecordingController::from_startup_inputs(
+                snapshot(root.path(), level),
+                ControllerStartupResources::inert(),
+                root.path(),
+            );
+            let before = controller.runtime_settings_arc().await;
+            let request = controller.formatter_revision_settings(None).await;
+            assert!(Arc::ptr_eq(&before, &request));
+            assert_eq!(request.formatting_policy(), level);
+        }
     }
 
     #[derive(Clone, Default)]
