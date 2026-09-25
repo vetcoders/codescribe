@@ -3362,7 +3362,8 @@ mod tests {
         assert_eq!(final_bounds(&events[0], rate).1, (100, 200));
         assert_eq!(final_bounds(&events[1], rate).1, (0, 100));
         assert_eq!(stamp_of(&events[0]).match_path, CommitMatchPath::Echo);
-        assert_eq!(stamp_of(&events[1]).match_path, CommitMatchPath::Echo);
+        // The second final carries no echo, so it takes the remaining commit by FIFO.
+        assert_eq!(stamp_of(&events[1]).match_path, CommitMatchPath::Fifo);
     }
 
     fn stamp_of(event: &AsrSessionEvent) -> &FinalCommit {
