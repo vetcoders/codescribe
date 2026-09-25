@@ -15213,6 +15213,21 @@ mod relay_l1_overlap_admission_tests {
         );
         assert_eq!(held_text(&lane, &occurrence).as_deref(), Some("mowa"));
         assert_eq!(held_count(&lane), 1);
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                EngineEvent::LedgerSeal { receipt } if receipt.coverage == occurrence
+            )),
+            "the owner must finish through a ledger seal, not hide the bad pin by staying open"
+        );
+        assert!(
+            lane.state
+                .acoustic_ledger
+                .lock()
+                .expect("ledger")
+                .is_sealed(&occurrence),
+            "the sealed document owner must retain only its speech-grounded label"
+        );
         assert_conserved(&lane, None);
     }
 
