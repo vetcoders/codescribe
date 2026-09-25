@@ -2994,6 +2994,74 @@ mod tests {
         assert!(bus_text.contains(&paste.text));
     }
 
+    /// A late ledger decision can land after Stop reads its frozen canvas but
+    /// before the Light+ compare-and-swap. That interleaving must not turn a
+    /// nonempty, ledger-backed take into a failed paste.
+    #[tokio::test]
+    async fn frozen_stop_canvas_survives_intervening_ledger_revision() {
+        let temp = tempfile::tempdir().unwrap();
+        let bus = Arc::new(
+            TranscriptBus::open_at(
+                TranscriptSession {
+                    session_id: "stop-shape-race".to_string(),
+                    mode: TranscriptMode::Dictation,
+                    has_latched_target: true,
+                    latched_target_is_self: false,
+                },
+                temp.path().join("stop-shape-race.jsonl"),
+                None,
+            )
+            .unwrap(),
+        );
+        let delivery = Arc::new(Mutex::new(String::new()));
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        bus.publish_started();
+        let mut emitter = PresentationEmitter::new_with_authority(
+            Arc::clone(&delivery),
+            None,
+            None,
+            Some(Arc::clone(&bus)),
+            Some(Arc::clone(&ledger)),
+            None,
+        );
+        emitter.on_capture_opened("stop-shape-race", 7);
+        let first = admitted_mutation(
+            &mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("stop-shape-race", 7, 0, 16_000),
+            1,
+            "to działa bo jest proste",
+        );
+        emitter.on_event(&first);
+        let frozen = emitter.visible_canvas_snapshot().unwrap();
+        assert!(!frozen.text.is_empty());
+        assert_ne!(
+            codescribe_core::pipeline::light_plus::apply(&frozen.text),
+            frozen.text,
+            "the fixture must exercise the Light+ CAS path"
+        );
+
+        // The test helper admits Apple on a new PCM occurrence. It drives the
+        // same reducer-revision race a Whisper completion would drive, without
+        // claiming to test Whisper's provider or admission path.
+        let late = admitted_mutation(
+            &mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("stop-shape-race", 7, 16_000, 32_000),
+            2,
+            "drugie słowa",
+        );
+        emitter.on_event(&late);
+        let current = emitter.visible_canvas_snapshot().unwrap();
+        assert!(current.revision > frozen.revision);
+
+        let paste = emitter
+            .shape_frozen_canvas_at_stop(frozen.clone())
+            .expect("a late ledger revision must not suppress a nonempty Stop paste");
+        assert_eq!(paste.session_id, frozen.session_id);
+        assert!(!paste.text.trim().is_empty());
+        assert!(paste.revision >= frozen.revision);
+        emitter.finish().await;
+    }
+
     #[tokio::test]
     async fn late_mutation_after_frozen_paste_remains_a_bus_revision() {
         let temp = tempfile::tempdir().unwrap();
