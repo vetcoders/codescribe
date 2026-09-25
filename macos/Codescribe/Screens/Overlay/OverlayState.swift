@@ -2218,6 +2218,9 @@ final class OverlayState {
       if isLifecycleTerminal {
         agentFinalTranscriptAppeared =
           !projection.renderedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if projection.delivery == .copiedToClipboard {
+          showFooterNotice("copied")
+        }
       }
       if signalsFirstSuccessfulTerminal {
         onSuccessfulDictation?()

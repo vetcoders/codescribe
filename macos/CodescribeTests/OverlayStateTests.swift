@@ -676,7 +676,10 @@ final class OverlayStateTests: XCTestCase {
   }
 
   func testEmptyAndNonComposerTerminalsDoNotConsumeComposerAdmission() throws {
-    for delivery in [CsTranscriptDelivery.unattempted, .sinkAccepted, .retained, .composerPending] {
+    for delivery in [
+      CsTranscriptDelivery.unattempted, .sinkAccepted, .retained, .composerPending,
+      .copiedToClipboard, .deferredInsertArmed,
+    ] {
       let state = OverlayState()
       var received: [String] = []
       state.onComposerTranscript = { text, _ in
@@ -1345,6 +1348,71 @@ final class OverlayStateTests: XCTestCase {
 
     XCTAssertEqual(engine.pastedText, "belt and braces transcript")
     XCTAssertEqual(state.toast, "copied")
+  }
+
+  func testStopCopyShowsPassiveFooterWithoutChangingTerminalState() {
+    for delivery in [
+      CsTranscriptDelivery.copiedToClipboard, .sinkAccepted, .deferredInsertArmed,
+    ] {
+      let state = OverlayState()
+      let engine = OverlayStateTestEngine()
+      state.engine = engine
+      state.handleRecordingStarted()
+      var ended: [String] = []
+      var stopped = 0
+      state.onCaptureEnded = { ended.append($0) }
+      state.onRecordingStopped = { stopped += 1 }
+
+      projectText(
+        "stop transcript", to: state, canPaste: true, canInsert: true,
+        canCopy: true, canRetranscribe: true, canFormat: true, canSendToAgent: true,
+        terminal: true, delivery: delivery, reducerAction: "session_ended")
+
+      XCTAssertEqual(state.toast, delivery == .copiedToClipboard ? "copied" : nil)
+      XCTAssertNil(state.errorMessage)
+      XCTAssertEqual(state.mode, .formatted)
+      XCTAssertTrue(state.terminal)
+      XCTAssertTrue(state.finalized)
+      XCTAssertFalse(state.recording)
+      XCTAssertTrue(state.canPaste)
+      XCTAssertTrue(state.canInsert)
+      XCTAssertTrue(state.canCopy)
+      XCTAssertTrue(state.canRetranscribe)
+      XCTAssertTrue(state.canFormat)
+      XCTAssertTrue(state.canSendToAgent)
+      XCTAssertEqual(state.activeText, "stop transcript")
+      XCTAssertEqual(ended, ["overlay-state-tests"])
+      XCTAssertEqual(stopped, 1)
+      XCTAssertEqual(engine.pasteCallCount, 0)
+      XCTAssertNil(engine.deferredText)
+      XCTAssertNil(engine.copiedTaggedText)
+    }
+  }
+
+  func testStopCopyFooterIgnoresRevisionReplayAndRetiredTake() throws {
+    let state = OverlayState()
+    projectText(
+      "stop transcript", to: state, terminal: true, lifecycleTerminal: false,
+      delivery: .copiedToClipboard, sessionId: "old", reducerAction: "apply_manual_edit")
+    XCTAssertNil(state.toast, "document revision is not stop delivery")
+
+    projectText(
+      "stop transcript", to: state, terminal: true, delivery: .copiedToClipboard,
+      sessionId: "old", reducerAction: "session_ended")
+    XCTAssertEqual(state.toast, "copied")
+    let copiedTerminal = try XCTUnwrap(state.latestTranscriptProjection)
+    state.showFooterNotice("new notice", persists: true)
+    state.applyTranscriptProjection(copiedTerminal)
+    XCTAssertEqual(state.toast, "new notice", "replay cannot restart the copied notice")
+
+    projectText("new capture", to: state, sessionId: "new")
+    state.showFooterNotice("current notice", persists: true)
+    projectText(
+      "old transcript", to: state, terminal: true, delivery: .copiedToClipboard,
+      sessionId: "old", reducerAction: "session_ended")
+    XCTAssertEqual(state.toast, "current notice")
+    XCTAssertEqual(state.activeText, "new capture")
+    XCTAssertFalse(state.finalized)
   }
 
   func testInsertShowsAccessibilityPermissionToastWhenEventPostingDenied() async {

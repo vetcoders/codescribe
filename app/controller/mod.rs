@@ -2864,6 +2864,14 @@ impl RecordingController {
         }
         info!(
             stop_to_delivery_ms = stop_start.elapsed().as_millis(),
+            delivery = match delivery {
+                TranscriptDelivery::SinkAccepted => "pasted",
+                TranscriptDelivery::CopiedToClipboard => "copied",
+                TranscriptDelivery::DeferredInsertArmed => "deferred_insert",
+                TranscriptDelivery::Unattempted => "unattempted",
+                TranscriptDelivery::ComposerPending => "composer_pending",
+                TranscriptDelivery::Retained => "retained",
+            },
             stop_final_wait_ms,
             stop_final_timeout,
             live_finals_admitted,
@@ -2902,7 +2910,12 @@ impl RecordingController {
             .settle(
                 take_id,
                 stop_final_timeout,
-                if delivery == TranscriptDelivery::SinkAccepted {
+                if matches!(
+                    delivery,
+                    TranscriptDelivery::SinkAccepted
+                        | TranscriptDelivery::CopiedToClipboard
+                        | TranscriptDelivery::DeferredInsertArmed
+                ) {
                     text
                 } else {
                     ""
@@ -3016,14 +3029,16 @@ impl RecordingController {
         match outcome {
             Ok(result) => {
                 // A declined payload or missing permission is not acceptance.
-                let disposition = if matches!(
-                    result.delivery,
+                let disposition = match result.delivery {
+                    OverlayPasteDelivery::Pasted => TranscriptDelivery::SinkAccepted,
+                    OverlayPasteDelivery::CopiedToClipboard => TranscriptDelivery::CopiedToClipboard,
+                    OverlayPasteDelivery::DeferredInsertArmed => {
+                        TranscriptDelivery::DeferredInsertArmed
+                    }
                     OverlayPasteDelivery::Noop
-                        | OverlayPasteDelivery::AccessibilityPermissionNeeded
-                ) {
-                    TranscriptDelivery::Retained
-                } else {
-                    TranscriptDelivery::SinkAccepted
+                    | OverlayPasteDelivery::AccessibilityPermissionNeeded => {
+                        TranscriptDelivery::Retained
+                    }
                 };
                 self.record_delivery_disposition(disposition).await;
                 info!(
@@ -6904,6 +6919,115 @@ mod refusal_recovery_tests {
         assert_eq!(late_final_missing_words("one two", ""), 0);
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn stopped_copy_outcomes_remain_distinct() {
+        // Inject the transport boundary, not clipboard or focus side effects.
+        // Changed, unconfirmed and preempted targets all return a copy result.
+        for (outcome, frontmost, preempted, expected, receipt) in [
+            (
+                OverlayPasteDelivery::Pasted,
+                Some("original-editor"),
+                false,
+                TranscriptDelivery::SinkAccepted,
+                "pasted",
+            ),
+            (
+                OverlayPasteDelivery::CopiedToClipboard,
+                Some("changed-editor"),
+                false,
+                TranscriptDelivery::CopiedToClipboard,
+                "copied",
+            ),
+            (
+                OverlayPasteDelivery::CopiedToClipboard,
+                None,
+                false,
+                TranscriptDelivery::CopiedToClipboard,
+                "copied",
+            ),
+            (
+                OverlayPasteDelivery::CopiedToClipboard,
+                Some("original-editor"),
+                true,
+                TranscriptDelivery::CopiedToClipboard,
+                "copied",
+            ),
+            (
+                OverlayPasteDelivery::DeferredInsertArmed,
+                Some("Codescribe"),
+                false,
+                TranscriptDelivery::DeferredInsertArmed,
+                "deferred_insert",
+            ),
+        ] {
+            let take = take(State::RecHold, false).await;
+            take.emitter.on_capture_opened(TAKE, 7);
+            take.emitter.on_event(&stop_preview("one two"));
+            let stopped_at = tokio::time::Instant::now();
+            let stop_receipt = take.controller.active_stop_receipt.read().await.clone();
+            stop_receipt.lock().unwrap().begin(Some(TAKE), stopped_at);
+            let mut wait = await_live_finals_for_delivery(
+                std::future::pending::<bool>(),
+                || take.emitter.visible_canvas_snapshot(),
+                stopped_at,
+                take.emitter.visible_canvas_snapshot(),
+                true,
+                None,
+            )
+            .await;
+            wait.preempted = preempted;
+            let receipts = StopReceiptLog::default();
+            let _trace = receipts.subscribe();
+            let calls = AtomicUsize::new(0);
+            let settled = take
+                .controller
+                .settle_frozen_canvas_at_stop(
+                    Some(TAKE),
+                    Some(&take.emitter),
+                    wait,
+                    stopped_at.into_std(),
+                    |text| {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        assert_eq!(text, "one two");
+                        take.controller.finish_stop_delivery(
+                            Ok(OverlayPasteResult {
+                                delivery: outcome,
+                                target_app_name: Some("original-editor".into()),
+                                frontmost_app_name: frontmost.map(str::to_owned),
+                                deferred_insert_shortcut: None,
+                                deferred_insert_failure: None,
+                            }),
+                            false,
+                        )
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(settled, expected);
+            assert_eq!(*take.controller.delivery_disposition.read().await, expected);
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            let log = receipts.text();
+            let settled_line = log
+                .lines()
+                .find(|line| line.contains("stop canvas delivery settled"))
+                .expect("settled receipt");
+            assert!(settled_line.contains(&format!("delivery=\"{receipt}\"")));
+            stop_receipt
+                .lock()
+                .unwrap()
+                .observe(&stop_live_final("one two three"));
+            assert!(receipts.text().contains("late_final_words_after_bound=1"));
+            assert_eq!(
+                deliver_terminal_unless_settled(Some(settled), || async {
+                    panic!("settled delivery attempted again")
+                })
+                .await
+                .unwrap(),
+                expected
+            );
+        }
+    }
+
     /// No live final, no committed document. This exercises
     /// the real snapshot, stop settlement and route with only the OS sink faked.
     #[tokio::test(start_paused = true)]
@@ -7947,10 +8071,21 @@ mod refusal_recovery_tests {
 
     #[tokio::test]
     async fn hold_refusal_routes_once_to_original_sink_with_exact_disposition() {
-        for delivery in [
-            OverlayPasteDelivery::Pasted,
-            OverlayPasteDelivery::Noop,
-            OverlayPasteDelivery::AccessibilityPermissionNeeded,
+        for (delivery, expected) in [
+            (OverlayPasteDelivery::Pasted, TranscriptDelivery::SinkAccepted),
+            (
+                OverlayPasteDelivery::CopiedToClipboard,
+                TranscriptDelivery::CopiedToClipboard,
+            ),
+            (
+                OverlayPasteDelivery::DeferredInsertArmed,
+                TranscriptDelivery::DeferredInsertArmed,
+            ),
+            (OverlayPasteDelivery::Noop, TranscriptDelivery::Retained),
+            (
+                OverlayPasteDelivery::AccessibilityPermissionNeeded,
+                TranscriptDelivery::Retained,
+            ),
         ] {
             let mut take = take(State::RecHold, true).await;
             let controller = &take.controller;
@@ -7988,7 +8123,7 @@ mod refusal_recovery_tests {
                 )
                 .await;
             assert_eq!(calls.load(Ordering::SeqCst), 1);
-            assert_eq!(result.is_ok(), delivery == OverlayPasteDelivery::Pasted);
+            assert_eq!(result.is_ok(), expected != TranscriptDelivery::Retained);
             controller.reset_finished_recording_state(&result).await;
             controller
                 .handle_processed_recording_result(false, &result)
@@ -7996,14 +8131,7 @@ mod refusal_recovery_tests {
             let (terminals, _) = terminal_events(&mut take);
             assert_eq!(terminals.len(), 1);
             assert_eq!(terminals[0].rendered_text, WORDS);
-            assert_eq!(
-                terminals[0].delivery,
-                if delivery == OverlayPasteDelivery::Pasted {
-                    TranscriptDelivery::SinkAccepted
-                } else {
-                    TranscriptDelivery::Retained
-                }
-            );
+            assert_eq!(terminals[0].delivery, expected);
         }
     }
 

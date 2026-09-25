@@ -277,6 +277,10 @@ pub enum CsTranscriptDelivery {
     SinkAccepted,
     /// No sink took the text; it stays recoverable.
     Retained,
+    /// The text was copied to the clipboard without posting a paste.
+    CopiedToClipboard,
+    /// The text is armed for a later explicit insert, not pasted yet.
+    DeferredInsertArmed,
 }
 
 /// The controller-admitted identity of one capture.
@@ -409,6 +413,8 @@ impl CsTranscriptDelivery {
             TranscriptDelivery::ComposerPending => Self::ComposerPending,
             TranscriptDelivery::SinkAccepted => Self::SinkAccepted,
             TranscriptDelivery::Retained => Self::Retained,
+            TranscriptDelivery::CopiedToClipboard => Self::CopiedToClipboard,
+            TranscriptDelivery::DeferredInsertArmed => Self::DeferredInsertArmed,
         }
     }
 }
@@ -1211,7 +1217,7 @@ mod tests {
 
     #[test]
     fn bus_projection_conversion_preserves_every_authority_field() {
-        let event = TranscriptBusEvidenceEvent {
+        let mut event = TranscriptBusEvidenceEvent {
             schema: "codescribe.transcript-evidence.v1".to_string(),
             sequence: 7,
             emitted_at: "2026-08-27T12:00:00Z".to_string(),
@@ -1348,6 +1354,33 @@ mod tests {
                 }],
             }
         );
+        for (delivery, expected, wire_value) in [
+            (
+                TranscriptDelivery::SinkAccepted,
+                CsTranscriptDelivery::SinkAccepted,
+                "sink_accepted",
+            ),
+            (
+                TranscriptDelivery::CopiedToClipboard,
+                CsTranscriptDelivery::CopiedToClipboard,
+                "copied_to_clipboard",
+            ),
+            (
+                TranscriptDelivery::DeferredInsertArmed,
+                CsTranscriptDelivery::DeferredInsertArmed,
+                "deferred_insert_armed",
+            ),
+        ] {
+            event.delivery = delivery;
+            event.reducer_action = "session_ended".into();
+            let wire = serde_json::to_value(&event).unwrap();
+            assert_eq!(wire["delivery"], wire_value);
+            let decoded: TranscriptBusEvidenceEvent = serde_json::from_value(wire).unwrap();
+            let projected = CsTranscriptProjectionEvent::from_bus_event(&decoded);
+            assert_eq!(projected.delivery, expected);
+            assert!(projected.terminal && projected.lifecycle_terminal);
+            assert_eq!(projected.rendered_text, event.rendered_text);
+        }
     }
 
     #[test]

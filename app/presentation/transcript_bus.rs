@@ -599,12 +599,15 @@ pub enum TranscriptDelivery {
     /// The document belongs to the Agent composer draft of the thread that
     /// owned the capture. Pending until the receiver admits it.
     ComposerPending,
-    /// A system sink (synthetic paste or armed deferred insert) accepted the
-    /// text at the OS boundary.
+    /// A synthetic paste accepted the text at the OS boundary.
     SinkAccepted,
     /// The stop path finished without any sink taking the text. It stays
     /// recoverable in the overlay and the session archive.
     Retained,
+    /// The text was copied to the clipboard without posting a paste.
+    CopiedToClipboard,
+    /// The text is armed for a later explicit insert, not pasted yet.
+    DeferredInsertArmed,
 }
 
 /// Why the controller left a Bus session. Typed on purpose: the terminal
