@@ -12702,6 +12702,46 @@ mod live_refinement_admission_tests {
         }
     }
 
+    /// A fixed L1 subspan can be observed while its larger Silero speech run
+    /// remains open. Its right edge is a window boundary, not a measured VAD
+    /// speech-end crossing; qualification may wait, but must not mint a serial
+    /// that falsely claims the speech already closed at that right edge.
+    #[test]
+    fn open_l1_subspan_cannot_forge_a_vad_close() {
+        use super::super::silero_fusion::SileroIngress;
+        use crate::audio::chunker::{VadBoundaryEvidence, VadBoundaryKind};
+
+        let (mut state, _events, _receiver, _requests) = fixture(1);
+        let mut fusion = SileroIngress::new(RATE, "live-admission", 7);
+        fusion.note_observed_pcm(5_000, 5_000);
+        fusion.observe_boundaries(&[VadBoundaryEvidence {
+            kind: VadBoundaryKind::SpeechStart,
+            sample: 0,
+            speech_probability: 0.95,
+        }]);
+        fusion
+            .ledger_mut()
+            .open_or_extend("live-admission", 7, 0, 5_000);
+        assert!(!fusion.ledger().utterances()[0].closed);
+        assert!(fusion.acoustic_speech_evidence().observed_speech());
+        state.fusion = Some(fusion);
+
+        let subspan = OccurrenceIdentity::new("live-admission", 7, 0, 4_000);
+        assert!(state
+            .window_by_samples(subspan.sample_start, subspan.sample_end)
+            .is_some());
+        let _ = qualify_owned_occurrence(&state, &subspan);
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        if let Some(serial) = ledger.serial_of(&subspan) {
+            assert_eq!(serial.vad_open_sample, Some(0));
+            assert_eq!(
+                serial.vad_close_sample, None,
+                "a 4 s L1 window end is not Silero's still-missing speech-end edge"
+            );
+            assert!(!serial.vad_closed());
+        }
+    }
+
     /// The L1 clock follows measured speech PCM, not Apple's phrase final or
     /// Silero's eventual speech-end edge. A five-second open speech run must
     /// have offered at least one live-sized observation before either closes.
