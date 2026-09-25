@@ -17574,9 +17574,10 @@ mod tc2_window_contract_tests {
     /// synthetic; both live-window and stop recovery must make the same choice.
     #[test]
     fn midpoint_in_closure_overlap_routes_to_exactly_one_owner() {
-        for (older_sealed, newer_sealed) in
-            [(false, false), (true, false), (false, true), (true, true)]
-        {
+        // With both owners labelled and their requests drained, the monotonic
+        // horizon cannot seal newer while leaving older open: closing at
+        // 743_424 also closes older at 510_464. Do not manufacture (false, true).
+        for (older_sealed, newer_sealed) in [(false, false), (true, false), (true, true)] {
             for stop_recovery in [false, true] {
                 let mut f = fixture();
                 assert!(reconcile_silero_ledger(
@@ -17596,28 +17597,65 @@ mod tc2_window_contract_tests {
                     &[apple_word("newer", 652_416, 659_136)],
                 ));
                 f.state.flush_layer1_coalesce(&f.events);
-                let requests =
-                    std::iter::from_fn(|| f.requests.try_recv().ok()).collect::<Vec<_>>();
-                let request = requests
-                    .iter()
-                    .find(|request| {
-                        request
-                            .member_occurrences
-                            .iter()
-                            .any(|(_, owner)| owner == &newer)
+                // Complete real submitted windows before closing their horizon;
+                // returning a frontier alone leaves the fixture's recovery debt.
+                while let Ok(request) = f.requests.try_recv() {
+                    let range = &request.provider_request.identity.range;
+                    let segments = [
+                        pin("older", 246_464, 262_784),
+                        pin("older_tail", 434_496, 470_976),
+                        pin("newer", 652_416, 659_136),
+                    ]
+                    .into_iter()
+                    .filter(|word| {
+                        range.sample_start <= word.range.sample_start
+                            && word.range.sample_end <= range.sample_end
                     })
-                    .unwrap();
-                for (id, owner, sealed) in
-                    [(1, &f.occurrence, older_sealed), (2, &newer, newer_sealed)]
-                {
-                    if sealed {
-                        f.state.return_whisper_without_label(&f.events, id, owner);
-                        f.state.emit_pending_seal(&f.events, id);
-                    }
-                    assert_eq!(
-                        f.state.acoustic_ledger.lock().unwrap().is_sealed(owner),
-                        sealed
-                    );
+                    .collect();
+                    f.state
+                        .complete_whisper_window(&f.events, completion(&request, segments), 15.5);
+                }
+                assert!(f.state.refinement_submitted.is_empty());
+                assert!(f.state.refinement_pending.is_empty());
+                assert!(f.state.layer1_coalesce.is_empty());
+                // (false, false): leave both horizons open.
+                // (true, false): close only older's end.
+                // (true, true): close newer's end, which also closes older.
+                if newer_sealed {
+                    f.state.close_admission_horizon(&f.events, newer.sample_end);
+                } else if older_sealed {
+                    f.state
+                        .close_admission_horizon(&f.events, f.occurrence.sample_end);
+                }
+
+                // A subsequent physical closure launches a fresh window whose
+                // eight-second context still hears the overlap. This lets the
+                // live path reach sealed owners without reusing a consumed job.
+                let later = OccurrenceIdentity::new(SESSION, 1, 744_000, 792_000);
+                f.state.audio.push(&vec![0.2; 792_000 - 743_424]);
+                f.physical
+                    .open_or_extend(SESSION, 1, later.sample_start, later.sample_end);
+                f.physical.close_open(later.sample_end);
+                assert!(reconcile_silero_ledger(
+                    &mut f.state,
+                    &f.events,
+                    &f.physical,
+                    &[],
+                ));
+                f.state.flush_layer1_coalesce(&f.events);
+                let request = f.requests.try_recv().unwrap();
+                assert!(
+                    request
+                        .member_occurrences
+                        .iter()
+                        .any(|(_, owner)| owner == &later)
+                );
+                assert!(request.provider_request.identity.range.sample_start <= 508_800);
+                assert!(request.provider_request.identity.range.sample_end >= 509_800);
+                for (owner, sealed) in [(&f.occurrence, older_sealed), (&newer, newer_sealed)] {
+                    let ledger = f.state.acoustic_ledger.lock().unwrap();
+                    assert!(!ledger.text_recovery_pending(owner));
+                    assert_eq!(ledger.is_sealed(owner), sealed);
                 }
                 let winner = if !older_sealed && newer_sealed {
                     &f.occurrence
@@ -17654,12 +17692,12 @@ mod tc2_window_contract_tests {
                 assert_eq!(apple_owners, vec![winner]);
                 assert!(f.state.unmatched_silero_words.is_empty());
 
-                let returned = completion(request, vec![pin("whisper_overlap", 509_400, 509_800)]);
+                let returned = completion(&request, vec![pin("whisper_overlap", 509_400, 509_800)]);
                 if stop_recovery {
                     admit_debt_occurrence_recovery(
                         &mut f.state,
                         &f.events,
-                        &newer,
+                        &later,
                         returned.payload.as_ref().unwrap(),
                     );
                 } else {
