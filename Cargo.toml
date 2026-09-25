@@ -134,6 +134,7 @@ block2 = "0.6"
 dispatch = "0.2"
 
 [dev-dependencies]
+codescribe_core = { package = "codescribe-core", path = "core", features = ["test-isolation"] }
 tempfile = "3"
 mockito = "1"
 serial_test = "3"

@@ -1,16 +1,17 @@
 //! Test-process fence for filesystem mutations at Codescribe-owned paths.
 //! Path resolution and reads remain legal; call this immediately before a write.
 
+#[cfg(any(test, feature = "test-isolation"))]
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
+#[cfg(any(test, feature = "test-isolation"))]
+use std::path::{Component, PathBuf};
 
 /// Panic before a test process mutates the account's real home directory.
 /// `HOME` is intentionally ignored when locating the real account home.
 #[track_caller]
+#[cfg(any(test, feature = "test-isolation"))]
 pub fn assert_test_write_allowed(path: &Path) {
-    if !cfg!(test) && std::env::var("CODESCRIBE_TEST_ISOLATION").as_deref() != Ok("1") {
-        return;
-    }
     let Some(home) = account_home() else {
         panic!(
             "test isolation cannot determine the account home before writing {}",
@@ -59,7 +60,13 @@ pub fn assert_test_write_allowed(path: &Path) {
     }
 }
 
-fn account_home() -> Option<PathBuf> {
+/// Shipped builds have no test fence or refusal text.
+#[inline]
+#[cfg(not(any(test, feature = "test-isolation")))]
+pub fn assert_test_write_allowed(_path: &Path) {}
+
+#[cfg(any(test, feature = "test-isolation"))]
+pub fn account_home() -> Option<PathBuf> {
     let uid = unsafe { libc::geteuid() };
     let mut pwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
     let mut result = std::ptr::null_mut();

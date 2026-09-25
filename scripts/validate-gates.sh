@@ -127,8 +127,16 @@ fi
 if [[ "$test_setup" != *'$(TEST_DATA_DIR_SETUP)'* ]]; then
     fail "TEST_SETUP must establish process-wide test data isolation"
 fi
-if [[ "$test_setup" != *'export CODESCRIBE_TEST_ISOLATION=1'* ]]; then
-    fail "TEST_SETUP must enable the real-home write guard"
+if ! grep -Fq 'test-isolation = []' core/Cargo.toml; then
+    fail "codescribe-core must declare the test-isolation feature"
+fi
+for manifest in Cargo.toml core/Cargo.toml bridge/Cargo.toml; do
+    if ! sed -n '/^\[dev-dependencies\]/,/^\[/p' "$manifest" | grep -Fq 'features = ["test-isolation"]'; then
+        fail "$manifest must enable the codescribe-core test-isolation dev feature"
+    fi
+done
+if [[ "$verify_recipe" != *'bash scripts/tests/test-isolation-not-shipped-test.sh'* ]]; then
+    fail "verify must inspect ship-shaped artifacts for the test fence"
 fi
 if [[ "$verify_recipe" != *'$(TEST_DATA_DIR_SETUP)'* ]]; then
     fail "verify must establish process-wide test data isolation before cargo"

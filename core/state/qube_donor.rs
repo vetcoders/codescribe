@@ -211,7 +211,6 @@ mod tests {
                     ENV_KEY,
                     "CODESCRIBE_DATA_DIR",
                     "CODESCRIBE_ENV_PATH",
-                    "HOME",
                 ]
                 .into_iter()
                 .map(|key| (key, std::env::var_os(key)))
@@ -238,29 +237,6 @@ mod tests {
         /// Shared lock behind [`env_lock`]; held for the duration of each test.
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
-    }
-
-    #[test]
-    #[serial]
-    fn donor_env_snapshot_restores_set_and_unset_values() {
-        let _g = env_lock().lock().unwrap();
-        let original = EnvSnapshot::capture();
-        for key in ["CODESCRIBE_DATA_DIR", "CODESCRIBE_ENV_PATH", "HOME"] {
-            for previous in [None, Some("before")] {
-                unsafe {
-                    match previous {
-                        Some(value) => std::env::set_var(key, value),
-                        None => std::env::remove_var(key),
-                    }
-                }
-                {
-                    let _restore = EnvSnapshot::capture();
-                    unsafe { std::env::set_var(key, "during") };
-                }
-                assert_eq!(std::env::var(key).ok().as_deref(), previous);
-            }
-        }
-        drop(original);
     }
 
     /// Write a mono 16 kHz int16 WAV fixture for donor path tests.

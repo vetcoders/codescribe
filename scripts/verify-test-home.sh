@@ -7,7 +7,6 @@ sandbox_root="${CODESCRIBE_TEST_DATA_DIR:?TEST_DATA_DIR_SETUP is required}"
 export CARGO_HOME="${CARGO_HOME:-$real_home/.cargo}"
 export RUSTUP_HOME="${RUSTUP_HOME:-$real_home/.rustup}"
 export HOME="$sandbox_root/home"
-export CODESCRIBE_TEST_ISOLATION=1
 mkdir -p "$HOME"
 
 gate_rc=0

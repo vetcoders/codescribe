@@ -158,10 +158,24 @@ mod tests {
 
     #[test]
     fn real_home_lock_is_refused_before_creation() {
+        let path = crate::test_isolation::account_home()
+            .expect("passwd account home")
+            .join(format!(
+                ".codescribe/test-isolation-agent-turn-refusal-{}.lock",
+                std::process::id()
+            ));
+        assert!(!path.exists(), "probe path must be absent");
         let result = std::panic::catch_unwind(|| {
-            let _ = acquire_agent_turn_lease_at(&agent_turn_lease_path());
+            let _ = acquire_agent_turn_lease_at(&path);
         });
-        assert!(result.is_err());
+        let panic = result.expect_err("account home lease must panic");
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .expect("guard panic text");
+        assert!(message.contains("test process refused write under real home"));
+        assert!(!path.exists(), "refusal must precede file creation");
     }
 
     #[test]

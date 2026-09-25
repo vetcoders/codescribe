@@ -342,7 +342,7 @@ bump-major:
 # gate: check class=static ci=no -- cargo fmt, prettier, clippy, semgrep, validate-envs, validate-gates; executes ZERO tests
 # gate: lint class=static ci=no -- cargo fmt --check + clippy on the workspace + verify-swift-format; no tests
 # gate: semgrep class=static ci=no -- semgrep scan --config auto --config .semgrep.yaml (semgrep.yml runs semgrep directly, not this target)
-# gate: verify class=hermetic ci=yes -- structural verifier, Bus-path/install guard, workspace tests and doctests under sandbox HOME with a Codescribe write leak check, model-promotion regression, env registry and ledger harness; rust.yml runs it
+# gate: verify class=hermetic ci=yes -- structural verifier, Bus-path/install guard, workspace tests and doctests under sandbox HOME with a Codescribe write leak check, separate ship-shaped artifact fence check, model-promotion regression, env registry and ledger harness; rust.yml runs it
 # gate: test-structural-verifier class=hermetic ci=no -- Python unit/mutant suite for the Loctree-only acoustic structural instrument; reads repo files only, no runtime
 # gate: test-transcript-bus-path class=hermetic ci=no -- shell/Python path-precedence and install-guard fail-closed tests in an isolated HOME; never installs the app
 # gate: verify-canaries class=hermetic ci=no -- claim-vs-execution canaries that read repo files only (scripts/canaries.sh); each row is born from a named incident
@@ -464,7 +464,6 @@ define TEST_SETUP
 $(TEST_DATA_DIR_SETUP); \
 LOG=$(TEST_LOG); \
 export CODESCRIBE_DISABLE_KEYCHAIN=1; \
-export CODESCRIBE_TEST_ISOLATION=1; \
 echo "" >> "$$LOG"; \
 echo "╔══════════════════════════════════════════════════════════╗" | tee -a "$$LOG"; \
 echo "║  Codescribe Test Suite — $$(date '+%Y-%m-%d %H:%M:%S')           ║" | tee -a "$$LOG"; \
@@ -1068,6 +1067,8 @@ verify:
 	bash scripts/tests/transcript-bus-path-test.sh; \
 	echo "=== Verify (hermetic: workspace tests) ==="; \
 	bash scripts/verify-test-home.sh; \
+	echo "=== Verify (ship-shaped artifacts contain no test fence) ==="; \
+	bash scripts/tests/test-isolation-not-shipped-test.sh; \
 	echo "=== Verify (Whisper model promotion) ==="; \
 	bash scripts/tests/download-model-test.sh; \
 	echo "=== Verify (env registry) ==="; \

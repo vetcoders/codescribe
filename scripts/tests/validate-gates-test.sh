@@ -57,6 +57,10 @@ with tempfile.TemporaryDirectory(prefix='validate-gates-test-') as tmp:
         repo = base / label
         (repo / 'scripts').mkdir(parents=True)
         (repo / 'Makefile').write_text(make)
+        for manifest in ('Cargo.toml', 'core/Cargo.toml', 'bridge/Cargo.toml'):
+            destination = repo / manifest
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes((source / manifest).read_bytes())
         shutil.copytree(source / '.github/workflows', repo / '.github/workflows')
         if workflow is not None:
             (repo / '.github/workflows/counterexample.yml').write_text(workflow)

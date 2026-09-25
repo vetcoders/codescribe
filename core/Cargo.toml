@@ -26,6 +26,7 @@ path = "bin/codescribe-whisper-validate.rs"
 [features]
 default = []
 licensing-dev = []
+test-isolation = []
 
 [dependencies]
 # Async runtime
@@ -102,6 +103,7 @@ tempfile = "3"
 libc = "0.2"
 
 [dev-dependencies]
+codescribe_core = { package = "codescribe-core", path = ".", features = ["test-isolation"] }
 mockito = "1"
 serial_test = "3"
 
