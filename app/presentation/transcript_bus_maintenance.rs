@@ -121,6 +121,10 @@ pub struct CompactionReport {
     pub applied: bool,
     /// Time spent holding the app's shared writer lock during the final swap.
     pub locked_ms: u64,
+    /// Complete tail rows read while holding the shared writer lock.
+    pub locked_rows_read: u64,
+    /// Tail bytes read while holding the shared writer lock.
+    pub locked_bytes_read: u64,
 }
 
 impl CompactionReport {
@@ -294,7 +298,13 @@ fn compact_bus_owned_reserved(
         // writer. A failed pass clears the reservation below.
         checks.insert(path.to_path_buf(), (Instant::now(), retention_days));
     }
-    let result = compact_bus_owned_once(path, retention_days, trigger);
+    let result = compact_bus_owned_once(
+        path,
+        retention_days,
+        trigger,
+        COMPACTION_THRESHOLD_BYTES,
+        || {},
+    );
     if result.is_err() {
         checks
             .lock()
@@ -308,17 +318,19 @@ fn compact_bus_owned_once(
     path: &Path,
     retention_days: u32,
     trigger: &str,
+    minimum_bytes: u64,
+    before_swap: impl FnOnce(),
 ) -> Result<Option<CompactionReport>> {
     let shared = super::transcript_bus::shared_bus_file(path)?;
     let initial = {
         let file = shared.lock().unwrap_or_else(|error| error.into_inner());
         file.metadata()?
     };
-    if initial.len() < COMPACTION_THRESHOLD_BYTES {
+    if initial.len() < minimum_bytes {
         return Ok(None);
     }
     let status = bus_status_with_retention_limit(path, Some(retention_days), Some(initial.len()))?;
-    if !status.wants_compaction()
+    if status.bytes < minimum_bytes
         || status
             .retention_preview
             .iter()
@@ -332,6 +344,7 @@ fn compact_bus_owned_once(
         std::fs::remove_file(&staged).ok();
         return Ok(None);
     }
+    before_swap();
     let result = (|| -> Result<u64> {
         use std::os::unix::fs::MetadataExt;
         let mut writer = shared.lock().unwrap_or_else(|error| error.into_inner());
@@ -359,8 +372,11 @@ fn compact_bus_owned_once(
             if read == 0 {
                 break;
             }
-            report.rows_read += buffer[..read].iter().filter(|byte| **byte == b'\n').count() as u64;
-            report.rows_kept += buffer[..read].iter().filter(|byte| **byte == b'\n').count() as u64;
+            let rows = buffer[..read].iter().filter(|byte| **byte == b'\n').count() as u64;
+            report.rows_read += rows;
+            report.rows_kept += rows;
+            report.locked_rows_read += rows;
+            report.locked_bytes_read += read as u64;
             out.write_all(&buffer[..read])?;
         }
         out.flush()?;
@@ -432,6 +448,8 @@ fn stage_bus(
             bytes_after: 0,
             applied: false,
             locked_ms: 0,
+            locked_rows_read: 0,
+            locked_bytes_read: 0,
         };
         let mut last_document: HashMap<String, String> = HashMap::new();
         let mut history_seen: HashSet<(String, u64)> = HashSet::new();
@@ -707,73 +725,68 @@ mod tests {
     }
 
     #[test]
-    fn app_append_does_not_wait_for_a_large_owned_compaction_scan() {
+    fn owned_compaction_locked_reads_depend_on_appended_tail_not_prefix() {
         use crate::presentation::transcript_bus::{
             TranscriptBus, TranscriptMode, TranscriptSession,
         };
-        let dir = temp("large-concurrent-append");
-        let path = dir.join("transcript-events.jsonl");
-        let buses: Vec<_> = (0..10)
-            .map(|index| {
-                TranscriptBus::open_at(
-                    TranscriptSession {
-                        session_id: format!("new-take-{index}"),
-                        mode: TranscriptMode::Dictation,
-                        has_latched_target: false,
-                        latched_target_is_self: false,
-                    },
-                    path.clone(),
-                    None,
-                )
-                .unwrap()
-            })
-            .collect();
-        let row = format!(
-            "{{\"schema\":\"codescribe.transcript-evidence.v1\",\"emitted_at\":\"2020-01-01T00:00:00Z\",\"padding\":\"{}\"}}\n",
-            "x".repeat(2048)
-        );
-        let mut out = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .unwrap();
-        while out.metadata().unwrap().len() < COMPACTION_THRESHOLD_BYTES {
-            out.write_all(row.as_bytes()).unwrap();
-        }
-        loop {
-            out.flush().unwrap();
-            let scan_started = Instant::now();
-            let _ = bus_status(&path).unwrap();
-            if scan_started.elapsed() >= Duration::from_secs(1) {
-                break;
-            }
-            let old_len = out.metadata().unwrap().len();
-            while out.metadata().unwrap().len() < old_len * 2 {
+        const TAIL_ROWS: usize = 10;
+        let mut locked_counts = Vec::new();
+        for prefix_bytes in [1024 * 1024, 10 * 1024 * 1024] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("transcript-events.jsonl");
+            let buses: Vec<_> = (0..TAIL_ROWS)
+                .map(|index| {
+                    TranscriptBus::open_at(
+                        TranscriptSession {
+                            session_id: format!("new-take-{index}"),
+                            mode: TranscriptMode::Dictation,
+                            has_latched_target: false,
+                            latched_target_is_self: false,
+                        },
+                        path.clone(),
+                        None,
+                    )
+                    .unwrap()
+                })
+                .collect();
+            let row = format!(
+                "{{\"schema\":\"codescribe.transcript-evidence.v1\",\"emitted_at\":\"2020-01-01T00:00:00Z\",\"padding\":\"{}\"}}\n",
+                "x".repeat(2048)
+            );
+            let mut out = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            while out.metadata().unwrap().len() < prefix_bytes {
                 out.write_all(row.as_bytes()).unwrap();
             }
+            drop(out);
+            let recorded_len = std::fs::metadata(&path).unwrap().len();
+            let report = compact_bus_owned_once(&path, 14, "test", 1, || {
+                std::thread::scope(|scope| {
+                    scope.spawn(|| {
+                        for bus in &buses {
+                            bus.publish_started();
+                        }
+                    }).join().unwrap();
+                });
+            })
+            .unwrap()
+            .unwrap();
+            assert!(report.applied);
+            assert_eq!(report.locked_rows_read, TAIL_ROWS as u64);
+            assert_eq!(
+                report.locked_bytes_read,
+                report.bytes_before - recorded_len,
+                "the locked reader copied exactly the appended tail"
+            );
+            let final_bus = std::fs::read_to_string(&path).unwrap();
+            for index in 0..TAIL_ROWS {
+                assert!(final_bus.contains(&format!("new-take-{index}")));
+            }
+            locked_counts.push(report.locked_rows_read);
         }
-        drop(out);
-        let worker_path = path.clone();
-        let worker =
-            std::thread::spawn(move || compact_bus_owned(&worker_path, 14, "test").unwrap());
-        std::thread::sleep(Duration::from_millis(100));
-        let append_started = Instant::now();
-        for bus in &buses {
-            bus.publish_started();
-        }
-        let append_elapsed = append_started.elapsed();
-        let report = worker.join().unwrap().unwrap();
-        assert!(
-            append_elapsed <= Duration::from_millis(100),
-            "append waited {append_elapsed:?}"
-        );
-        assert!(report.applied);
-        eprintln!("locked_ms={}", report.locked_ms);
-        assert!(report.locked_ms <= 100);
-        let final_bus = std::fs::read_to_string(&path).unwrap();
-        for index in 0..10 {
-            assert!(final_bus.contains(&format!("new-take-{index}")));
-        }
-        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(locked_counts, [TAIL_ROWS as u64; 2]);
     }
 
     #[test]

@@ -446,6 +446,15 @@ pub(crate) fn document_history_at(
     path: &Path,
     session_id: &str,
 ) -> io::Result<Vec<DocumentHistoryEntry>> {
+    let mut bytes_read = 0;
+    document_history_at_counted(path, session_id, &mut bytes_read)
+}
+
+fn document_history_at_counted(
+    path: &Path,
+    session_id: &str,
+    bytes_read: &mut u64,
+) -> io::Result<Vec<DocumentHistoryEntry>> {
     // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- path is the app-owned transcript_bus_path() or an explicit test temporary Bus path, never request input.
     let mut file = match std::fs::File::open(path) {
         Ok(file) => file,
@@ -465,6 +474,7 @@ pub(crate) fn document_history_at(
         file.seek(SeekFrom::Start(position))?;
         let mut block = vec![0; width];
         file.read_exact(&mut block)?;
+        *bytes_read += width as u64;
         block.extend_from_slice(&prefix);
         let mut end = block.len();
         for index in (0..block.len()).rev() {
@@ -495,9 +505,11 @@ pub(crate) fn document_history_at(
     for line in rows {
         if let Ok(row) = serde_json::from_slice::<CompactHistoryRow>(&line)
             && row.schema == HISTORY_SCHEMA
+            && row.session_id == session_id
+            && !row.rendered_text.trim().is_empty()
         {
             revisions
-                .entry(row.revision)
+                .entry((row.session_id, row.revision))
                 .or_insert(DocumentHistoryEntry {
                     revision: row.revision,
                     rendered_text: row.rendered_text,
@@ -513,7 +525,9 @@ pub(crate) fn document_history_at(
             continue;
         }
         if let Some(entry) = history_entry_from_event(&event) {
-            revisions.entry(entry.revision).or_insert(entry);
+            revisions
+                .entry((event.session_id, entry.revision))
+                .or_insert(entry);
         }
     }
     Ok(revisions.into_values().collect())
@@ -1404,7 +1418,6 @@ mod tests {
 
     #[test]
     fn recent_take_history_reads_only_the_bus_tail() {
-        use std::time::{Duration, Instant};
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("large-history.jsonl");
         let row = format!(
@@ -1412,33 +1425,62 @@ mod tests {
             "x".repeat(2048)
         );
         let mut out = std::fs::File::create(&path).unwrap();
-        while out.metadata().unwrap().len() < 128 * 1024 * 1024 {
+        while out.metadata().unwrap().len() < 10 * 1024 * 1024 {
             out.write_all(row.as_bytes()).unwrap();
         }
-        loop {
-            out.flush().unwrap();
-            let started = Instant::now();
-            let _ = super::super::transcript_bus_maintenance::bus_status(&path).unwrap();
-            if started.elapsed() >= Duration::from_secs(1) {
-                break;
-            }
-            let size = out.metadata().unwrap().len();
-            while out.metadata().unwrap().len() < size * 2 {
-                out.write_all(row.as_bytes()).unwrap();
-            }
-        }
         drop(out);
+        let older_bytes = std::fs::metadata(&path).unwrap().len();
         let bus = TranscriptBus::open_at(session("recent-take"), path.clone(), None).unwrap();
         bus.publish_started();
         let (ledger, _, base) = committed_fixture("recent-take");
         assert!(!bus.publish_revision(&base, &ledger).is_empty());
-        let started = Instant::now();
-        let history = document_history_at(&path, "recent-take").unwrap();
-        let elapsed = started.elapsed();
+        let recent_bytes = std::fs::metadata(&path).unwrap().len() - older_bytes;
+        let mut bytes_read = 0;
+        let history = document_history_at_counted(&path, "recent-take", &mut bytes_read).unwrap();
         assert!(!history.is_empty());
         assert!(
-            elapsed <= Duration::from_millis(100),
-            "recent history waited {elapsed:?}"
+            bytes_read <= recent_bytes + 64 * 1024,
+            "read {bytes_read} bytes for {recent_bytes} bytes of recent-session rows"
+        );
+    }
+
+    #[test]
+    fn history_versions_match_when_each_revision_carries_text_only_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let repeated_path = temp.path().join("repeated.jsonl");
+        let deduplicated_path = temp.path().join("deduplicated.jsonl");
+        let bus = TranscriptBus::open_at(session("history-once"), repeated_path.clone(), None)
+            .unwrap();
+        bus.publish_started();
+        let (ledger, _, base) = committed_fixture("history-once");
+        let mut versions = vec![bus.publish_revision(&base, &ledger)[0].clone()];
+        for offset in 1..=2 {
+            let mut next = versions[0].clone();
+            next.reducer_revision += offset;
+            next.reducer_action = "apply_manual_edit".to_string();
+            next.rendered_text = format!("version {}", next.reducer_revision);
+            versions.push(next);
+        }
+        let start = r#"{"schema":"codescribe.transcript.v1","session_id":"history-once","status":"session_started"}"#;
+        let mut repeated = format!("{start}\n");
+        let mut deduplicated = format!("{start}\n");
+        for event in &versions {
+            let full = serde_json::to_string(event).unwrap();
+            repeated.push_str(&format!("{full}\n{full}\n"));
+            let mut without_text = serde_json::to_value(event).unwrap();
+            without_text.as_object_mut().unwrap().remove("rendered_text");
+            deduplicated.push_str(&format!(
+                "{full}\n{}\n",
+                serde_json::to_string(&without_text).unwrap()
+            ));
+        }
+        std::fs::write(&repeated_path, repeated).unwrap();
+        std::fs::write(&deduplicated_path, deduplicated).unwrap();
+        let expected = document_history_at(&repeated_path, "history-once").unwrap();
+        assert_eq!(expected.len(), 3);
+        assert_eq!(
+            document_history_at(&deduplicated_path, "history-once").unwrap(),
+            expected
         );
     }
 

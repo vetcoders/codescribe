@@ -102,21 +102,29 @@ impl std::error::Error for CsError {}
 /// shut down it cannot be restarted in the same process.
 #[uniffi::export]
 pub fn start_application_runtime() -> Result<CsApplicationRuntimeSnapshot, CsError> {
+    start_application_runtime_with_compaction(|| {
+        let path = codescribe::presentation::transcript_bus::transcript_bus_path();
+        let days = codescribe::presentation::transcript_bus_maintenance::evidence_retention_days();
+        if let Err(error) =
+            codescribe::presentation::transcript_bus_maintenance::compact_bus_owned(
+                &path, days, "startup",
+            )
+        {
+            tracing::warn!(%error, "startup bus compaction unavailable");
+        }
+    })
+}
+
+/// Inject the startup compaction work for the thread-ordering test. The app
+/// uses the production closure above; both paths use the same spawn boundary.
+#[doc(hidden)]
+pub fn start_application_runtime_with_compaction(
+    compaction: impl FnOnce() + Send + 'static,
+) -> Result<CsApplicationRuntimeSnapshot, CsError> {
     let snapshot = application_runtime::start()?;
     if let Err(error) = std::thread::Builder::new()
         .name("codescribe-bus-compaction".to_string())
-        .spawn(|| {
-            let path = codescribe::presentation::transcript_bus::transcript_bus_path();
-            let days =
-                codescribe::presentation::transcript_bus_maintenance::evidence_retention_days();
-            if let Err(error) =
-                codescribe::presentation::transcript_bus_maintenance::compact_bus_owned(
-                    &path, days, "startup",
-                )
-            {
-                tracing::warn!(%error, "startup bus compaction unavailable");
-            }
-        })
+        .spawn(compaction)
     {
         tracing::warn!(%error, "startup bus compaction thread unavailable");
     }
