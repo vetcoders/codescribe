@@ -15133,6 +15133,45 @@ mod relay_l1_overlap_admission_tests {
         assert_conserved(&lane, Some("replayed_range_identity"));
     }
 
+    /// Falsifier for the T-A duplicate rule (integrator W3, parent's counterexample).
+    /// Window 1 ends its audio at the seam, so its "domu" stops at 48_000. Window 2
+    /// places the next, distinct short word "w" at 47_000..49_000: midpoint 48_000
+    /// makes it window 2's word, and it overlaps "domu" by half of its own span.
+    /// A geometric duplicate rule must not erase a different word.
+    #[test]
+    fn short_distinct_word_after_the_seam_is_not_a_replay_of_its_neighbour() {
+        let session = "seam-short-word";
+        let mut lane = open(session);
+        record_voiced_spans(
+            &lane,
+            LONG_SAMPLES,
+            &[(42_000, 49_000), (70_000, 88_000), (100_000, 140_000)],
+        );
+        let (occurrence, requests) = launch_long_span(&mut lane, Some("apple"));
+        let windows = [
+            vec![word_pin(session, "domu", 42_000, 48_000)],
+            vec![
+                word_pin(session, "domu", 42_500, 47_800),
+                word_pin(session, "w", 47_000, 49_000),
+                word_pin(session, "dalej", 70_000, 88_000),
+            ],
+            vec![word_pin(session, "koniec", 100_000, 140_000)],
+        ];
+        let mut events = Vec::new();
+        for (request, segments) in requests.iter().zip(windows) {
+            lane.state
+                .complete_whisper_window(&lane.tx, completion(request, segments), 9.5);
+            events.extend(drain(&mut lane.rx));
+        }
+        let warnings = warning_lines(&events);
+        assert!(!replay_refusal(&events, "w"), "{warnings}");
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("domu w dalej koniec"),
+            "{warnings}"
+        );
+    }
+
     #[test]
     fn apple_held_range_does_not_replay_an_owned_word() {
         let mut lane = open("seam-apple-held");
