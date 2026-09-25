@@ -776,6 +776,17 @@ impl AcousticLedger {
         })
     }
 
+    /// Cross-crate test door to the real word-slot admission, for the app
+    /// crate's presentation tests. Production callers stay inside this crate.
+    #[cfg(any(test, feature = "test-isolation"))]
+    pub fn admit_word_slots_for_tests(
+        &mut self,
+        observation: &ObservationIdentity,
+        words: &[(u64, u64, String)],
+    ) -> MutationReceipt {
+        self.admit_word_slots(observation, words)
+    }
+
     /// Merge word evidence on its owner. Heard span is the union of pin ranges,
     /// never a coverage gate. Rank is the order: Whisper replaces Apple,
     /// lexicon, and cloud-live slots by midpoint; cloud-live replaces Apple

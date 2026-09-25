@@ -1217,7 +1217,9 @@ impl RuntimeSettingsSnapshot {
         input.user_settings.formatting_level = Some(level.as_str().to_string());
         // An explicit request outranks the captured launch override only here.
         input.overrides.remove("FORMATTING_LEVEL");
-        input.env_overlay_keys.retain(|key| key != "FORMATTING_LEVEL");
+        input
+            .env_overlay_keys
+            .retain(|key| key != "FORMATTING_LEVEL");
         Config::runtime_snapshot_from_captured(input)
     }
 

@@ -126,7 +126,11 @@ fn formatter_revision_level(
     let selected = requested.unwrap_or(configured);
     Ok((
         selected,
-        if requested.is_some() { "request" } else { "settings" },
+        if requested.is_some() {
+            "request"
+        } else {
+            "settings"
+        },
     ))
 }
 
@@ -3031,7 +3035,9 @@ impl RecordingController {
                 // A declined payload or missing permission is not acceptance.
                 let disposition = match result.delivery {
                     OverlayPasteDelivery::Pasted => TranscriptDelivery::SinkAccepted,
-                    OverlayPasteDelivery::CopiedToClipboard => TranscriptDelivery::CopiedToClipboard,
+                    OverlayPasteDelivery::CopiedToClipboard => {
+                        TranscriptDelivery::CopiedToClipboard
+                    }
                     OverlayPasteDelivery::DeferredInsertArmed => {
                         TranscriptDelivery::DeferredInsertArmed
                     }
@@ -4862,7 +4868,8 @@ impl RecordingController {
                             .presentation
                             .set_literal_delivery(*hold_session.force_raw_mode.read().await);
                         *hold_session.active_stop_receipt.write().await = pipeline.stop_receipt;
-                        *hold_session.active_presentation.write().await = Some(pipeline.presentation);
+                        *hold_session.active_presentation.write().await =
+                            Some(pipeline.presentation);
                         let retry_result = rec.start_event_session(language_hint).await;
                         if let Err(retry_err) = retry_result {
                             error!("Failed to start recorder after recovery: {retry_err}");
@@ -6834,7 +6841,9 @@ mod refusal_recovery_tests {
         if let Some(text) = final_text {
             // A duplicate event and a later final must not produce another line.
             pipeline.event_sink.on_event(&stop_live_final(text));
-            pipeline.event_sink.on_event(&stop_live_final("another final"));
+            pipeline
+                .event_sink
+                .on_event(&stop_live_final("another final"));
             assert!(
                 pipeline
                     .presentation
@@ -8072,7 +8081,10 @@ mod refusal_recovery_tests {
     #[tokio::test]
     async fn hold_refusal_routes_once_to_original_sink_with_exact_disposition() {
         for (delivery, expected) in [
-            (OverlayPasteDelivery::Pasted, TranscriptDelivery::SinkAccepted),
+            (
+                OverlayPasteDelivery::Pasted,
+                TranscriptDelivery::SinkAccepted,
+            ),
             (
                 OverlayPasteDelivery::CopiedToClipboard,
                 TranscriptDelivery::CopiedToClipboard,

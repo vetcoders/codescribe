@@ -572,8 +572,10 @@ pub struct TranscriptReducer {
     /// Read-only evidence. Late non-current Apple words add their exact label
     /// to the pin key so re-delivery is idempotent and alternatives coexist.
     /// Other reasons retain one entry per range and their seal lifetime.
-    unanchored_evidence:
-        BTreeMap<(OccurrenceIdentity, Option<String>), (String, NoAuthorityReason, ObservationIdentity)>,
+    unanchored_evidence: BTreeMap<
+        (OccurrenceIdentity, Option<String>),
+        (String, NoAuthorityReason, ObservationIdentity),
+    >,
 }
 
 /// Whether `inner` lies wholly inside `outer` on one capture clock.
@@ -676,9 +678,7 @@ impl TranscriptReducer {
         let mut fragments = self
             .unanchored_evidence
             .iter()
-            .filter(|((range, _), (_, reason, _))| {
-                self.evidence_covering(range, *reason).is_none()
-            })
+            .filter(|((range, _), (_, reason, _))| self.evidence_covering(range, *reason).is_none())
             .map(|((range, _), (text, reason, observation))| {
                 (
                     range.sample_start,
@@ -1013,7 +1013,10 @@ impl TranscriptReducer {
         // An equal label can acquire real word pins without a new document
         // revision. Refresh geometry only from that authenticated receipt.
         if matches!(receipt, MutationReceipt::Preserve { .. }) {
-            if self.document_by_occurrence.contains_key(&observation.occurrence) {
+            if self
+                .document_by_occurrence
+                .contains_key(&observation.occurrence)
+            {
                 self.committed_slot_ranges.insert(
                     observation.occurrence.clone(),
                     ledger.committed_word_pin_ranges(&observation.occurrence),
@@ -1122,13 +1125,14 @@ impl TranscriptReducer {
             }
         }
         // A sealed committed token closes the alternatives painted inside it.
-        self.unanchored_evidence.retain(|(evidence, _), (_, reason, _)| {
-            *reason == NoAuthorityReason::LateAppleWordNotCurrent
-                || !receipt
-                    .sealed_occurrences
-                    .iter()
-                    .any(|sealed| range_within(evidence, sealed))
-        });
+        self.unanchored_evidence
+            .retain(|(evidence, _), (_, reason, _)| {
+                *reason == NoAuthorityReason::LateAppleWordNotCurrent
+                    || !receipt
+                        .sealed_occurrences
+                        .iter()
+                        .any(|sealed| range_within(evidence, sealed))
+            });
         let occurrence = receipt.sealed_occurrences.first()?.clone();
         self.observed_seals.insert(receipt.receipt_id.clone());
         let terminal = !receipt.is_occurrence_seal();
@@ -1471,9 +1475,8 @@ impl TranscriptReducer {
         self.terminal = true;
         // Stop can sample after SessionFinalised. These words still belong to
         // this take's final paint and delivery, even without slot authority.
-        self.unanchored_evidence.retain(|_, (_, reason, _)| {
-            *reason == NoAuthorityReason::LateAppleWordNotCurrent
-        });
+        self.unanchored_evidence
+            .retain(|_, (_, reason, _)| *reason == NoAuthorityReason::LateAppleWordNotCurrent);
     }
 
     /// Record ledger-computed session coverage without changing a single
@@ -8303,50 +8306,92 @@ mod tests {
         request: u64,
         text: &str,
     ) {
-        let observation = ObservationIdentity::new(ObservationProducer::Apple, request, request, pin.clone());
+        let observation =
+            ObservationIdentity::new(ObservationProducer::Apple, request, request, pin.clone());
         let receipt = ledger.lock().unwrap().keep_visible_unanchored(
-            &observation, text, super::NoAuthorityReason::LateAppleWordNotCurrent,
+            &observation,
+            text,
+            super::NoAuthorityReason::LateAppleWordNotCurrent,
         );
         emitter.on_event(&EngineEvent::LedgerMutation {
-            observation, label: text.into(), receipt,
+            observation,
+            label: text.into(),
+            receipt,
         });
     }
 
     #[tokio::test]
     async fn late_apple_evidence_uses_only_committed_slot_midpoints() {
-        for mode in ["owner_only", "slot", "slot_end", "omission", "preserved_label"] {
+        for mode in [
+            "owner_only",
+            "slot",
+            "slot_end",
+            "omission",
+            "preserved_label",
+        ] {
             let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
             let mut emitter = PresentationEmitter::new_with_authority(
-                Arc::new(Mutex::new(String::new())), None, None, None,
-                Some(Arc::clone(&ledger)), None,
+                Arc::new(Mutex::new(String::new())),
+                None,
+                None,
+                None,
+                Some(Arc::clone(&ledger)),
+                None,
             );
             emitter.set_literal_delivery(true);
             emitter.on_capture_opened("late", 7);
             let owner = OccurrenceIdentity::new("late", 7, 0, 64_000);
             admit_into(&emitter, &ledger, &owner, 1, "document");
-            let pins = [(4_000, 8_000, "alpha"), (20_000, 24_000, "beta"), (36_000, 40_000, "gamma")];
+            let pins = [
+                (4_000, 8_000, "alpha"),
+                (20_000, 24_000, "beta"),
+                (36_000, 40_000, "gamma"),
+            ];
             for (index, &(start, end, text)) in pins.iter().enumerate() {
-                late_apple_into(&emitter, &ledger,
-                    &OccurrenceIdentity::new("late", 7, start, end), index as u64 + 2, text);
+                late_apple_into(
+                    &emitter,
+                    &ledger,
+                    &OccurrenceIdentity::new("late", 7, start, end),
+                    index as u64 + 2,
+                    text,
+                );
             }
             let before = emitter.begin_stop_canvas().unwrap();
             assert_eq!(before.text, "document alpha beta gamma");
             assert_eq!(before.late_apple_word_counts(), (3, 0));
-            assert_eq!(emitter.paint_commands.lock().unwrap().last(), Some(&before.text));
+            assert_eq!(
+                emitter.paint_commands.lock().unwrap().last(),
+                Some(&before.text)
+            );
             // A new observation identity for the same pin and word does not
             // create another paint entry or invalidate the frozen provenance.
-            late_apple_into(&emitter, &ledger,
-                &OccurrenceIdentity::new("late", 7, 4_000, 8_000), 20, "alpha");
+            late_apple_into(
+                &emitter,
+                &ledger,
+                &OccurrenceIdentity::new("late", 7, 4_000, 8_000),
+                20,
+                "alpha",
+            );
             assert_eq!(emitter.visible_canvas_snapshot().unwrap(), before);
             if mode != "owner_only" {
-                let observation = ObservationIdentity::new(ObservationProducer::Whisper, 30, 30, owner.clone());
+                let observation =
+                    ObservationIdentity::new(ObservationProducer::Whisper, 30, 30, owner.clone());
                 let receipt = {
                     let mut ledger = ledger.lock().unwrap();
                     match mode {
                         // Midpoint 22_000 is covered by this half-open slot.
-                        "slot" => ledger.admit_word_slots(&observation, &[(22_000, 23_000, "heard".into())]),
-                        "slot_end" => ledger.admit_word_slots(&observation, &[(20_000, 22_000, "heard".into())]),
-                        "preserved_label" => ledger.admit_word_slots(&observation, &[(21_000, 33_000, "document".into())]),
+                        "slot" => ledger.admit_word_slots_for_tests(
+                            &observation,
+                            &[(22_000, 23_000, "heard".into())],
+                        ),
+                        "slot_end" => ledger.admit_word_slots_for_tests(
+                            &observation,
+                            &[(20_000, 22_000, "heard".into())],
+                        ),
+                        "preserved_label" => ledger.admit_word_slots_for_tests(
+                            &observation,
+                            &[(21_000, 33_000, "document".into())],
+                        ),
                         _ => ledger.admit(&observation, "Whisper omitted them"),
                     }
                 };
@@ -8354,33 +8399,83 @@ mod tests {
                     assert!(matches!(receipt, MutationReceipt::Preserve { .. }));
                 }
                 emitter.on_event(&EngineEvent::LedgerMutation {
-                    observation, label: String::new(), receipt,
+                    observation,
+                    label: String::new(),
+                    receipt,
                 });
             }
             let covered = matches!(mode, "slot" | "preserved_label");
             let after = emitter.visible_canvas_snapshot().unwrap();
-            assert_eq!(emitter.paint_commands.lock().unwrap().last(), Some(&after.text));
-            assert_eq!(after.late_apple_word_counts(), if covered { (2, 1) } else { (3, 0) });
+            assert_eq!(
+                emitter.paint_commands.lock().unwrap().last(),
+                Some(&after.text)
+            );
+            assert_eq!(
+                after.late_apple_word_counts(),
+                if covered { (2, 1) } else { (3, 0) }
+            );
             for word in ["alpha", "gamma"] {
-                assert_eq!(after.text.split_whitespace().filter(|text| *text == word).count(), 1);
+                assert_eq!(
+                    after
+                        .text
+                        .split_whitespace()
+                        .filter(|text| *text == word)
+                        .count(),
+                    1
+                );
             }
-            assert_eq!(after.text.split_whitespace().filter(|text| *text == "beta").count(), usize::from(!covered));
-            let evidence = emitter.session_state.lock().unwrap().unanchored_evidence("late", 7);
-            assert_eq!(evidence.iter().map(|entry| (entry.sample_start, entry.sample_end, entry.text.as_str()))
-                .collect::<Vec<_>>(), pins);
+            assert_eq!(
+                after
+                    .text
+                    .split_whitespace()
+                    .filter(|text| *text == "beta")
+                    .count(),
+                usize::from(!covered)
+            );
+            let evidence = emitter
+                .session_state
+                .lock()
+                .unwrap()
+                .unanchored_evidence("late", 7);
+            assert_eq!(
+                evidence
+                    .iter()
+                    .map(|entry| (entry.sample_start, entry.sample_end, entry.text.as_str()))
+                    .collect::<Vec<_>>(),
+                pins
+            );
             let missing = before.missing_words_from(&after);
             assert!(!missing.iter().any(|word| word.reason == "unaccounted"));
-            assert_eq!(missing.iter().filter(|word| word.word == "beta").count(), usize::from(covered));
+            assert_eq!(
+                missing.iter().filter(|word| word.word == "beta").count(),
+                usize::from(covered)
+            );
             seal_into(&emitter, &ledger, &owner);
-            late_apple_into(&emitter, &ledger,
-                &OccurrenceIdentity::new("late", 7, 4_000, 8_000), 40, "alpha");
+            late_apple_into(
+                &emitter,
+                &ledger,
+                &OccurrenceIdentity::new("late", 7, 4_000, 8_000),
+                40,
+                "alpha",
+            );
             emitter.on_event(&EngineEvent::SessionFinalised {
-                session_id: "late".into(), layer_summary: LayerSummary::default(),
+                session_id: "late".into(),
+                layer_summary: LayerSummary::default(),
             });
             let terminal = emitter.finish_stop_canvas().unwrap();
             assert_eq!(terminal.text, after.text);
-            assert_eq!(terminal.late_apple_word_counts(), after.late_apple_word_counts());
-            assert_eq!(emitter.session_state.lock().unwrap().unanchored_evidence("late", 7), evidence);
+            assert_eq!(
+                terminal.late_apple_word_counts(),
+                after.late_apple_word_counts()
+            );
+            assert_eq!(
+                emitter
+                    .session_state
+                    .lock()
+                    .unwrap()
+                    .unanchored_evidence("late", 7),
+                evidence
+            );
             assert_eq!(ledger.lock().unwrap().len(), 1);
             emitter.finish().await;
         }
@@ -8390,67 +8485,143 @@ mod tests {
     async fn late_apple_evidence_five_iwo_and_same_pin_alternatives() {
         let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
         let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::new(Mutex::new(String::new())), None, None, None,
-            Some(Arc::clone(&ledger)), None,
+            Arc::new(Mutex::new(String::new())),
+            None,
+            None,
+            None,
+            Some(Arc::clone(&ledger)),
+            None,
         );
         emitter.set_literal_delivery(true);
         emitter.on_capture_opened("five-late", 7);
         let owner = OccurrenceIdentity::new("five-late", 7, 0, 100_000);
         admit_into(&emitter, &ledger, &owner, 1, "document");
         for i in 0..5 {
-            late_apple_into(&emitter, &ledger,
-                &OccurrenceIdentity::new("five-late", 7, 4_000 + i * 16_000, 8_000 + i * 16_000), i + 2, "Iwo");
+            late_apple_into(
+                &emitter,
+                &ledger,
+                &OccurrenceIdentity::new("five-late", 7, 4_000 + i * 16_000, 8_000 + i * 16_000),
+                i + 2,
+                "Iwo",
+            );
         }
         let before = emitter.begin_stop_canvas().unwrap();
         assert_eq!(before.text, "document Iwo Iwo Iwo Iwo Iwo");
         assert_eq!(before.late_apple_word_counts(), (5, 0));
-        late_apple_into(&emitter, &ledger,
-            &OccurrenceIdentity::new("five-late", 7, 4_000, 8_000), 20, "Iwo");
+        late_apple_into(
+            &emitter,
+            &ledger,
+            &OccurrenceIdentity::new("five-late", 7, 4_000, 8_000),
+            20,
+            "Iwo",
+        );
         assert_eq!(emitter.finish_stop_canvas().unwrap(), before);
-        late_apple_into(&emitter, &ledger,
-            &OccurrenceIdentity::new("five-late", 7, 4_000, 8_000), 21, "Ewa");
+        late_apple_into(
+            &emitter,
+            &ledger,
+            &OccurrenceIdentity::new("five-late", 7, 4_000, 8_000),
+            21,
+            "Ewa",
+        );
         let after = emitter.visible_canvas_snapshot().unwrap();
         assert_eq!(after.late_apple_word_counts(), (6, 0));
-        assert_eq!(after.text.split_whitespace().filter(|word| *word == "Iwo").count(), 5);
-        assert_eq!(emitter.session_state.lock().unwrap().unanchored_evidence("five-late", 7).len(), 6);
+        assert_eq!(
+            after
+                .text
+                .split_whitespace()
+                .filter(|word| *word == "Iwo")
+                .count(),
+            5
+        );
+        assert_eq!(
+            emitter
+                .session_state
+                .lock()
+                .unwrap()
+                .unanchored_evidence("five-late", 7)
+                .len(),
+            6
+        );
         emitter.finish().await;
     }
 
     #[tokio::test]
     async fn evidence_without_late_apple_keeps_existing_bytes() {
-        for reason in [super::NoAuthorityReason::OverlapWithoutWordPins,
+        for reason in [
+            super::NoAuthorityReason::OverlapWithoutWordPins,
             super::NoAuthorityReason::ExclusiveTailAwaitingWholeSpan,
-            super::NoAuthorityReason::ZeroWidth] {
+            super::NoAuthorityReason::ZeroWidth,
+        ] {
             let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
             let mut emitter = PresentationEmitter::new_with_authority(
-                Arc::new(Mutex::new(String::new())), None, None, None,
-                Some(Arc::clone(&ledger)), None,
+                Arc::new(Mutex::new(String::new())),
+                None,
+                None,
+                None,
+                Some(Arc::clone(&ledger)),
+                None,
             );
             emitter.set_literal_delivery(true);
             emitter.on_capture_opened("unchanged", 7);
             let owner = OccurrenceIdentity::new("unchanged", 7, 0, 64_000);
             admit_into(&emitter, &ledger, &owner, 1, "Document, exactly.");
             for (start, end, text) in [(4_000, 8_000, "covered"), (80_000, 88_000, "uncovered")] {
-                let end = if reason == super::NoAuthorityReason::ZeroWidth { start } else { end };
-                let observation = ObservationIdentity::new(ObservationProducer::Apple, start, 0,
-                    OccurrenceIdentity::new("unchanged", 7, start, end));
-                let receipt = ledger.lock().unwrap().keep_visible_unanchored(&observation, text, reason);
-                emitter.on_event(&EngineEvent::LedgerMutation { observation, label: text.into(), receipt });
+                let end = if reason == super::NoAuthorityReason::ZeroWidth {
+                    start
+                } else {
+                    end
+                };
+                let observation = ObservationIdentity::new(
+                    ObservationProducer::Apple,
+                    start,
+                    0,
+                    OccurrenceIdentity::new("unchanged", 7, start, end),
+                );
+                let receipt =
+                    ledger
+                        .lock()
+                        .unwrap()
+                        .keep_visible_unanchored(&observation, text, reason);
+                emitter.on_event(&EngineEvent::LedgerMutation {
+                    observation,
+                    label: text.into(),
+                    receipt,
+                });
             }
             let frozen = emitter.begin_stop_canvas().unwrap();
             assert_eq!(frozen.text, "Document, exactly. uncovered");
             assert_eq!(frozen.preview_only_words, 1);
             assert_eq!(frozen.late_apple_word_counts(), (0, 0));
-            assert_eq!(frozen.missing_words_from(&frozen), vec![super::MissingVisibleWord {
-                word: "covered".into(), reason: format!("covered_by_committed occurrence={owner:?}"),
-            }]);
+            assert_eq!(
+                frozen.missing_words_from(&frozen),
+                vec![super::MissingVisibleWord {
+                    word: "covered".into(),
+                    reason: format!("covered_by_committed occurrence={owner:?}"),
+                }]
+            );
             assert_eq!(emitter.finish_stop_canvas().unwrap(), frozen);
             seal_into(&emitter, &ledger, &owner);
-            assert_eq!(emitter.session_state.lock().unwrap().unanchored_evidence("unchanged", 7).len(), 1);
+            assert_eq!(
+                emitter
+                    .session_state
+                    .lock()
+                    .unwrap()
+                    .unanchored_evidence("unchanged", 7)
+                    .len(),
+                1
+            );
             emitter.on_event(&EngineEvent::SessionFinalised {
-                session_id: "unchanged".into(), layer_summary: LayerSummary::default(),
+                session_id: "unchanged".into(),
+                layer_summary: LayerSummary::default(),
             });
-            assert!(emitter.session_state.lock().unwrap().unanchored_evidence("unchanged", 7).is_empty());
+            assert!(
+                emitter
+                    .session_state
+                    .lock()
+                    .unwrap()
+                    .unanchored_evidence("unchanged", 7)
+                    .is_empty()
+            );
             emitter.finish().await;
         }
     }
