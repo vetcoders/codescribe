@@ -81,7 +81,7 @@ use crate::os::clipboard;
 use crate::os::hold_badge::BadgeMode;
 use crate::os::hotkeys::{self, HoldMode};
 use crate::os::selection::{
-    AssistiveContext, capture_assistive_context,
+    AssistiveContext, CapturedAssistiveContext, capture_assistive_context,
     capture_assistive_context_with_image_with_prior_frontmost,
     capture_frontmost_app_only_with_prior_frontmost, is_codescribe_app,
 };
@@ -1558,6 +1558,7 @@ impl RecordingController {
         &self,
         state: State,
         prior_frontmost_app: Option<String>,
+        allow_clipboard_image: bool,
     ) -> AssistiveContext {
         // Start selection capture first: focus/caret state may disappear as soon
         // as the combo changes the UI. Snapshot the live transcript position
@@ -1567,37 +1568,28 @@ impl RecordingController {
         });
         let position = self.current_live_transcript_position(state).await;
         let captured_payload = capture_task.await.unwrap_or_default();
-        let captured = captured_payload.context;
-        let fallback = captured.clone();
-        // A selected image is retained before clipboard restoration. If Cmd+C
-        // produced no image, preserve the existing clipboard-image behavior.
-        let image_png = match captured_payload.image_png {
-            some @ Some(_) => some,
-            None => tokio::task::spawn_blocking(clipboard::get_image_png_best_effort)
+        let fallback = captured_payload.context.clone();
+        // The OS capture retains a selected image before clipboard restoration.
+        // Only assistive combos may also read an image already on the clipboard.
+        let clipboard_image = if allow_clipboard_image && captured_payload.image_png.is_none() {
+            tokio::task::spawn_blocking(clipboard::get_image_png_best_effort)
                 .await
-                .unwrap_or(None),
+                .unwrap_or(None)
+        } else {
+            None
         };
         let mut bucket = self.context_bucket.lock().await;
-        let result = (|| -> anyhow::Result<_> {
-            let mut context = captured;
-            let mut markers = Vec::new();
-            if let Some(selected_text) = context.selected_text.take()
-                && let Some(marker) = bucket.add_selection(position, selected_text)?
-            {
-                markers.push(marker);
-            }
-            if let Some(png) = image_png
-                && let Some(mut marker) = bucket.add_image_png(&png)?
-            {
-                marker.position = position;
-                markers.push(marker);
-            }
-            Ok((context, markers))
-        })();
+        let result = Self::record_captured_context(
+            &mut bucket,
+            position,
+            allow_clipboard_image,
+            || captured_payload,
+            || clipboard_image,
+        );
         drop(bucket);
 
         match result {
-            Ok((context, markers)) => {
+            Ok((context, events)) => {
                 let event_sink = {
                     let recorder = self.recorder.lock().await;
                     recorder
@@ -1605,13 +1597,10 @@ impl RecordingController {
                         .and_then(StreamingRecorder::event_sink_handle)
                 };
                 if let Some(event_sink) = event_sink {
-                    for marker in markers {
-                        event_sink.on_event(&EngineEvent::ContextMarker {
-                            position: marker.position,
-                            label: format!("{{{}}}", marker.label),
-                        });
+                    for event in &events {
+                        event_sink.on_event(event);
                     }
-                } else if !markers.is_empty() {
+                } else if !events.is_empty() {
                     warn!("Context markers captured without an active presentation reducer");
                 }
                 context
@@ -1621,6 +1610,48 @@ impl RecordingController {
                 fallback
             }
         }
+    }
+
+    /// Store only captures admitted by this route and return their reducer events.
+    /// Source closures let tests prove the clipboard policy without a pasteboard.
+    fn record_captured_context<C, P>(
+        bucket: &mut ContextBucket,
+        position: usize,
+        allow_clipboard_image: bool,
+        selection_source: C,
+        clipboard_source: P,
+    ) -> Result<(AssistiveContext, Vec<EngineEvent>)>
+    where
+        C: FnOnce() -> CapturedAssistiveContext,
+        P: FnOnce() -> Option<Vec<u8>>,
+    {
+        let captured = selection_source();
+        let mut context = captured.context;
+        let image_png = captured.image_png.or_else(|| {
+            if allow_clipboard_image {
+                clipboard_source()
+            } else {
+                None
+            }
+        });
+        let mut events = Vec::new();
+        if let Some(selected_text) = context.selected_text.take()
+            && let Some(marker) = bucket.add_selection(position, selected_text)?
+        {
+            events.push(EngineEvent::ContextMarker {
+                position: marker.position,
+                label: format!("{{{}}}", marker.label),
+            });
+        }
+        if let Some(png) = image_png
+            && let Some(marker) = bucket.add_image_png(&png)?
+        {
+            events.push(EngineEvent::ContextMarker {
+                position,
+                label: format!("{{{}}}", marker.label),
+            });
+        }
+        Ok((context, events))
     }
 
     /// Attach the current OS selection as `{selection_N}` during an in-flight
@@ -1635,7 +1666,7 @@ impl RecordingController {
 
         let prior_frontmost_app = self.pre_overlay_frontmost_app.read().await.clone();
         let _ctx = self
-            .capture_assistive_combo_context(current_state, prior_frontmost_app)
+            .capture_assistive_combo_context(current_state, prior_frontmost_app, false)
             .await;
         Ok(())
     }
@@ -3280,7 +3311,11 @@ impl RecordingController {
                             let prior_frontmost_app =
                                 self.pre_overlay_frontmost_app.read().await.clone();
                             let ctx = self
-                                .capture_assistive_combo_context(current_state, prior_frontmost_app)
+                                .capture_assistive_combo_context(
+                                    current_state,
+                                    prior_frontmost_app,
+                                    true,
+                                )
                                 .await;
                             *self.assistive_context.write().await = Some(ctx);
 
@@ -3298,7 +3333,11 @@ impl RecordingController {
                             let prior_frontmost_app =
                                 self.pre_overlay_frontmost_app.read().await.clone();
                             let ctx = self
-                                .capture_assistive_combo_context(current_state, prior_frontmost_app)
+                                .capture_assistive_combo_context(
+                                    current_state,
+                                    prior_frontmost_app,
+                                    true,
+                                )
                                 .await;
                             *self.assistive_context.write().await = Some(ctx);
 
@@ -5299,6 +5338,104 @@ impl Default for RecordingController {
     /// Build a controller with production defaults (`RecordingController::new`).
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod hold_context_tests {
+    use super::*;
+
+    fn bucket(root: &std::path::Path) -> ContextBucket {
+        ContextBucket::for_codescribe_data_dir(root)
+    }
+
+    fn assert_only_marker(events: &[EngineEvent], expected: &str, position: usize) {
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            EngineEvent::ContextMarker { position: at, label }
+                if *at == position && label == expected
+        ));
+    }
+
+    #[test]
+    fn hold_with_no_selection_ignores_existing_clipboard_image() {
+        let root = tempfile::tempdir().unwrap();
+        let mut bucket = bucket(root.path());
+        let clipboard_reads = std::cell::Cell::new(0);
+        let (context, events) = RecordingController::record_captured_context(
+            &mut bucket,
+            0,
+            false,
+            CapturedAssistiveContext::default,
+            || {
+                clipboard_reads.set(clipboard_reads.get() + 1);
+                Some(b"existing clipboard image".to_vec())
+            },
+        )
+        .unwrap();
+        assert_eq!(clipboard_reads.get(), 0);
+        assert!(context.selected_text.is_none());
+        assert!(bucket.is_empty());
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn hold_keeps_selected_text_marker() {
+        let root = tempfile::tempdir().unwrap();
+        let mut bucket = bucket(root.path());
+        let (_, events) = RecordingController::record_captured_context(
+            &mut bucket,
+            7,
+            false,
+            || CapturedAssistiveContext {
+                context: AssistiveContext {
+                    selected_text: Some("selected words".into()),
+                    frontmost_app: None,
+                },
+                image_png: None,
+            },
+            || panic!("hold must not read the clipboard image"),
+        )
+        .unwrap();
+        assert!(!bucket.is_empty());
+        assert_eq!(bucket.image_count(), 0);
+        assert_only_marker(&events, "{selection_1}", 7);
+    }
+
+    #[test]
+    fn hold_keeps_image_produced_by_selection_capture() {
+        let root = tempfile::tempdir().unwrap();
+        let mut bucket = bucket(root.path());
+        let (_, events) = RecordingController::record_captured_context(
+            &mut bucket,
+            7,
+            false,
+            || CapturedAssistiveContext {
+                context: AssistiveContext::default(),
+                image_png: Some(b"selected image".to_vec()),
+            },
+            || panic!("captured selection image must not trigger clipboard fallback"),
+        )
+        .unwrap();
+        assert_eq!(bucket.image_count(), 1);
+        assert_only_marker(&events, "{image_1}", 7);
+    }
+
+    #[test]
+    fn assistive_combo_keeps_clipboard_image_when_selection_is_empty() {
+        let root = tempfile::tempdir().unwrap();
+        let mut bucket = bucket(root.path());
+        let (_, events) = RecordingController::record_captured_context(
+            &mut bucket,
+            7,
+            true,
+            CapturedAssistiveContext::default,
+            || Some(b"clipboard image".to_vec()),
+        )
+        .unwrap();
+        assert_eq!(bucket.image_count(), 1);
+        assert_only_marker(&events, "{image_1}", 7);
     }
 }
 
