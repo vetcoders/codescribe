@@ -8,7 +8,7 @@ description: >
   Editing this skill or the app is a repository task, not an instruction to
   start another listener.
 metadata:
-  version: "0.5.1"
+  version: "0.6.0"
   loctree_value: "primary repo map for structural/literal repository work"
   aicx_value: "intent, session, and decision-context retrieval"
   dogfooding: "required for repo-impacting work"
@@ -85,6 +85,7 @@ Read only the reference needed by the current operation:
 | Select or diagnose notification/wakeup        | [Monitor](references/monitor.md)           |
 | Interpret drafts, revisions, refusal and seal | [Live vs seal](references/live-vs-seal.md) |
 | CLI transcript or shell insertion             | [CLI](references/cli.md)                   |
+| Spoken reply or voice notification            | [Voice reply](references/voice-reply.md)   |
 
 The [flow](FLOW.md) summarizes the path. [Examples](examples/example-prompt.md)
 include successful delivery, unavailable wakeup, and seal refusal.
@@ -143,6 +144,8 @@ transcript output; a monitor is not required.
 ## Output
 
 Give the name, delivery disposition and next relevant fact in a short response.
+When the Founder asks for a spoken reply, also speak it as described in
+[Voice reply](references/voice-reply.md); never while a take is live.
 Retain technical receipts in the current session's existing artifact surface
 when available; do not create a second configuration or lease database.
 Do not claim "I hear you" from an attach receipt alone.

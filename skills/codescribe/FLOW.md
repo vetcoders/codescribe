@@ -22,4 +22,5 @@ delivery. Explicit stop closes owned handles. Neither recovery nor an observer
 creates a second microphone.
 
 Procedures: [attach](references/attach.md), [monitor](references/monitor.md),
-[live vs seal](references/live-vs-seal.md), [CLI](references/cli.md).
+[live vs seal](references/live-vs-seal.md), [CLI](references/cli.md),
+[voice reply](references/voice-reply.md).
