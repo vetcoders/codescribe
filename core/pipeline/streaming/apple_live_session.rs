@@ -15998,6 +15998,146 @@ mod relay_l1_overlap_admission_tests {
         assert_conserved(&lane, Some("no_voiced_hop_in_pin"));
     }
 
+    /// A missing capture-energy observation is not evidence of speech. The
+    /// first half is measured, but the Whisper word pin is wholly in the
+    /// unobserved tail. Unlike measured silence, `voiced_hops_in` returns
+    /// `None` here; that must not become permission to relabel the occurrence.
+    #[test]
+    fn whisper_pin_in_unobserved_tail_cannot_gain_speech_authority() {
+        let mut lane = open("relay-unobserved-pin");
+        let session = "relay-unobserved-pin";
+        let observed_end = 24_000_u64;
+        let end = 48_000_u64;
+        record_energy(&lane, &[vec![0.2; observed_end as usize]]);
+        let occurrence = OccurrenceIdentity::new(session, 1, 0, end);
+        stage(&mut lane, 1, occurrence.clone(), "mowa");
+        assert!(
+            lane.state
+                .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, "mowa"))
+        );
+        assert!(lane.state.flush_layer1_coalesce(&lane.tx));
+        close_lexicon(&mut lane, 1, &occurrence, "mowa");
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 1);
+        let pin_start = 26_000;
+        let pin_end = 46_000;
+        assert!(pin_start >= observed_end && pin_end <= end);
+        assert_eq!(
+            lane.state
+                .capture_energy
+                .voiced_hops_in(session, 1, pin_start, pin_end),
+            None,
+            "the pin lies outside measured capture, not in measured silence"
+        );
+
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![word_pin(session, "halucynacja", pin_start, pin_end)],
+            ),
+            3.0,
+        );
+        let events = drain(&mut lane.rx);
+        assert_eq!(
+            mutation_count(&events),
+            0,
+            "unobserved PCM cannot authorize a Whisper word"
+        );
+        assert!(
+            !unanchored_label(&events, "halucynacja"),
+            "unknown support must not paint a word as if it were speech-backed"
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            EngineEvent::LedgerMutation {
+                observation,
+                receipt: MutationReceipt::Refuse { .. },
+                ..
+            } if observation.occurrence.sample_start == pin_start
+                && observation.occurrence.sample_end == pin_end
+        )));
+        assert_eq!(held_text(&lane, &occurrence).as_deref(), Some("mowa"));
+        assert_eq!(held_count(&lane), 1);
+    }
+
+    /// The capture writer precedes the Apple worker, so an ordinarily late
+    /// energy writer is not a production explanation for `None`. An invalid
+    /// earlier PCM block is: the owner marks this epoch unmeasurable, while a
+    /// later finite occurrence still has its own window and qualification.
+    /// The pin is in that occurrence's measured-zero tail and must not borrow
+    /// speech authority from a poisoned, unavailable energy lookup.
+    #[test]
+    fn whisper_pin_after_invalid_capture_cannot_gain_speech_authority() {
+        let mut lane = open("relay-invalid-before-pin");
+        let session = "relay-invalid-before-pin";
+        let earlier_invalid_end = 160_u64;
+        let voiced_len = 24_000_u64;
+        let occurrence_end = earlier_invalid_end + 48_000;
+        record_energy(
+            &lane,
+            &[
+                vec![f32::NAN; earlier_invalid_end as usize],
+                vec![0.2; voiced_len as usize],
+                vec![0.0; voiced_len as usize],
+            ],
+        );
+        let occurrence = OccurrenceIdentity::new(
+            session,
+            1,
+            earlier_invalid_end,
+            occurrence_end,
+        );
+        stage(&mut lane, 1, occurrence.clone(), "mowa");
+        let mut l1_piece = piece(1, &occurrence, "mowa");
+        l1_piece.audio[voiced_len as usize..].fill(0.0);
+        assert!(lane.state.enqueue_layer1_piece(&lane.tx, l1_piece));
+        assert!(lane.state.flush_layer1_coalesce(&lane.tx));
+        close_lexicon(&mut lane, 1, &occurrence, "mowa");
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 1);
+        let pin_start = earlier_invalid_end + 26_000;
+        let pin_end = earlier_invalid_end + 46_000;
+        assert!(pin_start >= earlier_invalid_end + voiced_len);
+        assert!(pin_end <= occurrence_end);
+        assert_eq!(
+            lane.state
+                .capture_energy
+                .voiced_hops_in(session, 1, pin_start, pin_end),
+            None,
+            "invalid earlier PCM makes this owner unavailable, not speech-backed"
+        );
+
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![word_pin(session, "halucynacja", pin_start, pin_end)],
+            ),
+            3.0,
+        );
+        let events = drain(&mut lane.rx);
+        assert_eq!(
+            mutation_count(&events),
+            0,
+            "an invalid speech witness cannot authorize a silent pin"
+        );
+        assert!(!unanchored_label(&events, "halucynacja"));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            EngineEvent::LedgerMutation {
+                observation,
+                receipt: MutationReceipt::Refuse { .. },
+                ..
+            } if observation.occurrence.sample_start == pin_start
+                && observation.occurrence.sample_end == pin_end
+        )));
+        assert_eq!(held_text(&lane, &occurrence).as_deref(), Some("mowa"));
+        assert_eq!(held_count(&lane), 1);
+    }
+
     /// The same geometry, with the pin overlapping a voiced hop.
     ///
     /// Contract: a pin that contains voiced audio stays admissible. Hop
@@ -16208,6 +16348,160 @@ mod relay_l1_overlap_admission_tests {
             Some("cale raz dwa")
         );
         assert_eq!(held_count(&lane), 1);
+        assert_conserved(&lane, None);
+    }
+
+    /// A local L1 word has its own PCM support even when later speech in the
+    /// same long Silero occurrence is still unresolved. Accepting the word
+    /// must neither wait for that later hop nor certify it by relabelling the
+    /// whole occurrence. This is the per-span Relay contract, not a terminal
+    /// seal or permission to guess the missing word.
+    #[test]
+    fn local_word_pin_advances_without_covering_unresolved_neighbour() {
+        let session = "relay-local-pin-debt";
+        let mut lane = open(session);
+        record_voiced_spans(
+            &lane,
+            LONG_SAMPLES,
+            &[(8_000, 48_000), (100_000, 140_000)],
+        );
+        let occurrence = OccurrenceIdentity::new(session, 1, 0, LONG_SAMPLES);
+        qualify_unlabelled(&mut lane, &occurrence);
+        let mut input = piece(1, &occurrence, "");
+        input.audio.fill(0.0);
+        input.audio[8_000..48_000].fill(0.2);
+        input.audio[100_000..140_000].fill(0.2);
+        assert!(lane.state.enqueue_layer1_piece(&lane.tx, input));
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 3);
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| {
+                    (
+                        request.provider_request.identity.range.sample_start,
+                        request.provider_request.identity.range.sample_end,
+                        request.admit_sample_start,
+                        request.admit_sample_end,
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                (0, 64_000, 0, 48_000),
+                (48_000, 112_000, 48_000, 96_000),
+                (96_000, 152_000, 96_000, 152_000),
+            ],
+        );
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![word_pin(session, "raz", 8_000, 48_000)],
+            ),
+            4.0,
+        );
+        let events = drain(&mut lane.rx);
+        assert!(
+            mutation_count(&events) > 0,
+            "the first grounded word must reach the ledger before the later hop is decoded"
+        );
+
+        let speech = AcousticSpeechEvidence::measured(
+            crate::audio::capture_receipt::CaptureEvidenceIdentity::new(session, 1),
+            "relay-local-pin-debt-test",
+            AcousticAvailability::Observed {
+                observed_samples: LONG_SAMPLES,
+            },
+            vec![
+                TailSampleRange {
+                    session: session.to_string(),
+                    capture_epoch: 1,
+                    sample_start: 8_000,
+                    sample_end: 48_000,
+                },
+                TailSampleRange {
+                    session: session.to_string(),
+                    capture_epoch: 1,
+                    sample_start: 100_000,
+                    sample_end: 140_000,
+                },
+            ],
+        );
+        let coverage = lane
+            .state
+            .acoustic_ledger
+            .lock()
+            .expect("ledger")
+            .assess_seal_coverage(session, 1, &speech, 250);
+        assert_eq!(coverage.status, SealCoverageStatus::Incomplete);
+        assert_eq!(coverage.speech_samples, 80_000);
+        assert_eq!(coverage.covered_samples, 40_000);
+        assert_eq!(
+            coverage
+                .uncovered_speech_ranges
+                .iter()
+                .map(|range| (range.sample_start, range.sample_end))
+                .collect::<Vec<_>>(),
+            vec![(100_000, 140_000)]
+        );
+        assert_conserved(&lane, None);
+    }
+
+    /// Whisper must fill a missed first speech island while preserving an
+    /// Apple word for the later island. Apple's broad phrase has no word-level
+    /// timing here, so this test proves coexistence, not a lexical replacement
+    /// of an individually pinned Apple word.
+    #[test]
+    fn local_l1_fills_apple_omission_without_erasing_neighbour() {
+        let session = "relay-local-apple-omission";
+        let mut lane = open(session);
+        record_voiced_spans(
+            &lane,
+            LONG_SAMPLES,
+            &[(8_000, 48_000), (100_000, 140_000)],
+        );
+        let occurrence = OccurrenceIdentity::new(session, 1, 0, LONG_SAMPLES);
+        let apple = "prawy";
+        stage(&mut lane, 1, occurrence.clone(), apple);
+        let mut input = piece(1, &occurrence, apple);
+        input.audio.fill(0.0);
+        input.audio[8_000..48_000].fill(0.2);
+        input.audio[100_000..140_000].fill(0.2);
+        assert!(lane.state.enqueue_layer1_piece(&lane.tx, input));
+        close_lexicon(&mut lane, 1, &occurrence, apple);
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 3);
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![word_pin(session, "dobry", 8_000, 48_000)],
+            ),
+            4.0,
+        );
+        let events = drain(&mut lane.rx);
+        assert!(
+            mutation_count(&events) > 0,
+            "the grounded local word must enter the ledger before the later island is decoded by L1"
+        );
+
+        let ledger = lane.state.acoustic_ledger.lock().expect("ledger");
+        let committed = ledger
+            .occurrences()
+            .filter_map(|identity| ledger.text_of(identity))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            committed.contains("dobry"),
+            "the missing first word must be committed: {committed}"
+        );
+        assert!(
+            committed.contains("prawy"),
+            "the first-island fill must not erase Apple's later word: {committed}"
+        );
+        drop(ledger);
         assert_conserved(&lane, None);
     }
 
