@@ -1595,7 +1595,8 @@ final class SettingsTruthTests: XCTestCase {
     let scroll = try XCTUnwrap(pane.range(of: "      ScrollView {"))
     let header = try XCTUnwrap(pane.range(of: "SettingsTabBar(model: model, section: section)"))
     XCTAssertLessThan(header.lowerBound, scroll.lowerBound)
-    XCTAssertEqual(pane.components(separatedBy: "SettingsTabBar(model: model, section: section)").count, 2)
+    XCTAssertEqual(
+      pane.components(separatedBy: "SettingsTabBar(model: model, section: section)").count, 2)
     XCTAssertTrue(pane[..<scroll.lowerBound].contains(".background(CSColor.windowWash)"))
     XCTAssertTrue(pane[scroll.lowerBound...].contains(".id(model.currentTab)"))
 
@@ -1622,7 +1623,8 @@ final class SettingsTruthTests: XCTestCase {
   func testShortcutsKeepsThePlainDetailScrollWithoutATabHeader() throws {
     let detail = try settingsLayoutSource("SettingsView.swift")
     let plainScroll = try XCTUnwrap(detail.range(of: "default:\n          ScrollView {"))
-    let shortcuts = try XCTUnwrap(detail.range(of: "case .shortcuts:\n      ShortcutsPanel(model: model)"))
+    let shortcuts = try XCTUnwrap(
+      detail.range(of: "case .shortcuts:\n      ShortcutsPanel(model: model)"))
     XCTAssertTrue(detail[plainScroll.lowerBound...].contains("untabbedDetail"))
     XCTAssertLessThan(plainScroll.lowerBound, shortcuts.lowerBound)
     XCTAssertFalse(detail.contains("SettingsTabBar("))
