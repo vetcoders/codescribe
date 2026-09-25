@@ -11,7 +11,9 @@ final class CsErrorPresentationTests: XCTestCase {
     let message = "Provider stream error: Agent SSE HTTP 401 Unauthorized: insufficient permissions"
     let error: Error = CsError.Agent(msg: message)
     XCTAssertEqual(error.userFacingMessage, message)
-    XCTAssertTrue(error.localizedDescription.contains("CsError"), "the generated description is the enum dump this seam exists to hide")
+    XCTAssertTrue(
+      error.localizedDescription.contains("CsError"),
+      "the generated description is the enum dump this seam exists to hide")
     XCTAssertFalse(error.userFacingMessage.contains("CsError"))
     XCTAssertEqual(CsError.Config(msg: "no key").userFacingMessage, "no key")
   }

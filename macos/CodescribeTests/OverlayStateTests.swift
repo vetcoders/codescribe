@@ -114,9 +114,10 @@ private final class OverlayStateTestEngine: DictationEngine {
     restoredSelections.append(restoreRevision)
     onRestore?()
     let text = historyEntries.first(where: { $0.revision == restoreRevision })!.renderedText
-    historyEntries.append(CsDocumentHistoryEntry(
-      revision: sourceRevision + 1, renderedText: text, provenance: "user-edit",
-      emittedAt: "2026-09-25T00:00:04Z"))
+    historyEntries.append(
+      CsDocumentHistoryEntry(
+        revision: sourceRevision + 1, renderedText: text, provenance: "user-edit",
+        emittedAt: "2026-09-25T00:00:04Z"))
     return CsUserRevisionResult(
       sessionId: sessionId, sourceRevision: sourceRevision,
       revision: sourceRevision + 1, renderedText: text,
@@ -376,7 +377,8 @@ final class OverlayStateTests: XCTestCase {
         reducerRevision: reducerRevision ?? sequence,
         reducerAction: reducerAction
           ?? (terminal
-            ? (projectedPhase == "coverage_refused" ? "session_ended" : "record_ledger_terminal_seal")
+            ? (projectedPhase == "coverage_refused"
+              ? "session_ended" : "record_ledger_terminal_seal")
             : "record_ledger_projection"),
         occurrenceSessionId: sessionId,
         captureEpoch: 1,
@@ -422,14 +424,16 @@ final class OverlayStateTests: XCTestCase {
       ],
       renderedText: "git add -- 'plik ze spacją.rs'")
     let text = group.renderedText + " dalsze słowa"
-    projectText(text, to: state, sessionId: "max-live", reducerRevision: 5,
+    projectText(
+      text, to: state, sessionId: "max-live", reducerRevision: 5,
       reducerAction: "apply_consultation_presentation", consultationPresentations: [group])
     XCTAssertEqual(state.latestTranscriptProjection?.consultationPresentations, [group])
     XCTAssertEqual(state.latestTranscriptProjection?.renderedText, text)
     XCTAssertEqual(state.revisionDraft, text)
     XCTAssertFalse(state.terminal)
     XCTAssertTrue(ended.isEmpty)
-    projectText(text + " jutro", to: state, sessionId: "max-live", reducerRevision: 6,
+    projectText(
+      text + " jutro", to: state, sessionId: "max-live", reducerRevision: 6,
       consultationPresentations: [group])
     XCTAssertEqual(state.latestTranscriptProjection?.consultationPresentations, [group])
     XCTAssertEqual(state.revisionDraft, text + " jutro")
@@ -443,11 +447,14 @@ final class OverlayStateTests: XCTestCase {
       identities.append(sessionID)
       return .admitted(threadID: UUID())
     }
-    projectText("same", to: state, terminal: true, delivery: .composerPending,
+    projectText(
+      "same", to: state, terminal: true, delivery: .composerPending,
       sessionId: "A", reducerAction: "session_ended")
-    projectText("same", to: state, terminal: true, delivery: .composerPending,
+    projectText(
+      "same", to: state, terminal: true, delivery: .composerPending,
       sessionId: "B", reducerAction: "session_ended")
-    projectText("same", to: state, terminal: true, delivery: .composerPending,
+    projectText(
+      "same", to: state, terminal: true, delivery: .composerPending,
       sessionId: "A", reducerAction: "session_ended")
     XCTAssertEqual(identities, ["A", "B"])
     XCTAssertEqual(state.latestTranscriptProjection?.sessionId, "B")
@@ -457,12 +464,14 @@ final class OverlayStateTests: XCTestCase {
     let state = OverlayState()
     let text = "  identical\t🙂  "
     for sessionID in ["A", "A", "B", "A"] {
-      projectText(text, to: state, terminal: true, delivery: .composerPending,
+      projectText(
+        text, to: state, terminal: true, delivery: .composerPending,
         sessionId: sessionID, reducerAction: "session_ended")
     }
     XCTAssertEqual(state.retainedComposerDelivery, text + "\n" + text)
     state.onComposerTranscript = { _, _ in .admitted(threadID: UUID()) }
-    projectText(text, to: state, terminal: true, delivery: .composerPending,
+    projectText(
+      text, to: state, terminal: true, delivery: .composerPending,
       sessionId: "A", reducerAction: "session_ended")
     XCTAssertEqual(state.retainedComposerDelivery, text)
     XCTAssertEqual(state.latestTranscriptProjection?.sessionId, "B")
@@ -481,7 +490,8 @@ final class OverlayStateTests: XCTestCase {
         return receipt
       }
 
-      projectText(text, to: state, terminal: true, delivery: .composerPending,
+      projectText(
+        text, to: state, terminal: true, delivery: .composerPending,
         sessionId: "S", reducerAction: "session_ended")
       let terminal = try XCTUnwrap(state.latestTranscriptProjection)
       state.applyTranscriptProjection(terminal)
@@ -500,12 +510,14 @@ final class OverlayStateTests: XCTestCase {
       received.append(text)
       return .admitted(threadID: UUID())
     }
-    projectText("prior R", to: state, terminal: true, delivery: .composerPending,
+    projectText(
+      "prior R", to: state, terminal: true, delivery: .composerPending,
       sessionId: "R", reducerAction: "session_ended")
     state.applyTranscriptProjection(try XCTUnwrap(state.latestTranscriptProjection))
 
     let text = "  new S\nS  "
-    projectText(text, to: state, terminal: true, delivery: .composerPending,
+    projectText(
+      text, to: state, terminal: true, delivery: .composerPending,
       sessionId: "S", reducerAction: "session_ended")
     state.applyTranscriptProjection(try XCTUnwrap(state.latestTranscriptProjection))
 
@@ -520,7 +532,8 @@ final class OverlayStateTests: XCTestCase {
         let state = OverlayState()
         if hasPriorSession {
           state.onComposerTranscript = { _, _ in .admitted(threadID: UUID()) }
-          projectText("prior R", to: state, terminal: true, delivery: .composerPending,
+          projectText(
+            "prior R", to: state, terminal: true, delivery: .composerPending,
             sessionId: "R", reducerAction: "session_ended")
         }
         var refused: [String] = []
@@ -532,7 +545,8 @@ final class OverlayStateTests: XCTestCase {
           }
         }
         let text = "  refused S\nrepeat repeat\t🙂  "
-        projectText(text, to: state, phase: "error", terminal: true,
+        projectText(
+          text, to: state, phase: "error", terminal: true,
           delivery: .composerPending, sessionId: "S", reducerAction: "session_ended")
         let terminal = try XCTUnwrap(state.latestTranscriptProjection)
         XCTAssertEqual(state.retainedComposerDelivery.map { Array($0.utf8) }, Array(text.utf8))
@@ -571,7 +585,8 @@ final class OverlayStateTests: XCTestCase {
         if !accepts { XCTAssertEqual(state?.retainedComposerDelivery, "S words") }
         captureOwner = nil
       }
-      projectText("S words", to: state, terminal: true, delivery: .composerPending,
+      projectText(
+        "S words", to: state, terminal: true, delivery: .composerPending,
         sessionId: "S", reducerAction: "session_ended")
       XCTAssertEqual(order, ["delivery", "stopped"])
       XCTAssertNil(captureOwner)
@@ -599,14 +614,16 @@ final class OverlayStateTests: XCTestCase {
         order.append("stopped")
         captureOwner = nil
       }
-      projectText("revised S", to: state, terminal: true, lifecycleTerminal: false,
+      projectText(
+        "revised S", to: state, terminal: true, lifecycleTerminal: false,
         sessionId: "S", reducerAction: "apply_manual_edit", manualEditReceipt: manualReceipt)
       XCTAssertTrue(order.isEmpty)
       XCTAssertEqual(captureOwner, owner)
       XCTAssertTrue(state.audioReady, "a document revision does not release capture")
       XCTAssertEqual(state.activeText, "revised S")
 
-      projectText("revised S", to: state, terminal: true, delivery: .composerPending,
+      projectText(
+        "revised S", to: state, terminal: true, delivery: .composerPending,
         sessionId: "S", reducerAction: "session_ended")
       state.applyTranscriptProjection(try XCTUnwrap(state.latestTranscriptProjection))
       XCTAssertEqual(order, ["delivery", "stopped"])
@@ -634,7 +651,8 @@ final class OverlayStateTests: XCTestCase {
         }
       }
       let text = receiverKind == "empty" ? "" : "S words"
-      projectText(text, to: state, terminal: true, delivery: .composerPending,
+      projectText(
+        text, to: state, terminal: true, delivery: .composerPending,
         sessionId: "S", reducerAction: "session_ended")
       let terminal = try XCTUnwrap(state.latestTranscriptProjection)
       for _ in 0..<2 {
@@ -657,13 +675,15 @@ final class OverlayStateTests: XCTestCase {
         return .admitted(threadID: UUID())
       }
       let initialText = delivery == .composerPending ? " \n\t " : "sink words"
-      projectText(initialText, to: state, terminal: true, delivery: delivery,
+      projectText(
+        initialText, to: state, terminal: true, delivery: delivery,
         sessionId: "S", reducerAction: "session_ended")
       state.applyTranscriptProjection(try XCTUnwrap(state.latestTranscriptProjection))
       XCTAssertTrue(received.isEmpty)
       XCTAssertNil(state.retainedComposerDelivery)
 
-      projectText("actual composer words", to: state, terminal: true, delivery: .composerPending,
+      projectText(
+        "actual composer words", to: state, terminal: true, delivery: .composerPending,
         sessionId: "S", reducerAction: "session_ended")
       state.applyTranscriptProjection(try XCTUnwrap(state.latestTranscriptProjection))
       XCTAssertEqual(received, ["actual composer words"])
@@ -1375,7 +1395,8 @@ final class OverlayStateTests: XCTestCase {
     let state = OverlayState()
     projectText("Tekst bazowy", to: state, terminal: true, reducerRevision: 7)
     let text = "  Tekst poprawiony\nraz raz  "
-    projectText(text, to: state, canCopy: true, terminal: true, reducerRevision: 8,
+    projectText(
+      text, to: state, canCopy: true, terminal: true, reducerRevision: 8,
       reducerAction: "apply_manual_edit", manualEditReceipt: "user-edit-test-7-8")
     XCTAssertEqual(Array(state.activeText.utf8), Array(text.utf8))
     XCTAssertEqual(state.revision, 8)
@@ -1726,7 +1747,8 @@ final class OverlayStateTests: XCTestCase {
     state.applyIndicatorMode(.assistive)
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
-    projectText("usable refused words", to: state, phase: "coverage_refused",
+    projectText(
+      "usable refused words", to: state, phase: "coverage_refused",
       canSendToAgent: true, terminal: true)
     state.finishControllerRecording()
     let delivered = expectation(description: "refused Agent take delivered")
@@ -1746,7 +1768,8 @@ final class OverlayStateTests: XCTestCase {
     state.applyIndicatorMode(.assistive)
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
-    projectText("words for review", to: state, phase: "coverage_refused",
+    projectText(
+      "words for review", to: state, phase: "coverage_refused",
       canSendToAgent: true, terminal: true)
     state.finishControllerRecording()
     state.beginTranscriptEdit()
@@ -1779,7 +1802,8 @@ final class OverlayStateTests: XCTestCase {
     projectText("third", to: state, terminal: true, reducerRevision: 3)
     await fulfillment(of: [loaded], timeout: 1)
     engine.onHistoryRead = nil
-    XCTAssertEqual(state.documentHistory.map(\.provenance),
+    XCTAssertEqual(
+      state.documentHistory.map(\.provenance),
       ["acoustic-ledger", "formatter", "retranscribe"])
 
     let requested = expectation(description: "selected history revision reached Rust")
@@ -1790,7 +1814,8 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.formattedText, "third", "only the reducer projection repaints")
     let refreshed = expectation(description: "fourth version loaded")
     engine.onHistoryRead = { refreshed.fulfill() }
-    projectText("first", to: state, terminal: true, lifecycleTerminal: false,
+    projectText(
+      "first", to: state, terminal: true, lifecycleTerminal: false,
       sessionId: "overlay-state-tests", reducerRevision: 4,
       reducerAction: "apply_manual_edit", manualEditReceipt: "user-edit-test-4")
     state.loadDocumentHistory()
@@ -1807,7 +1832,8 @@ final class OverlayStateTests: XCTestCase {
     var reads = 0
     engine.onHistoryRead = { reads += 1 }
     for revision in 1...10 {
-      projectText("version \(revision)", to: state, terminal: true,
+      projectText(
+        "version \(revision)", to: state, terminal: true,
         lifecycleTerminal: revision == 10, reducerRevision: UInt64(revision))
     }
     try? await Task.sleep(nanoseconds: 50_000_000)
@@ -1829,7 +1855,8 @@ final class OverlayStateTests: XCTestCase {
     state.fireAutoHideNowForTests(armedDeadline: 5)
     // No actor suspension between the refused deadline and explicit send:
     // an incorrect automatic send would already hold the delivery latch.
-    projectText("authorized revision", to: state, canSendToAgent: true, terminal: true,
+    projectText(
+      "authorized revision", to: state, canSendToAgent: true, terminal: true,
       lifecycleTerminal: false)
     let delivery = state.sendToAgent()
     XCTAssertNotNil(delivery)
@@ -1865,7 +1892,9 @@ final class OverlayStateTests: XCTestCase {
 
   func testAgentSendCompletionCannotDismissSuccessorCapture() async {
     enum SendFailure: Error { case refused }
-    let results: [Result<Bool, Error>] = [.success(true), .success(false), .failure(SendFailure.refused)]
+    let results: [Result<Bool, Error>] = [
+      .success(true), .success(false), .failure(SendFailure.refused),
+    ]
     for result in results {
       let engine = OverlayStateTestEngine()
       let state = OverlayState()
@@ -1919,7 +1948,8 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertFalse(OverlayIntentRail.projectedIntents(for: state).contains(.sendToAgent))
     XCTAssertNil(state.sendToAgent(), "direct invocation must also respect the producer")
 
-    projectText("accepted final", to: state, canSendToAgent: true, terminal: true,
+    projectText(
+      "accepted final", to: state, canSendToAgent: true, terminal: true,
       lifecycleTerminal: false)
     XCTAssertTrue(OverlayIntentRail.projectedIntents(for: state).contains(.sendToAgent))
     let sent = expectation(description: "rail intent reached the engine")
@@ -3281,7 +3311,8 @@ final class OverlayStateTests: XCTestCase {
     projectSessionText("nowy take", sessionId: "new", sequence: 1, to: state)
 
     // The predecessor's terminal seal finally arrives.
-    projectSessionText("stary take domknięty", sessionId: "old", sequence: 2, to: state,
+    projectSessionText(
+      "stary take domknięty", sessionId: "old", sequence: 2, to: state,
       terminal: true)
 
     XCTAssertEqual(state.formattedText, "nowy take", "a retired seal cannot repaint")
@@ -3660,7 +3691,8 @@ final class OverlayStateTests: XCTestCase {
 
     try? await Task.sleep(nanoseconds: 2_900_000_000)
 
-    XCTAssertNil(transient.toast, "the ordinary toast window did not expire; the wait proves nothing")
+    XCTAssertNil(
+      transient.toast, "the ordinary toast window did not expire; the wait proves nothing")
     XCTAssertEqual(state.toast, "kept for recovery", "the recovery notice was scheduled away")
   }
 
@@ -3692,7 +3724,8 @@ final class OverlayStateTests: XCTestCase {
   func testAddingRefusedCoverageDidNotChangeUnknownPhaseHandling() {
     let state = OverlayState()
     projectText("kept", to: state, phase: "coverage_refused", canCopy: true, terminal: true)
-    projectText("still kept", to: state, phase: "future_engine_phase", canCopy: true, terminal: true,
+    projectText(
+      "still kept", to: state, phase: "future_engine_phase", canCopy: true, terminal: true,
       lifecycleTerminal: false)
     XCTAssertEqual(state.mode, .coverageRefused, "an unknown phase retains the current chrome")
     XCTAssertEqual(state.activeText, "still kept")
@@ -3705,7 +3738,8 @@ final class OverlayStateTests: XCTestCase {
       status: status, unavailableReason: reason, speechSamples: status == .incomplete ? 32_000 : 0,
       coveredSamples: status == .incomplete ? 16_000 : 0, uncoveredSpeechRanges: [],
       maxUncoveredSamples: status == .incomplete ? 16_000 : 0, incompleteThresholdSamples: 4_000,
-      speechProducer: "capture_energy", availability: status == .incomplete ? "observed" : "not_observed",
+      speechProducer: "capture_energy",
+      availability: status == .incomplete ? "observed" : "not_observed",
       observedSamples: status == .incomplete ? 64_000 : nil,
       coverageRatio: status == .incomplete ? 0.5 : nil)
   }
@@ -3752,11 +3786,26 @@ final class OverlayStateTests: XCTestCase {
   func testTypedCoverageExplainsIncompleteAndEveryUnavailableReasonWithoutChangingBytes() {
     let cases: [(CsProjectedSealCoverageReceipt, String, String)] = [
       (coverage(.incomplete), "incomplete coverage", "Incomplete coverage"),
-      (coverage(.unavailable, reason: .notObserved), "measurement unavailable", "No acoustic measurement"),
-      (coverage(.unavailable, reason: .identityMismatch), "measurement unavailable", "did not match this take"),
-      (coverage(.unavailable, reason: .invalidMeasurement), "measurement unavailable", "could not be used"),
-      (coverage(.unavailable, reason: .partialObservation), "measurement unavailable", "only part of this take"),
-      (coverage(.unavailable, reason: .unknown), "measurement unavailable", "measurement was unavailable"),
+      (
+        coverage(.unavailable, reason: .notObserved), "measurement unavailable",
+        "No acoustic measurement"
+      ),
+      (
+        coverage(.unavailable, reason: .identityMismatch), "measurement unavailable",
+        "did not match this take"
+      ),
+      (
+        coverage(.unavailable, reason: .invalidMeasurement), "measurement unavailable",
+        "could not be used"
+      ),
+      (
+        coverage(.unavailable, reason: .partialObservation), "measurement unavailable",
+        "only part of this take"
+      ),
+      (
+        coverage(.unavailable, reason: .unknown), "measurement unavailable",
+        "measurement was unavailable"
+      ),
       (coverage(.unknown), "unverified coverage", "could not be verified"),
     ]
     for (receipt, status, explanation) in cases {
@@ -3766,7 +3815,8 @@ final class OverlayStateTests: XCTestCase {
       state.onSuccessfulDictation = { successes += 1 }
       state.onSendToAgent = { _ in sends += 1 }
       let words = "  Zażółć — tak tak!\n"
-      projectText(words, to: state, phase: "coverage_refused", canInsert: true, canCopy: true,
+      projectText(
+        words, to: state, phase: "coverage_refused", canInsert: true, canCopy: true,
         canRetranscribe: true, terminal: true, sealCoverage: receipt)
       XCTAssertEqual(state.statusText, status)
       XCTAssertTrue(state.coverageRefusalNotice?.contains(explanation) == true)
@@ -3786,10 +3836,15 @@ final class OverlayStateTests: XCTestCase {
       let state = OverlayState()
       var deliveries = 0
       var releases = 0
-      state.onComposerTranscript = { _, _ in deliveries += 1; return .admitted(threadID: UUID()) }
+      state.onComposerTranscript = { _, _ in
+        deliveries += 1
+        return .admitted(threadID: UUID())
+      }
       state.onCaptureEnded = { _ in releases += 1 }
-      projectText("tak tak", to: state, phase: "coverage_refused", canCopy: true,
-        terminal: true, delivery: .composerPending, sealCoverage: coverage(.unavailable, reason: .notObserved))
+      projectText(
+        "tak tak", to: state, phase: "coverage_refused", canCopy: true,
+        terminal: true, delivery: .composerPending,
+        sealCoverage: coverage(.unavailable, reason: .notObserved))
       let accepted = try XCTUnwrap(state.latestTranscriptProjection)
       var stale = accepted
       if staleAxis != "duplicate" {
@@ -3815,7 +3870,8 @@ final class OverlayStateTests: XCTestCase {
 
   func testLaterDocumentRevisionClearsOnlyItsOwnRefusalAndPreservesRepetition() throws {
     let state = OverlayState()
-    projectText("tak", to: state, phase: "coverage_refused", terminal: true,
+    projectText(
+      "tak", to: state, phase: "coverage_refused", terminal: true,
       sealCoverage: coverage(.unavailable, reason: .partialObservation))
     var revision = try XCTUnwrap(state.latestTranscriptProjection)
     revision.sequence += 1
@@ -3840,8 +3896,12 @@ final class OverlayStateTests: XCTestCase {
   func testEmptyUnavailableRefusalCreatesNoDeliveryOrCapability() {
     let state = OverlayState()
     var offers = 0
-    state.onComposerTranscript = { _, _ in offers += 1; return .empty }
-    projectText("", to: state, phase: "error", canCopy: false, terminal: true,
+    state.onComposerTranscript = { _, _ in
+      offers += 1
+      return .empty
+    }
+    projectText(
+      "", to: state, phase: "error", canCopy: false, terminal: true,
       delivery: .composerPending, sealCoverage: coverage(.unavailable, reason: .invalidMeasurement))
     XCTAssertEqual(state.activeText, "")
     XCTAssertEqual(offers, 0)

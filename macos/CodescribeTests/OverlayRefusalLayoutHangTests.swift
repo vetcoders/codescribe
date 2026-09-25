@@ -104,7 +104,8 @@ final class OverlayRefusalLayoutHangTests: XCTestCase {
     print(
       "W5_T18_REFUSAL_LAYOUT transition=toast-clear label=\(label) chars=\(harness.chars) elapsed_s=\(toastElapsed)"
     )
-    XCTAssertLessThan(toastElapsed, 2.0, "\(label): toast removal layout pass took \(toastElapsed)s")
+    XCTAssertLessThan(
+      toastElapsed, 2.0, "\(label): toast removal layout pass took \(toastElapsed)s")
   }
 
   // MARK: Control (Rust status card swaps the transcript out)
@@ -199,7 +200,8 @@ final class OverlayRefusalLayoutHangTests: XCTestCase {
 
   /// Rust-owned projection admitted through the production boundary, shaped
   /// like the 12:03–12:06 take: one growing live document, not terminal.
-  private func listeningProjection(_ text: String, sequence: UInt64) -> CsTranscriptProjectionEvent {
+  private func listeningProjection(_ text: String, sequence: UInt64) -> CsTranscriptProjectionEvent
+  {
     let sampleEnd = UInt64(7_680 + 595_000 * sequence)
     let receipt = CsProjectedAcousticReceipt(
       acousticSerialVersion: 1,

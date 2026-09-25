@@ -694,7 +694,8 @@ final class AgentChatStore: ObservableObject {
   // Read-only aggregate presentation; documents, never this joined string,
   // are the recovery/action authority.
   var retainedComposerDelivery: String? {
-    composerRecoveryDocuments.isEmpty ? nil
+    composerRecoveryDocuments.isEmpty
+      ? nil
       : composerRecoveryDocuments.map(\.text).joined(separator: "\n")
   }
   private var captureOwners: [String: UUID] = [:]
@@ -728,7 +729,8 @@ final class AgentChatStore: ObservableObject {
     composerCaptureAwaitingTerminal = false
     composerStopRetryAvailable = false
     dictationThreadID = threadID
-    let destination = threads.first { $0.id == threadID }
+    let destination =
+      threads.first { $0.id == threadID }
       ?? threadsBeforeSearch?.first { $0.id == threadID }
     engine?.setAssistiveTargetThread(backendId: destination?.backendId)
     return requestID
@@ -743,7 +745,9 @@ final class AgentChatStore: ObservableObject {
   func completeComposerCaptureStart(
     _ requestID: UUID, live: Bool, handle: CsCaptureHandle?
   ) {
-    guard isCurrentComposerCaptureRequest(requestID), !composerCaptureAwaitingTerminal else { return }
+    guard isCurrentComposerCaptureRequest(requestID), !composerCaptureAwaitingTerminal else {
+      return
+    }
     // Admission is one-shot for this request. Same-handle duplicates are inert;
     // a foreign or missing handle cannot replace the identity or gain a receipt.
     guard composerCaptureHandle == nil else { return }
@@ -753,7 +757,9 @@ final class AgentChatStore: ObservableObject {
       // arrives those bytes are recovery, not permission to use the selection.
       // Join only a still-retained document; an explicit recovery action that
       // already consumed it must never be replayed.
-      if let document = composerRecoveryDocuments.first(where: { $0.id == "capture:" + handle.captureId }) {
+      if let document = composerRecoveryDocuments.first(where: {
+        $0.id == "capture:" + handle.captureId
+      }) {
         composerRecoveryDocuments.removeAll { $0.id == document.id }
         captureDeliveryReceipts.removeValue(forKey: handle.captureId)
         receiveDictationTranscript(document.text, captureID: handle.captureId)
@@ -781,9 +787,12 @@ final class AgentChatStore: ObservableObject {
 
   /// Delayed replies address both the local request and the admitted take.
   /// A terminal consumer may already have delivered A and admitted B meanwhile.
-  func applyComposerStopOutcome(_ outcome: CsConditionalStop, requestID: UUID, handle: CsCaptureHandle) {
+  func applyComposerStopOutcome(
+    _ outcome: CsConditionalStop, requestID: UUID, handle: CsCaptureHandle
+  ) {
     guard isCurrentComposerCaptureRequest(requestID),
-      composerCaptureHandle?.captureId == handle.captureId else { return }
+      composerCaptureHandle?.captureId == handle.captureId
+    else { return }
     switch outcome {
     case .stopped, .alreadyStopping, .pending:
       awaitComposerCaptureTerminal()
@@ -799,7 +808,8 @@ final class AgentChatStore: ObservableObject {
 
   func reportComposerStopFailure(_ message: String, requestID: UUID, handle: CsCaptureHandle) {
     guard isCurrentComposerCaptureRequest(requestID),
-      composerCaptureHandle?.captureId == handle.captureId else { return }
+      composerCaptureHandle?.captureId == handle.captureId
+    else { return }
     reportDictationFailure(message, preservingDelivery: true)
     // Only an addressed failure grants retry. Global lifecycle paint cannot.
     composerStopRetryAvailable = true
@@ -1072,8 +1082,9 @@ final class AgentChatStore: ObservableObject {
     dictationFailureTask = Task { @MainActor [weak self] in
       do { try await waitForExpiry() } catch { return }
       guard let self, !Task.isCancelled, dictationFailureToken == token,
-        (composerCaptureRequestID == requestID || composerCaptureRequestID == nil),
-        case .failed = dictationPhase else { return }
+        composerCaptureRequestID == requestID || composerCaptureRequestID == nil,
+        case .failed = dictationPhase
+      else { return }
       // Preparing disables the real mic button. An addressed transport failure
       // stays actionable on the owning thread until retry or terminal receipt.
       guard !composerStopRetryAvailable else { return }
@@ -1442,7 +1453,8 @@ final class AgentChatStore: ObservableObject {
     guard let threadsProvider else { return }
     threadListRevision &+= 1
     do {
-      let rows = try threadSearchQuery.isEmpty
+      let rows =
+        try threadSearchQuery.isEmpty
         ? threadsProvider.listThreads()
         : threadsProvider.searchThreads(query: threadSearchQuery)
       if threadsBeforeSearch != nil { threadsBeforeSearch = restoredSearchRows() }
@@ -1527,7 +1539,8 @@ final class AgentChatStore: ObservableObject {
     let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
     if trimmed == threadSearchQuery, threadSearchError == nil { return }
     threadListRevision &+= 1
-    let hasActiveTurn = activeComposerTurn != nil || voiceTurnPhase != nil || dictationThreadID != nil
+    let hasActiveTurn =
+      activeComposerTurn != nil || voiceTurnPhase != nil || dictationThreadID != nil
     guard trimmed.isEmpty || !hasActiveTurn else {
       threadSearchError = "Finish the current turn before changing the thread search."
       return

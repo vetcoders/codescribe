@@ -64,7 +64,8 @@ struct DictationWhisperModelTab: View {
       ForEach(storedModels, id: \.name) { directory in
         SettingsControlRow(
           title: directory.name,
-          subtitle: "\(directory.status) · \(ByteCountFormatter.string(fromByteCount: Int64(directory.bytesOnDisk), countStyle: .file))\(directory.duplicateTokenizerWith.map { " · identical tokenizer: \($0)" } ?? "")"
+          subtitle:
+            "\(directory.status) · \(ByteCountFormatter.string(fromByteCount: Int64(directory.bytesOnDisk), countStyle: .file))\(directory.duplicateTokenizerWith.map { " · identical tokenizer: \($0)" } ?? "")"
         ) {
           Button("Remove") {
             do {

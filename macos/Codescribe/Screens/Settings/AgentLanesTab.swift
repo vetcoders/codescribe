@@ -16,10 +16,13 @@ struct AgentLanesTab: View {
         title: "Auto-send to Agent",
         subtitle: "Send an untouched transcript 5 seconds after the take ends."
       ) {
-        Toggle("", isOn: Binding(
-          get: { model.settings.agentAutoSend },
-          set: { model.setAgentAutoSend($0) }
-        ))
+        Toggle(
+          "",
+          isOn: Binding(
+            get: { model.settings.agentAutoSend },
+            set: { model.setAgentAutoSend($0) }
+          )
+        )
         .toggleStyle(.switch)
         .labelsHidden()
         .tint(CSColor.chromeAccent)

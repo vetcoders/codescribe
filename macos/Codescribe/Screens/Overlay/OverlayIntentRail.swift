@@ -188,11 +188,14 @@ struct OverlayIntentRail: View {
           .accessibilityIdentifier("overlay-retranscribe-\(pass.rawValue)")
       }
     } label: {
-      Label(OverlayIntent.retranscribe.accessibilityLabel, systemImage: OverlayIntent.retranscribe.systemImage)
-        .labelStyle(.iconOnly)
-        .frame(width: 32, height: 28)
-        .contentShape(RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous))
-        .foregroundStyle(palette.primaryText.color)
+      Label(
+        OverlayIntent.retranscribe.accessibilityLabel,
+        systemImage: OverlayIntent.retranscribe.systemImage
+      )
+      .labelStyle(.iconOnly)
+      .frame(width: 32, height: 28)
+      .contentShape(RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous))
+      .foregroundStyle(palette.primaryText.color)
     }
     .menuStyle(.button)
     .buttonStyle(.plain)

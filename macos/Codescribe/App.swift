@@ -827,7 +827,9 @@ func codescribeDebugInfo(
       "configured agent model: \(settings.llmAssistiveModel ?? "not specified")",
     ]
   } else {
-    lines.append("configuration: unavailable; loader refused or a configuration refusal was recorded in this process")
+    lines.append(
+      "configuration: unavailable; loader refused or a configuration refusal was recorded in this process"
+    )
   }
   if let lastServing {
     lines.append("last completed serving engine: \(lastServing.engine)")

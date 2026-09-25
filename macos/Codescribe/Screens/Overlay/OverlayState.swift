@@ -1008,11 +1008,13 @@ final class OverlayState {
       return
     }
     guard let projection = latestTranscriptProjection else {
-      presentActionFailure("The visible take has no session identity", notice: "retranscribe unavailable")
+      presentActionFailure(
+        "The visible take has no session identity", notice: "retranscribe unavailable")
       return
     }
     guard let path = engine.sessionAudioPath(sessionId: projection.sessionId) else {
-      presentActionFailure("The visible take's audio is unavailable", notice: "take audio unavailable")
+      presentActionFailure(
+        "The visible take's audio is unavailable", notice: "take audio unavailable")
       return
     }
     let prefixedPath = "\(pass.pathPrefix)\(path)"
@@ -1031,7 +1033,8 @@ final class OverlayState {
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
           self.engineChip = previousChip
-          self.presentActionFailure("The \(passEngine) pass returned no text", notice: "retranscribe returned no text")
+          self.presentActionFailure(
+            "The \(passEngine) pass returned no text", notice: "retranscribe returned no text")
           return
         }
         if !text.isEmpty {
@@ -1063,7 +1066,8 @@ final class OverlayState {
         }
         self.engineChip = passEngine
         self.showFooterNotice(
-          self.retranscribeRollback == nil ? "retranscribed" : "retranscribed — Back keeps the old text")
+          self.retranscribeRollback == nil
+            ? "retranscribed" : "retranscribed — Back keeps the old text")
         self.restartAutoHideCountdown()
       } catch {
         self.engineChip = previousChip
@@ -1146,7 +1150,8 @@ final class OverlayState {
   @discardableResult
   func sendToAgent() -> Task<Void, Never>? {
     guard terminal, canSendToAgent, !isRevisionDraftDirty,
-      !revisionCommitPending, !formatterCommitPending else { return nil }
+      !revisionCommitPending, !formatterCommitPending
+    else { return nil }
     // P0-D: capture user correction on FINAL for quality loop + lexicon learning.
     captureQualityIfEdited(action: "send")
     return deliverAgentTranscript()

@@ -51,7 +51,9 @@ final class RealComposerDictation: ComposerDictating {
     guard let store, !transitioning else { return }
     // Pending settlement is still ownership. Neither another press nor a false
     // recording query can acknowledge delivery or replace its destination.
-    guard !store.hasComposerCaptureRequest || store.ownsLiveDictation || store.composerStopRetryAvailable
+    guard
+      !store.hasComposerCaptureRequest || store.ownsLiveDictation
+        || store.composerStopRetryAvailable
     else { return }
     let ownedHandle = store.composerCaptureHandle
     let request = store.currentComposerCaptureRequestID
@@ -61,14 +63,17 @@ final class RealComposerDictation: ComposerDictating {
     transitionTask = Task { @MainActor in
       defer { transitioning = false }
       if let request {
-        guard store.isCurrentComposerCaptureRequest(request), let handle = ownedHandle else { return }
+        guard store.isCurrentComposerCaptureRequest(request), let handle = ownedHandle else {
+          return
+        }
         store.awaitComposerCaptureTerminal()
         do {
           let outcome = try await hotkeys.stopComposerTurnRecording(handle: handle)
           store.applyComposerStopOutcome(outcome, requestID: request, handle: handle)
         } catch {
           store.reportComposerStopFailure(
-            "Couldn't change recording: \(error.userFacingMessage)", requestID: request, handle: handle)
+            "Couldn't change recording: \(error.userFacingMessage)", requestID: request,
+            handle: handle)
         }
         // The terminal projection consumer must deliver before releasing the
         // latch. No post-stop isRecording poll can establish that ordering.

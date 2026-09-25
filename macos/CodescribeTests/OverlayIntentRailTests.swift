@@ -597,7 +597,8 @@ final class OverlayIntentRailTests: XCTestCase {
 
     XCTAssertEqual(engine.copiedTaggedText, "usable but unsealed")
     XCTAssertEqual(state.mode, .coverageRefused, "recovery must not relabel the phase")
-    XCTAssertEqual(OverlayIntentRail.accessibilityValue(for: state.statusText), "unverified coverage")
+    XCTAssertEqual(
+      OverlayIntentRail.accessibilityValue(for: state.statusText), "unverified coverage")
   }
 
   func testErrorRecoveryCopyUsesProductionRouteWithoutFormatting() async {
@@ -625,7 +626,8 @@ final class OverlayIntentRailTests: XCTestCase {
     XCTAssertEqual(state.latestTranscriptProjection?.sequence, projection?.sequence)
     XCTAssertEqual(state.latestTranscriptProjection?.reducerRevision, projection?.reducerRevision)
     XCTAssertEqual(state.latestTranscriptProjection?.reducerAction, "intent_rail_fixture")
-    XCTAssertTrue(engine.formatterRequests.isEmpty, "copy recovery must not create a revision or seal")
+    XCTAssertTrue(
+      engine.formatterRequests.isEmpty, "copy recovery must not create a revision or seal")
     XCTAssertTrue(engine.formatLevelWrites.isEmpty)
   }
 

@@ -188,7 +188,8 @@ final class ComposerDeliveryJoinTests: XCTestCase {
   }
 
   private func makeFixture(recording: [Bool]) -> Fixture {
-    let store = AgentChatStore(threadsProvider: StubThreadsProvider(), persistenceDefaults: isolatedDefaults())
+    let store = AgentChatStore(
+      threadsProvider: StubThreadsProvider(), persistenceDefaults: isolatedDefaults())
     let surface = FakeCaptureSurface(recording: recording)
     let dictation = RealComposerDictation(store: store, hotkeys: surface)
     store.dictation = dictation
@@ -242,7 +243,8 @@ final class ComposerDeliveryJoinTests: XCTestCase {
       evidenceCalibrationVersion: "test-v1",
       wordEvidenceReceipts: ["join-word-\(sequence)"],
       layerDecisionReceipts: ["join-layer-\(sequence)"],
-      sealReceipt: presentationReceipt?.sourceSealReceipt ?? (terminal ? "join-seal-\(sequence)" : nil),
+      sealReceipt: presentationReceipt?.sourceSealReceipt
+        ?? (terminal ? "join-seal-\(sequence)" : nil),
       manualEditReceipt: manualEditReceipt,
       presentationReceipt: presentationReceipt
     )
@@ -341,18 +343,22 @@ final class ComposerDeliveryJoinTests: XCTestCase {
       sourceRevision: 0, revision: 1, captureEpoch: 1, sampleStart: 0, sampleEnd: 16_000,
       sourceSealReceipt: "fixture-occurrence-seal-1", sentenceBreakBefore: false,
       sourceLabel: "pierwsze zdanie",
-      leftContext: "", leftContextSha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      leftContext: "",
+      leftContextSha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       shapedText: "Pierwsze zdanie.")
-    project("Pierwsze zdanie.", to: state, phase: "listening", terminal: false,
+    project(
+      "Pierwsze zdanie.", to: state, phase: "listening", terminal: false,
       lifecycleTerminal: false, delivery: .unattempted, reducerAction: "apply_incremental_shaping",
       presentationReceipt: proof)
     XCTAssertTrue(f.store.ownsLiveDictation)
     XCTAssertEqual(f.store.composerCaptureHandle?.captureId, "join-session")
     XCTAssertEqual(f.store.draft, "typed")
     XCTAssertEqual(stopped, 0)
-    XCTAssertEqual(state.latestTranscriptProjection?.acousticReceipts.first?.presentationReceipt, proof)
+    XCTAssertEqual(
+      state.latestTranscriptProjection?.acousticReceipts.first?.presentationReceipt, proof)
     XCTAssertNil(state.latestTranscriptProjection?.acousticReceipts.first?.manualEditReceipt)
-    project("Pierwsze zdanie. dalsze słowa", to: state, phase: "listening", terminal: false,
+    project(
+      "Pierwsze zdanie. dalsze słowa", to: state, phase: "listening", terminal: false,
       lifecycleTerminal: false, delivery: .unattempted, reducerAction: "apply_ledger_decision",
       presentationReceipt: proof)
     XCTAssertTrue(f.store.ownsLiveDictation)
@@ -542,7 +548,8 @@ final class ComposerDeliveryJoinTests: XCTestCase {
     state.connectComposer(to: f.store)
     let request = f.store.beginComposerCaptureRequest(threadID: f.threadA)
     sessionEnded("early text", to: state, sessionId: "early")
-    f.store.completeComposerCaptureStart(request, live: true,
+    f.store.completeComposerCaptureStart(
+      request, live: true,
       handle: CsCaptureHandle(captureId: "early"))
     XCTAssertFalse(f.store.ownsLiveDictation)
     XCTAssertFalse(f.store.hasComposerCaptureRequest)
@@ -575,7 +582,11 @@ final class ComposerDeliveryJoinTests: XCTestCase {
     XCTAssertEqual(f.store.draft, "typed B\n" + text)
     XCTAssertFalse(f.store.insertComposerRecovery(first.id, into: f.threadB))
     var copied = ""
-    XCTAssertTrue(f.store.copyComposerRecovery(second.id) { copied = $0; return true })
+    XCTAssertTrue(
+      f.store.copyComposerRecovery(second.id) {
+        copied = $0
+        return true
+      })
     XCTAssertEqual(Array(copied.utf8), Array(text.utf8))
     sessionEnded(text, to: state, sessionId: "A")
     sessionEnded(text, to: state, sessionId: "B")
@@ -685,7 +696,8 @@ final class ComposerDeliveryJoinTests: XCTestCase {
     XCTAssertEqual(f.store.currentComposerCaptureRequestID, request)
     f.dictation.toggle()
     await settle(f)
-    XCTAssertEqual(f.surface.calls, calls + [.stop("capture-A")], "pending success is not retry permission")
+    XCTAssertEqual(
+      f.surface.calls, calls + [.stop("capture-A")], "pending success is not retry permission")
     let state = OverlayState()
     state.connectComposer(to: f.store)
     sessionEnded("eventual words", to: state, sessionId: "capture-A")
@@ -779,7 +791,10 @@ final class ComposerDeliveryJoinTests: XCTestCase {
   }
 
   func testStaleStopRepliesAndFailuresCannotRepaintOrReleaseSuccessor() async {
-    let outcomes: [CsConditionalStop?] = [.stopped, .foreignCapture, .noLiveCapture, .alreadyStopping, .pending, .admissionUnavailable, nil]
+    let outcomes: [CsConditionalStop?] = [
+      .stopped, .foreignCapture, .noLiveCapture, .alreadyStopping, .pending, .admissionUnavailable,
+      nil,
+    ]
     for outcome in outcomes {
       let f = makeFixture(recording: [false])
       f.dictation.toggle()
@@ -1098,7 +1113,8 @@ final class ComposerDeliveryJoinTests: XCTestCase {
     f.store.select(f.threadB)
     f.store.delete(threadA)
 
-    let receipt = f.store.receiveDictationTranscript("words with nowhere to go", captureID: "join-session")
+    let receipt = f.store.receiveDictationTranscript(
+      "words with nowhere to go", captureID: "join-session")
 
     XCTAssertEqual(receipt, .retained("words with nowhere to go"))
     XCTAssertEqual(f.store.retainedComposerDelivery, "words with nowhere to go")
@@ -1111,7 +1127,9 @@ final class ComposerDeliveryJoinTests: XCTestCase {
     let f = makeFixture(recording: [false, true])
     admitCapture(f.store, threadID: f.threadA)
     f.store.select(f.threadB)
-    XCTAssertEqual(f.store.receiveDictationTranscript("parked words", captureID: "join-session"), .parked(threadID: f.threadA))
+    XCTAssertEqual(
+      f.store.receiveDictationTranscript("parked words", captureID: "join-session"),
+      .parked(threadID: f.threadA))
 
     f.store.delete(f.store.threads.first { $0.id == f.threadA }!)
 
@@ -1163,7 +1181,9 @@ final class ComposerDeliveryJoinTests: XCTestCase {
     f.store.addAttachments([URL(fileURLWithPath: "/tmp/round-trip-b.png")])
     let bAttachmentIDs = f.store.pendingAttachments.map(\.id)
 
-    XCTAssertEqual(f.store.receiveDictationTranscript("spoken for A", captureID: "join-session"), .parked(threadID: f.threadA))
+    XCTAssertEqual(
+      f.store.receiveDictationTranscript("spoken for A", captureID: "join-session"),
+      .parked(threadID: f.threadA))
 
     f.store.select(f.threadA)
     XCTAssertEqual(
@@ -1189,7 +1209,9 @@ final class ComposerDeliveryJoinTests: XCTestCase {
     let predecessor = try XCTUnwrap(f.store.currentComposerCaptureRequestID)
     f.store.select(f.threadB)
 
-    XCTAssertEqual(f.store.receiveDictationTranscript("first take", captureID: "join-session"), .parked(threadID: f.threadA))
+    XCTAssertEqual(
+      f.store.receiveDictationTranscript("first take", captureID: "join-session"),
+      .parked(threadID: f.threadA))
     // Receiving the document does not release the admitted capture request.
     XCTAssertEqual(f.store.currentComposerCaptureRequestID, predecessor)
     XCTAssertTrue(f.store.finishDictationCapture(sessionID: "join-session"))
@@ -1200,7 +1222,9 @@ final class ComposerDeliveryJoinTests: XCTestCase {
     let successor = try XCTUnwrap(f.store.currentComposerCaptureRequestID)
     XCTAssertNotEqual(successor, predecessor)
     XCTAssertEqual(f.store.composerCaptureHandle?.captureId, "second-session")
-    XCTAssertEqual(f.store.receiveDictationTranscript("second take", captureID: "second-session"), .parked(threadID: f.threadA))
+    XCTAssertEqual(
+      f.store.receiveDictationTranscript("second take", captureID: "second-session"),
+      .parked(threadID: f.threadA))
 
     XCTAssertTrue(f.store.finishDictationCapture(sessionID: "second-session"))
     XCTAssertFalse(f.store.hasComposerCaptureRequest)
@@ -1231,7 +1255,9 @@ final class ComposerDeliveryJoinTests: XCTestCase {
     let bAttachmentIDs = f.store.pendingAttachments.map(\.id)
     let focusBefore = f.store.composerFocusRequest
 
-    XCTAssertEqual(f.store.receiveDictationTranscript("for A only", captureID: "join-session"), .parked(threadID: f.threadA))
+    XCTAssertEqual(
+      f.store.receiveDictationTranscript("for A only", captureID: "join-session"),
+      .parked(threadID: f.threadA))
 
     XCTAssertEqual(f.store.selectedThreadID, f.threadB)
     XCTAssertEqual(f.store.draft, "mid-sentence in B")
@@ -1356,7 +1382,8 @@ final class ComposerDeliveryJoinTests: XCTestCase {
       if text == "first ask" { firstStarted.fulfill() }
       if text == "second ask" { secondStarted.fulfill() }
     }
-    let store = AgentChatStore(engine: engine, threadsProvider: StubThreadsProvider(),
+    let store = AgentChatStore(
+      engine: engine, threadsProvider: StubThreadsProvider(),
       persistenceDefaults: isolatedDefaults())
     let threadA = store.threads.first { $0.backendId == "t_a" }!.id
     let threadB = store.threads.first { $0.backendId == "t_b" }!.id
@@ -1384,7 +1411,9 @@ final class ComposerDeliveryJoinTests: XCTestCase {
     XCTAssertTrue(store.queuedTurns.isEmpty)
     XCTAssertNil(store.activeComposerTurn)
     XCTAssertEqual(engine.state.startedTexts, ["first ask", "second ask"])
-    let replies = store.threads.first { $0.id == threadA }?.messages.filter { $0.role == .assistant }
+    let replies = store.threads.first { $0.id == threadA }?.messages.filter {
+      $0.role == .assistant
+    }
     XCTAssertEqual(replies?.map(\.text), ["first reply", "second reply"])
 
     store.select(threadB)
@@ -1399,7 +1428,8 @@ final class ComposerDeliveryJoinTests: XCTestCase {
     defer { engine.state.cancelAll() }
     let started = expectation(description: "sentinel continuation registered")
     engine.state.onStart = { _ in started.fulfill() }
-    let sentinel = AgentChatStore(engine: engine, threadsProvider: StubThreadsProvider(),
+    let sentinel = AgentChatStore(
+      engine: engine, threadsProvider: StubThreadsProvider(),
       persistenceDefaults: sentinelDefaults)
     let sentinelThread = try XCTUnwrap(sentinel.selectedThreadID)
     sentinel.draft = "sentinel pending work"
@@ -1407,17 +1437,21 @@ final class ComposerDeliveryJoinTests: XCTestCase {
     sentinel.send()
     await fulfillment(of: [started], timeout: 2)
     guard engine.state.startedTexts.count == 1 else { return }
-    let accepted = try XCTUnwrap(sentinelDefaults.data(forKey: AgentChatStore.acceptedTurnsDefaultsKey))
-    let attachments = try XCTUnwrap(sentinelDefaults.data(forKey: AgentChatStore.attachmentMetadataDefaultsKey))
+    let accepted = try XCTUnwrap(
+      sentinelDefaults.data(forKey: AgentChatStore.acceptedTurnsDefaultsKey))
+    let attachments = try XCTUnwrap(
+      sentinelDefaults.data(forKey: AgentChatStore.attachmentMetadataDefaultsKey))
 
-    let other = AgentChatStore(threadsProvider: StubThreadsProvider(), persistenceDefaults: otherDefaults)
+    let other = AgentChatStore(
+      threadsProvider: StubThreadsProvider(), persistenceDefaults: otherDefaults)
     let otherThread = try XCTUnwrap(other.selectedThreadID)
     other.draft = "independent send"
     other.addAttachments([URL(fileURLWithPath: "/tmp/other.png")])
     other.send()
     await other.waitForComposerTurns(in: otherThread)
     XCTAssertEqual(sentinelDefaults.data(forKey: AgentChatStore.acceptedTurnsDefaultsKey), accepted)
-    XCTAssertEqual(sentinelDefaults.data(forKey: AgentChatStore.attachmentMetadataDefaultsKey), attachments)
+    XCTAssertEqual(
+      sentinelDefaults.data(forKey: AgentChatStore.attachmentMetadataDefaultsKey), attachments)
     engine.state.finishNext("sentinel reply")
     await sentinel.waitForComposerTurns(in: sentinelThread)
   }
@@ -1426,7 +1460,8 @@ final class ComposerDeliveryJoinTests: XCTestCase {
     let engine = HeldReplyEngine()
     let started = expectation(description: "continuation ready for cancellation")
     engine.state.onStart = { _ in started.fulfill() }
-    let store = AgentChatStore(engine: engine, threadsProvider: StubThreadsProvider(),
+    let store = AgentChatStore(
+      engine: engine, threadsProvider: StubThreadsProvider(),
       persistenceDefaults: isolatedDefaults())
     guard let thread = store.selectedThreadID else { return XCTFail("missing thread") }
     defer { engine.state.cancelAll() }
@@ -1733,7 +1768,9 @@ final class ComposerDeliveryJoinTests: XCTestCase {
       state.applyTranscriptProjection(revision)
     }
     state.finishControllerRecording()
-    if let request = f.store.currentComposerCaptureRequestID, let handle = f.store.composerCaptureHandle {
+    if let request = f.store.currentComposerCaptureRequestID,
+      let handle = f.store.composerCaptureHandle
+    {
       f.store.applyComposerStopOutcome(.noLiveCapture, requestID: request, handle: handle)
     }
     f.store.select(f.threadB)
