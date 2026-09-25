@@ -15223,6 +15223,46 @@ mod relay_l1_overlap_admission_tests {
         assert!(!replay_refusal(&events, "i"));
     }
 
+    /// W0 §10 defect, kept visible until T-C decides the coverage contract.
+    /// The later copy of the same seam word reaches 2_000 samples past the kept
+    /// copy, over voiced audio. Only exclusive slices count toward hop coverage
+    /// today, so those samples leave the long occurrence `sliced` and it loses
+    /// its whole Whisper text. Un-ignoring this test is a T-C acceptance criterion.
+    #[test]
+    #[ignore = "T-C: W0 §10 coverage contract"]
+    fn replayed_seam_copy_past_the_kept_word_keeps_the_whisper_text() {
+        let session = "seam-jitter-coverage";
+        let mut lane = open(session);
+        record_voiced_spans(
+            &lane,
+            LONG_SAMPLES,
+            &[(44_000, 53_000), (70_000, 88_000), (100_000, 140_000)],
+        );
+        let (occurrence, requests) = launch_long_span(&mut lane, Some("apple"));
+        let windows = [
+            vec![word_pin(session, "szew", 44_000, 51_000)],
+            vec![
+                word_pin(session, "szew", 45_000, 53_000),
+                word_pin(session, "dalej", 70_000, 88_000),
+            ],
+            vec![word_pin(session, "koniec", 100_000, 140_000)],
+        ];
+        let mut events = Vec::new();
+        for (request, segments) in requests.iter().zip(windows) {
+            lane.state
+                .complete_whisper_window(&lane.tx, completion(request, segments), 9.5);
+            events.extend(drain(&mut lane.rx));
+        }
+        let warnings = warning_lines(&events);
+        assert!(replay_refusal(&events, "szew"), "{warnings}");
+        assert_eq!(mutation_count(&events), 1, "{warnings}");
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("szew dalej koniec"),
+            "{warnings}"
+        );
+    }
+
     /// Falsifier for the T-A duplicate rule (integrator W3, parent's counterexample).
     /// Window 1 ends its audio at the seam, so its "domu" stops at 48_000. Window 2
     /// places the next, distinct short word "w" at 47_000..49_000: midpoint 48_000
