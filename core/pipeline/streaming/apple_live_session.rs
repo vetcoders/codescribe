@@ -15341,6 +15341,61 @@ mod live_refinement_admission_tests {
         assert_eq!(receipt.drain, TailPatchDrainDisposition::Completed);
     }
 
+    /// A padded long occurrence can produce one inadmissible leading slice
+    /// alongside later exact-PCM requests. Refusing that slice must not retire
+    /// the occurrence's Whisper frontier while those requests are in flight.
+    #[test]
+    fn invalid_padded_slice_does_not_retire_other_live_windows() {
+        let (mut state, events, mut receiver, mut requests) = fixture(8);
+        state.fusion_context = FusionContextMode::SymmetricPad;
+        // 7.84 s of speech stays below Silero's 12 s forced split. Capture
+        // ends with this occurrence, so the default symmetric context adds
+        // only its left pad: one leading slice can fail while two later
+        // exact-PCM windows remain valid and in flight.
+        state.audio = LiveAudioBuffer::new(RATE, 10.0);
+        state.audio.push(&vec![0.25; 8_840]);
+        let mut physical = UtteranceLedger::new();
+        physical.open_or_extend("live-admission", 7, 1_000, 8_840);
+        physical.close_open(8_840);
+        reconcile_silero_ledger(
+            &mut state,
+            &events,
+            &physical,
+            &[TranscriptSegment {
+                text: "phrase".into(),
+                start_ts: 1.1,
+                end_ts: 1.4,
+            }],
+        );
+        let occurrence = OccurrenceIdentity::new("live-admission", 7, 1_000, 8_840);
+        let launched = std::iter::from_fn(|| requests.try_recv().ok()).collect::<Vec<_>>();
+        assert!(
+            launched.len() >= 2,
+            "fixture must leave valid requests in flight after the refused slice"
+        );
+        assert!(
+            warnings(&mut receiver, RefinementFailure::InvalidIdentity.code()) >= 1,
+            "fixture must exercise the invalid leading padded slice"
+        );
+        for request in &launched {
+            assert_eq!(request.member_occurrences[0].1, occurrence);
+            request
+                .provider_request
+                .validate_pcm(&request.audio)
+                .expect("the remaining requests carry their exact PCM");
+        }
+        let ledger = state.acoustic_ledger.lock().expect("ledger");
+        assert!(
+            ledger
+                .frontier_of(&occurrence)
+                .is_some_and(|frontier| frontier
+                    .open_producers()
+                    .contains(&LedgerObservationProducer::Whisper)),
+            "one refused slice must not make valid in-flight completions stale"
+        );
+        assert!(!ledger.is_sealed(&occurrence));
+    }
+
     #[test]
     fn tail_patch_receipt_names_missing_terminal_evidence() {
         let receipt = tail_patch_receipt_after_stop(
