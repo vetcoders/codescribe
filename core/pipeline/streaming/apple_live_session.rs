@@ -1547,6 +1547,8 @@ struct AppleSealState {
     /// Admitted once, when those slices partition the occurrence and every
     /// intersecting pin was an exclusive tail.
     whisper_slices: BTreeMap<OccurrenceIdentity, Vec<(u64, u64, String)>>,
+    /// Same-word replay extents answer hop coverage only; they never supply text.
+    whisper_replay_coverage: BTreeMap<OccurrenceIdentity, Vec<(u64, u64)>>,
     /// Occurrences whose whole-span replacement was already refused.
     whisper_span_refused: BTreeSet<OccurrenceIdentity>,
     refinement_clock: Instant,
@@ -1642,6 +1644,7 @@ struct RoutedPin {
 #[derive(Clone, Default)]
 struct MemberPinRoute {
     exclusive: Vec<RoutedPin>,
+    replay_coverage: Vec<(u64, u64)>,
     blocked: bool,
 }
 
@@ -1658,12 +1661,18 @@ fn exclusive_label(pins: &[RoutedPin]) -> String {
 
 /// Exclusive windows cover the occurrence.
 ///
+/// Coverage answers "did Whisper hear this sound", not "who owns this word".
+/// A pin reclassified as a replay of the same word (T-A2: overlap ≥ ½ of
+/// the shorter member-clipped span and equal normalized text) lends its
+/// member-clipped extent to hop coverage. It lends no text and no authority.
+/// The document text of the occurrence is exactly the joined exclusive slices, as today.
 /// Without hop evidence the windows must abut from the member's start to its
 /// end. With hop evidence, a pause between pins that contains no voiced hop is
 /// not uncovered speech. A voiced hop that no pin overlaps still is.
 fn exclusive_slices_cover(
     occurrence: &OccurrenceIdentity,
     slices: &[(u64, u64, String)],
+    replay_coverage: &[(u64, u64)],
     voiced_hops: Option<&[(u64, u64)]>,
 ) -> bool {
     if let Some(hops) = voiced_hops {
@@ -1671,6 +1680,9 @@ fn exclusive_slices_cover(
             slices
                 .iter()
                 .any(|(slice_start, slice_end, _)| *end > *slice_start && *start < *slice_end)
+                || replay_coverage
+                    .iter()
+                    .any(|(replay_start, replay_end)| *end > *replay_start && *start < *replay_end)
         });
     }
     let mut cursor = occurrence.sample_start;
@@ -1849,6 +1861,7 @@ impl AppleSealState {
             refinement_pending: VecDeque::new(),
             refinement_submitted: BTreeMap::new(),
             whisper_slices: BTreeMap::new(),
+            whisper_replay_coverage: BTreeMap::new(),
             whisper_span_refused: BTreeSet::new(),
             refinement_clock: Instant::now(),
             refinement_lane_lost: false,
@@ -2340,15 +2353,16 @@ impl AppleSealState {
                 // Only admitted Whisper word spans can prove a replay. An Apple
                 // label on the member cannot. Compare this window's earlier
                 // pins too, so one payload cannot duplicate a word.
-                if word_grain
+                let same_word_replay = word_grain
+                    && !matches!(&class, OverlapPinClass::Replay)
                     && earlier_exclusive_slice_covers(
                         &self.whisper_slices,
                         &open_members,
                         &routes,
                         &pin,
                         text,
-                    )
-                {
+                    );
+                if same_word_replay {
                     class = OverlapPinClass::Replay;
                 }
                 let energy_silent = self
@@ -2390,6 +2404,16 @@ impl AppleSealState {
                         });
                     }
                     OverlapPinClass::Replay => {
+                        if same_word_replay {
+                            for (member_index, member) in open_members.iter().enumerate() {
+                                if pin.same_capture(member) && pin_intersects(&pin, member) {
+                                    routes[member_index].replay_coverage.push((
+                                        pin.sample_start.max(member.sample_start),
+                                        pin.sample_end.min(member.sample_end),
+                                    ));
+                                }
+                            }
+                        }
                         side.push((index, pin, text.to_string(), SidePin::Replay));
                     }
                     OverlapPinClass::Unanchored(reason) => {
@@ -2526,6 +2550,7 @@ impl AppleSealState {
     /// receipt per pending occurrence; the slice texts are already visible.
     fn refuse_incomplete_whisper_spans(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
         let pending = std::mem::take(&mut self.whisper_slices);
+        self.whisper_replay_coverage.clear();
         for (occurrence, slices) in pending {
             if !self.whisper_span_refused.insert(occurrence.clone()) {
                 continue;
@@ -2663,6 +2688,7 @@ impl AppleSealState {
             if route.blocked {
                 self.whisper_span_refused.insert(occurrence.clone());
                 self.whisper_slices.remove(occurrence);
+                self.whisper_replay_coverage.remove(occurrence);
                 self.keep_routed_visible(ev_tx, request_id, &route.exclusive);
                 self.emit_span_refusal(
                     ev_tx,
@@ -2708,6 +2734,12 @@ impl AppleSealState {
                 .flatten();
             if sliced {
                 let pin_ranges = voiced_hops.is_some();
+                if pin_ranges && !route.replay_coverage.is_empty() {
+                    self.whisper_replay_coverage
+                        .entry(occurrence.clone())
+                        .or_default()
+                        .extend_from_slice(&route.replay_coverage);
+                }
                 if let Some(text) = label.clone() {
                     let slices = self.whisper_slices.entry(occurrence.clone()).or_default();
                     if pin_ranges {
@@ -2730,7 +2762,15 @@ impl AppleSealState {
                 }
                 self.keep_routed_visible(ev_tx, request_id, &route.exclusive);
                 let covered = self.whisper_slices.get(occurrence).is_some_and(|slices| {
-                    exclusive_slices_cover(occurrence, slices, voiced_hops.as_deref())
+                    exclusive_slices_cover(
+                        occurrence,
+                        slices,
+                        self.whisper_replay_coverage
+                            .get(occurrence)
+                            .map(Vec::as_slice)
+                            .unwrap_or(&[]),
+                        voiced_hops.as_deref(),
+                    )
                 });
                 if !covered {
                     self.refinement_receipt(occurrence, "sliced");
@@ -2748,6 +2788,7 @@ impl AppleSealState {
                             .join(" ")
                     })
                     .unwrap_or_default();
+                self.whisper_replay_coverage.remove(occurrence);
                 if joined.is_empty() {
                     self.refinement_receipt(occurrence, "sliced");
                     continue;
@@ -15164,8 +15205,8 @@ mod relay_l1_overlap_admission_tests {
         assert_conserved(&lane, Some("replayed_range_identity"));
     }
 
-    /// The replayed copy deliberately extends over unvoiced samples.
-    /// Whether its extent may count toward hop coverage is deferred to T-C.
+    /// The replayed copy extends over unvoiced samples; lending its extent
+    /// to hop coverage leaves the exclusive text and single admission intact.
     #[test]
     fn seam_word_with_case_and_punctuation_change_is_admitted_once() {
         let session = "seam-normalized-word";
@@ -15229,7 +15270,6 @@ mod relay_l1_overlap_admission_tests {
     /// today, so those samples leave the long occurrence `sliced` and it loses
     /// its whole Whisper text. Un-ignoring this test is a T-C acceptance criterion.
     #[test]
-    #[ignore = "T-C: W0 §10 coverage contract"]
     fn replayed_seam_copy_past_the_kept_word_keeps_the_whisper_text() {
         let session = "seam-jitter-coverage";
         let mut lane = open(session);
@@ -15261,6 +15301,132 @@ mod relay_l1_overlap_admission_tests {
             Some("szew dalej koniec"),
             "{warnings}"
         );
+    }
+
+    #[test]
+    fn replay_coverage_never_duplicates_the_seam_word_in_document_text() {
+        let session = "seam-replay-text-once";
+        let mut lane = open(session);
+        record_voiced_spans(
+            &lane,
+            LONG_SAMPLES,
+            &[(44_000, 53_000), (70_000, 88_000), (100_000, 140_000)],
+        );
+        let (occurrence, requests) = launch_long_span(&mut lane, Some("apple"));
+        let windows = [
+            vec![word_pin(session, "szew", 44_000, 51_000)],
+            vec![
+                word_pin(session, "szew", 45_000, 53_000),
+                word_pin(session, "dalej", 70_000, 88_000),
+            ],
+            vec![word_pin(session, "koniec", 100_000, 140_000)],
+        ];
+        for (request, segments) in requests.iter().zip(windows) {
+            lane.state
+                .complete_whisper_window(&lane.tx, completion(request, segments), 9.5);
+            let _ = drain(&mut lane.rx);
+        }
+        let held = held_text(&lane, &occurrence).expect("Whisper replacement");
+        assert_eq!(
+            held.split_whitespace()
+                .filter(|word| *word == "szew")
+                .count(),
+            1
+        );
+    }
+
+    /// `szyk` is an ExclusiveTail under `classify_overlap_pin`: its midpoint
+    /// belongs to window 2 and its range fits the open member. Text differs,
+    /// so T-A2 cannot turn it into a same-word replay.
+    #[test]
+    fn distinct_seam_word_does_not_lend_replay_coverage() {
+        let session = "seam-distinct-coverage";
+        let mut lane = open(session);
+        record_voiced_spans(
+            &lane,
+            LONG_SAMPLES,
+            &[(44_000, 53_000), (70_000, 88_000), (100_000, 140_000)],
+        );
+        let (occurrence, requests) = launch_long_span(&mut lane, Some("apple"));
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(&requests[0], vec![word_pin(session, "szew", 44_000, 51_000)]),
+            9.5,
+        );
+        let _ = drain(&mut lane.rx);
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(&requests[1], vec![word_pin(session, "szyk", 45_000, 53_000)]),
+            9.5,
+        );
+        let events = drain(&mut lane.rx);
+        assert!(!lane.state.whisper_replay_coverage.contains_key(&occurrence));
+        assert!(!replay_refusal(&events, "szyk"));
+        assert!(lane.state.whisper_slices.get(&occurrence).is_some_and(|slices| {
+            slices.iter().any(|(_, _, text)| text == "szyk")
+        }));
+    }
+
+    #[test]
+    fn stop_and_blocked_span_discard_replay_coverage() {
+        let mut stopped = open("seam-stop-coverage");
+        let (occurrence, _) = launch_long_span(&mut stopped, Some("apple"));
+        stopped.state.whisper_slices.insert(
+            occurrence.clone(),
+            vec![(44_000, 51_000, "szew".into())],
+        );
+        stopped
+            .state
+            .whisper_replay_coverage
+            .insert(occurrence.clone(), vec![(45_000, 53_000)]);
+        stopped.state.refuse_incomplete_whisper_spans(&stopped.tx);
+        assert!(!stopped.state.whisper_replay_coverage.contains_key(&occurrence));
+
+        let mut blocked = open("seam-blocked-coverage");
+        let (occurrence, requests) = launch_long(&mut blocked, "apple");
+        blocked.state.whisper_slices.insert(
+            occurrence.clone(),
+            vec![(8_000, 40_000, "raz".into())],
+        );
+        blocked
+            .state
+            .whisper_replay_coverage
+            .insert(occurrence.clone(), vec![(40_000, 52_000)]);
+        blocked.state.complete_whisper_window(
+            &blocked.tx,
+            completion(
+                &requests[0],
+                vec![segment("seam-blocked-coverage", "szew", 40_000, 52_000)],
+            ),
+            8.0,
+        );
+        assert!(!blocked.state.whisper_replay_coverage.contains_key(&occurrence));
+    }
+
+    #[test]
+    fn replay_extent_is_clipped_to_member_before_hop_coverage() {
+        let session = "seam-clipped-coverage";
+        let mut lane = open(session);
+        let member = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, 52_000);
+        lane.state.whisper_slices.insert(
+            member.clone(),
+            vec![(44_000, 51_000, "szew".into())],
+        );
+        let routes = lane.state.route_overlap_pins(
+            &lane.tx,
+            2,
+            48_000,
+            96_000,
+            &[(1, member.clone())],
+            &[word_pin(session, "szew", 45_000, 53_000)],
+        );
+        assert_eq!(routes[0].replay_coverage, vec![(45_000, 52_000)]);
+        assert!(!exclusive_slices_cover(
+            &member,
+            &[(44_000, 51_000, "szew".into())],
+            &routes[0].replay_coverage,
+            Some(&[(52_000, 53_000)]),
+        ));
     }
 
     /// Falsifier for the T-A duplicate rule (integrator W3, parent's counterexample).
