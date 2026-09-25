@@ -103,12 +103,22 @@ impl std::error::Error for CsError {}
 #[uniffi::export]
 pub fn start_application_runtime() -> Result<CsApplicationRuntimeSnapshot, CsError> {
     let snapshot = application_runtime::start()?;
-    let path = codescribe::presentation::transcript_bus::transcript_bus_path();
-    let days = codescribe::presentation::transcript_bus_maintenance::evidence_retention_days();
-    if let Err(error) = codescribe::presentation::transcript_bus_maintenance::compact_bus_owned(
-        &path, days, "startup",
-    ) {
-        tracing::warn!(%error, "startup bus compaction unavailable");
+    if let Err(error) = std::thread::Builder::new()
+        .name("codescribe-bus-compaction".to_string())
+        .spawn(|| {
+            let path = codescribe::presentation::transcript_bus::transcript_bus_path();
+            let days =
+                codescribe::presentation::transcript_bus_maintenance::evidence_retention_days();
+            if let Err(error) =
+                codescribe::presentation::transcript_bus_maintenance::compact_bus_owned(
+                    &path, days, "startup",
+                )
+            {
+                tracing::warn!(%error, "startup bus compaction unavailable");
+            }
+        })
+    {
+        tracing::warn!(%error, "startup bus compaction thread unavailable");
     }
     Ok(snapshot)
 }

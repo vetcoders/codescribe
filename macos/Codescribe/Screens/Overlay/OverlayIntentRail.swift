@@ -46,11 +46,13 @@ struct OverlayIntentRail: View {
   let footerNotice: String?
   let footerEngineDot: Color
   let history: [CsDocumentHistoryEntry]
+  let historyAvailable: Bool
   let currentRevision: UInt64
   let formatLevel: FormattingPolicyOption
   let onIntent: (OverlayIntent) -> Void
   let onRetranscribe: (OverlayRetranscribePass) -> Void
   let onRestore: (UInt64) -> Void
+  let onHistoryRequest: () -> Void
   let onFormatLevel: (FormattingPolicyOption) -> Void
 
   init(
@@ -61,11 +63,13 @@ struct OverlayIntentRail: View {
     footerNotice: String? = nil,
     footerEngineDot: Color = .clear,
     history: [CsDocumentHistoryEntry] = [],
+    historyAvailable: Bool? = nil,
     currentRevision: UInt64 = 0,
     formatLevel: FormattingPolicyOption = .correction,
     onIntent: @escaping (OverlayIntent) -> Void,
     onRetranscribe: @escaping (OverlayRetranscribePass) -> Void = { _ in },
     onRestore: @escaping (UInt64) -> Void = { _ in },
+    onHistoryRequest: @escaping () -> Void = {},
     onFormatLevel: @escaping (FormattingPolicyOption) -> Void = { _ in },
     onFocusChange: @escaping (Bool) -> Void = { _ in }
   ) {
@@ -77,11 +81,13 @@ struct OverlayIntentRail: View {
     self.footerNotice = footerNotice
     self.footerEngineDot = footerEngineDot
     self.history = history
+    self.historyAvailable = historyAvailable ?? !history.isEmpty
     self.currentRevision = currentRevision
     self.formatLevel = formatLevel
     self.onIntent = onIntent
     self.onRetranscribe = onRetranscribe
     self.onRestore = onRestore
+    self.onHistoryRequest = onHistoryRequest
     self.onFormatLevel = onFormatLevel
   }
 
@@ -94,7 +100,7 @@ struct OverlayIntentRail: View {
       .padding(.horizontal, 8)
       .background(.regularMaterial, in: Capsule())
       HStack(spacing: 4) {
-        if !history.isEmpty {
+        if historyAvailable {
           historyMenu
         }
         ForEach(intents, id: \.self) { intent in
@@ -199,6 +205,8 @@ struct OverlayIntentRail: View {
 
   private var historyMenu: some View {
     Menu {
+      Button("Refresh transcript history") { onHistoryRequest() }
+        .accessibilityIdentifier("overlay-history-refresh")
       ForEach(history, id: \.revision) { entry in
         Button {
           onRestore(entry.revision)

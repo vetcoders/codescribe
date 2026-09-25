@@ -1096,7 +1096,11 @@ impl CodescribeHotkeys {
         session_id: String,
     ) -> Result<Vec<CsDocumentHistoryEntry>, CsError> {
         application_runtime::run(async move {
-            transcript_bus::document_history(&session_id)
+            tokio::task::spawn_blocking(move || transcript_bus::document_history(&session_id))
+                .await
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })?
                 .map(|entries| entries.into_iter().map(Into::into).collect())
                 .map_err(|error| CsError::Recording {
                     msg: format!("Transcript history unavailable: {error}"),
@@ -1115,15 +1119,22 @@ impl CodescribeHotkeys {
         restore_revision: u64,
     ) -> Result<CsUserRevisionResult, CsError> {
         application_runtime::run(async move {
-            let selected = transcript_bus::document_history(&session_id)
-                .map_err(|error| CsError::Recording {
-                    msg: format!("Transcript history unavailable: {error}"),
-                })?
-                .into_iter()
-                .find(|entry| entry.revision == restore_revision)
-                .ok_or_else(|| CsError::Recording {
-                    msg: "Selected transcript revision is not in the Bus history".to_string(),
-                })?;
+            let history_session_id = session_id.clone();
+            let selected = tokio::task::spawn_blocking(move || {
+                transcript_bus::document_history(&history_session_id)
+            })
+            .await
+            .map_err(|error| CsError::Recording {
+                msg: error.to_string(),
+            })?
+            .map_err(|error| CsError::Recording {
+                msg: format!("Transcript history unavailable: {error}"),
+            })?
+            .into_iter()
+            .find(|entry| entry.revision == restore_revision)
+            .ok_or_else(|| CsError::Recording {
+                msg: "Selected transcript revision is not in the Bus history".to_string(),
+            })?;
             let controller =
                 current_controller(&shared_controller()).ok_or_else(|| CsError::Recording {
                     msg: "no recording controller for transcript restoration".to_string(),

@@ -311,6 +311,7 @@ final class OverlayState {
   private(set) var formatterError: String?
   /// Read-only projection of this take's Bus journal revisions.
   private(set) var documentHistory: [CsDocumentHistoryEntry] = []
+  private var historyReadSessionId: String?
   private(set) var userRevisionProvenance: String?
   private(set) var canPaste = false
   private(set) var canInsert = false
@@ -2077,6 +2078,7 @@ final class OverlayState {
     // refused bytes. The first observed projection may already end this session.
     if isNewSession {
       documentHistory = []
+      historyReadSessionId = nil
       if let priorProjection { retiredProjectionSessions.insert(priorProjection.sessionId) }
       deliveredText = ""
       deliveredTextSessionId = nil
@@ -2161,8 +2163,11 @@ final class OverlayState {
     }
 
     if projection.terminal {
-      refreshDocumentHistory(
-        sessionId: projection.sessionId, sourceRevision: projection.reducerRevision)
+      if isLifecycleTerminal && historyReadSessionId != projection.sessionId {
+        historyReadSessionId = projection.sessionId
+        refreshDocumentHistory(
+          sessionId: projection.sessionId, sourceRevision: projection.reducerRevision)
+      }
       if deliveredTextSessionId != projection.sessionId {
         deliveredText = projection.renderedText
         deliveredTextSessionId = projection.sessionId
@@ -2344,6 +2349,12 @@ final class OverlayState {
         revisionCommitError = "Couldn't restore transcript version: \(error)"
       }
     }
+  }
+
+  func loadDocumentHistory() {
+    guard terminal, let projection = latestTranscriptProjection else { return }
+    refreshDocumentHistory(
+      sessionId: projection.sessionId, sourceRevision: projection.reducerRevision)
   }
 
   private func refreshDocumentHistory(sessionId: String, sourceRevision: UInt64) {
@@ -2543,6 +2554,7 @@ final class OverlayState {
     latestTranscriptProjection = nil
     revisionDraft = ""
     documentHistory = []
+    historyReadSessionId = nil
     // Retained chrome is evidence about the previous take, not this one.
     transcriptMode = "dictation"
     mode = .listening

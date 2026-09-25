@@ -49,11 +49,13 @@ struct DictationOverlayView: View {
           footerNotice: state.toast,
           footerEngineDot: footerEngineDot,
           history: state.documentHistory,
+          historyAvailable: state.terminal,
           currentRevision: state.revision,
           formatLevel: state.autoFormatLevel,
           onIntent: state.relayIntent,
           onRetranscribe: { state.retranscribe(pass: $0) },
           onRestore: state.restoreDocumentRevision,
+          onHistoryRequest: state.loadDocumentHistory,
           onFormatLevel: state.setAutoFormatLevel,
           onFocusChange: { actionsFocused = $0 }
         )

@@ -1768,10 +1768,25 @@ final class OverlayStateTests: XCTestCase {
     projectText("first", to: state, terminal: true, lifecycleTerminal: false,
       sessionId: "overlay-state-tests", reducerRevision: 4,
       reducerAction: "apply_manual_edit", manualEditReceipt: "user-edit-test-4")
+    state.loadDocumentHistory()
     await fulfillment(of: [refreshed], timeout: 1)
     XCTAssertEqual(state.formattedText, "first")
     XCTAssertEqual(state.documentHistory.map(\.revision), [1, 2, 3, 4])
     XCTAssertEqual(state.documentHistory.last?.provenance, "user-edit")
+  }
+
+  func testTerminalProjectionBurstReadsHistoryAtMostOnce() async {
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState()
+    state.engine = engine
+    var reads = 0
+    engine.onHistoryRead = { reads += 1 }
+    for revision in 1...10 {
+      projectText("version \(revision)", to: state, terminal: true,
+        lifecycleTerminal: revision == 10, reducerRevision: UInt64(revision))
+    }
+    try? await Task.sleep(nanoseconds: 50_000_000)
+    XCTAssertEqual(reads, 1)
   }
 
   func testAgentDeadlineRequiresProjectedSendPermission() async {

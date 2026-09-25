@@ -20,13 +20,13 @@
 //! dropped, and any row this code cannot parse is kept — an unknown schema is
 //! not permission to discard someone's data.
 //!
-//! SAFETY. In-app compaction holds the same descriptor lock as every app Bus
-//! append and replaces that descriptor after rename. The separate CLI process
+//! SAFETY. In-app compaction stages outside the descriptor lock, then copies
+//! the appended tail and replaces the descriptor under that lock. The separate CLI process
 //! cannot take that lock, so its command retains the quiet-period refusal and
 //! re-checks file identity before rename.
 
-use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::collections::{HashMap, HashSet};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
@@ -55,6 +55,7 @@ pub fn evidence_retention_days() -> u32 {
 const PREVIEW_WINDOWS: [u32; 4] = [3, 7, 14, 30];
 const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 static LAST_APP_CHECK: OnceLock<Mutex<HashMap<PathBuf, (Instant, u32)>>> = OnceLock::new();
+static ACTIVE_APP_COMPACTIONS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
 
 /// A write this recent means a session may still be open. Compaction refuses
 /// rather than race an append descriptor it cannot see.
@@ -118,6 +119,8 @@ pub struct CompactionReport {
     pub bytes_after: u64,
     /// False when `dry_run` kept the original in place.
     pub applied: bool,
+    /// Time spent holding the app's shared writer lock during the final swap.
+    pub locked_ms: u64,
 }
 
 impl CompactionReport {
@@ -156,7 +159,15 @@ pub fn bus_status(path: &Path) -> Result<BusStatus> {
 }
 
 fn bus_status_with_retention(path: &Path, retention_days: Option<u32>) -> Result<BusStatus> {
-    let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    bus_status_with_retention_limit(path, retention_days, None)
+}
+
+fn bus_status_with_retention_limit(
+    path: &Path,
+    retention_days: Option<u32>,
+    limit: Option<u64>,
+) -> Result<BusStatus> {
+    let bytes = limit.unwrap_or_else(|| std::fs::metadata(path).map(|m| m.len()).unwrap_or(0));
     let mut status = BusStatus {
         path: path.to_path_buf(),
         bytes,
@@ -186,7 +197,7 @@ fn bus_status_with_retention(path: &Path, retention_days: Option<u32>) -> Result
         .map(|days| (*days, cutoff_for(*days)))
         .collect();
     let mut reclaimable = vec![0u64; cutoffs.len()];
-    for line in BufReader::new(file).lines() {
+    for line in BufReader::new(file.take(bytes)).lines() {
         let line = line.with_context(|| format!("read bus {}", path.display()))?;
         if line.trim().is_empty() {
             continue;
@@ -242,9 +253,29 @@ pub fn compact_bus(path: &Path, retention_days: u32, dry_run: bool) -> Result<Co
     compact_bus_inner(path, retention_days, dry_run, false, None)
 }
 
-/// Compact through the app's shared writer. Every app append waits for the
-/// rewrite and then uses the reopened descriptor on the replacement inode.
+/// Compact through the app's shared writer. Appends wait only for tail copy
+/// and descriptor replacement.
 pub fn compact_bus_owned(
+    path: &Path,
+    retention_days: u32,
+    trigger: &str,
+) -> Result<Option<CompactionReport>> {
+    let active = ACTIVE_APP_COMPACTIONS.get_or_init(|| Mutex::new(HashSet::new()));
+    {
+        let mut active = active.lock().unwrap_or_else(|error| error.into_inner());
+        if !active.insert(path.to_path_buf()) {
+            return Ok(None);
+        }
+    }
+    let result = compact_bus_owned_reserved(path, retention_days, trigger);
+    active
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .remove(path);
+    result
+}
+
+fn compact_bus_owned_reserved(
     path: &Path,
     retention_days: u32,
     trigger: &str,
@@ -279,11 +310,14 @@ fn compact_bus_owned_once(
     trigger: &str,
 ) -> Result<Option<CompactionReport>> {
     let shared = super::transcript_bus::shared_bus_file(path)?;
-    let mut file = shared.lock().unwrap_or_else(|error| error.into_inner());
-    if file.metadata()?.len() < COMPACTION_THRESHOLD_BYTES {
+    let initial = {
+        let file = shared.lock().unwrap_or_else(|error| error.into_inner());
+        file.metadata()?
+    };
+    if initial.len() < COMPACTION_THRESHOLD_BYTES {
         return Ok(None);
     }
-    let status = bus_status_with_retention(path, Some(retention_days))?;
+    let status = bus_status_with_retention_limit(path, Some(retention_days), Some(initial.len()))?;
     if !status.wants_compaction()
         || status
             .retention_preview
@@ -293,7 +327,65 @@ fn compact_bus_owned_once(
     {
         return Ok(None);
     }
-    let report = compact_bus_inner(path, retention_days, false, true, Some(&mut file))?;
+    let (mut report, staged) = stage_bus(path, retention_days, initial.len(), true)?;
+    if report.evidence_rows_dropped == 0 {
+        std::fs::remove_file(&staged).ok();
+        return Ok(None);
+    }
+    let result = (|| -> Result<u64> {
+        use std::os::unix::fs::MetadataExt;
+        let mut writer = shared.lock().unwrap_or_else(|error| error.into_inner());
+        let locked_at = Instant::now();
+        let visible = std::fs::metadata(path)?;
+        let descriptor = writer.metadata()?;
+        anyhow::ensure!(
+            visible.dev() == initial.dev()
+                && visible.ino() == initial.ino()
+                && descriptor.dev() == initial.dev()
+                && descriptor.ino() == initial.ino()
+                && visible.len() >= initial.len()
+                && descriptor.len() == visible.len(),
+            "transcript bus shrank or was replaced during owned compaction"
+        );
+        let tail_len = visible.len() - initial.len();
+        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- this is the app-owned Bus path already verified against its shared writer descriptor, or a test temporary path.
+        let mut source = std::fs::File::open(path)?;
+        source.seek(SeekFrom::Start(initial.len()))?;
+        let mut tail = source.take(tail_len);
+        let mut out = std::fs::OpenOptions::new().append(true).open(&staged)?;
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let read = tail.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            report.rows_read += buffer[..read].iter().filter(|byte| **byte == b'\n').count() as u64;
+            report.rows_kept += buffer[..read].iter().filter(|byte| **byte == b'\n').count() as u64;
+            out.write_all(&buffer[..read])?;
+        }
+        out.flush()?;
+        anyhow::ensure!(
+            std::fs::metadata(path)?.len() == visible.len(),
+            "transcript bus grew outside the shared writer during tail copy"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o600))?;
+        }
+        let replacement = super::transcript_bus::open_bus_append_file(&staged)?;
+        std::fs::rename(&staged, path)?;
+        *writer = replacement;
+        report.bytes_before = visible.len();
+        report.bytes_after += tail_len;
+        report.applied = true;
+        Ok(locked_at.elapsed().as_millis() as u64)
+    })();
+    if result.is_err() {
+        std::fs::remove_file(&staged).ok();
+    }
+    let locked_ms = result?;
+    report.locked_ms = locked_ms;
     if report.applied {
         tracing::info!(
             rows_read = report.rows_read,
@@ -302,12 +394,139 @@ fn compact_bus_owned_once(
             bytes_before = report.bytes_before,
             bytes_after = report.bytes_after,
             trigger,
+            locked_ms,
             "bus_compaction"
         );
         Ok(Some(report))
     } else {
         Ok(None)
     }
+}
+
+fn stage_bus(
+    path: &Path,
+    retention_days: u32,
+    bytes_before: u64,
+    owned: bool,
+) -> Result<(CompactionReport, PathBuf)> {
+    let cutoff = cutoff_for(retention_days);
+
+    let staged = if owned {
+        path.with_extension(format!("jsonl.compacting.owned-{}", std::process::id()))
+    } else {
+        path.with_extension("jsonl.compacting")
+    };
+    let result = (|| -> Result<CompactionReport> {
+        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- staged path is derived from the bus path by `with_extension`, not from input.
+        let mut out = std::fs::File::create(&staged)
+            .with_context(|| format!("create staged bus {}", staged.display()))?;
+        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- same local bus path already opened for status above.
+        let source = std::fs::File::open(path)
+            .with_context(|| format!("open transcript bus {}", path.display()))?;
+
+        let mut report = CompactionReport {
+            rows_read: 0,
+            rows_kept: 0,
+            evidence_rows_dropped: 0,
+            bytes_before,
+            bytes_after: 0,
+            applied: false,
+            locked_ms: 0,
+        };
+        let mut last_document: HashMap<String, String> = HashMap::new();
+        let mut history_seen: HashSet<(String, u64)> = HashSet::new();
+        for line in BufReader::new(source.take(bytes_before)).lines() {
+            let line = line.with_context(|| format!("read transcript bus {}", path.display()))?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            report.rows_read += 1;
+            let parsed = serde_json::from_str::<serde_json::Value>(&line).ok();
+            let schema = parsed
+                .as_ref()
+                .and_then(|row| row.get("schema"))
+                .and_then(|value| value.as_str());
+            let time = parsed.as_ref().and_then(|row| {
+                ["emitted_at", "ts", "timestamp", "created_at"]
+                    .iter()
+                    .find_map(|key| row.get(*key).and_then(|value| value.as_str()))
+            });
+            let session_id = parsed
+                .as_ref()
+                .and_then(|row| row.get("session_id"))
+                .and_then(|value| value.as_str());
+            if schema == Some(EVIDENCE_SCHEMA)
+                && let Some(row) = parsed.as_ref()
+                && let (Some(session), Some(document)) = (
+                    session_id,
+                    row.get("rendered_text").and_then(|value| value.as_str()),
+                )
+            {
+                last_document.insert(session.to_string(), document.to_string());
+            }
+            // Only a row this code positively identifies as aged-out evidence is
+            // dropped. An unknown schema, or evidence with no readable timestamp,
+            // is kept: not understanding a row is not grounds for deleting it.
+            let keep_terminal_revision = parsed.as_ref().is_some_and(|row| {
+                row.get("reducer_action").and_then(|v| v.as_str()) == Some("apply_manual_edit")
+                    && row.get("terminal").and_then(|v| v.as_bool()) == Some(true)
+            });
+            let drop = schema == Some(EVIDENCE_SCHEMA)
+                && !keep_terminal_revision
+                && time.is_some_and(|t| t < cutoff.as_str());
+            let history = (schema == Some(EVIDENCE_SCHEMA))
+                .then(|| super::transcript_bus::compact_history_row(&line))
+                .flatten();
+            if let Some((session, revision, _)) = history.as_ref() {
+                if !drop {
+                    history_seen.insert((session.clone(), *revision));
+                }
+            } else if schema == Some(super::transcript_bus::HISTORY_SCHEMA)
+                && let (Some(session), Some(revision)) = (
+                    session_id,
+                    parsed
+                        .as_ref()
+                        .and_then(|row| row.get("revision"))
+                        .and_then(|value| value.as_u64()),
+                )
+            {
+                history_seen.insert((session.to_string(), revision));
+            }
+            if drop {
+                report.evidence_rows_dropped += 1;
+                if let Some((session, revision, compact)) = history
+                    && history_seen.insert((session, revision))
+                {
+                    report.rows_kept += 1;
+                    report.bytes_after += compact.len() as u64 + 1;
+                    writeln!(out, "{compact}")?;
+                }
+                continue;
+            }
+            let retained = if schema == Some(DELIVERY_SCHEMA)
+                && let Some(row) = parsed.as_ref()
+                && row.get("status").and_then(|value| value.as_str()) == Some("session_ended")
+                && row.get("rendered_text").is_none()
+                && let Some(document) = session_id.and_then(|id| last_document.get(id))
+            {
+                let mut row = row.clone();
+                row["rendered_text"] = serde_json::Value::String(document.clone());
+                serde_json::to_string(&row)?
+            } else {
+                line
+            };
+            report.rows_kept += 1;
+            report.bytes_after += retained.len() as u64 + 1;
+            writeln!(out, "{retained}")?;
+        }
+        out.flush()?;
+        drop(out);
+        Ok(report)
+    })();
+    if result.is_err() {
+        std::fs::remove_file(&staged).ok();
+    }
+    result.map(|report| (report, staged))
 }
 
 fn compact_bus_inner(
@@ -336,86 +555,7 @@ fn compact_bus_inner(
         );
     }
 
-    let cutoff = cutoff_for(retention_days);
-
-    let staged = path.with_extension("jsonl.compacting");
-    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- staged path is derived from the bus path by `with_extension`, not from input.
-    let mut out = std::fs::File::create(&staged)
-        .with_context(|| format!("create staged bus {}", staged.display()))?;
-    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- same local bus path already opened for status above.
-    let source = std::fs::File::open(path)
-        .with_context(|| format!("open transcript bus {}", path.display()))?;
-
-    let mut report = CompactionReport {
-        rows_read: 0,
-        rows_kept: 0,
-        evidence_rows_dropped: 0,
-        bytes_before,
-        bytes_after: 0,
-        applied: false,
-    };
-    let mut last_document: HashMap<String, String> = HashMap::new();
-    for line in BufReader::new(source).lines() {
-        let line = line.with_context(|| format!("read transcript bus {}", path.display()))?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        report.rows_read += 1;
-        let parsed = serde_json::from_str::<serde_json::Value>(&line).ok();
-        let schema = parsed
-            .as_ref()
-            .and_then(|row| row.get("schema"))
-            .and_then(|value| value.as_str());
-        let time = parsed.as_ref().and_then(|row| {
-            ["emitted_at", "ts", "timestamp", "created_at"]
-                .iter()
-                .find_map(|key| row.get(*key).and_then(|value| value.as_str()))
-        });
-        let session_id = parsed
-            .as_ref()
-            .and_then(|row| row.get("session_id"))
-            .and_then(|value| value.as_str());
-        if schema == Some(EVIDENCE_SCHEMA)
-            && let Some(row) = parsed.as_ref()
-            && let (Some(session), Some(document)) = (
-                session_id,
-                row.get("rendered_text").and_then(|value| value.as_str()),
-            )
-        {
-            last_document.insert(session.to_string(), document.to_string());
-        }
-        // Only a row this code positively identifies as aged-out evidence is
-        // dropped. An unknown schema, or evidence with no readable timestamp,
-        // is kept: not understanding a row is not grounds for deleting it.
-        let keep_terminal_revision = parsed.as_ref().is_some_and(|row| {
-            row.get("reducer_action").and_then(|v| v.as_str()) == Some("apply_manual_edit")
-                && row.get("terminal").and_then(|v| v.as_bool()) == Some(true)
-        });
-        let drop = schema == Some(EVIDENCE_SCHEMA)
-            && !keep_terminal_revision
-            && time.is_some_and(|t| t < cutoff.as_str());
-        if drop {
-            report.evidence_rows_dropped += 1;
-            continue;
-        }
-        let retained = if schema == Some(DELIVERY_SCHEMA)
-            && let Some(row) = parsed.as_ref()
-            && row.get("status").and_then(|value| value.as_str()) == Some("session_ended")
-            && row.get("rendered_text").is_none()
-            && let Some(document) = session_id.and_then(|id| last_document.get(id))
-        {
-            let mut row = row.clone();
-            row["rendered_text"] = serde_json::Value::String(document.clone());
-            serde_json::to_string(&row)?
-        } else {
-            line
-        };
-        report.rows_kept += 1;
-        report.bytes_after += retained.len() as u64 + 1;
-        writeln!(out, "{retained}")?;
-    }
-    out.flush()?;
-    drop(out);
+    let (mut report, staged) = stage_bus(path, retention_days, bytes_before, owned)?;
     if owned && report.evidence_rows_dropped == 0 {
         std::fs::remove_file(&staged).ok();
         report.bytes_after = report.bytes_before;
@@ -563,6 +703,112 @@ mod tests {
                 "lost row {index}"
             );
         }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn app_append_does_not_wait_for_a_large_owned_compaction_scan() {
+        use crate::presentation::transcript_bus::{
+            TranscriptBus, TranscriptMode, TranscriptSession,
+        };
+        let dir = temp("large-concurrent-append");
+        let path = dir.join("transcript-events.jsonl");
+        let buses: Vec<_> = (0..10)
+            .map(|index| {
+                TranscriptBus::open_at(
+                    TranscriptSession {
+                        session_id: format!("new-take-{index}"),
+                        mode: TranscriptMode::Dictation,
+                        has_latched_target: false,
+                        latched_target_is_self: false,
+                    },
+                    path.clone(),
+                    None,
+                )
+                .unwrap()
+            })
+            .collect();
+        let row = format!(
+            "{{\"schema\":\"codescribe.transcript-evidence.v1\",\"emitted_at\":\"2020-01-01T00:00:00Z\",\"padding\":\"{}\"}}\n",
+            "x".repeat(2048)
+        );
+        let mut out = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        while out.metadata().unwrap().len() < COMPACTION_THRESHOLD_BYTES {
+            out.write_all(row.as_bytes()).unwrap();
+        }
+        loop {
+            out.flush().unwrap();
+            let scan_started = Instant::now();
+            let _ = bus_status(&path).unwrap();
+            if scan_started.elapsed() >= Duration::from_secs(1) {
+                break;
+            }
+            let old_len = out.metadata().unwrap().len();
+            while out.metadata().unwrap().len() < old_len * 2 {
+                out.write_all(row.as_bytes()).unwrap();
+            }
+        }
+        drop(out);
+        let worker_path = path.clone();
+        let worker =
+            std::thread::spawn(move || compact_bus_owned(&worker_path, 14, "test").unwrap());
+        std::thread::sleep(Duration::from_millis(100));
+        let append_started = Instant::now();
+        for bus in &buses {
+            bus.publish_started();
+        }
+        let append_elapsed = append_started.elapsed();
+        let report = worker.join().unwrap().unwrap();
+        assert!(
+            append_elapsed <= Duration::from_millis(100),
+            "append waited {append_elapsed:?}"
+        );
+        assert!(report.applied);
+        eprintln!("locked_ms={}", report.locked_ms);
+        assert!(report.locked_ms <= 100);
+        let final_bus = std::fs::read_to_string(&path).unwrap();
+        for index in 0..10 {
+            assert!(final_bus.contains(&format!("new-take-{index}")));
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn owned_compaction_refuses_a_replaced_bus_before_rename() {
+        let dir = temp("replaced-during-compaction");
+        let path = dir.join("transcript-events.jsonl");
+        let row = b"{\"schema\":\"codescribe.transcript-evidence.v1\",\"emitted_at\":\"2020-01-01T00:00:00Z\"}\n";
+        let mut out = std::fs::File::create(&path).unwrap();
+        out.write_all(b"{\"schema\":\"codescribe.transcript.v1\",\"session_id\":\"seed\",\"status\":\"session_started\"}\n").unwrap();
+        while out.metadata().unwrap().len() < COMPACTION_THRESHOLD_BYTES {
+            out.write_all(row).unwrap();
+        }
+        drop(out);
+        let worker_path = path.clone();
+        let worker = std::thread::spawn(move || compact_bus_owned(&worker_path, 14, "test"));
+        let staged = path.with_extension(format!("jsonl.compacting.owned-{}", std::process::id()));
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while std::fs::metadata(&staged).map(|m| m.len()).unwrap_or(0) == 0
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            std::fs::metadata(&staged).unwrap().len() > 0,
+            "compaction never entered the off-lock stage"
+        );
+        std::fs::rename(&path, dir.join("original.jsonl")).unwrap();
+        std::fs::write(&path, b"replacement\n").unwrap();
+        let error = worker.join().unwrap().unwrap_err();
+        assert!(
+            error.to_string().contains("shrank or was replaced"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"replacement\n");
+        assert!(!staged.exists());
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
@@ -373,6 +373,69 @@ pub struct DocumentHistoryEntry {
     pub emitted_at: String,
 }
 
+pub(crate) const HISTORY_SCHEMA: &str = "codescribe.transcript-history.v1";
+
+#[derive(Serialize, Deserialize)]
+struct CompactHistoryRow {
+    schema: String,
+    session_id: String,
+    revision: u64,
+    rendered_text: String,
+    provenance: String,
+    emitted_at: String,
+}
+
+/// A compact copy of a reducer revision whose large acoustic row may expire.
+/// It preserves the existing Bus-derived history without retaining receipts.
+pub(crate) fn compact_history_row(line: &str) -> Option<(String, u64, String)> {
+    let event = serde_json::from_str::<TranscriptBusEvidenceEvent>(line).ok()?;
+    let entry = history_entry_from_event(&event)?;
+    let row = CompactHistoryRow {
+        schema: HISTORY_SCHEMA.to_string(),
+        session_id: event.session_id.clone(),
+        revision: entry.revision,
+        rendered_text: entry.rendered_text,
+        provenance: entry.provenance,
+        emitted_at: entry.emitted_at,
+    };
+    let encoded = serde_json::to_string(&row).ok()?;
+    Some((row.session_id, row.revision, encoded))
+}
+
+fn history_entry_from_event(event: &TranscriptBusEvidenceEvent) -> Option<DocumentHistoryEntry> {
+    if event.document_index != 0
+        || event.reducer_revision == 0
+        || event.reducer_action == "session_ended"
+        || event.rendered_text.trim().is_empty()
+    {
+        return None;
+    }
+    let receipt = (event.reducer_action == "apply_manual_edit")
+        .then(|| {
+            event
+                .acoustic_receipts
+                .first()
+                .and_then(|acoustic| acoustic.manual_edit_receipt.as_deref())
+        })
+        .flatten();
+    let provenance = ["user-edit", "retranscribe", "formatter", "light-plus"]
+        .into_iter()
+        .find(|kind| receipt.is_some_and(|id| id.starts_with(&format!("{kind}-"))))
+        .map(str::to_string)
+        .unwrap_or_else(|| match event.reducer_action.as_str() {
+            "apply_ledger_decision" => "acoustic-ledger".to_string(),
+            "apply_incremental_shaping" => "light-plus".to_string(),
+            "apply_consultation_presentation" => "consultation".to_string(),
+            action => action.to_string(),
+        });
+    Some(DocumentHistoryEntry {
+        revision: event.reducer_revision,
+        rendered_text: event.rendered_text.clone(),
+        provenance,
+        emitted_at: event.emitted_at.clone(),
+    })
+}
+
 /// Read the already published history for one take. A missing journal means
 /// there is no persisted history; it never licenses reconstructing it in UI.
 pub fn document_history(session_id: &str) -> io::Result<Vec<DocumentHistoryEntry>> {
@@ -383,51 +446,75 @@ pub(crate) fn document_history_at(
     path: &Path,
     session_id: &str,
 ) -> io::Result<Vec<DocumentHistoryEntry>> {
-    let file = match std::fs::File::open(path) {
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- path is the app-owned transcript_bus_path() or an explicit test temporary Bus path, never request input.
+    let mut file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error),
     };
+    // Recent takes live at the tail. Read blocks backwards and stop at this
+    // session's started row; other sessions may be interleaved, so merely
+    // seeing another session is not a safe stopping condition.
+    let mut position = file.metadata()?.len();
+    let mut prefix = Vec::new();
+    let mut rows = Vec::new();
+    let mut found_start = false;
+    while position > 0 && !found_start {
+        let width = position.min(64 * 1024) as usize;
+        position -= width as u64;
+        file.seek(SeekFrom::Start(position))?;
+        let mut block = vec![0; width];
+        file.read_exact(&mut block)?;
+        block.extend_from_slice(&prefix);
+        let mut end = block.len();
+        for index in (0..block.len()).rev() {
+            if block[index] != b'\n' {
+                continue;
+            }
+            let line = &block[index + 1..end];
+            end = index;
+            let Ok(row) = serde_json::from_slice::<serde_json::Value>(line) else {
+                continue;
+            };
+            if row.get("session_id").and_then(|value| value.as_str()) != Some(session_id) {
+                continue;
+            }
+            if row.get("status").and_then(|value| value.as_str()) == Some("session_started") {
+                found_start = true;
+                break;
+            }
+            rows.push(line.to_vec());
+        }
+        prefix = block[..end].to_vec();
+    }
+    if !found_start && !prefix.is_empty() {
+        rows.push(prefix);
+    }
+    rows.reverse();
     let mut revisions = std::collections::BTreeMap::new();
-    for line in BufReader::new(file).lines() {
-        let line = line?;
-        let Ok(event) = serde_json::from_str::<TranscriptBusEvidenceEvent>(&line) else {
-            continue;
-        };
-        if event.session_id != session_id
-            || event.document_index != 0
-            || event.reducer_revision == 0
-            || event.reducer_action == "session_ended"
-            || event.rendered_text.trim().is_empty()
+    for line in rows {
+        if let Ok(row) = serde_json::from_slice::<CompactHistoryRow>(&line)
+            && row.schema == HISTORY_SCHEMA
         {
+            revisions
+                .entry(row.revision)
+                .or_insert(DocumentHistoryEntry {
+                    revision: row.revision,
+                    rendered_text: row.rendered_text,
+                    provenance: row.provenance,
+                    emitted_at: row.emitted_at,
+                });
             continue;
         }
-        let receipt = (event.reducer_action == "apply_manual_edit")
-            .then(|| {
-                event
-                    .acoustic_receipts
-                    .first()
-                    .and_then(|acoustic| acoustic.manual_edit_receipt.as_deref())
-            })
-            .flatten();
-        let provenance = ["user-edit", "retranscribe", "formatter", "light-plus"]
-            .into_iter()
-            .find(|kind| receipt.is_some_and(|id| id.starts_with(&format!("{kind}-"))))
-            .map(str::to_string)
-            .unwrap_or_else(|| match event.reducer_action.as_str() {
-                "apply_ledger_decision" => "acoustic-ledger".to_string(),
-                "apply_incremental_shaping" => "light-plus".to_string(),
-                "apply_consultation_presentation" => "consultation".to_string(),
-                action => action.to_string(),
-            });
-        revisions
-            .entry(event.reducer_revision)
-            .or_insert(DocumentHistoryEntry {
-                revision: event.reducer_revision,
-                rendered_text: event.rendered_text,
-                provenance,
-                emitted_at: event.emitted_at,
-            });
+        let Ok(event) = serde_json::from_slice::<TranscriptBusEvidenceEvent>(&line) else {
+            continue;
+        };
+        if event.session_id != session_id {
+            continue;
+        }
+        if let Some(entry) = history_entry_from_event(&event) {
+            revisions.entry(entry.revision).or_insert(entry);
+        }
     }
     Ok(revisions.into_values().collect())
 }
@@ -1313,6 +1400,72 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn recent_take_history_reads_only_the_bus_tail() {
+        use std::time::{Duration, Instant};
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("large-history.jsonl");
+        let row = format!(
+            "{{\"schema\":\"codescribe.transcript.v1\",\"session_id\":\"old\",\"padding\":\"{}\"}}\n",
+            "x".repeat(2048)
+        );
+        let mut out = std::fs::File::create(&path).unwrap();
+        while out.metadata().unwrap().len() < 128 * 1024 * 1024 {
+            out.write_all(row.as_bytes()).unwrap();
+        }
+        loop {
+            out.flush().unwrap();
+            let started = Instant::now();
+            let _ = super::super::transcript_bus_maintenance::bus_status(&path).unwrap();
+            if started.elapsed() >= Duration::from_secs(1) {
+                break;
+            }
+            let size = out.metadata().unwrap().len();
+            while out.metadata().unwrap().len() < size * 2 {
+                out.write_all(row.as_bytes()).unwrap();
+            }
+        }
+        drop(out);
+        let bus = TranscriptBus::open_at(session("recent-take"), path.clone(), None).unwrap();
+        bus.publish_started();
+        let (ledger, _, base) = committed_fixture("recent-take");
+        assert!(!bus.publish_revision(&base, &ledger).is_empty());
+        let started = Instant::now();
+        let history = document_history_at(&path, "recent-take").unwrap();
+        let elapsed = started.elapsed();
+        assert!(!history.is_empty());
+        assert!(
+            elapsed <= Duration::from_millis(100),
+            "recent history waited {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn compaction_preserves_revision_history_for_expired_evidence() {
+        use std::time::{Duration, SystemTime};
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("history-retention.jsonl");
+        let bus = TranscriptBus::open_at(session("old-take"), path.clone(), None).unwrap();
+        let (ledger, _, base) = committed_fixture("old-take");
+        let mut event = bus.publish_revision(&base, &ledger)[0].clone();
+        event.emitted_at = "2020-01-01T00:00:00Z".to_string();
+        std::fs::write(&path, format!(
+            "{{\"schema\":\"codescribe.transcript.v1\",\"session_id\":\"old-take\",\"status\":\"session_started\"}}\n{}\n{{\"schema\":\"codescribe.transcript.v1\",\"session_id\":\"old-take\",\"status\":\"session_ended\"}}\n",
+            serde_json::to_string(&event).unwrap()
+        )).unwrap();
+        let before = document_history_at(&path, "old-take").unwrap();
+        assert_eq!(before.len(), 1);
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_times(
+            std::fs::FileTimes::new().set_modified(SystemTime::now() - Duration::from_secs(120)),
+        )
+        .unwrap();
+        let report =
+            super::super::transcript_bus_maintenance::compact_bus(&path, 14, false).unwrap();
+        assert_eq!(report.evidence_rows_dropped, 1);
+        assert_eq!(document_history_at(&path, "old-take").unwrap(), before);
     }
 
     #[derive(Default)]

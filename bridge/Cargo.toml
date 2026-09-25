@@ -8,7 +8,7 @@ description = "UniFFI bridge exposing the codescribe engine (agent streaming, ST
 
 [lib]
 name = "codescribe_ffi"
-crate-type = ["staticlib", "cdylib"]
+crate-type = ["staticlib", "cdylib", "rlib"]
 path = "src/lib.rs"
 
 # Binary used to generate the Swift bindings from the built dylib.
