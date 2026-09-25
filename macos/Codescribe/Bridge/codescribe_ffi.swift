@@ -11046,6 +11046,7 @@ public struct CsSettings: Equatable, Hashable {
     public var restoreClipboardDelayMs: UInt64
     public var startAtLogin: Bool
     public var agentEnterSends: Bool
+    public var agentAutoSend: Bool
     public var dumpAudioLogs: Bool
     /**
      * Lane = full ProviderRef (vendor ID or `custom:<slug>`) + model; provider first.
@@ -11121,7 +11122,7 @@ public struct CsSettings: Equatable, Hashable {
          * Legacy stop-file-pass token (`FINAL_PASS_MODE`). Runtime ignores it
          * on stop; Settings no longer exposes Always/Smart/Off. Persist `off`
          * if a value must still be written.
-         */finalPassMode: String?, restoreClipboard: Bool, restoreClipboardDelayMs: UInt64, startAtLogin: Bool, agentEnterSends: Bool, dumpAudioLogs: Bool,
+         */finalPassMode: String?, restoreClipboard: Bool, restoreClipboardDelayMs: UInt64, startAtLogin: Bool, agentEnterSends: Bool, agentAutoSend: Bool, dumpAudioLogs: Bool,
         /**
          * Lane = full ProviderRef (vendor ID or `custom:<slug>`) + model; provider first.
          */llmFormattingProvider: String?, llmFormattingModel: String?, llmAssistiveProvider: String?, llmAssistiveModel: String?, formattingLevel: String?, whisperModel: String?,
@@ -11192,6 +11193,7 @@ public struct CsSettings: Equatable, Hashable {
         self.restoreClipboardDelayMs = restoreClipboardDelayMs
         self.startAtLogin = startAtLogin
         self.agentEnterSends = agentEnterSends
+        self.agentAutoSend = agentAutoSend
         self.dumpAudioLogs = dumpAudioLogs
         self.llmFormattingProvider = llmFormattingProvider
         self.llmFormattingModel = llmFormattingModel
@@ -11267,6 +11269,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 restoreClipboardDelayMs: FfiConverterUInt64.read(from: &buf),
                 startAtLogin: FfiConverterBool.read(from: &buf),
                 agentEnterSends: FfiConverterBool.read(from: &buf),
+                agentAutoSend: FfiConverterBool.read(from: &buf),
                 dumpAudioLogs: FfiConverterBool.read(from: &buf),
                 llmFormattingProvider: FfiConverterOptionString.read(from: &buf),
                 llmFormattingModel: FfiConverterOptionString.read(from: &buf),
@@ -11330,6 +11333,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterUInt64.write(value.restoreClipboardDelayMs, into: &buf)
         FfiConverterBool.write(value.startAtLogin, into: &buf)
         FfiConverterBool.write(value.agentEnterSends, into: &buf)
+        FfiConverterBool.write(value.agentAutoSend, into: &buf)
         FfiConverterBool.write(value.dumpAudioLogs, into: &buf)
         FfiConverterOptionString.write(value.llmFormattingProvider, into: &buf)
         FfiConverterOptionString.write(value.llmFormattingModel, into: &buf)
@@ -16113,15 +16117,6 @@ public func downloadWhisperModel(listener: CsWhisperDownloadListener?)async thro
         )
 }
 /**
- * User-selected acoustic evidence lifetime; delivery history is unaffected.
- */
-public func evidenceRetentionDays() -> UInt32  {
-    return try!  FfiConverterUInt32.lift(try! rustCall() {
-    uniffi_codescribe_ffi_fn_func_evidence_retention_days($0
-    )
-})
-}
-/**
  * Read the live custom lexicon as flattened `variant -> canonical` rows.
  */
 public func lexiconCustomEntries()throws  -> [CsLexiconEntry]  {
@@ -16253,12 +16248,6 @@ public func runtimeLlmLane(lane: CsLlmLane) -> CsRuntimeLlmLane  {
     )
 })
 }
-public func setEvidenceRetentionDays(days: UInt32)throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
-    uniffi_codescribe_ffi_fn_func_set_evidence_retention_days(
-        FfiConverterUInt32.lower(days),$0
-    )
-}
-}
 /**
  * Stop controller/account activity first, then tear down every runtime worker.
  */
@@ -16358,9 +16347,6 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_download_whisper_model() != 38859) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_func_evidence_retention_days() != 26789) {
-        return InitializationResult.apiChecksumMismatch
-    }
     if (uniffi_codescribe_ffi_checksum_func_lexicon_custom_entries() != 24996) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -16398,9 +16384,6 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_runtime_llm_lane() != 23153) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_codescribe_ffi_checksum_func_set_evidence_retention_days() != 55998) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_shutdown_application_runtime() != 56989) {
