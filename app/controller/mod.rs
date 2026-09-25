@@ -2419,9 +2419,20 @@ impl RecordingController {
                         }
                         let delivery = if preempted || !clipboard::synthetic_paste_preflight().can_post_events() {
                             clipboard::set_clipboard(&payload)?;
+                            info!(take_id,
+                                target_readable_at_stop = stop.target.readable(),
+                                target_readable_at_paste = false,
+                                target_checked_at_paste = false,
+                                "stop paste delivery receipt");
                             OverlayPasteDelivery::CopiedToClipboard
                         } else {
-                            match clipboard::paste_to_stop_target(&payload, &stop.target)? {
+                            let receipt = clipboard::paste_to_stop_target(&payload, &stop.target)?;
+                            info!(take_id,
+                                target_readable_at_stop = receipt.target_readable_at_stop,
+                                target_readable_at_paste = receipt.target_readable_at_paste,
+                                delivery = ?receipt.delivery,
+                                "stop paste delivery receipt");
+                            match receipt.delivery {
                                 clipboard::StopPasteDelivery::Pasted => OverlayPasteDelivery::Pasted,
                                 clipboard::StopPasteDelivery::CopiedTargetChanged => OverlayPasteDelivery::CopiedToClipboard,
                             }
@@ -2519,7 +2530,7 @@ impl RecordingController {
             armed_order,
         } = wait;
         let snapshot = snapshot.filter(|canvas| Some(canvas.session_id.as_str()) == take_id);
-        let painted_words_at_stop = painted_at_stop.as_ref().map_or(0, |canvas| canvas.text.split_whitespace().count());
+        let painted_words_at_stop = painted_at_stop.as_ref().map_or(0, |canvas| canvas.visible_words.len());
         if preempted {
             info!(take_id, "stop_paste_preempted_by_next_take");
         }
@@ -2560,7 +2571,7 @@ impl RecordingController {
         let text = canvas.map_or("", |canvas| canvas.text.as_str());
         let preview_words = canvas.map_or(0, |canvas| canvas.preview_only_words);
         let paste_words = text.split_whitespace().count();
-        let painted_words_at_snapshot = paste_words;
+        let painted_words_at_snapshot = canvas.map_or(0, |canvas| canvas.visible_words.len());
         let missing_words = painted_at_stop.as_ref().map_or_else(Vec::new, |before| {
             match canvas {
                 Some(after) => before.missing_words_from(after),
@@ -2571,8 +2582,14 @@ impl RecordingController {
                 }).collect(),
             }
         });
+        let superseded_by_partial_words = missing_words.iter()
+            .filter(|word| word.reason.starts_with("superseded_by_partial rev=")).count();
+        let superseded_by_final_words = missing_words.iter()
+            .filter(|word| word.reason.starts_with("superseded_by_final rev=")).count();
+        let covered_by_committed_words = missing_words.iter()
+            .filter(|word| word.reason.starts_with("covered_by_committed occurrence=")).count();
+        let unaccounted = missing_words.iter().filter(|word| word.reason == "unaccounted").count();
         if !missing_words.is_empty() {
-            let unaccounted = missing_words.iter().filter(|word| word.reason == "unaccounted").count();
             warn!(take_id, paste_words, painted_words_at_stop, painted_words_at_snapshot,
                 missing_words = ?missing_words, unaccounted, defect = unaccounted > 0,
                 "stop_paste_lost_visible_words");
@@ -2587,6 +2604,10 @@ impl RecordingController {
             live_finals_admitted,
             painted_words_at_stop,
             painted_words_at_snapshot,
+            superseded_by_partial_words,
+            superseded_by_final_words,
+            covered_by_committed_words,
+            unaccounted,
             armed_order,
             light_plus,
             capture_epoch = canvas.map(|canvas| canvas.capture_epoch),
@@ -6440,6 +6461,11 @@ mod refusal_recovery_tests {
             async {
                 tokio::time::sleep(Duration::from_secs(5)).await;
                 take.emitter.on_event(&mutation);
+                take.emitter.on_event(&EngineEvent::PreviewDisposition {
+                    superseded_through_rev: 1,
+                    final_disposition: codescribe_core::pipeline::contracts::PreviewFinalDisposition::Admitted,
+                    refused_evidence: Vec::new(),
+                });
                 let at_ack = take.emitter.visible_canvas_snapshot().unwrap();
                 assert!(at_ack.has_committed_document);
                 assert_eq!(at_ack.text, "last complete words");
@@ -6550,6 +6576,7 @@ mod refusal_recovery_tests {
         take.emitter.on_event(&EngineEvent::PreviewDisposition {
             superseded_through_rev: 1,
             final_disposition: codescribe_core::pipeline::contracts::PreviewFinalDisposition::Admitted,
+            refused_evidence: Vec::new(),
         });
         let receipts = StopReceiptLog::default();
         let _trace = receipts.subscribe();
@@ -6577,6 +6604,9 @@ mod refusal_recovery_tests {
         assert!(receipts.text().contains("painted_words_at_stop=3"));
         assert!(receipts.text().contains("paste_words=1"));
         assert!(receipts.text().contains("superseded_by_final rev=1"));
+        assert!(receipts.text().contains("superseded_by_final_words=3"));
+        assert!(receipts.text().contains("superseded_by_partial_words=0"));
+        assert!(receipts.text().contains("covered_by_committed_words=0"));
         assert!(receipts.text().contains("unaccounted=0"));
         assert!(!receipts.text().contains("stop_paste_visible_word_defect"));
     }
