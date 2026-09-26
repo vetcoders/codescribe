@@ -146,8 +146,10 @@ struct DictationOverlayView: View {
               }
               .font(.system(size: 11, weight: .medium))
               .foregroundStyle(palette.primaryText.color)
-              .padding(.horizontal, 10)
-              .frame(minWidth: OverlayResizeChrome.actionsWidth(narrow: actions.phase != .hover))
+              .padding(.horizontal, actions.phase == .open ? 0 : 10)
+              .frame(
+                minWidth: actions.phase == .open
+                  ? nil : OverlayResizeChrome.actionsWidth(narrow: actions.phase != .hover))
               .frame(height: OverlayResizeChrome.actionsHeight)
               .fixedSize(horizontal: true, vertical: true)
               .contentShape(Capsule())
@@ -175,10 +177,10 @@ struct DictationOverlayView: View {
             .accessibilityIdentifier("overlay-tools-handle")
             if actions.phase == .open {
               intentRail
-                .padding(.trailing, 4)
             }
           }
           .padding(.vertical, actions.phase == .open ? 2 : 0)
+          .padding(.horizontal, actions.phase == .open ? 10 : 0)
           .fixedSize(horizontal: false, vertical: true)
           .modifier(OverlayActionsSurface(palette: palette, glassNamespace: bottomChromeNamespace))
           .contentShape(Capsule())
@@ -205,6 +207,7 @@ struct DictationOverlayView: View {
         }
         // Glass is confined to each capsule, before the bar's clear margins.
         // The AppKit edge intercept and existing header/body drag regions stay in place.
+        .frame(maxWidth: .infinity, alignment: .center)
         .padding(.horizontal, OverlayResizeChrome.actionsBottomInset)
         .padding(.bottom, OverlayResizeChrome.actionsBottomInset)
       } else if let label = OverlayActionsPresentation.finishingLabel(

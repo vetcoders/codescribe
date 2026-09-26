@@ -109,6 +109,30 @@ enum OverlayDockVisuals {
   }
 }
 
+/// Measures the single caption at its ideal width, then yields to the tool row.
+/// A maximum-width frame alone would reserve empty space after short labels.
+struct OverlayCaptionLayout: Layout {
+  static func width(natural: CGFloat, proposed: CGFloat?) -> CGFloat {
+    max(0, min(natural, 200, proposed ?? .infinity))
+  }
+
+  func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+    guard let caption = subviews.first else { return .zero }
+    let natural = caption.sizeThatFits(.unspecified)
+    let width = Self.width(natural: natural.width, proposed: proposal.width)
+    let fitted = caption.sizeThatFits(ProposedViewSize(width: width, height: proposal.height))
+    return CGSize(width: width, height: fitted.height)
+  }
+
+  func placeSubviews(
+    in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
+  ) {
+    subviews.first?.place(
+      at: CGPoint(x: bounds.minX, y: bounds.midY), anchor: .leading,
+      proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
+  }
+}
+
 /// The overlay's sole action surface. The reducer owns action availability;
 /// this view renders projected commands and one trailing caption slot inside
 /// the capsule supplied by the parent.
@@ -212,16 +236,17 @@ struct OverlayIntentRail: View {
         hovered: caption(for: hoveredControl ?? focusedControl),
         notice: footerNotice, engineLabel: footerEngineLabel)
       {
-        Text(slot.text)
-          .csMono(10, .medium)
-          .foregroundStyle(slot.dimmed ? palette.mutedText.color : palette.primaryText.color)
-          .lineLimit(1)
-          .truncationMode(.tail)
-          .padding(.horizontal, 4)
-          .frame(maxWidth: 200, alignment: .leading)
-          .layoutPriority(-1)
-          .allowsHitTesting(false)
-          .accessibilityIdentifier("overlay-tool-caption")
+        OverlayCaptionLayout {
+          Text(slot.text)
+            .csMono(10, .medium)
+            .foregroundStyle(slot.dimmed ? palette.mutedText.color : palette.primaryText.color)
+            .lineLimit(1)
+            .truncationMode(.tail)
+        }
+        .padding(.leading, 4)
+        .layoutPriority(-1)
+        .allowsHitTesting(false)
+        .accessibilityIdentifier("overlay-tool-caption")
       }
     }
     .buttonStyle(.plain)

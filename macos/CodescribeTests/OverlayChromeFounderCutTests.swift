@@ -779,7 +779,10 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(row.contains("slot.dimmed ? palette.mutedText.color : palette.primaryText.color"))
     XCTAssertTrue(row.contains(".lineLimit(1)"))
     XCTAssertTrue(row.contains(".truncationMode(.tail)"))
-    XCTAssertTrue(row.contains(".frame(maxWidth: 200, alignment: .leading)"))
+    XCTAssertTrue(row.contains("OverlayCaptionLayout {"))
+    XCTAssertFalse(row.contains(".frame(maxWidth: 200, alignment: .leading)"))
+    XCTAssertTrue(row.contains(".padding(.leading, 4)"))
+    XCTAssertFalse(row.contains(".padding(.horizontal, 4)"))
     XCTAssertTrue(row.contains(".layoutPriority(-1)"))
     XCTAssertTrue(row.contains(".allowsHitTesting(false)"))
     XCTAssertTrue(row.contains(".accessibilityIdentifier(\"overlay-tool-caption\")"))
@@ -792,6 +795,54 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     for forbidden in [".frame(width: 264)", "engineChip", "footerNoticeText", "footerEngineDot"] {
       XCTAssertFalse(source.contains(forbidden), forbidden)
     }
+  }
+
+  func testCaptionWidthHugsShortTextCapsLongTextAndYieldsToNarrowProposals() {
+    // Synthetic natural widths, independent of installed fonts and screen scale.
+    for proposed in [nil, .infinity, 320, 200] as [CGFloat?] {
+      XCTAssertEqual(OverlayCaptionLayout.width(natural: 66, proposed: proposed), 66)
+      XCTAssertEqual(OverlayCaptionLayout.width(natural: 280, proposed: proposed), 200)
+    }
+    // The caption receives the width remaining after tools, gaps and insets.
+    XCTAssertEqual(OverlayCaptionLayout.width(natural: 66, proposed: 40), 40)
+    XCTAssertEqual(OverlayCaptionLayout.width(natural: 280, proposed: 120), 120)
+    XCTAssertEqual(OverlayCaptionLayout.width(natural: 280, proposed: 0), 0)
+    XCTAssertEqual(OverlayCaptionLayout.width(natural: 200, proposed: nil), 200)
+    XCTAssertEqual(OverlayCaptionLayout.width(natural: 0, proposed: nil), 0)
+  }
+
+  func testCaptionLayoutMeasuresIdealTextAndPlacesItWithinTheAcceptedWidth() throws {
+    let layout = try section(
+      of: railSource(), from: "struct OverlayCaptionLayout: Layout", to: "/// The overlay's sole")
+    XCTAssertTrue(layout.contains("min(natural, 200, proposed ?? .infinity)"))
+    XCTAssertTrue(layout.contains("caption.sizeThatFits(.unspecified)"))
+    XCTAssertTrue(layout.contains("Self.width(natural: natural.width, proposed: proposal.width)"))
+    XCTAssertTrue(layout.contains("ProposedViewSize(width: width, height: proposal.height)"))
+    XCTAssertTrue(layout.contains("CGSize(width: width, height: fitted.height)"))
+    XCTAssertTrue(layout.contains("ProposedViewSize(width: bounds.width, height: bounds.height)"))
+  }
+
+  func testBottomCapsulesAreCenteredWithSymmetricOpenActionsInsets() throws {
+    let bottom = try section(
+      of: overlaySource(), from: ".overlay(alignment: .bottom)",
+      to: "} else if let label = OverlayActionsPresentation.finishingLabel(")
+    let capsule = try section(
+      of: bottom, from: "HStack(spacing: 2)", to: ".modifier(OverlayActionsSurface(")
+    XCTAssertTrue(capsule.contains(".padding(.horizontal, actions.phase == .open ? 10 : 0)"))
+    XCTAssertTrue(capsule.contains(".padding(.horizontal, actions.phase == .open ? 0 : 10)"))
+    XCTAssertTrue(capsule.contains("minWidth: actions.phase == .open"))
+    XCTAssertTrue(
+      capsule.contains("? nil : OverlayResizeChrome.actionsWidth(narrow: actions.phase != .hover)"))
+    XCTAssertFalse(capsule.contains(".padding(.trailing"))
+    XCTAssertFalse(capsule.contains(".padding(.leading"))
+    XCTAssertTrue(capsule.contains(".fixedSize(horizontal: false, vertical: true)"))
+    let groupFrame = try XCTUnwrap(
+      bottom.range(of: ".frame(maxWidth: .infinity, alignment: .center)"))
+    let capsuleSurface = try XCTUnwrap(bottom.range(of: ".modifier(OverlayActionsSurface("))
+    let clearMargin = try XCTUnwrap(bottom.range(of: ".padding(.horizontal, OverlayResizeChrome"))
+    XCTAssertLessThan(capsuleSurface.lowerBound, groupFrame.lowerBound)
+    XCTAssertLessThan(groupFrame.lowerBound, clearMargin.lowerBound)
+    XCTAssertFalse(bottom.contains("Spacer("))
   }
 
   func testOpenRailMountsOnlyInsideTheCapCapsuleAndClosedNoticeUsesItsLabel() throws {
@@ -919,7 +970,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let chrome = try section(
       of: source, from: "private func canvasStack", to: "/// 1px separator")
     XCTAssertTrue(
-      chrome.contains("minWidth: OverlayResizeChrome.actionsWidth(narrow: actions.phase != .hover)")
+      chrome.contains("? nil : OverlayResizeChrome.actionsWidth(narrow: actions.phase != .hover)")
     )
     XCTAssertTrue(chrome.contains("height: OverlayResizeChrome.actionsHeight"))
     XCTAssertTrue(chrome.contains(".padding(.bottom, OverlayResizeChrome.actionsBottomInset)"))
