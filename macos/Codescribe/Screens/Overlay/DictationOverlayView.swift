@@ -149,7 +149,8 @@ struct DictationOverlayView: View {
               .padding(.horizontal, actions.phase == .open ? 0 : 10)
               .frame(
                 minWidth: actions.phase == .open
-                  ? nil : OverlayResizeChrome.actionsWidth(narrow: actions.phase != .hover))
+                  ? nil : OverlayResizeChrome.actionsWidth(narrow: actions.phase != .hover)
+              )
               .frame(height: OverlayResizeChrome.actionsHeight)
               .fixedSize(horizontal: true, vertical: true)
               .contentShape(Capsule())
