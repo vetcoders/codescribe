@@ -17,6 +17,100 @@ import XCTest
 /// does expose: the native hierarchy and window drag hit-testing.
 @MainActor
 final class OverlayChromeFounderCutTests: XCTestCase {
+  func testEvidenceChipCountsAllItemsAndShowsLatestTwelveInPCMOrder() throws {
+    let evidence = (0..<13).map { index in
+      CsUnanchoredEvidence(
+        sampleStart: UInt64(index * 1600), sampleEnd: UInt64((index + 1) * 1600),
+        text: "word \(index)", reason: "late_apple_word_not_current")
+    }
+    let chip = try XCTUnwrap(OverlayEvidencePresentation.chip(evidence: evidence))
+    XCTAssertEqual(chip.count, 13)
+    XCTAssertEqual(chip.line, (1..<13).map { "word \($0)" }.joined(separator: " · "))
+    XCTAssertNil(OverlayEvidencePresentation.chip(evidence: []))
+  }
+
+  func testEvidenceChipPreservesRepeatedWordsAndVerbatimLabels() throws {
+    let evidence = (0..<5).map { index in
+      CsUnanchoredEvidence(
+        sampleStart: UInt64(index * 1600), sampleEnd: UInt64((index + 1) * 1600),
+        text: "Iwo", reason: "late_apple_word_not_current")
+    }
+    let chip = try XCTUnwrap(OverlayEvidencePresentation.chip(evidence: evidence))
+    XCTAssertEqual(chip.count, 5)
+    XCTAssertEqual(chip.line, "Iwo · Iwo · Iwo · Iwo · Iwo")
+    let verbatim = CsUnanchoredEvidence(
+      sampleStart: 0, sampleEnd: 1600, text: " żarty.  Krawędziach ", reason: "unanchored")
+    XCTAssertEqual(
+      OverlayEvidencePresentation.chip(evidence: [verbatim])?.line, verbatim.text)
+  }
+
+  func testEvidenceChipExpandsForHoverOrFocusOnlyWhileToolsAreClosed() {
+    for hovered in [false, true] {
+      for focused in [false, true] {
+        XCTAssertEqual(
+          OverlayEvidencePresentation.isExpanded(
+            hovered: hovered, focused: focused, actionsOpen: false), hovered || focused)
+        XCTAssertFalse(
+          OverlayEvidencePresentation.isExpanded(
+            hovered: hovered, focused: focused, actionsOpen: true))
+      }
+    }
+  }
+
+  func testEvidenceChipReplacesBodyRowsInsideTheSharedBottomGlassContainer() throws {
+    let evidence = try source(at: "Codescribe/Screens/Overlay/OverlayEvidenceList.swift")
+    XCTAssertFalse(evidence.contains("ForEach"))
+    XCTAssertFalse(evidence.contains("toolsHandleClearance"))
+    XCTAssertFalse(evidence.contains("VStack"))
+    let overlay = try overlaySource()
+    let body = try section(
+      of: overlay, from: "private var bodySection", to: "private var transcriptScroll")
+    XCTAssertFalse(body.contains("OverlayEvidence"))
+    let container = try section(
+      of: overlay, from: "private func sharedChromeContainer", to: "private func canvasStack")
+    XCTAssertTrue(container.contains("GlassEffectContainer(spacing: 0)"))
+    XCTAssertTrue(container.contains("canvasStack(intentRail)"))
+    let bottom = try section(
+      of: overlay, from: ".overlay(alignment: .bottom)",
+      to: "} else if let label = OverlayActionsPresentation.finishingLabel(")
+    XCTAssertTrue(bottom.contains("OverlayEvidenceChip("))
+    XCTAssertTrue(bottom.contains("HStack(spacing: 6)"))
+    XCTAssertTrue(bottom.contains("actionsOpen: actions.phase == .open"))
+    XCTAssertTrue(bottom.contains("glassNamespace: bottomChromeNamespace"))
+    XCTAssertTrue(bottom.contains(".layoutPriority(-1)"))
+    XCTAssertTrue(bottom.contains(".padding(.bottom, OverlayResizeChrome.actionsBottomInset)"))
+    XCTAssertTrue(bottom.contains(".padding(.horizontal, OverlayResizeChrome.actionsBottomInset)"))
+    XCTAssertTrue(overlay.contains("@Namespace private var bottomChromeNamespace"))
+    XCTAssertTrue(evidence.contains(".glassEffect(.regular.interactive(), in: Capsule())"))
+    XCTAssertTrue(evidence.contains(".glassEffectID(\"overlay-evidence\", in: glassNamespace)"))
+    XCTAssertTrue(evidence.contains("if reduceTransparency"))
+    XCTAssertTrue(evidence.contains(".background(palette.desktopBackground.color, in: Capsule())"))
+    XCTAssertTrue(evidence.contains(".background(.regularMaterial, in: Capsule())"))
+  }
+
+  func testEvidenceChipIsOnePassiveFocusableLineWithAnInstantReducedMotionSwap() throws {
+    let evidence = try source(at: "Codescribe/Screens/Overlay/OverlayEvidenceList.swift")
+    XCTAssertTrue(evidence.contains(".lineLimit(1)"))
+    XCTAssertTrue(evidence.contains(".truncationMode(.head)"))
+    XCTAssertTrue(evidence.contains(".frame(height: OverlayResizeChrome.actionsHeight)"))
+    XCTAssertTrue(evidence.contains(".onHover { hovered = $0 }"))
+    XCTAssertTrue(evidence.contains(".focusable()"))
+    XCTAssertTrue(evidence.contains(".focused($focused)"))
+    XCTAssertTrue(evidence.contains("OverlayEvidencePresentation.isExpanded("))
+    XCTAssertTrue(evidence.contains(".accessibilityElement(children: .ignore)"))
+    XCTAssertTrue(evidence.contains("Also heard, not committed:"))
+    XCTAssertTrue(evidence.contains(".help(\"Also heard · not committed:"))
+    for forbidden in [
+      "Button", "onTapGesture", "accessibilityAction", ".tint(", ".allowsHitTesting(false)",
+    ] {
+      XCTAssertFalse(evidence.contains(forbidden), forbidden)
+    }
+    XCTAssertTrue(
+      evidence.contains(".glassEffectTransition(reduceMotion ? .identity : .matchedGeometry)"))
+    XCTAssertTrue(evidence.contains("transaction.animation = nil"))
+    XCTAssertTrue(evidence.contains("transaction.disablesAnimations = true"))
+  }
+
   func testAcousticWarningsUseVoiceLabGateWithoutHidingOperationErrors() throws {
     let source = try overlaySource()
     XCTAssertTrue(source.contains("@AppStorage(DictationOverlayGate.labModeDefaultsKey)"))
@@ -297,7 +391,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   func testActionsAreInsertedOnlyAfterActivationAndHaveNoPinState() throws {
     let source = try overlaySource()
     let tools = try section(of: source, from: "HStack(spacing: 2)", to: "/// 1px separator")
-    XCTAssertTrue(tools.contains("if actions.phase == .open {\n            intentRail"))
+    XCTAssertTrue(tools.contains("if actions.phase == .open {\n              intentRail"))
     XCTAssertTrue(tools.contains("OverlayActionsPresentation.pillLabel("))
     XCTAssertTrue(tools.contains("phase: actions.phase, notice: state.toast"))
     XCTAssertTrue(tools.contains("actions.toggle()"))
@@ -381,7 +475,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       cap.contains(".accessibilityValue(actions.phase == .open ? \"Open\" : \"Collapsed\")"))
     XCTAssertTrue(cap.contains("if state.hasRecoverableSupersededWork && actions.phase != .open {"))
     XCTAssertTrue(cap.contains("overlay-retained-work-badge"))
-    XCTAssertTrue(tools.contains("if actions.phase == .open {\n            intentRail"))
+    XCTAssertTrue(tools.contains("if actions.phase == .open {\n              intentRail"))
     XCTAssertTrue(source.contains("intents: OverlayIntentRail.projectedIntents(for: state)"))
     let rail = try section(
       of: railSource(), from: "var body: some View", to: "private var retranscribeMenu")
@@ -561,8 +655,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   func testTakeStartAndCollapseRemoveMountedTools() throws {
     let source = try overlaySource()
     let canvas = try section(of: source, from: "private func canvasStack", to: "/// 1px separator")
-    XCTAssertTrue(canvas.contains("if !state.isCollapsed {\n        HStack(spacing: 2)"))
-    XCTAssertTrue(canvas.contains("if actions.phase == .open {\n            intentRail"))
+    XCTAssertTrue(canvas.contains("if !state.isCollapsed {\n        HStack(spacing: 6)"))
+    XCTAssertTrue(canvas.contains("if actions.phase == .open {\n              intentRail"))
     XCTAssertTrue(canvas.contains("actions.toggle()"))
     XCTAssertTrue(
       canvas.contains(".onChange(of: state.captureGeneration) { _, _ in actions.reset() }"))
@@ -677,7 +771,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let capsule = try section(
       of: canvas, from: "HStack(spacing: 2)",
       to: ".padding(.vertical, actions.phase == .open ? 2 : 0)")
-    XCTAssertTrue(capsule.contains("if actions.phase == .open {\n            intentRail"))
+    XCTAssertTrue(capsule.contains("if actions.phase == .open {\n              intentRail"))
     XCTAssertEqual(
       canvas.components(separatedBy: "\n").filter {
         $0.trimmingCharacters(in: .whitespaces) == "intentRail"

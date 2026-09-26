@@ -1,69 +1,83 @@
 import SwiftUI
 
-/// Read-only words beside the live canvas.
-///
-/// Rust keeps these visible without mutation authority — typically a Whisper
-/// alternative the ledger refused as a whole-span replacement inside an Apple
-/// occurrence. They are never canvas, copy, Bus, or delivery bytes, so this
-/// list paints them as secondary, visibly non-committed text in PCM order and
-/// offers no action. Live dictation cares about the words just heard, so only
-/// the latest rows show and older ones fold into a count.
-///
-/// It reads `liveEvidence` in its own body: every compact paint replaces that
-/// projection, and only this list — not the transcript canvas beside it — has
-/// to re-evaluate.
-struct OverlayEvidenceList: View {
-  let state: OverlayState
-  let palette: OverlayAppearancePalette
+/// A bounded label of the existing PCM-ordered projection, without document authority.
+enum OverlayEvidencePresentation {
+  static func chip(evidence: [CsUnanchoredEvidence]) -> (count: Int, line: String)? {
+    guard !evidence.isEmpty else { return nil }
+    return (evidence.count, evidence.suffix(12).map(\.text).joined(separator: " · "))
+  }
 
-  private static let visibleRows = 3
-  /// The overlay tools handle floats over the bottom of the body: an 8 pt
-  /// inset plus a 20 pt tall hit area, 18 pt of it inside the body's own
-  /// 10 pt bottom padding. Rows end above it instead of running under it.
-  private static let toolsHandleClearance: CGFloat = 18
-
-  var body: some View {
-    let evidence = state.liveEvidence
-    if !evidence.isEmpty {
-      let shown = evidence.suffix(Self.visibleRows)
-      VStack(alignment: .leading, spacing: CSSpace.xxs) {
-        Label("Also heard · not committed", systemImage: "waveform")
-          .csMono(10, .semibold)
-          .foregroundStyle(palette.mutedText.color)
-        if evidence.count > shown.count {
-          Text("+\(evidence.count - shown.count) earlier")
-            .csMono(10, .medium)
-            .foregroundStyle(palette.mutedText.color)
-        }
-        ForEach(shown, id: \.rangeID) { item in
-          Text(item.text)
-            .csFont(13, .regular)
-            .foregroundStyle(palette.mutedText.color)
-            .lineLimit(2)
-            .padding(.leading, CSSpace.sm)
-            .overlay(alignment: .leading) {
-              Capsule()
-                .fill(palette.border.color)
-                .frame(width: 2)
-            }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Not committed: \(item.text)")
-            .accessibilityValue("Samples \(item.sampleStart) to \(item.sampleEnd)")
-            .accessibilityIdentifier("overlay-unanchored-evidence-row")
-        }
-      }
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(.bottom, Self.toolsHandleClearance)
-      // Paint only: the window drag region behind the body keeps every click.
-      .allowsHitTesting(false)
-      .accessibilityElement(children: .contain)
-      .accessibilityIdentifier("overlay-unanchored-evidence")
-    }
+  static func isExpanded(hovered: Bool, focused: Bool, actionsOpen: Bool) -> Bool {
+    !actionsOpen && (hovered || focused)
   }
 }
 
-extension CsUnanchoredEvidence {
-  /// Rust keys evidence by its PCM range: unique within one capture, and
-  /// stable while a later observation relabels the same range.
-  var rangeID: String { "\(sampleStart)..<\(sampleEnd)" }
+/// Read-only evidence occupies one bottom-bar capsule, never transcript height.
+/// Only this view observes the live evidence projection; labels are not identity.
+struct OverlayEvidenceChip: View {
+  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var hovered = false
+  @FocusState private var focused: Bool
+  let state: OverlayState
+  let palette: OverlayAppearancePalette
+  let actionsOpen: Bool
+  let glassNamespace: Namespace.ID
+
+  private var expanded: Bool {
+    OverlayEvidencePresentation.isExpanded(
+      hovered: hovered, focused: focused, actionsOpen: actionsOpen)
+  }
+
+  var body: some View {
+    if let chip = OverlayEvidencePresentation.chip(evidence: state.liveEvidence) {
+      surface(count: chip.count, line: chip.line)
+        .contentShape(Capsule())
+        .focusable()
+        .focused($focused)
+        .onHover { hovered = $0 }
+        .help("Also heard · not committed: \(chip.line)")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Also heard, not committed: \(chip.line), \(chip.count) total")
+        .accessibilityIdentifier("overlay-unanchored-evidence")
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: expanded)
+        .transaction { transaction in
+          if reduceMotion {
+            transaction.animation = nil
+            transaction.disablesAnimations = true
+          }
+        }
+    }
+  }
+
+  @ViewBuilder
+  private func surface(count: Int, line: String) -> some View {
+    if reduceTransparency {
+      label(count: count, line: line)
+        .background(palette.desktopBackground.color, in: Capsule())
+    } else if #available(macOS 26.0, *) {
+      label(count: count, line: line)
+        .glassEffect(.regular.interactive(), in: Capsule())
+        .glassEffectID("overlay-evidence", in: glassNamespace)
+        .glassEffectTransition(reduceMotion ? .identity : .matchedGeometry)
+    } else {
+      label(count: count, line: line)
+        .background(.regularMaterial, in: Capsule())
+        .overlay { Capsule().strokeBorder(palette.border.color, lineWidth: 1) }
+    }
+  }
+
+  private func label(count: Int, line: String) -> some View {
+    HStack(spacing: 4) {
+      Image(systemName: "waveform")
+      Text(expanded ? line : "\(count)")
+        .lineLimit(1)
+        .truncationMode(.head)
+    }
+    .font(.system(size: 11, weight: .medium))
+    .padding(.horizontal, 10)
+    .frame(height: OverlayResizeChrome.actionsHeight)
+    .frame(maxWidth: expanded ? .infinity : nil, alignment: .trailing)
+    .fixedSize(horizontal: !expanded, vertical: true)
+  }
 }
