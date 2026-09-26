@@ -111,6 +111,35 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(evidence.contains("transaction.disablesAnimations = true"))
   }
 
+  func testActionsGlassMorphsInTheEvidenceNamespaceWithoutPaintingTheBottomBar() throws {
+    let overlay = try overlaySource()
+    let material = try section(
+      of: railSource(), from: "struct OverlayActionsSurface", to: "/// Symbols shared")
+    XCTAssertTrue(material.contains("else if #available(macOS 26.0, *)"))
+    XCTAssertTrue(material.contains(".glassEffect(.regular.interactive(), in: Capsule())"))
+    XCTAssertTrue(material.contains(".glassEffectID(\"overlay-actions\", in: glassNamespace)"))
+    XCTAssertTrue(
+      material.contains(".glassEffectTransition(reduceMotion ? .identity : .matchedGeometry)"))
+    let glass = try section(
+      of: material, from: "else if #available(macOS 26.0, *)", to: "} else {")
+    XCTAssertFalse(glass.contains(".background"))
+    XCTAssertFalse(glass.contains(".overlay"))
+    XCTAssertFalse(glass.contains(".tint"))
+    let bottom = try section(
+      of: overlay, from: ".overlay(alignment: .bottom)",
+      to: "} else if let label = OverlayActionsPresentation.finishingLabel(")
+    XCTAssertEqual(
+      bottom.components(separatedBy: "glassNamespace: bottomChromeNamespace").count - 1, 2)
+    let actionSurface = try XCTUnwrap(bottom.range(of: ".modifier(OverlayActionsSurface("))
+    let clearMargin = try XCTUnwrap(bottom.range(of: ".padding(.bottom, OverlayResizeChrome"))
+    XCTAssertLessThan(actionSurface.lowerBound, clearMargin.lowerBound)
+    XCTAssertFalse(
+      bottom.contains(".glassEffect("), "Only the two capsules may claim glass hit regions")
+    XCTAssertTrue(
+      bottom.contains(
+        ".animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: actions.phase)"))
+  }
+
   func testAcousticWarningsUseVoiceLabGateWithoutHidingOperationErrors() throws {
     let source = try overlaySource()
     XCTAssertTrue(source.contains("@AppStorage(DictationOverlayGate.labModeDefaultsKey)"))
@@ -821,7 +850,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       of: railSource(), from: "struct OverlayActionsSurface", to: "/// Symbols shared")
     XCTAssertTrue(material.contains("if reduceTransparency"))
     XCTAssertTrue(material.contains("Capsule().fill(palette.desktopBackground.color)"))
-    XCTAssertTrue(material.contains("} else {\n          Capsule().fill(.regularMaterial)"))
+    XCTAssertTrue(material.contains(".background { Capsule().fill(.regularMaterial) }"))
   }
 
   func testFinishingNoticeSurvivesFoldWithoutChangingBarHeight() throws {

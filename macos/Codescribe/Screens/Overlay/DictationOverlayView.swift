@@ -180,7 +180,7 @@ struct DictationOverlayView: View {
           }
           .padding(.vertical, actions.phase == .open ? 2 : 0)
           .fixedSize(horizontal: false, vertical: true)
-          .modifier(OverlayActionsSurface(palette: palette))
+          .modifier(OverlayActionsSurface(palette: palette, glassNamespace: bottomChromeNamespace))
           .contentShape(Capsule())
           .onHover { actions.pointerChanged($0) }
           .onChange(of: actionsFocused) { _, focused in

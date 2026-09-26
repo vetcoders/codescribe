@@ -70,18 +70,26 @@ struct OverlayActionsPresentation {
 /// when transparency is reduced; no glass reaches the resize band's hit region.
 struct OverlayActionsSurface: ViewModifier {
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   let palette: OverlayAppearancePalette
+  let glassNamespace: Namespace.ID
 
+  @ViewBuilder
   func body(content: Content) -> some View {
-    content
-      .background {
-        if reduceTransparency {
-          Capsule().fill(palette.desktopBackground.color)
-        } else {
-          Capsule().fill(.regularMaterial)
-        }
-      }
-      .overlay { Capsule().strokeBorder(palette.border.color, lineWidth: 1) }
+    if reduceTransparency {
+      content
+        .background { Capsule().fill(palette.desktopBackground.color) }
+        .overlay { Capsule().strokeBorder(palette.border.color, lineWidth: 1) }
+    } else if #available(macOS 26.0, *) {
+      content
+        .glassEffect(.regular.interactive(), in: Capsule())
+        .glassEffectID("overlay-actions", in: glassNamespace)
+        .glassEffectTransition(reduceMotion ? .identity : .matchedGeometry)
+    } else {
+      content
+        .background { Capsule().fill(.regularMaterial) }
+        .overlay { Capsule().strokeBorder(palette.border.color, lineWidth: 1) }
+    }
   }
 }
 
