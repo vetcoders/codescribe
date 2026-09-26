@@ -1929,22 +1929,39 @@ impl AppleSealState {
                     },
                 }),
         );
-        for (&utterance_id, pending) in &self.pending_silero_words {
-            words.extend(pending.iter().map(|word| UnadmittedAppleWord {
-                text: word.text.clone(),
-                sample_start: word.sample_start,
-                sample_end: word.sample_end,
-                source: UnadmittedAppleWordSource::Pending { utterance_id },
-            }));
+        let mut current_ranged: Vec<(FusionWord, UnadmittedAppleWordSource)> = Vec::new();
+        let ranged = self
+            .unmatched_silero_words
+            .iter()
+            .cloned()
+            .map(|word| (word, UnadmittedAppleWordSource::Unmatched))
+            .chain(
+                self.pending_silero_words
+                    .iter()
+                    .flat_map(|(&utterance_id, pending)| {
+                        pending.iter().cloned().map(move |word| {
+                            (word, UnadmittedAppleWordSource::Pending { utterance_id })
+                        })
+                    }),
+            );
+        for candidate in ranged {
+            if let Some(index) = current_ranged
+                .iter()
+                .position(|(held, _)| same_fusion_pcm_slot(held, &candidate.0))
+            {
+                current_ranged[index] = candidate;
+            } else {
+                current_ranged.push(candidate);
+            }
         }
         words.extend(
-            self.unmatched_silero_words
-                .iter()
-                .map(|word| UnadmittedAppleWord {
-                    text: word.text.clone(),
+            current_ranged
+                .into_iter()
+                .map(|(word, source)| UnadmittedAppleWord {
+                    text: word.text,
                     sample_start: word.sample_start,
                     sample_end: word.sample_end,
-                    source: UnadmittedAppleWordSource::Unmatched,
+                    source,
                 }),
         );
         words.extend(self.refused_untimed_words.values().flatten().cloned());
@@ -4669,26 +4686,30 @@ fn admit_late_apple_words(
 
 /// Arrival order chooses the current Apple hypothesis for a PCM word slot.
 /// Distinct adjacent words keep their own slots even if timestamp edges cross.
+fn same_fusion_pcm_slot(held: &FusionWord, word: &FusionWord) -> bool {
+    let middle = word.sample_start + word.sample_end.saturating_sub(word.sample_start) / 2;
+    let held_middle = held.sample_start + held.sample_end.saturating_sub(held.sample_start) / 2;
+    let overlap = held
+        .sample_end
+        .min(word.sample_end)
+        .saturating_sub(held.sample_start.max(word.sample_start));
+    let shorter = held
+        .sample_end
+        .saturating_sub(held.sample_start)
+        .min(word.sample_end.saturating_sub(word.sample_start));
+    overlap >= shorter / 2 + shorter % 2
+        && ((held.sample_start <= middle && middle < held.sample_end)
+            || (word.sample_start <= held_middle && held_middle < word.sample_end))
+}
+
 fn select_current_apple_words(words: Vec<FusionWord>) -> (Vec<FusionWord>, Vec<FusionWord>) {
     let mut selected: Vec<FusionWord> = Vec::new();
     let mut superseded = Vec::new();
     for word in words {
-        let middle = word.sample_start + word.sample_end.saturating_sub(word.sample_start) / 2;
-        if let Some(index) = selected.iter().position(|held| {
-            let held_middle =
-                held.sample_start + held.sample_end.saturating_sub(held.sample_start) / 2;
-            let overlap = held
-                .sample_end
-                .min(word.sample_end)
-                .saturating_sub(held.sample_start.max(word.sample_start));
-            let shorter = held
-                .sample_end
-                .saturating_sub(held.sample_start)
-                .min(word.sample_end.saturating_sub(word.sample_start));
-            overlap >= shorter / 2 + shorter % 2
-                && ((held.sample_start <= middle && middle < held.sample_end)
-                    || (word.sample_start <= held_middle && held_middle < word.sample_end))
-        }) {
+        if let Some(index) = selected
+            .iter()
+            .position(|held| same_fusion_pcm_slot(held, &word))
+        {
             if selected[index] == word {
                 continue;
             }
@@ -13776,6 +13797,33 @@ mod rc_w2_test_rehab {
                 .collect::<Vec<_>>(),
             ["Vite", "Vita"]
         );
+    }
+
+    #[test]
+    fn unadmitted_mirror_replaces_pending_word_at_same_pcm_slot() {
+        let mut state = state("mirror-revision", 2.0);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        state.unmatched_silero_words.push(FusionWord {
+            text: "Vite".into(),
+            sample_start: sample(0.25),
+            sample_end: sample(0.5),
+        });
+        state.pending_silero_words.insert(
+            2,
+            vec![FusionWord {
+                text: "Vitae".into(),
+                sample_start: sample(0.25),
+                sample_end: sample(0.5),
+            }],
+        );
+        state.publish_unadmitted_words(&tx);
+        let events = drain(&mut rx);
+        let [EngineEvent::UnadmittedAppleWords { words, .. }] = events.as_slice() else {
+            panic!("one preview revision expected: {events:?}");
+        };
+        assert_eq!(words.len(), 1);
+        assert_eq!(words[0].text, "Vitae");
+        assert_eq!(state.unmatched_silero_words[0].text, "Vite");
     }
 
     fn raw_finals(events: &[EngineEvent]) -> Vec<&str> {
