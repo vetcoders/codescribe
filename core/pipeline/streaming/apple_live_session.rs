@@ -4500,7 +4500,7 @@ fn admit_late_apple_words(
         .iter()
         .map(|(_, owner)| owner.clone())
         .collect::<Vec<_>>();
-    let mut by_owner: BTreeMap<OccurrenceIdentity, Vec<(u64, u64, String)>> = BTreeMap::new();
+    let mut by_owner: BTreeMap<OccurrenceIdentity, Vec<FusionWord>> = BTreeMap::new();
     for word in words {
         let pin = OccurrenceIdentity::new(
             state.session_id.clone(),
@@ -4517,18 +4517,23 @@ fn admit_late_apple_words(
             Some(index) => by_owner
                 .entry(owner_ranges[index].clone())
                 .or_default()
-                .push((word.sample_start, word.sample_end, word.text.clone())),
+                .push(word.clone()),
             _ => {
                 state.unmatched_silero_words.push(word.clone());
                 outcome.unmatched += 1;
             }
         }
     }
-    for (owner, mut words) in by_owner {
-        words.sort_by_key(|(start, end, _)| (*start, *end));
-        let before_dedup = words.len();
-        words.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1 && a.2 == b.2);
-        outcome.dropped_by_slot_rules += before_dedup - words.len();
+    for (owner, words) in by_owner {
+        let (selected, superseded) = select_current_apple_words(words);
+        outcome.dropped_by_slot_rules += superseded.len();
+        for word in &superseded {
+            retain_superseded_apple_word(state, ev_tx, request, word);
+        }
+        let words = selected
+            .into_iter()
+            .map(|word| (word.sample_start, word.sample_end, word.text))
+            .collect::<Vec<_>>();
         let mut ledger = state
             .acoustic_ledger
             .lock()
@@ -4585,10 +4590,23 @@ fn admit_late_apple_words(
                     shorter > 0 && overlap >= shorter / 2 + shorter % 2
                 })
             });
-            if consumed_span {
+            let higher_rank_owns_span = ledger.slots_of(&owner).is_some_and(|slots| {
+                slots.iter().any(|slot| {
+                    let overlap = end
+                        .min(slot.sample_end)
+                        .saturating_sub(start.max(slot.sample_start));
+                    overlap > 0
+                        && slot.producer.authority_rank()
+                            > LedgerObservationProducer::Apple.authority_rank()
+                })
+            });
+            if higher_rank_owns_span
+                || (consumed_span && ledger.matching_word_slot(&owner, &pin, &text, false))
+            {
                 outcome.dropped_by_slot_rules += 1;
-                // Rewording consumed PCM is not new speech, regardless of the
-                // slot's producer or whether its owner has already sealed.
+                // A replay or a higher-rank witness cannot add a second word.
+                // A fresh Apple correction of an Apple-owned slot continues to
+                // the ledger's replacement path below.
                 let receipt = if ledger.matching_word_slot(&owner, &pin, &text, false) {
                     ledger.refuse_replayed_range(&observation, &text)
                 } else {
@@ -4647,6 +4665,72 @@ fn admit_late_apple_words(
         }
     }
     outcome
+}
+
+/// Arrival order chooses the current Apple hypothesis for a PCM word slot.
+/// Distinct adjacent words keep their own slots even if timestamp edges cross.
+fn select_current_apple_words(words: Vec<FusionWord>) -> (Vec<FusionWord>, Vec<FusionWord>) {
+    let mut selected: Vec<FusionWord> = Vec::new();
+    let mut superseded = Vec::new();
+    for word in words {
+        let middle = word.sample_start + word.sample_end.saturating_sub(word.sample_start) / 2;
+        if let Some(index) = selected.iter().position(|held| {
+            let held_middle =
+                held.sample_start + held.sample_end.saturating_sub(held.sample_start) / 2;
+            let overlap = held
+                .sample_end
+                .min(word.sample_end)
+                .saturating_sub(held.sample_start.max(word.sample_start));
+            let shorter = held
+                .sample_end
+                .saturating_sub(held.sample_start)
+                .min(word.sample_end.saturating_sub(word.sample_start));
+            overlap >= shorter / 2 + shorter % 2
+                && ((held.sample_start <= middle && middle < held.sample_end)
+                    || (word.sample_start <= held_middle && held_middle < word.sample_end))
+        }) {
+            if selected[index] == word {
+                continue;
+            }
+            superseded.push(std::mem::replace(&mut selected[index], word));
+        } else {
+            selected.push(word);
+        }
+    }
+    (selected, superseded)
+}
+
+fn retain_superseded_apple_word(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    request: u64,
+    word: &FusionWord,
+) {
+    let pin = OccurrenceIdentity::new(
+        state.session_id.clone(),
+        state.capture_epoch,
+        word.sample_start,
+        word.sample_end,
+    );
+    let (observation, receipt) = {
+        let mut ledger = state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let observation =
+            ledger.next_word_observation(LedgerObservationProducer::Apple, request, &pin);
+        let receipt = ledger.keep_visible_unanchored(
+            &observation,
+            &word.text,
+            NoAuthorityReason::LateAppleWordNotCurrent,
+        );
+        (observation, receipt)
+    };
+    let _ = ev_tx.send(EngineEvent::LedgerMutation {
+        observation,
+        label: word.text.clone(),
+        receipt,
+    });
 }
 
 fn reconcile_silero_ledger(
@@ -4765,13 +4849,10 @@ fn reconcile_silero_ledger(
             .pending_silero_words
             .remove(&utterance_id)
             .unwrap_or_default();
-        // Replayed exact word coordinates revise that word, not a second
-        // acoustic occurrence. Disjoint equal words survive independently.
-        let mut by_range = BTreeMap::new();
-        for word in candidates {
-            by_range.insert((word.sample_start, word.sample_end), word);
+        let (words, superseded) = select_current_apple_words(candidates);
+        for word in &superseded {
+            retain_superseded_apple_word(state, ev_tx, utterance_id, word);
         }
-        let words = by_range.into_values().collect::<Vec<_>>();
         let ambiguous = words
             .windows(2)
             .any(|pair| pair[0].sample_end > pair[1].sample_start);
@@ -13666,6 +13747,37 @@ mod rc_w2_test_rehab {
         state.acoustic_ledger.lock().unwrap().rendered_text()
     }
 
+    #[test]
+    fn apple_self_corrections_keep_only_current_word_per_pcm_slot() {
+        let pin = |text: &str, start, end| FusionWord {
+            text: text.into(),
+            sample_start: start,
+            sample_end: end,
+        };
+        let (selected, superseded) = select_current_apple_words(vec![
+            pin("Vite", 1_000, 2_000),
+            pin("po", 3_000, 4_000),
+            pin("Vita", 1_000, 2_000),
+            pin("Vitae", 1_000, 2_000),
+            pin("21.", 5_000, 6_000),
+            pin("21.", 5_000, 6_000),
+        ]);
+        assert_eq!(
+            selected
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect::<Vec<_>>(),
+            ["Vitae", "po", "21."]
+        );
+        assert_eq!(
+            superseded
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect::<Vec<_>>(),
+            ["Vite", "Vita"]
+        );
+    }
+
     fn raw_finals(events: &[EngineEvent]) -> Vec<&str> {
         events
             .iter()
@@ -14278,10 +14390,8 @@ mod rc_w2_test_rehab {
             .lock()
             .unwrap()
             .admit_word_slots(&whisper, &[(sample(1.5), sample(1.75), "revised".into())]);
-        // Whisper windows coexist at the same pin: WD-2 (doubles) input,
-        // recorded 2026-09-25. This documents the current rule, not an endorsement.
         let retained_document = document(&state);
-        assert_eq!(retained_document, "alpha beta other revised");
+        assert_eq!(retained_document, "alpha beta revised");
         assert_eq!(
             retained_document
                 .split_whitespace()

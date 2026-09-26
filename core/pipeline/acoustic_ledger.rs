@@ -510,6 +510,24 @@ pub(crate) fn same_word_pin(
         && normalized == normalize(prior_text)
 }
 
+/// Two timed witnesses address one lexical slot when their PCM centres agree.
+/// Crossing ranges alone are insufficient: adjacent short words may overlap
+/// at a window seam while each midpoint still belongs to its own word.
+fn same_pcm_slot(left: &WordSlot, right: &WordSlot) -> bool {
+    let overlap = left
+        .sample_end
+        .min(right.sample_end)
+        .saturating_sub(left.sample_start.max(right.sample_start));
+    let shorter = (left.sample_end - left.sample_start).min(right.sample_end - right.sample_start);
+    if overlap < shorter / 2 + shorter % 2 {
+        return false;
+    }
+    let left_mid = left.sample_start + (left.sample_end - left.sample_start) / 2;
+    let right_mid = right.sample_start + (right.sample_end - right.sample_start) / 2;
+    (left.sample_start <= right_mid && right_mid < left.sample_end)
+        || (right.sample_start <= left_mid && left_mid < right.sample_end)
+}
+
 fn compose_label(slots: &[WordSlot]) -> String {
     slots
         .iter()
@@ -844,98 +862,54 @@ impl AcousticLedger {
                 });
             }
         }
-        let previous = self.slots_of(owner).unwrap_or(&[]).to_vec();
-        if observation.producer == ObservationProducer::Apple {
-            incoming.retain(|word| {
-                !previous.iter().any(|slot| {
-                    (matches!(
-                        slot.producer,
-                        ObservationProducer::Whisper | ObservationProducer::CloudLive
-                    ) && slot.sample_end > word.sample_start
-                        && slot.sample_start < word.sample_end)
-                        || same_word_pin(
-                            word.sample_start,
-                            word.sample_end,
-                            &word.text,
-                            slot.sample_start,
-                            slot.sample_end,
-                            &slot.text,
-                        )
-                })
-            });
-        }
-        if observation.producer == ObservationProducer::CloudLive {
-            incoming.retain(|word| {
-                !previous.iter().any(|slot| {
-                    slot.producer == ObservationProducer::Whisper
-                        && slot.sample_end > word.sample_start
-                        && slot.sample_start < word.sample_end
-                })
-            });
-        }
-        if incoming.is_empty() {
-            let label = self.text_of(owner).unwrap_or("").to_string();
-            return self.admit(observation, &label);
-        }
-        let heard = |slot: &WordSlot| {
-            let mid = slot.sample_start + (slot.sample_end - slot.sample_start) / 2;
-            incoming
+        let mut slots = self.slots_of(owner).unwrap_or(&[]).to_vec();
+        let mut removed = Vec::new();
+        let mut refused = Vec::new();
+        for word in incoming {
+            let conflicts = slots
                 .iter()
-                .any(|word| word.sample_start <= mid && mid < word.sample_end)
-        };
-        let removed = previous
-            .iter()
-            .filter(|slot| {
-                heard(slot)
-                    && match observation.producer {
-                        ObservationProducer::Whisper => matches!(
-                            slot.producer,
-                            ObservationProducer::Apple
-                                | ObservationProducer::Lexicon
-                                | ObservationProducer::CloudLive
-                        ),
-                        ObservationProducer::CloudLive => matches!(
-                            slot.producer,
-                            ObservationProducer::Apple | ObservationProducer::Lexicon
-                        ),
-                        _ => false,
-                    }
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        let mut slots = previous
-            .into_iter()
-            .filter(|slot| !removed.contains(slot))
-            .collect::<Vec<_>>();
-        slots.extend(incoming);
-        slots.sort_by(|a, b| {
-            (a.sample_start, a.sample_end, &a.text).cmp(&(b.sample_start, b.sample_end, &b.text))
-        });
-        // A replay delivered before its earlier window must yield the same
-        // surface. Keep the smallest PCM/text ordering key for overlapping
-        // copies; distinct words and disjoint repetitions remain separate.
-        let mut canonical: Vec<WordSlot> = Vec::with_capacity(slots.len());
-        for slot in slots {
-            let duplicate = matches!(
-                slot.producer,
-                ObservationProducer::Whisper | ObservationProducer::CloudLive
-            ) && canonical.iter().any(|prior| {
-                prior.producer == slot.producer
-                    && same_word_pin(
-                        slot.sample_start,
-                        slot.sample_end,
-                        &slot.text,
-                        prior.sample_start,
-                        prior.sample_end,
-                        &prior.text,
-                    )
+                .enumerate()
+                .filter_map(|(index, held)| same_pcm_slot(held, &word).then_some(index))
+                .collect::<Vec<_>>();
+            let blocked = conflicts.iter().any(|&index| {
+                let held = &slots[index];
+                held.producer.authority_rank() > word.producer.authority_rank()
+                    || (held.producer == word.producer
+                        && held.observation.generation >= word.observation.generation
+                        && held.observation != word.observation)
             });
-            if !duplicate {
-                canonical.push(slot);
+            if blocked {
+                refused.push(word);
+                continue;
+            }
+            if let Some(&first) = conflicts.first() {
+                for &index in conflicts.iter().rev() {
+                    removed.push(slots.remove(index));
+                }
+                slots.insert(first, word);
+            } else {
+                // Insert a genuinely new word into its PCM gap. Previously
+                // admitted slots retain their relative document order; a
+                // correction never sorts or moves those committed words.
+                let position = slots
+                    .iter()
+                    .position(|held| held.sample_start > word.sample_start)
+                    .unwrap_or(slots.len());
+                slots.insert(position, word);
             }
         }
-        let label = compose_label(&canonical);
-        let receipt = self.admit_with_slots(observation, &label, Some(canonical), true);
+        if removed.is_empty() && slots.as_slice() == self.slots_of(owner).unwrap_or(&[]) {
+            let label = self.text_of(owner).unwrap_or("").to_string();
+            let receipt = self.admit(observation, &label);
+            for word in refused {
+                let rejected =
+                    self.next_word_observation(word.producer, observation.request, owner);
+                self.refuse_replacement(&rejected, &word.text, RefuseReason::SealedReplay);
+            }
+            return receipt;
+        }
+        let label = compose_label(&slots);
+        let receipt = self.admit_with_slots(observation, &label, Some(slots), true);
         if receipt.grants_mutation() || matches!(receipt, MutationReceipt::Preserve { .. }) {
             let reason = match observation.producer {
                 ObservationProducer::Whisper => Some(RefuseReason::ReplacedByWhisper),
@@ -944,8 +918,18 @@ impl AcousticLedger {
             };
             if let Some(reason) = reason {
                 for slot in removed {
-                    self.refuse_replacement(&slot.observation, &slot.text, reason);
+                    let loser = if slot.observation == *observation {
+                        self.next_word_observation(slot.producer, observation.request, owner)
+                    } else {
+                        slot.observation
+                    };
+                    self.refuse_replacement(&loser, &slot.text, reason);
                 }
+            }
+            for word in refused {
+                let rejected =
+                    self.next_word_observation(word.producer, observation.request, owner);
+                self.refuse_replacement(&rejected, &word.text, RefuseReason::SealedReplay);
             }
         }
         receipt
@@ -6301,6 +6285,81 @@ mod tests {
                 .iter()
                 .all(|slot| slot.sample_end - slot.sample_start < occurrence.sample_len())
         );
+    }
+
+    #[test]
+    fn one_pcm_slot_replaces_variant_chain_and_numeric_double() {
+        for (first, second, final_word) in [("Vite", "Vita", "Vitae"), ("21.", "21.", "21.")] {
+            let (mut ledger, occurrence) = whisper_only_qualified_ledger();
+            let apple_first = obs(ObservationProducer::Apple, 0, occurrence.clone());
+            ledger.admit_word_slots(&apple_first, &[(1_000, 4_000, first.into())]);
+            let apple_second = obs(ObservationProducer::Apple, 1, occurrence.clone());
+            ledger.admit_word_slots(&apple_second, &[(1_000, 4_000, second.into())]);
+            let whisper = obs(ObservationProducer::Whisper, 0, occurrence.clone());
+            ledger.admit_word_slots(&whisper, &[(1_000, 4_000, final_word.into())]);
+
+            assert_eq!(ledger.text_of(&occurrence), Some(final_word));
+            let slots = ledger.slots_of(&occurrence).unwrap();
+            assert_eq!(slots.len(), 1);
+            assert_eq!(slots[0].producer, ObservationProducer::Whisper);
+            assert!(
+                ledger
+                    .layer_trail()
+                    .iter()
+                    .any(|entry| { entry.observation.producer == ObservationProducer::Apple })
+            );
+            ledger.note_frontier_return(&occurrence, ObservationProducer::Whisper);
+            ledger.seal(&occurrence).unwrap();
+            assert_eq!(ledger.text_of(&occurrence), Some(final_word));
+            ledger.assert_slot_labels();
+        }
+    }
+
+    #[test]
+    fn word_interleave_fills_pcm_gaps_without_moving_committed_slots() {
+        let (mut ledger, occurrence) = whisper_only_qualified_ledger();
+        let apple = obs(ObservationProducer::Apple, 0, occurrence.clone());
+        ledger.admit_word_slots(
+            &apple,
+            &[(1_000, 2_000, "po".into()), (5_000, 6_000, "w".into())],
+        );
+        let whisper = obs(ObservationProducer::Whisper, 0, occurrence.clone());
+        ledger.admit_word_slots(
+            &whisper,
+            &[
+                (3_000, 4_000, "poproszę".into()),
+                (7_000, 8_000, "prostu".into()),
+                (9_000, 10_000, "sumie".into()),
+            ],
+        );
+        assert_eq!(
+            ledger.text_of(&occurrence),
+            Some("po poproszę w prostu sumie")
+        );
+        let held = ledger.slots_of(&occurrence).unwrap().to_vec();
+        let late = obs(ObservationProducer::Whisper, 1, occurrence.clone());
+        ledger.admit_word_slots(&late, &[(7_000, 8_000, "prostu".into())]);
+        assert_eq!(ledger.slots_of(&occurrence).unwrap().len(), held.len());
+        assert_eq!(
+            ledger.text_of(&occurrence),
+            Some("po poproszę w prostu sumie")
+        );
+        ledger.assert_slot_labels();
+    }
+
+    #[test]
+    fn adjacent_swap_inserts_new_word_without_reordering_neighbours() {
+        let (mut ledger, occurrence) = whisper_only_qualified_ledger();
+        let apple = obs(ObservationProducer::Apple, 0, occurrence.clone());
+        ledger.admit_word_slots(
+            &apple,
+            &[(1_000, 2_000, "parę".into()), (7_000, 8_000, "słów".into())],
+        );
+        let whisper = obs(ObservationProducer::Whisper, 0, occurrence.clone());
+        ledger.admit_word_slots(&whisper, &[(4_000, 5_000, "korzystając".into())]);
+        assert_eq!(ledger.text_of(&occurrence), Some("parę korzystając słów"));
+        assert_eq!(ledger.slots_of(&occurrence).unwrap().len(), 3);
+        ledger.assert_slot_labels();
     }
 
     #[test]

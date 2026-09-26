@@ -7090,8 +7090,8 @@ mod refusal_recovery_tests {
             receipt,
         });
         let frozen = take.emitter.begin_stop_canvas().unwrap();
-        assert_eq!(frozen.late_apple_word_counts(), (1, 1));
-        assert!(frozen.text.split_whitespace().any(|word| word == "alpha"));
+        assert_eq!(frozen.late_apple_word_counts(), (0, 0));
+        assert!(!frozen.text.split_whitespace().any(|word| word == "alpha"));
         assert!(!frozen.text.split_whitespace().any(|word| word == "beta"));
         let expected_paste = frozen.text.clone();
         let wait = StopCanvasWait {
@@ -7122,7 +7122,7 @@ mod refusal_recovery_tests {
                             .visible_canvas_snapshot()
                             .unwrap()
                             .late_apple_word_counts(),
-                        (2, 1)
+                        (0, 0)
                     );
                     stop_sink(&take.controller, text, &calls)
                 },
@@ -7138,8 +7138,8 @@ mod refusal_recovery_tests {
             .filter(|line| line.contains("stop canvas delivery settled"));
         let line = settled_lines.next().expect("settled receipt");
         assert!(settled_lines.next().is_none());
-        assert!(line.contains("late_apple_words_pasted=1 "));
-        assert!(line.contains("late_apple_words_covered_by_slot=1 "));
+        assert!(!line.contains("late_apple_words_pasted="));
+        assert!(!line.contains("late_apple_words_covered_by_slot="));
         assert!(line.contains("delivery=\"pasted\""));
     }
 

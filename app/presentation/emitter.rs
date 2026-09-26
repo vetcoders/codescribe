@@ -663,8 +663,8 @@ impl TranscriptReducer {
     /// Apply only the mutation authority granted by the shared ledger. An
     /// unsigned or unqualified occurrence fails closed and creates no document
     /// entry, even when an engine supplied visible text.
-    /// PCM-ordered canvas: committed tokens, plus unanchored evidence whose
-    /// range is not already occupied by one of those tokens.
+    /// PCM-ordered canvas: committed tokens, plus live unanchored evidence.
+    /// Withdrawn Apple words remain in the evidence book, never in delivery.
     pub fn visible_projection(&self) -> String {
         let mut rendered = String::new();
         for (_, text, _, _) in self.visible_paint_fragments() {
@@ -678,19 +678,15 @@ impl TranscriptReducer {
         let mut fragments = self
             .unanchored_evidence
             .iter()
-            .filter(|((range, _), (_, reason, _))| self.evidence_covering(range, *reason).is_none())
-            .map(|((range, _), (text, reason, observation))| {
+            .filter(|((range, _), (_, reason, _))| {
+                *reason != NoAuthorityReason::LateAppleWordNotCurrent
+                    && self.evidence_covering(range, *reason).is_none()
+            })
+            .map(|((range, _), (text, _, observation))| {
                 (
                     range.sample_start,
                     text.clone(),
-                    if *reason == NoAuthorityReason::LateAppleWordNotCurrent {
-                        VisibleWordSource::LateAppleWord {
-                            pin: range.clone(),
-                            label: text.clone(),
-                        }
-                    } else {
-                        VisibleWordSource::Unanchored(observation.clone())
-                    },
+                    VisibleWordSource::Unanchored(observation.clone()),
                     true,
                 )
             })
@@ -915,6 +911,9 @@ impl TranscriptReducer {
         // Evidence remains visible in its sidebar, even when committed speech
         // represents it in the paste. Keep that coverage receipt in both reads.
         for ((range, _), (text, reason, observation)) in &self.unanchored_evidence {
+            if *reason == NoAuthorityReason::LateAppleWordNotCurrent {
+                continue;
+            }
             if let Some(owner) = self.evidence_covering(range, *reason) {
                 paint
                     .visible_words
@@ -922,14 +921,7 @@ impl TranscriptReducer {
                         VisibleWord {
                             word: word.to_string(),
                             preview_rev: None,
-                            source: if *reason == NoAuthorityReason::LateAppleWordNotCurrent {
-                                VisibleWordSource::LateAppleWord {
-                                    pin: range.clone(),
-                                    label: text.clone(),
-                                }
-                            } else {
-                                VisibleWordSource::Unanchored(observation.clone())
-                            },
+                            source: VisibleWordSource::Unanchored(observation.clone()),
                             offset,
                             covered_by: Some(owner.clone()),
                         }
@@ -8357,8 +8349,8 @@ mod tests {
                 );
             }
             let before = emitter.begin_stop_canvas().unwrap();
-            assert_eq!(before.text, "document alpha beta gamma");
-            assert_eq!(before.late_apple_word_counts(), (3, 0));
+            assert_eq!(before.text, "document");
+            assert_eq!(before.late_apple_word_counts(), (0, 0));
             assert_eq!(
                 emitter.paint_commands.lock().unwrap().last(),
                 Some(&before.text)
@@ -8404,34 +8396,15 @@ mod tests {
                     receipt,
                 });
             }
-            let covered = matches!(mode, "slot" | "preserved_label");
             let after = emitter.visible_canvas_snapshot().unwrap();
             assert_eq!(
                 emitter.paint_commands.lock().unwrap().last(),
                 Some(&after.text)
             );
-            assert_eq!(
-                after.late_apple_word_counts(),
-                if covered { (2, 1) } else { (3, 0) }
-            );
-            for word in ["alpha", "gamma"] {
-                assert_eq!(
-                    after
-                        .text
-                        .split_whitespace()
-                        .filter(|text| *text == word)
-                        .count(),
-                    1
-                );
+            assert_eq!(after.late_apple_word_counts(), (0, 0));
+            for word in ["alpha", "beta", "gamma"] {
+                assert!(!after.text.split_whitespace().any(|text| text == word));
             }
-            assert_eq!(
-                after
-                    .text
-                    .split_whitespace()
-                    .filter(|text| *text == "beta")
-                    .count(),
-                usize::from(!covered)
-            );
             let evidence = emitter
                 .session_state
                 .lock()
@@ -8446,10 +8419,7 @@ mod tests {
             );
             let missing = before.missing_words_from(&after);
             assert!(!missing.iter().any(|word| word.reason == "unaccounted"));
-            assert_eq!(
-                missing.iter().filter(|word| word.word == "beta").count(),
-                usize::from(covered)
-            );
+            assert!(missing.iter().all(|word| word.word != "beta"));
             seal_into(&emitter, &ledger, &owner);
             late_apple_into(
                 &emitter,
@@ -8506,8 +8476,8 @@ mod tests {
             );
         }
         let before = emitter.begin_stop_canvas().unwrap();
-        assert_eq!(before.text, "document Iwo Iwo Iwo Iwo Iwo");
-        assert_eq!(before.late_apple_word_counts(), (5, 0));
+        assert_eq!(before.text, "document");
+        assert_eq!(before.late_apple_word_counts(), (0, 0));
         late_apple_into(
             &emitter,
             &ledger,
@@ -8524,14 +8494,14 @@ mod tests {
             "Ewa",
         );
         let after = emitter.visible_canvas_snapshot().unwrap();
-        assert_eq!(after.late_apple_word_counts(), (6, 0));
+        assert_eq!(after.late_apple_word_counts(), (0, 0));
         assert_eq!(
             after
                 .text
                 .split_whitespace()
                 .filter(|word| *word == "Iwo")
                 .count(),
-            5
+            0
         );
         assert_eq!(
             emitter
