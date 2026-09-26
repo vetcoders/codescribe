@@ -491,10 +491,6 @@ struct CommittedPaintSource {
 enum VisibleWordSource {
     Committed(CommittedPaintSource),
     Unanchored(ObservationIdentity),
-    LateAppleWord {
-        pin: OccurrenceIdentity,
-        label: String,
-    },
     Unadmitted(UnadmittedAppleWord),
     DocumentRevision {
         receipt: Option<String>,
@@ -1733,19 +1729,10 @@ pub struct VisibleCanvasSnapshot {
 }
 
 impl VisibleCanvasSnapshot {
-    /// Counts in the frozen delivery bytes and in the separately visible,
-    /// slot-covered evidence. Delivery settlement owns reporting the outcome.
+    /// Late Apple words stay in the evidence book and never reach the canvas.
+    /// Both pasted and slot-covered canvas counts are therefore always zero.
     pub fn late_apple_word_counts(&self) -> (usize, usize) {
-        self.visible_words
-            .iter()
-            .filter(|word| matches!(word.source, VisibleWordSource::LateAppleWord { .. }))
-            .fold((0, 0), |(pasted, covered), word| {
-                if word.covered_by.is_some() {
-                    (pasted, covered + 1)
-                } else {
-                    (pasted + 1, covered)
-                }
-            })
+        (0, 0)
     }
 
     /// Compare two reads by occurrence/offset or counted PCM word identity.
@@ -1783,9 +1770,6 @@ impl VisibleCanvasSnapshot {
                     observation.occurrence.sample_start,
                     observation.occurrence.sample_end,
                 )),
-                VisibleWordSource::LateAppleWord { pin, .. } => {
-                    Some((pin.sample_start, pin.sample_end))
-                }
                 _ => None,
             };
             if let Some((start, end)) = range
@@ -1898,14 +1882,6 @@ impl VisibleCanvasSnapshot {
                     // Unchanged receipts still require the original offset.
                     Some("unaccounted".to_string())
                 }
-            } else if matches!(word.source, VisibleWordSource::LateAppleWord { .. }) {
-                // A later read may cover this pin, but only its slot receipt
-                // can explain the missing paste word. Containment is no proof.
-                pasted.visible_words.iter()
-                    .find(|present| present.source == word.source && present.offset == word.offset)
-                    .and_then(|present| present.covered_by.as_ref())
-                    .map(|owner| format!("covered_by_committed occurrence={owner:?}"))
-                    .or_else(|| Some("unaccounted".to_string()))
             } else if let VisibleWordSource::Unanchored(observation) = &word.source {
                 pasted.committed_sources.keys()
                     .find(|owner| range_within(&observation.occurrence, owner))
