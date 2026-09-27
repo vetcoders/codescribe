@@ -117,9 +117,13 @@ final class OverlayEditKeyGateTests: XCTestCase {
     }
     panel.orderFrontRegardless()
     let root = try XCTUnwrap(panel.contentView)
-    project("final text", phase: "formatted", terminal: true, sequence: 1, to: state)
     settle(root)
     let canvas = try XCTUnwrap(descendant(of: LiveTranscriptNativeTextView.self, in: root))
+    // Establish the preselected, non-editable canvas explicitly. The status
+    // scroll view may otherwise be AppKit's initial responder.
+    XCTAssertTrue(panel.makeFirstResponder(canvas))
+    project("final text", phase: "formatted", terminal: true, sequence: 1, to: state)
+    settle(root)
     XCTAssertTrue(panel.firstResponder === canvas)
     XCTAssertTrue(canvas.isEditable)
     XCTAssertFalse(panel.canBecomeKey)

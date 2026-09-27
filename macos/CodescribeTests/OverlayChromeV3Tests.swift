@@ -34,7 +34,7 @@ final class OverlayChromeV3Tests: XCTestCase {
     }
   }
 
-  func testPointerEntryAndExitRevealWithoutAReservedDock() {
+  func testPointerEntryAndExitRevealActions() {
     XCTAssertFalse(
       OverlayChromeVisibility.actionsVisible(
         pointerInside: false, keyboardFocus: false, voiceOver: false))
@@ -83,8 +83,9 @@ final class OverlayChromeV3Tests: XCTestCase {
       let scroll = try XCTUnwrap(text.enclosingScrollView)
       let rect = root.convert(scroll.bounds, from: scroll)
       XCTAssertGreaterThan(rect.width, width - 65)
-      XCTAssertGreaterThan(rect.height, 170)
-      XCTAssertLessThan(rect.minY, 24)
+      XCTAssertGreaterThan(rect.height, 130)
+      XCTAssertGreaterThanOrEqual(
+        rect.minY, OverlayResizeChrome.actionsBottomInset + OverlayResizeChrome.actionsHeight)
       XCTAssertLessThanOrEqual(rect.maxX, root.bounds.maxX)
     }
   }
