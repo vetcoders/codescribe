@@ -291,10 +291,9 @@ final class OverlayResizeHitTests: XCTestCase {
     let transcriptFrame = screenFrame(of: transcript.enclosingScrollView!, in: panel)
     XCTAssertLessThanOrEqual(firstLine.maxY, headerFrame.minY + 1)
     XCTAssertGreaterThanOrEqual(lastLine.minY, transcriptFrame.minY - 1)
-    XCTAssertGreaterThanOrEqual(
-      transcriptFrame.minY - panel.frame.minY,
-      OverlayResizeChrome.actionsBottomInset + OverlayResizeChrome.actionsHeight,
-      "The action handle must occupy layout space below the transcript")
+    XCTAssertLessThan(
+      transcriptFrame.minY - panel.frame.minY, 24,
+      "no dock or reserved action padding may consume the transcript bottom")
   }
 
   @MainActor

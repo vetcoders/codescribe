@@ -70,7 +70,6 @@ enum OverlayDockVisuals {
 @MainActor
 struct OverlayIntentRail: View {
   @FocusState private var focusedControl: String?
-  @State private var hoveredLabel: String?
   let onFocusChange: (Bool) -> Void
   let onDismiss: () -> Void
   let phase: String
@@ -135,74 +134,54 @@ struct OverlayIntentRail: View {
       }
       .padding(.horizontal, 8)
       .background(.regularMaterial, in: Capsule())
-      GeometryReader { geometry in
-        ScrollView(.horizontal) {
-          HStack(spacing: 4) {
-            if historyAvailable {
-              historyMenu
-                .focused($focusedControl, equals: "history")
-            }
-            if intents.contains(.recoverSuperseded) || intents.contains(.discardSuperseded) {
-              previousTakeMenu
-                .focused($focusedControl, equals: "previous-take")
-            }
-            ForEach(intents, id: \.self) { intent in
-              if intent == .retranscribe {
-                retranscribeMenu
-                  .focused($focusedControl, equals: intent.rawValue)
-              } else if intent == .format {
-                formatLevelMenu
-                  .focused($focusedControl, equals: "format-level")
-                OverlayDockButton(
-                  title: intent.accessibilityLabel,
-                  systemImage: intent.systemImage,
-                  hint: intent.accessibilityHint,
-                  identifier: "overlay-intent-\(intent.rawValue)",
-                  palette: palette,
-                  onHover: { hoveredLabel = $0 ? intent.accessibilityLabel : nil }
-                ) {
-                  dispatch(intent)
-                }
-                .focused($focusedControl, equals: intent.rawValue)
-              } else if intent != .close && intent != .recoverSuperseded
-                && intent != .discardSuperseded
-              {
-                OverlayDockButton(
-                  title: intent.accessibilityLabel,
-                  systemImage: intent.systemImage,
-                  hint: intent.accessibilityHint,
-                  identifier: "overlay-intent-\(intent.rawValue)",
-                  palette: palette,
-                  onHover: { hoveredLabel = $0 ? intent.accessibilityLabel : nil }
-                ) {
-                  dispatch(intent)
-                }
-                .focused($focusedControl, equals: intent.rawValue)
-              }
-            }
-          }
-          .padding(6)
-          .buttonStyle(.plain)
-          .background(.regularMaterial, in: Capsule())
-          .overlay { Capsule().strokeBorder(palette.border.color, lineWidth: 1) }
-          .frame(minWidth: geometry.size.width)
+      HStack(spacing: 4) {
+        if historyAvailable {
+          historyMenu
+            .focused($focusedControl, equals: "history")
         }
-        .scrollIndicators(.hidden)
+        if intents.contains(.recoverSuperseded) || intents.contains(.discardSuperseded) {
+          previousTakeMenu
+            .focused($focusedControl, equals: "previous-take")
+        }
+        ForEach(intents, id: \.self) { intent in
+          if intent == .retranscribe {
+            retranscribeMenu
+              .focused($focusedControl, equals: intent.rawValue)
+          } else if intent == .format {
+            formatLevelMenu
+              .focused($focusedControl, equals: "format-level")
+            OverlayDockButton(
+              title: intent.accessibilityLabel,
+              systemImage: intent.systemImage,
+              hint: intent.accessibilityHint,
+              identifier: "overlay-intent-\(intent.rawValue)",
+              palette: palette
+            ) {
+              dispatch(intent)
+            }
+            .focused($focusedControl, equals: intent.rawValue)
+          } else if intent != .close && intent != .recoverSuperseded && intent != .discardSuperseded
+          {
+            OverlayDockButton(
+              title: intent.accessibilityLabel,
+              systemImage: intent.systemImage,
+              hint: intent.accessibilityHint,
+              identifier: "overlay-intent-\(intent.rawValue)",
+              palette: palette
+            ) {
+              dispatch(intent)
+            }
+            .focused($focusedControl, equals: intent.rawValue)
+          }
+        }
       }
-      .frame(height: 40)
-      // Hover descriptions stay inside the rail; the row never changes height.
-      Text(hoveredLabel ?? " ")
-        .csMono(10, .medium)
-        .foregroundStyle(palette.mutedText.color)
-        .lineLimit(1)
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-        .accessibilityIdentifier("overlay-action-description")
+      .padding(6)
+      .buttonStyle(.plain)
+      .background(.regularMaterial, in: Capsule())
+      .overlay { Capsule().strokeBorder(palette.border.color, lineWidth: 1) }
     }
     .fixedSize(horizontal: false, vertical: true)
     .frame(maxWidth: .infinity, alignment: .center)
-    .onHover { if !$0 { hoveredLabel = nil } }
-    .onChange(of: intents) { _, _ in hoveredLabel = nil }
     .onChange(of: focusedControl) { _, control in onFocusChange(control != nil) }
     .onExitCommand {
       focusedControl = nil
@@ -268,7 +247,7 @@ struct OverlayIntentRail: View {
     .menuStyle(.button)
     .buttonStyle(.plain)
     .menuIndicator(.hidden)
-    .onHover { hoveredLabel = $0 ? OverlayIntent.retranscribe.accessibilityLabel : nil }
+    .help(OverlayIntent.retranscribe.accessibilityHint)
     .accessibilityLabel(OverlayIntent.retranscribe.accessibilityLabel)
     .accessibilityHint(OverlayIntent.retranscribe.accessibilityHint)
     .accessibilityIdentifier("overlay-intent-\(OverlayIntent.retranscribe.rawValue)")
@@ -298,7 +277,7 @@ struct OverlayIntentRail: View {
     .menuStyle(.button)
     .buttonStyle(.plain)
     .menuIndicator(.hidden)
-    .onHover { hoveredLabel = $0 ? "Previous take" : nil }
+    .help("Previous take: copy to clipboard or discard retained work")
     .accessibilityLabel("Previous take")
     .accessibilityHint("Copy or discard the retained previous take")
     .accessibilityIdentifier("overlay-previous-take-menu")
@@ -326,8 +305,7 @@ struct OverlayIntentRail: View {
     .menuStyle(.button)
     .buttonStyle(.plain)
     .menuIndicator(.hidden)
-    .onHover { hoveredLabel = $0 ? "Transcript history" : nil }
-    .accessibilityHint("Restore an earlier revision of this transcript")
+    .help("Restore an earlier revision of this transcript")
     .accessibilityLabel("Transcript version history")
     .accessibilityIdentifier("overlay-history-menu")
   }
@@ -351,8 +329,7 @@ struct OverlayIntentRail: View {
     .menuStyle(.button)
     .buttonStyle(.plain)
     .menuIndicator(.hidden)
-    .onHover { hoveredLabel = $0 ? "Choose Correction, Smart, or Max formatting" : nil }
-    .accessibilityHint("Choose Correction, Smart, or Max formatting")
+    .help("Choose Correction, Smart, or Max formatting")
     .accessibilityLabel("Formatter level")
     .accessibilityIdentifier("overlay-format-level-picker")
   }
@@ -464,7 +441,6 @@ private struct OverlayDockButton: View {
   let hint: String
   let identifier: String
   let palette: OverlayAppearancePalette
-  let onHover: (Bool) -> Void
   let action: () -> Void
 
   var body: some View {
@@ -480,10 +456,8 @@ private struct OverlayDockButton: View {
             palette.primaryText.color.opacity(
               OverlayDockVisuals.hoverOpacity(isHovering: isHovering)))
       }
-      .onHover {
-        isHovering = $0
-        onHover($0)
-      }
+      .onHover { isHovering = $0 }
+      .help(title)
       .accessibilityLabel(title)
       .accessibilityHint(hint)
       .accessibilityIdentifier(identifier)

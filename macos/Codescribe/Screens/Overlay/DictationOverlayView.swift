@@ -5,7 +5,7 @@ import SwiftUI
 // Layout (top → bottom):
 //   header   brand · ONE projection phase · compact waveform · timer
 //   body     transcript is the product surface (listening / formatted / terminal)
-//   actions  in the same vertical flow, below transcript and status
+//   floating actions over the transcript; no footer inset or reserved band
 //
 // Removed on purpose: duplicate RECORDING/modeMeta row, full bottom Finish/Close
 // action layer, and decorative body-top waveform competing with words.
@@ -27,7 +27,11 @@ struct DictationOverlayView: View {
 
   // Geometry constants local to this surface. The window is user-resizable;
   // content fills the frame and never goes narrower than `windowMinWidth`.
+  // `DictationOverlayWindow.minSize.height` MUST stay ≥ chrome + `bodyMinHeight`
+  // or GlassPanel paints past the window rect and squares the corners.
   private let windowMinWidth: CGFloat = 320
+  private let bodyMinHeight: CGFloat = 130
+  private let transcriptMinHeight: CGFloat = 96
   private var palette: OverlayAppearancePalette {
     OverlayAppearancePalette.resolve(colorScheme)
   }
@@ -104,7 +108,8 @@ struct DictationOverlayView: View {
         .opacity(state.isCollapsed ? 0 : 1)
         .allowsHitTesting(!state.isCollapsed)
         .accessibilityHidden(state.isCollapsed)
-
+    }
+    .overlay(alignment: .bottom) {
       if !state.isCollapsed {
         VStack(spacing: 2) {
           intentRail
@@ -134,12 +139,12 @@ struct DictationOverlayView: View {
           }
           .buttonStyle(.plain)
           .onExitCommand { actions.dismiss() }
-          .accessibilityHint(actions.isPinned ? "Unpin actions" : "Pin actions open")
+          .help(actions.isPinned ? "Unpin actions" : "Pin actions open")
           .accessibilityLabel("Actions")
           .accessibilityValue(actions.isPinned ? "Pinned" : "Hidden")
           .accessibilityIdentifier("overlay-tools-handle")
         }
-        .fixedSize(horizontal: false, vertical: true)
+        .fixedSize(horizontal: true, vertical: true)
         .padding(.horizontal, 8)
         .contentShape(Rectangle())
         .onHover { hovering in
@@ -396,9 +401,10 @@ struct DictationOverlayView: View {
   // MARK: Body
 
   private var bodySection: some View {
-    OverlayTranscriptLayout {
+    VStack(alignment: .leading, spacing: CSSpace.sm) {
+      // One permanent transcript surface. Status and lifecycle never replace
+      // its contents; the engine may replace them only via its projection.
       transcriptScroll
-    } status: {
       if let status = state.presentationStatus {
         presentationStatusBody(status)
           .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 8)))
@@ -424,6 +430,9 @@ struct DictationOverlayView: View {
         }
       }
     }
+    .frame(
+      maxWidth: .infinity, minHeight: bodyMinHeight, maxHeight: .infinity, alignment: .topLeading
+    )
     .padding(.horizontal, 20)
     .padding(.top, 4)
     .padding(.bottom, 10)
@@ -436,8 +445,8 @@ struct DictationOverlayView: View {
   /// Native live transcript: follows the newest words until the user clicks or
   /// selects an older phrase. The `NSTextView` keeps that selection stable across
   /// ongoing stream updates, so drag selection, Cmd-C and context-menu Copy work
-  /// during recording without stopping capture. The scroll view yields space
-  /// to status and actions as the window shrinks.
+  /// during recording without stopping capture. A `minHeight` reserves ~2–3 lines
+  /// at the window floor.
   private var transcriptScroll: some View {
     VStack(alignment: .leading, spacing: 0) {
       LiveTranscriptTextView(
@@ -460,7 +469,7 @@ struct DictationOverlayView: View {
             .allowsHitTesting(false)
         }
       }
-      .frame(minHeight: 0, maxHeight: .infinity)
+      .frame(minHeight: transcriptMinHeight)
       .accessibilityIdentifier("overlay-transcript-area")
       .accessibilityHint(
         state.isTranscriptEditable
@@ -536,7 +545,7 @@ struct DictationOverlayView: View {
       }
       Spacer(minLength: 0)
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
+    .frame(maxWidth: .infinity, minHeight: bodyMinHeight, alignment: .leading)
   }
 
   /// Terminal outcome for a take the ledger settled without accepting its
@@ -564,7 +573,7 @@ struct DictationOverlayView: View {
       }
       Spacer(minLength: 0)
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
+    .frame(maxWidth: .infinity, minHeight: bodyMinHeight, alignment: .leading)
     .accessibilityElement(children: .combine)
     .accessibilityIdentifier("overlay-coverage-refused")
   }
@@ -598,7 +607,7 @@ struct DictationOverlayView: View {
         Spacer(minLength: 0)
       }
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
+    .frame(maxWidth: .infinity, minHeight: bodyMinHeight, alignment: .leading)
   }
 
   /// Rust supplies every word and classification. The canvas only paints the
@@ -619,7 +628,7 @@ struct DictationOverlayView: View {
       }
       Spacer(minLength: 0)
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
+    .frame(maxWidth: .infinity, minHeight: bodyMinHeight, alignment: .leading)
     .accessibilityElement(children: .combine)
     .accessibilityIdentifier("overlay-presentation-status")
   }

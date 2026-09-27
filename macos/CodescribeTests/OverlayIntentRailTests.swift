@@ -378,10 +378,7 @@ final class OverlayIntentRailTests: XCTestCase {
     XCTAssertTrue(menu.contains("overlay-intent-discard-superseded"))
     XCTAssertTrue(
       menu.contains("Label(\"Previous take\", systemImage: OverlayControlSymbols.previousTake)"))
-    let normalizedSource = source.replacingOccurrences(
-      of: "\\s+", with: " ", options: .regularExpression)
-    XCTAssertTrue(
-      normalizedSource.contains("intent != .recoverSuperseded && intent != .discardSuperseded"))
+    XCTAssertTrue(source.contains("intent != .recoverSuperseded && intent != .discardSuperseded"))
     XCTAssertTrue(source.contains("Restore an earlier revision of this transcript"))
     let recovered = stateWithOneRetainedEdit()
     let engine = OverlayIntentBoundaryEngine()
@@ -540,59 +537,6 @@ final class OverlayIntentRailTests: XCTestCase {
       bitmap.colorAt(x: bitmap.pixelsWide - 1, y: 0)?.alphaComponent ?? 0,
       0.2
     )
-  }
-
-  func testUnsealedOverlayKeepsTranscriptAboveRevealedActionsAtWindowFloor() throws {
-    let suite = "OverlayIntentRailTests.refusal.\(UUID().uuidString)"
-    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-    defaults.set(true, forKey: DictationOverlayGate.labModeDefaultsKey)
-    defer { defaults.removePersistentDomain(forName: suite) }
-    for size in [CGSize(width: 320, height: 260), CGSize(width: 470, height: 400)] {
-      let state = stateWithOneRetainedEdit()
-      state.handleRecordingStarted()
-      var projection = try XCTUnwrap(
-        projectedState(
-          phase: "coverage_refused", text: "Iwo Iwo Iwo Iwo Iwo", canPaste: false,
-          canInsert: false, canCopy: true, canRetranscribe: true, canFormat: true, terminal: true
-        )
-        .latestTranscriptProjection)
-      projection.sequence = 2
-      projection.captureEpoch = 2
-      projection.sessionId = "refusal-layout"
-      projection.occurrenceSessionId = projection.sessionId
-      state.applyTranscriptProjection(projection)
-      XCTAssertTrue(state.hasRecoverableSupersededWork, "Retained work reveals the real rail")
-      if state.isCollapsed { state.toggleCollapsed() }
-      let host = NSHostingView(
-        rootView: DictationOverlayView(state: state)
-          .defaultAppStorage(defaults)
-          .transaction { $0.disablesAnimations = true }
-          .preferredColorScheme(.dark)
-          .frame(width: size.width, height: size.height)
-      )
-      host.frame = CGRect(origin: .zero, size: size)
-      host.layoutSubtreeIfNeeded()
-      RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-      host.layoutSubtreeIfNeeded()
-      func nativeText(in view: NSView) -> LiveTranscriptNativeTextView? {
-        if let text = view as? LiveTranscriptNativeTextView { return text }
-        return view.subviews.lazy.compactMap { nativeText(in: $0) }.first
-      }
-      let transcript = try XCTUnwrap(nativeText(in: host))
-      let scroll = try XCTUnwrap(transcript.enclosingScrollView)
-      let rect = host.convert(scroll.bounds, from: scroll)
-      XCTAssertGreaterThan(rect.height, 8)
-      let bottomSpace = host.isFlipped ? size.height - rect.maxY : rect.minY
-      XCTAssertGreaterThan(bottomSpace, 100, "Revealed actions and status need their own space")
-      XCTAssertEqual(transcript.string, "Iwo Iwo Iwo Iwo Iwo")
-      XCTAssertEqual(state.mode, .coverageRefused)
-      let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-      host.cacheDisplay(in: host.bounds, to: bitmap)
-      let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
-      try png.write(
-        to: FileManager.default.temporaryDirectory.appendingPathComponent(
-          "codescribe-unsealed-stacked-\(Int(size.width)).png"))
-    }
   }
 
   // MARK: Refusal recovery (rc-w2-refusal-ui) — UNRUN under W2

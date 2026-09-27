@@ -298,7 +298,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(source.contains("overlay-collapse-toggle"))
     let tools = try section(
       of: source, from: "VStack(spacing: 2)", to: "private var actionsVisible")
-    XCTAssertTrue(tools.contains(".fixedSize(horizontal: false, vertical: true)"))
+    XCTAssertTrue(tools.contains(".fixedSize(horizontal: true, vertical: true)"))
     XCTAssertTrue(tools.contains("actions.pointerInside = hovering"))
     XCTAssertTrue(tools.contains("actions.togglePin()"))
     XCTAssertTrue(tools.contains("Image(systemName: OverlayControlSymbols.actions)"))
