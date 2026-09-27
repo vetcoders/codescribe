@@ -6,7 +6,7 @@ import SwiftUI
 // Layout (top → bottom):
 //   header   brand · ONE projection phase · compact waveform · timer
 //   body     transcript is the product surface (listening / formatted / terminal)
-//   floating actions over the transcript; no footer inset or reserved band
+//   floating actions over the transcript; unsealed warning stacks below them
 //
 // Removed on purpose: duplicate RECORDING/modeMeta row, full bottom Finish/Close
 // action layer, and decorative body-top waveform competing with words.
@@ -15,6 +15,24 @@ import SwiftUI
 // never invents transcript truth, seals, or a second recorder. Future AoT mode
 // attaches to AgentChatStore (same thread owner) via existing sendToAgent — not
 // a parallel chat window.
+struct OverlayBottomChromeSlots: Equatable {
+  enum Slot: Equatable { case rail, coverageWarning }
+
+  let ordered: [Slot]
+
+  init(mode: OverlayMode, hasPresentationStatus: Bool, isCollapsed: Bool) {
+    if isCollapsed {
+      ordered = []
+    } else if mode == .coverageRefused && !hasPresentationStatus {
+      ordered = [.rail, .coverageWarning]
+    } else {
+      ordered = [.rail]
+    }
+  }
+
+  var showsCoverageWarning: Bool { ordered.contains(.coverageWarning) }
+}
+
 struct DictationOverlayView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.colorScheme) private var colorScheme
@@ -40,6 +58,11 @@ struct DictationOverlayView: View {
   private var showsDiagnostics: Bool {
     DeveloperSurface.isPowerModeEnabled(labMode: labMode)
   }
+  private var bottomChromeSlots: OverlayBottomChromeSlots {
+    OverlayBottomChromeSlots(
+      mode: state.mode, hasPresentationStatus: state.presentationStatus != nil,
+      isCollapsed: state.isCollapsed)
+  }
 
   var body: some View {
     OverlayCanvasSurface(palette: palette) {
@@ -48,6 +71,7 @@ struct DictationOverlayView: View {
           phase: state.statusText,
           intents: OverlayIntentRail.projectedIntents(for: state),
           palette: palette,
+          nativeHelpEnabled: !bottomChromeSlots.showsCoverageWarning,
           footerEngineLabel: state.footerEngineLabel,
           footerNotice: state.toast,
           history: state.documentHistory,
@@ -123,93 +147,109 @@ struct DictationOverlayView: View {
     }
     .overlay(alignment: .bottom) {
       if !state.isCollapsed {
-        HStack(spacing: 6) {
-          OverlayEvidenceChip(
-            state: state, palette: palette, actionsOpen: actions.phase == .open,
-            glassNamespace: bottomChromeNamespace
-          )
-          .layoutPriority(-1)
-          HStack(spacing: 2) {
-            Button {
-              actions.toggle()
-            } label: {
-              HStack(spacing: 4) {
-                Image(systemName: OverlayControlSymbols.actions)
-                if let label = OverlayActionsPresentation.pillLabel(
-                  phase: actions.phase, notice: state.toast)
-                {
-                  Text(label)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: 200, alignment: .leading)
-                }
-              }
-              .font(.system(size: 11, weight: .medium))
-              .foregroundStyle(palette.primaryText.color)
-              .padding(.horizontal, actions.phase == .open ? 0 : 10)
-              .frame(
-                minWidth: actions.phase == .open
-                  ? nil : OverlayResizeChrome.actionsWidth(narrow: actions.phase != .hover)
-              )
-              .frame(height: OverlayResizeChrome.actionsHeight)
-              .fixedSize(horizontal: true, vertical: true)
-              .contentShape(Capsule())
-              .overlay(alignment: .topTrailing) {
-                if state.hasRecoverableSupersededWork && actions.phase != .open {
-                  Circle()
-                    .fill(palette.processingStatus.color)
-                    .frame(width: 5, height: 5)
-                    .accessibilityHidden(true)
-                    .accessibilityIdentifier("overlay-retained-work-badge")
-                }
-              }
-            }
-            .buttonStyle(.plain)
-            .focusable()
-            .focused($actionsFocused)
-            .help(actions.phase == .open ? "Hide actions" : "Show actions")
-            .accessibilityLabel("Actions")
-            .accessibilityValue(actions.phase == .open ? "Open" : "Collapsed")
-            .accessibilityHint(
-              state.hasRecoverableSupersededWork
-                ? "Previous take available. Open actions to copy or discard it."
-                : "Show or hide transcript tools"
+        VStack(spacing: CSSpace.sm) {
+          HStack(spacing: 6) {
+            OverlayEvidenceChip(
+              state: state, palette: palette, actionsOpen: actions.phase == .open,
+              glassNamespace: bottomChromeNamespace
             )
-            .accessibilityIdentifier("overlay-tools-handle")
-            if actions.phase == .open {
-              intentRail
+            .layoutPriority(-1)
+            HStack(spacing: 2) {
+              Button {
+                actions.toggle()
+              } label: {
+                HStack(spacing: 4) {
+                  Image(systemName: OverlayControlSymbols.actions)
+                  if let label = OverlayActionsPresentation.pillLabel(
+                    phase: actions.phase, notice: state.toast)
+                  {
+                    Text(label)
+                      .lineLimit(1)
+                      .truncationMode(.tail)
+                      .frame(maxWidth: 200, alignment: .leading)
+                  }
+                }
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(palette.primaryText.color)
+                .padding(.horizontal, actions.phase == .open ? 0 : 10)
+                .frame(
+                  minWidth: actions.phase == .open
+                    ? nil : OverlayResizeChrome.actionsWidth(narrow: actions.phase != .hover)
+                )
+                .frame(height: OverlayResizeChrome.actionsHeight)
+                .fixedSize(horizontal: true, vertical: true)
+                .contentShape(Capsule())
+                .overlay(alignment: .topTrailing) {
+                  if state.hasRecoverableSupersededWork && actions.phase != .open {
+                    Circle()
+                      .fill(palette.processingStatus.color)
+                      .frame(width: 5, height: 5)
+                      .accessibilityHidden(true)
+                      .accessibilityIdentifier("overlay-retained-work-badge")
+                  }
+                }
+              }
+              .buttonStyle(.plain)
+              .focusable()
+              .focused($actionsFocused)
+              .help(
+                bottomChromeSlots.showsCoverageWarning
+                  ? "" : (actions.phase == .open ? "Hide actions" : "Show actions")
+              )
+              .accessibilityLabel("Actions")
+              .accessibilityValue(actions.phase == .open ? "Open" : "Collapsed")
+              .accessibilityHint(
+                state.hasRecoverableSupersededWork
+                  ? "Previous take available. Open actions to copy or discard it."
+                  : "Show or hide transcript tools"
+              )
+              .accessibilityIdentifier("overlay-tools-handle")
+              if actions.phase == .open {
+                intentRail
+              }
+            }
+            .padding(.vertical, actions.phase == .open ? 2 : 0)
+            .padding(.horizontal, actions.phase == .open ? 10 : 0)
+            .fixedSize(horizontal: false, vertical: true)
+            .modifier(
+              OverlayActionsSurface(palette: palette, glassNamespace: bottomChromeNamespace)
+            )
+            .contentShape(Capsule())
+            .onHover { actions.pointerChanged($0) }
+            .onChange(of: actionsFocused) { _, focused in
+              if focused { actions.interact() }
+            }
+            .onExitCommand { actions.dismiss() }
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: actions.phase)
+            .transaction { transaction in
+              if reduceMotion {
+                transaction.animation = nil
+                transaction.disablesAnimations = true
+              }
+            }
+            .task(id: actions.hideDeadline) {
+              guard let deadline = actions.hideDeadline else { return }
+              do {
+                try await ContinuousClock().sleep(until: deadline)
+              } catch { return }
+              guard !Task.isCancelled else { return }
+              actions.expire()
             }
           }
-          .padding(.vertical, actions.phase == .open ? 2 : 0)
-          .padding(.horizontal, actions.phase == .open ? 10 : 0)
-          .fixedSize(horizontal: false, vertical: true)
-          .modifier(OverlayActionsSurface(palette: palette, glassNamespace: bottomChromeNamespace))
-          .contentShape(Capsule())
-          .onHover { actions.pointerChanged($0) }
-          .onChange(of: actionsFocused) { _, focused in
-            if focused { actions.interact() }
-          }
-          .onExitCommand { actions.dismiss() }
-          .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: actions.phase)
-          .transaction { transaction in
-            if reduceMotion {
-              transaction.animation = nil
-              transaction.disablesAnimations = true
-            }
-          }
-          .task(id: actions.hideDeadline) {
-            guard let deadline = actions.hideDeadline else { return }
-            do {
-              try await ContinuousClock().sleep(until: deadline)
-            } catch { return }
-            guard !Task.isCancelled else { return }
-            actions.expire()
+          // Glass is confined to each capsule, before the bar's clear margins.
+          // The AppKit edge intercept and existing header/body drag regions stay in place.
+          .frame(maxWidth: .infinity, alignment: .center)
+          .padding(.horizontal, OverlayResizeChrome.actionsBottomInset)
+          if bottomChromeSlots.showsCoverageWarning {
+            coverageRefusedBody
+              .padding(10)
+              .background(
+                .regularMaterial,
+                in: RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous)
+              )
+              .padding(.horizontal, 20)
           }
         }
-        // Glass is confined to each capsule, before the bar's clear margins.
-        // The AppKit edge intercept and existing header/body drag regions stay in place.
-        .frame(maxWidth: .infinity, alignment: .center)
-        .padding(.horizontal, OverlayResizeChrome.actionsBottomInset)
         .padding(.bottom, OverlayResizeChrome.actionsBottomInset)
       } else if let label = OverlayActionsPresentation.finishingLabel(
         mode: state.mode, transcribing: state.transcribing, terminal: state.terminal)
@@ -487,10 +527,6 @@ struct DictationOverlayView: View {
           revisionStatusRow
         case .coverageRefused:
           revisionStatusRow
-          if showsDiagnostics {
-            coverageRefusedBody
-              .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 8)))
-          }
         case .noSpeech:
           noSpeechBody
             .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 8)))
@@ -620,8 +656,8 @@ struct DictationOverlayView: View {
 
   /// Terminal outcome for a take the ledger settled without accepting its
   /// acoustic coverage. The words stay on the canvas above, untouched: this
-  /// Voice Lab row explains why they carry no seal. Hiding this diagnostic
-  /// never changes the projected delivery permissions or the retained text.
+  /// warning explains why they carry no seal. It shares the bottom stack with
+  /// the rail so neither element can be placed over the other.
   ///
   /// Persistent by construction — it is painted from state, not scheduled
   /// like a toast — and combined into one accessibility element so VoiceOver
@@ -643,7 +679,7 @@ struct DictationOverlayView: View {
       }
       Spacer(minLength: 0)
     }
-    .frame(maxWidth: .infinity, minHeight: bodyMinHeight, alignment: .leading)
+    .frame(maxWidth: .infinity, alignment: .leading)
     .accessibilityElement(children: .combine)
     .accessibilityIdentifier("overlay-coverage-refused")
   }

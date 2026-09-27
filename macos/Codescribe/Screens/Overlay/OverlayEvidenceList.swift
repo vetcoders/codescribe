@@ -36,7 +36,7 @@ struct OverlayEvidenceChip: View {
         .focusable()
         .focused($focused)
         .onHover { hovered = $0 }
-        .help("Also heard · not committed: \(chip.line)")
+        .help(state.mode == .coverageRefused ? "" : "Also heard · not committed: \(chip.line)")
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Also heard, not committed: \(chip.line), \(chip.count) total")
         .accessibilityIdentifier("overlay-unanchored-evidence")

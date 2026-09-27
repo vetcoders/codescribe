@@ -130,7 +130,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       to: "} else if let label = OverlayActionsPresentation.finishingLabel(")
     XCTAssertEqual(
       bottom.components(separatedBy: "glassNamespace: bottomChromeNamespace").count - 1, 2)
-    let actionSurface = try XCTUnwrap(bottom.range(of: ".modifier(OverlayActionsSurface("))
+    let actionSurface = try XCTUnwrap(bottom.range(of: "OverlayActionsSurface(palette:"))
     let clearMargin = try XCTUnwrap(bottom.range(of: ".padding(.bottom, OverlayResizeChrome"))
     XCTAssertLessThan(actionSurface.lowerBound, clearMargin.lowerBound)
     XCTAssertFalse(
@@ -140,7 +140,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         ".animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: actions.phase)"))
   }
 
-  func testAcousticWarningsUseVoiceLabGateWithoutHidingOperationErrors() throws {
+  func testCoverageWarningStacksWithActionsWithoutHidingOperationErrors() throws {
     let source = try overlaySource()
     XCTAssertTrue(source.contains("@AppStorage(DictationOverlayGate.labModeDefaultsKey)"))
     XCTAssertTrue(source.contains("DeveloperSurface.isPowerModeEnabled(labMode: labMode)"))
@@ -149,8 +149,9 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       header.contains("if showsDiagnostics && state.compactProjection?.degraded == true"))
     XCTAssertTrue(header.contains("if let error = state.expansionPreferenceError"))
     let refusal = try section(of: source, from: "case .coverageRefused:", to: "case .noSpeech:")
-    XCTAssertTrue(refusal.contains("if showsDiagnostics {"))
-    XCTAssertTrue(refusal.contains("coverageRefusedBody"))
+    XCTAssertFalse(refusal.contains("coverageRefusedBody"))
+    XCTAssertTrue(source.contains("if bottomChromeSlots.showsCoverageWarning {"))
+    XCTAssertTrue(source.contains("coverageRefusedBody"))
   }
 
   func testExpansionClampsBottomAnchorsLowDragsAndSmallerNegativeDisplay() {

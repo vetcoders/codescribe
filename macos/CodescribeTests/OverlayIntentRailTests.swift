@@ -266,6 +266,48 @@ final class OverlayIntentRailTests: XCTestCase {
     XCTAssertEqual(OverlayDockLayout.minimumCanvasWidth, 320)
   }
 
+  func testUnsealedTakeKeepsWarningAndProjectedRailInSeparateOrderedSlots() {
+    let state = projectedState(
+      phase: "coverage_refused", text: "Words kept without a seal",
+      canPaste: true, canInsert: true, canCopy: true, canRetranscribe: true,
+      canFormat: true, terminal: true)
+    state.toggleCollapsed()
+    let slots = OverlayBottomChromeSlots(
+      mode: state.mode, hasPresentationStatus: state.presentationStatus != nil,
+      isCollapsed: state.isCollapsed)
+
+    XCTAssertEqual(state.mode, .coverageRefused)
+    XCTAssertEqual(slots.ordered, [.rail, .coverageWarning])
+    XCTAssertTrue(slots.showsCoverageWarning)
+    XCTAssertEqual(
+      OverlayIntentRail.projectedIntents(for: state),
+      [.insertPaste, .copy, .retranscribe, .format, .close])
+    XCTAssertNotNil(state.coverageRefusalNotice)
+    XCTAssertFalse(state.coverageRefusalDetail.isEmpty)
+  }
+
+  func testSealedTakeKeepsRailWithoutReservingWarningSlot() {
+    let state = projectedState(
+      phase: "formatted", text: "Sealed words",
+      canPaste: true, canInsert: true, canCopy: true, canRetranscribe: true,
+      canFormat: true, terminal: true)
+    state.toggleCollapsed()
+    let slots = OverlayBottomChromeSlots(
+      mode: state.mode, hasPresentationStatus: state.presentationStatus != nil,
+      isCollapsed: state.isCollapsed)
+
+    XCTAssertEqual(state.mode, .formatted)
+    XCTAssertEqual(slots.ordered, [.rail])
+    XCTAssertFalse(slots.showsCoverageWarning)
+    XCTAssertEqual(
+      OverlayIntentRail.projectedIntents(for: state),
+      [.insertPaste, .copy, .retranscribe, .format, .close])
+    XCTAssertEqual(
+      OverlayBottomChromeSlots(
+        mode: .coverageRefused, hasPresentationStatus: false, isCollapsed: true
+      ).ordered, [])
+  }
+
   func testDirtyRevisionReplacesDeliveryActionsWithCommitOrDiscard() {
     let state = projectedState(
       phase: "formatted",

@@ -146,6 +146,7 @@ struct OverlayIntentRail: View {
   let phase: String
   let intents: [OverlayIntent]
   let palette: OverlayAppearancePalette
+  let nativeHelpEnabled: Bool
   let footerEngineLabel: String
   let footerNotice: String?
   let history: [CsDocumentHistoryEntry]
@@ -162,6 +163,7 @@ struct OverlayIntentRail: View {
     phase: String,
     intents: [OverlayIntent],
     palette: OverlayAppearancePalette,
+    nativeHelpEnabled: Bool = true,
     footerEngineLabel: String = "",
     footerNotice: String? = nil,
     history: [CsDocumentHistoryEntry] = [],
@@ -183,6 +185,7 @@ struct OverlayIntentRail: View {
     self.phase = phase
     self.intents = intents
     self.palette = palette
+    self.nativeHelpEnabled = nativeHelpEnabled
     self.footerEngineLabel = footerEngineLabel
     self.footerNotice = footerNotice
     self.history = history
@@ -223,7 +226,8 @@ struct OverlayIntentRail: View {
             systemImage: intent.systemImage,
             hint: intent.accessibilityHint,
             identifier: "overlay-intent-\(intent.rawValue)",
-            palette: palette
+            palette: palette,
+            nativeHelpEnabled: nativeHelpEnabled
           ) {
             dispatch(intent)
           }
@@ -272,7 +276,7 @@ struct OverlayIntentRail: View {
     Menu {
       ForEach(OverlayRetranscribePass.allCases) { pass in
         Button(pass.visibleName) { retranscribe(pass) }
-          .help(pass.help)
+          .help(nativeHelpEnabled ? pass.help : "")
           .accessibilityIdentifier("overlay-retranscribe-\(pass.rawValue)")
       }
     } label: {
@@ -288,7 +292,7 @@ struct OverlayIntentRail: View {
     .menuStyle(.button)
     .buttonStyle(.plain)
     .menuIndicator(.hidden)
-    .help(OverlayIntent.retranscribe.accessibilityHint)
+    .help(nativeHelpEnabled ? OverlayIntent.retranscribe.accessibilityHint : "")
     .accessibilityLabel(OverlayIntent.retranscribe.accessibilityLabel)
     .accessibilityHint(OverlayIntent.retranscribe.accessibilityHint)
     .accessibilityIdentifier("overlay-intent-\(OverlayIntent.retranscribe.rawValue)")
@@ -300,14 +304,14 @@ struct OverlayIntentRail: View {
         Button(OverlayIntent.recoverSuperseded.accessibilityLabel) {
           dispatch(.recoverSuperseded)
         }
-        .help(OverlayIntent.recoverSuperseded.accessibilityHint)
+        .help(nativeHelpEnabled ? OverlayIntent.recoverSuperseded.accessibilityHint : "")
         .accessibilityIdentifier("overlay-intent-recover-superseded")
       }
       if intents.contains(.discardSuperseded) {
         Button(OverlayIntent.discardSuperseded.accessibilityLabel, role: .destructive) {
           dispatch(.discardSuperseded)
         }
-        .help(OverlayIntent.discardSuperseded.accessibilityHint)
+        .help(nativeHelpEnabled ? OverlayIntent.discardSuperseded.accessibilityHint : "")
         .accessibilityIdentifier("overlay-intent-discard-superseded")
       }
     } label: {
@@ -318,7 +322,7 @@ struct OverlayIntentRail: View {
     .menuStyle(.button)
     .buttonStyle(.plain)
     .menuIndicator(.hidden)
-    .help("Previous take: copy to clipboard or discard retained work")
+    .help(nativeHelpEnabled ? "Previous take: copy to clipboard or discard retained work" : "")
     .accessibilityLabel("Previous take")
     .accessibilityHint("Copy or discard the retained previous take")
     .accessibilityIdentifier("overlay-previous-take-menu")
@@ -350,7 +354,7 @@ struct OverlayIntentRail: View {
     .menuStyle(.button)
     .buttonStyle(.plain)
     .menuIndicator(.hidden)
-    .help("Restore an earlier revision of this transcript")
+    .help(nativeHelpEnabled ? "Restore an earlier revision of this transcript" : "")
     .accessibilityLabel("Transcript version history")
     .accessibilityIdentifier("overlay-history-menu")
   }
@@ -378,7 +382,7 @@ struct OverlayIntentRail: View {
     .menuStyle(.button)
     .buttonStyle(.plain)
     .menuIndicator(.visible)
-    .help(formatHelp)
+    .help(nativeHelpEnabled ? formatHelp : "")
     .accessibilityLabel(OverlayIntent.format.accessibilityLabel)
     .accessibilityHint(formatHelp)
     .accessibilityIdentifier("overlay-intent-format")
@@ -521,6 +525,7 @@ private struct OverlayDockButton: View {
   let hint: String
   let identifier: String
   let palette: OverlayAppearancePalette
+  let nativeHelpEnabled: Bool
   let action: () -> Void
 
   var body: some View {
@@ -537,7 +542,7 @@ private struct OverlayDockButton: View {
               OverlayDockVisuals.hoverOpacity(isHovering: isHovering)))
       }
       .onHover { isHovering = $0 }
-      .help(title)
+      .help(nativeHelpEnabled ? title : "")
       .accessibilityLabel(title)
       .accessibilityHint(hint)
       .accessibilityIdentifier(identifier)
