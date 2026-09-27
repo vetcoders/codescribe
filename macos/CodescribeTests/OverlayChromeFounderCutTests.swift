@@ -99,7 +99,9 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(evidence.contains("OverlayEvidencePresentation.isExpanded("))
     XCTAssertTrue(evidence.contains(".accessibilityElement(children: .ignore)"))
     XCTAssertTrue(evidence.contains("Also heard, not committed:"))
-    XCTAssertTrue(evidence.contains(".help(\"Also heard · not committed:"))
+    XCTAssertTrue(
+      evidence.contains(
+        ".help(state.mode == .coverageRefused ? \"\" : \"Also heard · not committed:"))
     for forbidden in [
       "Button", "onTapGesture", "accessibilityAction", ".tint(", ".allowsHitTesting(false)",
     ] {
@@ -421,7 +423,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   func testActionsAreInsertedOnlyAfterActivationAndHaveNoPinState() throws {
     let source = try overlaySource()
     let tools = try section(of: source, from: "HStack(spacing: 2)", to: "/// 1px separator")
-    XCTAssertTrue(tools.contains("if actions.phase == .open {\n              intentRail"))
+    XCTAssertTrue(containsGuardedIntentRail(tools))
     XCTAssertTrue(tools.contains("OverlayActionsPresentation.pillLabel("))
     XCTAssertTrue(tools.contains("phase: actions.phase, notice: state.toast"))
     XCTAssertTrue(tools.contains("actions.toggle()"))
@@ -505,7 +507,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       cap.contains(".accessibilityValue(actions.phase == .open ? \"Open\" : \"Collapsed\")"))
     XCTAssertTrue(cap.contains("if state.hasRecoverableSupersededWork && actions.phase != .open {"))
     XCTAssertTrue(cap.contains("overlay-retained-work-badge"))
-    XCTAssertTrue(tools.contains("if actions.phase == .open {\n              intentRail"))
+    XCTAssertTrue(containsGuardedIntentRail(tools))
     XCTAssertTrue(source.contains("intents: OverlayIntentRail.projectedIntents(for: state)"))
     let rail = try section(
       of: railSource(), from: "var body: some View", to: "private var retranscribeMenu")
@@ -565,7 +567,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     }
     XCTAssertTrue(menu.contains("} primaryAction: {\n      dispatch(.format)"))
     XCTAssertTrue(menu.contains(".menuIndicator(.visible)"))
-    XCTAssertTrue(menu.contains(".help(formatHelp)"))
+    XCTAssertTrue(menu.contains(".help(nativeHelpEnabled ? formatHelp : \"\")"))
     XCTAssertTrue(menu.contains(".accessibilityHint(formatHelp)"))
     XCTAssertTrue(menu.contains(".accessibilityIdentifier(\"overlay-intent-format\")"))
     XCTAssertFalse(source.contains("overlay-format-level-picker"))
@@ -685,8 +687,11 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   func testTakeStartAndCollapseRemoveMountedTools() throws {
     let source = try overlaySource()
     let canvas = try section(of: source, from: "private func canvasStack", to: "/// 1px separator")
-    XCTAssertTrue(canvas.contains("if !state.isCollapsed {\n        HStack(spacing: 6)"))
-    XCTAssertTrue(canvas.contains("if actions.phase == .open {\n              intentRail"))
+    XCTAssertTrue(
+      canvas.range(
+        of: #"if !state\.isCollapsed \{\s*VStack\(spacing: CSSpace\.sm\) \{\s*HStack\(spacing: 6\)"#,
+        options: .regularExpression) != nil)
+    XCTAssertTrue(containsGuardedIntentRail(canvas))
     XCTAssertTrue(canvas.contains("actions.toggle()"))
     XCTAssertTrue(
       canvas.contains(".onChange(of: state.captureGeneration) { _, _ in actions.reset() }"))
@@ -827,8 +832,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let bottom = try section(
       of: overlaySource(), from: ".overlay(alignment: .bottom)",
       to: "} else if let label = OverlayActionsPresentation.finishingLabel(")
-    let capsule = try section(
-      of: bottom, from: "HStack(spacing: 2)", to: ".modifier(OverlayActionsSurface(")
+    let capsule = try section(of: bottom, from: "HStack(spacing: 2)", to: ".modifier(")
     XCTAssertTrue(capsule.contains(".padding(.horizontal, actions.phase == .open ? 10 : 0)"))
     XCTAssertTrue(capsule.contains(".padding(.horizontal, actions.phase == .open ? 0 : 10)"))
     XCTAssertTrue(capsule.contains("minWidth: actions.phase == .open"))
@@ -839,7 +843,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(capsule.contains(".fixedSize(horizontal: false, vertical: true)"))
     let groupFrame = try XCTUnwrap(
       bottom.range(of: ".frame(maxWidth: .infinity, alignment: .center)"))
-    let capsuleSurface = try XCTUnwrap(bottom.range(of: ".modifier(OverlayActionsSurface("))
+    let capsuleSurface = try XCTUnwrap(bottom.range(of: "OverlayActionsSurface(palette:"))
     let clearMargin = try XCTUnwrap(bottom.range(of: ".padding(.horizontal, OverlayResizeChrome"))
     XCTAssertLessThan(capsuleSurface.lowerBound, groupFrame.lowerBound)
     XCTAssertLessThan(groupFrame.lowerBound, clearMargin.lowerBound)
@@ -852,7 +856,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let capsule = try section(
       of: canvas, from: "HStack(spacing: 2)",
       to: ".padding(.vertical, actions.phase == .open ? 2 : 0)")
-    XCTAssertTrue(capsule.contains("if actions.phase == .open {\n              intentRail"))
+    XCTAssertTrue(containsGuardedIntentRail(capsule))
     XCTAssertEqual(
       canvas.components(separatedBy: "\n").filter {
         $0.trimmingCharacters(in: .whitespaces) == "intentRail"
@@ -864,7 +868,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(capsule.contains(".truncationMode(.tail)"))
     XCTAssertTrue(capsule.contains(".frame(maxWidth: 200, alignment: .leading)"))
     XCTAssertTrue(capsule.contains(".frame(height: OverlayResizeChrome.actionsHeight)"))
-    XCTAssertEqual(canvas.components(separatedBy: ".modifier(OverlayActionsSurface").count - 1, 1)
+    XCTAssertEqual(canvas.components(separatedBy: "OverlayActionsSurface(palette:").count - 1, 1)
     XCTAssertTrue(canvas.contains(".padding(.bottom, OverlayResizeChrome.actionsBottomInset)"))
     XCTAssertFalse(canvas.contains(".onChange(of: state.toast)"))
     XCTAssertFalse(canvas.contains(".task(id: state.toast)"))
@@ -1181,6 +1185,12 @@ final class OverlayChromeFounderCutTests: XCTestCase {
 
   private func autoPasteControlSource(_ source: String) throws -> String {
     try section(of: source, from: "private var autoPasteControl", to: "private func chromeWaveform")
+  }
+
+  private func containsGuardedIntentRail(_ source: String) -> Bool {
+    source.range(
+      of: #"if actions\.phase == \.open \{\s*intentRail\s*\}"#,
+      options: .regularExpression) != nil
   }
 
   private func section(of source: String, from start: String, to end: String) throws -> String {
