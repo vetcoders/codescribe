@@ -51,6 +51,7 @@ LEASE_SCHEMA = "codescribe.agent-bridge.lease.v1"
 ATTACH_SCHEMA = "codescribe.agent-bridge.attach.v1"
 EVENT_SCHEMA = "codescribe.agent-bridge.event.v1"
 ACTIVE_NAMES_SCHEMA = "codescribe.agent-bridge.active-names.v1"
+AGENT_REPLY_SCHEMA = "codescribe.agent-reply.v1"
 DEFAULT_LEASE_TTL_SECONDS = 120.0
 ASSIGN_RE = re.compile(
     r"(?i)(?:będziesz(?:\s+od)?\s+teraz|nazywam\s+cię|nazywasz\s+się|"
@@ -1223,6 +1224,134 @@ def run(args: argparse.Namespace) -> int:
             lease.close()
 
 
+def _xai_speech_key() -> str | None:
+    """OAuth from the grok CLI's OIDC session first, Keychain API key as fallback."""
+    import subprocess
+
+    try:
+        data = json.loads((Path.home() / ".grok" / "auth.json").read_text())
+        for value in data.values():
+            if (
+                isinstance(value, dict)
+                and value.get("auth_mode") == "oidc"
+                and value.get("key")
+            ):
+                return str(value["key"])
+    except (OSError, ValueError):
+        pass
+    probe = subprocess.run(
+        [
+            "security",
+            "find-generic-password",
+            "-s",
+            "com.vetcoders.codescribe",
+            "-a",
+            "LLM_XAI_API_KEY",
+            "-w",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    key = probe.stdout.strip()
+    return key or None
+
+
+def bound_voice(root: Path, name: str | None) -> str:
+    """Voice bound to a name in <bridge-home>/voices.json; the male default otherwise."""
+    if name:
+        mapping = read_json(root / "voices.json") or {}
+        bindings = mapping.get("bindings", mapping)
+        voice = bindings.get(str(name).lower()) if isinstance(bindings, dict) else None
+        if isinstance(voice, str) and voice:
+            return voice
+    return "leo"
+
+
+def _speak_xai(text: str, voice: str, speed: float) -> tuple[bool, str | None]:
+    """Same TTS lane as the app (api.x.ai/v1/tts, PCM s16le 24 kHz), played via afplay."""
+    import subprocess
+    import tempfile
+    import urllib.request
+    import wave
+
+    key = _xai_speech_key()
+    if not key:
+        return False, "no xAI credential (run: grok login, or Keychain LLM_XAI_API_KEY)"
+    body = json.dumps(
+        {
+            "text": text,
+            "voice_id": voice,
+            "language": "auto",
+            "output_format": {"codec": "pcm", "sample_rate": 24000},
+            "speed": speed,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        "https://api.x.ai/v1/tts",
+        data=body,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            pcm = response.read()
+    except Exception as error:  # noqa: BLE001 - urllib raises several unrelated families
+        status = getattr(error, "code", None)
+        return False, f"tts request failed ({status or error.__class__.__name__})"
+    wav_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
+            wav_path = handle.name
+            with wave.open(handle, "wb") as sink:
+                sink.setnchannels(1)
+                sink.setsampwidth(2)
+                sink.setframerate(24000)
+                sink.writeframes(pcm)
+        played = subprocess.run(["afplay", wav_path], capture_output=True)
+        if played.returncode != 0:
+            return False, "afplay failed"
+    finally:
+        if wav_path:
+            try:
+                os.unlink(wav_path)
+            except OSError:
+                pass
+    return True, None
+
+
+def say_reply(args: argparse.Namespace) -> int:
+    """Append one agent-reply row to the canonical Bus, then speak it.
+
+    The Bus is the canonical relay for agent replies; xAI is only the speaker,
+    so a failed synthesis still lands the row (spoken=false with the reason).
+    """
+    voice = args.voice or bound_voice(args.bridge_home, args.name)
+    reply: dict[str, Any] = {
+        "schema": AGENT_REPLY_SCHEMA,
+        "kind": "agent_reply",
+        "emitted_at": utc_now(),
+        "reply_id": os.urandom(12).hex(),
+        "name": args.name,
+        "provider": args.provider,
+        "provider_session_id": args.session,
+        "text": args.say,
+        "voice": voice,
+        "speed": args.speed,
+        "spoken": False,
+    }
+    spoken, error = _speak_xai(args.say, voice, args.speed)
+    reply["spoken"] = spoken
+    if error:
+        reply["tts_error"] = error
+    line = json.dumps(reply, ensure_ascii=False) + "\n"
+    descriptor = os.open(args.bus, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    try:
+        os.write(descriptor, line.encode("utf-8"))
+    finally:
+        os.close(descriptor)
+    emit(reply)
+    return 0 if spoken else 5
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bus", type=Path, default=None, help="override bus path")
@@ -1285,6 +1414,16 @@ def main() -> int:
     )
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--interval", type=float, default=0.15)
+    parser.add_argument(
+        "--say",
+        help="append an agent reply to the canonical Bus and speak it through xAI TTS",
+    )
+    parser.add_argument(
+        "--voice",
+        default=None,
+        help="TTS voice id; defaults to the name's binding in <bridge-home>/voices.json",
+    )
+    parser.add_argument("--speed", type=float, default=1.25)
     args = parser.parse_args()
     if args.bus is None:
         args.bus = bus_path()
@@ -1312,6 +1451,18 @@ def main() -> int:
             return acknowledge_delivery(args)
         except (OSError, ValueError) as error:
             sys.stderr.write(f"bus-demux: acknowledgment refused: {error}\n")
+            return 3
+    if args.say is not None:
+        if not args.provider or not args.name:
+            parser.error("--say requires --provider/--session and --name")
+        if args.follow or args.once or args.from_start or args.all or args.become:
+            parser.error("--say takes no read mode")
+        if not args.say.strip():
+            parser.error("--say needs non-empty text")
+        try:
+            return say_reply(args)
+        except OSError as error:
+            sys.stderr.write(f"bus-demux: reply refused: {error}\n")
             return 3
     if args.lease_ttl <= 0:
         parser.error("--lease-ttl must be positive")
