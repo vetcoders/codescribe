@@ -1294,12 +1294,16 @@ def _speak_xai(text: str, voice: str, speed: float) -> tuple[bool, str | None]:
     # hostname verification enabled explicitly by the default TLS context.
     opener = urllib.request.OpenerDirector()
     opener.add_handler(urllib.request.HTTPSHandler(context=ssl.create_default_context()))
-    opener.addheaders = [
-        ("Content-Type", "application/json"),
-        ("Authorization", f"Bearer {key}"),
-    ]
+    # Headers ride on the Request: opener.addheaders lose to the default
+    # Content-Type that do_request_ installs first for any request with data,
+    # and the API rejects a JSON body labelled x-www-form-urlencoded (415).
+    request = urllib.request.Request(
+        "https://api.x.ai/v1/tts",
+        data=body,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+    )
     try:
-        with opener.open("https://api.x.ai/v1/tts", data=body, timeout=60) as response:
+        with opener.open(request, timeout=60) as response:
             if not 200 <= response.status < 300:
                 return False, f"tts request failed ({response.status})"
             pcm = response.read()
