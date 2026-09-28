@@ -24,6 +24,8 @@
 
 /// Admission readiness: the precondition of beginning a product recording.
 pub mod admission;
+/// Fn+digit agent channels. Not a take and not a `State` variant.
+mod agent_channel;
 /// Per-session assistive context bag (selection, app, images).
 mod context_bucket;
 /// One destination throne: intent → Agent / Orient / paste. Focus is not king.
@@ -1306,6 +1308,11 @@ pub struct RecordingController {
 
     /// Broadcast stream for IPC subscribers.
     event_broadcast: broadcast::Sender<IpcEvent>,
+
+    /// Open Fn+digit channels. Outside the take state machine.
+    ///
+    /// Lock order: this mutex before the recorder mutex.
+    agent_channels: Mutex<std::collections::HashMap<u8, agent_channel::OpenAgentChannel>>,
 }
 
 /// The shared handles one conversation audio loop moves into its task.
@@ -1525,6 +1532,7 @@ impl RecordingController {
             conversation_generation: Arc::new(AtomicU64::new(0)),
             conversation_task: Arc::new(Mutex::new(None)),
             event_broadcast,
+            agent_channels: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -2244,6 +2252,8 @@ impl RecordingController {
         &self,
         duration: Duration,
     ) -> Result<admission::EnergyCalibrationReport> {
+        self.refuse_exclusive_while_agent_channel_open("energy calibration")
+            .await?;
         use codescribe_core::audio::capture_receipt::{CaptureLevelAccumulator, CapturePathMeta};
         use codescribe_core::config::energy_calibration::{
             EnergyCalibrationArtifact, EnergyCalibrationProfile, SOURCE_GUIDED_CAPTURE,
@@ -4177,6 +4187,8 @@ impl RecordingController {
     /// Initializes ConversationEngine and AudioPlayer, then starts the audio
     /// processing loop that feeds mic input to Moshi and plays responses.
     async fn start_conversation_mode(&self) -> Result<()> {
+        self.refuse_exclusive_while_agent_channel_open("conversation")
+            .await?;
         let _serial = self.serial_lock.lock().await;
         if self.shutdown_requested.load(Ordering::SeqCst)
             || self.current_state().await != State::Idle
@@ -4834,6 +4846,8 @@ impl RecordingController {
                 // The capture-time target predates the overlay caret. A true
                 // self-canvas fact exists only at the explicit defer click.
                 latched_target_is_self: false,
+                audience: None,
+                badge_only: false,
             })
             .map(Arc::new);
             // Install the Bus before the recorder starts: from here every exit
@@ -5148,6 +5162,8 @@ impl RecordingController {
             // The capture-time target predates the overlay caret. A true
             // self-canvas fact exists only at the explicit defer click.
             latched_target_is_self: false,
+            audience: None,
+            badge_only: false,
         })
         .map(Arc::new);
 
@@ -6158,6 +6174,8 @@ mod terminal_delivery_target_falsifiers {
                     mode: TranscriptMode::Dictation,
                     has_latched_target: false,
                     latched_target_is_self: false,
+                    audience: None,
+                    badge_only: false,
                 },
                 path.clone(),
                 None,
@@ -7927,6 +7945,8 @@ mod refusal_recovery_tests {
                     mode: TranscriptMode::Agent,
                     has_latched_target: true,
                     latched_target_is_self: false,
+                    audience: None,
+                    badge_only: false,
                 },
                 dir.path().join("bus.jsonl"),
                 None,
@@ -8599,6 +8619,8 @@ mod owned_capture_settlement_tests {
                 mode: TranscriptMode::Agent,
                 has_latched_target: false,
                 latched_target_is_self: false,
+                audience: None,
+                badge_only: false,
             },
             dir.path().join("events.jsonl"),
             None,
@@ -10140,6 +10162,8 @@ mod capture_failure_recovery_tests {
                 mode: TranscriptMode::Dictation,
                 has_latched_target: false,
                 latched_target_is_self: false,
+                audience: None,
+                badge_only: false,
             },
             bus_path.clone(),
             None,

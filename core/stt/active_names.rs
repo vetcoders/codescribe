@@ -59,7 +59,10 @@ pub fn active_names() -> Vec<String> {
     cache.names.clone()
 }
 
-fn bridge_home() -> PathBuf {
+/// Runtime agent-bridge home: `CODESCRIBE_AGENT_BRIDGE_HOME`, otherwise
+/// `~/.codescribe/agent-bridge`. The audience binding file sits here, beside
+/// the leases the Bus followers already use.
+pub fn bridge_home() -> PathBuf {
     if let Ok(value) = std::env::var(BRIDGE_HOME_ENV) {
         let value = value.trim();
         if !value.is_empty() {

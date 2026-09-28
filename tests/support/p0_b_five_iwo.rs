@@ -269,6 +269,8 @@ fn publish_through_reducer_and_bus(
             mode: TranscriptMode::Dictation,
             has_latched_target: false,
             latched_target_is_self: false,
+            audience: None,
+            badge_only: false,
         },
         path.clone(),
         Some(manifest.sample_rate),
