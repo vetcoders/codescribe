@@ -1269,8 +1269,11 @@ def bound_voice(root: Path, name: str | None) -> str:
 
 def _speak_xai(text: str, voice: str, speed: float) -> tuple[bool, str | None]:
     """Same TTS lane as the app (api.x.ai/v1/tts, PCM s16le 24 kHz), played via afplay."""
+    import http.client
+    import ssl
     import subprocess
     import tempfile
+    import urllib.error
     import urllib.request
     import wave
 
@@ -1286,17 +1289,22 @@ def _speak_xai(text: str, voice: str, speed: float) -> tuple[bool, str | None]:
             "speed": speed,
         }
     ).encode("utf-8")
-    request = urllib.request.Request(
-        "https://api.x.ai/v1/tts",
-        data=body,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
-    )
+    # Install only TLS transport: no file handler, proxy or redirect handler.
+    # The URL remains literal at the actual I/O call, with certificate and
+    # hostname verification enabled explicitly by the default TLS context.
+    opener = urllib.request.OpenerDirector()
+    opener.add_handler(urllib.request.HTTPSHandler(context=ssl.create_default_context()))
+    opener.addheaders = [
+        ("Content-Type", "application/json"),
+        ("Authorization", f"Bearer {key}"),
+    ]
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
+        with opener.open("https://api.x.ai/v1/tts", data=body, timeout=60) as response:
+            if not 200 <= response.status < 300:
+                return False, f"tts request failed ({response.status})"
             pcm = response.read()
-    except Exception as error:  # noqa: BLE001 - urllib raises several unrelated families
-        status = getattr(error, "code", None)
-        return False, f"tts request failed ({status or error.__class__.__name__})"
+    except (OSError, urllib.error.URLError, http.client.HTTPException) as error:
+        return False, f"tts request failed ({error.__class__.__name__})"
     wav_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:

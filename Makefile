@@ -1075,6 +1075,7 @@ verify:
 	python3 -m unittest scripts/tests/test_env_registry.py; \
 	python3 -m unittest scripts/tests/test_data_asset_references.py; \
 	python3 -m unittest scripts/tests/test_sessions_dedupe.py; \
+	python3 -m unittest scripts/tests/test_bus_demux_speech.py; \
 	bash scripts/validate-envs.sh; \
 	echo "=== Verify (gate ledger) ==="; \
 	bash scripts/validate-gates.sh; \
