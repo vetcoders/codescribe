@@ -574,6 +574,16 @@ pub struct TranscriptReducer {
     >,
 }
 
+/// Sample a preview word is judged by. A zero-width phrase pin is the pin
+/// itself; a ranged word is its midpoint.
+fn preview_sample_point(start: u64, end: u64) -> u64 {
+    if start == end {
+        start
+    } else {
+        start + end.saturating_sub(start) / 2
+    }
+}
+
 /// Whether `inner` lies wholly inside `outer` on one capture clock.
 fn range_within(inner: &OccurrenceIdentity, outer: &OccurrenceIdentity) -> bool {
     inner.same_capture(outer)
@@ -791,10 +801,34 @@ impl TranscriptReducer {
     /// One read serves overlay paint, STOP and delivery. Midpoint coverage makes
     /// ledger-before-mirror publication safe: transient overlap never doubles a word.
     fn committed_covering(&self, start: u64, end: u64) -> Option<&OccurrenceIdentity> {
-        let midpoint = start + end.saturating_sub(start) / 2;
+        let midpoint = preview_sample_point(start, end);
         self.document_by_occurrence
             .keys()
             .find(|owner| owner.sample_start <= midpoint && midpoint < owner.sample_end)
+    }
+
+    /// A formatted final owns every sample up to the last committed end.
+    /// Preview words whose point is still inside that extent restate speech
+    /// the document already holds: formatting rewrites the letters, and a
+    /// Silero cut can leave the raw pin in a gap or before the first
+    /// occurrence. A point at or past the last committed end is a new tail
+    /// and stays. Refused-untimed phrases stay until that phrase is timed.
+    fn preview_restates_committed_document(&self, word: &UnadmittedAppleWord) -> bool {
+        if matches!(
+            word.source,
+            UnadmittedAppleWordSource::RefusedUntimed { .. }
+        ) {
+            return false;
+        }
+        let Some(extent_end) = self
+            .document_by_occurrence
+            .keys()
+            .map(|owner| owner.sample_end)
+            .max()
+        else {
+            return false;
+        };
+        preview_sample_point(word.sample_start, word.sample_end) < extent_end
     }
 
     fn read_paint(&self) -> PaintedCanvas {
@@ -814,18 +848,17 @@ impl TranscriptReducer {
             .collect::<std::collections::BTreeSet<_>>();
         let mut seen = BTreeMap::new();
         for word in &self.unadmitted_apple_words {
+            // Formatted finals rewrite the label. Retire the raw preview by
+            // the committed capture extent, not by string equality.
+            if self.preview_restates_committed_document(word) {
+                continue;
+            }
             let untimed = matches!(
                 word.source,
                 UnadmittedAppleWordSource::OpenPartial { .. }
                     | UnadmittedAppleWordSource::RefusedUntimed { .. }
             );
             if !untimed {
-                if self
-                    .committed_covering(word.sample_start, word.sample_end)
-                    .is_some()
-                {
-                    continue;
-                }
                 let key = (
                     word.sample_start,
                     word.sample_end,
@@ -1735,6 +1768,34 @@ impl VisibleCanvasSnapshot {
         (0, 0)
     }
 
+    /// Preview words inside the committed capture are the formatted document's
+    /// raw restatement, including a pin that missed the Silero cut. A point at
+    /// or past the last committed end is a tail, not an admission.
+    fn admitted_into_committed_extent(&self, start: u64, end: u64) -> Option<String> {
+        if self.committed_sources.is_empty() {
+            return None;
+        }
+        let point = preview_sample_point(start, end);
+        let extent_end = self
+            .committed_sources
+            .keys()
+            .map(|owner| owner.sample_end)
+            .max()?;
+        if point >= extent_end {
+            return None;
+        }
+        let owner = self
+            .committed_sources
+            .keys()
+            .find(|owner| owner.sample_start <= point && point < owner.sample_end)
+            .or_else(|| {
+                self.committed_sources
+                    .keys()
+                    .find(|owner| owner.sample_end == extent_end)
+            })?;
+        Some(format!("admitted_into occurrence={owner:?}"))
+    }
+
     /// Compare two reads by occurrence/offset or counted PCM word identity.
     /// A word in another range cannot hide a missing visible word.
     pub fn missing_words_from(&self, pasted: &Self) -> Vec<MissingVisibleWord> {
@@ -1814,6 +1875,11 @@ impl VisibleCanvasSnapshot {
                             Some(format!("closed_by_final phrase={phrase_id} outcomes={}",
                                 closed.describe_outcomes()))
                         }
+                    } else if let Some(reason) = pasted.admitted_into_committed_extent(
+                        original.sample_start,
+                        original.sample_end,
+                    ) {
+                        Some(reason)
                     } else {
                         Some("unaccounted".into())
                     }
@@ -1823,14 +1889,14 @@ impl VisibleCanvasSnapshot {
                         if *count == 0 { false } else { *count -= 1; true }
                     }) {
                         None
+                    } else if let Some(reason) = pasted.admitted_into_committed_extent(
+                        original.sample_start,
+                        original.sample_end,
+                    ) {
+                        Some(reason)
                     } else {
-                        let midpoint = original.sample_start
-                            + original.sample_end.saturating_sub(original.sample_start) / 2;
-                        if let Some(owner) = pasted.committed_sources.keys().find(|owner| {
-                            owner.sample_start <= midpoint && midpoint < owner.sample_end
-                        }) {
-                            Some(format!("admitted_into occurrence={owner:?}"))
-                        } else if let Some(observation) = pasted.visible_words.iter().find_map(|present| {
+                        let midpoint = preview_sample_point(original.sample_start, original.sample_end);
+                        if let Some(observation) = pasted.visible_words.iter().find_map(|present| {
                             let VisibleWordSource::Unanchored(observation) = &present.source else { return None; };
                             let range = &observation.occurrence;
                             (range.sample_start <= midpoint && midpoint < range.sample_end).then_some(observation)
@@ -4385,6 +4451,182 @@ mod tests {
         let reasons = stopped.missing_words_from(&emitter.finish_stop_canvas().unwrap());
         assert_eq!(reasons.len(), 1);
         assert_eq!(reasons[0].reason, "unaccounted");
+        emitter.finish().await;
+    }
+
+    fn numbered_words(prefix: &str, count: usize) -> String {
+        (0..count)
+            .map(|index| format!("{prefix}_{index:03}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Receipt 6bba5e1d: a formatted final and the raw preview of the same
+    /// speech. The preview pin sits before the Silero occurrence, so midpoint
+    /// coverage never sees it, and the letters no longer match.
+    #[tokio::test]
+    async fn formatted_final_retires_raw_preview_on_the_same_span() {
+        let (mut emitter, ledger) = mirror_take();
+        let raw = "kazda wersja jest gorsza";
+        let formatted = "Każda wersja jest gorsza.";
+        let mut words = mirror_words(
+            raw,
+            48_000,
+            48_000,
+            UnadmittedAppleWordSource::OpenPartial {
+                rev: 4,
+                phrase_id: 9,
+            },
+        );
+        words.extend(mirror_words(
+            raw,
+            48_000,
+            58_000,
+            UnadmittedAppleWordSource::Unmatched,
+        ));
+        emitter.on_event(&mirror(1, words));
+        let painted = emitter.begin_stop_canvas().unwrap();
+        assert!(painted.text.contains("kazda"));
+        let mutation = admitted_mutation(
+            &mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("take", 7, 58_368, 336_384),
+            1,
+            formatted,
+        );
+        emitter.on_event(&mutation);
+        let pasted = emitter.finish_stop_canvas().unwrap();
+        assert_eq!(pasted.text, formatted);
+        for token in ["Każda", "wersja", "jest", "gorsza."] {
+            assert_eq!(pasted.text.matches(token).count(), 1, "{token}");
+        }
+        assert!(!pasted.text.to_lowercase().contains("kazda"));
+        let reasons = painted.missing_words_from(&pasted);
+        assert!(!reasons.is_empty());
+        assert!(
+            reasons
+                .iter()
+                .all(|word| word.reason.starts_with("admitted_into occurrence=")),
+            "{reasons:?}"
+        );
+        emitter.finish().await;
+    }
+
+    /// A final that adds a tail past the last committed sample keeps that tail
+    /// once, and keeps every formatted word.
+    #[tokio::test]
+    async fn formatted_final_keeps_a_genuine_tail_word() {
+        let (mut emitter, ledger) = mirror_take();
+        let raw = "kazda wersja jest gorsza";
+        let formatted = "Każda wersja jest gorsza.";
+        let mut words = mirror_words(
+            raw,
+            48_000,
+            58_000,
+            UnadmittedAppleWordSource::Unmatched,
+        );
+        words.extend(mirror_words(
+            "ogonek",
+            2_200_000,
+            2_216_000,
+            UnadmittedAppleWordSource::Unmatched,
+        ));
+        emitter.on_event(&mirror(1, words));
+        let painted = emitter.visible_canvas_snapshot().unwrap();
+        assert!(painted.text.contains("ogonek"));
+        assert!(painted.text.contains("kazda"));
+        emitter.on_event(&admitted_mutation(
+            &mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("take", 7, 58_368, 336_384),
+            1,
+            formatted,
+        ));
+        let pasted = emitter.visible_canvas_snapshot().unwrap();
+        assert_eq!(pasted.text, format!("{formatted} ogonek"));
+        assert_eq!(pasted.text.matches("ogonek").count(), 1);
+        for token in formatted.split_whitespace() {
+            assert_eq!(pasted.text.matches(token).count(), 1, "{token}");
+        }
+        assert!(!pasted.text.to_lowercase().contains("kazda"));
+        emitter.finish().await;
+    }
+
+    /// Take 6bba5e1d painted 178 words and pasted one copy. The raw preview
+    /// must disappear; every formatted word must remain.
+    #[tokio::test]
+    async fn receipt_6bba5e1d_paints_one_copy_without_losing_formatted_words() {
+        let (mut emitter, ledger) = mirror_take();
+        let raw = numbered_words("raw", 178);
+        let formatted = numbered_words("fin", 69);
+        emitter.on_event(&mirror(
+            1,
+            mirror_words(
+                &raw,
+                48_000,
+                58_000,
+                UnadmittedAppleWordSource::OpenPartial {
+                    rev: 1,
+                    phrase_id: 7,
+                },
+            ),
+        ));
+        let painted = emitter.begin_stop_canvas().unwrap();
+        assert_eq!(painted.text.split_whitespace().count(), 178);
+        emitter.on_event(&admitted_mutation(
+            &mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("take", 7, 58_368, 336_384),
+            1,
+            &formatted,
+        ));
+        let pasted = emitter.finish_stop_canvas().unwrap();
+        assert_eq!(pasted.text, formatted);
+        assert_eq!(pasted.text.split_whitespace().count(), 69);
+        assert!(!pasted.text.contains("raw_000"));
+        assert!(!pasted.text.contains("raw_177"));
+        for token in formatted.split_whitespace() {
+            assert_eq!(pasted.text.matches(token).count(), 1, "{token}");
+        }
+        let reasons = painted.missing_words_from(&pasted);
+        assert_eq!(reasons.len(), 178);
+        assert!(
+            reasons
+                .iter()
+                .all(|word| word.reason.starts_with("admitted_into occurrence=")),
+            "{:?}",
+            reasons.first()
+        );
+        emitter.finish().await;
+    }
+
+    /// An explicit archival insert stays the paste. The raw preview of the
+    /// same span does not append a second copy.
+    #[tokio::test]
+    async fn manual_insert_of_archival_text_is_not_doubled_by_raw_preview() {
+        let (mut emitter, ledger) = mirror_take();
+        let archival = "Archiwalna transkrypcja do wstawienia";
+        emitter.on_event(&admitted_mutation(
+            &mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("take", 7, 0, 16_000),
+            1,
+            "Tekst bazowy",
+        ));
+        emitter.on_event(&EngineEvent::SessionFinalised {
+            session_id: "take".to_string(),
+            layer_summary: LayerSummary::default(),
+        });
+        let revision = emitter.visible_canvas_snapshot().unwrap().revision;
+        emitter
+            .apply_user_revision(UserRevisionIntent {
+                session_id: "take".to_string(),
+                source_revision: revision,
+                rendered_text: archival.to_string(),
+                provenance: DocumentRevisionProvenance::UserEdit,
+            })
+            .expect("archival insert commits");
+        emitter.on_event(&partial_mirror(2, "surowy duplikat", 0, 0));
+        let pasted = emitter.visible_canvas_snapshot().unwrap();
+        assert_eq!(pasted.text, archival);
+        assert!(!pasted.text.contains("surowy"));
+        assert!(!pasted.text.contains("duplikat"));
         emitter.finish().await;
     }
 
