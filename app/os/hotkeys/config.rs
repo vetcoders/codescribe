@@ -432,7 +432,6 @@ pub fn apply_hotkey_config(config: &Config) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::str::FromStr;
     use std::sync::Mutex;
 
     /// Serializes tests that mutate process-global hotkey atomics.

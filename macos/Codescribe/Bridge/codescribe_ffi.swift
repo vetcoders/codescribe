@@ -11074,6 +11074,20 @@ public struct CsSettings: Equatable, Hashable {
      * product default when no persisted choice exists.
      */
     public var deferredInsertShortcut: String
+    /**
+     * Agent-channel modifier (`ChannelModifier::as_str()`). `"ctrl"` or `"fn"`.
+     * Command is not a value.
+     */
+    public var channelModifier: String
+    /**
+     * Quick Fn press below the hold delay toggles dictation. Default off.
+     */
+    public var fnTapTogglesDictation: Bool
+    /**
+     * Middle mouse button follows Fn press/release. Default off.
+     * The tap stays listen-only, so the click still reaches the frontmost app.
+     */
+    public var middleMouseActsAsFn: Bool
     public var whisperLanguage: CsLanguage
     public var aiFormattingEnabled: Bool
     /**
@@ -11171,7 +11185,18 @@ public struct CsSettings: Equatable, Hashable {
          * Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
          * from the canonical merged config snapshot. `"disabled"` is the
          * product default when no persisted choice exists.
-         */deferredInsertShortcut: String, whisperLanguage: CsLanguage, aiFormattingEnabled: Bool,
+         */deferredInsertShortcut: String,
+        /**
+         * Agent-channel modifier (`ChannelModifier::as_str()`). `"ctrl"` or `"fn"`.
+         * Command is not a value.
+         */channelModifier: String,
+        /**
+         * Quick Fn press below the hold delay toggles dictation. Default off.
+         */fnTapTogglesDictation: Bool,
+        /**
+         * Middle mouse button follows Fn press/release. Default off.
+         * The tap stays listen-only, so the click still reaches the frontmost app.
+         */middleMouseActsAsFn: Bool, whisperLanguage: CsLanguage, aiFormattingEnabled: Bool,
         /**
          * `TranscriptSendMode::as_str()` — `"end_of_utterance"` / `"streaming"`.
          */transcriptSendMode: String, transcriptTaggingEnabled: Bool, transcriptTagTemplate: String, aiMaxTokens: Int32, aiAssistiveMaxTokens: Int32, showTrayGlyph: Bool, showDockIcon: Bool, transcriptionOverlayEnabled: Bool, holdIndicator: Bool, holdBadgeSize: UInt32, holdBadgeOffsetX: Int32, holdBadgeOffsetY: Int32,
@@ -11213,6 +11238,9 @@ public struct CsSettings: Equatable, Hashable {
         self.whisperContextWindowSec = whisperContextWindowSec
         self.lightPlusSentencePauseSec = lightPlusSentencePauseSec
         self.deferredInsertShortcut = deferredInsertShortcut
+        self.channelModifier = channelModifier
+        self.fnTapTogglesDictation = fnTapTogglesDictation
+        self.middleMouseActsAsFn = middleMouseActsAsFn
         self.whisperLanguage = whisperLanguage
         self.aiFormattingEnabled = aiFormattingEnabled
         self.transcriptSendMode = transcriptSendMode
@@ -11287,6 +11315,9 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 whisperContextWindowSec: FfiConverterFloat.read(from: &buf),
                 lightPlusSentencePauseSec: FfiConverterFloat.read(from: &buf),
                 deferredInsertShortcut: FfiConverterString.read(from: &buf),
+                channelModifier: FfiConverterString.read(from: &buf),
+                fnTapTogglesDictation: FfiConverterBool.read(from: &buf),
+                middleMouseActsAsFn: FfiConverterBool.read(from: &buf),
                 whisperLanguage: FfiConverterTypeCsLanguage.read(from: &buf),
                 aiFormattingEnabled: FfiConverterBool.read(from: &buf),
                 transcriptSendMode: FfiConverterString.read(from: &buf),
@@ -11349,6 +11380,9 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterFloat.write(value.whisperContextWindowSec, into: &buf)
         FfiConverterFloat.write(value.lightPlusSentencePauseSec, into: &buf)
         FfiConverterString.write(value.deferredInsertShortcut, into: &buf)
+        FfiConverterString.write(value.channelModifier, into: &buf)
+        FfiConverterBool.write(value.fnTapTogglesDictation, into: &buf)
+        FfiConverterBool.write(value.middleMouseActsAsFn, into: &buf)
         FfiConverterTypeCsLanguage.write(value.whisperLanguage, into: &buf)
         FfiConverterBool.write(value.aiFormattingEnabled, into: &buf)
         FfiConverterString.write(value.transcriptSendMode, into: &buf)
