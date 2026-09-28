@@ -691,6 +691,17 @@ candidate list, and `state_change_allowed: false` for each candidate receiver.
 The source text and reducer evidence remain unchanged; this is destination
 recognition, not an ASR correction or proof that the words were spoken correctly.
 
+## Optional audience field on sealed rows
+
+Sealed transcript rows may carry an optional top-level `audience` string.
+When `audience` equals a follower’s bound name, that follower receives the
+row without requiring its name to appear in the text; the emitted envelope
+marks `routing_match: "audience"`. When `audience` is `"*"` the row is a
+broadcast and every follower receives it with the same marker. An `audience`
+naming someone else does not suppress the existing name gate: rows still reach
+a follower if the transcript text addresses them by assignment, exact match,
+or fuzzy discovery. Rows without `audience` behave exactly as before.
+
 ## Native chat receiver acknowledgment
 
 For a provider/session-scoped `scripts/bus-demux.py` reader, stdout is transport,

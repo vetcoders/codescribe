@@ -893,4 +893,111 @@ bus.write_text(json.dumps(event)+'\n')
 assert subprocess.run(cmd, capture_output=True).returncode == 0
 PY
 
+# --- Audience field routing (FN-1 W1b) ---------------------------------------
+sealed_with_audience() {
+  local text="$1"
+  local audience="$2"
+  local status="${3:-transcript_sealed}"
+  local sequence="${4:-1}"
+  python3 - "$BUS" "$text" "$audience" "$status" "$sequence" <<'PY'
+import json, sys
+path, text, audience, status, sequence = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5])
+event = {
+    "schema": "codescribe.transcript.v1",
+    "sequence": sequence,
+    "session_id": "test-session",
+    "mode": "raw",
+    "utterance_id": "utterance-1",
+    "emitted_at": "2026-08-20T22:00:00Z",
+    "status": status,
+    "text": text,
+    "source": "test_fixture",
+    "audience": audience,
+}
+with open(path, "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+PY
+}
+
+# (a) audience-bound row reaches the named follower without a text mention.
+: >"$BUS"
+sealed_with_audience "neutral text without any name" "james" transcript_sealed 100
+got="$(run_once --name james)"
+python3 - "$got" <<'PY'
+import json, sys
+o = json.loads(sys.argv[1])
+assert o["audience"] == "james", o
+assert o["routing_match"] == "audience", o
+assert "neutral text" in o["text"], o
+assert o["state_change_allowed"] is True, o
+PY
+
+# (b) same row does not reach a differently named follower.
+if run_once --name leon >/dev/null 2>/dev/null; then
+  echo "expected audience-bound row to drop for leon" >&2
+  exit 1
+fi
+
+# (c) audience mismatch does not suppress the existing name gate.
+: >"$BUS"
+sealed_with_audience "James, wklejka nadal parkuje." "leon" transcript_sealed 101
+got="$(run_once --name james)"
+python3 - "$got" <<'PY'
+import json, sys
+o = json.loads(sys.argv[1])
+assert o["audience"] == "james", o
+assert o.get("routing_match") != "audience", o
+assert "James" in o["text"], o
+assert o["state_change_allowed"] is True, o
+PY
+
+# (d) broadcast audience reaches every follower.
+: >"$BUS"
+sealed_with_audience "broadcast neutral text" "*" transcript_sealed 102
+got_james="$(run_once --name james)"
+got_leon="$(run_once --name leon)"
+python3 - "$got_james" "$got_leon" <<'PY'
+import json, sys
+james = json.loads(sys.argv[1])
+leon = json.loads(sys.argv[2])
+assert james["audience"] == "*", james
+assert leon["audience"] == "*", leon
+assert james["routing_match"] == "audience", james
+assert leon["routing_match"] == "audience", leon
+assert "broadcast" in james["text"], james
+assert james["text"] == leon["text"], (james, leon)
+PY
+
+# (e) rows without audience behave exactly as before (covered by prior tests).
+
+# (f) unknown extra fields are tolerated and still routed.
+: >"$BUS"
+python3 - "$BUS" <<'PY'
+import json, sys
+path = sys.argv[1]
+event = {
+    "schema": "codescribe.transcript.v1",
+    "sequence": 103,
+    "session_id": "test-session",
+    "mode": "raw",
+    "utterance_id": "utterance-1",
+    "emitted_at": "2026-08-20T22:00:00Z",
+    "status": "transcript_sealed",
+    "text": "future field tolerance",
+    "source": "test_fixture",
+    "audience": "james",
+    "future_field": {"nested": [1, 2, 3]},
+}
+with open(path, "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+PY
+got="$(run_once --name james)"
+python3 - "$got" <<'PY'
+import json, sys
+o = json.loads(sys.argv[1])
+assert o["routing_match"] == "audience", o
+assert o["text"] == "future field tolerance", o
+assert o["audience"] == "james", o
+PY
+
 echo "bus-demux: ok"

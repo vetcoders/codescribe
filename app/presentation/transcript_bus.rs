@@ -82,6 +82,9 @@ pub struct TranscriptSession {
     /// capture-time sessions set this false because that caret fact exists
     /// only at the later defer click.
     pub latched_target_is_self: bool,
+    /// Optional audience tag for agent-channel sealed rows. `Some("*")` is a
+    /// broadcast; `None` behaves exactly as before.
+    pub audience: Option<String>,
 }
 
 /// Grain of one published span. Word pins are engine evidence; utterance
@@ -354,6 +357,10 @@ pub struct TranscriptBusEvidenceEvent {
     /// an evidence revision describes the document, never its destination.
     #[serde(default)]
     pub delivery: TranscriptDelivery,
+    /// Optional audience tag for agent-channel sealed rows. `Some("*")` is a
+    /// broadcast; absent rows behave exactly as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<String>,
     pub acoustic_receipts: Vec<ProjectedAcousticReceipt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seal_coverage: Option<ProjectedSealCoverageReceipt>,
@@ -972,6 +979,7 @@ impl TranscriptBus {
                 // An evidence revision states what the document is, never where
                 // it went. Only `publish_ended` stamps a delivery disposition.
                 delivery: TranscriptDelivery::Unattempted,
+                audience: self.session.audience.clone(),
                 acoustic_receipts: vec![Self::project_serial(
                     serial,
                     entry.word_evidence_receipts.clone(),
@@ -1205,6 +1213,7 @@ impl TranscriptBus {
                     sample_start: 0,
                     sample_end: 0,
                     document_index: 0,
+                    audience: self.session.audience.clone(),
                     label: String::new(),
                     rendered_text: String::new(),
                     delivery_text: None,
@@ -1579,6 +1588,7 @@ mod tests {
             mode: TranscriptMode::Agent,
             has_latched_target: false,
             latched_target_is_self: false,
+            audience: None,
         }
     }
 
@@ -2249,6 +2259,7 @@ mod tests {
                 mode: TranscriptMode::Agent,
                 has_latched_target: false,
                 latched_target_is_self: false,
+                audience: None,
             },
             path.clone(),
             Some(48_000),
@@ -2289,6 +2300,7 @@ mod tests {
             mode: TranscriptMode::Dictation,
             has_latched_target: false,
             latched_target_is_self: false,
+            audience: None,
         };
 
         let never_started = TranscriptBus::open_at(session.clone(), path.clone(), None).unwrap();
@@ -2355,6 +2367,7 @@ mod tests {
                 mode: TranscriptMode::Agent,
                 has_latched_target: false,
                 latched_target_is_self: false,
+                audience: None,
             },
             path,
             None,
@@ -2389,6 +2402,7 @@ mod tests {
                 mode: TranscriptMode::Dictation,
                 has_latched_target: false,
                 latched_target_is_self: false,
+                audience: None,
             },
             path,
             None,

@@ -26,7 +26,7 @@ use crate::pipeline::streaming::{
 use anyhow::{Context, Result, anyhow};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
@@ -191,6 +191,26 @@ impl std::error::Error for CaptureStopFailure {
     }
 }
 
+/// One logical PCM consumer riding the same physical capture as the take.
+///
+/// Channels never own the take epoch counter; they observe the same CoreAudio
+/// callback and run their own isolated `transcription_session` + ledger.
+#[derive(Debug, Clone)]
+struct ChannelCaptureSubscriber {
+    sender: mpsc::Sender<Vec<f32>>,
+    dropped: Arc<AtomicU64>,
+}
+
+/// Handle returned by [`StreamingRecorder::start_channel_capture_session`].
+/// Dropping it does **not** stop the session — the caller must pass it to
+/// [`StreamingRecorder::stop_channel_capture_session`] for ordered shutdown.
+#[derive(Debug)]
+pub struct ChannelCaptureSession {
+    subscriber: Arc<ChannelCaptureSubscriber>,
+    handle: JoinHandle<()>,
+    opened_physical_capture: Arc<AtomicBool>,
+}
+
 // Keep enough raw audio queued to survive a cold Whisper load without dropping
 // the user's first words. The STT session drains this backlog once the model is ready.
 /// Channel depth for cold Whisper load: first words queue instead of drop.
@@ -315,6 +335,12 @@ pub struct StreamingRecorder {
     /// Zero means this bind has not successfully opened capture yet.
     capture_epoch: u64,
     captured_samples: Arc<AtomicU64>,
+    /// Subscriber registry for agent-channel PCM fan-out. The callback reads
+    /// this list on every block, so subscribers can be added/removed without
+    /// replacing the CoreAudio callback.
+    channel_subscribers: Arc<StdMutex<Vec<Arc<ChannelCaptureSubscriber>>>>,
+    /// Current main-session audio sender. `None` when only channels are active.
+    main_audio_sender: Arc<StdMutex<Option<mpsc::Sender<Vec<f32>>>>>,
     terminal_audio_sender: Option<
         std::sync::mpsc::Sender<
             Result<crate::pipeline::streaming::live_audio_buffer::FinalizedPcmArchive, String>,
@@ -364,6 +390,8 @@ impl StreamingRecorder {
             authority_session_id: None,
             capture_epoch: 0,
             captured_samples: Arc::new(AtomicU64::new(0)),
+            channel_subscribers: Arc::new(StdMutex::new(Vec::new())),
+            main_audio_sender: Arc::new(StdMutex::new(None)),
             terminal_audio_sender: None,
             last_window_closed: None,
         })
@@ -395,6 +423,8 @@ impl StreamingRecorder {
             authority_session_id: None,
             capture_epoch: 0,
             captured_samples: Arc::new(AtomicU64::new(0)),
+            channel_subscribers: Arc::new(StdMutex::new(Vec::new())),
+            main_audio_sender: Arc::new(StdMutex::new(None)),
             terminal_audio_sender: None,
             last_window_closed: None,
         })
@@ -521,6 +551,48 @@ impl StreamingRecorder {
         LIVE_STREAMING_ENGINE_LABEL
     }
 
+    /// Install the CoreAudio callback that fans PCM out to the main session
+    /// (if any) and every active channel subscriber.
+    fn install_pcm_fanout_callback(&mut self) {
+        let main_sender = Arc::clone(&self.main_audio_sender);
+        let channel_subscribers = Arc::clone(&self.channel_subscribers);
+        let level_callback = self.level_callback.clone();
+        let captured_samples = Arc::clone(&self.captured_samples);
+        let dropped = Arc::clone(&self.dropped_chunks);
+        self.recorder.set_callback(Box::new(move |data| {
+            captured_samples.fetch_add(data.len() as u64, Ordering::Relaxed);
+            if let Some(ref level_cb) = level_callback {
+                level_cb(block_rms(data));
+            }
+            if let Ok(lock) = main_sender.lock() {
+                if let Some(ref tx) = *lock {
+                    if let Err(_e) = tx.try_send(data.to_vec()) {
+                        let n = dropped.fetch_add(1, Ordering::Relaxed);
+                        if n == 0 || (n + 1).is_multiple_of(50) {
+                            tracing::warn!(
+                                "Audio callback: main channel full, dropped {} chunk(s)",
+                                n + 1
+                            );
+                        }
+                    }
+                }
+            }
+            if let Ok(subs) = channel_subscribers.lock() {
+                for sub in subs.iter() {
+                    if let Err(_e) = sub.sender.try_send(data.to_vec()) {
+                        let n = sub.dropped.fetch_add(1, Ordering::Relaxed);
+                        if n == 0 || (n + 1).is_multiple_of(50) {
+                            tracing::warn!(
+                                "Audio callback: channel subscriber dropped {} chunk(s)",
+                                n + 1
+                            );
+                        }
+                    }
+                }
+            }
+        }));
+    }
+
     /// Start recording with the new event-based pipeline.
     ///
     /// Uses `transcription_session` which emits `EngineEvent`s to the configured
@@ -557,23 +629,11 @@ impl StreamingRecorder {
         // Create channel for audio chunks. This is intentionally larger than a
         // normal live queue: cold STT initialization happens behind this buffer.
         let (tx, rx) = mpsc::channel::<Vec<f32>>(AUDIO_BACKLOG_CHUNKS);
-
-        // Setup callback to send audio data
-        let dropped = Arc::clone(&self.dropped_chunks);
-        let level_callback = self.level_callback.clone();
-        let captured_samples = Arc::clone(&self.captured_samples);
-        self.recorder.set_callback(Box::new(move |data| {
-            captured_samples.fetch_add(data.len() as u64, Ordering::Relaxed);
-            if let Some(ref level_cb) = level_callback {
-                level_cb(block_rms(data));
-            }
-            if let Err(_e) = tx.try_send(data.to_vec()) {
-                let n = dropped.fetch_add(1, Ordering::Relaxed);
-                if n == 0 || (n + 1).is_multiple_of(50) {
-                    tracing::warn!("Audio callback: channel full, dropped {} chunk(s)", n + 1);
-                }
-            }
-        }));
+        *self
+            .main_audio_sender
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx);
+        self.install_pcm_fanout_callback();
 
         // Start actual audio stream
         self.recorder.start().await?;
@@ -640,6 +700,138 @@ impl StreamingRecorder {
             .await;
         }));
 
+        Ok(())
+    }
+
+    /// Start a non-take agent channel capture session.
+    ///
+    /// The channel rides the same physical capture as a take but runs its own
+    /// ledger, reducer, and event sink. The capture epoch is fixed to `1`; the
+    /// take epoch counter is never touched. If the recorder is not already
+    /// streaming, this opens it; otherwise the channel attaches to the active
+    /// stream and receives PCM fan-out.
+    pub async fn start_channel_capture_session(
+        &mut self,
+        session_id: String,
+        runtime_settings: Arc<RuntimeSettingsSnapshot>,
+        event_sink: Arc<dyn EventSink>,
+        language: Option<String>,
+    ) -> Result<ChannelCaptureSession> {
+        let (sub_tx, sub_rx) = mpsc::channel::<Vec<f32>>(AUDIO_BACKLOG_CHUNKS);
+        let subscriber = Arc::new(ChannelCaptureSubscriber {
+            sender: sub_tx,
+            dropped: Arc::new(AtomicU64::new(0)),
+        });
+        self.channel_subscribers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(Arc::clone(&subscriber));
+
+        let opened_physical_capture = Arc::new(AtomicBool::new(false));
+        let opened_flag = Arc::clone(&opened_physical_capture);
+
+        // Ensure the fan-out callback is installed before the recorder starts.
+        self.install_pcm_fanout_callback();
+
+        let actual_sample_rate;
+        let capture_device_name;
+        if !self.recorder.is_active() {
+            self.recorder.start().await?;
+            opened_flag.store(true, Ordering::SeqCst);
+            actual_sample_rate = self.recorder.actual_sample_rate();
+            capture_device_name = self.recorder.last_input_device().map(str::to_owned);
+            crate::audio::capture_receipt::publish_open_capture_path(
+                crate::audio::capture_receipt::CapturePathMeta::from_open_path(
+                    actual_sample_rate,
+                    self.recorder.last_native_channels(),
+                    self.recorder.last_input_device(),
+                ),
+            );
+            if actual_sample_rate != self.sample_rate {
+                info!(
+                    "StreamingRecorder sample_rate updated: config={}Hz -> actual={}Hz",
+                    self.sample_rate, actual_sample_rate
+                );
+                self.sample_rate = actual_sample_rate;
+            }
+        } else {
+            actual_sample_rate = self.sample_rate;
+            capture_device_name = self.recorder.last_input_device().map(str::to_owned);
+        }
+
+        let acoustic_ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let (layer1, _decision_receipt) = crate::asr_session::layer1_decision(&runtime_settings);
+        let handle = tokio::spawn(async move {
+            transcription_session(
+                sub_rx,
+                event_sink,
+                SessionConfig {
+                    session_id,
+                    capture_epoch: 1,
+                    runtime_settings,
+                    live_formatting_agent: None,
+                    acoustic_ledger,
+                    sample_rate: actual_sample_rate,
+                    capture_device_name,
+                    language,
+                    stream_log_path: None,
+                    utterance_silence_sec: None,
+                    capture_turn: CaptureTurnIntent::HandsFree,
+                    layer1,
+                    lifecycle_events: None,
+                    terminal_audio: None,
+                    last_window_closed: None,
+                },
+            )
+            .await;
+        });
+
+        Ok(ChannelCaptureSession {
+            subscriber,
+            handle,
+            opened_physical_capture,
+        })
+    }
+
+    /// Stop one agent channel capture session and release its subscriber.
+    ///
+    /// If this session opened the physical capture and no other session is
+    /// active, the recorder is stopped. The returned [`CaptureStopFailure`]
+    /// only reports channel-specific drain failures; caller-owned delivery
+    /// state is unchanged.
+    pub async fn stop_channel_capture_session(
+        &mut self,
+        session: ChannelCaptureSession,
+    ) -> Result<()> {
+        // Remove subscriber first so the callback stops feeding it.
+        {
+            let mut subs = self
+                .channel_subscribers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            subs.retain(|s| !Arc::ptr_eq(s, &session.subscriber));
+        }
+        // Dropping the sender ends the channel transcription task cleanly.
+        drop(session.subscriber);
+        session
+            .handle
+            .await
+            .context("channel transcription task failed")?;
+
+        let main_active = self
+            .main_audio_sender
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some();
+        let any_channels = !self
+            .channel_subscribers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty();
+
+        if session.opened_physical_capture.load(Ordering::SeqCst) && !main_active && !any_channels {
+            let _ = self.recorder.stop().await?;
+        }
         Ok(())
     }
 
@@ -748,6 +940,10 @@ impl StreamingRecorder {
             }
         }
         self.event_sink = None;
+        *self
+            .main_audio_sender
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
 
         // No early return may bypass the owned shutdown tail. Archive failure
         // is primary when both operations failed; never invent a saved path.

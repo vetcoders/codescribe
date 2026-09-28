@@ -24,6 +24,8 @@
 
 /// Admission readiness: the precondition of beginning a product recording.
 pub mod admission;
+/// Fn+digit agent channels: non-take capture consumers with audience-tagged output.
+mod agent_channel;
 /// Per-session assistive context bag (selection, app, images).
 mod context_bucket;
 /// One destination throne: intent → Agent / Orient / paste. Focus is not king.
@@ -1306,6 +1308,12 @@ pub struct RecordingController {
 
     /// Broadcast stream for IPC subscribers.
     event_broadcast: broadcast::Sender<IpcEvent>,
+
+    /// Active Fn+digit agent channels keyed by digit.
+    ///
+    /// Lock order: acquire this mutex before the recorder mutex; the channel
+    /// stop path needs both and this order prevents inversion.
+    agent_channels: Arc<Mutex<std::collections::HashMap<u8, agent_channel::AgentChannel>>>,
 }
 
 /// The shared handles one conversation audio loop moves into its task.
@@ -1525,6 +1533,7 @@ impl RecordingController {
             conversation_generation: Arc::new(AtomicU64::new(0)),
             conversation_task: Arc::new(Mutex::new(None)),
             event_broadcast,
+            agent_channels: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -4167,6 +4176,23 @@ impl RecordingController {
         Ok(())
     }
 
+    /// True when no agent channel blocks a single-capture surface such as
+    /// conversation mode or energy calibration.
+    ///
+    /// Lock order: this method acquires `agent_channels` only; callers that
+    /// also need the recorder lock must acquire `agent_channels` first.
+    async fn ensure_exclusive_capture_available(&self) -> Result<()> {
+        let channels = self.agent_channels.lock().await;
+        if channels.is_empty() {
+            Ok(())
+        } else {
+            let digits: Vec<u8> = channels.keys().copied().collect();
+            Err(anyhow::anyhow!(
+                "capture admission refused: agent channels active on digits {digits:?}"
+            ))
+        }
+    }
+
     /// Start conversation mode (full-duplex Moshi)
     ///
     /// Initializes ConversationEngine and AudioPlayer, then starts the audio
@@ -4180,6 +4206,7 @@ impl RecordingController {
                 "conversation capture admission unavailable"
             ));
         }
+        self.ensure_exclusive_capture_available().await?;
         info!("Starting conversation mode (Moshi full-duplex)");
 
         {
@@ -4829,6 +4856,7 @@ impl RecordingController {
                 // The capture-time target predates the overlay caret. A true
                 // self-canvas fact exists only at the explicit defer click.
                 latched_target_is_self: false,
+                audience: None,
             })
             .map(Arc::new);
             // Install the Bus before the recorder starts: from here every exit
@@ -5143,6 +5171,7 @@ impl RecordingController {
             // The capture-time target predates the overlay caret. A true
             // self-canvas fact exists only at the explicit defer click.
             latched_target_is_self: false,
+            audience: None,
         })
         .map(Arc::new);
 
@@ -6147,6 +6176,7 @@ mod terminal_delivery_target_falsifiers {
                     mode: TranscriptMode::Dictation,
                     has_latched_target: false,
                     latched_target_is_self: false,
+                    audience: None,
                 },
                 path.clone(),
                 None,
@@ -7740,6 +7770,7 @@ mod refusal_recovery_tests {
                     mode: TranscriptMode::Agent,
                     has_latched_target: true,
                     latched_target_is_self: false,
+                    audience: None,
                 },
                 dir.path().join("bus.jsonl"),
                 None,
@@ -8412,6 +8443,7 @@ mod owned_capture_settlement_tests {
                 mode: TranscriptMode::Agent,
                 has_latched_target: false,
                 latched_target_is_self: false,
+                audience: None,
             },
             dir.path().join("events.jsonl"),
             None,
@@ -9953,6 +9985,7 @@ mod capture_failure_recovery_tests {
                 mode: TranscriptMode::Dictation,
                 has_latched_target: false,
                 latched_target_is_self: false,
+                audience: None,
             },
             bus_path.clone(),
             None,

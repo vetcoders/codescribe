@@ -267,6 +267,7 @@ fn publish_through_reducer_and_bus(
         TranscriptSession {
             session_id: SESSION_ID.to_string(),
             mode: TranscriptMode::Dictation,
+            audience: None,
             has_latched_target: false,
             latched_target_is_self: false,
         },

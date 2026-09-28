@@ -515,6 +515,16 @@ def consider(
     if status != SEALED and not (drafts and status in LIVE_STATUSES):
         return None
     text = event.get("text") or ""
+    audience = event.get("audience")
+    if isinstance(audience, str):
+        if audience == "*":
+            payload = slim(event, "*")
+            payload["routing_match"] = "audience"
+            return payload
+        if name and audience.casefold() == name.casefold():
+            payload = slim(event, name.casefold())
+            payload["routing_match"] = "audience"
+            return payload
     # Destination recognition never rewrites the transcript. Fuzzy routing
     # requires complete registered-recipient discovery and a unique result.
     addressable = text
