@@ -8,27 +8,45 @@ struct OverlayMiniTooltip: ViewModifier {
   @State private var hovered = false
 
   func body(content: Content) -> some View {
-    content
-      .onHover { hovered = $0 }
-      .overlay(alignment: .top) {
-        if hovered && enabled {
-          Text(title)
-            .font(.system(size: 10, weight: .medium))
-            .foregroundStyle(palette.primaryText.color)
-            .lineLimit(1)
-            .fixedSize()
-            .padding(.horizontal, 7)
-            .padding(.vertical, 4)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
-            .overlay {
-              RoundedRectangle(cornerRadius: 6).strokeBorder(palette.border.color)
-            }
-            .alignmentGuide(.top) { $0[.bottom] + 6 }
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-        }
+    OverlayTooltipLayout {
+      content
+        .onHover { hovered = $0 }
+      if hovered && enabled {
+        Text(title)
+          .font(.system(size: 10, weight: .medium))
+          .foregroundStyle(palette.primaryText.color)
+          .lineLimit(1)
+          .fixedSize()
+          .padding(.horizontal, 7)
+          .padding(.vertical, 4)
+          .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+          .overlay {
+            RoundedRectangle(cornerRadius: 6).strokeBorder(palette.border.color)
+          }
+          .allowsHitTesting(false)
+          .accessibilityHidden(true)
       }
-      .zIndex(hovered && enabled ? 1 : 0)
+    }
+    .zIndex(hovered && enabled ? 1 : 0)
+  }
+}
+
+/// Keep the hint entirely above its anchor, independent of alignment guides
+/// propagated by the surrounding glass. The gap also clears the rail padding.
+struct OverlayTooltipLayout: Layout {
+  func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+    subviews[0].sizeThatFits(proposal)
+  }
+
+  func placeSubviews(
+    in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
+  ) {
+    subviews[0].place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
+    if subviews.count > 1 {
+      subviews[1].place(
+        at: CGPoint(x: bounds.midX, y: bounds.minY - 12),
+        anchor: .bottom, proposal: .unspecified)
+    }
   }
 }
 

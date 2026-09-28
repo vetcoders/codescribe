@@ -84,7 +84,12 @@ final class OverlayChromeV3Tests: XCTestCase {
       let rect = root.convert(scroll.bounds, from: scroll)
       XCTAssertGreaterThan(rect.width, width - 65)
       XCTAssertGreaterThan(rect.height, 100)
-      XCTAssertGreaterThanOrEqual(rect.minY, 24)
+      XCTAssertEqual(rect.minY, root.bounds.minY, accuracy: 2)
+      XCTAssertEqual(rect.maxY, root.bounds.maxY, accuracy: 2)
+      XCTAssertGreaterThan(scroll.contentInsets.top, 30)
+      XCTAssertGreaterThan(scroll.contentInsets.bottom, 30)
+      XCTAssertFalse(scroll.drawsBackground)
+      XCTAssertFalse(text.drawsBackground)
       XCTAssertLessThanOrEqual(rect.maxX, root.bounds.maxX)
     }
   }
@@ -102,11 +107,18 @@ final class OverlayChromeV3Tests: XCTestCase {
       )
       root.frame = NSRect(x: 0, y: 0, width: 320, height: 200)
       root.layoutSubtreeIfNeeded()
-      let effect = try XCTUnwrap(descendant(OverlayDesktopEffectView.self, in: root))
-      XCTAssertEqual(effect.blendingMode, .behindWindow)
-      XCTAssertEqual(effect.state, .active)
-      XCTAssertFalse(effect.isOpaque)
-      XCTAssertNil(effect.hitTest(NSPoint(x: 100, y: 100)))
+      if #available(macOS 26.0, *) {
+        let effect = try XCTUnwrap(descendant(OverlayClearGlassView.self, in: root))
+        XCTAssertEqual(effect.style, .clear)
+        XCTAssertNil(effect.tintColor)
+        XCTAssertNil(effect.hitTest(NSPoint(x: 100, y: 100)))
+      } else {
+        let effect = try XCTUnwrap(descendant(OverlayDesktopEffectView.self, in: root))
+        XCTAssertEqual(effect.blendingMode, .behindWindow)
+        XCTAssertEqual(effect.state, .active)
+        XCTAssertFalse(effect.isOpaque)
+        XCTAssertNil(effect.hitTest(NSPoint(x: 100, y: 100)))
+      }
     }
   }
 
@@ -117,5 +129,8 @@ final class OverlayChromeV3Tests: XCTestCase {
     root.frame = NSRect(x: 0, y: 0, width: 320, height: 200)
     root.layoutSubtreeIfNeeded()
     XCTAssertNil(descendant(OverlayDesktopEffectView.self, in: root))
+    if #available(macOS 26.0, *) {
+      XCTAssertNil(descendant(OverlayClearGlassView.self, in: root))
+    }
   }
 }

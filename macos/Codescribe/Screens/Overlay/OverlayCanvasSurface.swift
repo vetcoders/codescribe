@@ -36,9 +36,10 @@ struct OverlayCanvasBackdrop: View {
     ZStack {
       if reduceTransparency {
         Rectangle().fill(palette.desktopBackground.color)
+      } else if #available(macOS 26.0, *) {
+        OverlayClearGlass()
       } else {
         OverlayDesktopMaterial()
-        Rectangle().fill(palette.surfaceTint.color)
       }
     }
   }
@@ -59,5 +60,23 @@ private struct OverlayDesktopMaterial: NSViewRepresentable {
 }
 
 final class OverlayDesktopEffectView: NSVisualEffectView {
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+/// Native clear glass samples the desktop without an extra tint or HUD scrim.
+@available(macOS 26.0, *)
+private struct OverlayClearGlass: NSViewRepresentable {
+  func makeNSView(context: Context) -> OverlayClearGlassView {
+    let view = OverlayClearGlassView()
+    view.style = .clear
+    view.cornerRadius = CSRadius.window
+    return view
+  }
+
+  func updateNSView(_ nsView: OverlayClearGlassView, context: Context) {}
+}
+
+@available(macOS 26.0, *)
+final class OverlayClearGlassView: NSGlassEffectView {
   override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }

@@ -6,7 +6,7 @@ import SwiftUI
 // Layout (top → bottom):
 //   header   brand · ONE projection phase · compact waveform · timer
 //   body     transcript is the product surface (listening / formatted / terminal)
-//   actions and review status in vertical flow below the transcript
+//   header and footer float above the full-height transcript viewport
 //
 // Removed on purpose: duplicate RECORDING/modeMeta row, full bottom Finish/Close
 // action layer, and decorative body-top waveform competing with words.
@@ -48,6 +48,8 @@ struct DictationOverlayView: View {
   @FocusState private var actionsFocused: Bool
   @State private var pointerInsideOverlay = false
   @State private var overlayVisible = false
+  @State private var headerHeight: CGFloat = 48
+  @State private var footerHeight: CGFloat = 64
   @Bindable var state: OverlayState
 
   // Geometry constants local to this surface. The window is user-resizable;
@@ -123,141 +125,159 @@ struct DictationOverlayView: View {
   }
 
   private func canvasStack<IntentRail: View>(_ intentRail: IntentRail) -> some View {
-    VStack(spacing: 0) {
-      header
-      hairline(0.06)
-      if !state.isCollapsed,
-        let label = OverlayActionsPresentation.finishingLabel(
-          mode: state.mode, transcribing: state.transcribing, terminal: state.terminal)
-      {
-        Text(label)
-          .csMono(10, .medium)
-          .foregroundStyle(palette.processingStatus.color)
-          .accessibilityIdentifier("overlay-finishing")
-          .allowsHitTesting(false)
-      }
+    ZStack {
       bodySection
         .frame(height: state.isCollapsed ? 0 : nil)
-        .clipped()
         .opacity(state.isCollapsed ? 0 : 1)
         .allowsHitTesting(!state.isCollapsed)
         .accessibilityHidden(state.isCollapsed)
-      if !state.isCollapsed {
-        VStack(spacing: CSSpace.sm) {
-          HStack(spacing: 6) {
-            OverlayEvidenceChip(
-              state: state, palette: palette, actionsOpen: actions.phase == .open,
-              glassNamespace: bottomChromeNamespace
-            )
-            .layoutPriority(-1)
-            HStack(spacing: 2) {
-              Button {
-                actions.toggle()
-              } label: {
-                HStack(spacing: 4) {
-                  Image(systemName: OverlayControlSymbols.actions)
+      VStack(spacing: 0) {
+        header
+        hairline(0.06)
+        if !state.isCollapsed,
+          let label = OverlayActionsPresentation.finishingLabel(
+            mode: state.mode, transcribing: state.transcribing, terminal: state.terminal)
+        {
+          Text(label)
+            .csMono(10, .medium)
+            .foregroundStyle(palette.processingStatus.color)
+            .accessibilityIdentifier("overlay-finishing")
+            .allowsHitTesting(false)
+        }
+      }
+      .onGeometryChange(for: CGFloat.self) {
+        $0.size.height
+      } action: {
+        headerHeight = $0
+      }
+      .frame(maxHeight: .infinity, alignment: .top)
+      VStack(spacing: 0) {
+        if !state.isCollapsed {
+          VStack(spacing: CSSpace.sm) {
+            transcriptStatus
+              .padding(.horizontal, 20)
+            HStack(spacing: 6) {
+              OverlayEvidenceChip(
+                state: state, palette: palette, actionsOpen: actions.phase == .open,
+                glassNamespace: bottomChromeNamespace
+              )
+              .layoutPriority(-1)
+              HStack(spacing: 2) {
+                Button {
+                  actions.toggle()
+                } label: {
+                  HStack(spacing: 4) {
+                    Image(systemName: OverlayControlSymbols.actions)
 
-                }
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(palette.primaryText.color)
-                .padding(.horizontal, actions.phase == .open ? 0 : 10)
-                .frame(
-                  minWidth: actions.phase == .open
-                    ? nil : OverlayResizeChrome.actionsWidth(narrow: true)
-                )
-                .frame(height: OverlayResizeChrome.actionsHeight)
-                .fixedSize(horizontal: true, vertical: true)
-                .contentShape(Capsule())
-                .overlay(alignment: .topTrailing) {
-                  if state.hasRecoverableSupersededWork && actions.phase != .open {
-                    Circle()
-                      .fill(palette.processingStatus.color)
-                      .frame(width: 5, height: 5)
-                      .accessibilityHidden(true)
-                      .accessibilityIdentifier("overlay-retained-work-badge")
+                  }
+                  .font(.system(size: 11, weight: .medium))
+                  .foregroundStyle(palette.primaryText.color)
+                  .padding(.horizontal, actions.phase == .open ? 0 : 10)
+                  .frame(
+                    minWidth: actions.phase == .open
+                      ? nil : OverlayResizeChrome.actionsWidth(narrow: true)
+                  )
+                  .frame(height: OverlayResizeChrome.actionsHeight)
+                  .fixedSize(horizontal: true, vertical: true)
+                  .contentShape(Capsule())
+                  .overlay(alignment: .topTrailing) {
+                    if state.hasRecoverableSupersededWork && actions.phase != .open {
+                      Circle()
+                        .fill(palette.processingStatus.color)
+                        .frame(width: 5, height: 5)
+                        .accessibilityHidden(true)
+                        .accessibilityIdentifier("overlay-retained-work-badge")
+                    }
                   }
                 }
+                .buttonStyle(.plain)
+                .focusable()
+                .focused($actionsFocused)
+                .accessibilityLabel("Actions")
+                .accessibilityValue(actions.phase == .open ? "Open" : "Collapsed")
+                .accessibilityHint(
+                  state.hasRecoverableSupersededWork
+                    ? "Previous take available. Open actions to copy or discard it."
+                    : "Show or hide transcript tools"
+                )
+                .accessibilityIdentifier("overlay-tools-handle")
+                .modifier(OverlayMiniTooltip(title: "Actions", palette: palette))
+                if actions.phase == .open {
+                  intentRail
+                }
               }
-              .buttonStyle(.plain)
-              .focusable()
-              .focused($actionsFocused)
-              .accessibilityLabel("Actions")
-              .accessibilityValue(actions.phase == .open ? "Open" : "Collapsed")
-              .accessibilityHint(
-                state.hasRecoverableSupersededWork
-                  ? "Previous take available. Open actions to copy or discard it."
-                  : "Show or hide transcript tools"
+              .padding(.vertical, actions.phase == .open ? 2 : 0)
+              .padding(.horizontal, actions.phase == .open ? 10 : 0)
+              .fixedSize(horizontal: false, vertical: true)
+              .modifier(
+                OverlayActionsSurface(palette: palette, glassNamespace: bottomChromeNamespace)
               )
-              .accessibilityIdentifier("overlay-tools-handle")
-              .modifier(OverlayMiniTooltip(title: "Actions", palette: palette))
-              if actions.phase == .open {
-                intentRail
+              .contentShape(Capsule())
+              .onHover { actions.pointerChanged($0) }
+              .onChange(of: actionsFocused) { _, focused in
+                actions.focusChanged(focused)
+              }
+              .onExitCommand { actions.dismiss() }
+              .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: actions.phase)
+              .transaction { transaction in
+                if reduceMotion {
+                  transaction.animation = nil
+                  transaction.disablesAnimations = true
+                }
+              }
+              .task(id: actions.hideDeadline) {
+                guard let deadline = actions.hideDeadline else { return }
+                do {
+                  try await ContinuousClock().sleep(until: deadline)
+                } catch { return }
+                guard !Task.isCancelled else { return }
+                actions.expire()
               }
             }
-            .padding(.vertical, actions.phase == .open ? 2 : 0)
-            .padding(.horizontal, actions.phase == .open ? 10 : 0)
-            .fixedSize(horizontal: false, vertical: true)
-            .modifier(
-              OverlayActionsSurface(palette: palette, glassNamespace: bottomChromeNamespace)
-            )
-            .contentShape(Capsule())
-            .onHover { actions.pointerChanged($0) }
-            .onChange(of: actionsFocused) { _, focused in
-              actions.focusChanged(focused)
+            // Glass is confined to each capsule, before the bar's clear margins.
+            // The AppKit edge intercept and existing header/body drag regions stay in place.
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.horizontal, OverlayResizeChrome.actionsBottomInset)
+            if let notice = state.toast {
+              Text(notice)
+                .csMono(10, .medium)
+                .lineLimit(2)
+                .padding(.horizontal, 20)
+                .accessibilityIdentifier("overlay-footer-notice")
             }
-            .onExitCommand { actions.dismiss() }
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: actions.phase)
-            .transaction { transaction in
-              if reduceMotion {
-                transaction.animation = nil
-                transaction.disablesAnimations = true
-              }
-            }
-            .task(id: actions.hideDeadline) {
-              guard let deadline = actions.hideDeadline else { return }
-              do {
-                try await ContinuousClock().sleep(until: deadline)
-              } catch { return }
-              guard !Task.isCancelled else { return }
-              actions.expire()
+            if bottomChromeSlots.showsCoverageWarning {
+              OverlayCoverageStatus(
+                palette: palette, canRetranscribe: state.terminal && state.canRetranscribe,
+                cloudConfigured: state.cloudRetranscribeConfigured,
+                diagnosticNotice: showsDiagnostics ? state.coverageRefusalNotice : nil,
+                diagnosticDetail: showsDiagnostics ? state.coverageRefusalDetail : nil,
+                onRetranscribe: { state.retranscribe(pass: $0) }
+              )
             }
           }
-          // Glass is confined to each capsule, before the bar's clear margins.
-          // The AppKit edge intercept and existing header/body drag regions stay in place.
-          .frame(maxWidth: .infinity, alignment: .center)
-          .padding(.horizontal, OverlayResizeChrome.actionsBottomInset)
-          if let notice = state.toast {
-            Text(notice)
-              .csMono(10, .medium)
-              .lineLimit(2)
-              .padding(.horizontal, 20)
-              .accessibilityIdentifier("overlay-footer-notice")
-          }
-          if bottomChromeSlots.showsCoverageWarning {
-            OverlayCoverageStatus(
-              palette: palette, canRetranscribe: state.terminal && state.canRetranscribe,
-              cloudConfigured: state.cloudRetranscribeConfigured,
-              diagnosticNotice: showsDiagnostics ? state.coverageRefusalNotice : nil,
-              diagnosticDetail: showsDiagnostics ? state.coverageRefusalDetail : nil,
-              onRetranscribe: { state.retranscribe(pass: $0) }
-            )
-          }
+          .padding(.bottom, OverlayResizeChrome.actionsBottomInset)
+        } else if let label = OverlayActionsPresentation.finishingLabel(
+          mode: state.mode, transcribing: state.transcribing, terminal: state.terminal)
+        {
+          // The folded bar keeps its height; the passive wait label uses its
+          // bottom center without touching the header timer or capture state.
+          Text(label)
+            .csMono(10, .medium)
+            .foregroundStyle(palette.processingStatus.color)
+            .padding(.horizontal, 4)
+            .background(palette.desktopBackground.color, in: Capsule())
+            .padding(.bottom, 2)
+            .accessibilityIdentifier("overlay-finishing")
+            .allowsHitTesting(false)
         }
-        .padding(.bottom, OverlayResizeChrome.actionsBottomInset)
-      } else if let label = OverlayActionsPresentation.finishingLabel(
-        mode: state.mode, transcribing: state.transcribing, terminal: state.terminal)
-      {
-        // The folded bar keeps its height; the passive wait label uses its
-        // bottom center without touching the header timer or capture state.
-        Text(label)
-          .csMono(10, .medium)
-          .foregroundStyle(palette.processingStatus.color)
-          .padding(.horizontal, 4)
-          .background(palette.desktopBackground.color, in: Capsule())
-          .padding(.bottom, 2)
-          .accessibilityIdentifier("overlay-finishing")
-          .allowsHitTesting(false)
       }
+      .modifier(OverlayHeaderChrome(palette: palette))
+      .onGeometryChange(for: CGFloat.self) {
+        $0.size.height
+      } action: {
+        footerHeight = $0
+      }
+      .frame(maxHeight: .infinity, alignment: .bottom)
     }
     .overlay(alignment: .bottom) {
       if !state.isCollapsed {
@@ -508,40 +528,33 @@ struct DictationOverlayView: View {
   // MARK: Body
 
   private var bodySection: some View {
-    VStack(alignment: .leading, spacing: CSSpace.sm) {
-      // One permanent transcript surface. Status and lifecycle never replace
-      // its contents; the engine may replace them only via its projection.
-      transcriptScroll
-      if let status = state.presentationStatus {
-        presentationStatusBody(status)
+    transcriptScroll
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+      .padding(.horizontal, 20)
+      .background { OverlayWindowDragRegion(identifier: "overlay-body-drag-region") }
+  }
+
+  @ViewBuilder
+  private var transcriptStatus: some View {
+    if let status = state.presentationStatus {
+      presentationStatusBody(status)
+        .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 8)))
+    } else {
+      switch state.mode {
+      case .listening, .finalizing:
+        EmptyView()
+      case .formatted:
+        revisionStatusRow
+      case .coverageRefused:
+        revisionStatusRow
+      case .noSpeech:
+        noSpeechBody
           .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 8)))
-      } else {
-        switch state.mode {
-        case .listening, .finalizing:
-          EmptyView()
-        case .formatted:
-          revisionStatusRow
-        case .coverageRefused:
-          revisionStatusRow
-        case .noSpeech:
-          noSpeechBody
-            .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 8)))
-        case .error:
-          errorBody
-            .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 8)))
-        }
+      case .error:
+        errorBody
+          .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 8)))
       }
     }
-    .frame(
-      maxWidth: .infinity, minHeight: bodyMinHeight, maxHeight: .infinity, alignment: .topLeading
-    )
-    .padding(.horizontal, 20)
-    .padding(.top, 4)
-    .padding(.bottom, 10)
-    .background { OverlayWindowDragRegion(identifier: "overlay-body-drag-region") }
-    // Transcript content stays inside the body during live resize.
-    .clipped()
-    .animation(reduceMotion ? nil : CSMotion.floatIn, value: state.mode)
   }
 
   /// Native live transcript: follows the newest words until the user clicks or
@@ -555,6 +568,8 @@ struct DictationOverlayView: View {
         text: state.canvasText,
         isEditable: state.isTranscriptEditable,
         appearance: palette.appearance,
+        contentInsets: NSEdgeInsets(
+          top: headerHeight + 4, left: 0, bottom: footerHeight + 10, right: 0),
         onEditingChanged: { editing in
           if editing { state.beginTranscriptEdit() } else { state.endTranscriptEdit() }
         },
