@@ -1,8 +1,10 @@
+import AppKit
 import SwiftUI
 
 /// Appearance-aware physical sheet. Window interaction is owned by explicit
 /// inert regions in `DictationOverlayView`, not by a full-sheet AppKit layer.
 struct OverlayCanvasSurface<Content: View>: View {
+  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
   let palette: OverlayAppearancePalette
   @ViewBuilder let content: Content
 
@@ -10,8 +12,12 @@ struct OverlayCanvasSurface<Content: View>: View {
     content
       .background {
         ZStack {
-          Rectangle().fill(.ultraThinMaterial)
-          Rectangle().fill(palette.surfaceTint.color)
+          if reduceTransparency {
+            Rectangle().fill(palette.desktopBackground.color)
+          } else {
+            OverlayDesktopMaterial()
+            Rectangle().fill(palette.surfaceTint.color)
+          }
         }
       }
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous))
@@ -27,4 +33,22 @@ struct OverlayCanvasSurface<Content: View>: View {
         y: 9
       )
   }
+}
+
+/// Sample the desktop behind the non-activating panel, not its empty content.
+/// Keep the material active while the user types into another application.
+private struct OverlayDesktopMaterial: NSViewRepresentable {
+  func makeNSView(context: Context) -> OverlayDesktopEffectView {
+    let view = OverlayDesktopEffectView()
+    view.material = .hudWindow
+    view.blendingMode = .behindWindow
+    view.state = .active
+    return view
+  }
+
+  func updateNSView(_ nsView: OverlayDesktopEffectView, context: Context) {}
+}
+
+final class OverlayDesktopEffectView: NSVisualEffectView {
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }

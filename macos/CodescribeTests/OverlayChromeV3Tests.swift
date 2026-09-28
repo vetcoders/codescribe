@@ -92,4 +92,35 @@ final class OverlayChromeV3Tests: XCTestCase {
     if let view = root as? T { return view }
     return root.subviews.lazy.compactMap { self.descendant(type, in: $0) }.first
   }
+
+  func testCanvasSamplesDesktopWithoutInterceptingInput() throws {
+    for scheme in [ColorScheme.light, .dark] {
+      let root = NSHostingView(
+        rootView: OverlayCanvasSurface(palette: .resolve(scheme)) {
+          Text("Transcript").frame(width: 320, height: 200)
+        }
+        .environment(\.colorScheme, scheme)
+        .environment(\.accessibilityReduceTransparency, false)
+      )
+      root.frame = NSRect(x: 0, y: 0, width: 320, height: 200)
+      root.layoutSubtreeIfNeeded()
+      let effect = try XCTUnwrap(descendant(OverlayDesktopEffectView.self, in: root))
+      XCTAssertEqual(effect.blendingMode, .behindWindow)
+      XCTAssertEqual(effect.state, .active)
+      XCTAssertFalse(effect.isOpaque)
+      XCTAssertNil(effect.hitTest(NSPoint(x: 100, y: 100)))
+    }
+  }
+
+  func testReduceTransparencyRemovesDesktopSampling() {
+    let root = NSHostingView(
+      rootView: OverlayCanvasSurface(palette: .dark) {
+        Text("Transcript").frame(width: 320, height: 200)
+      }
+      .environment(\.accessibilityReduceTransparency, true)
+    )
+    root.frame = NSRect(x: 0, y: 0, width: 320, height: 200)
+    root.layoutSubtreeIfNeeded()
+    XCTAssertNil(descendant(OverlayDesktopEffectView.self, in: root))
+  }
 }
