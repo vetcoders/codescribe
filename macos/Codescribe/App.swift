@@ -108,7 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private static let showAgentNotification = Notification.Name("com.vetcoders.codescribe.showAgent")
   private static let notificationObject = Bundle.main.bundleIdentifier ?? "com.vetcoders.codescribe"
 
-  private static let helpURL = URL(string: "https://codescribe.vetcoders.io/")!
+  private static let helpURL = URL(string: "https://github.com/vetcoders/codescribe#readme")!
   private static let privacyURL = URL(string: "https://codescribe.vetcoders.io/privacy")!
   private static let termsURL = URL(string: "https://codescribe.vetcoders.io/terms")!
 
