@@ -96,11 +96,8 @@ final class OverlayChromeV3Tests: XCTestCase {
   func testCanvasSamplesDesktopWithoutInterceptingInput() throws {
     for scheme in [ColorScheme.light, .dark] {
       let root = NSHostingView(
-        rootView: OverlayCanvasSurface(palette: .resolve(scheme)) {
-          Text("Transcript").frame(width: 320, height: 200)
-        }
-        .environment(\.colorScheme, scheme)
-        .environment(\.accessibilityReduceTransparency, false)
+        rootView: OverlayCanvasBackdrop(palette: .resolve(scheme), reduceTransparency: false)
+          .environment(\.colorScheme, scheme)
       )
       root.frame = NSRect(x: 0, y: 0, width: 320, height: 200)
       root.layoutSubtreeIfNeeded()
@@ -114,10 +111,7 @@ final class OverlayChromeV3Tests: XCTestCase {
 
   func testReduceTransparencyRemovesDesktopSampling() {
     let root = NSHostingView(
-      rootView: OverlayCanvasSurface(palette: .dark) {
-        Text("Transcript").frame(width: 320, height: 200)
-      }
-      .environment(\.accessibilityReduceTransparency, true)
+      rootView: OverlayCanvasBackdrop(palette: .dark, reduceTransparency: true)
     )
     root.frame = NSRect(x: 0, y: 0, width: 320, height: 200)
     root.layoutSubtreeIfNeeded()

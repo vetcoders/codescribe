@@ -11,14 +11,7 @@ struct OverlayCanvasSurface<Content: View>: View {
   var body: some View {
     content
       .background {
-        ZStack {
-          if reduceTransparency {
-            Rectangle().fill(palette.desktopBackground.color)
-          } else {
-            OverlayDesktopMaterial()
-            Rectangle().fill(palette.surfaceTint.color)
-          }
-        }
+        OverlayCanvasBackdrop(palette: palette, reduceTransparency: reduceTransparency)
       }
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous))
       .overlay {
@@ -32,6 +25,22 @@ struct OverlayCanvasSurface<Content: View>: View {
         x: 0,
         y: 9
       )
+  }
+}
+
+struct OverlayCanvasBackdrop: View {
+  let palette: OverlayAppearancePalette
+  let reduceTransparency: Bool
+
+  var body: some View {
+    ZStack {
+      if reduceTransparency {
+        Rectangle().fill(palette.desktopBackground.color)
+      } else {
+        OverlayDesktopMaterial()
+        Rectangle().fill(palette.surfaceTint.color)
+      }
+    }
   }
 }
 
