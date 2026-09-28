@@ -779,7 +779,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         of: header, from: "Button {\n          state.relayIntent(.close)",
         to: "Text(\"codescribe\")")
       XCTAssertTrue(close.contains("ModeDot("))
-      XCTAssertTrue(close.contains("color: palette.statusToken(for: state.mode).color"))
+      XCTAssertTrue(close.contains("color: CSColor.terracotta"))
       XCTAssertTrue(close.contains("if closeDotHovered {"))
       XCTAssertTrue(close.contains("OverlayCloseCross()"))
       XCTAssertTrue(close.contains(".accessibilityHidden(true)"))
@@ -809,13 +809,15 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(
       header.contains(".accessibilityLabel(OverlayIntent.close.accessibilityLabel)"))
     XCTAssertTrue(
-      close.contains("color: palette.statusToken(for: state.mode).color"),
-      "The close control is the brand status dot")
+      close.contains("color: CSColor.terracotta"),
+      "The close control keeps the brand color regardless of engine state")
     XCTAssertEqual(header.components(separatedBy: "state.relayIntent(.close)").count - 1, 1)
     XCTAssertEqual(header.components(separatedBy: "overlay-brand-close-dot").count - 1, 1)
     // The dot keeps its pre-b83e95538 place: the hit target grows through the
     // content shape, never through a frame that shifts the dot or the wordmark.
-    XCTAssertTrue(close.contains("size: compact ? 5.25 : 7"))
+    XCTAssertTrue(close.contains("size: 7"))
+    XCTAssertFalse(close.contains("compact ?"), "Close size must not depend on header width")
+    XCTAssertFalse(close.contains("state.mode"), "Close must not signal engine state")
     XCTAssertFalse(close.contains("size: closeDotHovered"))
     XCTAssertTrue(close.contains(".scaleEffect(closeDotHovered"))
     let scale = try XCTUnwrap(close.range(of: ".scaleEffect(")?.lowerBound)
@@ -823,7 +825,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertLessThan(
       scale, hitShape, "Hover growth must not change the button's layout or hit shape")
     XCTAssertTrue(close.contains(".onHover { closeDotHovered = $0 }"))
-    XCTAssertTrue(close.contains(".contentShape(Circle().inset(by: compact ? -9.375 : -8.5))"))
+    XCTAssertTrue(close.contains(".contentShape(Circle().inset(by: -8.5))"))
     XCTAssertFalse(close.contains(".frame("), "A frame would move the dot")
     XCTAssertTrue(header.contains("Text(\"codescribe\")"))
     XCTAssertTrue(header.contains(".allowsHitTesting(false)"))

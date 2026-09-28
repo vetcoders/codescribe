@@ -353,8 +353,8 @@ struct DictationOverlayView: View {
           state.relayIntent(.close)
         } label: {
           ModeDot(
-            color: palette.statusToken(for: state.mode).color,
-            size: compact ? 5.25 : 7
+            color: CSColor.terracotta,
+            size: 7
           )
           .overlay {
             if closeDotHovered {
@@ -363,14 +363,14 @@ struct DictationOverlayView: View {
                 .accessibilityHidden(true)
             }
           }
-          .scaleEffect(closeDotHovered ? 10.0 / 7.0 : 1)
+          .scaleEffect(closeDotHovered ? 1.15 : 1)
           // 24 pt hit target without moving the dot: the shape reaches past the
           // circle, the layout keeps the pre-b83e95538 position (Founder, 25 IX).
-          .contentShape(Circle().inset(by: compact ? -9.375 : -8.5))
+          .contentShape(Circle().inset(by: -8.5))
         }
         .buttonStyle(.plain)
         .onHover { closeDotHovered = $0 }
-        .animation(.easeOut(duration: 0.12), value: closeDotHovered)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: closeDotHovered)
         // Never the panel's initial key view: the transcript canvas keeps the
         // preselection, and Space/Return cannot close the overlay by accident.
         .focusable(false)
