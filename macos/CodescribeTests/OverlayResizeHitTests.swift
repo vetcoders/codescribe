@@ -3,6 +3,23 @@ import XCTest
 @testable import Codescribe
 
 final class OverlayResizeHitTests: XCTestCase {
+  @MainActor
+  func testCappedOverlayDoesNotReadOrMeasureProjectedText() throws {
+    let screen = try XCTUnwrap(NSScreen.main)
+    let cap = max(
+      DictationOverlayWindow.minSize.height,
+      floor(screen.visibleFrame.height * OverlayContentSizePolicy.maximumScreenFraction))
+    var reads = 0
+    func projectedText() -> String {
+      reads += 1
+      return String(repeating: "recorded words\n", count: 2_000)
+    }
+    let height = OverlayContentSizePolicy.preferredHeight(
+      for: projectedText(), width: 470, textScale: 1, screen: screen, currentHeight: cap)
+    XCTAssertEqual(height, cap)
+    XCTAssertEqual(reads, 0, "A full-sized panel cannot grow; do not lay out its transcript again")
+  }
+
   private let bounds = NSRect(x: 0, y: 0, width: 400, height: 300)
   private let band = OverlayResizeHit.band
 

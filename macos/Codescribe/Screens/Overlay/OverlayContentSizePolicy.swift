@@ -9,15 +9,24 @@ enum OverlayContentSizePolicy {
   private static let bodyMinimumHeight: CGFloat = 130
 
   static func preferredHeight(
-    for text: String,
+    for text: @autoclosure () -> String,
     width: CGFloat,
     textScale: CGFloat,
-    screen: NSScreen?
+    screen: NSScreen?,
+    currentHeight: CGFloat = 0
   ) -> CGFloat {
+    let maximum = screen.map {
+      max(
+        DictationOverlayWindow.minSize.height, floor($0.visibleFrame.height * maximumScreenFraction)
+      )
+    }
+    // The panel only grows. Once capped, neither materialize nor lay out the
+    // transcript on every projection; its native scroll view owns the overflow.
+    if let maximum, currentHeight + 0.5 >= maximum { return maximum }
     let font = NSFont.systemFont(ofSize: 15 * textScale, weight: .medium)
     let paragraph = NSMutableParagraphStyle()
     paragraph.lineSpacing = 5
-    let measured = (text as NSString).boundingRect(
+    let measured = (text() as NSString).boundingRect(
       with: NSSize(
         width: max(1, width - bodyHorizontalInsets),
         height: .greatestFiniteMagnitude
@@ -29,11 +38,7 @@ enum OverlayContentSizePolicy {
       DictationOverlayWindow.minSize.height,
       chromeHeight + max(bodyMinimumHeight, ceil(measured.height))
     )
-    guard let visibleHeight = screen?.visibleFrame.height else { return desired }
-    let maximum = max(
-      DictationOverlayWindow.minSize.height,
-      floor(visibleHeight * maximumScreenFraction)
-    )
+    guard let maximum else { return desired }
     return min(desired, maximum)
   }
 }

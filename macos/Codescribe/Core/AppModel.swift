@@ -320,7 +320,8 @@ final class OverlayController: ObservableObject {
       for: state.activeText,
       width: panel.frame.width,
       textScale: textScale.scale,
-      screen: screen
+      screen: screen,
+      currentHeight: panel.frame.height
     )
     guard targetHeight > panel.frame.height + 0.5 else { return }
 

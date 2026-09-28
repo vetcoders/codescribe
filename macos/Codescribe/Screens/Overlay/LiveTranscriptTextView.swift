@@ -110,7 +110,7 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     return textView
   }
 
-  private func update(
+  func update(
     _ textView: LiveTranscriptNativeTextView,
     coordinator: Coordinator
   ) {
@@ -123,19 +123,48 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     textView.typingAttributes = attributes
     textView.insertionPointColor = OverlayAppearancePalette.resolve(appearance).bodyText.nsColor
 
-    let rendered = NSAttributedString(string: text, attributes: attributes)
-    let sameBytes = textView.string.utf8.elementsEqual(rendered.string.utf8)
+    let sameBytes = textView.string.utf8.elementsEqual(text.utf8)
+    let sameAttributes =
+      coordinator.renderedAttributes.map {
+        NSDictionary(dictionary: $0).isEqual(to: attributes)
+      } ?? false
     // While the caret is in the canvas the bytes we are handed are the bytes
     // the user just typed; repainting storage would throw the caret away.
     if sameBytes, coordinator.isEditing { return }
-    guard !sameBytes || textView.attributedString() != rendered else { return }
+    guard !sameBytes || !sameAttributes else { return }
 
     let previousSelection = textView.selectedRange()
     let wasFollowingTail = coordinator.followsTail
     coordinator.applyingUpdate = true
-    textView.textStorage?.setAttributedString(rendered)
+    let previous = textView.string as NSString
+    let incoming = text as NSString
+    if sameAttributes {
+      // Preserve the recorded prefix in TextKit. Replacing the whole storage
+      // invalidates every paragraph on each live append or open-tail revision.
+      // Compare UTF-16 units, not Characters: canonical Unicode equivalence
+      // must never hide a byte-level revision from the engine.
+      var prefix = 0
+      let sharedLength = min(previous.length, incoming.length)
+      while prefix < sharedLength, previous.character(at: prefix) == incoming.character(at: prefix)
+      {
+        prefix += 1
+      }
+      if prefix > 0, prefix < incoming.length,
+        (0xDC00...0xDFFF).contains(incoming.character(at: prefix))
+      {
+        prefix -= 1  // Do not split a surrogate pair at the changed boundary.
+      }
+      let tail = NSAttributedString(
+        string: incoming.substring(from: prefix), attributes: attributes)
+      textView.textStorage?.replaceCharacters(
+        in: NSRange(location: prefix, length: previous.length - prefix), with: tail)
+    } else {
+      textView.textStorage?.setAttributedString(
+        NSAttributedString(string: text, attributes: attributes))
+    }
+    coordinator.renderedAttributes = attributes
 
-    let updatedLength = rendered.length
+    let updatedLength = incoming.length
     if previousSelection.length > 0 || !wasFollowingTail {
       textView.setSelectedRange(
         LiveTranscriptSelectionPolicy.preservedRange(
@@ -147,7 +176,9 @@ struct LiveTranscriptTextView: NSViewRepresentable {
       let tail = NSRange(location: updatedLength, length: 0)
       textView.setSelectedRange(tail)
       DispatchQueue.main.async { [weak textView, weak coordinator] in
-        guard let textView, coordinator?.followsTail == true else { return }
+        guard let textView, coordinator?.followsTail == true,
+          (textView.string as NSString).length == tail.location
+        else { return }
         textView.scrollRangeToVisible(tail)
       }
     }
@@ -177,6 +208,7 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     var followsTail = true
     var applyingUpdate = false
     var isEditing = false
+    var renderedAttributes: [NSAttributedString.Key: Any]?
     var onEditingChanged: ((Bool) -> Void)?
     var onTextChange: ((String) -> Void)?
     var onCancelEdit: (() -> Void)?
@@ -193,6 +225,9 @@ struct LiveTranscriptTextView: NSViewRepresentable {
 
     func textDidChange(_ notification: Notification) {
       guard !applyingUpdate, let textView = notification.object as? NSTextView else { return }
+      // Native edits (including rich paste) can change attributes independently
+      // of the projection. Reapply the transcript style when editing finishes.
+      renderedAttributes = nil
       onTextChange?(textView.string)
     }
 
