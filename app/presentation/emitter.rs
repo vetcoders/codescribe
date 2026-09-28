@@ -4518,12 +4518,7 @@ mod tests {
         let (mut emitter, ledger) = mirror_take();
         let raw = "kazda wersja jest gorsza";
         let formatted = "Każda wersja jest gorsza.";
-        let mut words = mirror_words(
-            raw,
-            48_000,
-            58_000,
-            UnadmittedAppleWordSource::Unmatched,
-        );
+        let mut words = mirror_words(raw, 48_000, 58_000, UnadmittedAppleWordSource::Unmatched);
         words.extend(mirror_words(
             "ogonek",
             2_200_000,
@@ -4534,12 +4529,13 @@ mod tests {
         let painted = emitter.visible_canvas_snapshot().unwrap();
         assert!(painted.text.contains("ogonek"));
         assert!(painted.text.contains("kazda"));
-        emitter.on_event(&admitted_mutation(
+        let mutation = admitted_mutation(
             &mut ledger.lock().unwrap(),
             OccurrenceIdentity::new("take", 7, 58_368, 336_384),
             1,
             formatted,
-        ));
+        );
+        emitter.on_event(&mutation);
         let pasted = emitter.visible_canvas_snapshot().unwrap();
         assert_eq!(pasted.text, format!("{formatted} ogonek"));
         assert_eq!(pasted.text.matches("ogonek").count(), 1);
@@ -4571,12 +4567,13 @@ mod tests {
         ));
         let painted = emitter.begin_stop_canvas().unwrap();
         assert_eq!(painted.text.split_whitespace().count(), 178);
-        emitter.on_event(&admitted_mutation(
+        let mutation = admitted_mutation(
             &mut ledger.lock().unwrap(),
             OccurrenceIdentity::new("take", 7, 58_368, 336_384),
             1,
             &formatted,
-        ));
+        );
+        emitter.on_event(&mutation);
         let pasted = emitter.finish_stop_canvas().unwrap();
         assert_eq!(pasted.text, formatted);
         assert_eq!(pasted.text.split_whitespace().count(), 69);
@@ -4603,12 +4600,13 @@ mod tests {
     async fn manual_insert_of_archival_text_is_not_doubled_by_raw_preview() {
         let (mut emitter, ledger) = mirror_take();
         let archival = "Archiwalna transkrypcja do wstawienia";
-        emitter.on_event(&admitted_mutation(
+        let mutation = admitted_mutation(
             &mut ledger.lock().unwrap(),
             OccurrenceIdentity::new("take", 7, 0, 16_000),
             1,
             "Tekst bazowy",
-        ));
+        );
+        emitter.on_event(&mutation);
         emitter.on_event(&EngineEvent::SessionFinalised {
             session_id: "take".to_string(),
             layer_summary: LayerSummary::default(),
