@@ -95,8 +95,8 @@ Recording stopped before a transcript was available.
 
 | Layer                 | Rule                                                                                                     |
 | --------------------- | -------------------------------------------------------------------------------------------------------- |
-| Empty `speech.engine` | ASR mode resolver derives the mode from existing local/cloud intent; otherwise Apple only |
-| Settings UI write | ASR mode persists in `settings.json`; no engine or layered side writes |
+| Empty `speech.engine` | ASR mode resolver derives the mode from existing local/cloud intent; otherwise Apple only                |
+| Settings UI write     | ASR mode persists in `settings.json`; no engine or layered side writes                                   |
 | Record start          | **`preflight_apple_live_ready()`** when engine is Apple — refuse before REC if Speech/bridge not ready   |
 | Live vs final         | Cloud/Apple-only live fails closed without local weights; explicit HQ/local Retranscribe may use Whisper |
 
@@ -109,15 +109,15 @@ Recording stopped before a transcript was available.
 
 **Schema v3 — speech.engine keys that actually matter:**
 
-| JSON path                       | Internal field          | Wire / env              | Values                                     | Required for “simple works”? |
-| ------------------------------- | ----------------------- | ----------------------- | ------------------------------------------ | ---------------------------- |
-| `speech.language`               | `whisper_language`      | `WHISPER_LANGUAGE`      | `pl`, `en`, …                              | Yes (you have `pl` ✓)        |
-| `speech.engine.asr_mode` | `asr_mode` | `CODESCRIBE_ASR_MODE` | `apple_only` / `local_power` / `cloud` | Sole engine control |
-| `speech.engine.whisper_model`   | `whisper_model`         | `WHISPER_MODEL`         | model id                                   | For local refinement          |
-| `speech.engine.mode`            | maps to `use_local_stt` | legacy                  | `local_whisper` / `cloud_whisper`          | Optional legacy              |
-| `speech.engine.local_model`     | `local_model`           | path                    | model path                                 | Optional                     |
-| `speech.formatting.level`       | `formatting_level`      | —                       | `off`/`correction`/`smart`/`max`           | AI format (not STT)          |
-| `speech.emission.*`             | buffer/typing           | Voice Lab               | numbers                                    | Overlay pacing only          |
+| JSON path                     | Internal field          | Wire / env            | Values                                 | Required for “simple works”? |
+| ----------------------------- | ----------------------- | --------------------- | -------------------------------------- | ---------------------------- |
+| `speech.language`             | `whisper_language`      | `WHISPER_LANGUAGE`    | `pl`, `en`, …                          | Yes (you have `pl` ✓)        |
+| `speech.engine.asr_mode`      | `asr_mode`              | `CODESCRIBE_ASR_MODE` | `apple_only` / `local_power` / `cloud` | Sole engine control          |
+| `speech.engine.whisper_model` | `whisper_model`         | `WHISPER_MODEL`       | model id                               | For local refinement         |
+| `speech.engine.mode`          | maps to `use_local_stt` | older key             | `local_whisper` / `cloud_whisper`      | Optional older key           |
+| `speech.engine.local_model`   | `local_model`           | path                  | model path                             | Optional                     |
+| `speech.formatting.level`     | `formatting_level`      | —                     | `off`/`correction`/`smart`/`max`       | AI format (not STT)          |
+| `speech.emission.*`           | buffer/typing           | Voice Lab             | numbers                                | Overlay pacing only          |
 
 STT authentication follows endpoint ownership: `api.openai.com` and
 `api.libraxis.cloud` use `Authorization: Bearer`; loopback servers require no
@@ -306,17 +306,17 @@ consequences and `docs/TRANSCRIPT_BUS.md` for the projected wire contract.
 
 ### 3.2 Settings UI → config
 
-| Front control                   | UniFFI                                              | Core                                                                   |
-| ------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------- |
-| Load Settings form              | `CodescribeConfig.load_settings()`                  | one `RuntimeSettingsSnapshot` → `CsSettings::from_runtime_snapshot`    |
-| Save knobs                      | `update_config` / `update_config_many`              | `UserSettings::set_*` → write `settings.json`; may seed env            |
-| ASR mode picker                 | `CODESCRIBE_ASR_MODE` + `CODESCRIBE_CLOUD_CONSENT`  | Cloud requires `granted`; local override cannot disarm Cloud |
-| Active STT row                  | `current_serving_verdict()`                         | last live take (`local_apple` → Apple). No Smart-final-pass suffix     |
-| Whisper model status / download | `whisper_model_status` / `download_whisper_model`   | `core/config/models.rs`                                                |
-| Audio device                    | `audio_input_snapshot` + config keys                | `UserSettings.audio_input_device` + cpal                               |
-| Mic permission                  | `mic_permission_granted` / `request_mic_permission` | `app/os/permissions`                                                   |
-| Lane (LLM) truth                | runtime snapshot projection                         | `RuntimeSettingsSnapshot::llm_lanes()` → `RuntimeLlmLanes`             |
-| AI execution generation         | next selected runtime snapshot                      | sealed prompts + retry/delay + shared Agent/formatter request timing   |
+| Front control                   | UniFFI                                              | Core                                                                 |
+| ------------------------------- | --------------------------------------------------- | -------------------------------------------------------------------- |
+| Load Settings form              | `CodescribeConfig.load_settings()`                  | one `RuntimeSettingsSnapshot` → `CsSettings::from_runtime_snapshot`  |
+| Save knobs                      | `update_config` / `update_config_many`              | `UserSettings::set_*` → write `settings.json`; may seed env          |
+| ASR mode picker                 | `CODESCRIBE_ASR_MODE` + `CODESCRIBE_CLOUD_CONSENT`  | Cloud requires `granted`; local override cannot disarm Cloud         |
+| Active STT row                  | `current_serving_verdict()`                         | last live take (`local_apple` → Apple). No Smart-final-pass suffix   |
+| Whisper model status / download | `whisper_model_status` / `download_whisper_model`   | `core/config/models.rs`                                              |
+| Audio device                    | `audio_input_snapshot` + config keys                | `UserSettings.audio_input_device` + cpal                             |
+| Mic permission                  | `mic_permission_granted` / `request_mic_permission` | `app/os/permissions`                                                 |
+| Lane (LLM) truth                | runtime snapshot projection                         | `RuntimeSettingsSnapshot::llm_lanes()` → `RuntimeLlmLanes`           |
+| AI execution generation         | next selected runtime snapshot                      | sealed prompts + retry/delay + shared Agent/formatter request timing |
 
 ### 3.3 Dictation overlay / tray
 
@@ -516,12 +516,12 @@ Tests distinguish one document revision from its N per-entry projection rows.
 
 ## 4. Labels vs truth
 
-| Surface                              | Source of truth                             | Not truth          |
-| ------------------------------------ | ------------------------------------------- | ------------------ |
-| Settings **ASR mode** | resolved mode from the runtime snapshot | Last serving engine |
-| Settings **Active STT**              | `current_serving_verdict().engine` last run | Preference string  |
-| Overlay footer engine chip           | last verdict / controller truth label       | “I wanted Whisper” |
-| Error text                           | actual failing path                         | —                  |
+| Surface                    | Source of truth                             | Not truth           |
+| -------------------------- | ------------------------------------------- | ------------------- |
+| Settings **ASR mode**      | resolved mode from the runtime snapshot     | Last serving engine |
+| Settings **Active STT**    | `current_serving_verdict().engine` last run | Preference string   |
+| Overlay footer engine chip | last verdict / controller truth label       | “I wanted Whisper”  |
+| Error text                 | actual failing path                         | —                   |
 
 Valid engine labels on verdict: `local_apple`, `local_whisper`, `streaming_whisper`, `cloud_stt`.
 

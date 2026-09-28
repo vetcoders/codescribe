@@ -871,7 +871,7 @@ mod tests {
                 .push_bytes(&std::fs::read(path).unwrap())
                 .into_iter()
                 .map(Result::unwrap)
-                .last()
+                .next_back()
                 .unwrap()
                 .rendered_text
         };

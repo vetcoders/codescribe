@@ -1206,7 +1206,7 @@
               "file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
               "required_code": [
                 "struct OverlayIntentRail: View",
-                "ForEach(intents, id: \\.self)",
+                "ForEach(OverlayDockLayout(projectedIntents: intents).visibleIntents, id: \\.self)",
                 "dispatch(intent)",
                 "func dispatch(_ intent: OverlayIntent)",
                 "onIntent(intent)"

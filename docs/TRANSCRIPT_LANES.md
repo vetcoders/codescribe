@@ -226,15 +226,15 @@ revision for the session that is still current for exactly this reason.
 
 ## 7. Settings and runtime truth
 
-| Surface                                          | Meaning                                                                               |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------- |
-| `CODESCRIBE_ASR_MODE`                            | product intent: `local_power`, `cloud`, or `apple_only`                               |
-| `CODESCRIBE_LAYERED_TRANSCRIPTION`               | env-only diagnostic override for Local Power; Cloud ignores it |
-| `CODESCRIBE_APPLE_STT_LIVE_MODE`                 | Apple bridge transport A/B only                                                       |
-| `STT_TAIL_PROVIDER`                              | Layer 1 provider implementation                                                       |
-| `FINAL_PASS_MODE` / `CODESCRIBE_FINAL_PASS_MODE` | retired; ignored at runtime and rejected on config writes                                   |
-| `RuntimeSettingsSnapshot::llm_lanes()`           | sealed per-take LLM provider/model/endpoint/credential availability                   |
-| `tail_patch_session_receipt`                     | per-take evidence of live Layer 1 exercise and terminal accounting                    |
+| Surface                                          | Meaning                                                             |
+| ------------------------------------------------ | ------------------------------------------------------------------- |
+| `CODESCRIBE_ASR_MODE`                            | product intent: `local_power`, `cloud`, or `apple_only`             |
+| `CODESCRIBE_LAYERED_TRANSCRIPTION`               | env-only diagnostic override for Local Power; Cloud ignores it      |
+| `CODESCRIBE_APPLE_STT_LIVE_MODE`                 | Apple bridge transport A/B only                                     |
+| `STT_TAIL_PROVIDER`                              | Layer 1 provider implementation                                     |
+| `FINAL_PASS_MODE` / `CODESCRIBE_FINAL_PASS_MODE` | retired; ignored at runtime and rejected on config writes           |
+| `RuntimeSettingsSnapshot::llm_lanes()`           | sealed per-take LLM provider/model/endpoint/credential availability |
+| `tail_patch_session_receipt`                     | per-take evidence of live Layer 1 exercise and terminal accounting  |
 
 Configured intent, runtime arming, provider exercise, and accepted ledger
 mutation are four different facts. No UI toggle alone proves all four.

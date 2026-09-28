@@ -315,8 +315,10 @@ pub fn decode_pcm(bytes: &[u8]) -> Result<Vec<f32>, SpeechError> {
         return Err(SpeechError::Invalid("Invalid PCM16 speech response"));
     }
     Ok(bytes
-        .chunks_exact(2)
-        .map(|b| f32::from(i16::from_le_bytes([b[0], b[1]])) / 32768.0)
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| f32::from(i16::from_le_bytes(*b)) / 32768.0)
         .collect())
 }
 /// Lossless cap splitting, preferring whitespace boundaries when possible.
