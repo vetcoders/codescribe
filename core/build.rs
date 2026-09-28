@@ -388,7 +388,7 @@ fn configure_license_public_key(is_release: bool) {
     };
 
     let key_bytes = decode_license_public_key(&key_hex);
-    let fingerprint = format!("{:x}", Sha256::digest(key_bytes));
+    let fingerprint = hex::encode(Sha256::digest(key_bytes));
     if is_release && fingerprint == DEV_LICENSE_PUBLIC_KEY_FINGERPRINT {
         panic!(
             "{LICENSE_PUBLIC_KEY_ENV} has the forbidden development fingerprint {DEV_LICENSE_PUBLIC_KEY_FINGERPRINT}"

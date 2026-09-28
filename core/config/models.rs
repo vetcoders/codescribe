@@ -1006,12 +1006,14 @@ mod tests {
         )
         .unwrap();
         let mut tokenizer = tokenizers::Tokenizer::new(tokenizers::models::bpe::BPE::default());
-        tokenizer.add_special_tokens(&[
-            tokenizers::AddedToken::from("<|startoftranscript|>", true),
-            tokenizers::AddedToken::from("<|endoftext|>", true),
-            tokenizers::AddedToken::from("<|transcribe|>", true),
-            tokenizers::AddedToken::from("<|pl|>", true),
-        ]);
+        tokenizer
+            .add_special_tokens([
+                tokenizers::AddedToken::from("<|startoftranscript|>", true),
+                tokenizers::AddedToken::from("<|endoftext|>", true),
+                tokenizers::AddedToken::from("<|transcribe|>", true),
+                tokenizers::AddedToken::from("<|pl|>", true),
+            ])
+            .expect("add fixture special tokens");
         tokenizer.save(path.join("tokenizer.json"), false).unwrap();
         fs::write(
             path.join("mel_filters.npz"),
@@ -1544,10 +1546,12 @@ mod tests {
         create_complete_whisper_model(&newer_tokenizer);
         let mut incomplete_tokenizer =
             tokenizers::Tokenizer::new(tokenizers::models::bpe::BPE::default());
-        incomplete_tokenizer.add_special_tokens(&[
-            tokenizers::AddedToken::from("<|startoftranscript|>", true),
-            tokenizers::AddedToken::from("<|endoftext|>", true),
-        ]);
+        incomplete_tokenizer
+            .add_special_tokens([
+                tokenizers::AddedToken::from("<|startoftranscript|>", true),
+                tokenizers::AddedToken::from("<|endoftext|>", true),
+            ])
+            .expect("add fixture special tokens");
         incomplete_tokenizer
             .save(newer_tokenizer.join("tokenizer.json"), false)
             .unwrap();

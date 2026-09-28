@@ -420,7 +420,7 @@ pub(crate) fn verify_mel_filters(path: &Path) -> Result<()> {
         ));
     }
 
-    let actual = format!("{:x}", hasher.finalize());
+    let actual = hex::encode(hasher.finalize());
     if actual != MEL_FILTERS_SHA256 {
         return Err(anyhow!(
             "SHA-256 mismatch for {}: expected {}, got {}",
@@ -1087,12 +1087,14 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let path = temp.path().join("tokenizer.json");
         let mut tokenizer = tokenizers::Tokenizer::new(tokenizers::models::bpe::BPE::default());
-        tokenizer.add_special_tokens(&[
-            tokenizers::AddedToken::from("<|startoftranscript|>", true),
-            tokenizers::AddedToken::from("<|endoftext|>", true),
-            tokenizers::AddedToken::from("<|transcribe|>", true),
-            tokenizers::AddedToken::from("<|notimestamps|>", true),
-        ]);
+        tokenizer
+            .add_special_tokens([
+                tokenizers::AddedToken::from("<|startoftranscript|>", true),
+                tokenizers::AddedToken::from("<|endoftext|>", true),
+                tokenizers::AddedToken::from("<|transcribe|>", true),
+                tokenizers::AddedToken::from("<|notimestamps|>", true),
+            ])
+            .expect("add fixture special tokens");
         tokenizer.save(&path, false).unwrap();
         let architecture = parse_whisper_config(
             include_str!("../tests/fixtures/whisper_test_config.json"),

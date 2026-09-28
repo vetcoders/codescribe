@@ -16,7 +16,7 @@ use std::sync::OnceLock;
 
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use rand::Rng;
+use rand::RngExt;
 
 use candle_core::safetensors::Load;
 use candle_core::{DType, Device, IndexOp, Tensor};
@@ -1362,8 +1362,8 @@ impl LocalWhisperEngine {
                     .collect();
 
                 // Sample from distribution
-                let mut rng = rand::thread_rng();
-                let r: f32 = rng.r#gen();
+                let mut rng = rand::rng();
+                let r: f32 = rng.random();
                 let mut cumsum = 0.0;
                 let mut selected = 0u32;
                 for (idx, &p) in probs.iter().enumerate() {

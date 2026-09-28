@@ -261,7 +261,7 @@ impl TranscriptRevision {
                     || receipt.source_revision.checked_add(1) != Some(receipt.revision)
                     || receipt.left_context != left_context
                     || receipt.left_context_sha256
-                        != format!("{:x}", Sha256::digest(left_context.as_bytes()))
+                        != hex::encode(Sha256::digest(left_context.as_bytes()))
                     || !ledger.incremental_shapings().contains(receipt)
                     || receipt.source_seal_receipt.as_ref().is_some_and(|id| {
                         ledger

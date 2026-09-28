@@ -156,7 +156,7 @@ install:
 	@echo "MiniLM is not fetched: no runtime path loads it. Need it for e2e_round_trip or"
 	@echo "lexicon_gate_calibration? Run 'make download-embedder' once."
 	@env -u CODESCRIBE_EMBED_WHISPER -u CODESCRIBE_EMBED_EMBEDDER -u CODESCRIBE_NO_EMBED -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX \
-	 CODESCRIBE_LOCAL_INSTALL=1 cargo install --path . --force
+	 CODESCRIBE_LOCAL_INSTALL=1 cargo install --locked --path . --force
 	@mkdir -p ~/.codescribe
 	@$(MAKE) hooks
 	@./scripts/install-finder-quick-action.sh
@@ -166,7 +166,7 @@ install:
 install-no-embed:
 	@echo "Installing qube tools (DEV/RECOVERY: no optional embeds; runtime paths only)..."
 	@env -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX \
-	 CODESCRIBE_NO_EMBED=1 CODESCRIBE_LOCAL_INSTALL=1 cargo install --path . --force
+	 CODESCRIBE_NO_EMBED=1 CODESCRIBE_LOCAL_INSTALL=1 cargo install --locked --path . --force
 	@mkdir -p ~/.codescribe
 	@$(MAKE) hooks
 	@./scripts/install-finder-quick-action.sh

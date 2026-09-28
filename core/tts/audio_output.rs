@@ -142,7 +142,7 @@ impl AudioPlayer {
         let config = self.config.config();
 
         let stream = self.device.build_output_stream(
-            &config,
+            config,
             move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
                 // Poison-recovery inside the real-time audio callback: a panic
                 // must not poison the position lock and silence all further

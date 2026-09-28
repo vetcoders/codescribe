@@ -582,7 +582,7 @@ fn normalized_character_metrics(reference: &str, delivered: &str) -> (usize, f64
 
 fn sha256_file(path: &Path) -> String {
     let bytes = std::fs::read(path).expect("read acceptance input for hashing");
-    format!("{:x}", Sha256::digest(bytes))
+    hex::encode(Sha256::digest(bytes))
 }
 
 const REPAIR_WAVE_ROW_FIELDS: [&str; 21] = [

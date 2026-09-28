@@ -13,7 +13,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use rand::RngCore;
+use rand::Rng;
 use reqwest::Url;
 use reqwest::blocking::Client;
 use reqwest::blocking::multipart::{Form, Part};
@@ -1034,7 +1034,7 @@ fn spawn_sidecar() -> Result<SupervisedSidecar> {
     drop(reservation);
 
     let mut token_bytes = [0_u8; 32];
-    rand::thread_rng().fill_bytes(&mut token_bytes);
+    rand::rng().fill_bytes(&mut token_bytes);
     let token = token_bytes
         .iter()
         .map(|byte| format!("{byte:02x}"))

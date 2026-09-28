@@ -2460,7 +2460,7 @@ impl AcousticLedger {
             sentence_break_before,
             source_label: source_label.to_string(),
             left_context: left_context.to_string(),
-            left_context_sha256: format!("{:x}", Sha256::digest(left_context.as_bytes())),
+            left_context_sha256: hex::encode(Sha256::digest(left_context.as_bytes())),
             shaped_text: shaped_text.to_string(),
         };
         self.incremental_shapings.push(receipt.clone());
@@ -3757,7 +3757,7 @@ pub struct TranscriptComparisonReceipt {
 
 impl TranscriptComparisonReceipt {
     pub fn new(apple_rendered_text: String, final_pass_rendered_text: String) -> Self {
-        let digest = |text: &str| format!("{:x}", Sha256::digest(text.as_bytes()));
+        let digest = |text: &str| hex::encode(Sha256::digest(text.as_bytes()));
         Self {
             apple_sha256: digest(&apple_rendered_text),
             apple_char_count: apple_rendered_text.chars().count() as u64,
@@ -5757,7 +5757,7 @@ mod tests {
         assert_eq!(receipt.revision, 5);
         assert_eq!(
             receipt.left_context_sha256,
-            format!("{:x}", Sha256::digest("Poprzednie zdanie.".as_bytes())),
+            hex::encode(Sha256::digest("Poprzednie zdanie.".as_bytes())),
             "the left neighbourhood is pinned so the shape can be reproduced"
         );
         assert_eq!(ledger.incremental_shapings().len(), 1);
@@ -5994,7 +5994,7 @@ mod tests {
         assert_eq!(receipt.left_context, left_context);
         assert_eq!(
             receipt.left_context_sha256,
-            format!("{:x}", Sha256::digest(left_context.as_bytes()))
+            hex::encode(Sha256::digest(left_context.as_bytes()))
         );
         assert_eq!(receipt.shaped_text, "Jakieś słowa");
 

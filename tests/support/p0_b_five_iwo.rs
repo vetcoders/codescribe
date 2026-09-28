@@ -100,7 +100,7 @@ fn load_manifest() -> FixtureManifest {
 fn sha256_file(path: &Path) -> String {
     let bytes = fs::read(path)
         .unwrap_or_else(|error| panic!("cannot read five-Iwo fixture {}: {error}", path.display()));
-    format!("{:x}", Sha256::digest(bytes))
+    hex::encode(Sha256::digest(bytes))
 }
 
 fn load_pcm(manifest: &FixtureManifest) -> Vec<f32> {

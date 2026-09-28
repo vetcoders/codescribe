@@ -259,7 +259,7 @@ impl QualityRecord {
             digest.update(value.as_bytes());
             digest.update([0]);
         }
-        format!("legacy-{:x}", digest.finalize())
+        format!("legacy-{}", hex::encode(digest.finalize()))
     }
 }
 

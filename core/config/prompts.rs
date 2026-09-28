@@ -717,7 +717,7 @@ fn append_prompt_audit(event: PromptAuditEvent<'_>) -> std::io::Result<()> {
 
 /// Lowercase hex SHA-256, the digest form used throughout the audit trail.
 fn sha256_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    hex::encode(Sha256::digest(bytes))
 }
 
 /// Reveal the prompts directory in Finder, creating it first if needed.

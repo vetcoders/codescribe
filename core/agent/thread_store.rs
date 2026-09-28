@@ -23,8 +23,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use directories::BaseDirs;
-use rand::distributions::Alphanumeric;
-use rand::{Rng, thread_rng};
+use rand::distr::Alphanumeric;
+use rand::{RngExt, rng};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::{debug, warn};
@@ -1039,7 +1039,7 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
 
 /// Lowercase alphanumeric suffix used to make ids and blob names unique.
 fn random_suffix(len: usize) -> String {
-    thread_rng()
+    rng()
         .sample_iter(&Alphanumeric)
         .take(len)
         .map(char::from)

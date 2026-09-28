@@ -112,7 +112,7 @@ VAD internals are hardcoded in `core/vad/config.rs` (Silero defaults).
 
 - macOS (uses CoreAudio via cpal)
 - Microphone access permissions
-- Rust 1.88+ (the workspace MSRV) with tokio runtime
+- Rust 1.94+ (the workspace MSRV) with tokio runtime
 
 ---
 

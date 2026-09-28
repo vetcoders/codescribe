@@ -84,12 +84,12 @@ fn stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
     samples: Vec<f32>,
     ticket: u64,
     state: Arc<AtomicU8>,
-) -> Result<cpal::Stream, cpal::BuildStreamError> {
+) -> Result<cpal::Stream, cpal::Error> {
     let channels = usize::from(config.channels);
     let mut position = 0;
     let errors = state.clone();
     device.build_output_stream(
-        config,
+        *config,
         move |data: &mut [T], _| {
             // Complete only on the callback AFTER the last submitted buffer.
             // This avoids dropping the stream before that buffer reaches the device.

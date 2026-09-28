@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use rand::RngCore;
+use rand::Rng;
 use tiny_http::{Header, Request, Response, Server, StatusCode};
 
 use crate::llm::account_auth::pkce::{PkceCodes, generate_pkce};
@@ -536,7 +536,7 @@ fn build_authorize_url(
 /// OpenID `nonce` — same unguessability requirement, same generator.
 fn generate_state() -> String {
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 

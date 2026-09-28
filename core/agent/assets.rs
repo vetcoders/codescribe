@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use rand::distributions::Alphanumeric;
-use rand::{Rng, thread_rng};
+use rand::distr::Alphanumeric;
+use rand::{RngExt, rng};
 use sha2::{Digest, Sha256};
 
 use super::types::ImageAsset;
@@ -151,7 +151,7 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
 
 /// Lowercase alphanumeric suffix that keeps same-millisecond captures distinct.
 fn random_suffix(len: usize) -> String {
-    thread_rng()
+    rng()
         .sample_iter(&Alphanumeric)
         .take(len)
         .map(char::from)

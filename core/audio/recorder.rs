@@ -587,7 +587,7 @@ impl Recorder {
 
         let stream = device
             .build_input_stream(
-                &stream_config,
+                stream_config,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
                     let mono_samples = downmix_to_mono(data, native_channels);
 

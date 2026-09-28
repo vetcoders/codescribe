@@ -27,7 +27,7 @@ chrono = "0.4"
 directories = "6"
 serde_json = { workspace = true }
 crossbeam-channel = "0.5"
-cpal = "0.17"
+cpal = "0.18"
 hound = "3.5"
 
 [dev-dependencies]

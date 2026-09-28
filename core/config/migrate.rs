@@ -519,7 +519,7 @@ mod tests {
                 .expect("create prompt directory");
             let original = b"existing correction bytes\n\0tail\n";
             std::fs::write(&correction_path, original).expect("seed correction prompt");
-            let before = format!("{:x}", Sha256::digest(original));
+            let before = hex::encode(Sha256::digest(original));
 
             let mut file_env = HashMap::new();
             file_env.insert("FORMATTING_LEVEL".to_string(), input.to_string());
@@ -532,10 +532,9 @@ mod tests {
                 );
                 assert_eq!(snapshot.content.as_bytes(), original);
             }
-            let after = format!(
-                "{:x}",
-                Sha256::digest(std::fs::read(&correction_path).expect("read correction prompt"))
-            );
+            let after = hex::encode(Sha256::digest(
+                std::fs::read(&correction_path).expect("read correction prompt"),
+            ));
             assert_eq!(
                 after, before,
                 "migration changed formatting.txt for {input}"

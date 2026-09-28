@@ -578,8 +578,8 @@ fn run(command: CorpusCommand, invocation: Invocation) -> Result<()> {
                     "scope": "observed_measurement_deltas_only",
                     "release_readiness": "not_proven",
                     "calibration_and_full_runtime_equivalence": "not_proven_by_profile_reports",
-                    "baseline_report_sha256": format!("{:x}", Sha256::digest(&baseline_bytes)),
-                    "candidate_report_sha256": format!("{:x}", Sha256::digest(&candidate_bytes)),
+                    "baseline_report_sha256": hex::encode(Sha256::digest(&baseline_bytes)),
+                    "candidate_report_sha256": hex::encode(Sha256::digest(&candidate_bytes)),
                     "baseline_commit": before.commit,
                     "candidate_commit": after.commit,
                     "rows": deltas,
@@ -1897,7 +1897,7 @@ fn sha256_file(path: &Path) -> Result<String> {
         }
         hasher.update(&buffer[..read]);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hex::encode(hasher.finalize()))
 }
 
 fn sha256_plist_semantics(path: &Path) -> Result<String> {
@@ -1913,7 +1913,7 @@ fn sha256_plist_semantics(path: &Path) -> Result<String> {
             output.status
         );
     }
-    Ok(format!("{:x}", Sha256::digest(&output.stdout)))
+    Ok(hex::encode(Sha256::digest(&output.stdout)))
 }
 
 fn operator_configuration_fingerprints() -> Result<Vec<FileFingerprint>> {

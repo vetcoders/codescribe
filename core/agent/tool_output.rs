@@ -19,8 +19,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use rand::distributions::Alphanumeric;
-use rand::{Rng, thread_rng};
+use rand::distr::Alphanumeric;
+use rand::{RngExt, rng};
 use sha2::{Digest, Sha256};
 
 use super::{ContentBlock, Message};
@@ -168,7 +168,7 @@ impl ToolOutputStore {
 /// `0600` on Unix), synced, then renamed — so a concurrent reader never sees a
 /// partial file, and tool output never lands world-readable.
 fn atomic_write_private(path: &Path, body: &[u8]) -> Result<()> {
-    let suffix = thread_rng()
+    let suffix = rng()
         .sample_iter(&Alphanumeric)
         .take(8)
         .map(char::from)

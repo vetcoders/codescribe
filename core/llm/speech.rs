@@ -257,7 +257,7 @@ impl SpeechOptions {
     }
     fn cache_key(&self, text: &str) -> String {
         let identity = json!({"vendor":format!("{:?}",self.vendor),"model":self.model,"voice":self.voice,"speed":self.speed,"text":text,"sample_rate":SAMPLE_RATE});
-        format!("{:x}", Sha256::digest(identity.to_string().as_bytes()))
+        hex::encode(Sha256::digest(identity.to_string().as_bytes()))
     }
 }
 fn lane_vendor(lane: &RuntimeLlmLane) -> Result<ProviderKind, SpeechError> {
@@ -502,9 +502,9 @@ fn authenticated_cache_key(
         "audio": options.cache_key(text),
         "endpoint": endpoint,
         "auth_source": auth.source.as_str(),
-        "credential": format!("{:x}", Sha256::digest(auth.bearer.as_bytes())),
+        "credential": hex::encode(Sha256::digest(auth.bearer.as_bytes())),
     });
-    format!("{:x}", Sha256::digest(identity.to_string().as_bytes()))
+    hex::encode(Sha256::digest(identity.to_string().as_bytes()))
 }
 
 #[cfg(test)]

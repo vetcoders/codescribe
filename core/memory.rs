@@ -116,9 +116,8 @@ pub fn reclaim_metal_buffer_pool(device: &candle_core::Device) {
         .saturating_mul(pool_size);
     for _ in 0..calls {
         match metal.blit_command_encoder() {
-            // BlitCommandEncoder has no Drop impl: end_encoding() is mandatory
-            // or the entry's semaphore stays in Encoding and the next call hangs.
-            Ok(encoder) => encoder.end_encoding(),
+            // Candle 0.11 ends encoding when the command guard is dropped.
+            Ok(encoder) => drop(encoder),
             Err(e) => {
                 tracing::warn!("reclaim_metal_buffer_pool: encoder request failed: {e}");
                 return;

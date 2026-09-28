@@ -198,8 +198,8 @@ fn formatting_policy_walkaround_receipt() {
             .formatting_prompt()
             .expect("enabled policy selects provider prompt")
             .composed_content();
-        let prompt_digest = format!("{:x}", Sha256::digest(snapshot.content.as_bytes()));
-        let selected_digest = format!("{:x}", Sha256::digest(selected.as_bytes()));
+        let prompt_digest = hex::encode(Sha256::digest(snapshot.content.as_bytes()));
+        let selected_digest = hex::encode(Sha256::digest(selected.as_bytes()));
         assert_eq!(selected_digest, prompt_digest);
         println!(
             "{}",

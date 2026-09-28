@@ -107,7 +107,7 @@ impl CalibrationCapturePath {
         hasher.update(b"\0");
         hasher.update(self.sample_rate.to_le_bytes());
         hasher.update(self.channels.to_le_bytes());
-        format!("{:x}", hasher.finalize())
+        hex::encode(hasher.finalize())
     }
 }
 
@@ -613,7 +613,7 @@ impl EnergyCalibrationArtifact {
         let material = self.canonical_material();
         let mut hasher = Sha256::new();
         hasher.update(material.as_bytes());
-        self.digest = format!("{:x}", hasher.finalize());
+        self.digest = hex::encode(hasher.finalize());
         &self.digest
     }
 
