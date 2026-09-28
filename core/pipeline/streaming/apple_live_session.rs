@@ -21587,10 +21587,10 @@ mod relay_l1_overlap_admission_tests {
         assert_conserved(&lane, None);
     }
 
-    /// (d) An open aggregate Lexicon slot overlaps the recovery pin. Whisper
-    /// replaces that slot and retains its former label as refusal evidence.
+    /// (d) Debt recovery cannot replace an overlapping higher-rank Lexicon slot.
+    /// The open owner retains its slot and debt, with a refusal in the layer trail.
     #[test]
-    fn recovery_words_replace_overlapping_open_lexicon_slot_with_evidence() {
+    fn recovery_words_refuse_overlapping_higher_rank_lexicon_slot() {
         let mut lane = open("relay-recovery-lexicon");
         let occurrence = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, 32_000);
         stage(&mut lane, 1, occurrence.clone(), "apple tekst");
@@ -21626,38 +21626,71 @@ mod relay_l1_overlap_admission_tests {
                 .expect("ledger")
                 .require_text_recovery(&occurrence)
         );
+        let slots_before = {
+            let ledger = lane.state.acoustic_ledger.lock().expect("ledger");
+            assert!(!ledger.is_sealed(&occurrence));
+            let slots = ledger.slots_of(&occurrence).expect("lexicon slot").to_vec();
+            assert_eq!(slots.len(), 1);
+            assert_eq!(slots[0].producer, ObservationProducer::Lexicon);
+            assert_eq!(slots[0].text, "lexikon trzyma");
+            slots
+        };
         let _ = drain(&mut lane.rx);
         let payload = recovery_payload(
             &occurrence,
             vec![word_pin(&occurrence.session, "whisper inny", 4_000, 12_000)],
         );
-        assert!(admit_debt_occurrence_recovery(
-            &mut lane.state,
-            &lane.tx,
-            &occurrence,
-            &payload,
-        ));
+        let recovered =
+            admit_debt_occurrence_recovery(&mut lane.state, &lane.tx, &occurrence, &payload);
+        // Drain before asserting so an unexpected result reports the actual events.
         let events = drain(&mut lane.rx);
-        let warnings = warning_lines(&events);
-        assert!(!named_refusal(&events, "sealed_replay"), "{warnings}");
-        assert!(
-            !warnings.contains("seal_coverage_text_recovery_refused"),
-            "{warnings}"
+        assert!(!recovered, "higher-rank slot must retain debt: {events:#?}");
+        assert_eq!(
+            whisper_mutations(&events),
+            vec![(
+                "lexikon trzyma".to_string(),
+                MutationReceipt::Preserve {
+                    occurrence: occurrence.clone(),
+                    held_by: ObservationProducer::Lexicon,
+                },
+            )],
+            "{events:#?}"
         );
+        assert_eq!(mutation_count(&events), 0);
         assert_eq!(
             held_text(&lane, &occurrence).as_deref(),
-            Some("whisper inny")
+            Some("lexikon trzyma")
         );
-        assert!(
-            !lane
-                .state
-                .acoustic_ledger
-                .lock()
-                .expect("ledger")
-                .text_recovery_pending(&occurrence)
-        );
-        assert_replaced_slot_evidence(&lane, &occurrence, &["lexikon trzyma"]);
-        assert_conserved(&lane, None);
+        {
+            let ledger = lane.state.acoustic_ledger.lock().expect("ledger");
+            assert!(ledger.text_recovery_pending(&occurrence));
+            assert!(!ledger.is_sealed(&occurrence));
+            assert_eq!(
+                ledger.slots_of(&occurrence).unwrap(),
+                slots_before.as_slice()
+            );
+            // The routed event preserves the held label; the rejected candidate's
+            // receipt lives in the ledger trail. SealedReplay also names rank refusal.
+            let refused = ledger
+                .layer_trail_for(&occurrence)
+                .filter(|entry| {
+                    entry.observation.producer == ObservationProducer::Whisper
+                        && entry.observation.request == payload.identity.request_id
+                        && entry.candidate_label == "whisper inny"
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(refused.len(), 1, "trail={refused:#?}; events={events:#?}");
+            assert_eq!(
+                refused[0].decision,
+                MutationReceipt::Refuse {
+                    occurrence: occurrence.clone(),
+                    reason: RefuseReason::SealedReplay,
+                },
+                "{events:#?}"
+            );
+            ledger.assert_slot_labels();
+        }
+        assert_conserved(&lane, Some("sealed_replay"));
     }
 }
 
