@@ -44,17 +44,10 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       OverlayEvidencePresentation.chip(evidence: [verbatim])?.line, verbatim.text)
   }
 
-  func testEvidenceChipExpandsForHoverOrFocusOnlyWhileToolsAreClosed() {
-    for hovered in [false, true] {
-      for focused in [false, true] {
-        XCTAssertEqual(
-          OverlayEvidencePresentation.isExpanded(
-            hovered: hovered, focused: focused, actionsOpen: false), hovered || focused)
-        XCTAssertFalse(
-          OverlayEvidencePresentation.isExpanded(
-            hovered: hovered, focused: focused, actionsOpen: true))
-      }
-    }
+  func testEvidenceChipExpandsOnlyAfterSelectionWhileToolsAreClosed() {
+    XCTAssertFalse(OverlayEvidencePresentation.isExpanded(selected: false, actionsOpen: false))
+    XCTAssertTrue(OverlayEvidencePresentation.isExpanded(selected: true, actionsOpen: false))
+    XCTAssertFalse(OverlayEvidencePresentation.isExpanded(selected: true, actionsOpen: true))
   }
 
   func testEvidenceChipReplacesBodyRowsInsideTheSharedBottomGlassContainer() throws {
@@ -88,23 +81,18 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(evidence.contains(".background(.regularMaterial, in: Capsule())"))
   }
 
-  func testEvidenceChipIsOnePassiveFocusableLineWithAnInstantReducedMotionSwap() throws {
+  func testEvidenceChipUsesExplicitButtonActivationAndRespectsReducedMotion() throws {
     let evidence = try source(at: "Codescribe/Screens/Overlay/OverlayEvidenceList.swift")
     XCTAssertTrue(evidence.contains(".lineLimit(1)"))
     XCTAssertTrue(evidence.contains(".truncationMode(.head)"))
     XCTAssertTrue(evidence.contains(".frame(height: OverlayResizeChrome.actionsHeight)"))
-    XCTAssertTrue(evidence.contains(".onHover { hovered = $0 }"))
-    XCTAssertTrue(evidence.contains(".focusable()"))
-    XCTAssertTrue(evidence.contains(".focused($focused)"))
+    XCTAssertFalse(evidence.contains(".onHover"))
+    XCTAssertTrue(evidence.contains("selected.toggle()"))
     XCTAssertTrue(evidence.contains("OverlayEvidencePresentation.isExpanded("))
     XCTAssertTrue(evidence.contains(".accessibilityElement(children: .ignore)"))
     XCTAssertTrue(evidence.contains("Also heard, not committed:"))
-    XCTAssertTrue(
-      evidence.contains(
-        ".help(state.mode == .coverageRefused ? \"\" : \"Also heard · not committed:"))
-    for forbidden in [
-      "Button", "onTapGesture", "accessibilityAction", ".tint(", ".allowsHitTesting(false)",
-    ] {
+    XCTAssertTrue(evidence.contains("OverlayMiniTooltip("))
+    for forbidden in ["onTapGesture", ".tint(", ".allowsHitTesting(false)"] {
       XCTAssertFalse(evidence.contains(forbidden), forbidden)
     }
     XCTAssertTrue(
@@ -473,17 +461,17 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertEqual(actions.phase, .idle)
   }
 
-  func testPointerOpensToolsImmediatelyAndEscapeClosesUntilTheNextEntry() {
+  func testPointerNeverOpensToolsAfterDismissal() {
     var actions = OverlayActionsPresentation()
     actions.pointerChanged(true)
+    XCTAssertEqual(actions.phase, .idle)
+    actions.toggle()
     XCTAssertEqual(actions.phase, .open)
     actions.dismiss()
-    XCTAssertEqual(actions.phase, .idle)
     actions.pointerChanged(false)
     actions.pointerChanged(true)
-    XCTAssertEqual(actions.phase, .open)
-    actions.reset()
     XCTAssertEqual(actions.phase, .idle)
+    actions.reset()
     XCTAssertFalse(actions.pointerInside)
     XCTAssertNil(actions.hideDeadline)
   }
@@ -622,7 +610,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let bottom = try section(
       of: overlaySource(), from: "private func canvasStack",
       to: "} else if let label = OverlayActionsPresentation.finishingLabel(")
-    let capsule = try section(of: bottom, from: "HStack(spacing: 2)", to: ".modifier(")
+    let capsule = try section(
+      of: bottom, from: "HStack(spacing: 2)", to: "OverlayActionsSurface(palette:")
     XCTAssertTrue(capsule.contains(".padding(.horizontal, actions.phase == .open ? 10 : 0)"))
     XCTAssertTrue(capsule.contains(".padding(.horizontal, actions.phase == .open ? 0 : 10)"))
     XCTAssertTrue(capsule.contains("minWidth: actions.phase == .open"))

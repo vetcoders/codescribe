@@ -189,6 +189,7 @@ struct DictationOverlayView: View {
                   : "Show or hide transcript tools"
               )
               .accessibilityIdentifier("overlay-tools-handle")
+              .modifier(OverlayMiniTooltip(title: "Actions", palette: palette))
               if actions.phase == .open {
                 intentRail
               }

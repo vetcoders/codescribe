@@ -14,7 +14,7 @@ struct OverlayCoverageStatus: View {
 
   var body: some View {
     OverlayHoverControl(
-      id: "overlay-coverage-status", title: Self.message, palette: palette,
+      id: "overlay-coverage-status", title: "Recording quality details", palette: palette,
       presented: $presented
     ) {
       Label(Self.message, systemImage: "info.circle")

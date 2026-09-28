@@ -19,7 +19,6 @@ struct OverlayActionsPresentation {
 
   mutating func pointerChanged(_ inside: Bool, at now: ContinuousClock.Instant = .now) {
     pointerInside = inside
-    if inside { phase = .open }
     interact(at: now)
   }
 
@@ -54,7 +53,6 @@ struct OverlayActionsPresentation {
 
   mutating func focusChanged(_ focused: Bool) {
     keyboardFocused = focused
-    if focused { phase = .open }
     interact()
   }
 

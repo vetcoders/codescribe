@@ -1,13 +1,38 @@
 import SwiftUI
 
-/// Presentation only. A short exit grace bridges the gap to the panel;
-/// entering a control never waits and never invokes its action.
-struct OverlayHoverRegion {
-  var anchorInside = false
-  var panelInside = false
-  var isInside: Bool { anchorInside || panelInside }
+/// Immediate, non-interactive hint. It never changes layout or opens a panel.
+struct OverlayMiniTooltip: ViewModifier {
+  let title: String
+  let palette: OverlayAppearancePalette
+  var enabled = true
+  @State private var hovered = false
+
+  func body(content: Content) -> some View {
+    content
+      .onHover { hovered = $0 }
+      .overlay(alignment: .top) {
+        if hovered && enabled {
+          Text(title)
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(palette.primaryText.color)
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+            .overlay {
+              RoundedRectangle(cornerRadius: 6).strokeBorder(palette.border.color)
+            }
+            .alignmentGuide(.top) { $0[.bottom] + 6 }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
+      }
+      .zIndex(hovered && enabled ? 1 : 0)
+  }
 }
 
+/// Hover describes; only button activation opens details or executes an action.
 struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
   let id: String
   let title: String
@@ -16,8 +41,7 @@ struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
   var action: (() -> Void)? = nil
   @ViewBuilder var label: LabelContent
   @ViewBuilder var detail: (@escaping () -> Void) -> Detail
-  @State private var hover = OverlayHoverRegion()
-  @FocusState private var focused: Bool
+  @State private var hovered = false
 
   var body: some View {
     Button {
@@ -25,7 +49,7 @@ struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
         presented = nil
         action()
       } else {
-        presented = id
+        presented = presented == id ? nil : id
       }
     } label: {
       label
@@ -33,21 +57,15 @@ struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
         .padding(2)
         .background {
           RoundedRectangle(cornerRadius: CSRadius.chip)
-            .fill(palette.primaryText.color.opacity(hover.anchorInside ? 0.14 : 0))
+            .fill(palette.primaryText.color.opacity(hovered ? 0.14 : 0))
         }
         .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    .focused($focused)
     .accessibilityLabel(title)
     .accessibilityIdentifier(id)
-    .onHover { inside in
-      hover.anchorInside = inside
-      if inside { presented = id }
-    }
-    .onChange(of: focused) { _, value in
-      if value { presented = id }
-    }
+    .onHover { hovered = $0 }
+    .modifier(OverlayMiniTooltip(title: title, palette: palette, enabled: presented == nil))
     .popover(
       isPresented: Binding(
         get: { presented == id },
@@ -63,15 +81,7 @@ struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
         .fixedSize(horizontal: false, vertical: true)
         .background(.regularMaterial)
         .contentShape(Rectangle())
-        .onHover { hover.panelInside = $0 }
-        .onDisappear { hover.panelInside = false }
         .onExitCommand { presented = nil }
-    }
-    .task(id: hover.isInside) {
-      guard !hover.isInside, !focused, presented == id else { return }
-      do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
-      guard !hover.isInside, presented == id else { return }
-      presented = nil
     }
     .onExitCommand { presented = nil }
   }

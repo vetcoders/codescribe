@@ -7,8 +7,8 @@ enum OverlayEvidencePresentation {
     return (evidence.count, evidence.suffix(12).map(\.text).joined(separator: " · "))
   }
 
-  static func isExpanded(hovered: Bool, focused: Bool, actionsOpen: Bool) -> Bool {
-    !actionsOpen && (hovered || focused)
+  static func isExpanded(selected: Bool, actionsOpen: Bool) -> Bool {
+    !actionsOpen && selected
   }
 }
 
@@ -17,8 +17,7 @@ enum OverlayEvidencePresentation {
 struct OverlayEvidenceChip: View {
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @State private var hovered = false
-  @FocusState private var focused: Bool
+  @State private var selected = false
   let state: OverlayState
   let palette: OverlayAppearancePalette
   let actionsOpen: Bool
@@ -26,27 +25,31 @@ struct OverlayEvidenceChip: View {
 
   private var expanded: Bool {
     OverlayEvidencePresentation.isExpanded(
-      hovered: hovered, focused: focused, actionsOpen: actionsOpen)
+      selected: selected, actionsOpen: actionsOpen)
   }
 
   var body: some View {
     if let chip = OverlayEvidencePresentation.chip(evidence: state.liveEvidence) {
-      surface(count: chip.count, line: chip.line)
-        .contentShape(Capsule())
-        .focusable()
-        .focused($focused)
-        .onHover { hovered = $0 }
-        .help(state.mode == .coverageRefused ? "" : "Also heard · not committed: \(chip.line)")
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Also heard, not committed: \(chip.line), \(chip.count) total")
-        .accessibilityIdentifier("overlay-unanchored-evidence")
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: expanded)
-        .transaction { transaction in
-          if reduceMotion {
-            transaction.animation = nil
-            transaction.disablesAnimations = true
-          }
+      Button {
+        selected.toggle()
+      } label: {
+        surface(count: chip.count, line: chip.line)
+      }
+      .buttonStyle(.plain)
+      .contentShape(Capsule())
+      .modifier(OverlayMiniTooltip(title: "Also heard · not committed", palette: palette))
+      .onExitCommand { selected = false }
+      .onChange(of: actionsOpen) { _, open in if open { selected = false } }
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel("Also heard, not committed: \(chip.line), \(chip.count) total")
+      .accessibilityIdentifier("overlay-unanchored-evidence")
+      .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: expanded)
+      .transaction { transaction in
+        if reduceMotion {
+          transaction.animation = nil
+          transaction.disablesAnimations = true
         }
+      }
     }
   }
 

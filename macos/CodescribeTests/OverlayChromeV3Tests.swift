@@ -36,13 +36,14 @@ final class OverlayChromeV3Tests: XCTestCase {
     }
   }
 
-  func testPointerEntryImmediatelyRevealsActions() {
+  func testPointerEntryDoesNotRevealActions() {
     var actions = OverlayActionsPresentation()
-    XCTAssertEqual(actions.phase, .idle)
     actions.pointerChanged(true)
-    XCTAssertEqual(actions.phase, .open)
+    XCTAssertEqual(actions.phase, .idle)
     actions.pointerChanged(false)
-    XCTAssertNotNil(actions.hideDeadline)
+    XCTAssertNil(actions.hideDeadline)
+    actions.toggle()
+    XCTAssertEqual(actions.phase, .open)
   }
 
   func testKeyboardActivationOpensActionsWithoutPointer() {

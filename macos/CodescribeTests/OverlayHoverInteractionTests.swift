@@ -6,21 +6,11 @@ import XCTest
 
 @MainActor
 final class OverlayHoverInteractionTests: XCTestCase {
-  func testCrossingFromAnchorToPanelKeepsOneHoverRegion() {
-    var region = OverlayHoverRegion()
-    XCTAssertFalse(region.isInside)
-    region.anchorInside = true
-    XCTAssertTrue(region.isInside)
-    region.panelInside = true
-    region.anchorInside = false
-    XCTAssertTrue(region.isInside)
-    region.panelInside = false
-    XCTAssertFalse(region.isInside)
-  }
-
   func testToolPanelKeepsRailOpenUntilItCloses() {
     var actions = OverlayActionsPresentation()
     actions.pointerChanged(true)
+    XCTAssertEqual(actions.phase, .idle)
+    actions.toggle()
     XCTAssertEqual(actions.phase, .open)
     actions.panelChanged(true)
     actions.pointerChanged(false)
@@ -33,9 +23,11 @@ final class OverlayHoverInteractionTests: XCTestCase {
     XCTAssertEqual(actions.phase, .idle)
   }
 
-  func testKeyboardFocusRevealsActionsWithoutATimer() {
+  func testKeyboardFocusDoesNotOpenToolsBeforeActivation() {
     var actions = OverlayActionsPresentation()
     actions.focusChanged(true)
+    XCTAssertEqual(actions.phase, .idle)
+    actions.toggle()
     XCTAssertEqual(actions.phase, .open)
     XCTAssertNil(actions.hideDeadline)
     actions.focusChanged(false)
@@ -90,6 +82,32 @@ final class OverlayHoverInteractionTests: XCTestCase {
     XCTAssertEqual(model.actions, 1, "One click executes once even with a tooltip visible")
   }
 
+  func testDetailsRequireClickAndRemainOpenWithoutHover() throws {
+    let model = HarnessModel()
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 400, y: 300, width: 320, height: 120),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    let host = FirstMouseHostingView(rootView: Harness(model: model, opensDetails: true))
+    host.sizingOptions = []
+    panel.contentView = host
+    panel.orderFrontRegardless()
+    defer {
+      model.presented = nil
+      panel.orderOut(nil)
+    }
+    settle(host)
+    XCTAssertNil(model.presented)
+    let anchor = model.anchor
+    click(panel, host: host, anchor: anchor)
+    settle(host)
+    XCTAssertEqual(model.presented, "hover-probe")
+    RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+    XCTAssertEqual(
+      model.presented, "hover-probe", "Leaving the anchor must not dismiss clicked details")
+    XCTAssertEqual(model.actions, 0, "Opening choices must not execute a command")
+    XCTAssertEqual(model.anchor, anchor)
+  }
+
   private func click(_ panel: NSPanel, host: NSView, anchor: CGRect) {
     let rect = host.convert(anchor, to: nil)
     let location = NSPoint(x: rect.midX, y: rect.midY)
@@ -121,12 +139,13 @@ final class OverlayHoverInteractionTests: XCTestCase {
 
   private struct Harness: View {
     @Bindable var model: HarnessModel
+    var opensDetails = false
 
     var body: some View {
       HStack {
         OverlayHoverControl(
           id: "hover-probe", title: "Copy transcript", palette: .dark,
-          presented: $model.presented, action: { model.actions += 1 }
+          presented: $model.presented, action: opensDetails ? nil : { model.actions += 1 }
         ) {
           Image(systemName: "doc.on.doc").frame(width: 24, height: 24)
         } detail: { _ in
