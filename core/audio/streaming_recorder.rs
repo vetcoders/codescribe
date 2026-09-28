@@ -93,6 +93,42 @@ impl CaptureTurnIntent {
     }
 }
 
+/// What kind of client holds the shared capture open.
+///
+/// Capture lifetime is refcounted over subscribers, never identical to one
+/// take: the physical stream opens for the first subscriber and closes when
+/// the last one releases. The dictation take is the first subscriber kind;
+/// the agent channel (FN-1) is the second.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CaptureSubscriberKind {
+    /// A dictation take (hold, toggle, assistive, composer). Owns the ledger,
+    /// the reducer and stop-path delivery; at most one at a time, enforced by
+    /// [`StreamingRecorder::start_event_session`].
+    Take,
+    /// A non-take consumer (agent channel): taps the same PCM through the
+    /// bounded fan-out but binds no session authority, owns no ledger and
+    /// never drives the dictation state machine.
+    Channel,
+}
+
+/// Identity of one registered capture subscription.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CaptureSubscriberId(u64);
+
+/// What releasing the take's own subscription means for the physical capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TakeFeedRelease {
+    /// The take was the last subscriber: the stop path owes the physical
+    /// close and the whole-capture WAV, exactly the pre-refcount contract.
+    LastSubscriber,
+    /// Remaining subscribers keep the capture open: no physical close, and no
+    /// whole-capture WAV belongs to this take.
+    CaptureShared,
+    /// No take subscription was registered (stale-cleanup and recovery
+    /// paths); the stop path keeps the unconditional close it always had.
+    NoTakeFeed,
+}
+
 /// Transport admission only: never invoke the executor while opening audio.
 fn live_max_capability(
     intent: CaptureTurnIntent,
@@ -314,6 +350,19 @@ pub struct StreamingRecorder {
     /// Last capture-open epoch issued for the currently bound session.
     /// Zero means this bind has not successfully opened capture yet.
     capture_epoch: u64,
+    /// Capture subscribers currently holding the physical capture open. The
+    /// take registers here like any other subscriber; the stream closes when
+    /// the last subscriber releases, not when a take ends.
+    capture_subscribers: Vec<(CaptureSubscriberId, CaptureSubscriberKind)>,
+    /// Monotonic source of subscriber identities.
+    next_capture_subscriber: u64,
+    /// The subscription the active take session owns, if any.
+    take_subscriber: Option<CaptureSubscriberId>,
+    /// Bounded PCM fan-out, one feed per subscriber. The capture callback
+    /// offers every block to every feed and never blocks on a consumer (the
+    /// `RecorderLayer1Lane::offer_pcm` contract): a full feed drops the block
+    /// and counts it, a closed feed is reaped.
+    pcm_feeds: Arc<StdMutex<Vec<(CaptureSubscriberId, mpsc::Sender<Vec<f32>>)>>>,
     captured_samples: Arc<AtomicU64>,
     terminal_audio_sender: Option<
         std::sync::mpsc::Sender<
@@ -363,6 +412,10 @@ impl StreamingRecorder {
             acoustic_ledger: None,
             authority_session_id: None,
             capture_epoch: 0,
+            capture_subscribers: Vec::new(),
+            next_capture_subscriber: 0,
+            take_subscriber: None,
+            pcm_feeds: Arc::new(StdMutex::new(Vec::new())),
             captured_samples: Arc::new(AtomicU64::new(0)),
             terminal_audio_sender: None,
             last_window_closed: None,
@@ -394,6 +447,10 @@ impl StreamingRecorder {
             acoustic_ledger: None,
             authority_session_id: None,
             capture_epoch: 0,
+            capture_subscribers: Vec::new(),
+            next_capture_subscriber: 0,
+            take_subscriber: None,
+            pcm_feeds: Arc::new(StdMutex::new(Vec::new())),
             captured_samples: Arc::new(AtomicU64::new(0)),
             terminal_audio_sender: None,
             last_window_closed: None,
@@ -432,6 +489,82 @@ impl StreamingRecorder {
     /// Identity bound at capture open, not a latest-file or UI-slot lookup.
     pub fn capture_identity(&self) -> (Option<&str>, u64) {
         (self.authority_session_id.as_deref(), self.capture_epoch)
+    }
+
+    /// Register one capture subscriber with its bounded PCM feed.
+    ///
+    /// [`Self::capture_subscriber_count`] tells the caller whether it opened
+    /// the capture (first subscriber) or joined an already open one. The feed
+    /// is offered every captured block until the subscription is released.
+    pub fn acquire_capture_subscriber(
+        &mut self,
+        kind: CaptureSubscriberKind,
+        pcm_feed: mpsc::Sender<Vec<f32>>,
+    ) -> CaptureSubscriberId {
+        self.next_capture_subscriber += 1;
+        let id = CaptureSubscriberId(self.next_capture_subscriber);
+        self.capture_subscribers.push((id, kind));
+        self.pcm_feeds
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((id, pcm_feed));
+        id
+    }
+
+    /// Release one subscription. Returns `true` when it was the last one —
+    /// the caller then owes the physical capture close. Dropping the feed
+    /// closes that subscriber's PCM channel, so its session observes
+    /// end-of-capture and drains exactly as a physical close would make it.
+    pub fn release_capture_subscriber(&mut self, id: CaptureSubscriberId) -> bool {
+        let before = self.capture_subscribers.len();
+        self.capture_subscribers.retain(|(held, _)| *held != id);
+        if self.capture_subscribers.len() == before {
+            warn!(?id, "release of an unknown capture subscriber");
+        }
+        self.pcm_feeds
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(held, _)| *held != id);
+        if self.take_subscriber == Some(id) {
+            self.take_subscriber = None;
+        }
+        self.capture_subscribers.is_empty()
+    }
+
+    /// Subscribers currently holding the capture open.
+    pub fn capture_subscriber_count(&self) -> usize {
+        self.capture_subscribers.len()
+    }
+
+    /// Whether any subscriber holds the capture open.
+    pub fn has_capture_subscribers(&self) -> bool {
+        !self.capture_subscribers.is_empty()
+    }
+
+    /// Whether a dictation take currently subscribes to the capture.
+    pub fn has_take_subscriber(&self) -> bool {
+        self.capture_subscribers
+            .iter()
+            .any(|(_, kind)| *kind == CaptureSubscriberKind::Take)
+    }
+
+    /// Whether a non-take consumer (agent channel) currently subscribes.
+    pub fn has_non_take_subscriber(&self) -> bool {
+        self.capture_subscribers
+            .iter()
+            .any(|(_, kind)| *kind != CaptureSubscriberKind::Take)
+    }
+
+    /// Release the take's own subscription ahead of the stop tail.
+    fn release_take_pcm_feed(&mut self) -> TakeFeedRelease {
+        let Some(id) = self.take_subscriber.take() else {
+            return TakeFeedRelease::NoTakeFeed;
+        };
+        if self.release_capture_subscriber(id) {
+            TakeFeedRelease::LastSubscriber
+        } else {
+            TakeFeedRelease::CaptureShared
+        }
     }
 
     /// Store a per-utterance text callback.
@@ -545,6 +678,11 @@ impl StreamingRecorder {
             .as_ref()
             .map(Arc::clone)
             .ok_or_else(|| anyhow!("start_event_session requires AcousticLedger"))?;
+        if self.has_take_subscriber() {
+            return Err(anyhow!(
+                "start_event_session refused: a dictation take already subscribes to this capture"
+            ));
+        }
         let next_capture_epoch = self.capture_epoch.checked_add(1).ok_or_else(|| {
             anyhow!("capture epoch overflow: no unused epoch remains for the bound session")
         })?;
@@ -558,25 +696,37 @@ impl StreamingRecorder {
         // normal live queue: cold STT initialization happens behind this buffer.
         let (tx, rx) = mpsc::channel::<Vec<f32>>(AUDIO_BACKLOG_CHUNKS);
 
-        // Setup callback to send audio data
+        // The take joins the capture as one subscriber. A capture another
+        // subscriber already opened stays open and is shared; this take then
+        // owes no whole-capture WAV at stop (its terminal PCM lane is the
+        // live-buffer archive, wired with the agent channel in W1b).
+        let shared_capture = self.has_non_take_subscriber() && self.recorder.is_active();
+        let take_subscriber = self.acquire_capture_subscriber(CaptureSubscriberKind::Take, tx);
+        self.take_subscriber = Some(take_subscriber);
+
+        // One callback per physical capture fans every block out to all
+        // subscriber feeds; per-block cost stays O(subscribers) try_sends.
         let dropped = Arc::clone(&self.dropped_chunks);
         let level_callback = self.level_callback.clone();
         let captured_samples = Arc::clone(&self.captured_samples);
+        let pcm_feeds = Arc::clone(&self.pcm_feeds);
         self.recorder.set_callback(Box::new(move |data| {
             captured_samples.fetch_add(data.len() as u64, Ordering::Relaxed);
             if let Some(ref level_cb) = level_callback {
                 level_cb(block_rms(data));
             }
-            if let Err(_e) = tx.try_send(data.to_vec()) {
-                let n = dropped.fetch_add(1, Ordering::Relaxed);
-                if n == 0 || (n + 1).is_multiple_of(50) {
-                    tracing::warn!("Audio callback: channel full, dropped {} chunk(s)", n + 1);
-                }
-            }
+            let mut feeds = pcm_feeds
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            offer_pcm_to_feeds(&mut feeds, data, &dropped);
         }));
 
-        // Start actual audio stream
-        self.recorder.start().await?;
+        // Start actual audio stream: the first subscriber opens it; a shared
+        // capture is already running.
+        if !shared_capture && let Err(error) = self.recorder.start().await {
+            self.release_capture_subscriber(take_subscriber);
+            return Err(error);
+        }
         self.capture_epoch = next_capture_epoch;
         event_sink.on_capture_opened(&session_id, next_capture_epoch);
 
@@ -611,8 +761,16 @@ impl StreamingRecorder {
         let (layer1, _decision_receipt) = crate::asr_session::layer1_decision(&runtime_settings);
         let (lifecycle_handle, lifecycle_events) = recorder_lifecycle_channel();
         self.lifecycle_handle = Some(lifecycle_handle);
-        let (terminal_tx, terminal_rx) = std::sync::mpsc::channel();
-        self.terminal_audio_sender = Some(terminal_tx);
+        // A take that shares another subscriber's capture owes no whole-capture
+        // WAV at stop, so the session must not wait on the terminal archive
+        // handoff; its terminal PCM lane arrives with the agent channel (W1b).
+        let terminal_audio = if shared_capture {
+            None
+        } else {
+            let (terminal_tx, terminal_rx) = std::sync::mpsc::channel();
+            self.terminal_audio_sender = Some(terminal_tx);
+            Some(terminal_rx)
+        };
         let (last_window_tx, last_window_rx) = oneshot::channel();
         self.last_window_closed = Some(last_window_rx);
         self.transcription_handle = Some(tokio::spawn(async move {
@@ -633,7 +791,7 @@ impl StreamingRecorder {
                     capture_turn,
                     layer1,
                     lifecycle_events: Some(lifecycle_events),
-                    terminal_audio: Some(terminal_rx),
+                    terminal_audio,
                     last_window_closed: Some(last_window_tx),
                 },
             )
@@ -645,10 +803,12 @@ impl StreamingRecorder {
 
     /// Stop the session and return the accumulated transcript plus the WAV path.
     ///
-    /// Ordered shutdown: stop capture (which drops the sender), await the
-    /// transcription task, let the presentation layer drain, then release the
-    /// sink. Any chunks dropped to backpressure during the session are logged
-    /// here — that counter is the signal that audio was actually lost.
+    /// Ordered shutdown: release the take's subscription, stop capture when no
+    /// subscriber remains (a shared capture stays open and yields no WAV
+    /// here), await the transcription task, let the presentation layer drain,
+    /// then release the sink. Any chunks dropped to backpressure during the
+    /// session are logged here — that counter is the signal that audio was
+    /// actually lost.
     pub async fn stop(&mut self) -> Result<(String, Option<std::path::PathBuf>)> {
         info!("Stopping streaming recorder...");
 
@@ -661,15 +821,34 @@ impl StreamingRecorder {
             );
         }
 
-        // The all-at-once API remains for callers outside the stop delivery
-        // path; the controller uses close_capture/finish_closed_capture.
-        let stopped = self.recorder.stop().await;
+        // The take's subscription is released first: its PCM feed closes and
+        // the session drains exactly as a physical close would make it. The
+        // physical stream stops only when no subscriber remains; a capture
+        // shared with other subscribers stays open and owes this take no
+        // whole-capture WAV.
+        let stopped = match self.release_take_pcm_feed() {
+            TakeFeedRelease::LastSubscriber | TakeFeedRelease::NoTakeFeed => {
+                self.recorder.stop().await
+            }
+            TakeFeedRelease::CaptureShared => Ok(None),
+        };
         self.complete_stop(stopped).await
     }
 
-    /// Close capture independently of the session drain and WAV finalization.
+    /// Close the take's capture interest independently of the session drain
+    /// and WAV finalization.
+    ///
+    /// Releases the take subscription (closing its PCM feed), then closes the
+    /// physical stream only when no subscriber remains. The returned flag
+    /// belongs to this stop and must be passed to finalization; `false` covers
+    /// both "no stream was active" and "the capture stays open for others".
     pub async fn close_capture(&mut self) -> bool {
-        self.recorder.close_capture().await
+        match self.release_take_pcm_feed() {
+            TakeFeedRelease::LastSubscriber | TakeFeedRelease::NoTakeFeed => {
+                self.recorder.close_capture().await
+            }
+            TakeFeedRelease::CaptureShared => false,
+        }
     }
 
     /// The live session sends this only after Apple and any armed CloudLive
@@ -824,6 +1003,36 @@ impl StreamingRecorder {
     pub async fn stop_and_discard_path(&mut self) -> Result<String> {
         let (transcript, _audio_path) = self.stop().await?;
         Ok(transcript)
+    }
+}
+
+/// Offer one captured block to every subscriber feed.
+///
+/// Bounded and non-blocking — capture never branches on a consumer (the
+/// `RecorderLayer1Lane::offer_pcm` contract): a full feed drops the block and
+/// counts it on `dropped`, a closed feed is reaped from the registry.
+fn offer_pcm_to_feeds(
+    feeds: &mut Vec<(CaptureSubscriberId, mpsc::Sender<Vec<f32>>)>,
+    data: &[f32],
+    dropped: &AtomicU64,
+) {
+    let mut full = 0_u64;
+    feeds.retain(|(_, feed)| match feed.try_send(data.to_vec()) {
+        Ok(()) => true,
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            full += 1;
+            true
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => false,
+    });
+    if full > 0 {
+        let n = dropped.fetch_add(full, Ordering::Relaxed);
+        if n == 0 || (n + full).is_multiple_of(50) {
+            tracing::warn!(
+                "Audio callback: channel full, dropped {} chunk(s)",
+                n + full
+            );
+        }
     }
 }
 
@@ -1065,6 +1274,136 @@ mod tests {
             .expect_err("start_event_session should fail when event sink is missing");
         assert!(
             err.to_string().contains("requires event_sink"),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    /// Capture lifetime is refcounted over subscribers, never take-identical:
+    /// the capture closes only when the last subscriber releases, and a take
+    /// after the close binds a fresh ledger and epoch like any first take.
+    #[tokio::test]
+    async fn capture_lifecycle_is_refcounted_over_subscribers() {
+        let mut recorder = StreamingRecorder::new().expect("Failed to create recorder");
+        let (channel_tx, mut channel_rx) = mpsc::channel::<Vec<f32>>(8);
+        let (take_tx, mut take_rx) = mpsc::channel::<Vec<f32>>(8);
+
+        assert_eq!(recorder.capture_subscriber_count(), 0);
+        assert!(!recorder.has_capture_subscribers());
+
+        // The agent channel (non-take) subscribes first.
+        let channel =
+            recorder.acquire_capture_subscriber(CaptureSubscriberKind::Channel, channel_tx);
+        assert_eq!(recorder.capture_subscriber_count(), 1);
+        assert!(recorder.has_non_take_subscriber());
+        assert!(!recorder.has_take_subscriber());
+
+        // A dictation take joins as the second subscriber.
+        let take = recorder.acquire_capture_subscriber(CaptureSubscriberKind::Take, take_tx);
+        assert_eq!(recorder.capture_subscriber_count(), 2);
+        assert!(recorder.has_take_subscriber());
+
+        // The take leaving while the channel stays must NOT close the capture.
+        assert!(
+            !recorder.release_capture_subscriber(take),
+            "capture must stay open while the channel subscribes"
+        );
+        assert_eq!(recorder.capture_subscriber_count(), 1);
+        // Releasing a subscription drops its feed: the take's session observes
+        // end-of-capture, the untouched channel feed stays open.
+        assert!(matches!(
+            take_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        ));
+        assert!(matches!(
+            channel_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+
+        // The last subscriber releasing owes the physical close.
+        assert!(
+            recorder.release_capture_subscriber(channel),
+            "last subscriber release must report capture close"
+        );
+        assert_eq!(recorder.capture_subscriber_count(), 0);
+
+        // A take after the close binds a fresh ledger and restarts the epoch,
+        // exactly the pre-refcount first-take contract.
+        let runtime_settings = Arc::new(
+            crate::config::Config::load_runtime_snapshot_without_keychain()
+                .expect("keychain-free runtime snapshot"),
+        );
+        let ledger_a =
+            recorder.bind_session_authority("take-a".to_string(), Arc::clone(&runtime_settings));
+        assert_eq!(recorder.capture_identity(), (Some("take-a"), 0));
+        let ledger_b = recorder.bind_session_authority("take-b".to_string(), runtime_settings);
+        assert_eq!(recorder.capture_identity(), (Some("take-b"), 0));
+        assert!(
+            !Arc::ptr_eq(&ledger_a, &ledger_b),
+            "every take binds its own ledger, never the capture's"
+        );
+    }
+
+    /// The capture callback's fan-out is bounded and non-blocking: a full feed
+    /// drops the block and counts it, a closed feed is reaped, and neither
+    /// blocks nor removes the healthy feeds.
+    #[test]
+    fn pcm_fanout_drops_full_feeds_and_reaps_closed_ones() {
+        let dropped = AtomicU64::new(0);
+        let mut feeds: Vec<(CaptureSubscriberId, mpsc::Sender<Vec<f32>>)> = Vec::new();
+
+        let (open_tx, mut open_rx) = mpsc::channel::<Vec<f32>>(1);
+        feeds.push((CaptureSubscriberId(1), open_tx));
+        let (full_tx, _full_rx) = mpsc::channel::<Vec<f32>>(1);
+        full_tx
+            .try_send(vec![0.0])
+            .expect("prefill the bounded feed to capacity");
+        feeds.push((CaptureSubscriberId(2), full_tx));
+        let (closed_tx, closed_rx) = mpsc::channel::<Vec<f32>>(1);
+        drop(closed_rx);
+        feeds.push((CaptureSubscriberId(3), closed_tx));
+
+        offer_pcm_to_feeds(&mut feeds, &[1.0, 2.0, 3.0], &dropped);
+
+        assert_eq!(
+            open_rx.try_recv().expect("healthy feed receives the block"),
+            vec![1.0, 2.0, 3.0]
+        );
+        assert_eq!(
+            dropped.load(Ordering::Relaxed),
+            1,
+            "full feed drops, counted"
+        );
+        assert_eq!(
+            feeds.len(),
+            2,
+            "closed feed reaped, full feed retained for the next block"
+        );
+        assert!(feeds.iter().any(|(id, _)| *id == CaptureSubscriberId(1)));
+        assert!(feeds.iter().any(|(id, _)| *id == CaptureSubscriberId(2)));
+    }
+
+    /// One dictation take at a time: a second `start_event_session` is refused
+    /// before any device work while a take subscription is live.
+    #[tokio::test]
+    async fn start_event_session_refuses_a_second_take_subscriber() {
+        let mut recorder = StreamingRecorder::new().expect("Failed to create recorder");
+        recorder.set_event_sink(Some(Arc::new(
+            crate::pipeline::sinks::CollectorEventSink::new(),
+        )));
+        let runtime_settings = Arc::new(
+            crate::config::Config::load_runtime_snapshot_without_keychain()
+                .expect("keychain-free runtime snapshot"),
+        );
+        recorder.bind_session_authority("first-take".to_string(), runtime_settings);
+        let (take_tx, _take_rx) = mpsc::channel::<Vec<f32>>(8);
+        recorder.acquire_capture_subscriber(CaptureSubscriberKind::Take, take_tx);
+
+        let err = recorder
+            .start_event_session(None)
+            .await
+            .expect_err("a second take must be refused while one subscribes");
+        assert!(
+            err.to_string().contains("already subscribes"),
             "unexpected error: {err:?}"
         );
     }
