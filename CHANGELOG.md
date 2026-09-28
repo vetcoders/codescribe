@@ -11,16 +11,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Release reality
 
-| Version  | Repository milestone | Public distribution status                                                        |
-| -------- | -------------------- | --------------------------------------------------------------------------------- |
-| `0.13.3` | 2026-08-13           | **Latest published GitHub Release** (`v0.13.3`), signed, notarized, and stapled.  |
-| `0.14.0` | 2026-08-17           | Source/daily-build milestone only; no Git tag or GitHub Release was published.    |
-| `0.14.1` | 2026-08-18 onward    | Earlier source/release-candidate milestone.                                       |
-| `0.15.1` | 2026-09-13           | Current source/daily-build milestone; this patch bump does not publish a release. |
+| Version  | Repository milestone | Public distribution status                                                       |
+| -------- | -------------------- | -------------------------------------------------------------------------------- |
+| `0.13.3` | 2026-08-13           | **Latest published GitHub Release** (`v0.13.3`), signed, notarized, and stapled. |
+| `0.14.0` | 2026-08-17           | Source/daily-build milestone only; no Git tag or GitHub Release was published.   |
+| `0.14.1` | 2026-08-18 onward    | Earlier source/release-candidate milestone.                                      |
+| `0.15.1` | 2026-09-13           | Earlier source/daily-build milestone.                                            |
+| `0.15.2` | 2026-09-28           | Release branch prepared for PR; not a published distribution.                    |
 
 The sections below distinguish code milestones from public releases. A version
 number in `Cargo.toml` is not evidence that a DMG, tag, appcast, or GitHub
 Release exists.
+
+## [0.15.2] - 2026-09-28 (release preparation)
+
+### Changed
+
+- Prepare `release/0.15.2` from the installed overlay line (`b58d0d625`), retaining
+  the newer Transcript Bus `--say` change from `bc971ceca`.
+- Bump the CLI, core, and Swift bridge source version to `0.15.2`.
+
+This version bump prepares the PR branch; it does not publish a release or
+certify the outstanding overlay hover/layout correction.
 
 ## [0.15.1] - 2026-09-13 (source milestone)
 
