@@ -1516,11 +1516,16 @@ pub fn replay_corrections_through_extractor(
                 continue;
             }
         };
-        // Real records only: Correction level, or legacy-missing level.
+        // Teach only from edits of unreworded text: Off (raw) and Correction,
+        // or legacy-missing level. Smart/Max deliver LLM-reworded text, so an
+        // edit there corrects the formatter, not the engine's hearing.
         let level = record.formatting_level.as_deref();
         let teaches = match level {
             None => true,
-            Some(value) => value.eq_ignore_ascii_case(FormattingPolicy::Correction.as_str()),
+            Some(value) => {
+                value.eq_ignore_ascii_case(FormattingPolicy::Off.as_str())
+                    || value.eq_ignore_ascii_case(FormattingPolicy::Correction.as_str())
+            }
         };
         if !teaches {
             continue;
@@ -2702,6 +2707,73 @@ mod tests {
             !entries.iter().any(|e| e.variant == "zaznaczenie"),
             "apply must not smuggle in a pair the gate refused"
         );
+    }
+
+    /// The Founder dictates at formatting Off (raw). Wave 9 taught only from
+    /// Correction-level edits, so every raw-level fix — the least reworded,
+    /// safest teaching signal there is — was silently skipped and no candidate
+    /// ever reached the gate. Shaped on the 2026-09-28 receipt:
+    /// "Cloud już" → "Klaudiusz" (a 2→1 replace run). Smart/Max stay out.
+    #[test]
+    #[serial]
+    fn off_level_edits_teach_while_smart_and_max_stay_out() {
+        let temp_dir = tempfile::tempdir().expect("temp");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let temp_root = temp_dir.path().canonicalize().unwrap();
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
+        }
+        let quality = quality_dir();
+        fs::create_dir_all(&quality).unwrap();
+        let path = quality.join("corrections.jsonl");
+        let mut body = String::new();
+        while body.chars().count() < 200 {
+            body.push_str("tekst ");
+        }
+        let heard = format!("{body}a Cloud już ogarnia bus");
+        let meant = format!("{body}a Klaudiusz ogarnia bus");
+        let lines = [
+            serde_json::json!({
+                "timestamp_ms": 1,
+                "mode": "overlay",
+                "formatting_level": "off",
+                "raw_text": heard,
+                "delivered_text": heard,
+                "edited_text": meant,
+                "meta": {"action": "copy"}
+            })
+            .to_string(),
+            serde_json::json!({
+                "timestamp_ms": 2,
+                "mode": "overlay",
+                "formatting_level": "smart",
+                "raw_text": "x",
+                "delivered_text": "smart var",
+                "edited_text": "Smart Canon",
+                "meta": {"action": "copy"}
+            })
+            .to_string(),
+            serde_json::json!({
+                "timestamp_ms": 3,
+                "mode": "overlay",
+                "formatting_level": "max",
+                "raw_text": "y",
+                "delivered_text": "max var",
+                "edited_text": "Max Canon",
+                "meta": {"action": "copy"}
+            })
+            .to_string(),
+        ];
+        fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
+
+        let table = replay_corrections_through_extractor(&path, false).expect("replay");
+        assert_eq!(
+            table.len(),
+            1,
+            "the raw-level fix extracts; smart/max edits never enter: {table:?}"
+        );
+        assert_eq!(table[0].variant, "Cloud już");
+        assert_eq!(table[0].canonical, "Klaudiusz");
     }
 
     /// Commit under DATA_DIR isolation writes quality + meta and may teach pairs.
