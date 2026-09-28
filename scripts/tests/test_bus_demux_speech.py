@@ -58,9 +58,14 @@ class SpeechTransportTests(unittest.TestCase):
         self.assertEqual(handler._context.verify_mode, ssl.CERT_REQUIRED)
         self.assertTrue(handler._context.check_hostname)
         args, kwargs = self.opener.open.call_args
-        self.assertEqual(args, ("https://api.x.ai/v1/tts",))
+        request = args[0]
+        self.assertEqual(request.full_url, "https://api.x.ai/v1/tts")
         self.assertEqual(kwargs["timeout"], 60)
-        self.assertEqual(json.loads(kwargs["data"])["text"], "hello")
+        self.assertEqual(json.loads(request.data)["text"], "hello")
+        # Headers must ride on the Request itself: urllib's do_request_ installs
+        # a form-urlencoded Content-Type before opener.addheaders are consulted.
+        self.assertEqual(request.get_header("Content-type"), "application/json")
+        self.assertEqual(request.get_header("Authorization"), "Bearer test-only-key")
         self.response_context.__exit__.assert_called_once()
         self.assertTrue(paths)
         self.assertFalse(paths[0].exists())
