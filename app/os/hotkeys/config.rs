@@ -13,7 +13,8 @@
 //! defaults here mirror.
 
 use crate::config::{
-    Config, DeferredInsertShortcut, HoldArmModifier, ShortcutBinding, UserSettings, WorkMode,
+    ChannelModifier, Config, DeferredInsertShortcut, HoldArmModifier, ShortcutBinding,
+    UserSettings, WorkMode,
 };
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU64, Ordering as AtomicOrdering};
 
@@ -253,6 +254,65 @@ pub fn get_double_tap_interval_ms() -> u64 {
     DOUBLE_TAP_INTERVAL_MS.load(AtomicOrdering::SeqCst)
 }
 
+// --- Agent channel, Fn tap, middle mouse ---
+//
+// Channel digits default to Ctrl so a passed-through chord does not type into
+// the frontmost app. Fn tap and middle-mouse-as-Fn stay off until chosen.
+
+/// 0 = Ctrl (default), 1 = Fn. Command is not a stored value.
+static CHANNEL_MODIFIER: AtomicU8 = AtomicU8::new(0);
+/// Quick Fn press below the hold delay toggles dictation.
+static FN_TAP_TOGGLES_DICTATION: AtomicBool = AtomicBool::new(false);
+/// Middle mouse button follows the Fn press/release path.
+static MIDDLE_MOUSE_ACTS_AS_FN: AtomicBool = AtomicBool::new(false);
+
+fn encode_channel_modifier(modifier: ChannelModifier) -> u8 {
+    match modifier {
+        ChannelModifier::Ctrl => 0,
+        ChannelModifier::Fn => 1,
+    }
+}
+
+fn decode_channel_modifier(value: u8) -> ChannelModifier {
+    match value {
+        1 => ChannelModifier::Fn,
+        _ => ChannelModifier::Ctrl,
+    }
+}
+
+/// Publish the modifier that opens an agent channel with a digit.
+pub fn set_channel_modifier(modifier: ChannelModifier) {
+    CHANNEL_MODIFIER.store(encode_channel_modifier(modifier), AtomicOrdering::SeqCst);
+    tracing::info!("Agent channel modifier set to: {}", modifier.as_str());
+}
+
+/// Modifier currently required to open an agent channel.
+pub fn get_channel_modifier() -> ChannelModifier {
+    decode_channel_modifier(CHANNEL_MODIFIER.load(AtomicOrdering::SeqCst))
+}
+
+/// Enable or disable dictation toggle on a quick Fn press.
+pub fn set_fn_tap_toggles_dictation(enabled: bool) {
+    FN_TAP_TOGGLES_DICTATION.store(enabled, AtomicOrdering::SeqCst);
+    tracing::info!("Fn tap toggles dictation: {}", enabled);
+}
+
+/// Whether a quick Fn press toggles dictation.
+pub fn get_fn_tap_toggles_dictation() -> bool {
+    FN_TAP_TOGGLES_DICTATION.load(AtomicOrdering::SeqCst)
+}
+
+/// Enable or disable the middle mouse button as an Fn press/release.
+pub fn set_middle_mouse_acts_as_fn(enabled: bool) {
+    MIDDLE_MOUSE_ACTS_AS_FN.store(enabled, AtomicOrdering::SeqCst);
+    tracing::info!("Middle mouse acts as Fn: {}", enabled);
+}
+
+/// Whether mouse button 2 is fed to the detector as Fn.
+pub fn get_middle_mouse_acts_as_fn() -> bool {
+    MIDDLE_MOUSE_ACTS_AS_FN.load(AtomicOrdering::SeqCst)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// The whole hotkey contract as one comparable value.
 ///
@@ -266,6 +326,12 @@ pub struct HotkeyRuntimeConfig {
     pub hold_start_delay_ms: u64,
     pub double_tap_interval_ms: u64,
     pub deferred_insert_shortcut: DeferredInsertShortcut,
+    /// Digit chord modifier. Command cannot be stored here.
+    pub channel_modifier: ChannelModifier,
+    /// Quick Fn press below [`Self::hold_start_delay_ms`] toggles dictation.
+    pub fn_tap_toggles_dictation: bool,
+    /// Mouse button 2 is delivered as an Fn edge.
+    pub middle_mouse_acts_as_fn: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -305,6 +371,9 @@ impl From<&Config> for HotkeyRuntimeConfig {
             hold_start_delay_ms: config.hold_start_delay_ms,
             double_tap_interval_ms: config.double_tap_interval_ms,
             deferred_insert_shortcut: config.deferred_insert_shortcut,
+            channel_modifier: config.channel_modifier,
+            fn_tap_toggles_dictation: config.fn_tap_toggles_dictation,
+            middle_mouse_acts_as_fn: config.middle_mouse_acts_as_fn,
         }
     }
 }
@@ -318,6 +387,9 @@ pub fn get_hotkey_runtime_config() -> HotkeyRuntimeConfig {
         hold_start_delay_ms: get_hold_start_delay_ms(),
         double_tap_interval_ms: get_double_tap_interval_ms(),
         deferred_insert_shortcut: get_deferred_insert_shortcut(),
+        channel_modifier: get_channel_modifier(),
+        fn_tap_toggles_dictation: get_fn_tap_toggles_dictation(),
+        middle_mouse_acts_as_fn: get_middle_mouse_acts_as_fn(),
     }
 }
 
@@ -346,6 +418,9 @@ pub fn apply_hotkey_runtime_config(config: HotkeyRuntimeConfig) {
     set_hold_start_delay_ms(normalized.hold_start_delay_ms);
     set_double_tap_interval_ms(normalized.double_tap_interval_ms);
     set_deferred_insert_shortcut(normalized.deferred_insert_shortcut);
+    set_channel_modifier(normalized.channel_modifier);
+    set_fn_tap_toggles_dictation(normalized.fn_tap_toggles_dictation);
+    set_middle_mouse_acts_as_fn(normalized.middle_mouse_acts_as_fn);
 }
 
 /// Apply the hotkey slice of a [`Config`] to the runtime atomics.
@@ -357,6 +432,7 @@ pub fn apply_hotkey_config(config: &Config) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
     use std::sync::Mutex;
 
     /// Serializes tests that mutate process-global hotkey atomics.
@@ -411,6 +487,9 @@ mod tests {
             hold_start_delay_ms: 1234,
             double_tap_interval_ms: 260,
             deferred_insert_shortcut: DeferredInsertShortcut::CommandShiftV,
+            channel_modifier: ChannelModifier::Fn,
+            fn_tap_toggles_dictation: true,
+            middle_mouse_acts_as_fn: true,
         };
         apply_hotkey_runtime_config(runtime);
 
@@ -426,6 +505,9 @@ mod tests {
             get_deferred_insert_shortcut(),
             runtime.deferred_insert_shortcut
         );
+        assert_eq!(get_channel_modifier(), ChannelModifier::Fn);
+        assert!(get_fn_tap_toggles_dictation());
+        assert!(get_middle_mouse_acts_as_fn());
     }
 
     /// Second apply of an out-of-range interval is a no-op after the first clamp.
@@ -448,6 +530,9 @@ mod tests {
             hold_start_delay_ms: 800,
             double_tap_interval_ms: 999,
             deferred_insert_shortcut: DeferredInsertShortcut::CommandOptionV,
+            channel_modifier: ChannelModifier::Ctrl,
+            fn_tap_toggles_dictation: false,
+            middle_mouse_acts_as_fn: false,
         };
         apply_hotkey_runtime_config(runtime);
         let after_first = get_hotkey_runtime_config();
@@ -455,5 +540,39 @@ mod tests {
 
         apply_hotkey_runtime_config(runtime);
         assert_eq!(get_hotkey_runtime_config(), after_first);
+    }
+
+    /// `ctrl` and `fn` parse; `cmd` is rejected. Defaults stay ctrl, tap off, middle off.
+    #[test]
+    fn channel_modifier_parse_and_input_surface_defaults() {
+        assert_eq!("ctrl".parse::<ChannelModifier>(), Ok(ChannelModifier::Ctrl));
+        assert_eq!("fn".parse::<ChannelModifier>(), Ok(ChannelModifier::Fn));
+        assert!("cmd".parse::<ChannelModifier>().is_err());
+        assert!("command".parse::<ChannelModifier>().is_err());
+        assert_eq!(ChannelModifier::default(), ChannelModifier::Ctrl);
+
+        let config = Config::default();
+        assert_eq!(config.channel_modifier, ChannelModifier::Ctrl);
+        assert!(!config.fn_tap_toggles_dictation);
+        assert!(!config.middle_mouse_acts_as_fn);
+
+        let runtime = HotkeyRuntimeConfig {
+            mode_bindings: ModeHotkeyBindings {
+                dictation: ShortcutBinding::HoldFn,
+                formatting: ShortcutBinding::DoubleLeftOption,
+                assistive: ShortcutBinding::DoubleRightOption,
+            },
+            hold_exclusive: false,
+            hold_arm_modifier: HoldArmModifier::Shift,
+            hold_start_delay_ms: 800,
+            double_tap_interval_ms: 200,
+            deferred_insert_shortcut: DeferredInsertShortcut::default(),
+            channel_modifier: config.channel_modifier,
+            fn_tap_toggles_dictation: config.fn_tap_toggles_dictation,
+            middle_mouse_acts_as_fn: config.middle_mouse_acts_as_fn,
+        };
+        assert_eq!(runtime.channel_modifier, ChannelModifier::Ctrl);
+        assert!(!runtime.fn_tap_toggles_dictation);
+        assert!(!runtime.middle_mouse_acts_as_fn);
     }
 }
