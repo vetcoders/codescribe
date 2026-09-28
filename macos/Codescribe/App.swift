@@ -108,9 +108,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private static let showAgentNotification = Notification.Name("com.vetcoders.codescribe.showAgent")
   private static let notificationObject = Bundle.main.bundleIdentifier ?? "com.vetcoders.codescribe"
 
-  private static let helpURL = URL(string: "https://vetcoders.github.io/codescribe/")!
-  private static let privacyURL = URL(string: "https://vetcoders.github.io/codescribe/privacy")!
-  private static let termsURL = URL(string: "https://vetcoders.github.io/codescribe/terms")!
+  private static let helpURL = URL(string: "https://codescribe.vetcoders.io/")!
+  private static let privacyURL = URL(string: "https://codescribe.vetcoders.io/privacy")!
+  private static let termsURL = URL(string: "https://codescribe.vetcoders.io/terms")!
 
   // Every core-touching handle below is `lazy` for correctness, not for launch
   // cost. The XCTest bundle uses this app as its host, so `AppDelegate` is

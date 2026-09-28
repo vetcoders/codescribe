@@ -9,9 +9,9 @@ struct UserPanel: View {
 
   private static let docsURL = URL(
     string: "https://github.com/vetcoders/codescribe/tree/develop/docs")!
-  /// Public trust pages on the GitHub Pages site (base `/codescribe`).
-  private static let privacyURL = URL(string: "https://vetcoders.github.io/codescribe/privacy")!
-  private static let termsURL = URL(string: "https://vetcoders.github.io/codescribe/terms")!
+  /// Public trust pages on the Codescribe website.
+  private static let privacyURL = URL(string: "https://codescribe.vetcoders.io/privacy")!
+  private static let termsURL = URL(string: "https://codescribe.vetcoders.io/terms")!
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
