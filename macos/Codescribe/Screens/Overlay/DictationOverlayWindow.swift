@@ -325,7 +325,9 @@ enum DictationOverlayWindow {
     // raises to statusBar for the capture chord and yields to system alerts.
     panel.level = OverlayPresencePolicy.rest.windowLevel
     panel.sharingType = .readOnly
-    panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+    // AppKit hides transient panels during Mission Control and restores them
+    // afterwards without ending the take or rebuilding its content.
+    panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
     panel.isFloatingPanel = true
     panel.hidesOnDeactivate = false
     // One explicit AppKit path owns dragging on every supported OS version.

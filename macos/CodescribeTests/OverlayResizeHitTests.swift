@@ -4,6 +4,21 @@ import XCTest
 
 final class OverlayResizeHitTests: XCTestCase {
   @MainActor
+  func testOverlayYieldsToMissionControlAcrossPresenceLevels() {
+    let panel = DictationOverlayWindow.make(
+      state: OverlayState(),
+      textScale: TextScaleController(key: "OverlayResizeHitTests.missionControl"))
+    defer { panel.orderOut(nil) }
+    for policy in [OverlayPresencePolicy.rest, .yield, .capture] {
+      panel.level = policy.windowLevel
+      XCTAssertTrue(panel.collectionBehavior.contains(.transient))
+      XCTAssertFalse(panel.collectionBehavior.contains(.stationary))
+      XCTAssertTrue(panel.collectionBehavior.contains(.canJoinAllSpaces))
+      XCTAssertTrue(panel.collectionBehavior.contains(.fullScreenAuxiliary))
+    }
+  }
+
+  @MainActor
   func testCappedOverlayDoesNotReadOrMeasureProjectedText() throws {
     let screen = try XCTUnwrap(NSScreen.main)
     let cap = max(
