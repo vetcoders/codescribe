@@ -71,7 +71,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(container.contains("GlassEffectContainer(spacing: 0)"))
     XCTAssertTrue(container.contains("canvasStack(intentRail)"))
     let bottom = try section(
-      of: overlay, from: ".overlay(alignment: .bottom)",
+      of: overlay, from: "private func canvasStack",
       to: "} else if let label = OverlayActionsPresentation.finishingLabel(")
     XCTAssertTrue(bottom.contains("OverlayEvidenceChip("))
     XCTAssertTrue(bottom.contains("HStack(spacing: 6)"))
@@ -128,7 +128,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertFalse(glass.contains(".overlay"))
     XCTAssertFalse(glass.contains(".tint"))
     let bottom = try section(
-      of: overlay, from: ".overlay(alignment: .bottom)",
+      of: overlay, from: "private func canvasStack",
       to: "} else if let label = OverlayActionsPresentation.finishingLabel(")
     XCTAssertEqual(
       bottom.components(separatedBy: "glassNamespace: bottomChromeNamespace").count - 1, 2)
@@ -153,7 +153,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let refusal = try section(of: source, from: "case .coverageRefused:", to: "case .noSpeech:")
     XCTAssertFalse(refusal.contains("coverageRefusedBody"))
     XCTAssertTrue(source.contains("if bottomChromeSlots.showsCoverageWarning {"))
-    XCTAssertTrue(source.contains("coverageRefusedBody"))
+    XCTAssertTrue(source.contains("OverlayCoverageStatus("))
   }
 
   func testExpansionClampsBottomAnchorsLowDragsAndSmallerNegativeDisplay() {
@@ -424,8 +424,6 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let source = try overlaySource()
     let tools = try section(of: source, from: "HStack(spacing: 2)", to: "/// 1px separator")
     XCTAssertTrue(containsGuardedIntentRail(tools))
-    XCTAssertTrue(tools.contains("OverlayActionsPresentation.pillLabel("))
-    XCTAssertTrue(tools.contains("phase: actions.phase, notice: state.toast"))
     XCTAssertTrue(tools.contains("actions.toggle()"))
     XCTAssertTrue(tools.contains(".onHover { actions.pointerChanged($0) }"))
     XCTAssertTrue(tools.contains(".focusable()"))
@@ -475,26 +473,19 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertEqual(actions.phase, .idle)
   }
 
-  func testLeadingCapEscapeAndLifecycleResetCloseWithoutHoverReopeningTools() {
+  func testPointerOpensToolsImmediatelyAndEscapeClosesUntilTheNextEntry() {
     var actions = OverlayActionsPresentation()
     actions.pointerChanged(true)
-    actions.toggle()
     XCTAssertEqual(actions.phase, .open)
-    actions.toggle()
+    actions.dismiss()
     XCTAssertEqual(actions.phase, .idle)
     actions.pointerChanged(false)
     actions.pointerChanged(true)
-    XCTAssertEqual(actions.phase, .hover)
-    actions.toggle()
-    actions.dismiss()
+    XCTAssertEqual(actions.phase, .open)
+    actions.reset()
     XCTAssertEqual(actions.phase, .idle)
-    for _ in 0..<2 {
-      actions.toggle()
-      actions.reset()
-      XCTAssertEqual(actions.phase, .idle)
-      XCTAssertFalse(actions.pointerInside)
-      XCTAssertNil(actions.hideDeadline)
-    }
+    XCTAssertFalse(actions.pointerInside)
+    XCTAssertNil(actions.hideDeadline)
   }
 
   func testIdleRetainedTakeAndVoiceOverDoNotMountToolsThenCapOpensAndCloses() throws {
@@ -510,12 +501,9 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(containsGuardedIntentRail(tools))
     XCTAssertTrue(source.contains("intents: OverlayIntentRail.projectedIntents(for: state)"))
     let rail = try section(
-      of: railSource(), from: "var body: some View", to: "private var retranscribeMenu")
+      of: railSource(), from: "var body: some View", to: "static func projectedIntents")
     XCTAssertTrue(rail.contains(".accessibilityIdentifier(\"overlay-intent-dock\")"))
-    XCTAssertTrue(
-      rail.contains(
-        "if intents.contains(.recoverSuperseded) || intents.contains(.discardSuperseded) {\n"
-          + "        previousTakeMenu"))
+    XCTAssertTrue(rail.contains("overlay-previous-take-menu"))
 
     let state = OverlayState.previewFormatted()
     state.beginTranscriptEdit()
@@ -535,8 +523,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(intents.contains(.recoverSuperseded))
     XCTAssertTrue(intents.contains(.discardSuperseded))
     XCTAssertTrue(intents.contains(.finish))
-    XCTAssertTrue(rail.contains("ForEach(intents, id: \\.self) { intent in"))
-    XCTAssertTrue(rail.contains("identifier: \"overlay-intent-\\(intent.rawValue)\""))
+    XCTAssertTrue(rail.contains("OverlayDockLayout(projectedIntents: intents).visibleIntents"))
+    XCTAssertTrue(rail.contains("id: \"overlay-intent-\\(intent.rawValue)\""))
     actions.toggle()
     XCTAssertEqual(actions.phase, .idle, "The same cap removes the guarded rail again")
     XCTAssertNil(actions.hideDeadline)
@@ -547,43 +535,13 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertEqual(OverlayActionsPresentation().phase, .idle)
   }
 
-  func testAaMenuOffersCorrectionSmartAndMaxWithSettingsPrimaryAction() throws {
+  func testFormatRequiresAnExplicitChoiceAndNeverUsesAPrimaryAction() throws {
     let source = try railSource()
-    let menu = try section(of: source, from: "private var formatMenu", to: "private var formatHelp")
-    let choices = try section(of: menu, from: "Menu {", to: "} label: {")
-    XCTAssertTrue(
-      choices.contains("Text(\"Settings: \\(formatLevel.visibleName)\")\n        .disabled(true)"))
-    XCTAssertEqual(choices.components(separatedBy: "Button(").count - 1, 3)
-    XCTAssertTrue(choices.contains("Button(\"Correction\") { formatOnce(.correction) }"))
-    XCTAssertTrue(choices.contains("Button(\"Smart\") { formatOnce(.smart) }"))
-    XCTAssertTrue(choices.contains("Button(\"Max\") { formatOnce(.max) }"))
-    let correction = try XCTUnwrap(choices.range(of: "Button(\"Correction\")"))
-    let smart = try XCTUnwrap(choices.range(of: "Button(\"Smart\")"))
-    let max = try XCTUnwrap(choices.range(of: "Button(\"Max\")"))
-    XCTAssertLessThan(correction.lowerBound, smart.lowerBound)
-    XCTAssertLessThan(smart.lowerBound, max.lowerBound)
-    for forbidden in ["\"Off\"", ".off", "ForEach", "Picker", "checkmark", "Binding"] {
-      XCTAssertFalse(choices.contains(forbidden), forbidden)
-    }
-    XCTAssertTrue(menu.contains("} primaryAction: {\n      dispatch(.format)"))
-    XCTAssertTrue(menu.contains(".menuIndicator(.visible)"))
-    XCTAssertTrue(menu.contains(".help(nativeHelpEnabled ? formatHelp : \"\")"))
-    XCTAssertTrue(menu.contains(".accessibilityHint(formatHelp)"))
-    XCTAssertTrue(menu.contains(".accessibilityIdentifier(\"overlay-intent-format\")"))
-    XCTAssertFalse(source.contains("overlay-format-level-picker"))
-    XCTAssertFalse(source.contains("onFormatLevel"))
-    let wiring = try overlaySource()
-    XCTAssertTrue(wiring.contains("onFormatOnce: { state.formatTranscript(at: $0) }"))
-    XCTAssertTrue(wiring.contains("formatLevel: state.autoFormatLevel"))
-    XCTAssertTrue(wiring.contains("onIntent: state.relayIntent"))
-    for level in FormattingPolicyOption.allCases {
-      let rail = OverlayIntentRail(
-        phase: "formatted", intents: [.format], palette: .dark, formatLevel: level,
-        onIntent: { _ in })
-      XCTAssertEqual(
-        rail.caption(for: "format"),
-        "Format (Settings: \(level.visibleName)) · menu: Correction, Smart or Max once")
-    }
+    XCTAssertFalse(source.contains("primaryAction:"))
+    XCTAssertTrue(source.contains("intent == .format || intent == .retranscribe ? nil"))
+    XCTAssertTrue(source.contains("FormattingPolicyOption.correction, .smart, .max"))
+    XCTAssertTrue(source.contains("formatOnce(level)"))
+    XCTAssertTrue(try overlaySource().contains("onFormatOnce: { state.formatTranscript(at: $0) }"))
   }
 
   func testNoOverlayFileCanWriteTheSettingsFormattingLevel() throws {
@@ -603,85 +561,16 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     }
   }
 
-  func testOpenRowKeepsSevenToolsAndRecordingKeepsItsThreeTools() throws {
+  func testOpenRowKeepsProjectedToolsWithoutAnInlineCaption() throws {
     let source = try railSource()
-    let row = try section(of: source, from: "var body: some View", to: ".buttonStyle(.plain)")
-    XCTAssertTrue(row.contains("if historyAvailable {\n        historyMenu"))
-    XCTAssertTrue(
-      row.contains(
-        "if intents.contains(.recoverSuperseded) || intents.contains(.discardSuperseded) {\n"
-          + "        previousTakeMenu"))
-    XCTAssertTrue(row.contains("ForEach(intents, id: \\.self) { intent in"))
-    let retranscribe = try section(
-      of: row, from: "if intent == .retranscribe {", to: "} else if intent == .format {")
-    XCTAssertTrue(retranscribe.contains("retranscribeMenu"))
-    let format = try section(
-      of: row, from: "} else if intent == .format {", to: "} else if intent != .close")
-    XCTAssertTrue(format.contains("formatMenu"))
-    XCTAssertFalse(format.contains("OverlayDockButton("))
-    let buttons = try XCTUnwrap(
-      row.range(
-        of:
-          "} else if intent != .close && intent != .recoverSuperseded && intent != .discardSuperseded {"
-      ))
-    XCTAssertTrue(row[buttons.upperBound...].contains("OverlayDockButton("))
-    XCTAssertTrue(
-      row[buttons.upperBound...].contains("identifier: \"overlay-intent-\\(intent.rawValue)\""))
-    let menus = [
-      "overlay-history-menu": try section(
-        of: source, from: "private var historyMenu", to: "private var formatMenu"),
-      "overlay-previous-take-menu": try section(
-        of: source, from: "private var previousTakeMenu", to: "private var historyMenu"),
-      "overlay-intent-format": try section(
-        of: source, from: "private var formatMenu", to: "private func setHovered"),
-    ]
-    let retranscribeMenu = try section(
-      of: source, from: "private var retranscribeMenu", to: "private var previousTakeMenu")
-    XCTAssertTrue(
-      retranscribeMenu.contains(
-        ".accessibilityIdentifier(\"overlay-intent-\\(OverlayIntent.retranscribe.rawValue)\")"))
-    let rows: [(String, [OverlayIntent], Bool, [String])] = [
-      (
-        "formatted",
-        [
-          .recoverSuperseded, .discardSuperseded, .insertPaste, .copy,
-          .retranscribe, .format, .sendToAgent, .close,
-        ], true,
-        [
-          "overlay-history-menu", "overlay-previous-take-menu", "overlay-intent-insert-paste",
-          "overlay-intent-copy", "overlay-intent-retranscribe",
-          "overlay-intent-format", "overlay-intent-send-to-agent",
-        ]
-      ),
-      (
-        "listening", [.recoverSuperseded, .discardSuperseded, .finish, .copy, .close], false,
-        ["overlay-previous-take-menu", "overlay-intent-finish", "overlay-intent-copy"]
-      ),
-    ]
-    for (phase, intents, history, identifiers) in rows {
-      let rail = OverlayIntentRail(
-        phase: phase, intents: intents, palette: .dark, historyAvailable: history,
-        onIntent: { _ in })
-      XCTAssertEqual(rail.historyAvailable, history)
-      XCTAssertTrue(rail.intents.contains(.recoverSuperseded))
-      XCTAssertTrue(rail.intents.contains(.discardSuperseded))
-      for identifier in identifiers {
-        if let menu = menus[identifier] {
-          XCTAssertTrue(menu.contains(".accessibilityIdentifier(\"\(identifier)\")"), identifier)
-        } else {
-          let rawValue = String(identifier.dropFirst("overlay-intent-".count))
-          let intent = try XCTUnwrap(OverlayIntent(rawValue: rawValue), identifier)
-          XCTAssertTrue(rail.intents.contains(intent), identifier)
-        }
-      }
-      XCTAssertEqual(
-        rail.intents.contains(.format), history, "Only the formatted row has the Aa menu")
-      XCTAssertFalse(row.contains("\"overlay-intent-close\""))
-      XCTAssertTrue(
-        rail.intents.contains(.close), "The guarded row excludes close even when projected")
-      XCTAssertEqual(identifiers.count, history ? 7 : 3)
-      XCTAssertFalse(identifiers.contains("overlay-format-level-picker"))
-    }
+    XCTAssertFalse(source.contains("OverlayCaptionLayout"))
+    XCTAssertFalse(source.contains("captionSlot"))
+    XCTAssertFalse(source.contains(".help("))
+    XCTAssertTrue(source.contains("OverlayHoverControl("))
+    let all: [OverlayIntent] = [.insertPaste, .copy, .retranscribe, .format, .sendToAgent, .close]
+    XCTAssertEqual(
+      OverlayDockLayout(projectedIntents: all).visibleIntents,
+      [.insertPaste, .copy, .retranscribe, .format, .sendToAgent])
   }
 
   func testTakeStartAndCollapseRemoveMountedTools() throws {
@@ -689,7 +578,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let canvas = try section(of: source, from: "private func canvasStack", to: "/// 1px separator")
     XCTAssertTrue(
       canvas.range(
-        of: #"if !state\.isCollapsed \{\s*VStack\(spacing: CSSpace\.sm\) \{\s*HStack\(spacing: 6\)"#,
+        of:
+          #"if !state\.isCollapsed \{\s*VStack\(spacing: CSSpace\.sm\) \{\s*HStack\(spacing: 6\)"#,
         options: .regularExpression) != nil)
     XCTAssertTrue(containsGuardedIntentRail(canvas))
     XCTAssertTrue(canvas.contains("actions.toggle()"))
@@ -728,116 +618,16 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertEqual(actions.phase, .idle)
   }
 
-  func testCaptionSlotPrioritizesToolThenNoticeThenDimmedEngine() {
-    let cases: [(String?, String?, String?, String?, Bool?)] = [
-      ("Copy", "Copied", "Whisper", "Copy", false),
-      (nil, "Copied", "Whisper", "Copied", false),
-      (nil, nil, "Whisper", "Whisper", true),
-      (nil, nil, nil, nil, nil),
-      ("", "Copied", "Whisper", "Copied", false),
-      ("", "", "Whisper", "Whisper", true),
-      ("", "", "", nil, nil),
-    ]
-    for (hovered, notice, engine, text, dimmed) in cases {
-      let slot = OverlayActionsPresentation.captionSlot(
-        hovered: hovered, notice: notice, engineLabel: engine)
-      XCTAssertEqual(slot?.text, text)
-      XCTAssertEqual(slot?.dimmed, dimmed)
-    }
-  }
-
-  func testClosedPillNoticeOutranksHoverWithoutOpeningOrSchedulingHide() {
-    var actions = OverlayActionsPresentation()
-    XCTAssertNil(OverlayActionsPresentation.pillLabel(phase: actions.phase, notice: nil))
-    for hovering in [false, true] {
-      actions.pointerChanged(hovering)
-      let phase = actions.phase
-      XCTAssertEqual(
-        OverlayActionsPresentation.pillLabel(phase: phase, notice: "Copied"), "Copied")
-      for notice in [nil, ""] as [String?] {
-        XCTAssertEqual(
-          OverlayActionsPresentation.pillLabel(phase: phase, notice: notice),
-          hovering ? "Actions…" : nil)
-      }
-      XCTAssertEqual(actions.phase, hovering ? .hover : .idle)
-      XCTAssertNil(actions.hideDeadline)
-    }
-    actions.toggle()
-    XCTAssertEqual(actions.phase, .open)
-    XCTAssertNil(OverlayActionsPresentation.pillLabel(phase: actions.phase, notice: "Copied"))
-    XCTAssertNil(actions.hideDeadline, "A notice must not start a deadline under the pointer")
-    actions.pointerChanged(false)
-    let deadline = actions.hideDeadline
-    XCTAssertNotNil(deadline)
-    _ = OverlayActionsPresentation.pillLabel(phase: actions.phase, notice: "Format failed")
-    XCTAssertEqual(actions.hideDeadline, deadline, "Notice rendering must not restart auto-hide")
-  }
-
-  func testCaptionNoticeAndEngineRenderInsideTheToolRowWithoutAFloatingCard() throws {
-    let source = try railSource()
-    let body = try section(
-      of: source, from: "var body: some View {\n    HStack", to: "/// Retranscribe")
-    let row = try section(of: body, from: "HStack(spacing: 2)", to: ".buttonStyle(.plain)")
-    XCTAssertTrue(row.contains("OverlayActionsPresentation.captionSlot("))
-    XCTAssertTrue(row.contains("hovered: caption(for: hoveredControl ?? focusedControl)"))
-    XCTAssertTrue(row.contains("notice: footerNotice, engineLabel: footerEngineLabel"))
-    XCTAssertTrue(row.contains("Text(slot.text)"))
-    XCTAssertTrue(row.contains("slot.dimmed ? palette.mutedText.color : palette.primaryText.color"))
-    XCTAssertTrue(row.contains(".lineLimit(1)"))
-    XCTAssertTrue(row.contains(".truncationMode(.tail)"))
-    XCTAssertTrue(row.contains("OverlayCaptionLayout {"))
-    XCTAssertFalse(row.contains(".frame(maxWidth: 200, alignment: .leading)"))
-    XCTAssertTrue(row.contains(".padding(.leading, 4)"))
-    XCTAssertFalse(row.contains(".padding(.horizontal, 4)"))
-    XCTAssertTrue(row.contains(".layoutPriority(-1)"))
-    XCTAssertTrue(row.contains(".allowsHitTesting(false)"))
-    XCTAssertTrue(row.contains(".accessibilityIdentifier(\"overlay-tool-caption\")"))
-    XCTAssertTrue(body.contains(".fixedSize(horizontal: false, vertical: true)"))
-    for forbidden in [
-      ".overlay", ".background", ".offset", ".padding(.bottom", "OverlayActionsSurface",
-    ] {
-      XCTAssertFalse(body.contains(forbidden), forbidden)
-    }
-    for forbidden in [".frame(width: 264)", "engineChip", "footerNoticeText", "footerEngineDot"] {
-      XCTAssertFalse(source.contains(forbidden), forbidden)
-    }
-  }
-
-  func testCaptionWidthHugsShortTextCapsLongTextAndYieldsToNarrowProposals() {
-    // Synthetic natural widths, independent of installed fonts and screen scale.
-    for proposed in [nil, .infinity, 320, 200] as [CGFloat?] {
-      XCTAssertEqual(OverlayCaptionLayout.width(natural: 66, proposed: proposed), 66)
-      XCTAssertEqual(OverlayCaptionLayout.width(natural: 280, proposed: proposed), 200)
-    }
-    // The caption receives the width remaining after tools, gaps and insets.
-    XCTAssertEqual(OverlayCaptionLayout.width(natural: 66, proposed: 40), 40)
-    XCTAssertEqual(OverlayCaptionLayout.width(natural: 280, proposed: 120), 120)
-    XCTAssertEqual(OverlayCaptionLayout.width(natural: 280, proposed: 0), 0)
-    XCTAssertEqual(OverlayCaptionLayout.width(natural: 200, proposed: nil), 200)
-    XCTAssertEqual(OverlayCaptionLayout.width(natural: 0, proposed: nil), 0)
-  }
-
-  func testCaptionLayoutMeasuresIdealTextAndPlacesItWithinTheAcceptedWidth() throws {
-    let layout = try section(
-      of: railSource(), from: "struct OverlayCaptionLayout: Layout", to: "/// The overlay's sole")
-    XCTAssertTrue(layout.contains("min(natural, 200, proposed ?? .infinity)"))
-    XCTAssertTrue(layout.contains("caption.sizeThatFits(.unspecified)"))
-    XCTAssertTrue(layout.contains("Self.width(natural: natural.width, proposed: proposal.width)"))
-    XCTAssertTrue(layout.contains("ProposedViewSize(width: width, height: proposal.height)"))
-    XCTAssertTrue(layout.contains("CGSize(width: width, height: fitted.height)"))
-    XCTAssertTrue(layout.contains("ProposedViewSize(width: bounds.width, height: bounds.height)"))
-  }
-
   func testBottomCapsulesAreCenteredWithSymmetricOpenActionsInsets() throws {
     let bottom = try section(
-      of: overlaySource(), from: ".overlay(alignment: .bottom)",
+      of: overlaySource(), from: "private func canvasStack",
       to: "} else if let label = OverlayActionsPresentation.finishingLabel(")
     let capsule = try section(of: bottom, from: "HStack(spacing: 2)", to: ".modifier(")
     XCTAssertTrue(capsule.contains(".padding(.horizontal, actions.phase == .open ? 10 : 0)"))
     XCTAssertTrue(capsule.contains(".padding(.horizontal, actions.phase == .open ? 0 : 10)"))
     XCTAssertTrue(capsule.contains("minWidth: actions.phase == .open"))
     XCTAssertTrue(
-      capsule.contains("? nil : OverlayResizeChrome.actionsWidth(narrow: actions.phase != .hover)"))
+      capsule.contains("? nil : OverlayResizeChrome.actionsWidth(narrow: true)"))
     XCTAssertFalse(capsule.contains(".padding(.trailing"))
     XCTAssertFalse(capsule.contains(".padding(.leading"))
     XCTAssertTrue(capsule.contains(".fixedSize(horizontal: false, vertical: true)"))
@@ -850,30 +640,18 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertFalse(bottom.contains("Spacer("))
   }
 
-  func testOpenRailMountsOnlyInsideTheCapCapsuleAndClosedNoticeUsesItsLabel() throws {
+  func testNoticesAndCoverageStayOutsideTheActionCapsule() throws {
     let source = try overlaySource()
-    let canvas = try section(of: source, from: "private func canvasStack", to: "/// 1px separator")
     let capsule = try section(
-      of: canvas, from: "HStack(spacing: 2)",
+      of: source, from: "HStack(spacing: 2)",
       to: ".padding(.vertical, actions.phase == .open ? 2 : 0)")
     XCTAssertTrue(containsGuardedIntentRail(capsule))
-    XCTAssertEqual(
-      canvas.components(separatedBy: "\n").filter {
-        $0.trimmingCharacters(in: .whitespaces) == "intentRail"
-      }.count, 1)
-    XCTAssertTrue(capsule.contains("OverlayActionsPresentation.pillLabel("))
-    XCTAssertTrue(capsule.contains("phase: actions.phase, notice: state.toast"))
-    XCTAssertTrue(capsule.contains("Text(label)"))
-    XCTAssertTrue(capsule.contains(".lineLimit(1)"))
-    XCTAssertTrue(capsule.contains(".truncationMode(.tail)"))
-    XCTAssertTrue(capsule.contains(".frame(maxWidth: 200, alignment: .leading)"))
-    XCTAssertTrue(capsule.contains(".frame(height: OverlayResizeChrome.actionsHeight)"))
-    XCTAssertEqual(canvas.components(separatedBy: "OverlayActionsSurface(palette:").count - 1, 1)
-    XCTAssertTrue(canvas.contains(".padding(.bottom, OverlayResizeChrome.actionsBottomInset)"))
-    XCTAssertFalse(canvas.contains(".onChange(of: state.toast)"))
-    XCTAssertFalse(canvas.contains(".task(id: state.toast)"))
-    XCTAssertTrue(source.contains("footerNotice: state.toast"))
-    XCTAssertTrue(source.contains("footerEngineLabel: state.footerEngineLabel"))
+    XCTAssertFalse(capsule.contains("Text("))
+    XCTAssertFalse(capsule.contains("state.toast"))
+    XCTAssertTrue(source.contains("overlay-footer-notice"))
+    XCTAssertTrue(source.contains("OverlayCoverageStatus("))
+    XCTAssertTrue(
+      source.contains("diagnosticDetail: showsDiagnostics ? state.coverageRefusalDetail : nil"))
   }
 
   func testEveryToolHasACaptionAndDispatchResetsInteraction() {
@@ -883,12 +661,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       phase: "formatted", intents: OverlayIntent.allCases, palette: .dark,
       onIntent: { dispatched.append($0) }, onInteraction: { interactions += 1 })
     for intent in OverlayIntent.allCases where intent != .close {
-      XCTAssertFalse(rail.caption(for: intent.rawValue)?.isEmpty ?? true, intent.rawValue)
+      XCTAssertFalse(intent.accessibilityLabel.isEmpty)
     }
-    for control in ["history", "previous-take"] {
-      XCTAssertFalse(rail.caption(for: control)?.isEmpty ?? true)
-    }
-    XCTAssertNotEqual(rail.caption(for: "history"), rail.caption(for: "previous-take"))
     rail.dispatch(.copy)
     XCTAssertEqual(dispatched, [.copy])
     XCTAssertEqual(interactions, 1)
@@ -975,7 +749,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let chrome = try section(
       of: source, from: "private func canvasStack", to: "/// 1px separator")
     XCTAssertTrue(
-      chrome.contains("? nil : OverlayResizeChrome.actionsWidth(narrow: actions.phase != .hover)")
+      chrome.contains("? nil : OverlayResizeChrome.actionsWidth(narrow: true)")
     )
     XCTAssertTrue(chrome.contains("height: OverlayResizeChrome.actionsHeight"))
     XCTAssertTrue(chrome.contains(".padding(.bottom, OverlayResizeChrome.actionsBottomInset)"))

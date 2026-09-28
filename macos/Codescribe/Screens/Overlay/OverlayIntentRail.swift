@@ -10,14 +10,16 @@ struct OverlayDockLayout: Equatable {
 /// The overlay needs a quiet text-only state; tools are transient. Retained work
 /// is a badge, never a reveal trigger. This state has no document authority.
 struct OverlayActionsPresentation {
-  enum Phase: Equatable { case idle, hover, open }
+  enum Phase: Equatable { case idle, open }
   private(set) var phase: Phase = .idle
   private(set) var pointerInside = false
+  private(set) var panelPresented = false
+  private(set) var keyboardFocused = false
   private(set) var hideDeadline: ContinuousClock.Instant?
 
   mutating func pointerChanged(_ inside: Bool, at now: ContinuousClock.Instant = .now) {
     pointerInside = inside
-    if phase != .open { phase = inside ? .hover : .idle }
+    if inside { phase = .open }
     interact(at: now)
   }
 
@@ -31,11 +33,15 @@ struct OverlayActionsPresentation {
   }
 
   mutating func interact(at now: ContinuousClock.Instant = .now) {
-    hideDeadline = phase == .open && !pointerInside ? now.advanced(by: .seconds(3)) : nil
+    hideDeadline =
+      phase == .open && !pointerInside && !panelPresented && !keyboardFocused
+      ? now.advanced(by: .seconds(3)) : nil
   }
 
   mutating func expire(at now: ContinuousClock.Instant = .now) {
-    guard phase == .open, !pointerInside, let hideDeadline, now >= hideDeadline else { return }
+    guard phase == .open, !pointerInside, !panelPresented, !keyboardFocused, let hideDeadline,
+      now >= hideDeadline
+    else { return }
     dismiss()
   }
 
@@ -46,19 +52,15 @@ struct OverlayActionsPresentation {
 
   mutating func reset() { self = Self() }
 
-  static func captionSlot(
-    hovered: String?, notice: String?, engineLabel: String?
-  ) -> (text: String, dimmed: Bool)? {
-    if let hovered, !hovered.isEmpty { return (hovered, false) }
-    if let notice, !notice.isEmpty { return (notice, false) }
-    if let engineLabel, !engineLabel.isEmpty { return (engineLabel, true) }
-    return nil
+  mutating func focusChanged(_ focused: Bool) {
+    keyboardFocused = focused
+    if focused { phase = .open }
+    interact()
   }
 
-  static func pillLabel(phase: Phase, notice: String?) -> String? {
-    guard phase != .open else { return nil }
-    if let notice, !notice.isEmpty { return notice }
-    return phase == .hover ? "Actions…" : nil
+  mutating func panelChanged(_ presented: Bool) {
+    panelPresented = presented
+    interact()
   }
 
   static func finishingLabel(mode: OverlayMode, transcribing: Bool, terminal: Bool) -> String? {
@@ -109,306 +111,130 @@ enum OverlayDockVisuals {
   }
 }
 
-/// Measures the single caption at its ideal width, then yields to the tool row.
-/// A maximum-width frame alone would reserve empty space after short labels.
-struct OverlayCaptionLayout: Layout {
-  static func width(natural: CGFloat, proposed: CGFloat?) -> CGFloat {
-    max(0, min(natural, 200, proposed ?? .infinity))
-  }
-
-  func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-    guard let caption = subviews.first else { return .zero }
-    let natural = caption.sizeThatFits(.unspecified)
-    let width = Self.width(natural: natural.width, proposed: proposal.width)
-    let fitted = caption.sizeThatFits(ProposedViewSize(width: width, height: proposal.height))
-    return CGSize(width: width, height: fitted.height)
-  }
-
-  func placeSubviews(
-    in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
-  ) {
-    subviews.first?.place(
-      at: CGPoint(x: bounds.minX, y: bounds.midY), anchor: .leading,
-      proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
-  }
-}
-
-/// The overlay's sole action surface. The reducer owns action availability;
-/// this view renders projected commands and one trailing caption slot inside
-/// the capsule supplied by the parent.
+/// Fixed icon row. Hover content lives above its anchor, outside row layout.
 @MainActor
 struct OverlayIntentRail: View {
-  @FocusState private var focusedControl: String?
-  @State private var hoveredControl: String?
-  let onFocusChange: (Bool) -> Void
-  let onDismiss: () -> Void
-  let onInteraction: () -> Void
+  @State private var presented: String?
   let phase: String
   let intents: [OverlayIntent]
   let palette: OverlayAppearancePalette
-  let nativeHelpEnabled: Bool
-  let footerEngineLabel: String
-  let footerNotice: String?
-  let history: [CsDocumentHistoryEntry]
-  let historyAvailable: Bool
-  let currentRevision: UInt64
-  let formatLevel: FormattingPolicyOption
+  var history: [CsDocumentHistoryEntry] = []
+  var historyAvailable: Bool = false
+  var currentRevision: UInt64 = 0
+  var formatLevel: FormattingPolicyOption = .correction
+  var cloudRetranscribeConfigured = false
   let onIntent: (OverlayIntent) -> Void
-  let onRetranscribe: (OverlayRetranscribePass) -> Void
-  let onRestore: (UInt64) -> Void
-  let onHistoryRequest: () -> Void
-  let onFormatOnce: (FormattingPolicyOption) -> Void
-
-  init(
-    phase: String,
-    intents: [OverlayIntent],
-    palette: OverlayAppearancePalette,
-    nativeHelpEnabled: Bool = true,
-    footerEngineLabel: String = "",
-    footerNotice: String? = nil,
-    history: [CsDocumentHistoryEntry] = [],
-    historyAvailable: Bool? = nil,
-    currentRevision: UInt64 = 0,
-    formatLevel: FormattingPolicyOption = .correction,
-    onIntent: @escaping (OverlayIntent) -> Void,
-    onRetranscribe: @escaping (OverlayRetranscribePass) -> Void = { _ in },
-    onRestore: @escaping (UInt64) -> Void = { _ in },
-    onHistoryRequest: @escaping () -> Void = {},
-    onFormatOnce: @escaping (FormattingPolicyOption) -> Void = { _ in },
-    onFocusChange: @escaping (Bool) -> Void = { _ in },
-    onDismiss: @escaping () -> Void = {},
-    onInteraction: @escaping () -> Void = {}
-  ) {
-    self.onFocusChange = onFocusChange
-    self.onDismiss = onDismiss
-    self.onInteraction = onInteraction
-    self.phase = phase
-    self.intents = intents
-    self.palette = palette
-    self.nativeHelpEnabled = nativeHelpEnabled
-    self.footerEngineLabel = footerEngineLabel
-    self.footerNotice = footerNotice
-    self.history = history
-    self.historyAvailable = historyAvailable ?? !history.isEmpty
-    self.currentRevision = currentRevision
-    self.formatLevel = formatLevel
-    self.onIntent = onIntent
-    self.onRetranscribe = onRetranscribe
-    self.onRestore = onRestore
-    self.onHistoryRequest = onHistoryRequest
-    self.onFormatOnce = onFormatOnce
-  }
+  var onRetranscribe: (OverlayRetranscribePass) -> Void = { _ in }
+  var onRestore: (UInt64) -> Void = { _ in }
+  var onHistoryRequest: () -> Void = {}
+  var onFormatOnce: (FormattingPolicyOption) -> Void = { _ in }
+  var onDismiss: () -> Void = {}
+  var onInteraction: () -> Void = {}
+  var onPresentationChange: (Bool) -> Void = { _ in }
 
   var body: some View {
     HStack(spacing: 2) {
-      if historyAvailable {
-        historyMenu
-          .focused($focusedControl, equals: "history")
-          .onHover { setHovered("history", inside: $0) }
+      if historyAvailable || !history.isEmpty {
+        OverlayHoverControl(
+          id: "overlay-history-menu", title: "Transcript history", palette: palette,
+          presented: $presented
+        ) {
+          Image(systemName: OverlayControlSymbols.history).frame(width: 24, height: 24)
+        } detail: { close in
+          VStack(alignment: .leading, spacing: 8) {
+            Button("Refresh transcript history") { onHistoryRequest() }
+            ForEach(history, id: \.revision) { entry in
+              Button("Revision \(entry.revision) · \(entry.provenance)") {
+                close()
+                onRestore(entry.revision)
+              }
+              .disabled(entry.revision == currentRevision)
+            }
+          }
+        }
       }
       if intents.contains(.recoverSuperseded) || intents.contains(.discardSuperseded) {
-        previousTakeMenu
-          .focused($focusedControl, equals: "previous-take")
-          .onHover { setHovered("previous-take", inside: $0) }
-      }
-      ForEach(intents, id: \.self) { intent in
-        if intent == .retranscribe {
-          retranscribeMenu
-            .focused($focusedControl, equals: intent.rawValue)
-            .onHover { setHovered(intent.rawValue, inside: $0) }
-        } else if intent == .format {
-          formatMenu
-            .focused($focusedControl, equals: intent.rawValue)
-            .onHover { setHovered(intent.rawValue, inside: $0) }
-        } else if intent != .close && intent != .recoverSuperseded && intent != .discardSuperseded {
-          OverlayDockButton(
-            title: intent.accessibilityLabel,
-            systemImage: intent.systemImage,
-            hint: intent.accessibilityHint,
-            identifier: "overlay-intent-\(intent.rawValue)",
-            palette: palette,
-            nativeHelpEnabled: nativeHelpEnabled
-          ) {
-            dispatch(intent)
+        OverlayHoverControl(
+          id: "overlay-previous-take-menu", title: "Previous take", palette: palette,
+          presented: $presented
+        ) {
+          Image(systemName: OverlayControlSymbols.previousTake).frame(width: 24, height: 24)
+        } detail: { close in
+          VStack(alignment: .leading, spacing: 8) {
+            if intents.contains(.recoverSuperseded) {
+              Button(OverlayIntent.recoverSuperseded.accessibilityLabel) {
+                close()
+                dispatch(.recoverSuperseded)
+              }
+              .accessibilityIdentifier("overlay-intent-recover-superseded")
+            }
+            if intents.contains(.discardSuperseded) {
+              Button(OverlayIntent.discardSuperseded.accessibilityLabel, role: .destructive) {
+                close()
+                dispatch(.discardSuperseded)
+              }
+              .accessibilityIdentifier("overlay-intent-discard-superseded")
+            }
           }
-          .focused($focusedControl, equals: intent.rawValue)
-          .onHover { setHovered(intent.rawValue, inside: $0) }
         }
       }
-      // Keep discovery in-panel: native tooltips may be suppressed while inactive.
-      if let slot = OverlayActionsPresentation.captionSlot(
-        hovered: caption(for: hoveredControl ?? focusedControl),
-        notice: footerNotice, engineLabel: footerEngineLabel)
-      {
-        OverlayCaptionLayout {
-          Text(slot.text)
-            .csMono(10, .medium)
-            .foregroundStyle(slot.dimmed ? palette.mutedText.color : palette.primaryText.color)
-            .lineLimit(1)
-            .truncationMode(.tail)
+      ForEach(OverlayDockLayout(projectedIntents: intents).visibleIntents, id: \.self) { intent in
+        if intent != .recoverSuperseded && intent != .discardSuperseded {
+          OverlayHoverControl(
+            id: "overlay-intent-\(intent.rawValue)", title: intent.accessibilityLabel,
+            palette: palette, presented: $presented,
+            action: intent == .format || intent == .retranscribe ? nil : { dispatch(intent) }
+          ) {
+            Image(systemName: intent.systemImage).frame(width: 24, height: 24)
+          } detail: { close in
+            if intent == .format {
+              HStack(spacing: 10) {
+                ForEach([FormattingPolicyOption.correction, .smart, .max], id: \.rawValue) {
+                  level in
+                  Button(level.visibleName) {
+                    close()
+                    formatOnce(level)
+                  }
+                  .accessibilityIdentifier("overlay-format-level-\(level.rawValue)")
+                }
+              }
+            } else if intent == .retranscribe {
+              HStack(spacing: 10) {
+                Button("Local") {
+                  close()
+                  retranscribe(.fullHq)
+                }
+                .accessibilityIdentifier("overlay-retranscribe-hq")
+                if cloudRetranscribeConfigured {
+                  Button("Cloud") {
+                    close()
+                    retranscribe(.cloud)
+                  }
+                  .accessibilityIdentifier("overlay-retranscribe-cloud")
+                }
+              }
+            } else {
+              Text(intent.accessibilityLabel)
+            }
+          }
+          .accessibilityHint(intent.accessibilityHint)
         }
-        .padding(.leading, 4)
-        .layoutPriority(-1)
-        .allowsHitTesting(false)
-        .accessibilityIdentifier("overlay-tool-caption")
       }
     }
-    .buttonStyle(.plain)
-    .fixedSize(horizontal: false, vertical: true)
-    .onChange(of: focusedControl) { _, control in
-      onFocusChange(control != nil)
-      if control != nil { onInteraction() }
+    .fixedSize(horizontal: true, vertical: true)
+    .onChange(of: presented) { _, value in
+      onPresentationChange(value != nil)
+      if value != nil { onInteraction() }
     }
+    .onDisappear { onPresentationChange(false) }
     .onExitCommand {
-      focusedControl = nil
-      onFocusChange(false)
+      presented = nil
       onDismiss()
     }
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Overlay actions")
     .accessibilityValue(Self.accessibilityValue(for: phase))
     .accessibilityIdentifier("overlay-intent-dock")
-  }
-
-  /// Retranscribe is opt-in with the pass picked here: Full HQ (local
-  /// Whisper file pass) or Cloud.
-  private var retranscribeMenu: some View {
-    Menu {
-      ForEach(OverlayRetranscribePass.allCases) { pass in
-        Button(pass.visibleName) { retranscribe(pass) }
-          .help(nativeHelpEnabled ? pass.help : "")
-          .accessibilityIdentifier("overlay-retranscribe-\(pass.rawValue)")
-      }
-    } label: {
-      Label(
-        OverlayIntent.retranscribe.accessibilityLabel,
-        systemImage: OverlayIntent.retranscribe.systemImage
-      )
-      .labelStyle(.iconOnly)
-      .frame(width: 24, height: 24)
-      .contentShape(RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous))
-      .foregroundStyle(palette.primaryText.color)
-    }
-    .menuStyle(.button)
-    .buttonStyle(.plain)
-    .menuIndicator(.hidden)
-    .help(nativeHelpEnabled ? OverlayIntent.retranscribe.accessibilityHint : "")
-    .accessibilityLabel(OverlayIntent.retranscribe.accessibilityLabel)
-    .accessibilityHint(OverlayIntent.retranscribe.accessibilityHint)
-    .accessibilityIdentifier("overlay-intent-\(OverlayIntent.retranscribe.rawValue)")
-  }
-
-  private var previousTakeMenu: some View {
-    Menu {
-      if intents.contains(.recoverSuperseded) {
-        Button(OverlayIntent.recoverSuperseded.accessibilityLabel) {
-          dispatch(.recoverSuperseded)
-        }
-        .help(nativeHelpEnabled ? OverlayIntent.recoverSuperseded.accessibilityHint : "")
-        .accessibilityIdentifier("overlay-intent-recover-superseded")
-      }
-      if intents.contains(.discardSuperseded) {
-        Button(OverlayIntent.discardSuperseded.accessibilityLabel, role: .destructive) {
-          dispatch(.discardSuperseded)
-        }
-        .help(nativeHelpEnabled ? OverlayIntent.discardSuperseded.accessibilityHint : "")
-        .accessibilityIdentifier("overlay-intent-discard-superseded")
-      }
-    } label: {
-      Label("Previous take", systemImage: OverlayControlSymbols.previousTake)
-        .labelStyle(.iconOnly)
-        .frame(width: 24, height: 24)
-    }
-    .menuStyle(.button)
-    .buttonStyle(.plain)
-    .menuIndicator(.hidden)
-    .help(nativeHelpEnabled ? "Previous take: copy to clipboard or discard retained work" : "")
-    .accessibilityLabel("Previous take")
-    .accessibilityHint("Copy or discard the retained previous take")
-    .accessibilityIdentifier("overlay-previous-take-menu")
-  }
-
-  private var historyMenu: some View {
-    Menu {
-      Button("Refresh transcript history") {
-        onInteraction()
-        onHistoryRequest()
-      }
-      .accessibilityIdentifier("overlay-history-refresh")
-      ForEach(history, id: \.revision) { entry in
-        Button {
-          onInteraction()
-          onRestore(entry.revision)
-        } label: {
-          Text("Revision \(entry.revision) · \(entry.provenance) · \(entry.emittedAt)")
-          Text(String(entry.renderedText.prefix(64)).replacingOccurrences(of: "\n", with: " "))
-        }
-        .disabled(entry.revision == currentRevision)
-        .accessibilityIdentifier("overlay-history-revision-\(entry.revision)")
-      }
-    } label: {
-      Label("Transcript history", systemImage: OverlayControlSymbols.history)
-        .labelStyle(.iconOnly)
-        .frame(width: 24, height: 24)
-    }
-    .menuStyle(.button)
-    .buttonStyle(.plain)
-    .menuIndicator(.hidden)
-    .help(nativeHelpEnabled ? "Restore an earlier revision of this transcript" : "")
-    .accessibilityLabel("Transcript version history")
-    .accessibilityIdentifier("overlay-history-menu")
-  }
-
-  private var formatMenu: some View {
-    Menu {
-      Text("Settings: \(formatLevel.visibleName)")
-        .disabled(true)
-      Divider()
-      Button("Correction") { formatOnce(.correction) }
-        .accessibilityIdentifier("overlay-format-level-correction")
-      Button("Smart") { formatOnce(.smart) }
-        .accessibilityIdentifier("overlay-format-level-smart")
-      Button("Max") { formatOnce(.max) }
-        .accessibilityIdentifier("overlay-format-level-max")
-    } label: {
-      Label(OverlayIntent.format.accessibilityLabel, systemImage: OverlayIntent.format.systemImage)
-        .labelStyle(.iconOnly)
-        .frame(width: 24, height: 24)
-        .contentShape(RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous))
-        .foregroundStyle(palette.primaryText.color)
-    } primaryAction: {
-      dispatch(.format)
-    }
-    .menuStyle(.button)
-    .buttonStyle(.plain)
-    .menuIndicator(.visible)
-    .help(nativeHelpEnabled ? formatHelp : "")
-    .accessibilityLabel(OverlayIntent.format.accessibilityLabel)
-    .accessibilityHint(formatHelp)
-    .accessibilityIdentifier("overlay-intent-format")
-  }
-
-  private var formatHelp: String {
-    "Format (Settings: \(formatLevel.visibleName)) · menu: Correction, Smart or Max once"
-  }
-
-  private func setHovered(_ control: String, inside: Bool) {
-    if inside {
-      hoveredControl = control
-      onInteraction()
-    } else if hoveredControl == control {
-      hoveredControl = nil
-    }
-  }
-
-  func caption(for control: String?) -> String? {
-    switch control {
-    case "history": "History: earlier revisions"
-    case "previous-take": "Previous take: copy or discard"
-    case "format": formatHelp
-    case .some(let identifier): OverlayIntent(rawValue: identifier)?.accessibilityLabel
-    case .none: nil
-    }
   }
 
   static func projectedIntents(for state: OverlayState) -> [OverlayIntent] {
@@ -513,39 +339,6 @@ struct OverlayIntentRail: View {
   func formatOnce(_ level: FormattingPolicyOption) {
     onInteraction()
     onFormatOnce(level)
-  }
-}
-
-@MainActor
-private struct OverlayDockButton: View {
-  @State private var isHovering = false
-
-  let title: String
-  let systemImage: String
-  let hint: String
-  let identifier: String
-  let palette: OverlayAppearancePalette
-  let nativeHelpEnabled: Bool
-  let action: () -> Void
-
-  var body: some View {
-    Button(title, systemImage: systemImage, action: action)
-      .buttonStyle(.plain)
-      .labelStyle(.iconOnly)
-      .frame(width: 24, height: 24)
-      .contentShape(RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous))
-      .foregroundStyle(palette.primaryText.color)
-      .background {
-        RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous)
-          .fill(
-            palette.primaryText.color.opacity(
-              OverlayDockVisuals.hoverOpacity(isHovering: isHovering)))
-      }
-      .onHover { isHovering = $0 }
-      .help(nativeHelpEnabled ? title : "")
-      .accessibilityLabel(title)
-      .accessibilityHint(hint)
-      .accessibilityIdentifier(identifier)
   }
 }
 

@@ -34,13 +34,13 @@ final class OverlayChromeV3Tests: XCTestCase {
     }
   }
 
-  func testPointerEntryAndExitOnlyRevealTheActionsLabel() {
+  func testPointerEntryImmediatelyRevealsActions() {
     var actions = OverlayActionsPresentation()
     XCTAssertEqual(actions.phase, .idle)
     actions.pointerChanged(true)
-    XCTAssertEqual(actions.phase, .hover)
+    XCTAssertEqual(actions.phase, .open)
     actions.pointerChanged(false)
-    XCTAssertEqual(actions.phase, .idle)
+    XCTAssertNotNil(actions.hideDeadline)
   }
 
   func testKeyboardActivationOpensActionsWithoutPointer() {
@@ -80,8 +80,8 @@ final class OverlayChromeV3Tests: XCTestCase {
       let scroll = try XCTUnwrap(text.enclosingScrollView)
       let rect = root.convert(scroll.bounds, from: scroll)
       XCTAssertGreaterThan(rect.width, width - 65)
-      XCTAssertGreaterThan(rect.height, 170)
-      XCTAssertLessThan(rect.minY, 24)
+      XCTAssertGreaterThan(rect.height, 100)
+      XCTAssertGreaterThanOrEqual(rect.minY, 24)
       XCTAssertLessThanOrEqual(rect.maxX, root.bounds.maxX)
     }
   }

@@ -291,9 +291,9 @@ final class OverlayResizeHitTests: XCTestCase {
     let transcriptFrame = screenFrame(of: transcript.enclosingScrollView!, in: panel)
     XCTAssertLessThanOrEqual(firstLine.maxY, headerFrame.minY + 1)
     XCTAssertGreaterThanOrEqual(lastLine.minY, transcriptFrame.minY - 1)
-    XCTAssertLessThan(
+    XCTAssertGreaterThanOrEqual(
       transcriptFrame.minY - panel.frame.minY, 24,
-      "no dock or reserved action padding may consume the transcript bottom")
+      "Actions occupy their own vertical space below the transcript")
   }
 
   @MainActor

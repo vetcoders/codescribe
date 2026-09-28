@@ -6,7 +6,7 @@ import SwiftUI
 // Layout (top → bottom):
 //   header   brand · ONE projection phase · compact waveform · timer
 //   body     transcript is the product surface (listening / formatted / terminal)
-//   floating actions over the transcript; unsealed warning stacks below them
+//   actions and review status in vertical flow below the transcript
 //
 // Removed on purpose: duplicate RECORDING/modeMeta row, full bottom Finish/Close
 // action layer, and decorative body-top waveform competing with words.
@@ -50,8 +50,8 @@ struct DictationOverlayView: View {
   // `DictationOverlayWindow.minSize.height` MUST stay ≥ chrome + `bodyMinHeight`
   // or GlassPanel paints past the window rect and squares the corners.
   private let windowMinWidth: CGFloat = 320
-  private let bodyMinHeight: CGFloat = 130
-  private let transcriptMinHeight: CGFloat = 96
+  private let bodyMinHeight: CGFloat = 0
+  private let transcriptMinHeight: CGFloat = 32
   private var palette: OverlayAppearancePalette {
     OverlayAppearancePalette.resolve(colorScheme)
   }
@@ -71,21 +71,19 @@ struct DictationOverlayView: View {
           phase: state.statusText,
           intents: OverlayIntentRail.projectedIntents(for: state),
           palette: palette,
-          nativeHelpEnabled: !bottomChromeSlots.showsCoverageWarning,
-          footerEngineLabel: state.footerEngineLabel,
-          footerNotice: state.toast,
           history: state.documentHistory,
           historyAvailable: state.terminal,
           currentRevision: state.revision,
           formatLevel: state.autoFormatLevel,
+          cloudRetranscribeConfigured: state.cloudRetranscribeConfigured,
           onIntent: state.relayIntent,
           onRetranscribe: { state.retranscribe(pass: $0) },
           onRestore: state.restoreDocumentRevision,
           onHistoryRequest: state.loadDocumentHistory,
           onFormatOnce: { state.formatTranscript(at: $0) },
-          onFocusChange: { if $0 { actions.interact() } },
           onDismiss: { actions.dismiss() },
-          onInteraction: { actions.interact() }
+          onInteraction: { actions.interact() },
+          onPresentationChange: { actions.panelChanged($0) }
         )
       )
     }
@@ -144,8 +142,6 @@ struct DictationOverlayView: View {
         .opacity(state.isCollapsed ? 0 : 1)
         .allowsHitTesting(!state.isCollapsed)
         .accessibilityHidden(state.isCollapsed)
-    }
-    .overlay(alignment: .bottom) {
       if !state.isCollapsed {
         VStack(spacing: CSSpace.sm) {
           HStack(spacing: 6) {
@@ -160,21 +156,14 @@ struct DictationOverlayView: View {
               } label: {
                 HStack(spacing: 4) {
                   Image(systemName: OverlayControlSymbols.actions)
-                  if let label = OverlayActionsPresentation.pillLabel(
-                    phase: actions.phase, notice: state.toast)
-                  {
-                    Text(label)
-                      .lineLimit(1)
-                      .truncationMode(.tail)
-                      .frame(maxWidth: 200, alignment: .leading)
-                  }
+
                 }
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(palette.primaryText.color)
                 .padding(.horizontal, actions.phase == .open ? 0 : 10)
                 .frame(
                   minWidth: actions.phase == .open
-                    ? nil : OverlayResizeChrome.actionsWidth(narrow: actions.phase != .hover)
+                    ? nil : OverlayResizeChrome.actionsWidth(narrow: true)
                 )
                 .frame(height: OverlayResizeChrome.actionsHeight)
                 .fixedSize(horizontal: true, vertical: true)
@@ -192,10 +181,6 @@ struct DictationOverlayView: View {
               .buttonStyle(.plain)
               .focusable()
               .focused($actionsFocused)
-              .help(
-                bottomChromeSlots.showsCoverageWarning
-                  ? "" : (actions.phase == .open ? "Hide actions" : "Show actions")
-              )
               .accessibilityLabel("Actions")
               .accessibilityValue(actions.phase == .open ? "Open" : "Collapsed")
               .accessibilityHint(
@@ -217,7 +202,7 @@ struct DictationOverlayView: View {
             .contentShape(Capsule())
             .onHover { actions.pointerChanged($0) }
             .onChange(of: actionsFocused) { _, focused in
-              if focused { actions.interact() }
+              actions.focusChanged(focused)
             }
             .onExitCommand { actions.dismiss() }
             .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: actions.phase)
@@ -240,14 +225,21 @@ struct DictationOverlayView: View {
           // The AppKit edge intercept and existing header/body drag regions stay in place.
           .frame(maxWidth: .infinity, alignment: .center)
           .padding(.horizontal, OverlayResizeChrome.actionsBottomInset)
-          if bottomChromeSlots.showsCoverageWarning {
-            coverageRefusedBody
-              .padding(10)
-              .background(
-                .regularMaterial,
-                in: RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous)
-              )
+          if let notice = state.toast {
+            Text(notice)
+              .csMono(10, .medium)
+              .lineLimit(2)
               .padding(.horizontal, 20)
+              .accessibilityIdentifier("overlay-footer-notice")
+          }
+          if bottomChromeSlots.showsCoverageWarning {
+            OverlayCoverageStatus(
+              palette: palette, canRetranscribe: state.canRetranscribe,
+              cloudConfigured: state.cloudRetranscribeConfigured,
+              diagnosticNotice: showsDiagnostics ? state.coverageRefusalNotice : nil,
+              diagnosticDetail: showsDiagnostics ? state.coverageRefusalDetail : nil,
+              onRetranscribe: { state.retranscribe(pass: $0) }
+            )
           }
         }
         .padding(.bottom, OverlayResizeChrome.actionsBottomInset)
@@ -303,6 +295,9 @@ struct DictationOverlayView: View {
         .allowsHitTesting(false)
         .accessibilityHidden(true)
       }
+    }
+    .onChange(of: actions.phase) { _, phase in
+      if phase == .open { state.refreshRetranscriptionAvailability() }
     }
     .onChange(of: state.isCollapsed) { _, collapsed in
       if collapsed { actions.reset() }
@@ -603,9 +598,9 @@ struct DictationOverlayView: View {
         } else if state.isRevisionDraftDirty {
           Image(systemName: "pencil.line")
           Text("Draft · not committed")
-        } else {
-          Image(systemName: state.mode == .coverageRefused ? "doc.text" : "checkmark.seal")
-          Text(state.mode == .coverageRefused ? "Unsealed transcript" : "Ledger projection")
+        } else if state.mode != .coverageRefused {
+          Image(systemName: "checkmark.seal")
+          Text("Ledger projection")
         }
       }
       .csMono(10, .semibold)
@@ -652,36 +647,6 @@ struct DictationOverlayView: View {
       Spacer(minLength: 0)
     }
     .frame(maxWidth: .infinity, minHeight: bodyMinHeight, alignment: .leading)
-  }
-
-  /// Terminal outcome for a take the ledger settled without accepting its
-  /// acoustic coverage. The words stay on the canvas above, untouched: this
-  /// warning explains why they carry no seal. It shares the bottom stack with
-  /// the rail so neither element can be placed over the other.
-  ///
-  /// Persistent by construction — it is painted from state, not scheduled
-  /// like a toast — and combined into one accessibility element so VoiceOver
-  /// reads the refusal and its consequence as a single sentence rather than
-  /// two orphaned fragments.
-  private var coverageRefusedBody: some View {
-    HStack(spacing: 12) {
-      CSIconView(icon: .warning, size: 18, weight: .regular)
-        .foregroundStyle(palette.processingStatus.color)
-      VStack(alignment: .leading, spacing: 2) {
-        Text(state.coverageRefusalNotice ?? OverlayState.defaultCoverageRefusalNotice)
-          .csFont(15, .medium)
-          .foregroundStyle(palette.bodyText.color)
-          .fixedSize(horizontal: false, vertical: true)
-        Text(state.coverageRefusalDetail)
-          .csMono(11, .medium)
-          .foregroundStyle(palette.mutedText.color)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-      Spacer(minLength: 0)
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .accessibilityElement(children: .combine)
-    .accessibilityIdentifier("overlay-coverage-refused")
   }
 
   /// Terminal outcome for a recording/transcription failure. Unlike a toast, this

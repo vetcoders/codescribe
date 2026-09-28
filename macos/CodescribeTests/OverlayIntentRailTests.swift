@@ -6,6 +6,8 @@ import XCTest
 
 @MainActor
 private final class OverlayIntentBoundaryEngine: DictationEngine {
+  var cloudConfigured = false
+  func cloudRetranscribeConfigured() -> Bool { cloudConfigured }
   var onTranscribeFile: (() -> Void)?
   var receivedTranscribePath: String?
   var onFormatter: (() -> Void)?
@@ -136,6 +138,23 @@ final class OverlayIntentRailTests: XCTestCase {
         "event fixture for \(row.phase) did not paint the frozen action table"
       )
     }
+  }
+
+  func testCloudChoiceFollowsEngineConfigurationWithoutStartingATranscription() {
+    let state = OverlayState()
+    let engine = OverlayIntentBoundaryEngine()
+    var calls = 0
+    engine.onTranscribeFile = { calls += 1 }
+    state.engine = engine
+    state.refreshRetranscriptionAvailability()
+    XCTAssertFalse(state.cloudRetranscribeConfigured)
+    engine.cloudConfigured = true
+    state.refreshRetranscriptionAvailability()
+    XCTAssertTrue(state.cloudRetranscribeConfigured)
+    engine.cloudConfigured = false
+    state.refreshRetranscriptionAvailability()
+    XCTAssertFalse(state.cloudRetranscribeConfigured)
+    XCTAssertEqual(calls, 0)
   }
 
   func testDispatchUsesProductionStateRouteAndLeavesProjectionUntouched() async {
@@ -457,19 +476,10 @@ final class OverlayIntentRailTests: XCTestCase {
       .deletingLastPathComponent()
       .appendingPathComponent("Codescribe/Screens/Overlay/OverlayIntentRail.swift")
     let source = try String(contentsOf: url, encoding: .utf8)
-    let menuStart = try XCTUnwrap(source.range(of: "private var previousTakeMenu:"))
-    let menuEnd = try XCTUnwrap(source.range(of: "private var historyMenu:"))
-    let menu = String(source[menuStart.lowerBound..<menuEnd.lowerBound])
-    XCTAssertTrue(menu.contains("Menu {"))
-    XCTAssertTrue(menu.contains("dispatch(.recoverSuperseded)"))
-    XCTAssertTrue(menu.contains("dispatch(.discardSuperseded)"))
-    XCTAssertTrue(menu.contains("role: .destructive"))
-    XCTAssertTrue(menu.contains("overlay-intent-recover-superseded"))
-    XCTAssertTrue(menu.contains("overlay-intent-discard-superseded"))
-    XCTAssertTrue(
-      menu.contains("Label(\"Previous take\", systemImage: OverlayControlSymbols.previousTake)"))
-    XCTAssertTrue(source.contains("intent != .recoverSuperseded && intent != .discardSuperseded"))
-    XCTAssertTrue(source.contains("Restore an earlier revision of this transcript"))
+    XCTAssertTrue(source.contains("dispatch(.recoverSuperseded)"))
+    XCTAssertTrue(source.contains("dispatch(.discardSuperseded)"))
+    XCTAssertTrue(source.contains("role: .destructive"))
+    XCTAssertTrue(source.contains("overlay-previous-take-menu"))
     let recovered = stateWithOneRetainedEdit()
     let engine = OverlayIntentBoundaryEngine()
     recovered.engine = engine

@@ -46,6 +46,7 @@ protocol DictationEngine: AnyObject {
   func initModel() async throws
   func isModelLoaded() -> Bool
   func currentOverlayPolicy() -> OverlayPolicySnapshot?
+  func cloudRetranscribeConfigured() -> Bool
   func setAutoPasteEnabled(_ enabled: Bool)
   func overlayExpandedByDefault() -> Bool
   func setOverlayExpandedByDefault(_ enabled: Bool) -> Bool
@@ -63,6 +64,7 @@ protocol DictationEngine: AnyObject {
 }
 
 extension DictationEngine {
+  func cloudRetranscribeConfigured() -> Bool { false }
   func documentHistory(sessionId _: String) async throws -> [CsDocumentHistoryEntry] { [] }
   func restoreDocumentRevision(
     sessionId _: String, sourceRevision _: UInt64, restoreRevision _: UInt64
@@ -351,6 +353,7 @@ final class OverlayState {
   private(set) var coverageRefusalNotice: String?
   /// Prompt-free policy snapshot from C02's persisted settings owner. These
   /// values are replaced only by a fresh engine read, never by optimistic UI.
+  private(set) var cloudRetranscribeConfigured = false
   private(set) var autoPasteEnabled = true
   private(set) var autoFormatLevel: FormattingPolicyOption = .correction
   /// Assistive sessions never expose delivery controls. The controller owns
@@ -1255,7 +1258,12 @@ final class OverlayState {
     onClose?()
   }
 
+  func refreshRetranscriptionAvailability() {
+    cloudRetranscribeConfigured = engine?.cloudRetranscribeConfigured() ?? false
+  }
+
   private func refreshOverlayPolicyTruth() {
+    refreshRetranscriptionAvailability()
     guard let truth = engine?.currentOverlayPolicy() else { return }
     autoPasteEnabled = truth.autoPasteEnabled
     autoFormatLevel = truth.autoFormatLevel
@@ -2863,6 +2871,7 @@ final class ControllerDictationEngine: DictationEngine {
   }
   func initModel() async throws {}
   func isModelLoaded() -> Bool { true }
+  func cloudRetranscribeConfigured() -> Bool { config.cloudFileRetranscriptionAvailable() }
   func currentOverlayPolicy() -> OverlayPolicySnapshot? {
     let toggles = config.trayToggles()
     guard let formatLevel = FormattingPolicyOption(rawValue: toggles.formattingLevel) else {
