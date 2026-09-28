@@ -27,6 +27,18 @@ protocol HotkeysEngine {
   /// Re-arm the global CGEventTap after a first-run permission grant so hotkeys
   /// go live without an app restart. Idempotent — safe on every Refresh.
   func rearmAfterPermissionGrant()
+  /// Agent-channel modifier: `"ctrl"` (default) or `"fn"`. Command is not a value.
+  func channelModifier() -> String
+  /// Persist the channel modifier and live-reload the detector. `"cmd"` is rejected.
+  func setChannelModifier(_ value: String) throws
+  /// Whether a quick Fn press below the hold delay toggles dictation. Default off.
+  func fnTapTogglesDictation() -> Bool
+  /// Persist the Fn-tap dictation toggle and live-reload the detector.
+  func setFnTapTogglesDictation(_ enabled: Bool) throws
+  /// Whether mouse button 2 follows Fn press and release. Default off.
+  func middleMouseActsAsFn() -> Bool
+  /// Persist the middle-mouse Fn option and live-reload the detector.
+  func setMiddleMouseActsAsFn(_ enabled: Bool) throws
 }
 
 // MARK: - Real engine (UniFFI bridge adapter)
@@ -37,6 +49,7 @@ protocol HotkeysEngine {
 /// through settings.json.
 final class RealHotkeysEngine: HotkeysEngine {
   private let hotkeys = CodescribeHotkeys()
+  private let config = CodescribeConfig()
 
   func modeBindings() -> [CsModeBinding] { hotkeys.getModeBindings() }
   func availableBindings() -> [CsBindingOption] { hotkeys.availableBindings() }
@@ -54,6 +67,32 @@ final class RealHotkeysEngine: HotkeysEngine {
     // is intentionally discarded here.
     _ = hotkeys.rearmAfterPermissionGrant()
   }
+
+  func channelModifier() -> String {
+    normalizeChannelModifier(config.loadSettings().channelModifier)
+  }
+
+  func setChannelModifier(_ value: String) throws {
+    try config.updateConfig(
+      key: "AGENT_CHANNEL_MODIFIER", value: normalizeChannelModifier(value))
+  }
+
+  func fnTapTogglesDictation() -> Bool { config.loadSettings().fnTapTogglesDictation }
+
+  func setFnTapTogglesDictation(_ enabled: Bool) throws {
+    try config.updateConfig(key: "FN_TAP_TOGGLES_DICTATION", value: enabled ? "1" : "0")
+  }
+
+  func middleMouseActsAsFn() -> Bool { config.loadSettings().middleMouseActsAsFn }
+
+  func setMiddleMouseActsAsFn(_ enabled: Bool) throws {
+    try config.updateConfig(key: "MIDDLE_MOUSE_ACTS_AS_FN", value: enabled ? "1" : "0")
+  }
+}
+
+/// `"fn"` stays Fn. Every other token, including Command, is Ctrl.
+private func normalizeChannelModifier(_ value: String) -> String {
+  value.lowercased() == "fn" ? "fn" : "ctrl"
 }
 
 // MARK: - Mock engine (previews)
@@ -68,6 +107,12 @@ struct MockHotkeysEngine: HotkeysEngine {
   func setModeBinding(mode: CsWorkMode, binding: CsShortcutBinding) throws {}
   func resetToDefaults() throws {}
   func rearmAfterPermissionGrant() {}
+  func channelModifier() -> String { "ctrl" }
+  func setChannelModifier(_ value: String) throws {}
+  func fnTapTogglesDictation() -> Bool { false }
+  func setFnTapTogglesDictation(_ enabled: Bool) throws {}
+  func middleMouseActsAsFn() -> Bool { false }
+  func setMiddleMouseActsAsFn(_ enabled: Bool) throws {}
   func validate(candidate: [CsModeBinding]) -> [CsHotkeyConflict] {
     // Surface a representative blocking conflict when dictation double-taps Ctrl
     // while a toggle mode is also active — matches the core reachability rule.

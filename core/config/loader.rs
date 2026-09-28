@@ -1045,6 +1045,17 @@ impl Config {
         {
             self.hold_arm_modifier = arm;
         }
+        if let Ok(val) = Self::config_runtime_env_var("AGENT_CHANNEL_MODIFIER")
+            && let Ok(modifier) = val.parse()
+        {
+            self.channel_modifier = modifier;
+        }
+        if let Ok(val) = Self::config_runtime_env_var("FN_TAP_TOGGLES_DICTATION") {
+            self.fn_tap_toggles_dictation = matches!(val.as_str(), "1" | "true" | "yes" | "on");
+        }
+        if let Ok(val) = Self::config_runtime_env_var("MIDDLE_MOUSE_ACTS_AS_FN") {
+            self.middle_mouse_acts_as_fn = matches!(val.as_str(), "1" | "true" | "yes" | "on");
+        }
         if let Ok(val) = Self::config_runtime_env_var("HOLD_START_DELAY_MS")
             && let Ok(ms) = val.parse()
         {
@@ -1351,6 +1362,22 @@ impl Config {
             && let Ok(arm) = v.parse()
         {
             self.hold_arm_modifier = arm;
+        }
+        if Self::config_runtime_env_var("AGENT_CHANNEL_MODIFIER").is_err()
+            && let Some(ref v) = settings.channel_modifier
+            && let Ok(modifier) = v.parse()
+        {
+            self.channel_modifier = modifier;
+        }
+        if Self::config_runtime_env_var("FN_TAP_TOGGLES_DICTATION").is_err()
+            && let Some(v) = settings.fn_tap_toggles_dictation
+        {
+            self.fn_tap_toggles_dictation = v;
+        }
+        if Self::config_runtime_env_var("MIDDLE_MOUSE_ACTS_AS_FN").is_err()
+            && let Some(v) = settings.middle_mouse_acts_as_fn
+        {
+            self.middle_mouse_acts_as_fn = v;
         }
         // AI
         if Self::config_runtime_env_var("AI_FORMATTING_ENABLED").is_err()
@@ -1666,6 +1693,8 @@ impl Config {
                 | "TRANSCRIPTION_OVERLAY_ENABLED"
                 | "TRAY_START_ASSISTIVE"
                 | "HOLD_EXCLUSIVE"
+                | "FN_TAP_TOGGLES_DICTATION"
+                | "MIDDLE_MOUSE_ACTS_AS_FN"
                 | "USE_LOCAL_STT"
                 | "HISTORY_ENABLED"
                 | "QUICK_NOTES_ENABLED"
@@ -1681,7 +1710,7 @@ impl Config {
                     let bool_val = matches!(value, "1" | "true" | "yes" | "on");
                     settings.set_bool(key, bool_val);
                 }
-                "HOLD_ARM_MODIFIER" => {
+                "HOLD_ARM_MODIFIER" | "AGENT_CHANNEL_MODIFIER" => {
                     settings.set_string(key, value);
                 }
                 _ => {
@@ -1810,6 +1839,11 @@ impl Config {
                             settings_ref.hold_arm_modifier = Some(arm.as_str().to_string());
                         }
                     }
+                    "AGENT_CHANNEL_MODIFIER" => {
+                        if let Ok(modifier) = value.parse::<crate::config::ChannelModifier>() {
+                            settings_ref.channel_modifier = Some(modifier.as_str().to_string());
+                        }
+                    }
                     // C2: same validated writes as the single-key set_string
                     // path — a batch write must not bypass mode/consent/URL
                     // validation or silently drop these keys.
@@ -1902,6 +1936,8 @@ impl Config {
                     | "TRANSCRIPTION_OVERLAY_ENABLED"
                     | "TRAY_START_ASSISTIVE"
                     | "HOLD_EXCLUSIVE"
+                    | "FN_TAP_TOGGLES_DICTATION"
+                    | "MIDDLE_MOUSE_ACTS_AS_FN"
                     | "USE_LOCAL_STT"
                     | "HISTORY_ENABLED"
                     | "QUICK_NOTES_ENABLED"
@@ -1927,6 +1963,12 @@ impl Config {
                             }
                             "TRAY_START_ASSISTIVE" => settings_ref.tray_start_assistive = Some(bv),
                             "HOLD_EXCLUSIVE" => settings_ref.hold_exclusive = Some(bv),
+                            "FN_TAP_TOGGLES_DICTATION" => {
+                                settings_ref.fn_tap_toggles_dictation = Some(bv)
+                            }
+                            "MIDDLE_MOUSE_ACTS_AS_FN" => {
+                                settings_ref.middle_mouse_acts_as_fn = Some(bv)
+                            }
                             "USE_LOCAL_STT" => settings_ref.use_local_stt = Some(bv),
                             "HISTORY_ENABLED" => settings_ref.history_enabled = Some(bv),
                             "QUICK_NOTES_ENABLED" => settings_ref.quick_notes_enabled = Some(bv),

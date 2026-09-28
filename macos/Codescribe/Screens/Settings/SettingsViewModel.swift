@@ -2096,6 +2096,56 @@ final class SettingsViewModel: ObservableObject {
     persist("HOLD_ARM_MODIFIER", normalized)
   }
 
+  /// Agent-channel modifier: `"ctrl"` (default) or `"fn"`. Command is not offered.
+  var channelModifier: String {
+    settings.channelModifier.lowercased() == "fn" ? "fn" : "ctrl"
+  }
+
+  func setChannelModifier(_ value: String) {
+    let normalized = value.lowercased() == "fn" ? "fn" : "ctrl"
+    settings.channelModifier = normalized
+    writeHotkeySurface("AGENT_CHANNEL_MODIFIER", normalized) {
+      try hotkeys?.setChannelModifier(normalized)
+    }
+  }
+
+  /// Quick Fn press toggles dictation. Off until the Founder turns it on.
+  var fnTapTogglesDictation: Bool { settings.fnTapTogglesDictation }
+
+  func setFnTapTogglesDictation(_ enabled: Bool) {
+    settings.fnTapTogglesDictation = enabled
+    writeHotkeySurface("FN_TAP_TOGGLES_DICTATION", enabled ? "1" : "0") {
+      try hotkeys?.setFnTapTogglesDictation(enabled)
+    }
+  }
+
+  /// Middle mouse button follows Fn. Off until chosen. The click is not swallowed.
+  var middleMouseActsAsFn: Bool { settings.middleMouseActsAsFn }
+
+  func setMiddleMouseActsAsFn(_ enabled: Bool) {
+    settings.middleMouseActsAsFn = enabled
+    writeHotkeySurface("MIDDLE_MOUSE_ACTS_AS_FN", enabled ? "1" : "0") {
+      try hotkeys?.setMiddleMouseActsAsFn(enabled)
+    }
+  }
+
+  /// One settings.json write. The hotkeys seam persists when it is injected;
+  /// otherwise the shared config router does. Either path reloads the detector.
+  private func writeHotkeySurface(
+    _ key: String, _ value: String, viaHotkeys: () throws -> Void
+  ) {
+    if hotkeys != nil {
+      do {
+        try viaHotkeys()
+        if let engine { applyLoadedSettings(engine.loadSettings()) }
+      } catch {
+        lastError = String(describing: error)
+      }
+      return
+    }
+    persist(key, value)
+  }
+
   /// Deferred-insert chord from the canonical persisted settings snapshot.
   @Published private(set) var deferredInsertShortcut: DeferredInsertShortcutOption = .disabled
 
