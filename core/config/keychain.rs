@@ -63,6 +63,13 @@ fn note_credential_acquisition(operation: &'static str) {
 
 /// Keychain service identity for every Codescribe generic-password item.
 const SERVICE: &str = "com.vetcoders.codescribe";
+
+/// Credential namespace sealed before the first engine credential lookup.
+pub fn credential_service() -> &'static str {
+    super::runtime_host::selected()
+        .map(|host| host.keychain_service.as_str())
+        .unwrap_or(SERVICE)
+}
 /// Account name of the single bundled secret item (all API keys together).
 const BUNDLE_ACCOUNT: &str = "codescribe_keychain_bundle_v1";
 
@@ -122,7 +129,7 @@ pub fn apply_key_moves(moves: &[KeyMove]) -> Result<usize> {
     );
     // Do not collapse denial/corruption into an empty bundle: that would erase
     // the durable retry intent. -25300 is Security.framework errSecItemNotFound.
-    let mut bundle = match get_generic_password(SERVICE, BUNDLE_ACCOUNT) {
+    let mut bundle = match get_generic_password(credential_service(), BUNDLE_ACCOUNT) {
         Ok(bytes) => decode_bundle(&bytes).context("Keychain bundle cannot be decoded")?,
         Err(error) if error.code() == -25300 => KeychainBundle::default(),
         Err(error) => return Err(error).context("Keychain relocation read failed"),
@@ -347,7 +354,7 @@ fn load_bundle() -> Option<KeychainBundle> {
     if let Some(bundle) = read_bundle_cache() {
         return Some(bundle);
     }
-    match get_generic_password(SERVICE, BUNDLE_ACCOUNT) {
+    match get_generic_password(credential_service(), BUNDLE_ACCOUNT) {
         Ok(bytes) => {
             let bundle = decode_bundle(&bytes);
             if bundle.is_some() {
@@ -370,7 +377,7 @@ fn load_bundle() -> Option<KeychainBundle> {
 fn save_bundle(bundle: &KeychainBundle) -> Result<()> {
     note_credential_acquisition("write bundle");
     let payload = encode_bundle(bundle)?;
-    set_generic_password(SERVICE, BUNDLE_ACCOUNT, &payload)
+    set_generic_password(credential_service(), BUNDLE_ACCOUNT, &payload)
         .with_context(|| "Failed to save Keychain bundle")?;
     write_bundle_cache(Some(bundle.clone()));
     Ok(())
@@ -636,7 +643,7 @@ pub fn delete_key(account: &str) -> Result<()> {
     let mut bundle = load_bundle().unwrap_or_default();
     if bundle.keys.remove(account).is_some() {
         if bundle.keys.is_empty() {
-            match delete_generic_password(SERVICE, BUNDLE_ACCOUNT) {
+            match delete_generic_password(credential_service(), BUNDLE_ACCOUNT) {
                 Ok(()) => {
                     write_bundle_cache(None);
                     info!("Deleted Keychain bundle (last key removed)");

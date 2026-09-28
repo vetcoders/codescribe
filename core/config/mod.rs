@@ -50,6 +50,8 @@ pub mod portable;
 pub mod prompts;
 /// Backup-first launch repair and its diagnostic receipt.
 pub mod repair;
+/// Explicit state and credential ownership for an embedding application.
+pub mod runtime_host;
 /// GUI-managed user settings JSON (regular-user tier).
 pub mod settings;
 /// Process-wide app-data I/O fence used by destructive reset.

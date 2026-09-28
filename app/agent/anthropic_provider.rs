@@ -92,12 +92,24 @@ impl AnthropicProvider {
         lane: &RuntimeLlmLane,
         request_timing: &RuntimeAiRequestTiming,
     ) -> Result<Self> {
-        let api_key_account = Some(lane.credential().key_account().to_string());
-        let endpoint = lane.endpoint().to_string();
-        // Model comes from the shared assistive-lane setting; Settings supplies a
-        // Claude model when the assistive provider is Anthropic.
-        let default_model = lane.model().to_string();
+        let mut result = Self::from_configuration(
+            lane.endpoint().to_string(),
+            lane.model().to_string(),
+            String::new(),
+            request_timing,
+        )?;
+        result.api_key_account = Some(lane.credential().key_account().to_string());
+        Ok(result)
+    }
 
+    /// Per-turn configuration supplied by an embedding application. Credentials
+    /// belong to that caller; this provider never reads a different app's keys.
+    pub fn from_configuration(
+        endpoint: String,
+        default_model: String,
+        api_key: String,
+        request_timing: &RuntimeAiRequestTiming,
+    ) -> Result<Self> {
         let initial_response_timeout = request_timing.attempt_timeout();
         let inter_chunk_timeout = request_timing.inter_chunk_timeout();
 
@@ -116,8 +128,8 @@ impl AnthropicProvider {
         Ok(Self {
             client,
             endpoint,
-            api_key: String::new(),
-            api_key_account,
+            api_key,
+            api_key_account: None,
             anthropic_version: ANTHROPIC_VERSION.to_string(),
             default_model,
             default_max_tokens: DEFAULT_MAX_TOKENS,

@@ -17,6 +17,10 @@ use codescribe_core::attachment::{MAX_VISION_IMAGE_BYTES, load_image_for_vision}
 use codescribe_core::config::RuntimeSettingsSnapshot;
 use tokio::task::AbortHandle;
 
+use crate::document_agent::{
+    CsDocumentProvider, CsDocumentToolHost, DOCUMENT_AGENT_PROMPT, DocumentAgentContext,
+    document_tool_registry,
+};
 use crate::{CsError, application_runtime};
 
 /// Maximum number of image attachments the composer may forward in one message.
@@ -275,7 +279,7 @@ impl CodescribeAgent {
         let agent = self.clone();
         application_runtime::run(async move {
             agent
-                .run_stream(text, thread_id, Vec::new(), listener)
+                .run_stream(text, thread_id, Vec::new(), listener, None)
                 .await
         })
         .await?
@@ -307,7 +311,9 @@ impl CodescribeAgent {
                 &attachments,
                 assistive_lane.supports_vision(assistive_lane.model()),
             )?;
-            agent.run_stream(text, thread_id, images, listener).await
+            agent
+                .run_stream(text, thread_id, images, listener, None)
+                .await
         })
         .await?
     }
@@ -331,6 +337,40 @@ impl CodescribeAgent {
     pub fn cancel_turn(&self, thread_id: String) -> bool {
         self.approvals.cancel_thread(&thread_id);
         self.turns.cancel(&thread_id)
+    }
+
+    /// Run the same agent loop against the embedding editor's live document.
+    /// Requires an explicit host identity; cannot inherit the desktop app's
+    /// documents, credentials, tools, or conversation directory.
+    pub async fn stream_document(
+        &self,
+        text: String,
+        thread_id: String,
+        document: Arc<dyn CsDocumentToolHost>,
+        provider: Option<CsDocumentProvider>,
+        listener: Arc<dyn CsAgentListener>,
+    ) -> Result<String, CsError> {
+        if codescribe_core::config::runtime_host::selected().is_none() {
+            return Err(CsError::Config {
+                msg: "document agent requires an embedding host identity".into(),
+            });
+        }
+        let agent = self.clone();
+        application_runtime::run(async move {
+            agent
+                .run_stream(
+                    text,
+                    thread_id,
+                    Vec::new(),
+                    listener,
+                    Some(DocumentAgentContext {
+                        host: document,
+                        provider,
+                    }),
+                )
+                .await
+        })
+        .await?
     }
 
     /// Recover outstanding cards after attaching or refreshing the UI.
@@ -373,17 +413,35 @@ impl CodescribeAgent {
         thread_id: String,
         attachments: Vec<ImageAttachment>,
         listener: Arc<dyn CsAgentListener>,
+        document: Option<DocumentAgentContext>,
     ) -> Result<String, CsError> {
         // One fresh seal for the WHOLE turn: lane identity, provider
         // credential, stream options and persistence labels all read the same
         // generation, and a key saved in Settings reaches the next send.
         let settings = self.current_settings();
         let assistive_lane = settings.llm_lanes().assistive();
-        let provider = codescribe::agent::create_provider_for_lane(
-            settings.as_ref(),
-            codescribe_core::config::RuntimeLlmLaneKind::Assistive,
-        )?;
-        let registry = codescribe::agent::tools::configured_registry();
+        let explicit_provider = document
+            .as_ref()
+            .and_then(|context| context.provider.as_ref());
+        let provider = match explicit_provider {
+            Some(configuration) => configuration.build(settings.ai_execution().request_timing())?,
+            None => codescribe::agent::create_provider_for_lane(
+                settings.as_ref(),
+                codescribe_core::config::RuntimeLlmLaneKind::Assistive,
+            )?,
+        };
+        let provider_label = explicit_provider
+            .map(|p| p.wire.clone())
+            .unwrap_or_else(|| assistive_lane.provider().as_str().to_string());
+        let model = explicit_provider
+            .map(|p| p.model.clone())
+            .unwrap_or_else(|| assistive_lane.model().to_string());
+        let active_document = document.as_ref().map(|context| Arc::clone(&context.host));
+        let is_document_session = document.is_some();
+        let registry = match document {
+            Some(context) => document_tool_registry(context.host)?,
+            None => codescribe::agent::tools::configured_registry(),
+        };
         let (ui_tx, ui_rx) = tokio::sync::mpsc::channel::<AgentUiEvent>(64);
         let approvals = Arc::clone(&self.approvals);
         let approval_handler: ToolApprovalHandler =
@@ -422,12 +480,25 @@ impl CodescribeAgent {
         // controller path uses (build_agent_stream_options), so a Swift chat send
         // is not stripped of the WORKSPACE-augmented assistive prompt and the
         // configured `ai_assistive_max_tokens`.
-        let options = build_bridge_stream_options(
-            settings.values().ai_assistive_max_tokens,
-            settings.as_ref(),
-        );
+        let options = if is_document_session {
+            StreamOptions {
+                model: model.clone(),
+                system_prompt: Some(DOCUMENT_AGENT_PROMPT.into()),
+                max_tokens: u32::try_from(settings.values().ai_assistive_max_tokens)
+                    .ok()
+                    .filter(|value| *value > 0),
+                temperature: None,
+                reset_chain: false,
+            }
+        } else {
+            build_bridge_stream_options(
+                settings.values().ai_assistive_max_tokens,
+                settings.as_ref(),
+            )
+        };
 
         let turn = PreparedTurn {
+            active_document,
             session,
             text,
             attachments,
@@ -443,13 +514,7 @@ impl CodescribeAgent {
         // purpose: its partial messages are discarded, so the thread on disk
         // keeps the last completed-turn state (today's only cancel trigger is
         // thread deletion, where persisting would resurrect the thread).
-        deliver_completed_thread(
-            thread_id,
-            messages,
-            assistive_lane.provider().as_str().to_string(),
-            assistive_lane.model().to_string(),
-        )
-        .await;
+        deliver_completed_thread(thread_id, messages, provider_label, model).await;
         Ok(final_text)
     }
 }
@@ -457,6 +522,7 @@ impl CodescribeAgent {
 /// Everything a spawned agent turn needs, bundled so [`drive_turn`] stays a
 /// single testable unit (tests build one from a scripted provider + mock tools).
 struct PreparedTurn {
+    active_document: Option<Arc<dyn CsDocumentToolHost>>,
     /// Agent session with history already restored and tools registered.
     session: AgentSession,
     /// The user's message for this turn.
@@ -492,12 +558,22 @@ async fn drive_turn(
     thread_id: String,
 ) -> Result<(String, Vec<Message>), CsError> {
     let PreparedTurn {
+        active_document,
         session,
         text,
         attachments,
         options,
         mut ui_rx,
     } = turn;
+
+    if active_document
+        .as_ref()
+        .is_some_and(|host| !host.is_active())
+    {
+        return Err(CsError::Agent {
+            msg: "Document turn cancelled".into(),
+        });
+    }
 
     // Drive the agent loop on a task so the channel closes when it finishes,
     // letting the drain loop below terminate cleanly. The task hands back the
@@ -509,6 +585,16 @@ async fn drive_turn(
         Ok::<Vec<Message>, anyhow::Error>(session.messages().to_vec())
     });
     let _turn_guard = turns.register(&thread_id, send_handle.abort_handle());
+    // Closes the interval between the early cancellation check and registration.
+    // A later Stop reaches the registered abort handle through cancel_turn.
+    if active_document
+        .as_ref()
+        .is_some_and(|host| !host.is_active())
+    {
+        return Err(CsError::Agent {
+            msg: "Document turn cancelled".into(),
+        });
+    }
 
     let mut final_text = String::new();
     while let Some(event) = ui_rx.recv().await {
@@ -1169,12 +1255,110 @@ mod tests {
             ui_tx,
         );
         PreparedTurn {
+            active_document: None,
             session,
             text: text.to_string(),
             attachments: Vec::new(),
             options: test_options(),
             ui_rx,
         }
+    }
+
+    #[tokio::test]
+    async fn document_cancelled_before_registration_never_starts_a_turn() {
+        struct ClosedHost;
+        impl CsDocumentToolHost for ClosedHost {
+            fn is_active(&self) -> bool {
+                false
+            }
+            fn execute(&self, _: String, _: String) -> Result<String, CsError> {
+                panic!("a closed document must never receive tool calls")
+            }
+        }
+        let mut turn = scripted_turn(text_turn_script("late"), ToolRegistry::new(), "run");
+        turn.active_document = Some(Arc::new(ClosedHost));
+        let listener = Arc::new(RecordingListener::default());
+        assert!(
+            drive_turn(turn, listener.clone(), Arc::default(), "closed".into())
+                .await
+                .is_err()
+        );
+        assert_eq!(listener.done_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn document_agent_reads_and_edits_through_the_host_in_one_turn() {
+        struct Host(std::sync::Mutex<Vec<String>>);
+        impl CsDocumentToolHost for Host {
+            fn is_active(&self) -> bool {
+                true
+            }
+            fn execute(&self, name: String, arguments: String) -> Result<String, CsError> {
+                let args: serde_json::Value = serde_json::from_str(&arguments).unwrap();
+                self.0.lock().unwrap().push(name.clone());
+                match name.as_str() {
+                    "document_read" => Ok(r#"{"text":"unsaved decision","revision":"r1"}"#.into()),
+                    "document_replace" => {
+                        assert_eq!(args["revision"], "r1");
+                        Ok(r#"{"edited":true,"direct_file_write":false}"#.into())
+                    }
+                    _ => panic!("unexpected tool"),
+                }
+            }
+        }
+        let host = Arc::new(Host(std::sync::Mutex::new(Vec::new())));
+        let registry = document_tool_registry(host.clone()).unwrap();
+        let mut names: Vec<_> = registry
+            .definitions()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            ["document_read", "document_replace", "document_search"]
+        );
+        let batch = |id: &str, name: &str, arguments| {
+            vec![
+                AgentEvent::ToolCallReady {
+                    id: id.into(),
+                    name: name.into(),
+                    arguments,
+                },
+                AgentEvent::ResponseDone {
+                    response_id: None,
+                    clean: true,
+                },
+            ]
+        };
+        let scripts = vec![
+            batch(
+                "read",
+                "document_read",
+                serde_json::json!({"offset":0,"limit":8000}),
+            ),
+            batch(
+                "edit",
+                "document_replace",
+                serde_json::json!({"revision":"r1","old_text":"decision","new_text":"result"}),
+            ),
+            text_turn_script("Edited the unsaved document").remove(0),
+        ];
+        let listener = Arc::new(RecordingListener::default());
+        let (reply, _) = drive_turn(
+            scripted_turn(scripts, registry, "Change decision to result"),
+            listener.clone(),
+            Arc::default(),
+            "document-session".into(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reply, "Edited the unsaved document");
+        assert_eq!(
+            *host.0.lock().unwrap(),
+            ["document_read", "document_replace"]
+        );
+        assert_eq!(listener.done_count.load(Ordering::SeqCst), 1);
     }
 
     /// Poll `flag` until set or `timeout` elapses, returning its final value.

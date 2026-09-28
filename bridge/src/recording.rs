@@ -1218,6 +1218,7 @@ mod tests {
     #[test]
     fn bus_projection_conversion_preserves_every_authority_field() {
         let mut event = TranscriptBusEvidenceEvent {
+            audience: None,
             schema: "codescribe.transcript-evidence.v1".to_string(),
             sequence: 7,
             emitted_at: "2026-08-27T12:00:00Z".to_string(),
@@ -1423,6 +1424,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let bus = TranscriptBus::open_at(
             TranscriptSession {
+                audience: None,
                 session_id: "bridge-shaping".to_string(),
                 mode: TranscriptMode::Agent,
                 has_latched_target: false,
@@ -1508,6 +1510,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let bus = TranscriptBus::open_at(
             TranscriptSession {
+                audience: None,
                 session_id: "bridge-shaping".to_string(),
                 mode: TranscriptMode::Agent,
                 has_latched_target: false,

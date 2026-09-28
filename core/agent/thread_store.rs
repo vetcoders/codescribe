@@ -693,6 +693,9 @@ fn is_assistive_wire_label(line: &str) -> bool {
 /// hardcoded Application Support path is the last resort when the platform
 /// directories cannot be resolved.
 pub(crate) fn app_data_dir() -> PathBuf {
+    if let Some(host) = crate::config::runtime_host::selected() {
+        return host.data_directory.clone();
+    }
     if let Ok(custom) = std::env::var("CODESCRIBE_DATA_DIR") {
         return PathBuf::from(shellexpand::tilde(&custom).into_owned());
     }
