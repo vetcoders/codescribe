@@ -189,6 +189,15 @@ pub struct UserSettings {
     /// Assistive-arm modifier on hold base: `"shift"` (default) or `"cmd"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hold_arm_modifier: Option<String>,
+    /// Agent-channel modifier: `"ctrl"` (default) or `"fn"`. Command is rejected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel_modifier: Option<String>,
+    /// Quick Fn press below the hold delay toggles dictation. `None` keeps the default off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fn_tap_toggles_dictation: Option<bool>,
+    /// Middle mouse button follows Fn. `None` keeps the default off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub middle_mouse_acts_as_fn: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode_bindings: Option<Vec<ModeBinding>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1372,6 +1381,12 @@ struct InteractionV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     deferred_insert_shortcut: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    channel_modifier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fn_tap_toggles_dictation: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    middle_mouse_acts_as_fn: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     restore_clipboard: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     restore_clipboard_delay_ms: Option<u64>,
@@ -1622,6 +1637,9 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "LIGHT_PLUS_SENTENCE_PAUSE_SEC",
     "HOLD_EXCLUSIVE",
     "HOLD_ARM_MODIFIER",
+    "AGENT_CHANNEL_MODIFIER",
+    "FN_TAP_TOGGLES_DICTATION",
+    "MIDDLE_MOUSE_ACTS_AS_FN",
     // AI / Formatting
     "AI_FORMATTING_ENABLED",
     "AUTO_PASTE_ENABLED",
@@ -1712,6 +1730,9 @@ impl UserSettings {
                     arm_modifier: self.hold_arm_modifier.clone(),
                     start_delay_ms: self.hold_start_delay_ms,
                 }),
+                channel_modifier: self.channel_modifier.clone(),
+                fn_tap_toggles_dictation: self.fn_tap_toggles_dictation,
+                middle_mouse_acts_as_fn: self.middle_mouse_acts_as_fn,
                 mode_bindings: Some(normalized_mode_bindings),
                 send_mode: self.transcript_send_mode.clone(),
                 agent_enter_sends: self.agent_enter_sends,
@@ -1842,6 +1863,18 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|i| i.hold.as_ref())
                 .and_then(|h| h.arm_modifier.clone()),
+            channel_modifier: v2
+                .interaction
+                .as_ref()
+                .and_then(|i| i.channel_modifier.clone()),
+            fn_tap_toggles_dictation: v2
+                .interaction
+                .as_ref()
+                .and_then(|i| i.fn_tap_toggles_dictation),
+            middle_mouse_acts_as_fn: v2
+                .interaction
+                .as_ref()
+                .and_then(|i| i.middle_mouse_acts_as_fn),
             mode_bindings: v2
                 .interaction
                 .as_ref()
@@ -2860,6 +2893,13 @@ impl UserSettings {
                     return;
                 }
             },
+            "AGENT_CHANNEL_MODIFIER" => match value.parse::<crate::config::ChannelModifier>() {
+                Ok(modifier) => self.channel_modifier = Some(modifier.as_str().to_string()),
+                Err(error) => {
+                    warn!("Rejected agent channel modifier write: {error}");
+                    return;
+                }
+            },
             other => {
                 warn!("Unknown string setting key: {other}");
                 return;
@@ -2906,6 +2946,8 @@ impl UserSettings {
             "HOLD_INDICATOR" => self.hold_indicator = Some(value),
             "RESTORE_CLIPBOARD" => self.restore_clipboard = Some(value),
             "HOLD_EXCLUSIVE" => self.hold_exclusive = Some(value),
+            "FN_TAP_TOGGLES_DICTATION" => self.fn_tap_toggles_dictation = Some(value),
+            "MIDDLE_MOUSE_ACTS_AS_FN" => self.middle_mouse_acts_as_fn = Some(value),
             "USE_LOCAL_STT" => self.use_local_stt = Some(value),
             SILERO_FUSION_ENV => self.seal_lane_armed = Some(value),
             "HISTORY_ENABLED" => self.history_enabled = Some(value),

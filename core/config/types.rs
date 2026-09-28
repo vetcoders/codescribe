@@ -394,6 +394,53 @@ impl HoldArmModifier {
     }
 }
 
+/// Modifier that opens an agent channel together with a digit.
+///
+/// `Ctrl` is the product default. `Fn` is the optional alternative.
+/// Command is not a variant: it collides with tab switching.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ChannelModifier {
+    #[default]
+    Ctrl,
+    Fn,
+}
+
+impl ChannelModifier {
+    /// Stable settings.json / env token (`ctrl` or `fn`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ctrl => "ctrl",
+            Self::Fn => "fn",
+        }
+    }
+
+    /// Settings label. Presentation only.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ctrl => "Ctrl",
+            Self::Fn => "Fn",
+        }
+    }
+}
+
+impl FromStr for ChannelModifier {
+    /// Parse error payload for channel-modifier wire identifiers.
+    type Err = String;
+
+    /// Accept `ctrl` and `fn`. `cmd` / `command` / `meta` are rejected.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_lowercase().as_str() {
+            "ctrl" | "control" => Ok(Self::Ctrl),
+            "fn" | "globe" | "function" => Ok(Self::Fn),
+            "cmd" | "command" | "meta" => {
+                Err("Command cannot be the agent-channel modifier (tab-switching collision)".into())
+            }
+            other => Err(format!("Unknown channel modifier: {other}")),
+        }
+    }
+}
+
 impl FromStr for HoldArmModifier {
     /// Parse error payload for HoldArmModifier wire identifiers.
     type Err = String;
@@ -446,6 +493,18 @@ pub struct Config {
     /// Global one-shot command for inserting the in-memory deferred transcript.
     #[serde(default)]
     pub deferred_insert_shortcut: DeferredInsertShortcut,
+
+    /// Modifier held with a digit to open an agent channel. Command is unrepresentable.
+    #[serde(default)]
+    pub channel_modifier: ChannelModifier,
+
+    /// Quick Fn press below the hold delay toggles dictation. Off until chosen.
+    #[serde(default)]
+    pub fn_tap_toggles_dictation: bool,
+
+    /// Middle mouse button (button 2) follows the Fn press/release path. Off until chosen.
+    #[serde(default)]
+    pub middle_mouse_acts_as_fn: bool,
 
     // ===== Language =====
     /// Whisper language preference
@@ -640,6 +699,9 @@ impl Default for Config {
             whisper_context_window_sec: default_whisper_context_window_sec(),
             light_plus_sentence_pause_sec: default_light_plus_sentence_pause_sec(),
             deferred_insert_shortcut: DeferredInsertShortcut::default(),
+            channel_modifier: ChannelModifier::default(),
+            fn_tap_toggles_dictation: false,
+            middle_mouse_acts_as_fn: false,
             whisper_language: Language::default(),
             ai_formatting_enabled: false,
             auto_paste_enabled: default_auto_paste_enabled(),

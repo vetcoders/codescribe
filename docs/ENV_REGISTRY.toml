@@ -1107,6 +1107,27 @@ reload = "restart"
 category = "hotkeys"
 description = "Modifier arming assistive chat on the dictation hold base (shift|cmd)"
 
+[vars.AGENT_CHANNEL_MODIFIER]
+default = "ctrl"
+type = "string"
+reload = "hot"
+category = "hotkeys"
+description = "Modifier held with a digit to open an agent channel (ctrl|fn). Command is rejected."
+
+[vars.FN_TAP_TOGGLES_DICTATION]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "hotkeys"
+description = "Quick Fn press below the hold delay toggles dictation. Off until chosen. Hold past the delay stays hold-to-talk."
+
+[vars.MIDDLE_MOUSE_ACTS_AS_FN]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "hotkeys"
+description = "Mouse button 2 follows Fn press and release. Off until chosen. The tap is listen-only, so the click still reaches the frontmost app."
+
 [vars.CODESCRIBE_DEFERRED_INSERT_SHORTCUT]
 default = "disabled"
 type = "string"

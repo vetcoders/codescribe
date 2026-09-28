@@ -102,6 +102,14 @@ pub struct CsSettings {
     /// from the canonical merged config snapshot. `"disabled"` is the
     /// product default when no persisted choice exists.
     pub deferred_insert_shortcut: String,
+    /// Agent-channel modifier (`ChannelModifier::as_str()`). `"ctrl"` or `"fn"`.
+    /// Command is not a value.
+    pub channel_modifier: String,
+    /// Quick Fn press below the hold delay toggles dictation. Default off.
+    pub fn_tap_toggles_dictation: bool,
+    /// Middle mouse button follows Fn press/release. Default off.
+    /// The tap stays listen-only, so the click still reaches the frontmost app.
+    pub middle_mouse_acts_as_fn: bool,
     // ── Language ──
     pub whisper_language: CsLanguage,
     // ── AI / formatting ──
@@ -207,6 +215,9 @@ impl CsSettings {
             whisper_context_window_sec: config.whisper_context_window_sec,
             light_plus_sentence_pause_sec: config.light_plus_sentence_pause_sec,
             deferred_insert_shortcut: config.deferred_insert_shortcut.wire_id().to_string(),
+            channel_modifier: config.channel_modifier.as_str().to_string(),
+            fn_tap_toggles_dictation: config.fn_tap_toggles_dictation,
+            middle_mouse_acts_as_fn: config.middle_mouse_acts_as_fn,
             whisper_language: CsLanguage::from(config.whisper_language),
             ai_formatting_enabled: config.ai_formatting_enabled,
             transcript_send_mode: config.transcript_send_mode.as_str().to_string(),
