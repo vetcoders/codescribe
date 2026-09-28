@@ -11041,13 +11041,44 @@ mod storm_tests {
                 })
                 .collect::<Vec<_>>();
             assert_eq!(mirrors.len(), 1);
+            let preview = if second.start_ts >= 9.125 {
+                expected.clone()
+            } else {
+                vec![(at(second.start_ts), at(second.end_ts), second.text.as_str())]
+            };
             assert_eq!(
                 mirrors[0]
                     .iter()
                     .map(|word| (word.sample_start, word.sample_end, word.text.as_str()))
                     .collect::<Vec<_>>(),
-                expected
+                preview
             );
+            if preview.len() == 1 {
+                let fusion = state.fusion.as_mut().unwrap();
+                let start = fusion
+                    .ledger()
+                    .utterances()
+                    .last()
+                    .unwrap()
+                    .range
+                    .sample_start;
+                fusion.observe(Some((start, at(10.0))), false, at(10.0));
+                fusion.observe(None, true, at(10.0));
+                seal_sliced_by_silero(&mut state, &tx, &[]);
+                let ledger = state.acoustic_ledger.lock().unwrap();
+                assert!(ledger.layer_trail().iter().any(|entry| {
+                    entry.candidate_label == "leftover"
+                        && entry.observation.occurrence.sample_start == at(9.0)
+                        && entry.observation.occurrence.sample_end == at(9.125)
+                        && matches!(
+                            entry.decision,
+                            MutationReceipt::KeepVisibleUnanchored {
+                                reason: NoAuthorityReason::LateAppleWordNotCurrent,
+                                ..
+                            }
+                        )
+                }));
+            }
         }
     }
 
@@ -15220,6 +15251,13 @@ mod rc_w2_test_rehab {
                         state.acoustic_ledger.lock().unwrap().is_sealed(&owner),
                         !observer_open
                     );
+                    let (seal_before, slots_before) = {
+                        let ledger = state.acoustic_ledger.lock().unwrap();
+                        (
+                            ledger.seal_of(&owner).cloned(),
+                            ledger.slots_of(&owner).unwrap().to_vec(),
+                        )
+                    };
                     drain(&mut rx);
                     if case == 1 {
                         words[1].text = "changed".into();
@@ -15268,18 +15306,33 @@ mod rc_w2_test_rehab {
                             );
                         }
                         1 => {
-                            assert!(events.iter().any(|event| matches!(
-                                event,
-                                EngineEvent::LedgerMutation {
-                                    label,
-                                    receipt: MutationReceipt::Refuse {
-                                        reason: RefuseReason::SealedReplay,
-                                        ..
-                                    },
-                                    ..
-                                } if label == "changed"
-                            )));
-                            assert_eq!(document(&state), "alpha beta");
+                            if observer_open {
+                                assert_eq!(document(&state), "alpha changed");
+                                assert!(events.iter().any(|event| matches!(event,
+                                    EngineEvent::LedgerMutation { label, receipt, .. }
+                                        if label == "alpha changed" && receipt.grants_mutation())));
+                                let ledger = state.acoustic_ledger.lock().unwrap();
+                                assert_eq!(ledger.slots_of(&owner).unwrap().len(), 2);
+                                assert!(ledger.layer_trail_for(&owner).any(|entry| {
+                                    entry.candidate_label == "alpha beta"
+                                        && entry.decision.grants_mutation()
+                                }));
+                            } else {
+                                assert!(events.iter().any(|event| matches!(event,
+                                    EngineEvent::LedgerMutation { label,
+                                        receipt: MutationReceipt::KeepVisibleUnanchored {
+                                            reason: NoAuthorityReason::LateAppleWordSealedOwner, .. }, .. }
+                                        if label == "changed")));
+                                assert_eq!(document(&state), "alpha beta");
+                                let ledger = state.acoustic_ledger.lock().unwrap();
+                                assert_eq!(ledger.seal_of(&owner), seal_before.as_ref());
+                                assert_eq!(
+                                    ledger.slots_of(&owner).unwrap(),
+                                    slots_before.as_slice()
+                                );
+                                drop(ledger);
+                                assert_sealed_apple_refusal(&state, &owner);
+                            }
                         }
                         _ => {
                             for word in ["alpha", "beta"] {
@@ -16252,6 +16305,37 @@ mod rc_w2_test_rehab {
         );
     }
 
+    fn assert_sealed_apple_refusal(state: &AppleSealState, owner: &OccurrenceIdentity) {
+        let mut ledger = state.acoustic_ledger.lock().unwrap();
+        let seal = ledger
+            .seal_of(owner)
+            .expect("genuinely sealed fixture")
+            .clone();
+        let slots = ledger.slots_of(owner).unwrap().to_vec();
+        let label = ledger.text_of(owner).unwrap().to_string();
+        let observation = ledger.next_word_observation(LedgerObservationProducer::Apple, 99, owner);
+        assert!(matches!(
+            ledger.admit(&observation, "forbidden sealed rewrite"),
+            MutationReceipt::Refuse {
+                reason: RefuseReason::SealedReplay,
+                ..
+            }
+        ));
+        assert_eq!(ledger.seal_of(owner), Some(&seal));
+        assert_eq!(ledger.slots_of(owner).unwrap(), slots.as_slice());
+        assert_eq!(ledger.text_of(owner), Some(label.as_str()));
+        assert!(ledger.layer_trail_for(owner).any(|entry| {
+            entry.observation == observation
+                && matches!(
+                    entry.decision,
+                    MutationReceipt::Refuse {
+                        reason: RefuseReason::SealedReplay,
+                        ..
+                    }
+                )
+        }));
+    }
+
     #[test]
     fn changed_apple_span_cannot_append_a_cumulative_suffix() {
         for armed in [false, true] {
@@ -16263,6 +16347,17 @@ mod rc_w2_test_rehab {
             }
             let owner = OccurrenceIdentity::new("stale-apple-slot", 7, 0, sample(2.0));
             emit(&mut state, &tx, vec![segment("alpha beta", 0.0, 2.0)]);
+            // Returning the observer and closing the horizon, rather than merely
+            // closing Silero, establishes finality in both configurations.
+            state.return_outstanding_whisper_without_label(&tx);
+            assert!(state.acoustic_ledger.lock().unwrap().is_sealed(&owner));
+            let seal = state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .seal_of(&owner)
+                .unwrap()
+                .clone();
             let before = state
                 .acoustic_ledger
                 .lock()
@@ -16280,6 +16375,7 @@ mod rc_w2_test_rehab {
             assert_eq!(ledger.text_of(&owner), Some("alpha beta"));
             assert_eq!(ledger.slots_of(&owner).unwrap(), before.as_slice());
             assert_eq!(ledger.conservation().residue(), 0);
+            assert_eq!(ledger.seal_of(&owner), Some(&seal));
             drop(ledger);
             assert!(drain(&mut rx).iter().any(|event| match event {
                 EngineEvent::LedgerMutation { label, receipt, .. }
@@ -16287,14 +16383,15 @@ mod rc_w2_test_rehab {
                 {
                     matches!(
                         receipt,
-                        MutationReceipt::Refuse {
-                            reason: RefuseReason::SealedReplay,
+                        MutationReceipt::KeepVisibleUnanchored {
+                            reason: NoAuthorityReason::LateAppleWordSealedOwner,
                             ..
                         }
                     )
                 }
                 _ => false,
             }));
+            assert_sealed_apple_refusal(&state, &owner);
         }
     }
 
@@ -19447,6 +19544,37 @@ mod relay_l1_overlap_admission_tests {
         tail_rx: mpsc::Receiver<TailPatchRequest>,
     }
 
+    fn assert_replaced_slot_evidence(
+        lane: &Lane,
+        occurrence: &OccurrenceIdentity,
+        losers: &[&str],
+    ) {
+        let ledger = lane.state.acoustic_ledger.lock().expect("ledger");
+        for loser in losers {
+            assert!(
+                ledger.layer_trail_for(occurrence).any(|entry| {
+                    entry.candidate_label == *loser
+                        && matches!(
+                            entry.decision,
+                            MutationReceipt::Refuse {
+                                reason: RefuseReason::ReplacedByWhisper,
+                                ..
+                            }
+                        )
+                }),
+                "missing replacement receipt for {loser}"
+            );
+            assert!(
+                ledger
+                    .slots_of(occurrence)
+                    .unwrap()
+                    .iter()
+                    .all(|slot| slot.text != *loser)
+            );
+        }
+        ledger.assert_slot_labels();
+    }
+
     fn open(session: &str) -> Lane {
         let (tx, rx) = mpsc::unbounded_channel();
         let (tail_tx, tail_rx) = mpsc::channel(8);
@@ -20108,13 +20236,14 @@ mod relay_l1_overlap_admission_tests {
         );
         assert_eq!(
             held_text(&lane, &occurrence).as_deref(),
-            Some("raz nowy stary dwa ogon trzy")
+            Some("raz nowy dwa trzy")
         );
         assert_eq!(
             held_count(&lane),
             1,
             "replay must not mint a duplicate token"
         );
+        assert_replaced_slot_evidence(&lane, &occurrence, &["stary", "ogon"]);
         assert_conserved(&lane, None);
     }
 
@@ -20585,17 +20714,14 @@ mod relay_l1_overlap_admission_tests {
             1,
             "a measured-silent pause between word pins is not uncovered speech"
         );
-        assert_eq!(
-            held_text(&lane, &occurrence).as_deref(),
-            Some("cale raz dwa")
-        );
+        assert_eq!(held_text(&lane, &occurrence).as_deref(), Some("raz dwa"));
         assert_eq!(held_count(&lane), 1);
         assert_eq!(energy_lookups(&lane), 0);
+        assert_replaced_slot_evidence(&lane, &occurrence, &["cale"]);
         assert_conserved(&lane, None);
     }
 
-    /// A gap between two admitted word pins that still contains a voiced hop
-    /// is uncovered speech. The member stays unreplaced.
+    /// A voiced gap does not keep a superseded aggregate label in the document.
     #[test]
     fn voiced_gap_does_not_block_admission_of_heard_words() {
         let mut lane = open("relay-voiced-gap");
@@ -20631,11 +20757,9 @@ mod relay_l1_overlap_admission_tests {
             2,
             "a voiced hop between word pins is uncovered speech"
         );
-        assert_eq!(
-            held_text(&lane, &occurrence).as_deref(),
-            Some("cale raz dwa")
-        );
+        assert_eq!(held_text(&lane, &occurrence).as_deref(), Some("raz dwa"));
         assert_eq!(held_count(&lane), 1);
+        assert_replaced_slot_evidence(&lane, &occurrence, &["cale"]);
         assert_conserved(&lane, None);
     }
 
@@ -20861,12 +20985,13 @@ mod relay_l1_overlap_admission_tests {
                 .complete_whisper_window(&lane.tx, completion(request, segments), 9.5);
             events.extend(drain(&mut lane.rx));
         }
+        assert_replaced_slot_evidence(&lane, &occurrence, &["Szew,"]);
         let warnings = warning_lines(&events);
         assert!(replay_refusal(&events, "szew"), "{warnings}");
         assert_eq!(mutation_count(&events), 3);
         assert_eq!(
             held_text(&lane, &occurrence).as_deref(),
-            Some("Szew, dalej koniec"),
+            Some("szew dalej koniec"),
             "{warnings}"
         );
     }
@@ -21301,7 +21426,7 @@ mod relay_l1_overlap_admission_tests {
         );
         assert_eq!(
             held_text(&lane, &occurrence).as_deref(),
-            Some("raz krawedz dwa echo trzy cztery")
+            Some("raz krawedz dwa trzy cztery")
         );
         assert!(
             !lane
@@ -21313,6 +21438,7 @@ mod relay_l1_overlap_admission_tests {
             "the joined whisper label clears the text debt"
         );
         assert_eq!(held_count(&lane), 1);
+        assert_replaced_slot_evidence(&lane, &occurrence, &["echo"]);
         assert_conserved(&lane, Some("replayed_range_identity"));
     }
 
@@ -21354,9 +21480,10 @@ mod relay_l1_overlap_admission_tests {
         );
         assert_eq!(
             held_text(&lane, &occurrence).as_deref(),
-            Some("raz krawedz dwa echo trzy cztery")
+            Some("raz krawedz dwa trzy cztery")
         );
         assert_eq!(held_count(&lane), 1);
+        assert_replaced_slot_evidence(&lane, &occurrence, &["cale zdanie", "echo"]);
         assert_conserved(&lane, Some("replayed_range_identity"));
     }
 
@@ -21446,7 +21573,7 @@ mod relay_l1_overlap_admission_tests {
         );
         assert_eq!(
             held_text(&lane, &occurrence).as_deref(),
-            Some("apple nowy ucieka")
+            Some("nowy ucieka")
         );
         assert!(
             !lane
@@ -21456,16 +21583,14 @@ mod relay_l1_overlap_admission_tests {
                 .expect("ledger")
                 .text_recovery_pending(&occurrence)
         );
+        assert_replaced_slot_evidence(&lane, &occurrence, &["apple"]);
         assert_conserved(&lane, None);
     }
 
-    /// (d) Lexicon already holds a different label. Whisper recovery is inside
-    /// the occurrence and the ledger refuses it as `sealed_replay`.
-    ///
-    /// That refusal is why the debt stays. The warning has to name it, the
-    /// segment range, and the occurrence range.
+    /// (d) An open aggregate Lexicon slot overlaps the recovery pin. Whisper
+    /// replaces that slot and retains its former label as refusal evidence.
     #[test]
-    fn recovery_words_join_open_owner_without_overwriting_unheard_lexicon_slot() {
+    fn recovery_words_replace_overlapping_open_lexicon_slot_with_evidence() {
         let mut lane = open("relay-recovery-lexicon");
         let occurrence = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, 32_000);
         stage(&mut lane, 1, occurrence.clone(), "apple tekst");
@@ -21521,7 +21646,7 @@ mod relay_l1_overlap_admission_tests {
         );
         assert_eq!(
             held_text(&lane, &occurrence).as_deref(),
-            Some("lexikon trzyma whisper inny")
+            Some("whisper inny")
         );
         assert!(
             !lane
@@ -21531,6 +21656,7 @@ mod relay_l1_overlap_admission_tests {
                 .expect("ledger")
                 .text_recovery_pending(&occurrence)
         );
+        assert_replaced_slot_evidence(&lane, &occurrence, &["lexikon trzyma"]);
         assert_conserved(&lane, None);
     }
 }
@@ -22557,7 +22683,7 @@ mod tc2_window_contract_tests {
     }
 
     #[test]
-    fn ambiguous_apple_ranges_keep_one_whole_occurrence_slot() {
+    fn overlapping_apple_revisions_keep_one_exact_slot_and_loser_receipt() {
         let mut f = fixture();
         assert!(reconcile_silero_ledger(
             &mut f.state,
@@ -22569,17 +22695,33 @@ mod tc2_window_contract_tests {
             ]
         ));
         let ledger = f.state.acoustic_ledger.lock().unwrap();
-        assert_eq!(ledger.text_of(&f.occurrence), Some("one two"));
+        assert_eq!(ledger.text_of(&f.occurrence), Some("two"));
         let slots = ledger.slots_of(&f.occurrence).unwrap();
         assert_eq!(slots.len(), 1);
         assert_eq!(
             (slots[0].sample_start, slots[0].sample_end),
-            (227_328, 510_464)
+            (262_784, 300_000)
         );
+        assert!(ledger.layer_trail().iter().any(|entry| {
+            entry.candidate_label == "one"
+                && entry.observation.occurrence.sample_start == 246_464
+                && entry.observation.occurrence.sample_end == 290_000
+                && matches!(
+                    entry.decision,
+                    MutationReceipt::KeepVisibleUnanchored {
+                        reason: NoAuthorityReason::LateAppleWordNotCurrent,
+                        ..
+                    }
+                )
+        }));
+        assert_eq!(ledger.conservation().residue(), 0);
         ledger.assert_slot_labels();
         drop(ledger);
-        assert!(std::iter::from_fn(|| f.receiver.try_recv().ok()).any(|event| matches!(event,
-            EngineEvent::Warning { code, .. } if code == "apple_closed_occurrence_ambiguous_word_ranges")));
+        assert!(
+            std::iter::from_fn(|| f.receiver.try_recv().ok()).any(|event| matches!(event,
+            EngineEvent::LedgerMutation { label, receipt: MutationReceipt::KeepVisibleUnanchored {
+                reason: NoAuthorityReason::LateAppleWordNotCurrent, .. }, .. } if label == "one"))
+        );
     }
 
     #[test]
@@ -22669,7 +22811,7 @@ mod tc2_window_contract_tests {
     }
 
     #[test]
-    fn jittered_replay_has_the_same_document_when_next_window_finishes_first() {
+    fn jittered_replay_keeps_one_slot_and_latest_revision_in_either_completion_order() {
         for reversed in [false, true] {
             let mut f = fixture();
             let first = f.requests.try_recv().unwrap();
@@ -22690,7 +22832,31 @@ mod tc2_window_contract_tests {
             for result in results {
                 f.state.complete_whisper_window(&f.events, result, 10.7);
             }
-            assert_words(&f, "Alpha, delta");
+            let (winner, loser) = if reversed {
+                ("Alpha, delta", "alpha")
+            } else {
+                ("alpha delta", "Alpha,")
+            };
+            assert_words(&f, winner);
+            let ledger = f.state.acoustic_ledger.lock().unwrap();
+            assert_eq!(ledger.slots_of(&f.occurrence).unwrap().len(), 2);
+            assert!(ledger.layer_trail_for(&f.occurrence).any(|entry| {
+                entry.candidate_label == loser
+                    && matches!(
+                        entry.decision,
+                        MutationReceipt::Refuse {
+                            reason: RefuseReason::ReplacedByWhisper,
+                            ..
+                        }
+                    )
+            }));
+            assert!(ledger.layer_trail().iter().any(|entry| matches!(
+                entry.decision,
+                MutationReceipt::Refuse {
+                    reason: RefuseReason::ReplayedRangeIdentity,
+                    ..
+                }
+            )));
         }
     }
 
