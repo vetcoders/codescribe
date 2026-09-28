@@ -126,9 +126,11 @@ struct DictationOverlayView: View {
 
   private func canvasStack<IntentRail: View>(_ intentRail: IntentRail) -> some View {
     ZStack {
-      if !state.isCollapsed {
-        bodySection
-      }
+      bodySection
+        .frame(height: state.isCollapsed ? 0 : nil)
+        .opacity(state.isCollapsed ? 0 : 1)
+        .allowsHitTesting(!state.isCollapsed)
+        .accessibilityHidden(state.isCollapsed)
       VStack(spacing: 0) {
         header
         hairline(0.06)

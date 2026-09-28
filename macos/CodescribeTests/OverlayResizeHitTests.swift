@@ -323,9 +323,12 @@ final class OverlayResizeHitTests: XCTestCase {
     let transcriptFrame = screenFrame(of: transcript.enclosingScrollView!, in: panel)
     XCTAssertLessThanOrEqual(firstLine.maxY, headerFrame.minY + 1)
     XCTAssertGreaterThanOrEqual(lastLine.minY, transcriptFrame.minY - 1)
+    XCTAssertEqual(transcriptFrame.minY, panel.frame.minY, accuracy: 1)
+    let scroll = try XCTUnwrap(transcript.enclosingScrollView)
+    XCTAssertGreaterThan(scroll.contentInsets.bottom, 24)
     XCTAssertGreaterThanOrEqual(
-      transcriptFrame.minY - panel.frame.minY, 24,
-      "Actions occupy their own vertical space below the transcript")
+      lastLine.minY, transcriptFrame.minY + scroll.contentInsets.bottom - 1,
+      "The last line must remain reachable above the floating footer")
   }
 
   @MainActor
