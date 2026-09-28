@@ -41,6 +41,7 @@ struct LiveTranscriptTextView: NSViewRepresentable {
   private let utf8Identity: [UInt8]
   let isEditable: Bool
   let appearance: OverlayAppearance
+  let contentInsets: NSEdgeInsets
   let onEditingChanged: ((Bool) -> Void)?
   let onTextChange: ((String) -> Void)?
   let onCancelEdit: (() -> Void)?
@@ -50,6 +51,7 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     text: String,
     isEditable: Bool = false,
     appearance: OverlayAppearance,
+    contentInsets: NSEdgeInsets = NSEdgeInsetsZero,
     onEditingChanged: ((Bool) -> Void)? = nil,
     onTextChange: ((String) -> Void)? = nil,
     onCancelEdit: (() -> Void)? = nil
@@ -58,6 +60,7 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     self.utf8Identity = Array(text.utf8)
     self.isEditable = isEditable
     self.appearance = appearance
+    self.contentInsets = contentInsets
     self.onEditingChanged = onEditingChanged
     self.onTextChange = onTextChange
     self.onCancelEdit = onCancelEdit
@@ -70,6 +73,8 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     textView.delegate = context.coordinator
 
     let scrollView = NSScrollView()
+    scrollView.automaticallyAdjustsContentInsets = false
+    scrollView.contentInsets = contentInsets
     scrollView.borderType = .noBorder
     scrollView.drawsBackground = false
     scrollView.hasHorizontalScroller = false
@@ -83,6 +88,7 @@ struct LiveTranscriptTextView: NSViewRepresentable {
   }
 
   func updateNSView(_ scrollView: NSScrollView, context: Context) {
+    scrollView.contentInsets = contentInsets
     guard let textView = scrollView.documentView as? LiveTranscriptNativeTextView else { return }
     update(textView, coordinator: context.coordinator)
   }

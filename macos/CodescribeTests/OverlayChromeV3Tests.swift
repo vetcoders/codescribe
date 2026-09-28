@@ -84,7 +84,12 @@ final class OverlayChromeV3Tests: XCTestCase {
       let rect = root.convert(scroll.bounds, from: scroll)
       XCTAssertGreaterThan(rect.width, width - 65)
       XCTAssertGreaterThan(rect.height, 100)
-      XCTAssertGreaterThanOrEqual(rect.minY, 24)
+      XCTAssertEqual(rect.minY, root.bounds.minY, accuracy: 2)
+      XCTAssertEqual(rect.maxY, root.bounds.maxY, accuracy: 2)
+      XCTAssertGreaterThan(scroll.contentInsets.top, 30)
+      XCTAssertGreaterThan(scroll.contentInsets.bottom, 30)
+      XCTAssertFalse(scroll.drawsBackground)
+      XCTAssertFalse(text.drawsBackground)
       XCTAssertLessThanOrEqual(rect.maxX, root.bounds.maxX)
     }
   }
