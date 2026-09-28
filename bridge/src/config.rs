@@ -1215,6 +1215,11 @@ impl CodescribeConfig {
         }
     }
 
+    /// Availability of the same file lane used by explicit cloud retranscription.
+    pub fn cloud_file_retranscription_available(&self) -> bool {
+        crate::recording::cloud_file_lane(&Config::load()).is_ok()
+    }
+
     pub fn stt_lanes(&self) -> Vec<CsSttLane> {
         let settings = UserSettings::load();
         SttLane::ALL

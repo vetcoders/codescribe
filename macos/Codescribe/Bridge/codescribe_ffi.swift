@@ -1250,6 +1250,11 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
     func clearMcpConfiguration() throws
 
     /**
+     * Availability of the same file lane used by explicit cloud retranscription.
+     */
+    func cloudFileRetranscriptionAvailable()  -> Bool
+
+    /**
      * Absolute path to the config directory (`~/.codescribe`, or the
      * `CODESCRIBE_DATA_DIR` override).
      */
@@ -1682,6 +1687,17 @@ open func clearMcpConfiguration()throws   {try rustCallWithError(FfiConverterTyp
             self.uniffiCloneHandle(),$0
     )
 }
+}
+
+    /**
+     * Availability of the same file lane used by explicit cloud retranscription.
+     */
+open func cloudFileRetranscriptionAvailable() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribeconfig_cloud_file_retranscription_available(
+            self.uniffiCloneHandle(),$0
+    )
+})
 }
 
     /**
@@ -16511,6 +16527,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_clear_mcp_configuration() != 52016) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_cloud_file_retranscription_available() != 7524) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_config_dir() != 34462) {

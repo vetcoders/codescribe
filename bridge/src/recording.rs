@@ -974,7 +974,7 @@ fn transcribe_file_hq(path: String) -> Result<CsTranscription, CsError> {
     })
 }
 
-fn cloud_file_lane(
+pub(crate) fn cloud_file_lane(
     config: &codescribe_core::config::Config,
 ) -> Result<codescribe_core::stt::lanes::ResolvedSttLane, CsError> {
     let lane = config
