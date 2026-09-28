@@ -1008,6 +1008,88 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(engine.pasteCallCount, 0)
   }
 
+  func testQuietInputAdvisoryPreservesTranscriptAndDelivery() {
+    let state = OverlayState()
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    projectText("Recorded words stay here", to: state, terminal: false)
+    state.applyVad(true)
+    let text = state.formattedText
+    let revision = state.revision
+    let actions = OverlayIntentRail.projectedIntents(for: state)
+    for tick in 0...150 {
+      state.applyAudioLevel(0.0025, now: Double(tick) / 50)
+    }
+    XCTAssertTrue(state.levelMeter.hasLowInputSignal)
+    XCTAssertEqual(state.formattedText, text)
+    XCTAssertEqual(state.revision, revision)
+    XCTAssertEqual(OverlayIntentRail.projectedIntents(for: state), actions)
+    XCTAssertTrue(state.recording)
+    state.handleRecordingPreparing()
+    XCTAssertTrue(state.levelMeter.hasLowInputSignal, "A repeated start is the same take")
+    projectText(text, to: state, terminal: true)
+    state.finishControllerRecording()
+    state.handleRecordingPreparing()
+    XCTAssertFalse(state.levelMeter.hasLowInputSignal)
+  }
+
+  func testQuietInputNoticeUsesExistingFooterOnlyWhileListening() {
+    XCTAssertTrue(
+      OverlayBottomChromeSlots(
+        mode: .listening, hasPresentationStatus: false, isCollapsed: false,
+        hasLowInputSignal: true
+      ).showsCoverageWarning)
+    XCTAssertFalse(
+      OverlayBottomChromeSlots(
+        mode: .listening, hasPresentationStatus: false, isCollapsed: true,
+        hasLowInputSignal: true
+      ).showsCoverageWarning)
+    XCTAssertFalse(
+      OverlayBottomChromeSlots(
+        mode: .formatted, hasPresentationStatus: false, isCollapsed: false,
+        hasLowInputSignal: true
+      ).showsCoverageWarning)
+    XCTAssertEqual(
+      OverlayCoverageStatus.message,
+      "Recording quality low. Run mic calibration and check surroundings.")
+  }
+
+  func testQuietInputAdvisoryRequiresSpeechAndRecoversWithoutFlicker() {
+    let meter = AudioLevelMeter()
+    func feed(_ db: Double, speech: Bool, from start: Double, seconds: Double) {
+      for tick in 0...Int(seconds * 50) {
+        meter.push(
+          rms: Float(pow(10, db / 20)), speechActive: speech,
+          now: start + Double(tick) / 50)
+      }
+    }
+    feed(-52, speech: false, from: 0, seconds: 3)
+    XCTAssertFalse(meter.hasLowInputSignal, "Quiet pauses are not a speech-quality verdict")
+    feed(-52, speech: true, from: 3.02, seconds: 1)
+    XCTAssertFalse(meter.hasLowInputSignal, "A brief soft word must not flash a warning")
+    feed(-52, speech: true, from: 4.04, seconds: 1.2)
+    XCTAssertTrue(meter.hasLowInputSignal)
+    feed(-44, speech: true, from: 5.26, seconds: 2.2)
+    XCTAssertTrue(meter.hasLowInputSignal, "The recovery margin prevents flicker")
+    feed(-38, speech: true, from: 7.48, seconds: 4.2)
+    XCTAssertFalse(meter.hasLowInputSignal)
+    meter.reset()
+    XCTAssertNil(meter.gain)
+    XCTAssertFalse(meter.hasLowInputSignal)
+  }
+
+  func testQuietInputAdvisoryIgnoresMissingAudioAndClockGaps() {
+    let meter = AudioLevelMeter()
+    for tick in 0...150 {
+      meter.push(rms: 0, speechActive: true, now: Double(tick) / 50)
+      meter.push(rms: .nan, speechActive: true, now: Double(tick) / 50)
+    }
+    XCTAssertFalse(meter.hasLowInputSignal)
+    meter.push(rms: 0.0025, speechActive: true, now: 100)
+    meter.push(rms: 0.0025, speechActive: true, now: 200)
+    XCTAssertFalse(meter.hasLowInputSignal, "Missing callbacks are not measured speech")
+  }
+
   func testAudioLevelMeterOrdersFiniteEnergyAndRejectsInvalidInput() throws {
     let meter = AudioLevelMeter()
     XCTAssertNil(meter.gain)

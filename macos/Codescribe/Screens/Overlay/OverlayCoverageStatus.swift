@@ -2,6 +2,8 @@ import SwiftUI
 
 /// A projected uncertainty, not a verdict about the words or their delivery.
 struct OverlayCoverageStatus: View {
+  static let message =
+    "Recording quality low. Run mic calibration and check surroundings."
   let palette: OverlayAppearancePalette
   let canRetranscribe: Bool
   let cloudConfigured: Bool
@@ -12,15 +14,16 @@ struct OverlayCoverageStatus: View {
 
   var body: some View {
     OverlayHoverControl(
-      id: "overlay-coverage-status", title: "Review transcript", palette: palette,
+      id: "overlay-coverage-status", title: Self.message, palette: palette,
       presented: $presented
     ) {
-      Label("Review transcript", systemImage: "info.circle")
-        .csMono(10, .medium)
+      Label(Self.message, systemImage: "info.circle")
+        .font(.system(size: 11))
+        .fixedSize(horizontal: false, vertical: true)
         .foregroundStyle(palette.processingStatus.color)
     } detail: { close in
       VStack(alignment: .leading, spacing: 10) {
-        Text("The text was kept, but we could not confirm that the transcription is complete.")
+        Text(Self.message)
           .fixedSize(horizontal: false, vertical: true)
         if let diagnosticNotice, let diagnosticDetail {
           Divider()

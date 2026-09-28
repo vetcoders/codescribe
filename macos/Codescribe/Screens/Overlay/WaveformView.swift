@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import SwiftUI
 
 // Width-adaptive listening waveform — Canvas + per-bar `eq` animation with staggered delays.
@@ -14,15 +15,19 @@ import SwiftUI
 // motion reads identically to the CSS `@keyframes eq` without a discrete keyframe rig.
 
 /// Live input-level meter driving the waveform when the engine streams real RMS
-/// blocks (`on_audio_level`). Deliberately NOT an ObservableObject: the
-/// TimelineView already redraws every frame while active, so the Canvas simply
-/// reads the latest smoothed value on each tick — republishing every ~21ms
-/// block through @Published would only add invalidation churn on the host view.
+/// blocks (`on_audio_level`). Only advisory transitions are observed. The
+/// TimelineView reads the display gain without publishing every capture block.
 /// Main-actor only: pushed from the hopped listener callback, read from body.
 @MainActor
+@Observable
 final class AudioLevelMeter {
   /// Smoothed display gain in 0...1, or nil when no live signal has arrived.
-  private(set) var gain: Double?
+  @ObservationIgnored private(set) var gain: Double?
+  private(set) var hasLowInputSignal = false
+  @ObservationIgnored private var lastBlockAt: TimeInterval?
+  @ObservationIgnored private var lastSpeechAt: TimeInterval?
+  @ObservationIgnored private var speechSeconds = 0.0
+  @ObservationIgnored private var speechEnergy = 0.0
 
   /// Map one linear RMS block onto display gain: dB scale (speech at a normal
   /// mic distance lives around −45…−25 dBFS), fast attack / slow release so
@@ -30,7 +35,10 @@ final class AudioLevelMeter {
   /// per block. The window is deliberately tight and the response curve
   /// perceptual (pow 0.7): ordinary speech must visibly move the bars, not
   /// hover just above the rest scale.
-  func push(rms: Float) {
+  func push(
+    rms: Float, speechActive: Bool = false,
+    now: TimeInterval = ProcessInfo.processInfo.systemUptime
+  ) {
     guard rms.isFinite, rms >= 0 else { return }
     let db = 20 * log10(max(Double(rms), 1e-6))
     let linear = min(max((db + 55) / 30, 0), 1)
@@ -38,9 +46,51 @@ final class AudioLevelMeter {
     let current = gain ?? 0
     let smoothing = target > current ? 0.6 : 0.15
     gain = current + (target - current) * smoothing
+    assessInput(rms: Double(rms), speechActive: speechActive, now: now)
   }
 
-  func reset() { gain = nil }
+  private func assessInput(rms: Double, speechActive: Bool, now: TimeInterval) {
+    guard now.isFinite else { return }
+    defer { lastBlockAt = now }
+    guard let lastBlockAt else { return }
+    let elapsed = now - lastBlockAt
+    // Missing or delayed callbacks are not measured speech duration.
+    guard elapsed > 0, elapsed <= 0.25 else {
+      speechSeconds = 0
+      speechEnergy = 0
+      return
+    }
+    if let lastSpeechAt, now - lastSpeechAt > 1.5 {
+      speechSeconds = 0
+      speechEnergy = 0
+    }
+    // VAD identifies speech; digital silence and near-zero blocks provide no
+    // evidence for an input-quality claim. Never turn pauses into warnings.
+    guard speechActive, rms > pow(10, -70.0 / 20) else { return }
+    lastSpeechAt = now
+    speechSeconds += elapsed
+    speechEnergy += rms * rms * elapsed
+    guard speechSeconds >= 2 else { return }
+    let speechDB = 10 * log10(speechEnergy / speechSeconds)
+    // Advisory thresholds, not transcript admission or an accuracy score.
+    // A recovery margin keeps normal syllable-level variation from flashing.
+    if speechDB < -46 {
+      hasLowInputSignal = true
+    } else if speechDB > -42 {
+      hasLowInputSignal = false
+    }
+    speechSeconds = 0
+    speechEnergy = 0
+  }
+
+  func reset() {
+    gain = nil
+    hasLowInputSignal = false
+    lastBlockAt = nil
+    lastSpeechAt = nil
+    speechSeconds = 0
+    speechEnergy = 0
+  }
 }
 
 struct WaveformView: View {

@@ -2683,7 +2683,9 @@ final class OverlayState {
   /// `on_audio_level` — capture RMS per audio block. Only feeds the meter
   /// during live capture: once the session is transcribing/finalised the
   /// waveform is frozen or gone, and a late block must not wiggle it.
-  func applyAudioLevel(_ rms: Float) {
+  func applyAudioLevel(
+    _ rms: Float, now: TimeInterval = ProcessInfo.processInfo.systemUptime
+  ) {
     guard recording,
       warmingUp || audioReady || vadActive,
       !finalized,
@@ -2691,7 +2693,7 @@ final class OverlayState {
       !isFinalPass,
       mode == .listening
     else { return }
-    levelMeter.push(rms: rms)
+    levelMeter.push(rms: rms, speechActive: vadActive, now: now)
     if levelMeter.gain != nil { hasMeasuredAudioLevel = true }
   }
 

@@ -20,10 +20,15 @@ struct OverlayBottomChromeSlots: Equatable {
 
   let ordered: [Slot]
 
-  init(mode: OverlayMode, hasPresentationStatus: Bool, isCollapsed: Bool) {
+  init(
+    mode: OverlayMode, hasPresentationStatus: Bool, isCollapsed: Bool,
+    hasLowInputSignal: Bool = false
+  ) {
     if isCollapsed {
       ordered = []
-    } else if mode == .coverageRefused && !hasPresentationStatus {
+    } else if !hasPresentationStatus
+      && (mode == .coverageRefused || (mode == .listening && hasLowInputSignal))
+    {
       ordered = [.rail, .coverageWarning]
     } else {
       ordered = [.rail]
@@ -61,7 +66,7 @@ struct DictationOverlayView: View {
   private var bottomChromeSlots: OverlayBottomChromeSlots {
     OverlayBottomChromeSlots(
       mode: state.mode, hasPresentationStatus: state.presentationStatus != nil,
-      isCollapsed: state.isCollapsed)
+      isCollapsed: state.isCollapsed, hasLowInputSignal: state.levelMeter.hasLowInputSignal)
   }
 
   var body: some View {
@@ -234,7 +239,7 @@ struct DictationOverlayView: View {
           }
           if bottomChromeSlots.showsCoverageWarning {
             OverlayCoverageStatus(
-              palette: palette, canRetranscribe: state.canRetranscribe,
+              palette: palette, canRetranscribe: state.terminal && state.canRetranscribe,
               cloudConfigured: state.cloudRetranscribeConfigured,
               diagnosticNotice: showsDiagnostics ? state.coverageRefusalNotice : nil,
               diagnosticDetail: showsDiagnostics ? state.coverageRefusalDetail : nil,
