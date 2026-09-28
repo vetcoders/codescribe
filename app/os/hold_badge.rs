@@ -343,6 +343,7 @@ mod imp {
         timer_running: bool,
         config: HoldBadgeConfig,
         last_position: (f64, f64),
+        degraded: bool,
     }
 
     lazy_static::lazy_static! {
@@ -358,6 +359,7 @@ mod imp {
             timer_running: false,
             config: HoldBadgeConfig::default(),
             last_position: (f64::NAN, f64::NAN),
+            degraded: false,
         }));
     }
 
@@ -381,59 +383,73 @@ mod imp {
                 return;
             }
             let (panel, diameter, base_color) = {
-                let state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
                 let Some(panel) = state.window else {
                     return;
                 };
+                state.degraded = degraded;
                 (panel as Id, state.config.diameter, state.config.color)
             };
             unsafe {
-                let content: Id = msg_send![panel, contentView];
-                let children: Id = msg_send![content, subviews];
-                let count: usize = msg_send![children, count];
-                if count < 2 {
-                    return;
-                }
-                let dot: Id = msg_send![children, objectAtIndex: 0usize];
-                let label: Id = msg_send![children, objectAtIndex: 1usize];
-                let value = CFString::new(&text);
-                let _: () = msg_send![label, setStringValue: value.as_concrete_TypeRef() as Id];
-                let _: () = msg_send![label, setHidden: text.is_empty()];
-                let _: () = msg_send![label, sizeToFit];
-                let label_frame: CGRect = msg_send![label, frame];
-                let width = label_frame.size.width.min(360.0);
-                let height = label_frame.size.height.max(diameter);
-                let frame = CGRect {
-                    origin: CGPoint {
-                        x: diameter + 6.0,
-                        y: 0.0,
-                    },
-                    size: CGSize { width, height },
-                };
-                let _: () = msg_send![label, setFrame: frame];
-                let size = CGSize {
-                    width: if text.is_empty() {
-                        diameter
-                    } else {
-                        diameter + 6.0 + width
-                    },
-                    height,
-                };
-                let _: () = msg_send![panel, setContentSize: size];
-                let panel_frame: CGRect = msg_send![panel, frame];
-                let origin = fit_panel_origin(panel, panel_frame.origin.x, panel_frame.origin.y);
-                let _: () = msg_send![panel, setFrameOrigin: origin];
-                let color = if degraded {
-                    (1.0, 0.62, 0.0, 1.0)
-                } else {
-                    base_color
-                };
-                let cg = create_cg_color(color.0, color.1, color.2, color.3);
-                let layer: Id = msg_send![dot, layer];
-                let _: () = msg_send![layer, setBackgroundColor: cg];
-                CGColorRelease(cg);
+                paint_preview(panel, diameter, base_color, &text, degraded);
             }
         });
+    }
+
+    /// Main-thread painting shared by text updates and mode changes.
+    unsafe fn paint_preview(
+        panel: Id,
+        diameter: f64,
+        base_color: (f64, f64, f64, f64),
+        text: &str,
+        degraded: bool,
+    ) {
+        unsafe {
+            let content: Id = msg_send![panel, contentView];
+            let children: Id = msg_send![content, subviews];
+            let count: usize = msg_send![children, count];
+            if count < 2 {
+                return;
+            }
+            let dot: Id = msg_send![children, objectAtIndex: 0usize];
+            let label: Id = msg_send![children, objectAtIndex: 1usize];
+            let value = CFString::new(text);
+            let _: () = msg_send![label, setStringValue: value.as_concrete_TypeRef() as Id];
+            let _: () = msg_send![label, setHidden: text.is_empty()];
+            let _: () = msg_send![label, sizeToFit];
+            let label_frame: CGRect = msg_send![label, frame];
+            let width = label_frame.size.width.min(360.0);
+            let height = label_frame.size.height.max(diameter);
+            let frame = CGRect {
+                origin: CGPoint {
+                    x: diameter + 6.0,
+                    y: 0.0,
+                },
+                size: CGSize { width, height },
+            };
+            let _: () = msg_send![label, setFrame: frame];
+            let size = CGSize {
+                width: if text.is_empty() {
+                    diameter
+                } else {
+                    diameter + 6.0 + width
+                },
+                height,
+            };
+            let _: () = msg_send![panel, setContentSize: size];
+            let panel_frame: CGRect = msg_send![panel, frame];
+            let origin = fit_panel_origin(panel, panel_frame.origin.x, panel_frame.origin.y);
+            let _: () = msg_send![panel, setFrameOrigin: origin];
+            let color = if degraded {
+                (1.0, 0.62, 0.0, 1.0)
+            } else {
+                base_color
+            };
+            let cg = create_cg_color(color.0, color.1, color.2, color.3);
+            let layer: Id = msg_send![dot, layer];
+            let _: () = msg_send![layer, setBackgroundColor: cg];
+            CGColorRelease(cg);
+        }
     }
 
     /// Check if the currently focused element accepts text input
@@ -764,18 +780,40 @@ mod imp {
             return;
         }
         debug!("Showing hold badge (diameter={})", config.diameter);
-        unsafe {
-            // IMPORTANT: do not hold BADGE_STATE while calling `panel_close`.
-            // Closing a panel can trigger AppKit callbacks/notifications which may
-            // re-enter our code and attempt to lock BADGE_STATE again → deadlock.
-            let old_panel_ptr = {
-                let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
-                state.window.take()
-            };
-            if let Some(panel_ptr) = old_panel_ptr {
-                panel_close(panel_ptr as Id);
+        // A mode transition belongs to the same take. Keep its existing label
+        // and window; recreating the panel loses the last projection at Stop.
+        let existing = {
+            let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            if generation != BADGE_GENERATION.load(Ordering::SeqCst) {
+                return;
             }
-
+            state.window.map(|panel| {
+                state.config = config.clone();
+                state.last_position = (f64::NAN, f64::NAN);
+                (panel as Id, state.degraded)
+            })
+        };
+        if let Some((panel, degraded)) = existing {
+            unsafe {
+                let content: Id = msg_send![panel, contentView];
+                let children: Id = msg_send![content, subviews];
+                let dot: Id = msg_send![children, objectAtIndex: 0usize];
+                let label: Id = msg_send![children, objectAtIndex: 1usize];
+                let value: Id = msg_send![label, stringValue];
+                let text = CFString::wrap_under_get_rule(value.cast()).to_string();
+                let size = CGSize {
+                    width: config.diameter,
+                    height: config.diameter,
+                };
+                let _: () = msg_send![dot, setFrameSize: size];
+                let layer: Id = msg_send![dot, layer];
+                let _: () = msg_send![layer, setCornerRadius: config.diameter / 2.0];
+                let _: () = msg_send![layer, setOpacity: 1.0f32];
+                paint_preview(panel, config.diameter, config.color, &text, degraded);
+            }
+            return;
+        }
+        unsafe {
             // Create new badge panel (MUST be on main thread)
             let panel = create_badge_panel(&config);
 
@@ -805,6 +843,8 @@ mod imp {
                 state.window = Some(panel as usize);
                 state.config = config.clone();
                 state.timer_running = true;
+                state.last_position = (f64::NAN, f64::NAN);
+                state.degraded = false;
                 start_updater = !was_running;
             }
 
@@ -882,6 +922,7 @@ mod imp {
                                 };
                                 if !state.timer_running
                                     || state.window != Some(window_ptr)
+                                    || state.config.mode != config.mode
                                     || !super::token_is_current(generation, take_token())
                                 {
                                     return;
@@ -946,6 +987,7 @@ mod imp {
         let panel_ptr = {
             let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
             state.timer_running = false;
+            state.degraded = false;
             state.window.take()
         };
 

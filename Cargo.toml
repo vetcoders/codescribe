@@ -51,6 +51,11 @@ path = "bin/codescribe-teacher.rs"
 name = "codescribe-corpus"
 path = "bin/codescribe-corpus.rs"
 
+[[test]]
+name = "hold_badge_native"
+path = "tests/hold_badge_native.rs"
+harness = false
+
 [lib]
 path = "app/lib.rs"
 
