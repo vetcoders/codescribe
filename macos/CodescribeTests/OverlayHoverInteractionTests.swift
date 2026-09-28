@@ -108,6 +108,38 @@ final class OverlayHoverInteractionTests: XCTestCase {
     XCTAssertEqual(model.anchor, anchor)
   }
 
+  func testMiniTooltipClearsButtonAndRailWithoutResizingAnchor() {
+    for title in ["Copy", "Previous take", "Copy the full transcript"] {
+      let model = HarnessModel()
+      let host = NSHostingView(
+        rootView:
+          OverlayTooltipLayout {
+            Color.clear.frame(width: 24, height: 24)
+              .onGeometryChange(for: CGRect.self) {
+                $0.frame(in: .global)
+              } action: {
+                model.anchor = $0
+              }
+            Text(title).font(.system(size: 10)).fixedSize()
+              .padding(.horizontal, 7).padding(.vertical, 4)
+              .onGeometryChange(for: CGRect.self) {
+                $0.frame(in: .global)
+              } action: {
+                model.hint = $0
+              }
+          }
+          .padding(4)
+          .frame(width: 320, height: 120)
+      )
+      host.frame = NSRect(x: 0, y: 0, width: 320, height: 120)
+      settle(host)
+      XCTAssertEqual(model.anchor.size, CGSize(width: 24, height: 24))
+      XCTAssertGreaterThan(model.hint.width, 0)
+      XCTAssertLessThanOrEqual(model.hint.maxY, model.anchor.minY - 12)
+      XCTAssertEqual(model.hint.midX, model.anchor.midX, accuracy: 0.5)
+    }
+  }
+
   private func click(_ panel: NSPanel, host: NSView, anchor: CGRect) {
     let rect = host.convert(anchor, to: nil)
     let location = NSPoint(x: rect.midX, y: rect.midY)
@@ -135,6 +167,7 @@ final class OverlayHoverInteractionTests: XCTestCase {
     var presented: String?
     var actions = 0
     var anchor: CGRect = .zero
+    var hint: CGRect = .zero
   }
 
   private struct Harness: View {
