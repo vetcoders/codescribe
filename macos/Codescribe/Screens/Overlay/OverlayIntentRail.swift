@@ -118,15 +118,10 @@ struct OverlayIntentRail: View {
   let phase: String
   let intents: [OverlayIntent]
   let palette: OverlayAppearancePalette
-  var history: [CsDocumentHistoryEntry] = []
-  var historyAvailable: Bool = false
-  var currentRevision: UInt64 = 0
   var formatLevel: FormattingPolicyOption = .correction
   var cloudRetranscribeConfigured = false
   let onIntent: (OverlayIntent) -> Void
   var onRetranscribe: (OverlayRetranscribePass) -> Void = { _ in }
-  var onRestore: (UInt64) -> Void = { _ in }
-  var onHistoryRequest: () -> Void = {}
   var onFormatOnce: (FormattingPolicyOption) -> Void = { _ in }
   var onDismiss: () -> Void = {}
   var onInteraction: () -> Void = {}
@@ -134,15 +129,13 @@ struct OverlayIntentRail: View {
 
   var body: some View {
     HStack(spacing: 2) {
-      if historyAvailable || !history.isEmpty {
-        OverlayHoverControl(
-          id: "overlay-history-menu", title: "Transcript history", palette: palette,
-          presented: $presented
-        ) {
-          Image(systemName: OverlayControlSymbols.history).frame(width: 24, height: 24)
-        } detail: { close in
-          historyContent(close: close)
-        }
+      OverlayHoverControl(
+        id: "overlay-history-menu", title: "Transcription history", palette: palette,
+        presented: $presented
+      ) {
+        Image(systemName: OverlayControlSymbols.history).frame(width: 24, height: 24)
+      } detail: { _ in
+        OverlayTranscriptHistory()
       }
       if intents.contains(.recoverSuperseded) || intents.contains(.discardSuperseded) {
         OverlayHoverControl(
@@ -226,36 +219,6 @@ struct OverlayIntentRail: View {
     .accessibilityLabel("Overlay actions")
     .accessibilityValue(Self.accessibilityValue(for: phase))
     .accessibilityIdentifier("overlay-intent-dock")
-  }
-
-  func historyContent(close: @escaping () -> Void) -> some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Button("Refresh transcript history") { onHistoryRequest() }
-      ScrollView {
-        LazyVStack(alignment: .leading, spacing: 8) {
-          ForEach(history.reversed(), id: \.revision) { entry in
-            Button {
-              close()
-              onRestore(entry.revision)
-            } label: {
-              VStack(alignment: .leading, spacing: 3) {
-                Text("Version \(entry.revision)")
-                  .fontWeight(.semibold)
-                Text(entry.renderedText)
-                  .lineLimit(2)
-                  .foregroundStyle(.secondary)
-              }
-              .frame(maxWidth: .infinity, alignment: .leading)
-              .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(entry.revision == currentRevision)
-          }
-        }
-      }
-      .frame(height: 300)
-    }
-    .frame(width: 260)
   }
 
   static func projectedIntents(for state: OverlayState) -> [OverlayIntent] {

@@ -82,15 +82,12 @@ private final class OverlayIntentBoundaryEngine: DictationEngine {
 final class OverlayIntentRailTests: XCTestCase {
   func testLongHistoryPopoverStaysWithinViewport() {
     let history = (1...200).map {
-      CsDocumentHistoryEntry(
-        revision: UInt64($0), renderedText: "Transcript \($0)",
-        provenance: "record_ledger_seal", emittedAt: "2026-09-28T10:00:00Z")
+      CsHistoryEntry(
+        path: "take-\($0).txt", timestampMs: Int64($0),
+        preview: "Transcript \($0)", kind: .raw)
     }
-    let rail = OverlayIntentRail(
-      phase: "formatted", intents: [], palette: .dark,
-      history: history, currentRevision: 200, onIntent: { _ in })
     let host = NSHostingView(
-      rootView: rail.historyContent(close: {})
+      rootView: OverlayTranscriptHistory().historyList(history)
         .font(.system(size: 12, weight: .medium))
         .padding(10)
         .frame(maxWidth: 280)
