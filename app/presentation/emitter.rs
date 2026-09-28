@@ -808,15 +808,21 @@ impl TranscriptReducer {
     }
 
     /// A formatted final owns every sample up to the last committed end.
-    /// Preview words whose point is still inside that extent restate speech
-    /// the document already holds: formatting rewrites the letters, and a
-    /// Silero cut can leave the raw pin in a gap or before the first
-    /// occurrence. A point at or past the last committed end is a new tail
-    /// and stays. Refused-untimed phrases stay until that phrase is timed.
+    /// Pending and unmatched preview words whose point is still inside that
+    /// extent restate speech the document already holds: formatting rewrites
+    /// the letters, and a Silero cut can leave the raw pin in a gap or before
+    /// the first occurrence. A point at or past the last committed end is a
+    /// new tail and stays.
+    ///
+    /// An open partial is exempt. Its production pin is a stuck zero-width
+    /// diagnostic, not a PCM position, so the extent cannot tell new speech
+    /// from a restatement. That phrase leaves through `closed_by_final`
+    /// before the paste snapshot. Refused-untimed phrases stay until timed.
     fn preview_restates_committed_document(&self, word: &UnadmittedAppleWord) -> bool {
         if matches!(
             word.source,
-            UnadmittedAppleWordSource::RefusedUntimed { .. }
+            UnadmittedAppleWordSource::OpenPartial { .. }
+                | UnadmittedAppleWordSource::RefusedUntimed { .. }
         ) {
             return false;
         }
@@ -848,8 +854,9 @@ impl TranscriptReducer {
             .collect::<std::collections::BTreeSet<_>>();
         let mut seen = BTreeMap::new();
         for word in &self.unadmitted_apple_words {
-            // Formatted finals rewrite the label. Retire the raw preview by
-            // the committed capture extent, not by string equality.
+            // Formatted finals rewrite the label. Retire pending and unmatched
+            // raw preview by the committed capture extent, not by string
+            // equality. Open partials stay: a stuck pin does not locate them.
             if self.preview_restates_committed_document(word) {
                 continue;
             }
@@ -4470,29 +4477,33 @@ mod tests {
     }
 
     /// Receipt 6bba5e1d: a formatted final and the raw preview of the same
-    /// speech. The preview pin sits before the Silero occurrence, so midpoint
-    /// coverage never sees it, and the letters no longer match.
+    /// speech. The open partial sits on a stuck pin and leaves through phrase
+    /// close before the stop snapshot. The unmatched replay remains inside the
+    /// committed extent, so the paste keeps the formatted document once.
     #[tokio::test]
     async fn formatted_final_retires_raw_preview_on_the_same_span() {
         let (mut emitter, ledger) = mirror_take();
         let raw = "kazda wersja jest gorsza";
         let formatted = "Każda wersja jest gorsza.";
-        let mut words = mirror_words(
-            raw,
-            48_000,
-            48_000,
-            UnadmittedAppleWordSource::OpenPartial {
-                rev: 4,
-                phrase_id: 9,
-            },
-        );
-        words.extend(mirror_words(
-            raw,
-            48_000,
-            58_000,
-            UnadmittedAppleWordSource::Unmatched,
+        emitter.on_event(&mirror(
+            1,
+            mirror_words(
+                raw,
+                48_000,
+                48_000,
+                UnadmittedAppleWordSource::OpenPartial {
+                    rev: 4,
+                    phrase_id: 9,
+                },
+            ),
         ));
-        emitter.on_event(&mirror(1, words));
+        emitter.on_event(&closed_mirror(
+            2,
+            mirror_words(raw, 48_000, 58_000, UnadmittedAppleWordSource::Unmatched),
+            9,
+            codescribe_core::pipeline::contracts::ApplePhraseOutcome::Admitted,
+            raw.split_whitespace().count(),
+        ));
         let painted = emitter.begin_stop_canvas().unwrap();
         assert!(painted.text.contains("kazda"));
         let mutation = admitted_mutation(
@@ -4554,8 +4565,9 @@ mod tests {
         emitter.finish().await;
     }
 
-    /// Take 6bba5e1d painted 178 words and pasted one copy. The raw preview
-    /// must disappear; every formatted word must remain.
+    /// Take 6bba5e1d painted 178 words and pasted one copy. Production had
+    /// already closed the open partial; the doubling was the unmatched replay.
+    /// That replay must disappear, and every formatted word must remain.
     #[tokio::test]
     async fn receipt_6bba5e1d_paints_one_copy_without_losing_formatted_words() {
         let (mut emitter, ledger) = mirror_take();
@@ -4566,12 +4578,19 @@ mod tests {
             mirror_words(
                 &raw,
                 48_000,
-                58_000,
+                48_000,
                 UnadmittedAppleWordSource::OpenPartial {
                     rev: 1,
                     phrase_id: 7,
                 },
             ),
+        ));
+        emitter.on_event(&closed_mirror(
+            2,
+            mirror_words(&raw, 48_000, 58_000, UnadmittedAppleWordSource::Unmatched),
+            7,
+            codescribe_core::pipeline::contracts::ApplePhraseOutcome::Admitted,
+            178,
         ));
         let painted = emitter.begin_stop_canvas().unwrap();
         assert_eq!(painted.text.split_whitespace().count(), 178);
@@ -4602,8 +4621,8 @@ mod tests {
         emitter.finish().await;
     }
 
-    /// An explicit archival insert stays the paste. The raw preview of the
-    /// same span does not append a second copy.
+    /// An explicit archival insert stays the paste. The open partial of the
+    /// same span closes before the snapshot, so it does not append a second copy.
     #[tokio::test]
     async fn manual_insert_of_archival_text_is_not_doubled_by_raw_preview() {
         let (mut emitter, ledger) = mirror_take();
@@ -4629,10 +4648,62 @@ mod tests {
             })
             .expect("archival insert commits");
         emitter.on_event(&partial_mirror(2, "surowy duplikat", 0, 0));
+        emitter.on_event(&closed_mirror(
+            3,
+            Vec::new(),
+            1,
+            codescribe_core::pipeline::contracts::ApplePhraseOutcome::Admitted,
+            2,
+        ));
         let pasted = emitter.visible_canvas_snapshot().unwrap();
         assert_eq!(pasted.text, archival);
         assert!(!pasted.text.contains("surowy"));
         assert!(!pasted.text.contains("duplikat"));
+        emitter.finish().await;
+    }
+
+    /// A stuck open-partial pin is inside the committed extent and still paints
+    /// new words. An unmatched replay on that same extent restates the document
+    /// and leaves the overlay.
+    #[tokio::test]
+    async fn stale_open_partial_keeps_new_words_after_commit() {
+        let (mut emitter, ledger) = mirror_take();
+        let mutation = admitted_mutation(
+            &mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("take", 7, 0, 64_000),
+            1,
+            "committed",
+        );
+        emitter.on_event(&mutation);
+        let mut words = mirror_words(
+            "fresh speech",
+            0,
+            0,
+            UnadmittedAppleWordSource::OpenPartial {
+                rev: 4,
+                phrase_id: 3,
+            },
+        );
+        words.extend(mirror_words(
+            "later phrase",
+            8_000,
+            12_000,
+            UnadmittedAppleWordSource::OpenPartial {
+                rev: 4,
+                phrase_id: 4,
+            },
+        ));
+        words.extend(mirror_words(
+            "replayed",
+            1_000,
+            8_000,
+            UnadmittedAppleWordSource::Unmatched,
+        ));
+        emitter.on_event(&mirror(1, words));
+        let snapshot = emitter.visible_canvas_snapshot().unwrap();
+        assert_eq!(snapshot.text, "committed fresh speech later phrase");
+        assert!(!snapshot.text.contains("replayed"));
+        assert_eq!(snapshot.preview_only_words, 4);
         emitter.finish().await;
     }
 
