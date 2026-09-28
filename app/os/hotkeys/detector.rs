@@ -77,6 +77,8 @@ pub enum HotkeyEvent {
     ToggleRaw,
     /// Assistive toggle gesture (double-tap right Option)
     ToggleAssistive,
+    /// Fn+0..9 toggles one agent channel. This is not a dictation take.
+    AgentChannel { digit: u8 },
     /// A double-tap gesture was detected but could not be routed.
     DoubleTapBlocked {
         gesture: DoubleTapGesture,
@@ -247,6 +249,8 @@ pub enum HotkeyPhysicalKey {
     Fn,
     Space,
     V,
+    /// Top-row or keypad digit. `0` is the broadcast channel.
+    Digit(u8),
     Other,
 }
 
@@ -324,6 +328,8 @@ pub struct HotkeyDetector {
     /// Last sampled arm-modifier state while a hold is active, so a Shift
     /// (or Cmd) pulse can attach another `{selection_N}` without flipping mode.
     arm_modifier_down: bool,
+    /// Digit currently held with Fn, so key-repeat does not toggle twice.
+    agent_channel_digit_down: Option<u8>,
 }
 
 impl Default for HotkeyDetector {
@@ -346,7 +352,38 @@ impl Default for HotkeyDetector {
             insert_here_v_down: false,
             wrong_arm_logged: false,
             arm_modifier_down: false,
+            agent_channel_digit_down: None,
         }
+    }
+}
+
+/// macOS virtual keycode for a digit, top row or keypad.
+///
+/// The event tap already delivers every key. This only names the digits the
+/// Fn channel chord cares about.
+pub fn digit_from_virtual_keycode(keycode: i64) -> Option<u8> {
+    match keycode {
+        29 => Some(0),
+        18 => Some(1),
+        19 => Some(2),
+        20 => Some(3),
+        21 => Some(4),
+        23 => Some(5),
+        22 => Some(6),
+        26 => Some(7),
+        28 => Some(8),
+        25 => Some(9),
+        82 => Some(0),
+        83 => Some(1),
+        84 => Some(2),
+        85 => Some(3),
+        86 => Some(4),
+        87 => Some(5),
+        88 => Some(6),
+        89 => Some(7),
+        91 => Some(8),
+        92 => Some(9),
+        _ => None,
     }
 }
 
@@ -369,6 +406,11 @@ impl HotkeyDetector {
                 modifiers,
             } => self.handle_key_down(now, key, modifiers, config),
             HotkeyDetectorInput::KeyUp { key, modifiers } => {
+                if let HotkeyPhysicalKey::Digit(digit) = key
+                    && self.agent_channel_digit_down == Some(digit)
+                {
+                    self.agent_channel_digit_down = None;
+                }
                 if key == HotkeyPhysicalKey::Space {
                     self.show_agent_space_down = false;
                 }
@@ -402,6 +444,16 @@ impl HotkeyDetector {
         modifiers: HotkeyModifierSnapshot,
         config: HotkeyRuntimeConfig,
     ) -> Option<HotkeyEvent> {
+        if let HotkeyPhysicalKey::Digit(digit) = key
+            && modifiers.fn_key
+        {
+            if self.agent_channel_digit_down == Some(digit) {
+                return None;
+            }
+            self.agent_channel_digit_down = Some(digit);
+            return Some(HotkeyEvent::AgentChannel { digit });
+        }
+
         if key == HotkeyPhysicalKey::V
             && deferred_insert_modifiers_match(config.deferred_insert_shortcut, modifiers)
         {
@@ -948,6 +1000,71 @@ mod tests {
             cmd,
             fn_key,
         }
+    }
+
+    #[test]
+    fn fn_digit_toggles_an_agent_channel_once_per_press() {
+        let config = test_config(
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::DoubleRightOption,
+        );
+        let now = Instant::now();
+        let mut detector = HotkeyDetector::default();
+        let down = |detector: &mut HotkeyDetector, key, modifiers| {
+            detector.feed(
+                HotkeyDetectorInput::KeyDown {
+                    now,
+                    key,
+                    modifiers,
+                },
+                config,
+            )
+        };
+        assert_eq!(
+            down(
+                &mut detector,
+                HotkeyPhysicalKey::Digit(3),
+                mods(false, false, false, false, true)
+            ),
+            Some(HotkeyEvent::AgentChannel { digit: 3 })
+        );
+        assert_eq!(
+            down(
+                &mut detector,
+                HotkeyPhysicalKey::Digit(3),
+                mods(false, false, false, false, true)
+            ),
+            None,
+            "key repeat must not seal the channel"
+        );
+        detector.feed(
+            HotkeyDetectorInput::KeyUp {
+                key: HotkeyPhysicalKey::Digit(3),
+                modifiers: mods(false, false, false, false, true),
+            },
+            config,
+        );
+        assert_eq!(
+            down(
+                &mut detector,
+                HotkeyPhysicalKey::Digit(3),
+                mods(false, false, false, false, true)
+            ),
+            Some(HotkeyEvent::AgentChannel { digit: 3 })
+        );
+        assert_eq!(
+            down(
+                &mut detector,
+                HotkeyPhysicalKey::Digit(3),
+                mods(false, false, false, false, false)
+            ),
+            None
+        );
+        assert_eq!(digit_from_virtual_keycode(20), Some(3));
+        assert_eq!(digit_from_virtual_keycode(29), Some(0));
+        assert_eq!(digit_from_virtual_keycode(85), Some(3));
+        assert_eq!(digit_from_virtual_keycode(49), None);
     }
 
     #[test]
