@@ -3306,11 +3306,16 @@ impl RecordingController {
     /// Bring the recorder to a clean pre-start state: force-stop a stream left
     /// active by a previous session, then clear its callbacks. Refusing to
     /// start here would strand the user behind a session they cannot see.
+    ///
+    /// Admission requires "no active dictation take", never "no capture": an
+    /// active stream that capture subscribers legitimately own (a take or the
+    /// agent channel) is not stale and must not be force-stopped here. Only a
+    /// stream no subscriber owns is leftover state.
     async fn ensure_recorder_ready_for_start(
         recorder: &mut StreamingRecorder,
         context: &str,
     ) -> Result<()> {
-        if recorder.recorder.is_active() {
+        if recorder.recorder.is_active() && !recorder.has_capture_subscribers() {
             warn!("{context}: recorder already active before start; forcing stale-session stop");
             recorder
                 .stop_and_discard_path()
@@ -5637,6 +5642,11 @@ impl RecordingController {
     /// crosses that same lock, so the comparison and the stop it authorizes are
     /// one critical section: a replacement take cannot slip between them.
     ///
+    /// The gate reads take identity, never capture existence. The `session_id`
+    /// slot belongs to the one live dictation take; a capture kept open by
+    /// non-take subscribers (agent channel) registers no take here, so stops
+    /// correctly report `NoLiveCapture` and leave that capture untouched.
+    ///
     /// Production passes a named capture, including stop-current gestures.
     /// `None` remains only for direct terminal-body fixtures.
     async fn capture_gate(&self, expected: Option<&str>) -> CaptureStopOutcome {
@@ -6131,6 +6141,7 @@ mod hold_context_tests {
 #[cfg(test)]
 mod terminal_delivery_target_falsifiers {
     use super::*;
+    use crate::audio::streaming_recorder::CaptureSubscriberKind;
 
     #[tokio::test]
     async fn failed_stop_publishes_failure_instead_of_completed() {
@@ -6584,6 +6595,182 @@ mod terminal_delivery_target_falsifiers {
             Some("theirs"),
             "the foreign take's identity is untouched"
         );
+    }
+
+    /// Take admission requires "no active dictation take", never "no capture":
+    /// a toggle start is admitted while a non-take subscriber (the agent
+    /// channel) holds the capture open, and a second dictation take is still
+    /// refused.
+    #[tokio::test]
+    async fn take_admission_ignores_a_non_take_capture_subscriber() {
+        let controller = RecordingController::new_without_keychain();
+        let (channel_tx, _channel_rx) = mpsc::channel::<Vec<f32>>(8);
+        let channel = {
+            let mut guard = controller.recorder.lock().await;
+            guard
+                .as_mut()
+                .expect("recorder fixture")
+                .acquire_capture_subscriber(CaptureSubscriberKind::Channel, channel_tx)
+        };
+
+        let admitted = controller
+            .start_toggle_recording(false, CaptureTurnIntent::HandsFree)
+            .await
+            .expect("a take start resolves to an admission, not an error");
+        assert!(
+            matches!(admitted, CaptureAdmission::Admitted(_)),
+            "a take must start while only a channel subscribes to the capture"
+        );
+        assert_eq!(controller.current_state().await, State::RecToggle);
+
+        let second = controller
+            .start_toggle_recording(false, CaptureTurnIntent::HandsFree)
+            .await
+            .expect("a refusal is an admission outcome, not an error");
+        assert!(
+            matches!(second, CaptureAdmission::NotAdmitted),
+            "one dictation take at a time"
+        );
+
+        // The channel subscription survives the whole take gesture untouched.
+        controller.reset().await;
+        let mut guard = controller.recorder.lock().await;
+        let recorder = guard.as_mut().expect("recorder fixture");
+        assert!(recorder.has_non_take_subscriber());
+        assert!(recorder.release_capture_subscriber(channel));
+        assert_eq!(recorder.capture_subscriber_count(), 0);
+    }
+
+    /// The gate reads take identity, never capture existence: a capture kept
+    /// open by a non-take subscriber registers no take, so stops report "no
+    /// live capture" and the channel's capture is left untouched.
+    #[tokio::test]
+    async fn capture_gate_reads_take_identity_not_capture_existence() {
+        let controller = Arc::new(RecordingController::new_without_keychain());
+        let (channel_tx, _channel_rx) = mpsc::channel::<Vec<f32>>(8);
+        controller
+            .recorder
+            .lock()
+            .await
+            .as_mut()
+            .expect("recorder fixture")
+            .acquire_capture_subscriber(CaptureSubscriberKind::Channel, channel_tx);
+
+        assert_eq!(
+            controller.capture_gate(Some("mine")).await,
+            CaptureStopOutcome::NoLiveCapture,
+            "an open capture without a take is not a stop target"
+        );
+        assert_eq!(
+            controller
+                .stop_current_capture()
+                .await
+                .expect("a refusal is an outcome, not an error"),
+            CaptureStopOutcome::NoLiveCapture
+        );
+        assert_eq!(controller.current_state().await, State::Idle);
+    }
+
+    /// Regression: with no channel subscriber, the hold→toggle→hold gesture
+    /// ladder keeps the pre-refcount contract — the same state transitions,
+    /// the same stop receipts, and an empty session slot whenever Idle.
+    #[tokio::test]
+    async fn hold_toggle_hold_without_a_channel_keeps_the_pre_refcount_contract() {
+        let controller = Arc::new(RecordingController::new_without_keychain());
+
+        for leg in 0..2 {
+            controller
+                .handle_hotkey_event(HotkeyInput {
+                    key_type: HotkeyType::Hold,
+                    action: HotkeyAction::Down,
+                    assistive: false,
+                    hold_mode: HoldMode::Raw,
+                    force_raw: false,
+                    force_ai: false,
+                })
+                .await
+                .expect("hold down resolves");
+            // The delayed hold start owns the IDLE → REC_HOLD transition.
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while controller.current_state().await != State::RecHold {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "hold leg {leg}: start did not reach REC_HOLD"
+                );
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            controller
+                .handle_hotkey_event(HotkeyInput {
+                    key_type: HotkeyType::Hold,
+                    action: HotkeyAction::Up,
+                    assistive: false,
+                    hold_mode: HoldMode::Raw,
+                    force_raw: false,
+                    force_ai: false,
+                })
+                .await
+                .expect("hold up resolves");
+            assert_eq!(
+                controller.current_state().await,
+                State::Idle,
+                "hold leg {leg}: stop settles to IDLE"
+            );
+            assert!(
+                controller.session_id.read().await.is_none(),
+                "hold leg {leg}: Idle owns no take slot"
+            );
+            assert_eq!(
+                controller.capture_gate(None).await,
+                CaptureStopOutcome::Stopped,
+                "hold leg {leg}: the unnamed-stop receipt contract is unchanged"
+            );
+
+            if leg == 0 {
+                // Assistive toggle: its stop routes through the plain
+                // finish path (adjudication requires non-assistive), the same
+                // headless-proven settlement the fixture stops exercise.
+                controller
+                    .handle_hotkey_event(HotkeyInput {
+                        key_type: HotkeyType::Toggle,
+                        action: HotkeyAction::Press,
+                        assistive: true,
+                        hold_mode: HoldMode::Raw,
+                        force_raw: false,
+                        force_ai: false,
+                    })
+                    .await
+                    .expect("toggle press resolves");
+                assert_eq!(
+                    controller.current_state().await,
+                    State::RecToggle,
+                    "toggle leg: start reaches REC_TOGGLE"
+                );
+                let toggle_take = controller
+                    .session_id
+                    .read()
+                    .await
+                    .clone()
+                    .expect("toggle leg: the take owns the session slot");
+                let stopped = controller
+                    .stop_capture_if_owned(&toggle_take)
+                    .await
+                    .expect("toggle leg: stop resolves");
+                assert_eq!(
+                    stopped,
+                    CaptureStopOutcome::Stopped,
+                    "toggle leg: named stop receipt"
+                );
+                assert_eq!(controller.current_state().await, State::Idle);
+                assert!(controller.session_id.read().await.is_none());
+            }
+        }
+
+        // No subscriber leaked through three takes: the registry is empty and
+        // the next take would open a fresh capture, exactly as before.
+        let guard = controller.recorder.lock().await;
+        let recorder = guard.as_ref().expect("recorder fixture");
+        assert_eq!(recorder.capture_subscriber_count(), 0);
+        assert!(!recorder.has_capture_subscribers());
     }
 }
 
