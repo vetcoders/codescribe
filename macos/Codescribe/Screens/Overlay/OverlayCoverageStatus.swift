@@ -2,6 +2,7 @@ import SwiftUI
 
 /// A projected uncertainty, not a verdict about the words or their delivery.
 struct OverlayCoverageStatus: View {
+  @Environment(\.openSettings) private var openSettings
   static let message =
     "Recording quality low. Run mic calibration and check surroundings."
   let palette: OverlayAppearancePalette
@@ -25,6 +26,14 @@ struct OverlayCoverageStatus: View {
       VStack(alignment: .leading, spacing: 10) {
         Text(Self.message)
           .fixedSize(horizontal: false, vertical: true)
+        Button("Mic calibration in Settings…") {
+          close()
+          SettingsDeepLink.present(.audio, anchor: .audioReadiness)
+          openSettings()
+          NSApp.activate(ignoringOtherApps: true)
+        }
+        .controlSize(.small)
+        .accessibilityIdentifier("overlay-open-mic-calibration-settings")
         if let diagnosticNotice, let diagnosticDetail {
           Divider()
           Text(diagnosticNotice)
@@ -44,6 +53,8 @@ struct OverlayCoverageStatus: View {
               }
             }
           }
+          .controlSize(.small)
+          .font(.system(size: 11, weight: .medium))
         }
       }
       .frame(width: 250)
