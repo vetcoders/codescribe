@@ -694,13 +694,21 @@ recognition, not an ASR correction or proof that the words were spoken correctly
 ## Optional audience field on sealed rows
 
 Sealed transcript rows may carry an optional top-level `audience` string.
-When `audience` equals a follower’s bound name, that follower receives the
+When `audience` equals a follower's bound name, that follower receives the
 row without requiring its name to appear in the text; the emitted envelope
 marks `routing_match: "audience"`. When `audience` is `"*"` the row is a
 broadcast and every follower receives it with the same marker. An `audience`
 naming someone else does not suppress the existing name gate: rows still reach
 a follower if the transcript text addresses them by assignment, exact match,
 or fuzzy discovery. Rows without `audience` behave exactly as before.
+
+The digit that produced the row is configured in
+`vc.agent-audience-binding.v1.json` under the agent-bridge home
+(`CODESCRIBE_AGENT_BRIDGE_HOME`, otherwise `~/.codescribe/agent-bridge`).
+Each digit `1`–`9` names one agent session (`audience`, `provider`,
+`provider_session_id`). Digit `0` is the broadcast and does not need a row
+in that file. A missing or malformed file refuses the channel instead of
+opening the microphone.
 
 ## Native chat receiver acknowledgment
 

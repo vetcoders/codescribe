@@ -475,7 +475,7 @@ class EvidenceNormalizer:
     def _as_clean(
         self, event: dict[str, Any], status: str, text: str
     ) -> dict[str, Any]:
-        return {
+        clean = {
             "schema": CLEAN_SCHEMA,
             "sequence": event.get("sequence"),
             "session_id": event.get("session_id"),
@@ -495,6 +495,10 @@ class EvidenceNormalizer:
             "sample_end": event.get("sample_end"),
             "document_index": event.get("document_index"),
         }
+        audience = event.get("audience")
+        if isinstance(audience, str) and audience:
+            clean["audience"] = audience
+        return clean
 
 
 def emit(payload: dict[str, Any]) -> None:

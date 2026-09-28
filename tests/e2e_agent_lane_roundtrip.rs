@@ -191,9 +191,10 @@ async fn selected_agent_lane_roundtrip(lane: codescribe_core::config::RuntimeLlm
                 TranscriptSession {
                     session_id: "http-capture".into(),
                     mode: TranscriptMode::Dictation,
-                    audience: None,
                     has_latched_target: true,
                     latched_target_is_self: false,
+                    audience: None,
+                    badge_only: false,
                 },
                 bus_path.clone(),
                 None,

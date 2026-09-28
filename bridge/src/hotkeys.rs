@@ -1714,6 +1714,9 @@ async fn dispatch_recording_hotkey_event(
             };
             controller.handle_hotkey_event(input).await?;
         }
+        HotkeyEvent::AgentChannel { digit } => {
+            controller.toggle_agent_channel(digit).await?;
+        }
         HotkeyEvent::DoubleTapBlocked { gesture, reason } => {
             // Detector is the single owner of the stable
             // `blocked_double_tap gesture=… reason=…` INFO line (W11-C).
@@ -2001,6 +2004,10 @@ mod app_action_tests {
     #[test]
     fn mid_hold_attach_does_not_target_agent_or_claim_capture() {
         assert!(!event_can_start_capture(&HotkeyEvent::AttachSelection));
+        assert!(
+            !event_can_start_capture(&HotkeyEvent::AgentChannel { digit: 0 }),
+            "Fn+digit must not take the dictation capture gate"
+        );
         assert!(!event_targets_agent_ui(&HotkeyEvent::AttachSelection));
         assert!(!event_targets_agent_ui(&HotkeyEvent::HoldUpdate {
             mode: HoldMode::Chat,

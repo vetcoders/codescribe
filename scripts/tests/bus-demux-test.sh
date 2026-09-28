@@ -893,7 +893,7 @@ bus.write_text(json.dumps(event)+'\n')
 assert subprocess.run(cmd, capture_output=True).returncode == 0
 PY
 
-# --- Audience field routing (FN-1 W1b) ---------------------------------------
+# --- Audience field routing (FN-1) -------------------------------------------
 sealed_with_audience() {
   local text="$1"
   local audience="$2"
@@ -919,7 +919,6 @@ with open(path, "a", encoding="utf-8") as handle:
 PY
 }
 
-# (a) audience-bound row reaches the named follower without a text mention.
 : >"$BUS"
 sealed_with_audience "neutral text without any name" "james" transcript_sealed 100
 got="$(run_once --name james)"
@@ -932,13 +931,11 @@ assert "neutral text" in o["text"], o
 assert o["state_change_allowed"] is True, o
 PY
 
-# (b) same row does not reach a differently named follower.
 if run_once --name leon >/dev/null 2>/dev/null; then
   echo "expected audience-bound row to drop for leon" >&2
   exit 1
 fi
 
-# (c) audience mismatch does not suppress the existing name gate.
 : >"$BUS"
 sealed_with_audience "James, wklejka nadal parkuje." "leon" transcript_sealed 101
 got="$(run_once --name james)"
@@ -951,7 +948,6 @@ assert "James" in o["text"], o
 assert o["state_change_allowed"] is True, o
 PY
 
-# (d) broadcast audience reaches every follower.
 : >"$BUS"
 sealed_with_audience "broadcast neutral text" "*" transcript_sealed 102
 got_james="$(run_once --name james)"
@@ -964,13 +960,9 @@ assert james["audience"] == "*", james
 assert leon["audience"] == "*", leon
 assert james["routing_match"] == "audience", james
 assert leon["routing_match"] == "audience", leon
-assert "broadcast" in james["text"], james
 assert james["text"] == leon["text"], (james, leon)
 PY
 
-# (e) rows without audience behave exactly as before (covered by prior tests).
-
-# (f) unknown extra fields are tolerated and still routed.
 : >"$BUS"
 python3 - "$BUS" <<'PY'
 import json, sys

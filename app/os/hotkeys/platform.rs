@@ -47,6 +47,7 @@ fn preempts_stop_paste(event: &HotkeyEvent) -> bool {
 /// thread by a CFRunLoop.
 #[cfg(target_os = "macos")]
 mod macos {
+    use super::super::detector::digit_from_virtual_keycode;
     use super::*;
     use std::ffi::c_void;
     use std::ptr;
@@ -518,6 +519,9 @@ mod macos {
     /// Map a macOS virtual keycode onto the keys the detector distinguishes;
     /// everything else becomes `Other`.
     fn map_keycode(keycode: i64) -> HotkeyPhysicalKey {
+        if let Some(digit) = digit_from_virtual_keycode(keycode) {
+            return HotkeyPhysicalKey::Digit(digit);
+        }
         match keycode {
             K_VK_OPTION => HotkeyPhysicalKey::LeftOption,
             K_VK_RIGHT_OPTION => HotkeyPhysicalKey::RightOption,

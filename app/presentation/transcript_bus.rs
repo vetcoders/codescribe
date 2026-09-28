@@ -82,9 +82,12 @@ pub struct TranscriptSession {
     /// capture-time sessions set this false because that caret fact exists
     /// only at the later defer click.
     pub latched_target_is_self: bool,
-    /// Optional audience tag for agent-channel sealed rows. `Some("*")` is a
-    /// broadcast; `None` behaves exactly as before.
+    /// Agent-channel audience stamped on sealed rows. `Some("*")` is the Fn+0
+    /// broadcast. `None` is every dictation row: readers that ignore the field
+    /// keep the previous contract.
     pub audience: Option<String>,
+    /// Hold-badge preview only. Paste and the overlay document stay off.
+    pub badge_only: bool,
 }
 
 /// Grain of one published span. Word pins are engine evidence; utterance
@@ -357,8 +360,7 @@ pub struct TranscriptBusEvidenceEvent {
     /// an evidence revision describes the document, never its destination.
     #[serde(default)]
     pub delivery: TranscriptDelivery,
-    /// Optional audience tag for agent-channel sealed rows. `Some("*")` is a
-    /// broadcast; absent rows behave exactly as before.
+    /// Agent-channel audience. Omitted when the session has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audience: Option<String>,
     pub acoustic_receipts: Vec<ProjectedAcousticReceipt>,
@@ -775,13 +777,19 @@ impl TranscriptBus {
         take_in_progress: bool,
         session_wav_exists: bool,
     ) -> TranscriptProjectionAvailability {
-        resolve_transcript_projection_availability(
+        let mut availability = resolve_transcript_projection_availability(
             has_text,
             take_in_progress,
             session_wav_exists,
             self.session.has_latched_target,
             self.session.latched_target_is_self,
-        )
+        );
+        if self.session.badge_only {
+            availability.can_paste = false;
+            availability.can_insert = false;
+            availability.can_send_to_agent = false;
+        }
+        availability
     }
 
     pub(crate) fn session_id(&self) -> &str {
@@ -1213,7 +1221,6 @@ impl TranscriptBus {
                     sample_start: 0,
                     sample_end: 0,
                     document_index: 0,
-                    audience: self.session.audience.clone(),
                     label: String::new(),
                     rendered_text: String::new(),
                     delivery_text: None,
@@ -1227,6 +1234,7 @@ impl TranscriptBus {
                     terminal: true,
                     lifecycle_terminal: true,
                     delivery,
+                    audience: self.session.audience.clone(),
                     acoustic_receipts: Vec::new(),
                     consultation_presentations: Vec::new(),
                     seal_coverage: None,
@@ -1589,7 +1597,58 @@ mod tests {
             has_latched_target: false,
             latched_target_is_self: false,
             audience: None,
+            badge_only: false,
         }
+    }
+
+    #[test]
+    fn channel_rows_carry_audience_and_do_not_offer_paste() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut channel = session("channel-leon");
+        channel.audience = Some("Leon".to_string());
+        channel.badge_only = true;
+        let bus = TranscriptBus::open_at(channel, dir.path().join("channel.jsonl"), None).unwrap();
+        let (ledger, _, revision) = committed_fixture("channel-leon");
+        let events = bus.publish_revision(&revision, &ledger);
+        assert!(!events.is_empty());
+        assert!(events.iter().all(|event| {
+            event.audience.as_deref() == Some("Leon")
+                && !event.can_paste
+                && !event.can_insert
+                && !event.can_send_to_agent
+        }));
+        let raw = std::fs::read_to_string(dir.path().join("channel.jsonl")).unwrap();
+        assert!(raw.contains("\"audience\":\"Leon\"") || raw.contains("\"audience\": \"Leon\""));
+
+        let plain_dir = tempfile::tempdir().unwrap();
+        let plain = TranscriptBus::open_at(
+            session("plain-take"),
+            plain_dir.path().join("plain.jsonl"),
+            None,
+        )
+        .unwrap();
+        let (ledger, _, revision) = committed_fixture("plain-take");
+        let events = plain.publish_revision(&revision, &ledger);
+        assert!(events.iter().all(|event| event.audience.is_none()));
+        let raw = std::fs::read_to_string(plain_dir.path().join("plain.jsonl")).unwrap();
+        assert!(
+            !raw.contains("\"audience\""),
+            "rows without an audience omit the field: {raw}"
+        );
+
+        let broadcast_dir = tempfile::tempdir().unwrap();
+        let mut broadcast = session("channel-all");
+        broadcast.audience = Some("*".to_string());
+        broadcast.badge_only = true;
+        let bus = TranscriptBus::open_at(broadcast, broadcast_dir.path().join("all.jsonl"), None)
+            .unwrap();
+        let (ledger, _, revision) = committed_fixture("channel-all");
+        let events = bus.publish_revision(&revision, &ledger);
+        assert!(
+            events
+                .iter()
+                .all(|event| event.audience.as_deref() == Some("*"))
+        );
     }
 
     fn inject_fault(bus: &TranscriptBus) -> Arc<Mutex<Fault>> {
@@ -2260,6 +2319,7 @@ mod tests {
                 has_latched_target: false,
                 latched_target_is_self: false,
                 audience: None,
+                badge_only: false,
             },
             path.clone(),
             Some(48_000),
@@ -2301,6 +2361,7 @@ mod tests {
             has_latched_target: false,
             latched_target_is_self: false,
             audience: None,
+            badge_only: false,
         };
 
         let never_started = TranscriptBus::open_at(session.clone(), path.clone(), None).unwrap();
@@ -2368,6 +2429,7 @@ mod tests {
                 has_latched_target: false,
                 latched_target_is_self: false,
                 audience: None,
+                badge_only: false,
             },
             path,
             None,
@@ -2403,6 +2465,7 @@ mod tests {
                 has_latched_target: false,
                 latched_target_is_self: false,
                 audience: None,
+                badge_only: false,
             },
             path,
             None,
