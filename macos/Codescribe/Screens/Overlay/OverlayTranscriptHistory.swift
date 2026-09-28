@@ -61,7 +61,6 @@ struct OverlayTranscriptHistory: View {
     .accessibilityIdentifier("overlay-transcription-history")
   }
 
-
   func historyList(_ entries: [CsHistoryEntry]) -> some View {
     ScrollView {
       LazyVStack(alignment: .leading, spacing: 4) {
