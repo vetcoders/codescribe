@@ -362,7 +362,7 @@ pub struct StreamingRecorder {
     /// offers every block to every feed and never blocks on a consumer (the
     /// `RecorderLayer1Lane::offer_pcm` contract): a full feed drops the block
     /// and counts it, a closed feed is reaped.
-    pcm_feeds: Arc<StdMutex<Vec<(CaptureSubscriberId, mpsc::Sender<Vec<f32>>)>>>,
+    pcm_feeds: Arc<PcmFeedRegistry>,
     captured_samples: Arc<AtomicU64>,
     terminal_audio_sender: Option<
         std::sync::mpsc::Sender<
@@ -371,6 +371,9 @@ pub struct StreamingRecorder {
     >,
     last_window_closed: Option<oneshot::Receiver<()>>,
 }
+
+/// Subscriber feeds behind one lock: id -> bounded PCM sender.
+type PcmFeedRegistry = StdMutex<Vec<(CaptureSubscriberId, mpsc::Sender<Vec<f32>>)>>;
 
 impl StreamingRecorder {
     /// Seal order from the immutable generation bound to this capture.
