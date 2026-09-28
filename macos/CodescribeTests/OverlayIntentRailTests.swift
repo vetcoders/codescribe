@@ -80,6 +80,27 @@ private final class OverlayIntentBoundaryEngine: DictationEngine {
 
 @MainActor
 final class OverlayIntentRailTests: XCTestCase {
+  func testLongHistoryPopoverStaysWithinViewport() {
+    let history = (1...200).map {
+      CsDocumentHistoryEntry(
+        revision: UInt64($0), renderedText: "Transcript \($0)",
+        provenance: "record_ledger_seal", emittedAt: "2026-09-28T10:00:00Z")
+    }
+    let rail = OverlayIntentRail(
+      phase: "formatted", intents: [], palette: .dark,
+      history: history, currentRevision: 200, onIntent: { _ in })
+    let host = NSHostingView(
+      rootView: rail.historyContent(close: {})
+        .font(.system(size: 12, weight: .medium))
+        .padding(10)
+        .frame(maxWidth: 280)
+        .fixedSize(horizontal: false, vertical: true))
+    let size = host.fittingSize
+    XCTAssertGreaterThan(size.height, 100)
+    XCTAssertLessThanOrEqual(size.height, 380)
+    XCTAssertLessThanOrEqual(size.width, 280)
+  }
+
   func testEventFixturesRenderFrozenProjectionTable() {
     let rows:
       [(
