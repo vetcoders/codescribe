@@ -775,7 +775,10 @@ not rewritten.
 An open channel session also appends `codescribe.channel-session.v1` (`kind: channel_session`). `state: open` with `loud: true` means the microphone is
 live. `state: sealed` with `reason: silence` means
 `CODESCRIBE_CHANNEL_AUTOSEAL_SECS` elapsed without new channel text. `0`
-disables that cap. The row names `opened_at`, `provider`,
+disables that cap. `state: sealed` with `reason: hangup` means Fn+digit was
+pressed again and nothing reopens the session. Each channel session gets at
+most one `sealed` row, on the bus that carried its `open` row, after its
+capture closed and whether or not the ledger issued a terminal seal. The row names `opened_at`, `provider`,
 `provider_session_id`, and `utterance_silence_sec`. `ChannelHudState` carries
 the same open fact, including provider and session, for the overlay. The
 overlay paint itself is a separate cut.

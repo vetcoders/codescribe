@@ -201,6 +201,25 @@ pub(crate) enum ChannelOpenMode {
     AttachedOnly,
 }
 
+/// Why a channel session ended: the `reason` of its one `sealed` receipt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChannelSealReason {
+    /// Utterance silence delivered the words; the quiet contract reopens
+    /// the channel on the same binding.
+    Silence,
+    /// Fn+digit pressed again: the Founder hung up and nothing reopens it.
+    Hangup,
+}
+
+impl ChannelSealReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Silence => "silence",
+            Self::Hangup => "hangup",
+        }
+    }
+}
+
 pub fn binding_path() -> PathBuf {
     active_names::bridge_home().join(BINDING_FILENAME)
 }
@@ -277,23 +296,39 @@ fn refusal(error: ChannelOpenRefusal) -> anyhow::Error {
 }
 
 impl RecordingController {
-    /// Fn+digit toggle. A second press of the same digit seals and closes.
-    /// Dictation state is not changed.
+    /// Fn+digit toggle. A second press of the same digit hangs up: the
+    /// session seals with `reason: hangup` and does not reopen. Dictation
+    /// state is not changed.
     pub async fn toggle_agent_channel(&self, digit: u8) -> Result<()> {
-        self.dispatch_agent_channel(digit, &binding_path(), ChannelOpenMode::Live)
-            .await
+        self.dispatch_agent_channel(
+            digit,
+            &binding_path(),
+            &crate::presentation::transcript_bus::transcript_bus_path(),
+            ChannelOpenMode::Live,
+        )
+        .await
     }
 
+    /// `shared_bus` carries the rows and receipts of a channel whose binding
+    /// names no dedicated bus.
     pub(crate) async fn dispatch_agent_channel(
         &self,
         digit: u8,
         binding_file: &Path,
+        shared_bus: &Path,
         mode: ChannelOpenMode,
     ) -> Result<()> {
         let mut channels = self.agent_channels.lock().await;
         if let Some(open) = channels.remove(&digit) {
             drop(channels);
-            self.close_open_channel(open).await?;
+            self.close_open_channel(
+                digit,
+                open,
+                ChannelSealReason::Hangup,
+                shared_bus,
+                channel_autoseal_secs(),
+            )
+            .await?;
             return Ok(());
         }
 
@@ -335,7 +370,7 @@ impl RecordingController {
                     bound
                         .bus
                         .clone()
-                        .unwrap_or_else(crate::presentation::transcript_bus::transcript_bus_path),
+                        .unwrap_or_else(|| shared_bus.to_path_buf()),
                 )));
                 // The Pointer Indicator knob rules every badge path: Settings
                 // promises "Base size; Agent mode stays proportionally larger",
@@ -444,10 +479,9 @@ impl RecordingController {
                     provider_session_id: receipt_provider_session.as_deref(),
                 },
             );
-            let open_receipt_bus = receipt_bus
-                .unwrap_or_else(crate::presentation::transcript_bus::transcript_bus_path);
+            let open_receipt_bus = receipt_bus.as_deref().unwrap_or(shared_bus);
             if let Err(error) =
-                crate::presentation::agent_ack::append_json_line(&open_receipt_bus, &line)
+                crate::presentation::agent_ack::append_json_line(open_receipt_bus, &line)
             {
                 tracing::warn!(%error, digit, "channel open receipt was not appended");
             }
@@ -455,7 +489,22 @@ impl RecordingController {
         Ok(())
     }
 
-    async fn close_open_channel(&self, open: OpenAgentChannel) -> Result<()> {
+    /// The one closing throne of a channel session, for silence and hang-up
+    /// alike. It consumes the open record, which its caller removed from
+    /// `agent_channels` exactly once, so a session gets at most one `sealed`
+    /// receipt. The receipt follows the capture close: `end_channel_session`
+    /// joins the transcription task, so every evidence row of the session is
+    /// already on the bus when a follower reads the boundary. It does not
+    /// wait for a ledger terminal seal: a take whose coverage was refused has
+    /// no other row that releases its words.
+    async fn close_open_channel(
+        &self,
+        digit: u8,
+        open: OpenAgentChannel,
+        reason: ChannelSealReason,
+        shared_bus: &Path,
+        autoseal_secs: u64,
+    ) -> Result<()> {
         let retained_audio = {
             let mut recorder_guard = self.recorder.lock().await;
             match recorder_guard.as_mut() {
@@ -479,6 +528,31 @@ impl RecordingController {
                 open.session_id.as_deref(),
                 path,
                 codescribe_core::state::SessionTranscriptArchive::Committed(&heard),
+            );
+        }
+        let line = crate::presentation::agent_ack::channel_session_line(
+            &crate::presentation::agent_ack::ChannelSessionLine {
+                state: "sealed",
+                reason: reason.as_str(),
+                channel: &digit.to_string(),
+                agent: &open.audience,
+                session_id: open.session_id.as_deref(),
+                autoseal_secs,
+                opened_at: open.opened_at,
+                utterance_silence_sec: open.silence_sec,
+                provider: open.provider.as_deref(),
+                provider_session_id: open.provider_session_id.as_deref(),
+            },
+        );
+        let seal_receipt_bus = open.bus.as_deref().unwrap_or(shared_bus);
+        if let Err(error) =
+            crate::presentation::agent_ack::append_json_line(seal_receipt_bus, &line)
+        {
+            tracing::warn!(
+                %error,
+                digit,
+                reason = reason.as_str(),
+                "channel seal receipt was not appended"
             );
         }
         let state = self.current_state().await;
@@ -561,42 +635,17 @@ impl RecordingController {
         };
         let mut sealed = Vec::new();
         for (digit, open) in due {
-            let channel = digit.to_string();
-            let agent = open.audience.clone();
-            let session_id = open.session_id.clone();
-            let opened_at = open.opened_at;
-            let silence_sec = open.silence_sec;
-            let provider = open.provider.clone();
-            let provider_session_id = open.provider_session_id.clone();
             let mode = open.mode;
-            let channel_bus = open.bus.clone();
-            if let Err(error) = self.close_open_channel(open).await {
+            if let Err(error) = self
+                .close_open_channel(digit, open, ChannelSealReason::Silence, bus, secs)
+                .await
+            {
                 tracing::warn!(%error, digit, "channel auto-seal could not close the capture");
                 continue;
             }
-            let line = crate::presentation::agent_ack::channel_session_line(
-                &crate::presentation::agent_ack::ChannelSessionLine {
-                    state: "sealed",
-                    reason: "silence",
-                    channel: &channel,
-                    agent: &agent,
-                    session_id: session_id.as_deref(),
-                    autoseal_secs: secs,
-                    opened_at,
-                    utterance_silence_sec: silence_sec,
-                    provider: provider.as_deref(),
-                    provider_session_id: provider_session_id.as_deref(),
-                },
-            );
-            let seal_receipt_bus = channel_bus.as_deref().unwrap_or(bus);
-            if let Err(error) =
-                crate::presentation::agent_ack::append_json_line(seal_receipt_bus, &line)
-            {
-                tracing::warn!(%error, digit, "channel silence receipt was not appended");
-            }
             sealed.push(digit);
             if let Some(binding) = reopen_binding
-                && let Err(error) = self.dispatch_agent_channel(digit, binding, mode).await
+                && let Err(error) = self.dispatch_agent_channel(digit, binding, bus, mode).await
             {
                 tracing::warn!(
                     %error,
@@ -695,6 +744,68 @@ mod tests {
         path
     }
 
+    fn bus_rows(bus: &Path) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(bus)
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("json"))
+            .collect()
+    }
+
+    /// Digit 3 bound to Leon on a dedicated `buses/channel-3.jsonl`.
+    fn write_dedicated_binding(dir: &Path) -> (PathBuf, PathBuf) {
+        let channel_bus = dir.join("buses/channel-3.jsonl");
+        let binding = format!(
+            r#"{{"schema":"vc.agent-audience-binding.v1","bindings":{{"3":{{"audience":"Leon","provider":"codex","provider_session_id":"leon-session","bus":"{}"}}}}}}"#,
+            channel_bus.display()
+        );
+        (write_binding(dir, &binding), channel_bus)
+    }
+
+    /// Opens digit 3 without a device and stamps the session label a Live
+    /// open mints, so receipts carry the identity followers key on. Returns
+    /// the open instant.
+    async fn open_stamped(
+        controller: &RecordingController,
+        binding: &Path,
+        shared_bus: &Path,
+        session: &str,
+    ) -> SystemTime {
+        controller
+            .dispatch_agent_channel(3, binding, shared_bus, ChannelOpenMode::AttachedOnly)
+            .await
+            .expect("open");
+        stamp_session(controller, session).await
+    }
+
+    async fn stamp_session(controller: &RecordingController, session: &str) -> SystemTime {
+        let mut channels = controller.agent_channels.lock().await;
+        let open = channels.get_mut(&3).expect("channel 3 is open");
+        open.session_id = Some(session.to_string());
+        open.opened_at
+    }
+
+    async fn hear_voice_at(controller: &RecordingController, at: SystemTime) {
+        let open = controller.agent_channel_snapshot(3).await.expect("open");
+        *open
+            .last_voice_at
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = at;
+    }
+
+    fn sealed_rows(rows: &[serde_json::Value]) -> Vec<(String, String)> {
+        rows.iter()
+            .filter(|row| row["schema"] == "codescribe.channel-session.v1")
+            .filter(|row| row["state"] == "sealed")
+            .map(|row| {
+                (
+                    row["session_id"].as_str().unwrap_or_default().to_string(),
+                    row["reason"].as_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect()
+    }
+
     #[test]
     fn digit_zero_is_broadcast_without_a_binding_file() {
         let missing = Path::new("/tmp/codescribe-fn1-missing-binding.json");
@@ -759,8 +870,9 @@ mod tests {
         let controller = RecordingController::new_without_keychain();
         let dir = tempfile::tempdir().expect("temp");
         let path = dir.path().join(BINDING_FILENAME);
+        let shared_bus = dir.path().join("shared-bus.jsonl");
         let error = controller
-            .dispatch_agent_channel(4, &path, ChannelOpenMode::AttachedOnly)
+            .dispatch_agent_channel(4, &path, &shared_bus, ChannelOpenMode::AttachedOnly)
             .await
             .expect_err("missing binding must refuse");
         let message = format!("{error:#}");
@@ -777,6 +889,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(agent_ack_duck)]
     async fn second_press_closes_the_channel_and_leaves_dictation_idle() {
         let controller = RecordingController::new_without_keychain();
         let dir = tempfile::tempdir().expect("temp");
@@ -784,8 +897,9 @@ mod tests {
             dir.path(),
             r#"{"schema":"vc.agent-audience-binding.v1","bindings":{"3":{"audience":"Leon","provider":"codex","provider_session_id":"leon-session"}}}"#,
         );
+        let shared_bus = dir.path().join("shared-bus.jsonl");
         controller
-            .dispatch_agent_channel(3, &path, ChannelOpenMode::AttachedOnly)
+            .dispatch_agent_channel(3, &path, &shared_bus, ChannelOpenMode::AttachedOnly)
             .await
             .expect("open");
         let open = controller.agent_channel_snapshot(3).await.expect("open");
@@ -804,7 +918,7 @@ mod tests {
         assert!(!take);
 
         controller
-            .dispatch_agent_channel(3, &path, ChannelOpenMode::Live)
+            .dispatch_agent_channel(3, &path, &shared_bus, ChannelOpenMode::Live)
             .await
             .expect("second press closes");
         assert!(controller.agent_channel_snapshot(3).await.is_none());
@@ -812,6 +926,13 @@ mod tests {
         assert_eq!(count, 0);
         assert!(!channel);
         assert_eq!(controller.current_state().await, super::super::State::Idle);
+        let rows = bus_rows(&shared_bus);
+        assert_eq!(
+            rows.len(),
+            1,
+            "a binding without a dedicated bus seals on the shared bus: {rows:?}"
+        );
+        assert_eq!(rows[0]["reason"], "hangup", "{rows:?}");
     }
 
     #[tokio::test]
@@ -822,8 +943,9 @@ mod tests {
             dir.path(),
             r#"{"schema":"vc.agent-audience-binding.v1","bindings":{"1":{"audience":"Ada","provider":"claude","provider_session_id":"ada-session"}}}"#,
         );
+        let shared_bus = dir.path().join("shared-bus.jsonl");
         controller
-            .dispatch_agent_channel(1, &path, ChannelOpenMode::AttachedOnly)
+            .dispatch_agent_channel(1, &path, &shared_bus, ChannelOpenMode::AttachedOnly)
             .await
             .expect("open");
         let error = controller
@@ -886,8 +1008,9 @@ mod tests {
             dir.path(),
             r#"{"schema":"vc.agent-audience-binding.v1","bindings":{"3":{"audience":"Leon","provider":"codex","provider_session_id":"leon-session"}}}"#,
         );
+        let bus = dir.path().join("bus.jsonl");
         controller
-            .dispatch_agent_channel(3, &path, ChannelOpenMode::AttachedOnly)
+            .dispatch_agent_channel(3, &path, &bus, ChannelOpenMode::AttachedOnly)
             .await
             .expect("open");
         let hud = controller.channel_hud_states().await;
@@ -900,7 +1023,6 @@ mod tests {
         assert_eq!(hud[0].provider.as_deref(), Some("codex"));
         assert_eq!(hud[0].provider_session_id.as_deref(), Some("leon-session"));
 
-        let bus = dir.path().join("bus.jsonl");
         let snapshot = controller.agent_channel_snapshot(3).await.expect("open");
         let opened = snapshot.opened_at;
         let still_open = controller
@@ -1013,18 +1135,14 @@ mod tests {
         crate::audio::tts_duck::clear();
         let controller = RecordingController::new_without_keychain();
         let dir = tempfile::tempdir().expect("temp");
-        let channel_bus = dir.path().join("buses/channel-3.jsonl");
-        let binding = format!(
-            r#"{{"schema":"vc.agent-audience-binding.v1","bindings":{{"3":{{"audience":"Leon","provider":"codex","provider_session_id":"leon-session","bus":"{}"}}}}}}"#,
-            channel_bus.display()
-        );
-        let path = write_binding(dir.path(), &binding);
+        let (path, channel_bus) = write_dedicated_binding(dir.path());
 
         let bound = resolve_digit(3, &path).expect("bound session");
         assert_eq!(bound.bus.as_deref(), Some(channel_bus.as_path()));
 
+        let shared_bus = dir.path().join("shared-bus.jsonl");
         controller
-            .dispatch_agent_channel(3, &path, ChannelOpenMode::AttachedOnly)
+            .dispatch_agent_channel(3, &path, &shared_bus, ChannelOpenMode::AttachedOnly)
             .await
             .expect("open");
         let snapshot = controller.agent_channel_snapshot(3).await.expect("open");
@@ -1035,7 +1153,6 @@ mod tests {
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = opened + Duration::from_secs(60);
 
-        let shared_bus = dir.path().join("shared-bus.jsonl");
         let sealed = controller
             .seal_channels_silent_for(opened + Duration::from_secs(180), &shared_bus, 120, None)
             .await;
@@ -1068,8 +1185,9 @@ mod tests {
             dir.path(),
             r#"{"schema":"vc.agent-audience-binding.v1","bindings":{"3":{"audience":"Leon","provider":"codex","provider_session_id":"leon-session"}}}"#,
         );
+        let bus = dir.path().join("bus.jsonl");
         controller
-            .dispatch_agent_channel(3, &path, ChannelOpenMode::AttachedOnly)
+            .dispatch_agent_channel(3, &path, &bus, ChannelOpenMode::AttachedOnly)
             .await
             .expect("open");
         let snapshot = controller.agent_channel_snapshot(3).await.expect("open");
@@ -1079,7 +1197,6 @@ mod tests {
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = opened + Duration::from_secs(1);
 
-        let bus = dir.path().join("bus.jsonl");
         let sealed = controller
             .seal_channels_silent_for(opened + Duration::from_secs(6), &bus, 5, Some(&path))
             .await;
@@ -1108,6 +1225,185 @@ mod tests {
             text.lines().count(),
             1,
             "one silence seal writes one receipt; the attached-only reopen adds none: {text}"
+        );
+    }
+
+    /// The observed loss: drafts reached the bus, the ledger refused terminal
+    /// finality, and the Founder hung up before the silence boundary. The
+    /// hang-up itself must put the closing row on the channel's own bus.
+    #[tokio::test]
+    #[serial(agent_ack_duck)]
+    async fn hang_up_before_any_seal_writes_one_hangup_receipt_on_the_channel_bus() {
+        let controller = RecordingController::new_without_keychain();
+        let dir = tempfile::tempdir().expect("temp");
+        let (path, channel_bus) = write_dedicated_binding(dir.path());
+        let shared_bus = dir.path().join("shared-bus.jsonl");
+        let session = "agent-channel-3-hangup";
+        let opened = open_stamped(&controller, &path, &shared_bus, session).await;
+        // Voice was heard one second in; the five-second silence boundary
+        // has not passed, so no silence seal can precede the hang-up.
+        hear_voice_at(&controller, opened + Duration::from_secs(1)).await;
+        assert!(
+            controller
+                .seal_channels_silent_for(opened + Duration::from_secs(2), &shared_bus, 5, None)
+                .await
+                .is_empty()
+        );
+
+        controller
+            .dispatch_agent_channel(3, &path, &shared_bus, ChannelOpenMode::Live)
+            .await
+            .expect("second press hangs up");
+
+        assert!(controller.agent_channel_snapshot(3).await.is_none());
+        let (count, channel, _) = controller.capture_subscriber_view().await;
+        assert_eq!(count, 0);
+        assert!(!channel);
+        assert!(
+            !shared_bus.exists(),
+            "a dedicated-bus channel writes nothing to the shared bus"
+        );
+        let rows = bus_rows(&channel_bus);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        let row = &rows[0];
+        assert_eq!(row["schema"], "codescribe.channel-session.v1");
+        assert_eq!(row["kind"], "channel_session");
+        assert_eq!(row["state"], "sealed");
+        assert_eq!(row["reason"], "hangup");
+        assert_eq!(row["channel"], "3");
+        assert_eq!(row["agent"], "Leon");
+        assert_eq!(row["session_id"], session);
+        assert_eq!(row["loud"], false);
+        assert_eq!(row["provider"], "codex");
+        assert_eq!(row["provider_session_id"], "leon-session");
+        assert_eq!(row["autoseal_secs"], channel_autoseal_secs());
+        assert!(
+            row["opened_at"]
+                .as_str()
+                .is_some_and(|stamp| stamp.ends_with('Z')),
+            "{row}"
+        );
+        assert!(
+            row["emitted_at"]
+                .as_str()
+                .is_some_and(|stamp| stamp.ends_with('Z')),
+            "{row}"
+        );
+
+        // The hung-up session is gone: a later silence poll seals nothing.
+        let later = controller
+            .seal_channels_silent_for(
+                opened + Duration::from_secs(600),
+                &shared_bus,
+                5,
+                Some(&path),
+            )
+            .await;
+        assert!(later.is_empty());
+        assert_eq!(bus_rows(&channel_bus).len(), 1);
+    }
+
+    /// One closing throne: a session sealed by silence is never sealed again
+    /// by a hang-up. The hang-up closes the session the quiet contract
+    /// reopened, and a digit press after a seal without reopen opens.
+    #[tokio::test]
+    #[serial(agent_ack_duck)]
+    async fn a_silence_sealed_session_is_never_sealed_again_by_a_hang_up() {
+        crate::audio::tts_duck::clear();
+        let controller = RecordingController::new_without_keychain();
+        let dir = tempfile::tempdir().expect("temp");
+        let (path, channel_bus) = write_dedicated_binding(dir.path());
+        let shared_bus = dir.path().join("shared-bus.jsonl");
+
+        let opened = open_stamped(&controller, &path, &shared_bus, "agent-channel-3-first").await;
+        hear_voice_at(&controller, opened + Duration::from_secs(1)).await;
+        let sealed = controller
+            .seal_channels_silent_for(opened + Duration::from_secs(6), &shared_bus, 5, Some(&path))
+            .await;
+        assert_eq!(sealed, vec![3]);
+        stamp_session(&controller, "agent-channel-3-reopened").await;
+        controller
+            .dispatch_agent_channel(3, &path, &shared_bus, ChannelOpenMode::Live)
+            .await
+            .expect("hang up the reopened session");
+        assert!(controller.agent_channel_snapshot(3).await.is_none());
+        assert_eq!(
+            sealed_rows(&bus_rows(&channel_bus)),
+            vec![
+                ("agent-channel-3-first".to_string(), "silence".to_string()),
+                ("agent-channel-3-reopened".to_string(), "hangup".to_string()),
+            ]
+        );
+
+        // Silence without a reopen leaves the digit closed; the next press
+        // opens a fresh session instead of sealing the finished one twice.
+        let opened = open_stamped(&controller, &path, &shared_bus, "agent-channel-3-last").await;
+        hear_voice_at(&controller, opened + Duration::from_secs(1)).await;
+        let sealed = controller
+            .seal_channels_silent_for(opened + Duration::from_secs(6), &shared_bus, 5, None)
+            .await;
+        assert_eq!(sealed, vec![3]);
+        controller
+            .dispatch_agent_channel(3, &path, &shared_bus, ChannelOpenMode::AttachedOnly)
+            .await
+            .expect("press after a seal opens");
+        assert!(controller.agent_channel_snapshot(3).await.is_some());
+        let sealed = sealed_rows(&bus_rows(&channel_bus));
+        assert_eq!(sealed.len(), 3, "{sealed:?}");
+        for session in [
+            "agent-channel-3-first",
+            "agent-channel-3-reopened",
+            "agent-channel-3-last",
+        ] {
+            assert_eq!(
+                sealed.iter().filter(|(id, _)| id == session).count(),
+                1,
+                "{session} is sealed exactly once: {sealed:?}"
+            );
+        }
+        assert!(!shared_bus.exists());
+    }
+
+    /// A hang-up ends one session, not the channel: the next press reopens
+    /// on the same binding and the quiet contract runs as before.
+    #[tokio::test]
+    #[serial(agent_ack_duck)]
+    async fn reopen_after_a_hang_up_keeps_the_quiet_contract() {
+        crate::audio::tts_duck::clear();
+        let controller = RecordingController::new_without_keychain();
+        let dir = tempfile::tempdir().expect("temp");
+        let (path, channel_bus) = write_dedicated_binding(dir.path());
+        let shared_bus = dir.path().join("shared-bus.jsonl");
+
+        open_stamped(&controller, &path, &shared_bus, "agent-channel-3-before").await;
+        controller
+            .dispatch_agent_channel(3, &path, &shared_bus, ChannelOpenMode::Live)
+            .await
+            .expect("hang up");
+        assert!(controller.channel_hud_states().await.is_empty());
+
+        let opened = open_stamped(&controller, &path, &shared_bus, "agent-channel-3-after").await;
+        let hud = controller.channel_hud_states().await;
+        assert_eq!(hud.len(), 1);
+        assert!(hud[0].open && hud[0].loud, "{hud:?}");
+        assert_eq!(hud[0].audience, "Leon");
+        hear_voice_at(&controller, opened + Duration::from_secs(1)).await;
+        let sealed = controller
+            .seal_channels_silent_for(opened + Duration::from_secs(6), &shared_bus, 5, Some(&path))
+            .await;
+        assert_eq!(sealed, vec![3]);
+        let reopened = controller
+            .agent_channel_snapshot(3)
+            .await
+            .expect("the quiet contract reopens after a hang-up cycle");
+        assert_eq!(reopened.audience, "Leon");
+        assert_eq!(reopened.bus.as_deref(), Some(channel_bus.as_path()));
+        assert_eq!(
+            sealed_rows(&bus_rows(&channel_bus)),
+            vec![
+                ("agent-channel-3-before".to_string(), "hangup".to_string()),
+                ("agent-channel-3-after".to_string(), "silence".to_string()),
+            ]
         );
     }
 }
