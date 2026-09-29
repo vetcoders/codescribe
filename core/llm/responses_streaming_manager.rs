@@ -25,6 +25,7 @@ use tracing::{debug, info, warn};
 use crate::agent::event::AgentEvent;
 
 use super::ai_formatting::{AiReasoningCallback, AiStreamCallback};
+use super::responses_output::{ResponsesOutputItem, extract_output_channels};
 
 /// Whole-request ceiling handed to `reqwest`. Deliberately far longer than any
 /// realistic turn: the live guards are the initial-response and inter-chunk
@@ -39,6 +40,48 @@ const STREAM_DEADLINE: Duration = Duration::from_secs(10 * 60);
 /// Reasoning models can stay silent for minutes mid-thought, so the ordinary
 /// (much shorter) inter-chunk timeout would abort a healthy stream.
 const REASONING_INTER_CHUNK_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// One `data:` payload after the shared SSE framing step.
+struct SseData {
+    event: Option<String>,
+    data: String,
+}
+
+/// Pull the next `data:` payload out of `buffer`.
+///
+/// Returns `None` when no full line remains. Blank lines and `:` comments are
+/// dropped. An `event:` line updates `current_event` and is not returned.
+/// A line that is neither is ignored, matching the three stream loops this
+/// replaced. `data` is start-trimmed only.
+fn next_sse_data(buffer: &mut String, current_event: &mut Option<String>) -> Option<SseData> {
+    loop {
+        let newline_pos = buffer.find('\n')?;
+        let line = buffer[..newline_pos].trim().to_string();
+        *buffer = buffer[newline_pos + 1..].to_string();
+
+        if line.is_empty() || line.starts_with(':') {
+            continue;
+        }
+
+        if let Some(event) = line
+            .strip_prefix("event: ")
+            .or_else(|| line.strip_prefix("event:"))
+        {
+            *current_event = Some(event.trim().to_string());
+            continue;
+        }
+
+        if let Some(data) = line
+            .strip_prefix("data: ")
+            .or_else(|| line.strip_prefix("data:"))
+        {
+            return Some(SseData {
+                event: current_event.take(),
+                data: data.trim_start().to_string(),
+            });
+        }
+    }
+}
 
 /// Accumulated result of one non-agent `/v1/responses` stream.
 #[derive(Debug, Clone)]
@@ -281,118 +324,101 @@ impl<'a> ResponsesStreamingManager<'a> {
             let chunk = chunk_result.context("Stream read error")?;
             buffer.push_str(&String::from_utf8_lossy(&chunk));
 
-            while let Some(newline_pos) = buffer.find('\n') {
-                let line = buffer[..newline_pos].trim().to_string();
-                buffer = buffer[newline_pos + 1..].to_string();
-
-                if line.is_empty() || line.starts_with(':') {
-                    continue;
+            while let Some(SseData {
+                event: data_event,
+                data,
+            }) = next_sse_data(&mut buffer, &mut current_event)
+            {
+                if data == "[DONE]" {
+                    saw_done = true;
+                    break;
                 }
 
-                if let Some(event) = line
-                    .strip_prefix("event: ")
-                    .or_else(|| line.strip_prefix("event:"))
-                {
-                    current_event = Some(event.trim().to_string());
-                    continue;
+                if data_event.as_deref() == Some("error") {
+                    let error = parse_sse_error_event(&data);
+                    anyhow::bail!("{}", format_sse_error("SSE", &error));
                 }
 
-                if let Some(data) = line
-                    .strip_prefix("data: ")
-                    .or_else(|| line.strip_prefix("data:"))
+                let chunk = match serde_json::from_str::<StreamChunk>(&data) {
+                    Ok(parsed) => parsed,
+                    Err(error) => {
+                        warn!("Skipping malformed SSE chunk: {}", error);
+                        continue;
+                    }
+                };
                 {
-                    let data = data.trim_start();
-                    let data_event = current_event.take();
-                    if data == "[DONE]" {
-                        saw_done = true;
-                        break;
+                    if let Some(seq) = chunk.sequence_number {
+                        last_sequence_number = Some(seq);
                     }
-
-                    if data_event.as_deref() == Some("error") {
-                        let error = parse_sse_error_event(data);
-                        anyhow::bail!("{}", format_sse_error("SSE", &error));
-                    }
-
-                    let chunk = match serde_json::from_str::<StreamChunk>(data) {
-                        Ok(parsed) => parsed,
-                        Err(error) => {
-                            warn!("Skipping malformed SSE chunk: {}", error);
-                            continue;
-                        }
-                    };
+                    if let Some(resp) = &chunk.response
+                        && !resp.id.is_empty()
                     {
-                        if let Some(seq) = chunk.sequence_number {
-                            last_sequence_number = Some(seq);
+                        response_id = Some(resp.id.clone());
+                    }
+                    match chunk.chunk_type.as_str() {
+                        "response.output_text.delta" => {
+                            if let Some(delta) = chunk.delta {
+                                if let Some(cb) = &self.callbacks.assistant {
+                                    cb(&delta);
+                                }
+                                assistant_text.push_str(&delta);
+                            }
                         }
-                        if let Some(resp) = &chunk.response
-                            && !resp.id.is_empty()
-                        {
-                            response_id = Some(resp.id.clone());
+                        "response.output_text.done" => {
+                            if let Some(text) = chunk.text {
+                                let text = text.trim().to_string();
+                                if !text.is_empty() {
+                                    if assistant_text.is_empty()
+                                        && let Some(cb) = &self.callbacks.assistant
+                                    {
+                                        cb(&text);
+                                    }
+                                    assistant_done = Some(text);
+                                }
+                            }
                         }
-                        match chunk.chunk_type.as_str() {
-                            "response.output_text.delta" => {
-                                if let Some(delta) = chunk.delta {
-                                    if let Some(cb) = &self.callbacks.assistant {
-                                        cb(&delta);
-                                    }
-                                    assistant_text.push_str(&delta);
+                        "response.reasoning_summary_text.delta" => {
+                            if let Some(delta) = chunk.delta {
+                                if let Some(cb) = &self.callbacks.reasoning {
+                                    cb(&delta);
                                 }
+                                reasoning_text.push_str(&delta);
                             }
-                            "response.output_text.done" => {
-                                if let Some(text) = chunk.text {
-                                    let text = text.trim().to_string();
-                                    if !text.is_empty() {
-                                        if assistant_text.is_empty()
-                                            && let Some(cb) = &self.callbacks.assistant
-                                        {
-                                            cb(&text);
-                                        }
-                                        assistant_done = Some(text);
-                                    }
-                                }
-                            }
-                            "response.reasoning_summary_text.delta" => {
-                                if let Some(delta) = chunk.delta {
-                                    if let Some(cb) = &self.callbacks.reasoning {
-                                        cb(&delta);
-                                    }
-                                    reasoning_text.push_str(&delta);
-                                }
-                            }
-                            "response.reasoning_summary_text.done" => {
-                                if let Some(text) = chunk.text {
-                                    let text = text.trim().to_string();
-                                    if !text.is_empty() {
-                                        if reasoning_text.is_empty()
-                                            && let Some(cb) = &self.callbacks.reasoning
-                                        {
-                                            cb(&text);
-                                        }
-                                        reasoning_done = Some(text);
-                                    }
-                                }
-                            }
-                            "response.output_item.added" | "response.output_item.done" => {
-                                log_sse_lifecycle_event("SSE", &chunk);
-                            }
-                            "response.content_part.added" | "response.content_part.done" => {
-                                log_sse_lifecycle_event("SSE", &chunk);
-                            }
-                            "response.completed" | "response.done" => {
-                                saw_completed = true;
-                                if let Some(resp) = &chunk.response {
-                                    let parsed = extract_output_channels(&resp.output);
-                                    if !parsed.0.is_empty() {
-                                        completed_output = Some(parsed);
-                                    } else {
-                                        warn!(
-                                            "SSE response.completed without parseable output_text payload; falling back to channel buffers"
-                                        );
-                                    }
-                                }
-                            }
-                            _ => {}
                         }
+                        "response.reasoning_summary_text.done" => {
+                            if let Some(text) = chunk.text {
+                                let text = text.trim().to_string();
+                                if !text.is_empty() {
+                                    if reasoning_text.is_empty()
+                                        && let Some(cb) = &self.callbacks.reasoning
+                                    {
+                                        cb(&text);
+                                    }
+                                    reasoning_done = Some(text);
+                                }
+                            }
+                        }
+                        "response.output_item.added" | "response.output_item.done" => {
+                            log_sse_lifecycle_event("SSE", &chunk);
+                        }
+                        "response.content_part.added" | "response.content_part.done" => {
+                            log_sse_lifecycle_event("SSE", &chunk);
+                        }
+                        "response.completed" | "response.done" => {
+                            saw_completed = true;
+                            if let Some(resp) = &chunk.response {
+                                let parsed = extract_output_channels(&resp.output);
+                                if !parsed.assistant_text.is_empty() {
+                                    completed_output =
+                                        Some((parsed.assistant_text, parsed.reasoning_text));
+                                } else {
+                                    warn!(
+                                        "SSE response.completed without parseable output_text payload; falling back to channel buffers"
+                                    );
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -550,85 +576,67 @@ impl<'a> ResponsesStreamingManager<'a> {
             let chunk = chunk_result.context("Resume stream read error")?;
             buffer.push_str(&String::from_utf8_lossy(&chunk));
 
-            while let Some(newline_pos) = buffer.find('\n') {
-                let line = buffer[..newline_pos].trim().to_string();
-                buffer = buffer[newline_pos + 1..].to_string();
-
-                if line.is_empty() || line.starts_with(':') {
-                    continue;
+            while let Some(SseData {
+                event: data_event,
+                data,
+            }) = next_sse_data(&mut buffer, &mut current_event)
+            {
+                if data == "[DONE]" {
+                    return Ok(ResponsesStreamOutput {
+                        assistant_text,
+                        reasoning_text: if reasoning_text.is_empty() {
+                            None
+                        } else {
+                            Some(reasoning_text)
+                        },
+                        response_id: Some(response_id.to_string()),
+                    });
                 }
 
-                if let Some(event) = line
-                    .strip_prefix("event: ")
-                    .or_else(|| line.strip_prefix("event:"))
-                {
-                    current_event = Some(event.trim().to_string());
-                    continue;
+                if data_event.as_deref() == Some("error") {
+                    let error = parse_sse_error_event(&data);
+                    anyhow::bail!("{}", format_sse_error("Resume SSE", &error));
                 }
 
-                if let Some(data) = line
-                    .strip_prefix("data: ")
-                    .or_else(|| line.strip_prefix("data:"))
+                let chunk = match serde_json::from_str::<StreamChunk>(&data) {
+                    Ok(parsed) => parsed,
+                    Err(error) => {
+                        warn!("Skipping malformed SSE chunk: {}", error);
+                        continue;
+                    }
+                };
                 {
-                    let data = data.trim_start();
-                    let data_event = current_event.take();
-                    if data == "[DONE]" {
-                        return Ok(ResponsesStreamOutput {
-                            assistant_text,
-                            reasoning_text: if reasoning_text.is_empty() {
-                                None
-                            } else {
-                                Some(reasoning_text)
-                            },
-                            response_id: Some(response_id.to_string()),
-                        });
-                    }
-
-                    if data_event.as_deref() == Some("error") {
-                        let error = parse_sse_error_event(data);
-                        anyhow::bail!("{}", format_sse_error("Resume SSE", &error));
-                    }
-
-                    let chunk = match serde_json::from_str::<StreamChunk>(data) {
-                        Ok(parsed) => parsed,
-                        Err(error) => {
-                            warn!("Skipping malformed SSE chunk: {}", error);
-                            continue;
-                        }
-                    };
-                    {
-                        match chunk.chunk_type.as_str() {
-                            "response.output_text.delta" => {
-                                if let Some(delta) = chunk.delta {
-                                    if let Some(cb) = &self.callbacks.assistant {
-                                        cb(&delta);
-                                    }
-                                    assistant_text.push_str(&delta);
+                    match chunk.chunk_type.as_str() {
+                        "response.output_text.delta" => {
+                            if let Some(delta) = chunk.delta {
+                                if let Some(cb) = &self.callbacks.assistant {
+                                    cb(&delta);
                                 }
+                                assistant_text.push_str(&delta);
                             }
-                            "response.reasoning_summary_text.delta" => {
-                                if let Some(delta) = chunk.delta {
-                                    if let Some(cb) = &self.callbacks.reasoning {
-                                        cb(&delta);
-                                    }
-                                    reasoning_text.push_str(&delta);
-                                }
-                            }
-                            "response.output_item.added" | "response.output_item.done" => {
-                                log_sse_lifecycle_event("Resume SSE", &chunk);
-                            }
-                            "response.content_part.added" | "response.content_part.done" => {
-                                log_sse_lifecycle_event("Resume SSE", &chunk);
-                            }
-                            "response.completed" | "response.done" => {
-                                debug!(
-                                    "Resume stream completed ({}B accumulated text)",
-                                    assistant_text.len()
-                                );
-                                break;
-                            }
-                            _ => {}
                         }
+                        "response.reasoning_summary_text.delta" => {
+                            if let Some(delta) = chunk.delta {
+                                if let Some(cb) = &self.callbacks.reasoning {
+                                    cb(&delta);
+                                }
+                                reasoning_text.push_str(&delta);
+                            }
+                        }
+                        "response.output_item.added" | "response.output_item.done" => {
+                            log_sse_lifecycle_event("Resume SSE", &chunk);
+                        }
+                        "response.content_part.added" | "response.content_part.done" => {
+                            log_sse_lifecycle_event("Resume SSE", &chunk);
+                        }
+                        "response.completed" | "response.done" => {
+                            debug!(
+                                "Resume stream completed ({}B accumulated text)",
+                                assistant_text.len()
+                            );
+                            break;
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -749,41 +757,22 @@ async fn run_agent_stream(
         let chunk = chunk_result.context("Agent SSE stream read error")?;
         buffer.push_str(&String::from_utf8_lossy(&chunk));
 
-        while let Some(newline_pos) = buffer.find('\n') {
-            let line = buffer[..newline_pos].trim().to_string();
-            buffer = buffer[newline_pos + 1..].to_string();
-
-            if line.is_empty() || line.starts_with(':') {
-                continue;
-            }
-
-            if let Some(event) = line
-                .strip_prefix("event: ")
-                .or_else(|| line.strip_prefix("event:"))
-            {
-                current_event = Some(event.trim().to_string());
-                continue;
-            }
-
-            let Some(data) = line
-                .strip_prefix("data: ")
-                .or_else(|| line.strip_prefix("data:"))
-            else {
-                continue;
-            };
-            let data = data.trim_start();
-            let data_event = current_event.take();
+        while let Some(SseData {
+            event: data_event,
+            data,
+        }) = next_sse_data(&mut buffer, &mut current_event)
+        {
             if data == "[DONE]" {
                 saw_done = true;
                 break;
             }
 
             if data_event.as_deref() == Some("error") {
-                let error = parse_sse_error_event(data);
+                let error = parse_sse_error_event(&data);
                 anyhow::bail!("{}", format_sse_error("Agent SSE", &error));
             }
 
-            let chunk = match serde_json::from_str::<StreamChunk>(data) {
+            let chunk = match serde_json::from_str::<StreamChunk>(&data) {
                 Ok(parsed) => parsed,
                 Err(error) => {
                     warn!("Skipping malformed SSE chunk: {}", error);
@@ -1599,7 +1588,7 @@ struct StreamResponse {
     #[serde(default)]
     id: String,
     #[serde(default)]
-    output: Vec<StreamOutputItem>,
+    output: Vec<ResponsesOutputItem>,
     /// Final response status reported by the Responses API. `response.done` is
     /// "always emitted, no matter the final state"; clients must inspect this
     /// to discriminate `completed` from `cancelled` / `failed` / `incomplete`.
@@ -1645,18 +1634,9 @@ struct StreamItem {
     name: Option<String>,
 }
 
-/// Item inside a terminal response's `output` array — `message` or `reasoning`,
-/// each holding content parts.
-#[derive(Debug, Deserialize)]
-struct StreamOutputItem {
-    #[serde(rename = "type")]
-    item_type: String,
-    #[serde(default)]
-    content: Option<Vec<StreamContentPart>>,
-}
-
-/// Leaf content part. Text lives in `text` or, for reasoning summaries, in
-/// `summary` — readers must accept either.
+/// Leaf content part on a lifecycle event. Text lives in `text` or, for
+/// reasoning summaries, in `summary`. Terminal `output` items use
+/// [`ResponsesOutputItem`] instead of this type.
 #[derive(Debug, Deserialize)]
 struct StreamContentPart {
     #[serde(rename = "type")]
@@ -1665,57 +1645,6 @@ struct StreamContentPart {
     text: Option<String>,
     #[serde(default)]
     summary: Option<String>,
-}
-
-/// Split a terminal response's `output` array into
-/// `(assistant_text, reasoning_text)`.
-///
-/// Recovers the turn when deltas were missed or never sent: assistant text is
-/// taken only from `message` items, while reasoning summaries are accepted on
-/// either `message` or `reasoning` items. Blank and unrecognised parts are
-/// dropped; empty reasoning collapses to `None`.
-fn extract_output_channels(output: &[StreamOutputItem]) -> (String, Option<String>) {
-    let mut assistant_parts = Vec::new();
-    let mut reasoning_parts = Vec::new();
-
-    for item in output {
-        let Some(parts) = item.content.as_ref() else {
-            continue;
-        };
-        let is_message = item.item_type == "message";
-        let is_reasoning = item.item_type == "reasoning";
-
-        for part in parts {
-            let text = part
-                .text
-                .as_deref()
-                .or(part.summary.as_deref())
-                .map(str::trim)
-                .filter(|s| !s.is_empty());
-            match part.part_type.as_str() {
-                "output_text" | "text" if is_message => {
-                    if let Some(text) = text {
-                        assistant_parts.push(text.to_string());
-                    }
-                }
-                "reasoning_summary_text" if is_message || is_reasoning => {
-                    if let Some(text) = text {
-                        reasoning_parts.push(text.to_string());
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    let assistant_text = assistant_parts.join("").trim().to_string();
-    let reasoning_text = reasoning_parts.join("").trim().to_string();
-    let reasoning_text = if reasoning_text.is_empty() {
-        None
-    } else {
-        Some(reasoning_text)
-    };
-    (assistant_text, reasoning_text)
 }
 
 /// Unit and mockito SSE tests for auth, channel extraction, and agent events.
@@ -1755,11 +1684,11 @@ fn summarize_error_body(body: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::responses_output::{ResponsesOutputItem, extract_output_channels};
     use super::{
         AgentEvent, AuthHeaderMode, ResponsesStreamingManager, StreamCallbacks, StreamChunk,
-        StreamOutputItem, ToolCallTracker, apply_auth_headers, dirty_terminal_response_id,
-        extract_output_channels, fallback_reasoning, parse_agent_event,
-        reasoning_content_available, validated_endpoint_url,
+        ToolCallTracker, apply_auth_headers, dirty_terminal_response_id, fallback_reasoning,
+        parse_agent_event, reasoning_content_available, validated_endpoint_url,
     };
     use reqwest::Client;
     use serde_json::json;
@@ -2005,7 +1934,7 @@ mod tests {
     /// Message and reasoning items concatenate into assistant and summary channels.
     #[test]
     fn extract_output_channels_collects_assistant_and_reasoning() {
-        let output: Vec<StreamOutputItem> = serde_json::from_value(json!([
+        let output: Vec<ResponsesOutputItem> = serde_json::from_value(json!([
             {
                 "type": "message",
                 "content": [
@@ -2025,15 +1954,15 @@ mod tests {
         ]))
         .expect("valid stream output fixture");
 
-        let (assistant, reasoning) = extract_output_channels(&output);
-        assert_eq!(assistant, "foobar");
-        assert_eq!(reasoning.as_deref(), Some("r1r2r3"));
+        let parsed = extract_output_channels(&output);
+        assert_eq!(parsed.assistant_text, "foobar");
+        assert_eq!(parsed.reasoning_text.as_deref(), Some("r1r2r3"));
     }
 
     /// Blank or unknown content parts do not invent assistant or reasoning text.
     #[test]
     fn extract_output_channels_ignores_blank_and_unknown_parts() {
-        let output: Vec<StreamOutputItem> = serde_json::from_value(json!([
+        let output: Vec<ResponsesOutputItem> = serde_json::from_value(json!([
             {
                 "type": "message",
                 "content": [
@@ -2046,9 +1975,9 @@ mod tests {
         ]))
         .expect("valid stream output fixture");
 
-        let (assistant, reasoning) = extract_output_channels(&output);
-        assert!(assistant.is_empty());
-        assert_eq!(reasoning, None);
+        let parsed = extract_output_channels(&output);
+        assert!(parsed.assistant_text.is_empty());
+        assert_eq!(parsed.reasoning_text, None);
     }
 
     /// Function-call start → args delta → done becomes the tool-call agent events.

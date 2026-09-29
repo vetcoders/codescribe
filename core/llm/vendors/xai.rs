@@ -1,4 +1,5 @@
-//! xAI vendor pin. `serde_json` only; I1 wires this into the registry.
+//! xAI wire pin. The registry reads identity strings from here.
+//! Lane model seeds stay `grok-4.5` in `provider.rs`; this module pins `grok-4.6`.
 
 /// Codescribe id (not an xAI slug). docs: https://docs.x.ai/developers/rest-api-reference
 pub const CANONICAL: &str = "xai-responses";

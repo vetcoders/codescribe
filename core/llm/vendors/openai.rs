@@ -1,4 +1,5 @@
-//! OpenAI wire facts; registry policy identifiers are Codescribe-owned.
+//! OpenAI wire facts. The registry row reads these constants.
+//! `CANONICAL`, `ALIASES`, and `DISPLAY_NAME` are Codescribe spellings, not OpenAI slugs.
 use serde_json::{Value, json};
 
 // docs: https://developers.openai.com/api/reference/resources/responses/methods/create

@@ -127,17 +127,15 @@ struct ProviderIdentity {
     assistive_model: &'static str,
 }
 
-/// OpenAI Responses endpoint. Pinned here until I1 rewires the row to
-/// `vendors::openai` (cut W1-OA).
-pub const DEFAULT_OPENAI_RESPONSES_ENDPOINT: &str = "https://api.openai.com/v1/responses";
+/// OpenAI Responses endpoint. The string lives in `vendors::openai`.
+pub const DEFAULT_OPENAI_RESPONSES_ENDPOINT: &str = vendors::openai::ENDPOINT;
 /// OpenAI formatting-lane seed until live discovery answers.
-pub const DEFAULT_FORMATTING_MODEL: &str = "gpt-4.1";
+pub const DEFAULT_FORMATTING_MODEL: &str = vendors::openai::DEFAULT_FORMATTING_MODEL;
 /// OpenAI assistive-lane seed until live discovery answers.
-pub const DEFAULT_ASSISTIVE_MODEL: &str = "gpt-5.5";
-/// xAI serves the Responses protocol from its OpenAI-compatible base URL.
-/// Pinned here until I1 rewires the row to `vendors::xai` (cut W1-XA).
-const DEFAULT_XAI_RESPONSES_ENDPOINT: &str = "https://api.x.ai/v1/responses";
-/// Current Grok model at the time of this cut; both lanes share the seed.
+pub const DEFAULT_ASSISTIVE_MODEL: &str = vendors::openai::DEFAULT_ASSISTIVE_MODEL;
+/// xAI Responses endpoint. The string lives in `vendors::xai`.
+const DEFAULT_XAI_RESPONSES_ENDPOINT: &str = vendors::xai::ENDPOINT;
+/// Live lane seed. `vendors::xai` pins `grok-4.6`; these lanes stay on `grok-4.5`.
 const DEFAULT_XAI_MODEL: &str = "grok-4.5";
 
 const LIBRAXIS_IDENTITY: ProviderIdentity = ProviderIdentity {
@@ -155,10 +153,10 @@ const LIBRAXIS_IDENTITY: ProviderIdentity = ProviderIdentity {
 
 const OPENAI_IDENTITY: ProviderIdentity = ProviderIdentity {
     kind: ProviderKind::OpenAiResponses,
-    canonical: "openai-responses",
-    aliases: &["openai", "openai_responses"],
-    display_name: "OpenAI (Responses)",
-    api_key_account: "LLM_OPENAI_API_KEY",
+    canonical: vendors::openai::CANONICAL,
+    aliases: vendors::openai::ALIASES,
+    display_name: vendors::openai::DISPLAY_NAME,
+    api_key_account: vendors::openai::API_KEY_ACCOUNT,
     wire_family: WireFamily::OpenAiResponses,
     endpoint: DEFAULT_OPENAI_RESPONSES_ENDPOINT,
     extra_hosts: &[],
@@ -168,10 +166,10 @@ const OPENAI_IDENTITY: ProviderIdentity = ProviderIdentity {
 
 const XAI_IDENTITY: ProviderIdentity = ProviderIdentity {
     kind: ProviderKind::XaiResponses,
-    canonical: "xai-responses",
-    aliases: &["xai", "grok", "xai_responses"],
-    display_name: "xAI (Grok)",
-    api_key_account: "LLM_XAI_API_KEY",
+    canonical: vendors::xai::CANONICAL,
+    aliases: vendors::xai::ALIASES,
+    display_name: vendors::xai::DISPLAY_NAME,
+    api_key_account: vendors::xai::API_KEY_ACCOUNT,
     wire_family: WireFamily::OpenAiResponses,
     endpoint: DEFAULT_XAI_RESPONSES_ENDPOINT,
     extra_hosts: &[],
