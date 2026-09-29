@@ -6,14 +6,13 @@ import SwiftUI
 struct OverlayCanvasSurface<Content: View>: View {
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
   let palette: OverlayAppearancePalette
-  var isEditing = false
   @ViewBuilder let content: Content
 
   var body: some View {
     content
       .background {
         OverlayCanvasBackdrop(
-          palette: palette, reduceTransparency: reduceTransparency, isEditing: isEditing)
+          palette: palette, reduceTransparency: reduceTransparency)
       }
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous))
       .overlay {
@@ -33,11 +32,10 @@ struct OverlayCanvasSurface<Content: View>: View {
 struct OverlayCanvasBackdrop: View {
   let palette: OverlayAppearancePalette
   let reduceTransparency: Bool
-  var isEditing = false
 
   var body: some View {
     ZStack {
-      if reduceTransparency || isEditing {
+      if reduceTransparency {
         Rectangle().fill(palette.desktopBackground.color)
       } else {
         OverlayDesktopMaterial()

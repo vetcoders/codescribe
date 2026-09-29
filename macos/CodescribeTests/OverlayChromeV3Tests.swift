@@ -123,16 +123,4 @@ final class OverlayChromeV3Tests: XCTestCase {
     XCTAssertNil(descendant(OverlayDesktopEffectView.self, in: root))
 
   }
-  func testEditingRemovesDesktopSamplingEvenWithTransparencyEnabled() {
-    for scheme in [ColorScheme.light, .dark] {
-      let root = NSHostingView(
-        rootView: OverlayCanvasBackdrop(
-          palette: .resolve(scheme), reduceTransparency: false, isEditing: true)
-      )
-      root.frame = NSRect(x: 0, y: 0, width: 320, height: 200)
-      root.layoutSubtreeIfNeeded()
-      XCTAssertNil(descendant(OverlayDesktopEffectView.self, in: root))
-    }
-  }
-
 }
