@@ -181,45 +181,25 @@ final class TrayViewModelTests: XCTestCase {
   }
 
   func testTrayStatusFeedMapsReadyRecordingProcessingAndAgentColorsOneToOne() throws {
-    let ready = TrayStatusStore.preview(kind: .idle, tone: .neutral)
-    try assertDotColor(
-      ready,
-      equals: NSColor(srgbRed: 157.0 / 255.0, green: 177.0 / 255.0, blue: 120.0 / 255.0, alpha: 1)
-    )
-
-    let recording = TrayStatusStore.preview(kind: .listening, tone: .active)
-    try assertDotColor(
-      recording,
-      equals: NSColor(srgbRed: 1, green: 59.0 / 255.0, blue: 48.0 / 255.0, alpha: 1)
-    )
-
-    let processing = TrayStatusStore.preview(kind: .processing, tone: .active)
-    try assertDotColor(
-      processing,
-      equals: NSColor(srgbRed: 242.0 / 255.0, green: 140.0 / 255.0, blue: 69.0 / 255.0, alpha: 1)
-    )
-
-    let agent = TrayStatusStore.preview(
-      kind: .listening,
-      tone: .active,
-      indicatorMode: .assistive,
-      assistive: true
-    )
-    try assertDotColor(
-      agent,
-      equals: NSColor(srgbRed: 155.0 / 255.0, green: 114.0 / 255.0, blue: 242.0 / 255.0, alpha: 1)
-    )
-
-    let agentProcessing = TrayStatusStore.preview(
-      kind: .processing,
-      tone: .active,
-      indicatorMode: .processing,
-      assistive: false
-    )
-    try assertDotColor(
-      agentProcessing,
-      equals: NSColor(srgbRed: 242.0 / 255.0, green: 140.0 / 255.0, blue: 69.0 / 255.0, alpha: 1)
-    )
+    let cases: [(TrayStatusStore, UInt32, UInt32)] = [
+      (.preview(kind: .idle, tone: .neutral), 0x55663A, 0x9DB178),
+      (.preview(kind: .listening, tone: .active), 0xFF3B30, 0xFF3B30),
+      (.preview(kind: .processing, tone: .active), 0xB96A24, 0xF28C45),
+      (.preview(kind: .listening, tone: .active, indicatorMode: .assistive, assistive: true),
+       0x9B72F2, 0x9B72F2),
+      (.preview(kind: .processing, tone: .active, indicatorMode: .processing, assistive: false),
+       0xB96A24, 0xF28C45),
+    ]
+    for (store, light, dark) in cases {
+      for (name, expected) in [(NSAppearance.Name.aqua, light), (.darkAqua, dark)] {
+        let appearance = try XCTUnwrap(NSAppearance(named: name))
+        var resolved: NSColor?
+        appearance.performAsCurrentDrawingAppearance {
+          resolved = store.menuBarDotColor.map { NSColor($0).usingColorSpace(.sRGB) } ?? nil
+        }
+        assertColor(try XCTUnwrap(resolved), equals: NSColor(hex: expected))
+      }
+    }
   }
 
   /// The header pill already paints idle / success / listening / processing.
@@ -372,17 +352,6 @@ final class TrayViewModelTests: XCTestCase {
       FormattingPolicyOption.allCases.map(\.visibleName),
       ["Off", "Correction", "Smart", "Max"]
     )
-  }
-
-  private func assertDotColor(
-    _ store: TrayStatusStore,
-    equals expected: NSColor,
-    file: StaticString = #filePath,
-    line: UInt = #line
-  ) throws {
-    let color = try XCTUnwrap(store.menuBarDotColor, file: file, line: line)
-    let resolved = try XCTUnwrap(NSColor(color).usingColorSpace(.sRGB), file: file, line: line)
-    assertColor(resolved, equals: expected, file: file, line: line)
   }
 
   private func assertColor(

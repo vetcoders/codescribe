@@ -306,8 +306,12 @@ struct Composer: View {
   }
 
   private func paletteList<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-    ScrollView {
+    ViewThatFits(in: .vertical) {
       VStack(alignment: .leading, spacing: 0) { content() }
+        .fixedSize(horizontal: false, vertical: true)
+      ScrollView {
+        VStack(alignment: .leading, spacing: 0) { content() }
+      }
     }
     .frame(maxHeight: 190)
     .background(Color.primary.opacity(0.05))
