@@ -1,6 +1,6 @@
 import SwiftUI
 
-// Tray Menu (glass dropdown panel).
+// Tray content. NSPopover owns the material, corner treatment, and shadow.
 //
 // Reusable content view: App.swift hosts this inside an `NSPopover`
 // (`NSHostingController(rootView: TrayMenuView(viewModel:))`) anchored to a
@@ -16,52 +16,52 @@ struct TrayMenuView: View {
   // macOS 14+ action to open the app's Settings scene — replaces the fragile
   // private `showSettingsWindow:` selector that stopped working on newer macOS.
   @Environment(\.openWindow) private var openWindow
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
-    GlassPanel(cornerRadius: CSRadius.tray) {
-      VStack(spacing: 0) {
-        statusHeader
-        if trayStatus.showsDetailStatusRow {
-          trayStatusRow
-        }
-        TrayDivider(top: 3, bottom: 5)
-
-        primaryActions
-
-        TrayDivider()
-        quickSettingsGroup
-
-        notesGroup
-        diagnosticsGroup
-
-        TrayDivider()
-        TrayRow(icon: .settings, title: "Settings…", shortcut: "⌘,") {
-          openWindow(id: SettingsView.windowID)
-        }
-        if DeveloperSurface.isEnabled() {
-          TrayRow(icon: .diagnostics, title: "Voice Lab…") {
-            Task { await VoiceLabRuntime.shared.openConsole() }
-          }
-        }
-        TrayRow(icon: .setupWizard, title: "Setup Wizard…") { viewModel.onOpenSetupWizard() }
-        TrayRow(icon: .refresh, title: "Check for Updates…") {
-          viewModel.onCheckForUpdates()
-        }
-        TrayRow(icon: .help, title: "Help") { viewModel.onHelp() }
-        TrayRow(icon: .info, title: "About") { viewModel.onAbout() }
-
-        TrayDivider()
-        TrayRow(
-          icon: .power,
-          iconColor: CSColor.terracottaDeep,
-          title: "Quit codescribe",
-          titleColor: CSColor.textMuted,
-          shortcut: "⌘Q"
-        ) { viewModel.onQuit() }
+    VStack(spacing: 0) {
+      statusHeader
+      if trayStatus.showsDetailStatusRow {
+        trayStatusRow
       }
-      .padding(7)
+      TrayDivider(top: 3, bottom: 5)
+
+      primaryActions
+
+      TrayDivider()
+      quickSettingsGroup
+
+      notesGroup
+      diagnosticsGroup
+
+      TrayDivider()
+      TrayRow(icon: .settings, title: "Settings…", shortcut: "⌘,") {
+        openWindow(id: SettingsView.windowID)
+      }
+      if DeveloperSurface.isEnabled() {
+        TrayRow(icon: .diagnostics, title: "Voice Lab…") {
+          Task { await VoiceLabRuntime.shared.openConsole() }
+        }
+      }
+      TrayRow(icon: .setupWizard, title: "Setup Wizard…") { viewModel.onOpenSetupWizard() }
+      TrayRow(icon: .refresh, title: "Check for Updates…") {
+        viewModel.onCheckForUpdates()
+      }
+      TrayRow(icon: .help, title: "Help") { viewModel.onHelp() }
+      TrayRow(icon: .info, title: "About") { viewModel.onAbout() }
+
+      TrayDivider()
+      TrayRow(
+        icon: .power,
+        iconColor: CSColor.terracottaDeep,
+        title: "Quit codescribe",
+        titleColor: CSColor.textMuted,
+        shortcut: "⌘Q"
+      ) { viewModel.onQuit() }
     }
+    .padding(7)
     .frame(width: 300)
+    .transaction { if reduceMotion { $0.disablesAnimations = true } }
     .onAppear { viewModel.refreshStatus() }
     .onDisappear { viewModel.collapseDisclosures() }
   }

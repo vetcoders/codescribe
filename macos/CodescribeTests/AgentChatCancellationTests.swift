@@ -277,12 +277,7 @@ final class AgentChatCancellationTests: XCTestCase {
   }
 
   func testComposerSendUsesSystemCircleAndSharedControlGeometry() {
-    guard case .sf(let symbolName) = ComposerActionVisualState.send(enabled: true).icon.backend
-    else {
-      return XCTFail("Composer send action must use an SF Symbol")
-    }
-
-    XCTAssertEqual(symbolName, "arrow.up.circle.fill")
+    XCTAssertEqual(ComposerActionVisualState.send(enabled: true).icon.systemName, "arrow.up.circle.fill")
     XCTAssertEqual(ComposerControlMetrics.glyphSize, 15)
     XCTAssertEqual(ComposerControlMetrics.hitTargetSize, 22)
   }

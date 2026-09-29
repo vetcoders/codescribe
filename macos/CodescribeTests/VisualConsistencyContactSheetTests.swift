@@ -29,58 +29,28 @@ final class VisualConsistencyContactSheetTests: XCTestCase {
     let run = SheetRun()
     let directory = try run.prepareDirectory()
 
-    run.takeOverlay(
-      stateName: "formatted",
-      state: OverlayState.previewFormatted(),
-      sizeName: "floor",
-      scheme: .dark,
-      size: overlayFloor
-    )
-    run.takeOverlay(
-      stateName: "formatted",
-      state: OverlayState.previewFormatted(),
-      sizeName: "floor",
-      scheme: .light,
-      size: overlayFloor
-    )
-    run.takeOverlay(
-      stateName: "formatted",
-      state: OverlayState.previewFormatted(),
-      sizeName: "wide",
-      scheme: .dark,
-      size: overlayWide
-    )
-    run.takeOverlay(
-      stateName: "formatted",
-      state: OverlayState.previewFormatted(),
-      sizeName: "wide",
-      scheme: .light,
-      size: overlayWide
-    )
-    run.takeOverlay(
-      stateName: "error",
-      state: OverlayState.previewError(),
-      sizeName: "floor",
-      scheme: .dark,
-      size: overlayFloor
-    )
-    run.takeOverlay(
-      stateName: "error",
-      state: OverlayState.previewError(),
-      sizeName: "floor",
-      scheme: .light,
-      size: overlayFloor
-    )
-
-    run.takeAgent(sizeName: "floor", scheme: .dark, size: agentFloor)
-    run.takeAgent(sizeName: "floor", scheme: .light, size: agentFloor)
-    run.takeAgent(sizeName: "ideal", scheme: .dark, size: agentIdeal)
-    run.takeAgent(sizeName: "ideal", scheme: .light, size: agentIdeal)
-
-    run.takeSettings(sizeName: "floor", scheme: .dark, size: settingsFloor)
-    run.takeSettings(sizeName: "floor", scheme: .light, size: settingsFloor)
-    run.takeSettings(sizeName: "wide", scheme: .dark, size: settingsWide)
-    run.takeSettings(sizeName: "wide", scheme: .light, size: settingsWide)
+    for (sizeName, size) in [("floor", overlayFloor), ("wide", overlayWide)] {
+      for scheme in [EvidenceScheme.dark, .light] {
+        run.takeOverlay(
+          stateName: "formatted", state: OverlayState.previewFormatted(),
+          sizeName: sizeName, scheme: scheme, size: size)
+      }
+    }
+    for scheme in [EvidenceScheme.dark, .light] {
+      run.takeOverlay(
+        stateName: "error", state: OverlayState.previewError(),
+        sizeName: "floor", scheme: scheme, size: overlayFloor)
+    }
+    for (sizeName, size) in [("floor", agentFloor), ("ideal", agentIdeal)] {
+      for scheme in [EvidenceScheme.dark, .light] {
+        run.takeAgent(sizeName: sizeName, scheme: scheme, size: size)
+      }
+    }
+    for (sizeName, size) in [("floor", settingsFloor), ("wide", settingsWide)] {
+      for scheme in [EvidenceScheme.dark, .light] {
+        run.takeSettings(sizeName: sizeName, scheme: scheme, size: size)
+      }
+    }
 
     #if DEBUG
       run.takeTray(

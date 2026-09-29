@@ -29,7 +29,7 @@ struct OverlayCoverageStatus: View {
           .fixedSize(horizontal: false, vertical: true)
         Button("Mic calibration in Settings…") {
           close()
-          SettingsDeepLink.present(.audio, anchor: .audioReadiness)
+          SettingsDeepLink.shared.present(.audio, anchor: .audioReadiness)
           openWindow(id: SettingsView.windowID)
           NSApp.activate(ignoringOtherApps: true)
         }

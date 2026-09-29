@@ -79,7 +79,7 @@ final class ChatLayoutPolicyTests: XCTestCase {
     XCTAssertEqual(AgentWindowMetrics.minWidth, 640)
     XCTAssertEqual(AgentWindowMetrics.minHeight, 440)
     let detailAtFloor =
-      AgentWindowMetrics.minWidth - AgentSidebarMode.expanded.minimumWidth
+      AgentWindowMetrics.minWidth - AgentSidebarMetrics.minimumWidth
     XCTAssertGreaterThanOrEqual(
       detailAtFloor,
       ChatLayoutPolicy.minimumReadable,
@@ -87,22 +87,25 @@ final class ChatLayoutPolicyTests: XCTestCase {
     )
     XCTAssertGreaterThan(
       AgentWindowMetrics.minWidth,
-      AgentSidebarMode.expanded.maximumWidth,
+      AgentSidebarMetrics.maximumWidth,
       "window floor must stay wider than a fully dragged rail so native collapse is not the only way to keep detail visible"
     )
   }
 
   func testSidebarHasReadableFloorAndBoundedExpansion() {
-    XCTAssertEqual(AgentSidebarMode.expanded.minimumWidth, 267)
-    XCTAssertEqual(AgentSidebarMode.expanded.idealWidth, 300)
-    XCTAssertEqual(AgentSidebarMode.expanded.maximumWidth, 360)
+    XCTAssertEqual(AgentSidebarMetrics.minimumWidth, 267)
+    XCTAssertEqual(AgentSidebarMetrics.maximumWidth, 360)
   }
 
   @MainActor
   func testNativeSidebarItemEnforcesBoundsAfterWindowAttachment() throws {
     final class LayoutEngine: ChatEngineFixture {}
     let store = AgentChatStore(
-      engine: LayoutEngine(), threads: [ChatThread(title: "A thread", meta: "now", model: "gpt-6-sol")])
+      engine: LayoutEngine(),
+      threads: [
+        ChatThread(
+          title: String(repeating: "Long thread title ", count: 8), meta: "now", model: "gpt-6-sol")
+      ])
     let host = NSHostingController(rootView: AgentChatView(store: store))
     let window = NSWindow(contentViewController: host)
     window.setContentSize(NSSize(width: 1120, height: 720))
@@ -118,6 +121,38 @@ final class ChatLayoutPolicyTests: XCTestCase {
     let item = try XCTUnwrap(split.splitViewItems.first(where: { $0.behavior == .sidebar }))
     XCTAssertEqual(item.minimumThickness, 267)
     XCTAssertEqual(item.maximumThickness, 360)
+
+    store.threads[0].title = "Short"
+    RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+    XCTAssertEqual(item.maximumThickness, 267)
+    XCTAssertLessThanOrEqual(item.viewController.view.frame.width, 268)
+    let shortWidth = item.viewController.view.frame.width
+    store.threads[0].title = "Moderately descriptive thread title"
+    RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+    XCTAssertGreaterThan(item.maximumThickness, 267)
+    XCTAssertLessThan(
+      item.maximumThickness, 360,
+      "Intrinsic measurement must produce intermediate widths, not only floor/ceiling buckets")
+    store.threads[0].title = String(repeating: "Long thread title ", count: 8)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+    XCTAssertEqual(item.maximumThickness, 360)
+    XCTAssertEqual(
+      item.viewController.view.frame.width, shortWidth, accuracy: 1,
+      "A wider content cap must not expand the user's divider")
+    store.threads[0].title = "Short again"
+    RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+    XCTAssertEqual(item.maximumThickness, 267)
+    store.threads[0].model = String(repeating: "model-name-", count: 10)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+    XCTAssertEqual(item.maximumThickness, 360, "Metadata participates in intrinsic row width")
+    let retainedThreads = store.threads
+    store.threads = []
+    RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+    XCTAssertEqual(
+      item.maximumThickness, 360, "Transient empty search results must not reset the cap")
+    store.threads = retainedThreads
+    store.threads[0].title = String(repeating: "Long thread title ", count: 8)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.15))
     for windowWidth in [1120.0, 640.0, 1800.0, 800.0] {
       window.setContentSize(NSSize(width: windowWidth, height: 720))
       for proposed in [1600.0, 50.0, 300.0, 900.0, 0.0] {

@@ -1711,6 +1711,77 @@ pub fn is_promoted_key(key: &str) -> bool {
     PROMOTED_SETTINGS_KEYS.contains(&key)
 }
 
+// One registry owns both typed setters and wire dispatch. Recognized malformed
+// numbers return Some(false), so they never fall through to string validation.
+macro_rules! typed_setting_writes {
+    ($($store:ident : $ty:ty, $parse:expr => {
+        $($key:pat => $field:ident $(=> $normalize:path)?),* $(,)?
+    })*) => {
+        impl UserSettings {
+            $(fn $store(&mut self, key: &str, value: $ty) -> bool {
+                match key {
+                    $($key => self.$field = Some(typed_setting_writes!(@value value $(, $normalize)?)),)*
+                    _ => return false,
+                }
+                true
+            })*
+
+            fn assign_typed_wire(&mut self, key: &str, value: &str) -> Option<bool> {
+                match key {
+                    $($($key)|* => Some(($parse)(value).is_some_and(|parsed| self.$store(key, parsed))),)*
+                    _ => None,
+                }
+            }
+        }
+    };
+    (@value $value:ident) => { $value };
+    (@value $value:ident, $normalize:path) => { $normalize($value) };
+}
+
+typed_setting_writes! {
+    store_bool: bool, |value: &str| Some(matches!(value, "1" | "true" | "yes" | "on")) => {
+        "AI_FORMATTING_ENABLED" => ai_formatting_enabled,
+        "AUTO_PASTE_ENABLED" => auto_paste_enabled,
+        "TRANSCRIPT_TAGGING_ENABLED" => transcript_tagging_enabled,
+        "BEEP_ON_START" => beep_on_start,
+        "SHOW_DOCK_ICON" => show_dock_icon,
+        "TRANSCRIPTION_OVERLAY_ENABLED" => transcription_overlay_enabled,
+        "TRAY_START_ASSISTIVE" => tray_start_assistive,
+        "HOLD_INDICATOR" => hold_indicator,
+        "RESTORE_CLIPBOARD" => restore_clipboard,
+        "HOLD_EXCLUSIVE" => hold_exclusive,
+        "FN_TAP_TOGGLES_DICTATION" => fn_tap_toggles_dictation,
+        "MIDDLE_MOUSE_ACTS_AS_FN" => middle_mouse_acts_as_fn,
+        "USE_LOCAL_STT" => use_local_stt,
+        SILERO_FUSION_ENV => seal_lane_armed,
+        "HISTORY_ENABLED" => history_enabled,
+        "QUICK_NOTES_ENABLED" => quick_notes_enabled,
+        "QUICK_NOTES_SAVE_ONLY" => quick_notes_save_only,
+        "START_AT_LOGIN" => start_at_login,
+        "QUBE_DAEMON_AUTOSTART" => qube_daemon_autostart,
+        "AGENT_ENTER_SENDS" => agent_enter_sends,
+        "AGENT_AUTO_SEND" => agent_auto_send,
+        "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED" => stt_initial_prompt_enabled,
+    }
+    store_u64: u64, |value: &str| value.parse::<u64>().ok() => {
+        "HOLD_START_DELAY_MS" => hold_start_delay_ms,
+        "DOUBLE_TAP_INTERVAL_MS" => double_tap_interval_ms,
+        "CODESCRIBE_BUFFER_DELAY_MS" => buffer_delay_ms,
+        "CODESCRIBE_EMIT_WORDS_MAX" => emit_words_max,
+        "BACKEND_MAX_UPLOAD_MB" => backend_max_upload_mb,
+        "HOLD_BADGE_SIZE" => hold_badge_size,
+        "RESTORE_CLIPBOARD_DELAY_MS" => restore_clipboard_delay_ms,
+    }
+    store_f32: f32, |value: &str| value.parse::<f32>().ok() => {
+        "SOUND_VOLUME" => sound_volume,
+        "TOGGLE_SILENCE_SEC" => toggle_silence_sec,
+        "WHISPER_CONTEXT_WINDOW_SEC" => whisper_context_window_sec => super::normalize_whisper_context_window_sec,
+        "LIGHT_PLUS_SENTENCE_PAUSE_SEC" => light_plus_sentence_pause_sec => super::normalize_light_plus_sentence_pause_sec,
+        "CODESCRIBE_TYPING_CPS" => typing_cps,
+        "CODESCRIBE_BUFFERED_INTERIM_SEC" => buffered_interim_sec,
+    }
+}
+
 impl UserSettings {
     /// Project the flat settings onto the nested on-disk schema. Always writes
     /// `schema_version: 3` and normalized values, so re-saving an older file
@@ -2680,62 +2751,8 @@ impl UserSettings {
         value: &str,
         batch: bool,
     ) -> anyhow::Result<bool> {
-        const U64_KEYS: &[&str] = &[
-            "HOLD_START_DELAY_MS",
-            "DOUBLE_TAP_INTERVAL_MS",
-            "CODESCRIBE_BUFFER_DELAY_MS",
-            "CODESCRIBE_EMIT_WORDS_MAX",
-            "BACKEND_MAX_UPLOAD_MB",
-            "HOLD_BADGE_SIZE",
-            "RESTORE_CLIPBOARD_DELAY_MS",
-        ];
-        const F32_KEYS: &[&str] = &[
-            "SOUND_VOLUME",
-            "TOGGLE_SILENCE_SEC",
-            "WHISPER_CONTEXT_WINDOW_SEC",
-            "LIGHT_PLUS_SENTENCE_PAUSE_SEC",
-            "CODESCRIBE_TYPING_CPS",
-            "CODESCRIBE_BUFFERED_INTERIM_SEC",
-        ];
-        const BOOL_KEYS: &[&str] = &[
-            "AI_FORMATTING_ENABLED",
-            "AUTO_PASTE_ENABLED",
-            "TRANSCRIPT_TAGGING_ENABLED",
-            "BEEP_ON_START",
-            "SHOW_DOCK_ICON",
-            "TRANSCRIPTION_OVERLAY_ENABLED",
-            "TRAY_START_ASSISTIVE",
-            "HOLD_EXCLUSIVE",
-            "FN_TAP_TOGGLES_DICTATION",
-            "MIDDLE_MOUSE_ACTS_AS_FN",
-            "USE_LOCAL_STT",
-            "HISTORY_ENABLED",
-            "QUICK_NOTES_ENABLED",
-            "QUICK_NOTES_SAVE_ONLY",
-            "START_AT_LOGIN",
-            "QUBE_DAEMON_AUTOSTART",
-            "AGENT_ENTER_SENDS",
-            "AGENT_AUTO_SEND",
-            "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED",
-            "HOLD_INDICATOR",
-            "RESTORE_CLIPBOARD",
-            SILERO_FUSION_ENV,
-        ];
-        if U64_KEYS.contains(&key) {
-            return Ok(value
-                .parse::<u64>()
-                .ok()
-                .is_some_and(|parsed| self.store_u64(key, parsed)));
-        }
-        if F32_KEYS.contains(&key) {
-            return Ok(value
-                .parse::<f32>()
-                .ok()
-                .is_some_and(|parsed| self.store_f32(key, parsed)));
-        }
-        if BOOL_KEYS.contains(&key) {
-            let parsed = matches!(value, "1" | "true" | "yes" | "on");
-            return Ok(self.store_bool(key, parsed));
+        if let Some(assigned) = self.assign_typed_wire(key, value) {
+            return Ok(assigned);
         }
         self.stage_string(key, value, batch)
     }
@@ -2919,70 +2936,6 @@ impl UserSettings {
             }
         }
         Ok(true)
-    }
-
-    fn store_bool(&mut self, key: &str, value: bool) -> bool {
-        match key {
-            "AI_FORMATTING_ENABLED" => self.ai_formatting_enabled = Some(value),
-            "AUTO_PASTE_ENABLED" => self.auto_paste_enabled = Some(value),
-            "TRANSCRIPT_TAGGING_ENABLED" => self.transcript_tagging_enabled = Some(value),
-            "BEEP_ON_START" => self.beep_on_start = Some(value),
-            "SHOW_DOCK_ICON" => self.show_dock_icon = Some(value),
-            "TRANSCRIPTION_OVERLAY_ENABLED" => self.transcription_overlay_enabled = Some(value),
-            "TRAY_START_ASSISTIVE" => self.tray_start_assistive = Some(value),
-            "HOLD_INDICATOR" => self.hold_indicator = Some(value),
-            "RESTORE_CLIPBOARD" => self.restore_clipboard = Some(value),
-            "HOLD_EXCLUSIVE" => self.hold_exclusive = Some(value),
-            "FN_TAP_TOGGLES_DICTATION" => self.fn_tap_toggles_dictation = Some(value),
-            "MIDDLE_MOUSE_ACTS_AS_FN" => self.middle_mouse_acts_as_fn = Some(value),
-            "USE_LOCAL_STT" => self.use_local_stt = Some(value),
-            SILERO_FUSION_ENV => self.seal_lane_armed = Some(value),
-            "HISTORY_ENABLED" => self.history_enabled = Some(value),
-            "QUICK_NOTES_ENABLED" => self.quick_notes_enabled = Some(value),
-            "QUICK_NOTES_SAVE_ONLY" => self.quick_notes_save_only = Some(value),
-            "START_AT_LOGIN" => self.start_at_login = Some(value),
-            "QUBE_DAEMON_AUTOSTART" => self.qube_daemon_autostart = Some(value),
-            "AGENT_ENTER_SENDS" => self.agent_enter_sends = Some(value),
-            "AGENT_AUTO_SEND" => self.agent_auto_send = Some(value),
-            "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED" => {
-                self.stt_initial_prompt_enabled = Some(value)
-            }
-            _ => return false,
-        }
-        true
-    }
-
-    fn store_u64(&mut self, key: &str, value: u64) -> bool {
-        match key {
-            "HOLD_START_DELAY_MS" => self.hold_start_delay_ms = Some(value),
-            "DOUBLE_TAP_INTERVAL_MS" => self.double_tap_interval_ms = Some(value),
-            "CODESCRIBE_BUFFER_DELAY_MS" => self.buffer_delay_ms = Some(value),
-            "CODESCRIBE_EMIT_WORDS_MAX" => self.emit_words_max = Some(value),
-            "BACKEND_MAX_UPLOAD_MB" => self.backend_max_upload_mb = Some(value),
-            "HOLD_BADGE_SIZE" => self.hold_badge_size = Some(value),
-            "RESTORE_CLIPBOARD_DELAY_MS" => self.restore_clipboard_delay_ms = Some(value),
-            _ => return false,
-        }
-        true
-    }
-
-    fn store_f32(&mut self, key: &str, value: f32) -> bool {
-        match key {
-            "SOUND_VOLUME" => self.sound_volume = Some(value),
-            "TOGGLE_SILENCE_SEC" => self.toggle_silence_sec = Some(value),
-            "WHISPER_CONTEXT_WINDOW_SEC" => {
-                self.whisper_context_window_sec =
-                    Some(super::normalize_whisper_context_window_sec(value));
-            }
-            "LIGHT_PLUS_SENTENCE_PAUSE_SEC" => {
-                self.light_plus_sentence_pause_sec =
-                    Some(super::normalize_light_plus_sentence_pause_sec(value));
-            }
-            "CODESCRIBE_TYPING_CPS" => self.typing_cps = Some(value),
-            "CODESCRIBE_BUFFERED_INTERIM_SEC" => self.buffered_interim_sec = Some(value),
-            _ => return false,
-        }
-        true
     }
 }
 

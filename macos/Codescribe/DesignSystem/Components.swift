@@ -188,36 +188,6 @@ extension View {
   }
 }
 
-/// Glass container: material + adaptive tint + hairline border + deep shadow.
-/// Window glass lets `.ultraThinMaterial` follow the system appearance — no
-/// forced scheme — and drinks the adaptive `glassUnder` / `glassBase` tints,
-/// so Settings, Agent, and Tray panels are native in both light and dark.
-/// The dictation overlay does not use this container: its floating canvas is
-/// owned by `OverlayAppearancePalette`, which follows the explicit user
-/// appearance preference instead.
-struct GlassPanel<Content: View>: View {
-  var cornerRadius: CGFloat = CSRadius.window
-  var blurTint: Double = 0.84
-  @ViewBuilder var content: Content
-
-  var body: some View {
-    content
-      .background(
-        ZStack {
-          CSColor.glassUnder
-          Rectangle().fill(.ultraThinMaterial)
-          CSColor.glassBase.opacity(blurTint - 0.6)
-        }
-      )
-      .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-          .strokeBorder(CSColor.hairline(0.09), lineWidth: 1)
-      )
-      .shadow(color: .black.opacity(0.6), radius: 50, x: 0, y: 40)
-  }
-}
-
 /// Small mode/brand dot.
 struct ModeDot: View {
   var color: Color = CSColor.terracotta

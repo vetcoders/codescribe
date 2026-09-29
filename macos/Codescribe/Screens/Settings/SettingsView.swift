@@ -46,8 +46,7 @@ struct SettingsView: View {
     .background(HostingWindowReader { hostWindow = $0 })
     .onReceive(
       NotificationCenter.default.publisher(
-        for: SettingsDeepLink.pendingSectionDidChange,
-        object: SettingsDeepLinkMailbox.shared)
+        for: SettingsDeepLink.pendingSectionDidChange, object: SettingsDeepLink.shared)
     ) { _ in
       // Only a Settings surface the user can actually see may take the one-shot
       // target. A hosted-but-hidden instance (closed scene, XCTest host) must
@@ -115,7 +114,7 @@ struct SettingsView: View {
   }
 
   private func consumePendingDeepLink() {
-    guard let target = SettingsDeepLink.consume() else { return }
+    guard let target = SettingsDeepLink.shared.consume() else { return }
     model.select(target.section)
     pendingScrollAnchor = target.anchor
   }

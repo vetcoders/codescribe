@@ -601,24 +601,34 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(model.section, .shortcuts, "openOverlay must not touch rail routing")
   }
 
-  func testLegacyKeysAndAgentDeepLinksResolveToDedicatedPanels() {
-    // A dedicated mailbox: the live Settings window consumes the SHARED one
-    // synchronously on every post, so asserting round-trips against the
-    // shared instance races the product's own (correct) consumption.
-    let mailbox = SettingsDeepLinkMailbox()
+  func testDeepLinkNotificationsReachOnlyTheirOwner() {
+    let links = SettingsDeepLink()
+    let other = SettingsDeepLink()
+    let delivered = expectation(
+      forNotification: SettingsDeepLink.pendingSectionDidChange, object: links)
+    delivered.assertForOverFulfill = true
+    other.present(.audio, anchor: .audioReadiness)
+    links.present(.agent)
+    wait(for: [delivered], timeout: 0.2)
+    XCTAssertEqual(links.consume()?.section, .agent)
+    XCTAssertEqual(other.consume()?.anchor, .audioReadiness)
+  }
 
-    mailbox.pendingSection = .keys
-    XCTAssertEqual(mailbox.consume()?.section.destination, .providers)
-    XCTAssertNil(mailbox.consume())
+  func testSectionAndAgentDeepLinksResolveToDedicatedPanels() {
+    let links = SettingsDeepLink()
+
+    links.pendingSection = .keys
+    XCTAssertEqual(links.consume()?.section.destination, .providers)
+    XCTAssertNil(links.consume())
 
     XCTAssertEqual(SettingsDeepLink.agentConfigurationSection, .agent)
-    mailbox.pendingSection = SettingsDeepLink.agentConfigurationSection
-    XCTAssertEqual(mailbox.consume()?.section.destination, .agent)
-    XCTAssertNil(mailbox.consume())
+    links.pendingSection = SettingsDeepLink.agentConfigurationSection
+    XCTAssertEqual(links.consume()?.section.destination, .agent)
+    XCTAssertNil(links.consume())
 
-    mailbox.present(.audio, anchor: .audioReadiness)
+    links.present(.audio, anchor: .audioReadiness)
     XCTAssertEqual(
-      mailbox.consume(),
+      links.consume(),
       SettingsDeepLinkTarget(section: .audio, anchor: .audioReadiness)
     )
   }
