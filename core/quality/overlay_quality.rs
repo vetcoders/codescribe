@@ -152,6 +152,23 @@ pub const MAX_TOKEN_CHANGE_RATIO: f64 = 0.40;
 /// even when 100% of their few tokens change.
 pub const MIN_TOKENS_FOR_REWRITE_GUARD: usize = 6;
 
+/// STT confidence columns stored on one quality JSONL row.
+#[derive(Debug, Clone, Default)]
+pub struct SttConfidence {
+    pub avg_logprob: Option<f32>,
+    pub speech_pct: Option<f32>,
+    pub flags: Vec<String>,
+}
+
+/// Mode, model, formatting, action, and confidence beside the three text columns.
+pub struct QualityCapture<'a> {
+    pub mode: &'a str,
+    pub model: Option<String>,
+    pub formatting_level: Option<String>,
+    pub action: Option<&'a str>,
+    pub confidence: SttConfidence,
+}
+
 impl QualityRecord {
     /// New record for one overlay edit, stamped now with a fresh
     /// `correction_id` at revision 1. Confidence fields are left empty; use
@@ -169,13 +186,13 @@ impl QualityRecord {
             raw_text,
             delivered_text,
             edited_text,
-            mode,
-            model,
-            formatting_level,
-            action,
-            None,
-            None,
-            Vec::new(),
+            QualityCapture {
+                mode,
+                model,
+                formatting_level,
+                action,
+                confidence: SttConfidence::default(),
+            },
         )
     }
 
@@ -184,35 +201,18 @@ impl QualityRecord {
     /// An unavailable clock yields `timestamp_ms == 0` rather than a panic: the
     /// correction itself is the evidence, and refusing to record it because the
     /// system clock misbehaved would lose the operator's actual work.
-    // allow(too_many_arguments): WHY — ten positional parameters are the
-    // telescoping tail of `new` -> `new_with_confidence`; every one is a column
-    // of the quality JSONL row, not a behaviour switch. WHEN — re-added
-    // 2026-09-08 by the vc-prune Wave 5 silencer strip after clippy fired
-    // `too many arguments (9/7)`; the strip confirms the lint is authentic, not
-    // a false positive. WHERE — the fix is one `OverlayCorrectionInput` struct
-    // shared with `commit_overlay_correction_with_confidence` /
-    // `_with_provenance` below and threaded through `bridge/src/quality.rs:189`
-    // (the UniFFI entry). That crosses the FFI signature and was out of budget
-    // for a silencer-strip cut; it is filed as the wave's headline smell.
-    #[allow(clippy::too_many_arguments)]
     pub fn new_with_confidence(
         raw_text: String,
         delivered_text: String,
         edited_text: String,
-        mode: &str,
-        model: Option<String>,
-        formatting_level: Option<String>,
-        action: Option<&str>,
-        avg_logprob: Option<f32>,
-        speech_pct: Option<f32>,
-        confidence_flags: Vec<String>,
+        capture: QualityCapture<'_>,
     ) -> Self {
         let timestamp_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        let meta = match action {
-            Some(a) => serde_json::json!({ "source": "overlay-final", "action": a }),
+        let meta = match capture.action {
+            Some(action) => serde_json::json!({ "source": "overlay-final", "action": action }),
             None => serde_json::json!({ "source": "overlay-final" }),
         };
         QualityRecord {
@@ -220,15 +220,15 @@ impl QualityRecord {
             revision: 1,
             timestamp_ms,
             session_id: None,
-            mode: mode.to_string(),
-            model,
-            formatting_level,
+            mode: capture.mode.to_string(),
+            model: capture.model,
+            formatting_level: capture.formatting_level,
             raw_text,
             delivered_text,
             edited_text,
-            avg_logprob,
-            speech_pct,
-            confidence_flags,
+            avg_logprob: capture.confidence.avg_logprob,
+            speech_pct: capture.confidence.speech_pct,
+            confidence_flags: capture.confidence.flags,
             meta,
         }
     }
@@ -1275,6 +1275,22 @@ pub fn commit_overlay_correction(
     )
 }
 
+/// One overlay correction as the quality writer sees it.
+///
+/// The UniFFI export stays a flat argument list. Swift callers live outside
+/// this cut. Rust callers pass this value.
+pub struct OverlayCorrectionInput<'a> {
+    pub raw_text: &'a str,
+    pub delivered_text: &'a str,
+    pub edited_text: &'a str,
+    pub mode: &'a str,
+    pub model: Option<String>,
+    pub action: Option<&'a str>,
+    pub formatting_level: Option<&'a str>,
+    pub edit_provenance: Option<&'a str>,
+    pub confidence: SttConfidence,
+}
+
 /// Persist quality evidence with canonical level provenance. Candidate learning
 /// is deliberately narrower than evidence capture: only Correction keeps the
 /// existing custom-lexicon behavior; Off, Smart, and Max remain evidence-only.
@@ -1287,7 +1303,7 @@ pub fn commit_overlay_correction_with_level(
     action: Option<&str>,
     formatting_level: Option<&str>,
 ) -> Result<OverlayCorrectionCommit> {
-    commit_overlay_correction_with_confidence(
+    commit_overlay_correction_with_provenance(OverlayCorrectionInput {
         raw_text,
         delivered_text,
         edited_text,
@@ -1295,73 +1311,18 @@ pub fn commit_overlay_correction_with_level(
         model,
         action,
         formatting_level,
-        None,
-        None,
-        Vec::new(),
-    )
-}
-
-/// Like [`commit_overlay_correction_with_level`], plus optional STT confidence
-/// fields recorded on the quality JSONL line (W11-C / LL-D).
-// allow(too_many_arguments): WHY — rung three of the four-rung telescoping
-// chain `commit_overlay_correction` -> `_with_level` -> `_with_confidence` ->
-// `_with_provenance`, each rung adding parameters rather than a payload type.
-// WHEN — re-added 2026-09-08 by the vc-prune Wave 5 silencer strip (clippy:
-// `too many arguments (10/7)`). WHERE — collapses together with
-// `new_with_confidence` and `_with_provenance` once `OverlayCorrectionInput`
-// exists; do not add a fifth rung.
-#[allow(clippy::too_many_arguments)]
-pub fn commit_overlay_correction_with_confidence(
-    raw_text: &str,
-    delivered_text: &str,
-    edited_text: &str,
-    mode: &str,
-    model: Option<String>,
-    action: Option<&str>,
-    formatting_level: Option<&str>,
-    avg_logprob: Option<f32>,
-    speech_pct: Option<f32>,
-    confidence_flags: Vec<String>,
-) -> Result<OverlayCorrectionCommit> {
-    commit_overlay_correction_with_provenance(
-        raw_text,
-        delivered_text,
-        edited_text,
-        mode,
-        model,
-        action,
-        formatting_level,
-        None,
-        avg_logprob,
-        speech_pct,
-        confidence_flags,
-    )
+        edit_provenance: None,
+        confidence: SttConfidence::default(),
+    })
 }
 
 /// Persist one overlay receipt while keeping delivery action separate from the
 /// explicit editor provenance that alone may vote in the three-confirmation gate.
-// allow(too_many_arguments): WHY — the widest rung of the telescoping chain
-// (11 parameters) and the only one production reaches from outside this file,
-// via the UniFFI export at `bridge/src/quality.rs:189`. WHEN — re-added
-// 2026-09-08 by the vc-prune Wave 5 silencer strip (clippy: `too many
-// arguments (11/7)`). WHERE — changing this signature changes the Swift-facing
-// ABI, so the `OverlayCorrectionInput` cut must land here and in
-// `bridge/src/quality.rs` in one commit.
-#[allow(clippy::too_many_arguments)]
 pub fn commit_overlay_correction_with_provenance(
-    raw_text: &str,
-    delivered_text: &str,
-    edited_text: &str,
-    mode: &str,
-    model: Option<String>,
-    action: Option<&str>,
-    formatting_level: Option<&str>,
-    edit_provenance: Option<&str>,
-    avg_logprob: Option<f32>,
-    speech_pct: Option<f32>,
-    confidence_flags: Vec<String>,
+    input: OverlayCorrectionInput<'_>,
 ) -> Result<OverlayCorrectionCommit> {
-    let formatting_level = formatting_level
+    let formatting_level = input
+        .formatting_level
         .map(FormattingPolicy::parse)
         .transpose()?
         .map(|level| level.as_str().to_string());
@@ -1369,21 +1330,22 @@ pub fn commit_overlay_correction_with_provenance(
     // 2026-08-17 learned "pisanie Żyda" → "mi się nie wydaje" and "w 3 4" →
     // "Dwa Trzy Cztery Pięć". Lexicon grows only on an explicit teach gesture
     // (highlighted span / Voice Lab), never from a formatting-level flag.
-    let teaches =
-        overlay_commit_teaches_lexicon(mode, action) || edit_provenance_is_manual(edit_provenance);
+    let teaches = overlay_commit_teaches_lexicon(input.mode, input.action)
+        || edit_provenance_is_manual(input.edit_provenance);
     let mut record = QualityRecord::new_with_confidence(
-        raw_text.to_string(),
-        delivered_text.to_string(),
-        edited_text.to_string(),
-        mode,
-        model,
-        formatting_level,
-        action,
-        avg_logprob,
-        speech_pct,
-        confidence_flags,
+        input.raw_text.to_string(),
+        input.delivered_text.to_string(),
+        input.edited_text.to_string(),
+        QualityCapture {
+            mode: input.mode,
+            model: input.model,
+            formatting_level,
+            action: input.action,
+            confidence: input.confidence,
+        },
     );
-    if let Some(provenance) = edit_provenance
+    if let Some(provenance) = input
+        .edit_provenance
         .map(str::trim)
         .filter(|value| !value.is_empty())
         && let Some(meta) = record.meta.as_object_mut()
@@ -1400,16 +1362,16 @@ pub fn commit_overlay_correction_with_provenance(
     if teaches {
         // Learn what the recognizer actually heard, not punctuation/casing or
         // rewrites introduced by the formatter/parser between STT and overlay.
-        let learning_source = if raw_text.trim().is_empty() {
-            delivered_text
+        let learning_source = if input.raw_text.trim().is_empty() {
+            input.delivered_text
         } else {
-            raw_text
+            input.raw_text
         };
         // Word-level extraction may yield several pairs. Only candidates taught
         // by enough identical human records may reach the write primitive.
         match classify_human_lexicon_teaches(&extract_lexicon_candidates(
             learning_source,
-            edited_text,
+            input.edited_text,
         )) {
             Ok(promotion) => {
                 lexicon_teach_progress = promotion.progress;
@@ -1454,36 +1416,39 @@ pub fn commit_overlay_correction_with_provenance(
 /// the existing Correction path. Speech-gap pustki are evidence-only: there
 /// is no word to teach until a human supplies one in Voice Lab.
 pub fn teach_span(variant: &str, canonical: &str, kind: &str) -> Result<OverlayCorrectionCommit> {
-    match kind {
-        "speech_gap" => commit_overlay_correction_with_confidence(
-            variant,
-            variant,
+    let (edited_text, action, formatting_level, flag) = match kind {
+        "speech_gap" => (
             if canonical.trim().is_empty() {
                 "∅"
             } else {
                 canonical
             },
-            "overlay-span",
-            None,
-            Some("teach-span-gap"),
-            Some(FormattingPolicy::Off.as_str()),
-            None,
-            None,
-            vec!["speech_gap".to_string()],
+            "teach-span-gap",
+            FormattingPolicy::Off.as_str(),
+            "speech_gap",
         ),
-        _ => commit_overlay_correction_with_confidence(
-            variant,
-            variant,
+        _ => (
             canonical,
-            "overlay-span",
-            None,
-            Some("teach-span"),
-            Some(FormattingPolicy::Correction.as_str()),
-            None,
-            None,
-            vec!["lexicon_corrected".to_string()],
+            "teach-span",
+            FormattingPolicy::Correction.as_str(),
+            "lexicon_corrected",
         ),
-    }
+    };
+    commit_overlay_correction_with_provenance(OverlayCorrectionInput {
+        raw_text: variant,
+        delivered_text: variant,
+        edited_text,
+        mode: "overlay-span",
+        model: None,
+        action: Some(action),
+        formatting_level: Some(formatting_level),
+        edit_provenance: None,
+        confidence: SttConfidence {
+            avg_logprob: None,
+            speech_pct: None,
+            flags: vec![flag.to_string()],
+        },
+    })
 }
 
 /// Replay historical `corrections.jsonl` through the current extractor.
@@ -2152,19 +2117,17 @@ mod tests {
         unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root) };
 
         let commit = |action: &str, provenance: Option<&str>| {
-            commit_overlay_correction_with_provenance(
-                "ajwo",
-                "ajwo",
-                "Iwo",
-                "overlay",
-                None,
-                Some(action),
-                Some("correction"),
-                provenance,
-                None,
-                None,
-                Vec::new(),
-            )
+            commit_overlay_correction_with_provenance(OverlayCorrectionInput {
+                raw_text: "ajwo",
+                delivered_text: "ajwo",
+                edited_text: "Iwo",
+                mode: "overlay",
+                model: None,
+                action: Some(action),
+                formatting_level: Some("correction"),
+                edit_provenance: provenance,
+                confidence: SttConfidence::default(),
+            })
             .unwrap()
         };
 
@@ -2516,13 +2479,17 @@ mod tests {
             "r".into(),
             "d".into(),
             "e".into(),
-            "overlay",
-            None,
-            Some("correction".into()),
-            Some("copy"),
-            Some(-0.42),
-            Some(0.91),
-            vec!["low_logprob".into()],
+            QualityCapture {
+                mode: "overlay",
+                model: None,
+                formatting_level: Some("correction".into()),
+                action: Some("copy"),
+                confidence: SttConfidence {
+                    avg_logprob: Some(-0.42),
+                    speech_pct: Some(0.91),
+                    flags: vec!["low_logprob".into()],
+                },
+            },
         );
         fresh.timestamp_ms = 99;
         let encoded = serde_json::to_string(&fresh).expect("encode");

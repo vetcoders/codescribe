@@ -12,9 +12,10 @@ use codescribe_core::pipeline::highlight::{
     OverlayHighlight, OverlayHighlightKind, overlay_highlights_enabled as highlights_lane_enabled,
 };
 use codescribe_core::quality::overlay_quality::{
-    CustomLexiconEntry, DictionaryTeachResult, OverlayCorrectionCommit, QualityRecord,
-    VoiceLabSaveOutcome, commit_overlay_correction_with_provenance, custom_lexicon_entries,
-    finalize_voice_lab_correction, recent_quality_records, teach_dictionary_from_store, teach_span,
+    CustomLexiconEntry, DictionaryTeachResult, OverlayCorrectionCommit, OverlayCorrectionInput,
+    QualityRecord, SttConfidence, VoiceLabSaveOutcome, commit_overlay_correction_with_provenance,
+    custom_lexicon_entries, finalize_voice_lab_correction, recent_quality_records,
+    teach_dictionary_from_store, teach_span,
 };
 
 use crate::CsError;
@@ -173,14 +174,11 @@ pub struct CsTokenConfidence {
 /// stored alongside the text so later analysis can correlate corrections with how
 /// unsure the engine was.
 #[uniffi::export]
-// allow(too_many_arguments): WHY — this is the UniFFI ABI the Swift overlay
-// calls; the nine parameters are the nine columns of one quality receipt, and
-// collapsing them means exporting a new `uniffi::Record` and changing the
-// generated Swift signature at every overlay call site. WHEN — re-added
-// 2026-09-08 by the vc-prune Wave 5 silencer strip after clippy fired `too many
-// arguments (9/7)`; the lint is authentic, the fix is simply not a Rust-only
-// cut. WHERE — must land together with the `OverlayCorrectionInput` cut in
-// `core/quality/overlay_quality.rs` and the Swift callers under `macos/`.
+// allow(too_many_arguments): WHY — Swift overlay calls this flat nine-argument
+// UniFFI export. A generated record would change that Swift signature.
+// WHEN — kept 2026-09-29. The Rust writer now takes `OverlayCorrectionInput`;
+// this export is the remaining flat boundary. WHERE — `macos/` callers are
+// outside this cut, so the export stays positional.
 #[allow(clippy::too_many_arguments)]
 pub fn commit_overlay_quality_record(
     raw_text: String,
@@ -195,19 +193,21 @@ pub fn commit_overlay_quality_record(
 ) -> Result<CsQualityCommitResult, CsError> {
     // Delegate to core. Model/mode are best-effort for MVP (overlay always).
     // action carried for meta (over-correct for P2-03: "captureQualityIfEdited gubi action").
-    commit_overlay_correction_with_provenance(
-        &raw_text,
-        &delivered_text,
-        &edited_text,
-        "overlay",
-        None,
-        Some(&action),
-        Some(&formatting_level),
-        edit_provenance.as_deref(),
-        avg_logprob,
-        speech_pct,
-        confidence_flags,
-    )
+    commit_overlay_correction_with_provenance(OverlayCorrectionInput {
+        raw_text: &raw_text,
+        delivered_text: &delivered_text,
+        edited_text: &edited_text,
+        mode: "overlay",
+        model: None,
+        action: Some(&action),
+        formatting_level: Some(&formatting_level),
+        edit_provenance: edit_provenance.as_deref(),
+        confidence: SttConfidence {
+            avg_logprob,
+            speech_pct,
+            flags: confidence_flags,
+        },
+    })
     .map(Into::into)
     .map_err(|e| CsError::Quality {
         msg: format!("quality commit failed: {}", e),

@@ -6,6 +6,7 @@ import json
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -125,6 +126,24 @@ def exact_payload(*rows: dict[str, object]) -> dict[str, object]:
     return {"occurrences": list(rows)}
 
 
+def mapping(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise AssertionError(f"expected a mapping, got {type(value).__name__}")
+    return value
+
+
+def sequence(value: object) -> list[object]:
+    if not isinstance(value, list):
+        raise AssertionError(f"expected a list, got {type(value).__name__}")
+    return value
+
+
+def as_int(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise AssertionError(f"expected an integer, got {type(value).__name__}")
+    return value
+
+
 def literal_payload(
     literal: str, *rows: dict[str, object], indexed_files: int = 1
 ) -> dict[str, object]:
@@ -198,6 +217,7 @@ class StubVerifier:
         self.literal_responses = literal_responses or {}
         self.bodies = bodies or {}
         self.occurrence_responses = occurrence_responses or {}
+        self.occurrence_override: Callable[[str], dict[str, object]] | None = None
         self.command_inventory = [
             ["loct", "context", "--json"],
             ["loct", "occurrences", "quality_gate", "--json"],
@@ -218,13 +238,15 @@ class StubVerifier:
         }
 
     def occurrences(self, _symbol: str) -> dict[str, object]:
+        if self.occurrence_override is not None:
+            return self.occurrence_override(_symbol)
         if _symbol in self.occurrence_responses:
             return self.occurrence_responses[_symbol]
         body_rows = [
-            row
+            mapping(row)
             for (symbol, _file), payload in self.bodies.items()
             if symbol == _symbol
-            for row in payload.get("bodies", [])  # type: ignore[union-attr]
+            for row in sequence(payload.get("bodies", []))
         ]
         if body_rows:
             return exact_payload(
@@ -232,7 +254,7 @@ class StubVerifier:
                     occurrence(
                         _symbol,
                         file=str(row["file"]),
-                        line=int(row["start_line"]),
+                        line=as_int(row["start_line"]),
                         match_role="definition",
                     )
                     for row in body_rows
@@ -426,10 +448,11 @@ class SubstringResidueTests(unittest.TestCase):
         for value in (True, None):
             with self.subTest(value=value):
                 payload = regex_payload()
+                matches = mapping(payload["matches"])
                 if value is None:
-                    del payload["matches"]["truncated"]  # type: ignore[index]
+                    del matches["truncated"]
                 else:
-                    payload["matches"]["truncated"] = value  # type: ignore[index]
+                    matches["truncated"] = value
                 with self.assertRaises(RuntimeError):
                     VERIFIER.residue_occurrences(
                         payload, exact_payload(), "quality_gate"
@@ -437,7 +460,7 @@ class SubstringResidueTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as raw_repo:
             truncated = regex_payload()
-            truncated["matches"]["truncated"] = True  # type: ignore[index]
+            mapping(truncated["matches"])["truncated"] = True
             with self.assertRaises(RuntimeError):
                 VERIFIER.verify_stage(
                     StubVerifier(Path(raw_repo), regex_response=truncated),
@@ -452,10 +475,11 @@ class SubstringResidueTests(unittest.TestCase):
         for total in (0, True, -1, None):
             with self.subTest(total=total):
                 payload = regex_payload(row)
+                matches = mapping(payload["matches"])
                 if total is None:
-                    del payload["matches"]["total"]  # type: ignore[index]
+                    del matches["total"]
                 else:
-                    payload["matches"]["total"] = total  # type: ignore[index]
+                    matches["total"] = total
                 with self.assertRaises(RuntimeError):
                     VERIFIER.residue_occurrences(
                         payload, exact_payload(), "quality_gate"
@@ -465,10 +489,11 @@ class SubstringResidueTests(unittest.TestCase):
         for offset in (1, True, None):
             with self.subTest(offset=offset):
                 payload = regex_payload()
+                matches = mapping(payload["matches"])
                 if offset is None:
-                    del payload["matches"]["offset"]  # type: ignore[index]
+                    del matches["offset"]
                 else:
-                    payload["matches"]["offset"] = offset  # type: ignore[index]
+                    matches["offset"] = offset
                 with self.assertRaises(RuntimeError):
                     VERIFIER.residue_occurrences(
                         payload, exact_payload(), "quality_gate"
@@ -478,11 +503,11 @@ class SubstringResidueTests(unittest.TestCase):
         for value in (False, None):
             with self.subTest(value=value):
                 payload = regex_payload()
-                universe = payload["matches"]["universe"]  # type: ignore[index]
+                universe = mapping(mapping(payload["matches"])["universe"])
                 if value is None:
-                    del universe["scan_complete"]  # type: ignore[index]
+                    del universe["scan_complete"]
                 else:
-                    universe["scan_complete"] = value  # type: ignore[index]
+                    universe["scan_complete"] = value
                 with self.assertRaises(RuntimeError):
                     VERIFIER.residue_occurrences(
                         payload, exact_payload(), "quality_gate"
@@ -498,11 +523,11 @@ class SubstringResidueTests(unittest.TestCase):
             for value in (False, None):
                 with self.subTest(key=key, value=value):
                     payload = regex_payload()
-                    trust = payload["regex_trust"]
+                    trust = mapping(payload["regex_trust"])
                     if value is None:
-                        del trust[key]  # type: ignore[index]
+                        del trust[key]
                     else:
-                        trust[key] = value  # type: ignore[index]
+                        trust[key] = value
                     with self.assertRaises(RuntimeError):
                         VERIFIER.residue_occurrences(
                             payload, exact_payload(), "quality_gate"
@@ -512,14 +537,14 @@ class SubstringResidueTests(unittest.TestCase):
         malformed = regex_payload()
         del malformed["matches"]
         missing_occurrences = regex_payload()
-        del missing_occurrences["matches"]["occurrences"]  # type: ignore[index]
+        del mapping(missing_occurrences["matches"])["occurrences"]
         non_list_occurrences = regex_payload()
-        non_list_occurrences["matches"]["occurrences"] = {}  # type: ignore[index]
+        mapping(non_list_occurrences["matches"])["occurrences"] = {}
         non_object_occurrence = regex_payload()
-        non_object_occurrence["matches"]["occurrences"] = ["row"]  # type: ignore[index]
+        mapping(non_object_occurrence["matches"])["occurrences"] = ["row"]
         for payload in (
             malformed,
-            {"matches": []},
+            mapping({"matches": []}),
             missing_occurrences,
             non_list_occurrences,
             non_object_occurrence,
@@ -640,7 +665,7 @@ class CorridorProofTests(unittest.TestCase):
     def ordering_contract(self) -> list[dict[str, object]]:
         contract = copy.deepcopy(self.contract())
         corridor = contract[0]
-        corridor["required_invocations"].append(  # type: ignore[union-attr]
+        sequence(corridor["required_invocations"]).append(
             {
                 "callee": "publish_event",
                 "callee_file": "app/presentation/transcript_bus.rs",
@@ -900,7 +925,7 @@ class CorridorProofTests(unittest.TestCase):
             "  Self::project_serial(serial);\n"
             "}\n"
         )
-        verifier.occurrences = lambda _symbol: exact_payload(  # type: ignore[method-assign]
+        verifier.occurrence_override = lambda _symbol: exact_payload(
             occurrence(
                 "publish_revision",
                 file="app/presentation/transcript_bus.rs",
@@ -1198,41 +1223,45 @@ class CorridorProofTests(unittest.TestCase):
             unreachable_schema["items"]["required"], ["required_code", "reason"]
         )
 
-    def test_c18_typed_integer_false_condition_is_red(self) -> None:
-        verifier = self.verifier_for(
+    def _gated_revision(self, condition: str) -> str:
+        return (
             "fn publish_revision() {\n"
-            "  if 1u8 == 2u8 {\n"
+            f"  if {condition} {{\n"
             "    let serial = ledger.serial_of(&entry.occurrence);\n"
             "    Self::project_serial(serial);\n"
             "  }\n"
             "}\n"
         )
 
-        observed, failures = VERIFIER.verify_code_corridors(verifier, self.contract())
-
-        unreachable = observed["projection"]["hops"][0][
-            "unreachable_required_code"
-        ]
-        self.assertEqual(len(unreachable), 2)
-        self.assertTrue(any("unreachable required code" in failure for failure in failures))
-
-    def test_c19_false_arithmetic_condition_is_red(self) -> None:
-        verifier = self.verifier_for(
-            "fn publish_revision() {\n"
-            "  if 1 + 0 == 2 {\n"
-            "    let serial = ledger.serial_of(&entry.occurrence);\n"
-            "    Self::project_serial(serial);\n"
-            "  }\n"
-            "}\n"
+    def test_false_constant_conditions_mark_required_hops_unreachable(self) -> None:
+        cases = (
+            ("c18_typed_integer_false_condition_is_red", "1u8 == 2u8"),
+            ("c19_false_arithmetic_condition_is_red", "1 + 0 == 2"),
+            (
+                "c22_false_negative_remainder_condition_is_red",
+                "-5i32 % 3i32 == 1i32",
+            ),
+            (
+                "c24_false_negative_division_condition_is_red",
+                "-5i32 / 3i32 == -2i32",
+            ),
         )
-
-        observed, failures = VERIFIER.verify_code_corridors(verifier, self.contract())
-
-        unreachable = observed["projection"]["hops"][0][
-            "unreachable_required_code"
-        ]
-        self.assertEqual(len(unreachable), 2)
-        self.assertTrue(any("unreachable required code" in failure for failure in failures))
+        for name, condition in cases:
+            with self.subTest(name=name, condition=condition):
+                observed, failures = VERIFIER.verify_code_corridors(
+                    self.verifier_for(self._gated_revision(condition)),
+                    self.contract(),
+                )
+                unreachable = observed["projection"]["hops"][0][
+                    "unreachable_required_code"
+                ]
+                self.assertEqual(len(unreachable), 2)
+                self.assertTrue(
+                    any(
+                        "unreachable required code" in failure
+                        for failure in failures
+                    )
+                )
 
     def test_c20_return_inside_braceless_closure_does_not_kill_function(self) -> None:
         verifier = self.verifier_for(
@@ -1250,79 +1279,28 @@ class CorridorProofTests(unittest.TestCase):
             observed["projection"]["hops"][0]["unreachable_required_code"], []
         )
 
-    def test_c21_true_negative_remainder_condition_preserves_reachable_hop(
-        self,
-    ) -> None:
-        verifier = self.verifier_for(
-            "fn publish_revision() {\n"
-            "  if -5i32 % 3i32 == -2i32 {\n"
-            "    let serial = ledger.serial_of(&entry.occurrence);\n"
-            "    Self::project_serial(serial);\n"
-            "  }\n"
-            "}\n"
+    def test_true_constant_conditions_keep_required_hops_reachable(self) -> None:
+        cases = (
+            (
+                "c21_true_negative_remainder_condition_preserves_reachable_hop",
+                "-5i32 % 3i32 == -2i32",
+            ),
+            (
+                "c23_true_negative_division_condition_preserves_reachable_hop",
+                "-5i32 / 3i32 == -1i32",
+            ),
         )
-
-        observed, failures = VERIFIER.verify_code_corridors(verifier, self.contract())
-
-        self.assertEqual(failures, [])
-        self.assertEqual(
-            observed["projection"]["hops"][0]["unreachable_required_code"], []
-        )
-
-    def test_c22_false_negative_remainder_condition_is_red(self) -> None:
-        verifier = self.verifier_for(
-            "fn publish_revision() {\n"
-            "  if -5i32 % 3i32 == 1i32 {\n"
-            "    let serial = ledger.serial_of(&entry.occurrence);\n"
-            "    Self::project_serial(serial);\n"
-            "  }\n"
-            "}\n"
-        )
-
-        observed, failures = VERIFIER.verify_code_corridors(verifier, self.contract())
-
-        unreachable = observed["projection"]["hops"][0][
-            "unreachable_required_code"
-        ]
-        self.assertEqual(len(unreachable), 2)
-        self.assertTrue(any("unreachable required code" in failure for failure in failures))
-
-    def test_c23_true_negative_division_condition_preserves_reachable_hop(
-        self,
-    ) -> None:
-        verifier = self.verifier_for(
-            "fn publish_revision() {\n"
-            "  if -5i32 / 3i32 == -1i32 {\n"
-            "    let serial = ledger.serial_of(&entry.occurrence);\n"
-            "    Self::project_serial(serial);\n"
-            "  }\n"
-            "}\n"
-        )
-
-        observed, failures = VERIFIER.verify_code_corridors(verifier, self.contract())
-
-        self.assertEqual(failures, [])
-        self.assertEqual(
-            observed["projection"]["hops"][0]["unreachable_required_code"], []
-        )
-
-    def test_c24_false_negative_division_condition_is_red(self) -> None:
-        verifier = self.verifier_for(
-            "fn publish_revision() {\n"
-            "  if -5i32 / 3i32 == -2i32 {\n"
-            "    let serial = ledger.serial_of(&entry.occurrence);\n"
-            "    Self::project_serial(serial);\n"
-            "  }\n"
-            "}\n"
-        )
-
-        observed, failures = VERIFIER.verify_code_corridors(verifier, self.contract())
-
-        unreachable = observed["projection"]["hops"][0][
-            "unreachable_required_code"
-        ]
-        self.assertEqual(len(unreachable), 2)
-        self.assertTrue(any("unreachable required code" in failure for failure in failures))
+        for name, condition in cases:
+            with self.subTest(name=name, condition=condition):
+                observed, failures = VERIFIER.verify_code_corridors(
+                    self.verifier_for(self._gated_revision(condition)),
+                    self.contract(),
+                )
+                self.assertEqual(failures, [])
+                self.assertEqual(
+                    observed["projection"]["hops"][0]["unreachable_required_code"],
+                    [],
+                )
 
     def test_c25_integer_division_and_remainder_follow_rust_sign_rules(self) -> None:
         cases = {
@@ -1420,7 +1398,7 @@ class CorridorProofTests(unittest.TestCase):
 
     def test_c30_malformed_ordering_entry_is_schema_red(self) -> None:
         contract = self.ordering_contract()
-        contract[0]["ordering"] = [  # type: ignore[index]
+        mapping(contract[0])["ordering"] = [
             {
                 "caller": "publish_revision",
                 "caller_file": "app/presentation/transcript_bus.rs",
@@ -1672,7 +1650,8 @@ class CorridorProofTests(unittest.TestCase):
 
     def test_c37_name_only_lock_barrier_is_schema_red(self) -> None:
         contract = self.ordering_contract()
-        contract[0]["ordering"][0]["barrier"] = {  # type: ignore[index]
+        ordering = sequence(mapping(contract[0])["ordering"])
+        mapping(ordering[0])["barrier"] = {
             "callee": "lock",
             "selection": "last_before_after",
         }
