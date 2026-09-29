@@ -179,9 +179,8 @@ struct ComposerTextView: NSViewRepresentable {
     textView.string = text
     textView.placeholder = "Type a message…"
     textView.font = ComposerTextLayout.composerFont(size: 13.5 * textScale)
-    textView.textColor = NSColor(srgbRed: 0xE9 / 255, green: 0xE7 / 255, blue: 0xE0 / 255, alpha: 1)
-    textView.insertionPointColor = NSColor(
-      srgbRed: 0xD9 / 255, green: 0x77 / 255, blue: 0x57 / 255, alpha: 1)
+    textView.textColor = AgentChrome.composerTextColor()
+    textView.insertionPointColor = AgentChrome.composerCaretColor()
     textView.setAccessibilityIdentifier(ComposerAccessibility.textViewIdentifier)
     textView.setAccessibilityLabel("Message")
     textView.onKeyDown = { [weak coordinator = context.coordinator, weak textView] event in
@@ -216,6 +215,8 @@ struct ComposerTextView: NSViewRepresentable {
       let length = min(selection.length, utf16Count - location)
       textView.setSelectedRange(NSRange(location: location, length: length))
     }
+    textView.textColor = AgentChrome.composerTextColor()
+    textView.insertionPointColor = AgentChrome.composerCaretColor()
     textView.needsDisplay = true
     context.coordinator.refreshLayout(textView, in: scrollView)
 
@@ -370,12 +371,7 @@ private final class ComposerNativeTextView: NSTextView {
     guard string.isEmpty, !placeholder.isEmpty, let font else { return }
     let attributes: [NSAttributedString.Key: Any] = [
       .font: font,
-      .foregroundColor: NSColor(
-        srgbRed: 0x6F / 255,
-        green: 0x72 / 255,
-        blue: 0x68 / 255,
-        alpha: 1
-      ),
+      .foregroundColor: AgentChrome.composerPlaceholderColor(),
     ]
     let origin = NSPoint(
       x: textContainerInset.width + (textContainer?.lineFragmentPadding ?? 0),

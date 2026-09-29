@@ -36,7 +36,7 @@ enum CodeHighlighter {
   /// - Returns: the highlighted `AttributedString`, or `nil` on failure so the
   ///   caller keeps its plain-mono placeholder (never a crash, never empty).
   static func attributed(_ code: String, language: String?, dark: Bool) async -> AttributedString? {
-    let colors = HighlightColors.custom(css: dark ? CodeTheme.darkCSS : CodeTheme.lightCSS)
+    let colors = HighlightColors.custom(css: AgentChrome.codeCSS(dark: dark))
     do {
       if let rawHint = language?.trimmingCharacters(in: .whitespaces), !rawHint.isEmpty {
         let hint = rawHint.lowercased()
@@ -54,8 +54,8 @@ enum CodeHighlighter {
 /// so the code palette tracks the design system. No `background` rules — the code
 /// block keeps its own `surfaceRaised` fill.
 enum CodeTheme {
-  // Dark surface (the agent chat is pinned to .preferredColorScheme(.dark), so
-  // this is the variant in use today).
+  // Dark Aqua. The agent window follows the system appearance, so this CSS
+  // is selected only when `colorScheme == .dark`.
   //   base            → textBodyAlt  #DFE2DB
   //   keyword/type    → terracotta   #D97757  (the one brand accent)
   //   string/addition → oliveLight   #9DB178
@@ -76,8 +76,8 @@ enum CodeTheme {
     .hljs-deletion,.hljs-link{color:#D97757}
     """
 
-  // Light surface: a forward-looking variant (dormant while the chat is
-  // dark-pinned). Reuses darker CSColor tokens so tokens read on a light fill —
+  // Light Aqua. Selected when the window is not dark. Reuses darker CSColor
+  // tokens so tokens read on a light fill —
   // olive #5F6B3E, terracottaDeep #C98A6E, eyebrowOlive #7F8C5E, textFaintAlt
   // #5D6058, textMutedAlt #82857F, ink #090A0D — rather than inventing a new
   // palette the design system does not carry.

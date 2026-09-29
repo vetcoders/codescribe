@@ -1,15 +1,16 @@
 import AppKit
 import SwiftUI
 
-// Screen-local helpers for Agent Chat. Off-token shades from the mock that the
-// shared CSColor palette does not carry verbatim live here (and ONLY here).
+// Screen-local chat ink. Names, tool detail, and the thinking label track
+// the system appearance through AgentChrome. An active thread subtitle keeps
+// the system accent.
 
 enum ChatPalette {
-  static let nameInactive = Color(hex: 0xC7CABF)  // inactive thread name / segmented body
-  static let nameActive = Color(hex: 0xF0EEE7)  // active thread name / titles / you-bubble text
+  static let nameInactive = AgentChrome.secondary
+  static let nameActive = AgentChrome.primary
   static var activeThreadSub: Color { CSColor.chromeAccent.opacity(0.78) }
-  static let toolBody = Color(hex: 0x9AA093)  // tool-activity detail text
-  static let thinking = Color(hex: 0x8A8D87)  // "thinking…" label
+  static let toolBody = AgentChrome.secondary
+  static let thinking = AgentChrome.tertiary
 }
 
 enum ComposerMicVisualState: CaseIterable, Equatable {
@@ -52,7 +53,7 @@ struct RippleMic: View {
         icon: state.icon,
         size: ComposerControlMetrics.glyphSize,
         weight: isActive ? .semibold : .regular,
-        color: isActive ? CSColor.terracottaLight : CSColor.textFaint
+        color: isActive ? AgentChrome.brandLabel : AgentChrome.tertiary
       )
     }
     .frame(
@@ -102,7 +103,7 @@ struct BlinkCaret: View {
 struct MarkdownText: View {
   let raw: String
   var size: CGFloat = 14
-  var bodyColor: Color = CSColor.textBodyAlt
+  var bodyColor: Color = AgentChrome.primary
   var showsCaret: Bool = false
 
   /// Per-surface text scale (chat window ⌘+/-/0). A single multiplier over the
@@ -141,7 +142,7 @@ struct MarkdownText: View {
     case .heading(let level, let text):
       let hSize = headingSize(level)
       inlineText(
-        text, baseFont: CSFont.ui(hSize, .bold), baseColor: CSColor.textHigh,
+        text, baseFont: CSFont.ui(hSize, .bold), baseColor: AgentChrome.primary,
         fontSize: hSize, isLast: isLast
       )
       .padding(.top, level <= 2 ? 3 : 1)
@@ -163,7 +164,7 @@ struct MarkdownText: View {
       codeBlock(language, content, isLast: isLast)
     case .thematicBreak:
       Rectangle()
-        .fill(CSColor.hairline(0.12))
+        .fill(AgentChrome.separator(0.12))
         .frame(height: 1)
         .frame(maxWidth: .infinity)
         .padding(.vertical, 4)
@@ -227,7 +228,7 @@ struct MarkdownText: View {
     HStack(alignment: .firstTextBaseline, spacing: 7) {
       Text(marker)
         .font(CSFont.mono(deep ? s - 4 : s - 2))
-        .foregroundStyle(deep ? CSColor.textFaint : CSColor.textMutedAlt)
+        .foregroundStyle(deep ? AgentChrome.tertiary : AgentChrome.secondary)
         .frame(minWidth: 14, alignment: .trailing)
       inlineText(
         text, baseFont: CSFont.ui(s), baseColor: bodyColor,
@@ -246,12 +247,12 @@ struct MarkdownText: View {
         icon: done ? .checkboxOn : .checkboxOff,
         size: s - 1,
         weight: done ? .semibold : .regular,
-        color: done ? CSColor.oliveLight : CSColor.textFaint
+        color: done ? CSColor.oliveLight : AgentChrome.tertiary
       )
       .frame(minWidth: 14, alignment: .trailing)
       inlineText(
         text, baseFont: CSFont.ui(s),
-        baseColor: done ? CSColor.textMutedAlt : bodyColor,
+        baseColor: done ? AgentChrome.secondary : bodyColor,
         fontSize: s, isLast: isLast)
     }
     .padding(.leading, CGFloat(min(indent, 4)) * 16)
@@ -333,7 +334,7 @@ struct MarkdownText: View {
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+        .strokeBorder(AgentChrome.separator(0.08), lineWidth: 1)
     )
     .fixedSize(horizontal: false, vertical: true)
   }
@@ -364,7 +365,7 @@ struct MarkdownText: View {
   private func tableCell(_ text: String, isHeader: Bool, isLastRow: Bool) -> some View {
     let cellSize = isHeader ? s - 2 : s - 1
     let font = isHeader ? CSFont.mono(cellSize, .semibold) : CSFont.ui(cellSize)
-    let color = isHeader ? CSColor.textHigh : bodyColor
+    let color = isHeader ? AgentChrome.primary : bodyColor
     let attr = Self.inlineAttributed(
       text, fontSize: cellSize,
       baseFont: font, baseColor: color)
@@ -375,11 +376,11 @@ struct MarkdownText: View {
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
       .padding(.horizontal, 10)
       .padding(.vertical, 6)
-      .background(isHeader ? CSColor.surfaceRaised(0.05) : Color.clear)
+      .background(isHeader ? AgentChrome.lift(0.05) : Color.clear)
       .overlay(alignment: .bottom) {
         if !isLastRow {
           Rectangle()
-            .fill(CSColor.hairline(isHeader ? 0.12 : 0.06))
+            .fill(AgentChrome.separator(isHeader ? 0.12 : 0.06))
             .frame(height: 1)
         }
       }
@@ -444,7 +445,7 @@ struct MarkdownText: View {
     for range in codeRanges {
       attr[range].font = CSFont.mono(fontSize - 1)
       attr[range].foregroundColor = CSColor.oliveLight
-      attr[range].backgroundColor = CSColor.surfaceRaised(0.10)
+      attr[range].backgroundColor = AgentChrome.lift(0.10)
     }
     // Links use the operator's system accent and a subtle underline.
     for range in linkRanges {
@@ -537,7 +538,7 @@ enum CalloutKind {
 
   var tint: Color {
     switch self {
-    case .note: return CSColor.textMuted  // neutral (palette carries no blue)
+    case .note: return AgentChrome.secondary  // neutral (palette carries no blue)
     case .tip: return CSColor.oliveLight
     case .important: return CSColor.terracottaDeep
     case .warning: return CSColor.amber
@@ -607,18 +608,18 @@ private struct CodeBlockView: View {
       .font(CSFont.mono(size - 1))
       // Base colour for runs the theme leaves unstyled; the highlighter's
       // per-token foreground colours win over this modifier.
-      .foregroundStyle(CSColor.textBodyAlt)
+      .foregroundStyle(AgentChrome.primary)
       .lineSpacing(4)
       .textSelection(.enabled)
       .fixedSize(horizontal: false, vertical: true)
       .frame(maxWidth: .infinity, alignment: .leading)
       .padding(.horizontal, 11)
       .padding(.vertical, 9)
-      .background(CSColor.surfaceRaised(0.05))
+      .background(AgentChrome.codeWell)
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-          .strokeBorder(CSColor.hairline(0.06), lineWidth: 1)
+          .strokeBorder(AgentChrome.separator(0.06), lineWidth: 1)
       )
       .overlay(alignment: .topTrailing) {
         if hovering || copied {
@@ -675,14 +676,14 @@ private struct CodeBlockView: View {
         Text(copied ? "copied" : "copy")
           .font(CSFont.mono(10, .medium))
       }
-      .foregroundStyle(copied ? CSColor.oliveLight : CSColor.textMuted)
+      .foregroundStyle(copied ? CSColor.oliveLight : AgentChrome.secondary)
       .padding(.horizontal, 7)
       .padding(.vertical, 3)
-      .background(CSColor.glassUnder.opacity(0.7))
+      .background(AgentChrome.lift(0.08))
       .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .strokeBorder(CSColor.hairline(0.10), lineWidth: 1)
+          .strokeBorder(AgentChrome.separator(0.10), lineWidth: 1)
       )
     }
     .csFocusRing()

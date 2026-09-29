@@ -643,8 +643,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Wrap in TextScaleRoot so ⌘+/-/0 on the chat window scale the message
     // bodies + composer via `\.csTextScale`, independently of the overlay.
     let root = TextScaleRoot(controller: model.chatTextScale) {
-      AgentChatView(store: model.chat, maxPermissions: maxPermissionModel)
-        .preferredColorScheme(.dark)
+      AgentChrome.host(
+        AgentChatView(store: model.chat, maxPermissions: maxPermissionModel)
+      )
     }
     let hosting = NSHostingController(rootView: root)
     let window = NSWindow(contentViewController: hosting)

@@ -96,7 +96,7 @@ struct OversizedMessageBody<Head: View>: View {
         )
         .frame(maxWidth: .infinity)
         .frame(height: 380)
-        .background(CSColor.surfaceRaised(0.04))
+        .background(AgentChrome.lift(0.04))
         .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
       } else {
         head(OversizedBubblePolicy.head(of: fullText))
@@ -114,7 +114,7 @@ struct OversizedMessageBody<Head: View>: View {
           icon: showFull ? .chevronDown : .chevronRight,
           size: 8,
           weight: .semibold,
-          color: CSColor.textFaintAlt
+          color: AgentChrome.tertiary
         )
         Text(
           showFull
@@ -122,7 +122,7 @@ struct OversizedMessageBody<Head: View>: View {
             : "Show full text · \(OversizedBubblePolicy.byteSummary(fullText))"
         )
         .font(CSFont.mono(10.5, .medium))
-        .foregroundStyle(CSColor.textMuted)
+        .foregroundStyle(AgentChrome.secondary)
       }
       .contentShape(Rectangle())
     }
@@ -144,7 +144,7 @@ struct StreamWindowNote: View {
       "live view shows the newest output · full text kept (\(OversizedBubblePolicy.byteSummary(fullText)))"
     )
     .font(CSFont.mono(9.5, .medium))
-    .foregroundStyle(CSColor.textFaintAlt)
+    .foregroundStyle(AgentChrome.tertiary)
   }
 }
 
@@ -191,7 +191,7 @@ struct FullTextView: NSViewRepresentable {
 
   private func apply(to textView: NSTextView) {
     textView.font = font
-    textView.textColor = NSColor(CSColor.textBodyAlt)
+    textView.textColor = AgentChrome.transcriptTextColor()
     textView.string = text
   }
 }
