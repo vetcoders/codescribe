@@ -40,8 +40,7 @@ struct EmbedderSlot {
 /// The one process-wide engine slot.
 static SLOT: OnceLock<Mutex<EmbedderSlot>> = OnceLock::new();
 
-/// Config used to (re)load the engine. First value wins (default unless
-/// `init_with_config` set one before the first load).
+/// Default config captured on first load and reused for every reload.
 static CONFIG: OnceLock<EmbedderConfig> = OnceLock::new();
 
 /// Guard so the idle reaper thread is spawned at most once.
@@ -183,43 +182,6 @@ fn with_embedder<R>(f: impl FnOnce(&mut EmbedderEngine) -> Result<R>) -> Result<
 
 /// Initialize the embedder with default config.
 pub fn init() -> Result<()> {
-    with_embedder(|_| Ok(()))
-}
-
-/// Load the engine off the caller's thread, ignoring the outcome.
-///
-/// Historical note: the semantic guard — the only consumer, deleted in
-/// `ac6d399b3` — ran *after* AI formatting returned, so a cold engine put its
-/// whole load on the stop path, in series behind the model call. There is no
-/// production caller today. Measured 2026-08-12: `semantic_guard took_ms=1127`,
-/// of which ~1.0s was `Embedder initialized from embedded model`, against 0.13s
-/// of actual comparison.
-///
-/// Call this when a formatting request is dispatched, not at startup. The LLM
-/// round-trip is seconds of dead time the load fits inside entirely, and by
-/// scoping the warm to lanes that are about to need the engine anyway, this
-/// buys latency without lengthening how long 471 MB of weights sit resident —
-/// the idle-unload budget stays exactly as configured.
-///
-/// Idempotent and non-blocking: concurrent callers serialize on the same slot
-/// mutex the guard itself takes, and a failed load is left for the guard to
-/// report through its normal fail-open path.
-pub fn warm() {
-    std::thread::Builder::new()
-        .name("embedder-warm".into())
-        .spawn(|| {
-            if let Err(error) = init() {
-                warn!("Embedder warm-up failed (semantic guard will retry): {error}");
-            }
-        })
-        .ok();
-}
-
-/// Initialize with custom configuration.
-///
-/// The config is captured for (re)loads; the first config wins. Idempotent.
-pub fn init_with_config(config: EmbedderConfig) -> Result<()> {
-    let _ = CONFIG.set(config);
     with_embedder(|_| Ok(()))
 }
 

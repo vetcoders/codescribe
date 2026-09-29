@@ -8,10 +8,8 @@ use super::types::{HotkeyAction, HotkeyInput, HotkeyType, State};
 /// generic hold delay — prevents accidental Emil sessions on short taps.
 const ASSISTIVE_HOLD_START_DELAY_FLOOR_MS: u64 = 400;
 
-/// How long a toggle stop may wait for adjudication (live + final pass) to settle.
-pub(super) const TOGGLE_STOP_ADJUDICATE_TIMEOUT: Duration = Duration::from_secs(120);
-/// Stop-path timeout; currently the same budget as [`TOGGLE_STOP_ADJUDICATE_TIMEOUT`].
-pub(super) const STOP_TIMEOUT: Duration = TOGGLE_STOP_ADJUDICATE_TIMEOUT;
+/// How long a stop caller may wait for adjudication to settle.
+pub(super) const STOP_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Apply the assistive floor to a configured hold delay.
 ///

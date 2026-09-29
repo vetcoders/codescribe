@@ -526,6 +526,7 @@ struct PermissionStepView: View {
 
 struct ApiKeyStepView: View {
   @ObservedObject var model: OnboardingViewModel
+  @FocusState private var keyFocused: Bool
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
@@ -610,6 +611,7 @@ struct ApiKeyStepView: View {
       HStack(spacing: 8) {
         SecureField(isSet ? "Replace key…" : "Paste key…", text: $model.apiKeyDraft)
           .textFieldStyle(.plain)
+          .focused($keyFocused)
           .font(CSFont.mono(12))
           .foregroundStyle(CSColor.textBody)
           .padding(.horizontal, 11)
@@ -622,6 +624,9 @@ struct ApiKeyStepView: View {
             RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
               .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
           )
+          .overlay {
+            CSFocusOutline(isFocused: keyFocused, cornerRadius: CSRadius.input)
+          }
           .onSubmit { model.saveApiKey() }
         Button("Save key") { model.saveApiKey() }.modifier(SetupActionStyle(prominent: true))
       }

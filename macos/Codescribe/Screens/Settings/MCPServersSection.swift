@@ -303,6 +303,9 @@ private struct MCPAddServerForm: View {
   @State private var argsText: String = ""
   @State private var endpoint: String = ""
   @State private var token: String = ""
+  @FocusState private var focusedField: Field?
+
+  private enum Field { case name, endpoint, token, command, args }
 
   private var canAdd: Bool {
     !name.trimmingCharacters(in: .whitespaces).isEmpty
@@ -324,11 +327,12 @@ private struct MCPAddServerForm: View {
       }
       .pickerStyle(.segmented)
 
-      field(placeholder: "name (e.g. prview)", text: $name, mono: true)
+      field(placeholder: "name (e.g. prview)", text: $name, mono: true, focus: .name)
       if remote {
-        field(placeholder: "endpoint (https://…/mcp)", text: $endpoint, mono: true)
+        field(placeholder: "endpoint (https://…/mcp)", text: $endpoint, mono: true, focus: .endpoint)
         SecureField("bearer token (optional, saved in Keychain)", text: $token)
           .textFieldStyle(.plain)
+          .focused($focusedField, equals: .token)
           .font(CSFont.mono(12, .regular))
           .foregroundStyle(Color.primary)
           .padding(.horizontal, 11)
@@ -337,9 +341,12 @@ private struct MCPAddServerForm: View {
             RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
               .fill(Color.primary.opacity(0.06))
           )
+          .overlay {
+            CSFocusOutline(isFocused: focusedField == .token, cornerRadius: CSRadius.input)
+          }
       } else {
-        field(placeholder: "command (e.g. prview)", text: $command, mono: true)
-        field(placeholder: "args, space-separated (e.g. mcp)", text: $argsText, mono: true)
+        field(placeholder: "command (e.g. prview)", text: $command, mono: true, focus: .command)
+        field(placeholder: "args, space-separated (e.g. mcp)", text: $argsText, mono: true, focus: .args)
       }
 
       HStack {
@@ -375,9 +382,12 @@ private struct MCPAddServerForm: View {
     )
   }
 
-  private func field(placeholder: String, text: Binding<String>, mono: Bool) -> some View {
+  private func field(
+    placeholder: String, text: Binding<String>, mono: Bool, focus: Field
+  ) -> some View {
     TextField(placeholder, text: text)
       .textFieldStyle(.plain)
+      .focused($focusedField, equals: focus)
       .font(mono ? CSFont.mono(12, .regular) : CSFont.ui(12, .regular))
       .foregroundStyle(Color.primary)
       .padding(.horizontal, 11)
@@ -390,6 +400,9 @@ private struct MCPAddServerForm: View {
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
           .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
       )
+      .overlay {
+        CSFocusOutline(isFocused: focusedField == focus, cornerRadius: CSRadius.input)
+      }
       .onSubmit(submit)
   }
 
