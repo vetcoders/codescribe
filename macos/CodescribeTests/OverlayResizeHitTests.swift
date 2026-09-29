@@ -140,9 +140,12 @@ final class OverlayResizeHitTests: XCTestCase {
       )
     }
 
-    // The placement Menu occupies this measured 30.5 × 19 pt hit frame at the
-    // 470 pt test width. Its focus/key view must receive a click, not window drag.
-    let placementMenuPoint = NSPoint(x: root.bounds.maxX - 157.25, y: y)
+    // The placement Menu's measured non-drag hit span at the 470 pt test width
+    // is x = 335.75…359.75 (third control from the right, after the preview
+    // toggle and Stop). Annex A2 removed the Auto Paste chip, so the full
+    // header now fits at this width and the menu moved from maxX − 157.25.
+    // Its focus/key view must receive a click, not window drag.
+    let placementMenuPoint = NSPoint(x: root.bounds.maxX - 122.25, y: y)
     let placementMenuHit = try XCTUnwrap(root.hitTest(placementMenuPoint))
     XCTAssertTrue(
       hitChain(from: placementMenuHit).contains("NSHostingView"),

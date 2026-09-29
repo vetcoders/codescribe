@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 
 @testable import Codescribe
@@ -215,6 +216,126 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertTrue(status.contains("overlay-channel-delivery-"))
     XCTAssertFalse(status.contains("Divider("))
     XCTAssertFalse(status.contains("glassEffect("))
+    // The header shows one glyph, never the microphone: mic = recording only.
+    XCTAssertFalse(status.contains("antenna.radiowaves"))
+    XCTAssertFalse(status.contains("hasOpenChannel ? \"mic.fill\""))
+    // A click opens details and nothing else: it cannot light ␆.
+    XCTAssertTrue(status.contains("showsDetails.toggle()"))
+    XCTAssertEqual(status.components(separatedBy: "showsDetails.toggle()").count - 1, 1)
+  }
+
+  // MARK: Agent glyph (Annex A3/A4 — the state table is the Codex root's proposal)
+
+  func testAgentGlyphIsOneCharacterWithOneLabelPerState() {
+    let table: [(OverlayAgentGlyph, String, String)] = [
+      (.attached, "\u{2756}", "Agent attached"),
+      (.open, "\u{2756}", "Agent channel open"),
+      (.awaitingReceipt, "\u{28F8}", "Waiting for the agent to confirm receipt"),
+      (.acknowledged, "\u{2406}", "Agent confirmed receipt"),
+      (.unavailable, "\u{26A0}\u{FE0E}", "Agent channel status unavailable"),
+    ]
+    XCTAssertEqual(table.map(\.0), OverlayAgentGlyph.allCases, "every state is named once")
+    for (glyph, character, label) in table {
+      XCTAssertEqual(glyph.character, character)
+      XCTAssertEqual(glyph.character.count, 1, "\(glyph) spends exactly one character")
+      XCTAssertEqual(glyph.label, label)
+    }
+    XCTAssertEqual(Set(table.map(\.2)).count, table.count, "labels tell every state apart")
+    XCTAssertEqual(
+      OverlayAgentGlyph.unavailable.character.unicodeScalars.last, "\u{FE0E}",
+      "the warning sign is the monochrome text form, never the colour emoji")
+    XCTAssertEqual(OverlayAgentGlyph.allCases.filter(\.pulses), [.awaitingReceipt])
+  }
+
+  func testAgentGlyphResolvesWorstNewsFirstFromProjectionOnly() {
+    func channel(_ id: String, _ stage: OverlayChannelDelivery.Stage?, open: Bool = false)
+      -> OverlayChannelDelivery
+    {
+      OverlayChannelDelivery(
+        channel: id, agent: "Agent \(id)", deliveryID: stage == nil ? nil : "d\(id)",
+        stage: stage, isOpen: open)
+    }
+    XCTAssertNil(OverlayAgentGlyph.resolve(channels: [], unavailable: false), "no agent, no slot")
+    XCTAssertEqual(OverlayAgentGlyph.resolve(channels: [], unavailable: true), .unavailable)
+    XCTAssertEqual(OverlayAgentGlyph.resolve(channels: [channel("1", nil)], unavailable: false), .attached)
+    XCTAssertEqual(
+      OverlayAgentGlyph.resolve(channels: [channel("1", nil, open: true)], unavailable: false),
+      .open)
+    for stage in [OverlayChannelDelivery.Stage.sent, .queued] {
+      XCTAssertEqual(
+        OverlayAgentGlyph.resolve(channels: [channel("1", stage, open: true)], unavailable: false),
+        .awaitingReceipt)
+    }
+    XCTAssertEqual(
+      OverlayAgentGlyph.resolve(channels: [channel("1", .received, open: true)], unavailable: false),
+      .acknowledged)
+    XCTAssertEqual(
+      OverlayAgentGlyph.resolve(
+        channels: [channel("1", .received), channel("2", .sent)], unavailable: false),
+      .awaitingReceipt, "one unconfirmed delivery keeps the slot waiting")
+    XCTAssertEqual(
+      OverlayAgentGlyph.resolve(channels: [channel("1", .received)], unavailable: true),
+      .unavailable, "an unreadable status never shows a stale receipt")
+  }
+
+  /// ␆ comes from the agent's own `codescribe.agent-ack.v1` row for this
+  /// delivery, channel and agent — not from the durable marker, another
+  /// channel, re-reading over time, or an earlier take's receipt.
+  func testAcknowledgedGlyphLightsOnlyFromTheMatchingAgentAckRow() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    func glyph() async throws -> OverlayAgentGlyph? {
+      OverlayAgentGlyph.resolve(channels: try await reader.read(), unavailable: false)
+    }
+    var current = try await glyph()
+    XCTAssertEqual(current, .attached)
+    try fixture.append(fixture.open())
+    current = try await glyph()
+    XCTAssertEqual(current, .open)
+    try fixture.append(fixture.seal(1))
+    current = try await glyph()
+    XCTAssertEqual(current, .awaitingReceipt)
+    try fixture.lease(pending: [fixture.envelope(Fixture.firstID)])
+    try fixture.marker(Fixture.firstID)
+    for _ in 0..<3 {
+      current = try await glyph()
+      XCTAssertEqual(current, .awaitingReceipt, "marker and elapsed reads are not the agent's row")
+    }
+    try fixture.append(fixture.ack(Fixture.firstID, channel: "2"))
+    current = try await glyph()
+    XCTAssertEqual(current, .awaitingReceipt, "another channel cannot acknowledge this one")
+    try fixture.append(fixture.ack(Fixture.firstID))
+    current = try await glyph()
+    XCTAssertEqual(current, .acknowledged)
+    try fixture.append(fixture.seal(2))
+    current = try await glyph()
+    XCTAssertEqual(current, .awaitingReceipt, "new words must not inherit the old receipt")
+  }
+
+  func testAgentGlyphKeepsOneFixedSlotSoNeighboursNeverMove() {
+    let inputs: [(OverlayAgentGlyph, [OverlayChannelDelivery], Bool)] = [
+      (.attached, [.init(channel: "1", agent: "a", deliveryID: nil, stage: nil, isOpen: false)], false),
+      (.open, [.init(channel: "1", agent: "a", deliveryID: nil, stage: nil, isOpen: true)], false),
+      (.awaitingReceipt, [.init(channel: "1", agent: "a", deliveryID: "d", stage: .queued, isOpen: false)], false),
+      (.acknowledged, [.init(channel: "1", agent: "a", deliveryID: "d", stage: .received, isOpen: false)], false),
+      (.unavailable, [.init(channel: "1", agent: "a", deliveryID: nil, stage: nil, isOpen: false)], true),
+    ]
+    var sizes: [CGSize] = []
+    for (expected, channels, unavailable) in inputs {
+      for palette in [OverlayAppearancePalette.light, .dark] {
+        let view = OverlayChannelStatusView(
+          channels: channels, unavailable: unavailable, palette: palette, animates: false)
+        XCTAssertEqual(view.glyph, expected)
+        let host = NSHostingView(rootView: view)
+        host.layoutSubtreeIfNeeded()
+        sizes.append(host.fittingSize)
+      }
+    }
+    for size in sizes {
+      XCTAssertEqual(size.width, OverlayAgentGlyph.slotSize.width, accuracy: 0.5)
+      XCTAssertEqual(size.height, OverlayAgentGlyph.slotSize.height, accuracy: 0.5)
+    }
   }
 
   private struct Fixture {

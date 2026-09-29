@@ -47,7 +47,6 @@ protocol DictationEngine: AnyObject {
   func isModelLoaded() -> Bool
   func currentOverlayPolicy() -> OverlayPolicySnapshot?
   func cloudRetranscribeConfigured() -> Bool
-  func setAutoPasteEnabled(_ enabled: Bool)
   func overlayExpandedByDefault() -> Bool
   func setOverlayExpandedByDefault(_ enabled: Bool) -> Bool
   func overlayKeepVisibleBetweenTakes() -> Bool
@@ -88,8 +87,10 @@ extension DictationEngine {
   func setOverlayKeepVisibleBetweenTakes(_ enabled: Bool) -> Bool { false }
 }
 
+/// Paste mode is not part of it: Settings › Shortcuts and the tray cycle own
+/// `paste_mode`, and the overlay neither shows nor writes it (Founder direction
+/// as relayed in the Codex handoff, Annex A2, 2026-09-29).
 struct OverlayPolicySnapshot: Equatable {
-  let autoPasteEnabled: Bool
   let autoFormatLevel: FormattingPolicyOption
 }
 
@@ -354,11 +355,7 @@ final class OverlayState {
   /// Prompt-free policy snapshot from C02's persisted settings owner. These
   /// values are replaced only by a fresh engine read, never by optimistic UI.
   private(set) var cloudRetranscribeConfigured = false
-  private(set) var autoPasteEnabled = true
   private(set) var autoFormatLevel: FormattingPolicyOption = .correction
-  /// Assistive sessions never expose delivery controls. The controller owns
-  /// that authoritative session gate and updates this presentation fence.
-  private(set) var autoPasteControlAvailable = true
   /// Serving-engine label latched once per session. Rendering never performs
   /// settings I/O or a UniFFI read.
   private(set) var engineChip = "not yet served"
@@ -1257,20 +1254,6 @@ final class OverlayState {
     }
   }
 
-  /// Persist through C02's single config seam, then immediately replace local
-  /// state with a fresh disk-backed snapshot. A rejected write therefore snaps
-  /// back to durable truth instead of leaving an optimistic switch behind.
-  func setAutoPasteEnabled(_ enabled: Bool) {
-    guard autoPasteControlAvailable, let engine else { return }
-    engine.setAutoPasteEnabled(enabled)
-    refreshOverlayPolicyTruth()
-    restartAutoHideCountdown()
-  }
-
-  func setAutoPasteControlAvailable(_ available: Bool) {
-    autoPasteControlAvailable = available
-  }
-
   func close() {
     discardRevisionDraft()
     // P0-D: capture user correction on FINAL for quality loop + lexicon learning.
@@ -1297,7 +1280,6 @@ final class OverlayState {
   private func refreshOverlayPolicyTruth() {
     refreshRetranscriptionAvailability()
     guard let truth = engine?.currentOverlayPolicy() else { return }
-    autoPasteEnabled = truth.autoPasteEnabled
     autoFormatLevel = truth.autoFormatLevel
   }
 
@@ -1323,7 +1305,6 @@ final class OverlayState {
     indicatorMode = mode
     if mode == .assistive {
       agentSessionArmed = true
-      autoPasteControlAvailable = false
     }
   }
 
@@ -1578,13 +1559,11 @@ final class OverlayState {
     // failure for another.
     if recording, captureProvedLife {
       agentSessionArmed = indicatorMode == .assistive
-      autoPasteControlAvailable = !agentSessionArmed
       refreshOverlayPolicyTruth()
       onRecordingPreparing?()
       return
     }
     agentSessionArmed = indicatorMode == .assistive
-    autoPasteControlAvailable = !agentSessionArmed
     finalized = false
     isFinalPass = false
     warmingUp = true
@@ -2917,13 +2896,7 @@ final class ControllerDictationEngine: DictationEngine {
     guard let formatLevel = FormattingPolicyOption(rawValue: toggles.formattingLevel) else {
       return nil
     }
-    return OverlayPolicySnapshot(
-      autoPasteEnabled: toggles.autoPasteEnabled,
-      autoFormatLevel: formatLevel
-    )
-  }
-  func setAutoPasteEnabled(_ enabled: Bool) {
-    _ = try? config.setAutoPasteEnabled(enabled: enabled)
+    return OverlayPolicySnapshot(autoFormatLevel: formatLevel)
   }
   func overlayExpandedByDefault() -> Bool {
     config.overlayExpandedByDefault()

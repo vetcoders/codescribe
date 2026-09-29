@@ -868,41 +868,61 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertFalse(rail.contains("Text(phase"))
   }
 
-  func testAutoPasteToggleMirrorsStateAndFlipsIt() throws {
-    let engine = OverlayChromePolicyEngine()
+  /// Annex A2: Auto Paste leaves the overlay header. Paste mode itself stays
+  /// where it is — Settings › Shortcuts and the tray cycle own `paste_mode` —
+  /// and the overlay keeps no path that could write it.
+  func testHeaderHasNoAutoPasteControlAndOverlayCannotWritePasteMode() throws {
+    try withPanel(state: .previewListening()) { _, root in
+      let elements = accessibilityTree(root)
+      XCTAssertFalse(elements.isEmpty, "The rendered accessibility hierarchy must be observable")
+      XCTAssertFalse(elements.contains { $0.accessibilityIdentifier() == "overlay-auto-paste" })
+    }
+    let overlay = try overlaySource()
+    let header = try headerSource(overlay)
+    for gone in ["overlay-auto-paste", "autoPaste", "AutoPaste", "pasteMode"] {
+      XCTAssertFalse(overlay.contains(gone), "overlay view still carries \(gone)")
+    }
+    // The microphone mark belongs to recording only; the header spends its
+    // width on the waveform, the recording light and one agent glyph.
+    XCTAssertTrue(header.contains("chromeWaveform(barCount:"))
+    XCTAssertTrue(header.contains("OverlayRecordingLightView("))
+    XCTAssertTrue(header.contains("OverlayChannelStatusView("))
+    XCTAssertTrue(header.contains("OverlayRecordingControls("))
+
+    let state = try source(at: "Codescribe/Screens/Overlay/OverlayState.swift")
+    for writer in ["setAutoPasteEnabled", "setPasteMode", "autoPasteEnabled"] {
+      XCTAssertFalse(state.contains(writer), "overlay state still reaches \(writer)")
+    }
+    XCTAssertFalse(
+      try source(at: "Codescribe/Core/AppModel.swift").contains("setAutoPasteControlAvailable"))
+  }
+
+  /// Annex A1: the live-preview toggle folds and unfolds the transcript and
+  /// shows ^ while expanded, v while folded — never an eye.
+  func testLivePreviewToggleFoldsAndShowsTheMatchingChevron() throws {
     let state = OverlayState.previewListening()
-    state.engine = engine
-    XCTAssertTrue(state.autoPasteEnabled)
-    XCTAssertTrue(state.autoPasteControlAvailable)
+    func controls() -> OverlayRecordingControls {
+      OverlayRecordingControls(
+        canFinish: true, isPreviewCollapsed: state.isCollapsed, compact: false,
+        palette: .dark, onIntent: { _ in }, onPreviewToggle: { state.toggleCollapsed() })
+    }
+    let startedCollapsed = state.isCollapsed
+    let before = controls()
+    XCTAssertEqual(before.previewSymbol, startedCollapsed ? "chevron.down" : "chevron.up")
+    before.togglePreview()
+    XCTAssertNotEqual(state.isCollapsed, startedCollapsed, "the toggle folds or unfolds")
+    let after = controls()
+    XCTAssertEqual(after.previewSymbol, state.isCollapsed ? "chevron.down" : "chevron.up")
+    XCTAssertNotEqual(before.previewSymbol, after.previewSymbol)
+    XCTAssertEqual(
+      after.previewAccessibilityLabel, state.isCollapsed ? "Show live preview" : "Hide live preview")
+    after.togglePreview()
+    XCTAssertEqual(state.isCollapsed, startedCollapsed)
 
-    // The header control flips the durable policy through the engine and
-    // re-reads truth; it never paints an optimistic switch.
-    state.setAutoPasteEnabled(!state.autoPasteEnabled)
-    XCTAssertEqual(engine.writes, [false])
-    XCTAssertFalse(state.autoPasteEnabled)
-    state.setAutoPasteEnabled(!state.autoPasteEnabled)
-    XCTAssertEqual(engine.writes, [false, true])
-    XCTAssertTrue(state.autoPasteEnabled)
-
-    // Unavailable (agent session armed): the control is disabled and writes
-    // are refused, the policy stays where it was.
-    state.setAutoPasteControlAvailable(false)
-    XCTAssertFalse(state.autoPasteControlAvailable)
-    state.setAutoPasteEnabled(false)
-    XCTAssertEqual(engine.writes, [false, true])
-    XCTAssertTrue(state.autoPasteEnabled)
-
-    let source = try overlaySource()
-    let header = try headerSource(source)
-    XCTAssertTrue(
-      header.contains("autoPasteControl"),
-      "Both header widths are built by justifiedHeader and must carry the toggle")
-    let control = try autoPasteControlSource(source)
-    XCTAssertTrue(control.contains("state.setAutoPasteEnabled(!state.autoPasteEnabled)"))
-    XCTAssertTrue(control.contains(".disabled(!state.autoPasteControlAvailable)"))
-    XCTAssertTrue(control.contains(".accessibilityIdentifier(\"overlay-auto-paste\")"))
-    XCTAssertTrue(
-      control.contains(".accessibilityValue(state.autoPasteEnabled ? \"On\" : \"Off\")"))
+    let overlay = try overlaySource()
+    XCTAssertFalse(overlay.contains("\"eye"), "no eye pictogram on the preview toggle")
+    XCTAssertTrue(overlay.contains("Image(systemName: previewSymbol)"))
+    XCTAssertTrue(overlay.contains(".accessibilityIdentifier(\"overlay-live-preview-toggle\")"))
   }
 
   private func withPanel(
@@ -962,11 +982,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   private func headerSource(_ source: String) throws -> String {
     try section(
       of: source, from: "private func justifiedHeader(compact: Bool)",
-      to: "private var autoPasteControl")
-  }
-
-  private func autoPasteControlSource(_ source: String) throws -> String {
-    try section(of: source, from: "private var autoPasteControl", to: "private func chromeWaveform")
+      to: "private func chromeWaveform")
   }
 
   private func containsGuardedIntentRail(_ source: String) -> Bool {
@@ -1002,8 +1018,6 @@ private final class OverlayChromePolicyEngine: DictationEngine {
     expanded = enabled
     return true
   }
-  var writes: [Bool] = []
-  var enabled = true
   func setListener(_ listener: CsTranscriptionListener) {}
   func startRecording(language: CsLanguage?) async throws {}
   func stopRecording() async throws -> String { "" }
@@ -1011,11 +1025,7 @@ private final class OverlayChromePolicyEngine: DictationEngine {
   func initModel() async throws {}
   func isModelLoaded() -> Bool { true }
   func currentOverlayPolicy() -> OverlayPolicySnapshot? {
-    OverlayPolicySnapshot(autoPasteEnabled: enabled, autoFormatLevel: .correction)
-  }
-  func setAutoPasteEnabled(_ enabled: Bool) {
-    writes.append(enabled)
-    self.enabled = enabled
+    OverlayPolicySnapshot(autoFormatLevel: .correction)
   }
   func commitUserRevision(
     sessionId: String, sourceRevision: UInt64, renderedText: String

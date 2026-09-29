@@ -36,12 +36,7 @@ private final class OverlayStateTestEngine: DictationEngine {
   var onDefer: (() -> Void)?
   var pasteTargetAppNameValue: String?
   var onPasteTargetRead: (() -> Void)?
-  var persistedPolicy = OverlayPolicySnapshot(
-    autoPasteEnabled: true,
-    autoFormatLevel: .correction
-  )
-  var persistAutoPasteWrites = true
-  var autoPasteWrites: [Bool] = []
+  var persistedPolicy = OverlayPolicySnapshot(autoFormatLevel: .correction)
   var pinEnabled = false
   var pinWrites: [Bool] = []
   func overlayKeepVisibleBetweenTakes() -> Bool { pinEnabled }
@@ -136,14 +131,6 @@ private final class OverlayStateTestEngine: DictationEngine {
   func currentOverlayPolicy() -> OverlayPolicySnapshot? {
     policyReadCount += 1
     return persistedPolicy
-  }
-  func setAutoPasteEnabled(_ enabled: Bool) {
-    autoPasteWrites.append(enabled)
-    guard persistAutoPasteWrites else { return }
-    persistedPolicy = OverlayPolicySnapshot(
-      autoPasteEnabled: enabled,
-      autoFormatLevel: persistedPolicy.autoFormatLevel
-    )
   }
   func pasteText(text: String) async throws -> CsPasteResult {
     pastedText = text
@@ -938,60 +925,18 @@ final class OverlayStateTests: XCTestCase {
   func testOverlayPolicyRefreshesAtSessionEntryFromPersistedTruth() {
     let state = OverlayState()
     let engine = OverlayStateTestEngine()
-    engine.persistedPolicy = OverlayPolicySnapshot(
-      autoPasteEnabled: false,
-      autoFormatLevel: .off
-    )
+    engine.persistedPolicy = OverlayPolicySnapshot(autoFormatLevel: .off)
     state.engine = engine
 
     state.handleRecordingPreparing()
-    XCTAssertFalse(state.autoPasteEnabled)
     XCTAssertEqual(state.autoFormatLevel, .off)
     XCTAssertEqual(engine.policyReadCount, 1)
 
-    engine.persistedPolicy = OverlayPolicySnapshot(
-      autoPasteEnabled: true,
-      autoFormatLevel: .max
-    )
+    engine.persistedPolicy = OverlayPolicySnapshot(autoFormatLevel: .max)
     state.handleRecordingStarted()
-    XCTAssertTrue(state.autoPasteEnabled)
     XCTAssertEqual(state.autoFormatLevel, .max)
     XCTAssertEqual(engine.policyReadCount, 2)
-  }
-
-  func testAutoPasteWriteReconcilesSuccessAndFailureWithoutDelivery() {
-    for persists in [true, false] {
-      let state = OverlayState()
-      let engine = OverlayStateTestEngine()
-      engine.persistedPolicy = OverlayPolicySnapshot(
-        autoPasteEnabled: false,
-        autoFormatLevel: .off
-      )
-      engine.persistAutoPasteWrites = persists
-      state.engine = engine
-      state.handleRecordingPreparing()
-
-      state.setAutoPasteEnabled(true)
-
-      XCTAssertEqual(engine.autoPasteWrites, [true])
-      XCTAssertEqual(state.autoPasteEnabled, persists)
-      XCTAssertEqual(state.autoFormatLevel, .off)
-      XCTAssertEqual(engine.policyReadCount, 2)
-      XCTAssertEqual(engine.pasteCallCount, 0)
-    }
-  }
-
-  func testAssistiveFenceMakesAutoPasteControlUnavailableAndNonWriting() {
-    let state = OverlayState()
-    let engine = OverlayStateTestEngine()
-    state.engine = engine
-    state.setAutoPasteControlAvailable(false)
-
-    state.setAutoPasteEnabled(false)
-
-    XCTAssertFalse(state.autoPasteControlAvailable)
-    XCTAssertTrue(engine.autoPasteWrites.isEmpty)
-    XCTAssertEqual(engine.pasteCallCount, 0)
+    XCTAssertEqual(engine.pasteCallCount, 0, "a policy read never delivers")
   }
 
   func testQuietInputAdvisoryPreservesTranscriptAndDelivery() {
@@ -1836,8 +1781,7 @@ final class OverlayStateTests: XCTestCase {
     for level in FormattingPolicyOption.allCases {
       let state = OverlayState()
       let engine = OverlayStateTestEngine()
-      engine.persistedPolicy = OverlayPolicySnapshot(
-        autoPasteEnabled: true, autoFormatLevel: .smart)
+      engine.persistedPolicy = OverlayPolicySnapshot(autoFormatLevel: .smart)
       state.engine = engine
       state.handleRecordingPreparing()
       projectText(
@@ -2291,7 +2235,7 @@ final class OverlayStateTests: XCTestCase {
     controller.showForRecording()
     XCTAssertEqual(factoryCount, 0)
     XCTAssertEqual(frontCount, 0)
-    XCTAssertTrue(controller.state.autoPasteControlAvailable)
+    XCTAssertNotEqual(controller.state.indicatorMode, .assistive)
   }
 
   func testAgentModesNeverConstructOrOrderOverlayFront() {
@@ -2309,7 +2253,7 @@ final class OverlayStateTests: XCTestCase {
 
       controller.showForRecording()
       XCTAssertEqual(frontCount, 0, "\(mode) is owned by the Agent composer")
-      XCTAssertFalse(controller.state.autoPasteControlAvailable)
+      XCTAssertEqual(controller.state.indicatorMode, .assistive)
     }
   }
 
@@ -2333,7 +2277,6 @@ final class OverlayStateTests: XCTestCase {
     controller.handleIndicatorModeChange(.assistive)
     XCTAssertEqual(outCount, 1)
     XCTAssertEqual(controller.state.indicatorMode, .assistive)
-    XCTAssertFalse(controller.state.autoPasteControlAvailable)
   }
 
   func testFormattedReviewBlocksAssistiveHideWithoutFormatInFlight() {
@@ -2355,7 +2298,6 @@ final class OverlayStateTests: XCTestCase {
     controller.handleIndicatorModeChange(.assistive)
     XCTAssertEqual(outCount, 0)
     XCTAssertNotEqual(state.indicatorMode, .assistive)
-    XCTAssertTrue(state.autoPasteControlAvailable)
   }
 
   func testOverlayPanelUsesNonActivatingStyle() {
@@ -2790,7 +2732,9 @@ final class OverlayStateTests: XCTestCase {
     let splitPath = overlayDir.appendingPathComponent("OverlaySplitPrimaryAction.swift").path
 
     XCTAssertFalse(FileManager.default.fileExists(atPath: splitPath))
-    XCTAssertTrue(overlaySource.contains("overlay-auto-paste"))
+    XCTAssertFalse(
+      overlaySource.contains("overlay-auto-paste"),
+      "paste mode lives in Settings and the tray, not in the overlay header")
     XCTAssertTrue(overlaySource.contains("OverlayPlacementMenu"))
     XCTAssertFalse(overlaySource.contains("private var placementMenu"))
     XCTAssertFalse(overlaySource.contains("performPrimaryAction"))
@@ -3662,7 +3606,7 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertFalse(state.vadActive)
     XCTAssertTrue(state.hasMeasuredAudioLevel, "the mic is alive and reporting")
     XCTAssertEqual(state.levelMeter.gain, 0, "what it reports is silence")
-    XCTAssertTrue(state.autoPasteControlAvailable)
+    XCTAssertNotEqual(state.indicatorMode, .assistive)
     withExtendedLifetime(controller) {}
   }
 
@@ -3687,7 +3631,7 @@ final class OverlayStateTests: XCTestCase {
     agentState.handleRecordingPreparing()
     agentState.handleRecordingStarted()
     XCTAssertEqual(agentFronts, 0, "a genuine Agent/Assistive route is owned by the composer")
-    XCTAssertFalse(agentState.autoPasteControlAvailable)
+    XCTAssertEqual(agentState.indicatorMode, .assistive)
 
     // The visible Dictation route never takes key or main away from the user.
     var visibleFronts = 0

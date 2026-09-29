@@ -16,7 +16,7 @@ private final class OverlayIntentBoundaryEngine: DictationEngine {
   var formatterRequests:
     [(sessionId: String, sourceRevision: UInt64, level: FormattingPolicyOption?)] = []
   var formatterFailure: Error?
-  var policy = OverlayPolicySnapshot(autoPasteEnabled: true, autoFormatLevel: .correction)
+  var policy = OverlayPolicySnapshot(autoFormatLevel: .correction)
 
   func setListener(_ listener: CsTranscriptionListener) {}
   func startRecording(language: CsLanguage?) async throws {}
@@ -50,7 +50,6 @@ private final class OverlayIntentBoundaryEngine: DictationEngine {
   func initModel() async throws {}
   func isModelLoaded() -> Bool { true }
   func currentOverlayPolicy() -> OverlayPolicySnapshot? { policy }
-  func setAutoPasteEnabled(_ enabled: Bool) {}
   func pasteText(text: String) async throws -> CsPasteResult { pasteResult() }
   func deferText(text: String) async throws -> CsPasteResult { pasteResult() }
   func copyTaggedTranscript(text: String) async throws {
@@ -292,7 +291,7 @@ final class OverlayIntentRailTests: XCTestCase {
       phase: "formatted", text: "final", canPaste: true, canInsert: true,
       canCopy: true, canRetranscribe: true, canFormat: true, terminal: true)
     let engine = OverlayIntentBoundaryEngine()
-    engine.policy = OverlayPolicySnapshot(autoPasteEnabled: true, autoFormatLevel: .smart)
+    engine.policy = OverlayPolicySnapshot(autoFormatLevel: .smart)
     state.engine = engine
     let settingsBefore = engine.policy
     let rail = OverlayIntentRail(
@@ -569,9 +568,8 @@ final class OverlayIntentRailTests: XCTestCase {
       OverlayIntent.allCases.filter { $0 != .close }.map(\.systemImage)
       + [
         OverlayControlSymbols.history, OverlayControlSymbols.previousTake,
-        OverlayControlSymbols.actions, OverlayControlSymbols.autoPasteOff,
-        OverlayControlSymbols.autoPasteOn, OverlayControlSymbols.placement,
-        "chevron.up", "chevron.down", "pin.fill",
+        OverlayControlSymbols.actions, OverlayControlSymbols.placement,
+        OverlayControlSymbols.collapsePreview, OverlayControlSymbols.expandPreview, "pin.fill",
         "arrow.up.and.down.and.arrow.left.and.right",
       ] + OverlayAnchor.allCases.map(\.systemImage)
     let collisions = Dictionary(grouping: symbols, by: { $0 }).filter { $0.value.count > 1 }
@@ -661,10 +659,14 @@ final class OverlayIntentRailTests: XCTestCase {
     hostingView.frame = CGRect(origin: .zero, size: size)
     hostingView.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+    // Annex A2 removed the Auto Paste chip; the width it held went back to
+    // the waveform, so at the window floor (no agent glyph, and no timer in a
+    // windowless host) the full meter fits instead of the compact one.
     try assertHeaderControlsFit(
       expandedRecorder.frames,
       inside: size.width,
-      context: "expanded listening header"
+      context: "expanded listening header",
+      compactMeter: false
     )
 
     let collapsedState = OverlayState.previewListening()
@@ -683,7 +685,8 @@ final class OverlayIntentRailTests: XCTestCase {
     try assertHeaderControlsFit(
       collapsedRecorder.frames,
       inside: size.width,
-      context: "collapsed listening header"
+      context: "collapsed listening header",
+      compactMeter: false
     )
 
     let bitmap = try XCTUnwrap(hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds))
@@ -818,6 +821,8 @@ final class OverlayIntentRailTests: XCTestCase {
     XCTAssertEqual(routedIntents, [.finish])
     XCTAssertTrue(previewCollapsed)
     XCTAssertEqual(expanded.previewAccessibilityLabel, "Hide live preview")
+    // Annex A1: chevrons, never an eye. Expanded offers ^ (fold).
+    XCTAssertEqual(expanded.previewSymbol, "chevron.up")
 
     let collapsed = OverlayRecordingControls(
       canFinish: true,
@@ -829,6 +834,7 @@ final class OverlayIntentRailTests: XCTestCase {
     )
     XCTAssertTrue(collapsed.showsStop)
     XCTAssertEqual(collapsed.previewAccessibilityLabel, "Show live preview")
+    XCTAssertEqual(collapsed.previewSymbol, "chevron.down", "collapsed offers v (unfold)")
 
     let unavailable = OverlayRecordingControls(
       canFinish: false,

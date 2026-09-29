@@ -368,7 +368,6 @@ final class OverlayController: ObservableObject {
       sessionWasAssistive = true
       hide()
     }
-    state.setAutoPasteControlAvailable(!sessionWasAssistive)
     state.applyIndicatorMode(mode)
   }
 

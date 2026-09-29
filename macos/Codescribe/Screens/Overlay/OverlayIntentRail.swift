@@ -98,9 +98,13 @@ enum OverlayControlSymbols {
   static let history = "clock.arrow.circlepath"
   static let previousTake = "tray.and.arrow.up"
   static let actions = "ellipsis"
-  static let autoPasteOff = "arrow.down.to.line"
-  static let autoPasteOn = "arrow.down.to.line.compact"
   static let placement = "location.viewfinder"
+  /// Live-preview toggle: "wolałem dzióbki ^v" (Founder, quoted in the Codex
+  /// handoff, Annex A1, 2026-09-29). Expanded
+  /// shows ^ (fold the transcript), collapsed shows v (unfold it), as the
+  /// collapse toggle did before 8b987508 swapped in an eye.
+  static let collapsePreview = "chevron.up"
+  static let expandPreview = "chevron.down"
 }
 
 enum OverlayDockVisuals {

@@ -4,7 +4,10 @@ import SwiftUI
 // Slim evidence-first dictation overlay.
 //
 // Layout (top → bottom):
-//   header   brand · compact waveform · timer · Stop and live-preview controls
+//   header   brand · compact waveform · agent glyph · light · timer · Stop and
+//            live-preview controls. Paste mode lives in Settings and the tray,
+//            never here: the waveform keeps the width (Founder direction as
+//            relayed in the Codex handoff, Annex A2, 2026-09-29).
 //   body     transcript is the product surface (listening / formatted / terminal)
 //   header and footer float above the full-height transcript viewport
 //
@@ -51,6 +54,11 @@ struct OverlayRecordingControls: View {
   var showsStop: Bool { canFinish }
   var previewAccessibilityLabel: String {
     isPreviewCollapsed ? "Show live preview" : "Hide live preview"
+  }
+  /// The chevron points where the transcript goes on click: ^ folds it into
+  /// the bar, v unfolds it.
+  var previewSymbol: String {
+    isPreviewCollapsed ? OverlayControlSymbols.expandPreview : OverlayControlSymbols.collapsePreview
   }
 
   var body: some View {
@@ -126,7 +134,7 @@ struct OverlayRecordingControls: View {
 
   private var previewButton: some View {
     Button(action: togglePreview) {
-      Image(systemName: isPreviewCollapsed ? "eye" : "eye.slash")
+      Image(systemName: previewSymbol)
         .font(.system(size: 11, weight: .semibold))
         .foregroundStyle(palette.mutedText.color)
         .frame(width: 22, height: 22)
@@ -580,10 +588,9 @@ struct DictationOverlayView: View {
         if !state.channelDelivery.isEmpty || state.channelStatusUnavailable {
           OverlayChannelStatusView(
             channels: state.channelDelivery, unavailable: state.channelStatusUnavailable,
-            palette: palette
+            palette: palette, animates: overlayVisible
           )
         }
-        autoPasteControl
         if let light = state.recordingLight {
           OverlayRecordingLightView(light: light, palette: palette, animates: overlayVisible)
         }
@@ -603,36 +610,6 @@ struct DictationOverlayView: View {
       .accessibilityElement(children: .contain)
       .accessibilityIdentifier("overlay-header-trailing")
     }
-  }
-
-  /// Compact header auto-paste control: discrete icon + indicator dot.
-  private var autoPasteControl: some View {
-    Button {
-      state.setAutoPasteEnabled(!state.autoPasteEnabled)
-    } label: {
-      HStack(spacing: 4) {
-        Image(
-          systemName: state.autoPasteEnabled
-            ? OverlayControlSymbols.autoPasteOn : OverlayControlSymbols.autoPasteOff
-        )
-        .font(.system(size: 10, weight: .semibold))
-        Circle()
-          .fill(state.autoPasteEnabled ? CSColor.oliveLight : CSColor.textFaint)
-          .frame(width: 5, height: 5)
-      }
-      .foregroundStyle(palette.mutedText.color)
-      .padding(.horizontal, 6)
-      .padding(.vertical, 4)
-      .background(CSColor.surfaceRaised(0.04))
-      .overlay(Capsule().strokeBorder(palette.border.color, lineWidth: 1))
-      .clipShape(Capsule())
-    }
-    .buttonStyle(.plain)
-    .disabled(!state.autoPasteControlAvailable)
-    .help("Auto-paste: \(state.autoPasteEnabled ? "On" : "Off")")
-    .accessibilityLabel("Auto-paste toggle")
-    .accessibilityValue(state.autoPasteEnabled ? "On" : "Off")
-    .accessibilityIdentifier("overlay-auto-paste")
   }
 
   /// Audio-evidence strip in the primary bar. Amplitude/VAD only — word/PCM
