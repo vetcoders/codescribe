@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -35,6 +35,19 @@ struct Cursor {
     emitted: BTreeSet<String>,
     known_seals: BTreeSet<String>,
     ducked_replies: Vec<String>,
+    /// Read position per bus file. The 500 ms scan loop must never re-read
+    /// history: without this the pass is O(file) and a long-lived bus pins a
+    /// core (observed at 100% CPU on a 20 GB bus).
+    bus_marks: BTreeMap<String, BusMark>,
+}
+
+/// Where a bus file was last consumed, plus a fingerprint of its first bytes
+/// so a rotation to the same byte length is still detected.
+#[derive(Debug, Default, Clone, Copy)]
+struct BusMark {
+    offset: u64,
+    head_len: u32,
+    head_hash: u64,
 }
 
 struct ChannelBinding {
@@ -61,20 +74,36 @@ pub fn scan(bridge_home: &Path, fallback_bus: &Path) -> io::Result<ScanStats> {
             buses.push(bus.clone());
         }
     }
-    let bus_lines = read_buses(&buses)?;
-    for value in &bus_lines {
-        if value.get("kind").and_then(Value::as_str) == Some("agent_ack")
-            && let Some(id) = delivery_id_of(value)
-            && cursor.emitted.insert(id.to_string())
-        {
-            dirty = true;
-        }
-        if let Some(reply_id) = spoken_reply_id(value) {
-            if reply_is_recent(value) {
-                note_spoken_reply(&mut cursor, &mut dirty, &reply_id);
-            } else {
-                remember_reply(&mut cursor, &mut dirty, &reply_id);
+    for bus in &buses {
+        let key = bus.to_string_lossy().into_owned();
+        let mut mark = cursor.bus_marks.get(&key).copied().unwrap_or_default();
+        let before = mark;
+        fold_bus_delta(bus, &mut mark, |value| {
+            if value.get("kind").and_then(Value::as_str) == Some("agent_ack")
+                && let Some(id) = delivery_id_of(value)
+                && cursor.emitted.insert(id.to_string())
+            {
+                dirty = true;
             }
+            // A seal row read once must keep proving its delivery on later
+            // passes, which no longer re-read history.
+            if let Some(id) = seal_delivery_id(value) {
+                let id = id.to_string();
+                if !cursor.emitted.contains(&id) && cursor.known_seals.insert(id) {
+                    dirty = true;
+                }
+            }
+            if let Some(reply_id) = spoken_reply_id(value) {
+                if reply_is_recent(value) {
+                    note_spoken_reply(&mut cursor, &mut dirty, &reply_id);
+                } else {
+                    remember_reply(&mut cursor, &mut dirty, &reply_id);
+                }
+            }
+        })?;
+        if mark.offset != before.offset || mark.head_hash != before.head_hash {
+            cursor.bus_marks.insert(key, mark);
+            dirty = true;
         }
     }
     for lease in &leases {
@@ -140,11 +169,7 @@ pub fn scan(bridge_home: &Path, fallback_bus: &Path) -> io::Result<ScanStats> {
                 .iter()
                 .find(|pending| pending.id == delivery_id)
                 .and_then(|pending| pending.kind.as_deref());
-            let proven = pending_kind == Some("seal")
-                || cursor.known_seals.contains(&delivery_id)
-                || bus_lines
-                    .iter()
-                    .any(|line| line_proves_seal(line, &delivery_id));
+            let proven = pending_kind == Some("seal") || cursor.known_seals.contains(&delivery_id);
             if !proven {
                 stats.skipped_unproven += 1;
                 continue;
@@ -242,10 +267,34 @@ fn load_cursor(bridge_home: &Path) -> io::Result<Cursor> {
     if value.get("schema").and_then(Value::as_str) != Some(CURSOR_SCHEMA) {
         return Ok(Cursor::default());
     }
+    let bus_marks = value
+        .get("bus_marks")
+        .and_then(Value::as_object)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|(path, mark)| {
+                    Some((
+                        path.clone(),
+                        BusMark {
+                            offset: mark.get("offset").and_then(Value::as_u64)?,
+                            head_len: mark.get("head_len").and_then(Value::as_u64)? as u32,
+                            head_hash: mark
+                                .get("head_hash")
+                                .and_then(Value::as_str)?
+                                .parse()
+                                .ok()?,
+                        },
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(Cursor {
         emitted: string_set(value.get("emitted")),
         known_seals: string_set(value.get("known_seals")),
         ducked_replies: string_list(value.get("ducked_replies")),
+        bus_marks,
     })
 }
 
@@ -256,6 +305,21 @@ fn write_cursor(bridge_home: &Path, cursor: &Cursor) -> io::Result<()> {
         "emitted": cursor.emitted.iter().collect::<Vec<_>>(),
         "known_seals": cursor.known_seals.iter().collect::<Vec<_>>(),
         "ducked_replies": cursor.ducked_replies,
+        "bus_marks": cursor
+            .bus_marks
+            .iter()
+            .map(|(path, mark)| {
+                (
+                    path.clone(),
+                    json!({
+                        "offset": mark.offset,
+                        "head_len": mark.head_len,
+                        // u64 does not survive JSON floats; keep it textual.
+                        "head_hash": mark.head_hash.to_string(),
+                    }),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>(),
     });
     write_private_json(&path, &body)
 }
@@ -421,25 +485,69 @@ fn load_channels(bridge_home: &Path) -> BTreeMap<String, ChannelBinding> {
     channels
 }
 
-fn read_buses(paths: &[PathBuf]) -> io::Result<Vec<Value>> {
-    let mut lines = Vec::new();
-    for path in paths {
-        let text = match fs::read_to_string(path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error),
+/// Feed `on_line` every complete JSON line the bus gained since the mark,
+/// then advance the mark past the last consumed newline. A rotated or
+/// truncated file (shorter than the mark, or with different first bytes)
+/// resets the mark and replays from the start — the cursor's emitted set
+/// keeps replays from double-appending. A trailing partial line is left for
+/// the next pass.
+fn fold_bus_delta(
+    path: &Path,
+    mark: &mut BusMark,
+    mut on_line: impl FnMut(&Value),
+) -> io::Result<()> {
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let len = file.metadata()?.len();
+    if mark.offset > 0 {
+        let rotated = len < mark.offset || {
+            let mut head = vec![0_u8; mark.head_len as usize];
+            file.read_exact(&mut head)?;
+            hash_bytes(&head) != mark.head_hash
         };
-        for line in text.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            if let Ok(value) = serde_json::from_str::<Value>(line) {
-                lines.push(value);
-            }
+        if rotated {
+            *mark = BusMark::default();
         }
     }
-    Ok(lines)
+    if len == mark.offset {
+        return Ok(());
+    }
+    file.seek(SeekFrom::Start(mark.offset))?;
+    let mut delta = Vec::with_capacity(usize::try_from(len - mark.offset).unwrap_or(0));
+    file.read_to_end(&mut delta)?;
+    let consumed = match delta.iter().rposition(|byte| *byte == b'\n') {
+        Some(last_newline) => last_newline + 1,
+        None => return Ok(()),
+    };
+    for line in delta[..consumed].split(|byte| *byte == b'\n') {
+        let line = match std::str::from_utf8(line) {
+            Ok(line) => line.trim(),
+            Err(_) => continue,
+        };
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(value) = serde_json::from_str::<Value>(line) {
+            on_line(&value);
+        }
+    }
+    if mark.offset == 0 {
+        let head_len = consumed.min(256);
+        mark.head_len = head_len as u32;
+        mark.head_hash = hash_bytes(&delta[..head_len]);
+    }
+    mark.offset += consumed as u64;
+    Ok(())
+}
+
+fn hash_bytes(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
 }
 
 fn marker_delivery_id(path: &Path, lease_id: &str) -> io::Result<Option<String>> {
@@ -496,12 +604,11 @@ fn safe_lease_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
 }
 
-fn line_proves_seal(value: &Value, delivery_id: &str) -> bool {
-    if delivery_id_of(value) != Some(delivery_id) {
-        return false;
-    }
-    value.get("kind").and_then(Value::as_str) == Some("seal")
-        || value.get("status").and_then(Value::as_str) == Some("transcript_sealed")
+/// The delivery id of a bus row that proves a seal, if this row is one.
+fn seal_delivery_id(value: &Value) -> Option<&str> {
+    let sealed = value.get("kind").and_then(Value::as_str) == Some("seal")
+        || value.get("status").and_then(Value::as_str) == Some("transcript_sealed");
+    if sealed { delivery_id_of(value) } else { None }
 }
 
 fn spoken_reply_id(value: &Value) -> Option<String> {
@@ -800,5 +907,142 @@ mod tests {
             !crate::audio::tts_duck::channel_capture_should_drop(),
             "the same spoken reply must not re-arm the gate on the next scan"
         );
+    }
+
+    const HIDDEN_ID: &str = "cccccccccccccccccccccccc";
+    const DELTA_ID: &str = "dddddddddddddddddddddddd";
+    const ROTATED_ID: &str = "eeeeeeeeeeeeeeeeeeeeeeee";
+    const PARTIAL_ID: &str = "ffffffffffffffffffffffff";
+
+    fn seal_row(id: &str) -> String {
+        format!(
+            "{}\n",
+            json!({"schema": "codescribe.transcript.v1", "kind": "seal", "delivery_id": id})
+        )
+    }
+
+    fn marker_for(bridge: &Path, id: &str) {
+        write_json(
+            &bridge
+                .join("acknowledgments")
+                .join(LEASE_ID)
+                .join(format!("{id}.json")),
+            &json!({"lease_id": LEASE_ID, "delivery_id": id}),
+        );
+    }
+
+    fn bridge_with_lease(root: &Path, bus: &Path) -> PathBuf {
+        let bridge = root.join("bridge");
+        write_json(&bridge.join(BINDING_FILENAME), &binding("sess-roman"));
+        write_json(
+            &bridge.join("leases").join(format!("{LEASE_ID}.json")),
+            &lease(bus, json!([])),
+        );
+        bridge
+    }
+
+    #[test]
+    fn a_scan_never_rereads_consumed_bus_history() {
+        let root = tempfile::tempdir().unwrap();
+        let bus = root.path().join("bus.jsonl");
+        let bridge = bridge_with_lease(root.path(), &bus);
+        // The first line is longer than the 256-byte head fingerprint, so the
+        // second line lies in consumed-but-unfingerprinted territory.
+        let first_line = format!(
+            "{}\n",
+            json!({
+                "schema": "codescribe.transcript.v1",
+                "kind": "seal",
+                "delivery_id": SEAL_ID,
+                "text": "x".repeat(300)
+            })
+        );
+        let second_line = seal_row("9999999999999999999999aa");
+        fs::write(&bus, format!("{first_line}{second_line}")).unwrap();
+        marker_for(&bridge, SEAL_ID);
+        assert_eq!(scan(&bridge, &bus).unwrap().appended, 1);
+
+        // Rewrite the CONSUMED second line in place with a same-length, fully
+        // valid seal row for another delivery. An implementation that re-reads
+        // history would prove and emit it; the mark must never look back.
+        let hidden = seal_row(HIDDEN_ID);
+        assert_eq!(
+            hidden.len(),
+            second_line.len(),
+            "witness must keep the byte length"
+        );
+        let mut bytes = fs::read(&bus).unwrap();
+        let start = first_line.len();
+        bytes[start..start + hidden.len()].copy_from_slice(hidden.as_bytes());
+        fs::write(&bus, &bytes).unwrap();
+        marker_for(&bridge, HIDDEN_ID);
+        assert_eq!(
+            scan(&bridge, &bus).unwrap().appended,
+            0,
+            "history was re-read"
+        );
+
+        // The delta after the offset is still consumed normally.
+        let mut file = OpenOptions::new().append(true).open(&bus).unwrap();
+        file.write_all(seal_row(DELTA_ID).as_bytes()).unwrap();
+        drop(file);
+        marker_for(&bridge, DELTA_ID);
+        assert_eq!(scan(&bridge, &bus).unwrap().appended, 1);
+        let ids: Vec<String> = ack_rows(&bus)
+            .iter()
+            .filter_map(|row| {
+                row.get("delivery_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect();
+        assert!(ids.contains(&SEAL_ID.to_string()) && ids.contains(&DELTA_ID.to_string()));
+        assert!(!ids.contains(&HIDDEN_ID.to_string()), "{ids:?}");
+    }
+
+    #[test]
+    fn bus_truncation_resets_the_offset_and_replays_without_duplicates() {
+        let root = tempfile::tempdir().unwrap();
+        let bus = root.path().join("bus.jsonl");
+        let bridge = bridge_with_lease(root.path(), &bus);
+        fs::write(&bus, seal_row(SEAL_ID)).unwrap();
+        marker_for(&bridge, SEAL_ID);
+        assert_eq!(scan(&bridge, &bus).unwrap().appended, 1);
+
+        // Rotation: the whole file is replaced (same length as before, same
+        // inode - only the head fingerprint can tell). The mark resets, the
+        // fresh seal is emitted, and the already-emitted delivery is not
+        // appended again even though the replay sees no trace of it on disk.
+        fs::write(&bus, seal_row(ROTATED_ID)).unwrap();
+        marker_for(&bridge, ROTATED_ID);
+        assert_eq!(scan(&bridge, &bus).unwrap().appended, 1);
+        assert_eq!(scan(&bridge, &bus).unwrap().appended, 0);
+        let rows = ack_rows(&bus);
+        assert_eq!(rows.len(), 1, "rotation destroyed the old rows on disk");
+        assert_eq!(
+            rows[0].get("delivery_id").and_then(Value::as_str),
+            Some(ROTATED_ID)
+        );
+    }
+
+    #[test]
+    fn a_partial_bus_line_waits_for_its_newline() {
+        let root = tempfile::tempdir().unwrap();
+        let bus = root.path().join("bus.jsonl");
+        let bridge = bridge_with_lease(root.path(), &bus);
+        let row = seal_row(PARTIAL_ID);
+        let (head, tail) = row.split_at(row.len() - 9);
+        fs::write(&bus, head).unwrap();
+        marker_for(&bridge, PARTIAL_ID);
+        assert_eq!(
+            scan(&bridge, &bus).unwrap().appended,
+            0,
+            "half a line proved a seal"
+        );
+
+        let mut file = OpenOptions::new().append(true).open(&bus).unwrap();
+        file.write_all(tail.as_bytes()).unwrap();
+        drop(file);
+        assert_eq!(scan(&bridge, &bus).unwrap().appended, 1);
     }
 }
