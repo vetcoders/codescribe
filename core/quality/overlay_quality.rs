@@ -1786,45 +1786,20 @@ pub fn derive_lexicon_pairs(delivered: &str, canonical: &str) -> Vec<(String, St
 mod tests {
     use super::*;
     use serial_test::serial;
-    use std::ffi::OsString;
 
-    /// Restores one process env var on drop so serial tests leave the host clean.
-    struct EnvRestore {
-        key: &'static str,
-        previous: Option<OsString>,
-    }
-
-    impl EnvRestore {
-        /// Snapshot the current value (or absence) of `key` before a test mutates it.
-        fn capture(key: &'static str) -> Self {
-            Self {
-                key,
-                previous: std::env::var_os(key),
-            }
-        }
-    }
-
-    impl Drop for EnvRestore {
-        /// Put the captured env binding back; safe only under #[serial] exclusive access.
-        fn drop(&mut self) {
-            match &self.previous {
-                Some(value) => unsafe { std::env::set_var(self.key, value) },
-                None => unsafe { std::env::remove_var(self.key) },
-            }
-        }
-    }
+    use crate::test_isolation::EnvGuard;
 
     /// Owns only data-dir isolation; each scenario decides which files exist.
     struct QualityFixture {
         // Fields drop in order: restore the environment before deleting its directory.
-        _environment: EnvRestore,
+        _environment: EnvGuard,
         _directory: tempfile::TempDir,
     }
 
     impl QualityFixture {
         fn new(message: &str) -> Self {
             let directory = tempfile::tempdir().expect(message);
-            let environment = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+            let environment = EnvGuard::capture("CODESCRIBE_DATA_DIR");
             let root = directory.path().canonicalize().unwrap();
             // SAFETY: callers retain #[serial]; the guard restores the previous binding.
             unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", &root) };
@@ -2423,7 +2398,7 @@ mod tests {
     #[test]
     #[serial]
     fn quality_write_panics_without_data_dir_under_test() {
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let _guard = EnvGuard::capture("CODESCRIBE_DATA_DIR");
         unsafe {
             std::env::remove_var("CODESCRIBE_DATA_DIR");
         }
@@ -2649,7 +2624,7 @@ mod tests {
         // verified via loct find --literal) for hermetic test isolation. No twin
         // path logic. Prove by writing under temp and asserting the returned path.
         let temp_dir = tempfile::tempdir().expect("temp data dir for isolation");
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let _guard = EnvGuard::capture("CODESCRIBE_DATA_DIR");
 
         // Canonicalize for macOS reality: config_dir() does .canonicalize() on
         // CODESCRIBE_DATA_DIR (see loader.rs), turning /var/folders into
@@ -2659,7 +2634,7 @@ mod tests {
             .canonicalize()
             .unwrap_or_else(|_| temp_dir.path().to_path_buf());
 
-        // SAFETY: test-only, #[serial] guarantees exclusive access; mirrors EnvGuard/EnvRestore
+        // SAFETY: test-only, #[serial] guarantees exclusive access; uses the shared EnvGuard
         // pattern used elsewhere in test-only configuration guards. Process-env mutation
         // is the documented way to drive CODESCRIBE_DATA_DIR for hermetic isolation tests.
         unsafe {
@@ -2725,12 +2700,12 @@ mod tests {
     #[serial]
     fn test_commit_records_distinct_raw_and_various_actions() {
         let temp_dir = tempfile::tempdir().expect("temp data dir for isolation");
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let _guard = EnvGuard::capture("CODESCRIBE_DATA_DIR");
         let temp_root = temp_dir
             .path()
             .canonicalize()
             .unwrap_or_else(|_| temp_dir.path().to_path_buf());
-        // SAFETY: test-only, #[serial] + EnvRestore; mirrors other env guards.
+        // SAFETY: test-only, #[serial] + EnvGuard; mirrors other env guards.
         unsafe {
             std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
         }
@@ -2803,7 +2778,7 @@ mod tests {
     #[serial]
     fn test_commit_long_edit_records_quality_but_no_lexicon_candidate() {
         let temp_dir = tempfile::tempdir().expect("temp");
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let _guard = EnvGuard::capture("CODESCRIBE_DATA_DIR");
         let temp_root = temp_dir
             .path()
             .canonicalize()
@@ -2850,13 +2825,13 @@ mod tests {
     #[serial]
     fn test_voice_lab_read_surface_returns_live_records_and_lexicon_entries() {
         let temp_dir = tempfile::tempdir().expect("temp data dir for read surface");
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-        let _min_guard = EnvRestore::capture(LEXICON_MIN_CORRECTIONS_ENV);
+        let _guard = EnvGuard::capture("CODESCRIBE_DATA_DIR");
+        let _min_guard = EnvGuard::capture(LEXICON_MIN_CORRECTIONS_ENV);
         let temp_root = temp_dir
             .path()
             .canonicalize()
             .unwrap_or_else(|_| temp_dir.path().to_path_buf());
-        // SAFETY: this test is serial and EnvRestore restores process state.
+        // SAFETY: this test is serial and EnvGuard restores process state.
         unsafe {
             std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
             // This read-projection fixture is intentionally a one-write
@@ -3058,7 +3033,7 @@ mod tests {
     #[serial]
     fn correction_learning_uses_raw_stt_not_formatted_delivery() {
         let _fixture = QualityFixture::new("temp quality root");
-        let _min_guard = EnvRestore::capture(LEXICON_MIN_CORRECTIONS_ENV);
+        let _min_guard = EnvGuard::capture(LEXICON_MIN_CORRECTIONS_ENV);
         unsafe {
             std::env::set_var(LEXICON_MIN_CORRECTIONS_ENV, "1");
         };
@@ -3085,7 +3060,7 @@ mod tests {
     #[serial]
     fn voice_lab_revision_keeps_raw_stt_as_dictionary_source() {
         let _fixture = QualityFixture::new("temp quality root");
-        let _min_guard = EnvRestore::capture(LEXICON_MIN_CORRECTIONS_ENV);
+        let _min_guard = EnvGuard::capture(LEXICON_MIN_CORRECTIONS_ENV);
         unsafe {
             // This fixture isolates the raw-source writer behavior; the product
             // threshold itself is covered by the three-save Voice Lab test.
@@ -3123,7 +3098,7 @@ mod tests {
     #[serial]
     fn finalizing_correction_appends_revision_and_leaves_one_active_mapping() {
         let _fixture = QualityFixture::new("temp data dir for Voice Lab edit");
-        let _min_guard = EnvRestore::capture(LEXICON_MIN_CORRECTIONS_ENV);
+        let _min_guard = EnvGuard::capture(LEXICON_MIN_CORRECTIONS_ENV);
         unsafe {
             // This regression is the one-write supersession fixture, not the
             // product threshold contract.
@@ -3213,7 +3188,7 @@ mod tests {
     #[test]
     #[serial]
     fn lexicon_min_corrections_fails_closed_to_three() {
-        let _guard = EnvRestore::capture(LEXICON_MIN_CORRECTIONS_ENV);
+        let _guard = EnvGuard::capture(LEXICON_MIN_CORRECTIONS_ENV);
 
         unsafe { std::env::remove_var(LEXICON_MIN_CORRECTIONS_ENV) };
         assert_eq!(lexicon_min_corrections(), 3);
@@ -3292,7 +3267,7 @@ mod tests {
     #[serial]
     fn pairs_are_gated_individually_not_as_one_edit() {
         let _fixture = QualityFixture::new("temp data dir");
-        let _min_guard = EnvRestore::capture(LEXICON_MIN_CORRECTIONS_ENV);
+        let _min_guard = EnvGuard::capture(LEXICON_MIN_CORRECTIONS_ENV);
         unsafe {
             // This is an extractor/write-primitive fixture; the product
             // threshold itself is covered separately below.
@@ -3340,7 +3315,7 @@ mod tests {
     #[serial]
     fn lexicon_write_failure_never_vetoes_the_human_save() {
         let _fixture = QualityFixture::new("temp data dir");
-        let _min_guard = EnvRestore::capture(LEXICON_MIN_CORRECTIONS_ENV);
+        let _min_guard = EnvGuard::capture(LEXICON_MIN_CORRECTIONS_ENV);
         unsafe {
             // Force the writer path: this fixture verifies that an I/O failure
             // after an eligible promotion cannot veto the human revision.

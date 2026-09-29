@@ -2627,7 +2627,6 @@ mod reset_tests {
     use chrono::{DateTime, Utc};
     use codescribe_core::config::{Config, begin_app_data_reset};
     use serial_test::serial;
-    use std::ffi::{OsStr, OsString};
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -2640,36 +2639,7 @@ mod reset_tests {
         std::env::temp_dir().join(format!("cs_reset_{}_{tag}_{nanos}", std::process::id()))
     }
 
-    /// Scoped process-env override that restores the prior value on drop, so a
-    /// reset test cannot leak `CODESCRIBE_DATA_DIR` into the next one.
-    struct EnvGuard {
-        key: &'static str,
-        previous: Option<OsString>,
-    }
-
-    impl EnvGuard {
-        /// Set `key`, remembering whatever was there before.
-        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
-            let previous = std::env::var_os(key);
-            // SAFETY: reset tests that mutate process env are serialized.
-            unsafe { std::env::set_var(key, value) };
-            Self { key, previous }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        /// Put the previous value back, or unset the key when it was absent —
-        /// restoring an empty string instead would not be the same state.
-        fn drop(&mut self) {
-            // SAFETY: restores the serialized test's prior process environment.
-            unsafe {
-                match &self.previous {
-                    Some(value) => std::env::set_var(self.key, value),
-                    None => std::env::remove_var(self.key),
-                }
-            }
-        }
-    }
+    use codescribe_core::test_isolation::EnvGuard;
 
     /// Write a fixture file, creating its parents. Panics on failure: a fixture
     /// that did not materialize would make the assertions below meaningless.
@@ -3198,7 +3168,6 @@ mod settings_snapshot_tests {
     };
     use codescribe_core::config::{Config, UserSettings};
     use serial_test::serial;
-    use std::ffi::{OsStr, OsString};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -3876,46 +3845,7 @@ mod settings_snapshot_tests {
         let _ = remove_path_without_following_symlinks(&root);
     }
 
-    /// Scoped process-env override restored on drop. Carries a `remove` arm as
-    /// well as `set`, because these tests must be able to prove a value came
-    /// from disk — which requires unsetting the env tier that would mask it.
-    struct EnvGuard {
-        key: &'static str,
-        previous: Option<OsString>,
-    }
-
-    impl EnvGuard {
-        /// Pin `key` to a value for the duration of the test.
-        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
-            let previous = std::env::var_os(key);
-            // SAFETY: this module serializes every process-env test.
-            unsafe { std::env::set_var(key, value) };
-            Self { key, previous }
-        }
-
-        /// Unset `key` for the duration of the test. Needed because the
-        /// operator's own environment can otherwise leak a real override into
-        /// the run and decide the assertion instead of the persisted store.
-        fn remove(key: &'static str) -> Self {
-            let previous = std::env::var_os(key);
-            // SAFETY: this module serializes every process-env test.
-            unsafe { std::env::remove_var(key) };
-            Self { key, previous }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        /// Restore the captured value, or unset when there was none.
-        fn drop(&mut self) {
-            // SAFETY: this module serializes every process-env test.
-            unsafe {
-                match self.previous.as_ref() {
-                    Some(value) => std::env::set_var(self.key, value),
-                    None => std::env::remove_var(self.key),
-                }
-            }
-        }
-    }
+    use codescribe_core::test_isolation::EnvGuard;
 
     #[test]
     #[serial_test::serial]

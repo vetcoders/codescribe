@@ -610,23 +610,8 @@ struct ApiKeyStepView: View {
       }
       HStack(spacing: 8) {
         SecureField(isSet ? "Replace key…" : "Paste key…", text: $model.apiKeyDraft)
-          .textFieldStyle(.plain)
           .focused($keyFocused)
-          .font(CSFont.mono(12))
-          .foregroundStyle(CSColor.textBody)
-          .padding(.horizontal, 11)
-          .padding(.vertical, 8)
-          .background(
-            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-              .fill(CSColor.surfaceRaised(0.03))
-          )
-          .overlay(
-            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-              .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
-          )
-          .overlay {
-            CSFocusOutline(isFocused: keyFocused, cornerRadius: CSRadius.input)
-          }
+          .settingsInputChrome(isFocused: keyFocused)
           .onSubmit { model.saveApiKey() }
         Button("Save key") { model.saveApiKey() }.modifier(SetupActionStyle(prominent: true))
       }

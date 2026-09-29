@@ -1938,40 +1938,7 @@ mod tests {
         assert_eq!(first[0].role, "user");
     }
 
-    /// RAII holder that restores one env var to its prior value on drop.
-    ///
-    /// Captures the previous value rather than assuming the variable was unset,
-    /// so a test run under an operator dotenv leaves the environment as it found it.
-    struct EnvGuard {
-        key: &'static str,
-        prev: Option<String>,
-    }
-
-    impl EnvGuard {
-        /// Set the variable, remembering what was there before.
-        fn set(key: &'static str, value: &str) -> Self {
-            let prev = std::env::var(key).ok();
-            unsafe { std::env::set_var(key, value) };
-            Self { key, prev }
-        }
-
-        /// Unset the variable, remembering what was there before.
-        fn remove(key: &'static str) -> Self {
-            let prev = std::env::var(key).ok();
-            unsafe { std::env::remove_var(key) };
-            Self { key, prev }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        /// Restore the captured value, or unset again if there was none.
-        fn drop(&mut self) {
-            match self.prev.as_deref() {
-                Some(value) => unsafe { std::env::set_var(self.key, value) },
-                None => unsafe { std::env::remove_var(self.key) },
-            }
-        }
-    }
+    use crate::test_isolation::EnvGuard;
 
     /// A bundle of [`EnvGuard`]s that unwinds in one go at end of scope.
     struct TestEnv {

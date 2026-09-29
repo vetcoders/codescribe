@@ -7,6 +7,11 @@ use std::path::Path;
 #[cfg(any(test, feature = "test-isolation"))]
 use std::path::{Component, PathBuf};
 
+#[cfg(any(test, feature = "test-isolation"))]
+mod environment;
+#[cfg(any(test, feature = "test-isolation"))]
+pub use environment::{EnvGuard, ScopedEnv};
+
 /// Panic before a test process mutates the account's real home directory.
 /// `HOME` is intentionally ignored when locating the real account home.
 #[track_caller]

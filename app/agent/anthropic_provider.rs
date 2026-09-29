@@ -1017,48 +1017,7 @@ mod tests {
     use serde_json::json;
     use std::time::Duration;
 
-    /// Restores process env after a serial request-boundary test.
-    struct ScopedEnv {
-        previous: Vec<(&'static str, Option<std::ffi::OsString>)>,
-    }
-
-    impl ScopedEnv {
-        fn new() -> Self {
-            Self {
-                previous: Vec::new(),
-            }
-        }
-
-        fn set(&mut self, key: &'static str, value: impl AsRef<std::ffi::OsStr>) {
-            self.previous.push((key, std::env::var_os(key)));
-            // SAFETY: the only test using this helper is serial and restores
-            // every value before leaving its scope.
-            unsafe { std::env::set_var(key, value) };
-        }
-
-        fn remove(&mut self, key: &'static str) {
-            self.previous.push((key, std::env::var_os(key)));
-            // SAFETY: same serial, scope-bound invariant as `set`.
-            unsafe { std::env::remove_var(key) };
-        }
-    }
-
-    impl Drop for ScopedEnv {
-        fn drop(&mut self) {
-            for (key, previous) in self.previous.drain(..).rev() {
-                match previous {
-                    Some(value) => {
-                        // SAFETY: restoring the value captured by this serial test.
-                        unsafe { std::env::set_var(key, value) };
-                    }
-                    None => {
-                        // SAFETY: restoring the absent state captured by this serial test.
-                        unsafe { std::env::remove_var(key) };
-                    }
-                }
-            }
-        }
-    }
+    use codescribe_core::test_isolation::ScopedEnv;
 
     /// Test helper: one-block text message with the given role.
     fn text_message(role: Role, text: &str) -> Message {

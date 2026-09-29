@@ -1985,49 +1985,7 @@ mod tests {
         assert_eq!(drained.first().map(|edge| edge.sample), Some(37));
     }
 
-    /// RAII guard that restores an env var on drop.
-    ///
-    /// The gate config reads `CODESCRIBE_BUFFERED_*` at construction, so these
-    /// tests must mutate process-wide env — which is why every test using this
-    /// guard is also `#[serial]`. Restoring the previous value (including its
-    /// absence) keeps the operator's own `~/.codescribe/.env` from leaking
-    /// between tests.
-    struct EnvGuard {
-        key: &'static str,
-        prev: Option<String>,
-    }
-
-    impl EnvGuard {
-        /// Remove `key` for the guard's lifetime.
-        fn unset(key: &'static str) -> Self {
-            let prev = std::env::var(key).ok();
-            unsafe {
-                std::env::remove_var(key);
-            }
-            Self { key, prev }
-        }
-
-        /// Set `key` to `value` for the guard's lifetime.
-        fn set(key: &'static str, value: &str) -> Self {
-            let prev = std::env::var(key).ok();
-            unsafe {
-                std::env::set_var(key, value);
-            }
-            Self { key, prev }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        /// Restore the previous env value (or unset) when the guard leaves scope.
-        fn drop(&mut self) {
-            unsafe {
-                match self.prev.as_ref() {
-                    Some(prev) => std::env::set_var(self.key, prev),
-                    None => std::env::remove_var(self.key),
-                };
-            }
-        }
-    }
+    use crate::test_isolation::EnvGuard;
 
     /// Start on high prob, stay open on speech, End after enough silence frames.
     #[test]
@@ -2110,7 +2068,7 @@ mod tests {
     #[test]
     #[serial]
     fn utterance_default_silence_uses_buffered_cadence_default() {
-        let _g = EnvGuard::unset("CODESCRIBE_BUFFERED_SILENCE_SEC");
+        let _g = EnvGuard::remove("CODESCRIBE_BUFFERED_SILENCE_SEC");
 
         let sr = 16000u32;
 

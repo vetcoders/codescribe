@@ -636,7 +636,7 @@ mod tests {
     #[serial]
     async fn login_roundtrip_callback_exchanges_code_and_stores_tokens() {
         let _disable = EnvGuard::set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
-        let _tokens = EnvGuard::unset(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
+        let _tokens = EnvGuard::remove(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
 
         let mut issuer = mockito::Server::new_async().await;
         let _mock = issuer
@@ -687,7 +687,7 @@ mod tests {
     #[serial]
     async fn chatgpt_identity_token_stores_without_responses_write() {
         let _disable = EnvGuard::set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
-        let _tokens = EnvGuard::unset(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
+        let _tokens = EnvGuard::remove(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
 
         let mut issuer = mockito::Server::new_async().await;
         let _exchange = issuer
@@ -746,41 +746,7 @@ mod tests {
     }
 
     /// RAII env override for serial tests; restores prior value on drop.
-    #[derive(Debug)]
-    struct EnvGuard {
-        key: &'static str,
-        previous: Option<String>,
-    }
-
-    impl EnvGuard {
-        /// Set `key=value`, capturing the previous state for restore.
-        fn set(key: &'static str, value: &str) -> Self {
-            let previous = std::env::var(key).ok();
-            // SAFETY: env-touching tests here are serialized with `serial`.
-            unsafe { std::env::set_var(key, value) };
-            Self { key, previous }
-        }
-
-        /// Remove `key`, capturing the previous state for restore.
-        fn unset(key: &'static str) -> Self {
-            let previous = std::env::var(key).ok();
-            // SAFETY: env-touching tests here are serialized with `serial`.
-            unsafe { std::env::remove_var(key) };
-            Self { key, previous }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        /// Restore the exact process env captured at set/unset.
-        fn drop(&mut self) {
-            match &self.previous {
-                // SAFETY: env-touching tests here are serialized with `serial`.
-                Some(value) => unsafe { std::env::set_var(self.key, value) },
-                // SAFETY: env-touching tests here are serialized with `serial`.
-                None => unsafe { std::env::remove_var(self.key) },
-            }
-        }
-    }
+    use crate::test_isolation::EnvGuard;
 
     /// Authorization-code grant posts form body and maps access/refresh/id.
     #[tokio::test]
@@ -881,8 +847,8 @@ mod tests {
     #[serial]
     async fn paste_code_provider_is_refused_a_loopback_server() {
         let _disable = EnvGuard::set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
-        let _openai = EnvGuard::unset(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
-        let _anthropic = EnvGuard::unset(ANTHROPIC_ACCOUNT_TOKENS_ACCOUNT);
+        let _openai = EnvGuard::remove(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
+        let _anthropic = EnvGuard::remove(ANTHROPIC_ACCOUNT_TOKENS_ACCOUNT);
 
         let opts = ServerOptions::new(ProviderKind::AnthropicMessages, "client".to_string())
             .expect("Anthropic has an OAuth registry row");
@@ -906,8 +872,8 @@ mod tests {
     #[test]
     #[serial]
     fn server_options_take_issuer_and_port_from_the_providers_row() {
-        let _openai_issuer = EnvGuard::unset("CODESCRIBE_OPENAI_OAUTH_ISSUER");
-        let _anthropic_issuer = EnvGuard::unset("CODESCRIBE_ANTHROPIC_OAUTH_ISSUER");
+        let _openai_issuer = EnvGuard::remove("CODESCRIBE_OPENAI_OAUTH_ISSUER");
+        let _anthropic_issuer = EnvGuard::remove("CODESCRIBE_ANTHROPIC_OAUTH_ISSUER");
 
         let openai = openai_opts("client");
         assert_eq!(openai.provider, ProviderKind::OpenAiResponses);

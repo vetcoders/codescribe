@@ -566,41 +566,16 @@ pub fn transcribe_chunk(
 mod tests {
     use super::*;
     use serial_test::serial;
-    use std::ffi::OsString;
 
-    /// RAII capture of one process env key for serial restoration on drop.
-    struct EnvRestore {
-        key: &'static str,
-        previous: Option<OsString>,
-    }
-
-    impl EnvRestore {
-        /// Snapshot `key`'s current value (or absence) before a test mutates it.
-        fn capture(key: &'static str) -> Self {
-            Self {
-                key,
-                previous: std::env::var_os(key),
-            }
-        }
-    }
-
-    impl Drop for EnvRestore {
-        /// Restore the exact process env captured at `capture`.
-        fn drop(&mut self) {
-            match &self.previous {
-                Some(value) => unsafe { std::env::set_var(self.key, value) },
-                None => unsafe { std::env::remove_var(self.key) },
-            }
-        }
-    }
+    use crate::test_isolation::EnvGuard;
 
     /// File transcription stays prompt-free by contract.
     #[test]
     #[serial]
     fn file_transcription_initial_prompt_defaults_off() {
-        let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-        let _env_path = EnvRestore::capture("CODESCRIBE_ENV_PATH");
-        let _prompt_enabled = EnvRestore::capture("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED");
+        let _data_dir = EnvGuard::capture("CODESCRIBE_DATA_DIR");
+        let _env_path = EnvGuard::capture("CODESCRIBE_ENV_PATH");
+        let _prompt_enabled = EnvGuard::capture("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED");
         let temp_dir = tempfile::tempdir().expect("temp data dir");
 
         unsafe {
@@ -616,9 +591,9 @@ mod tests {
     #[test]
     #[serial]
     fn file_transcription_initial_prompt_stays_off_when_window_prompt_is_opted_in() {
-        let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-        let _env_path = EnvRestore::capture("CODESCRIBE_ENV_PATH");
-        let _prompt_enabled = EnvRestore::capture("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED");
+        let _data_dir = EnvGuard::capture("CODESCRIBE_DATA_DIR");
+        let _env_path = EnvGuard::capture("CODESCRIBE_ENV_PATH");
+        let _prompt_enabled = EnvGuard::capture("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED");
         let temp_dir = tempfile::tempdir().expect("temp data dir");
 
         unsafe {
@@ -638,7 +613,7 @@ mod tests {
     #[test]
     #[serial]
     fn whisper_default_ttl_is_1800() {
-        let _ttl = EnvRestore::capture("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS");
+        let _ttl = EnvGuard::capture("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS");
 
         unsafe { std::env::remove_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS") };
         assert_eq!(
@@ -653,7 +628,7 @@ mod tests {
     #[test]
     #[serial]
     fn fleet_red_whisper_effective_ttl_overrides_include_zero_keep_warm() {
-        let _ttl = EnvRestore::capture("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS");
+        let _ttl = EnvGuard::capture("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS");
 
         unsafe { std::env::set_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS", "17") };
         assert_eq!(idle_unload_after(), Some(Duration::from_secs(17)));
@@ -669,7 +644,7 @@ mod tests {
     #[test]
     #[serial]
     fn whisper_residency_policy_exposes_effective_ttl_and_keep_warm() {
-        let _ttl = EnvRestore::capture("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS");
+        let _ttl = EnvGuard::capture("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS");
 
         unsafe { std::env::remove_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS") };
         assert_eq!(
@@ -694,8 +669,8 @@ mod tests {
     #[test]
     #[serial]
     fn configured_local_model_prefers_env_then_settings_then_env_file() {
-        let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-        let _local_model = EnvRestore::capture("LOCAL_MODEL");
+        let _data_dir = EnvGuard::capture("CODESCRIBE_DATA_DIR");
+        let _local_model = EnvGuard::capture("LOCAL_MODEL");
         let temp_dir = tempfile::tempdir().expect("temp data dir");
 
         unsafe {
@@ -753,7 +728,7 @@ mod tests {
     #[ignore = "loads the real Whisper weights and decodes 60s on Metal"]
     #[serial]
     fn whisper_metal_pool_footprint_with_resident_weights() {
-        let _ttl = EnvRestore::capture("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS");
+        let _ttl = EnvGuard::capture("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS");
         // Keep the weights resident for the whole measurement. The reaper's
         // 30-minute unload must not race this bench.
         unsafe { std::env::set_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS", "0") };

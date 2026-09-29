@@ -3,38 +3,7 @@ use serial_test::serial;
 use std::fs;
 use tempfile::TempDir;
 
-struct EnvGuard {
-    key: &'static str,
-    prev: Option<String>,
-}
-
-impl EnvGuard {
-    fn set(key: &'static str, value: &str) -> Self {
-        let prev = std::env::var(key).ok();
-        // SAFETY: tests run single-threaded with controlled env usage.
-        unsafe { std::env::set_var(key, value) };
-        Self { key, prev }
-    }
-
-    fn unset(key: &'static str) -> Self {
-        let prev = std::env::var(key).ok();
-        // SAFETY: tests run single-threaded with controlled env usage.
-        unsafe { std::env::remove_var(key) };
-        Self { key, prev }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        if let Some(prev) = &self.prev {
-            // SAFETY: tests run single-threaded with controlled env usage.
-            unsafe { std::env::set_var(self.key, prev) };
-        } else {
-            // SAFETY: tests run single-threaded with controlled env usage.
-            unsafe { std::env::remove_var(self.key) };
-        }
-    }
-}
+use codescribe_core::test_isolation::EnvGuard;
 
 fn missing_required_envs(config: &Config) -> Vec<&'static str> {
     let mut missing = Vec::new();
@@ -92,10 +61,10 @@ fn env_precedence_stt_file_endpoint() {
 #[test]
 #[serial]
 fn required_cloud_stt_vars_when_local_disabled() {
-    let _alias = EnvGuard::unset("STT_ENDPOINT");
+    let _alias = EnvGuard::remove("STT_ENDPOINT");
     let _g1 = EnvGuard::set("USE_LOCAL_STT", "0");
-    let _g2 = EnvGuard::unset("STT_FILE_ENDPOINT");
-    let _g3 = EnvGuard::unset("STT_FILE_API_KEY");
+    let _g2 = EnvGuard::remove("STT_FILE_ENDPOINT");
+    let _g3 = EnvGuard::remove("STT_FILE_API_KEY");
 
     let mut cfg = Config::default();
     cfg.load_from_env();
@@ -113,7 +82,7 @@ fn loopback_cloud_stt_does_not_require_api_key() {
         "STT_FILE_ENDPOINT",
         "http://127.0.0.1:8000/v1/audio/transcriptions",
     );
-    let _g3 = EnvGuard::unset("STT_FILE_API_KEY");
+    let _g3 = EnvGuard::remove("STT_FILE_API_KEY");
 
     let mut cfg = Config::default();
     cfg.load_from_env();
@@ -149,7 +118,7 @@ fn default_env_carries_no_llm_endpoint_or_key_rows() {
 #[serial]
 fn required_model_path_when_no_embed() {
     let _g1 = EnvGuard::set("CODESCRIBE_NO_EMBED", "1");
-    let _g2 = EnvGuard::unset("CODESCRIBE_MODEL_PATH");
+    let _g2 = EnvGuard::remove("CODESCRIBE_MODEL_PATH");
 
     let mut cfg = Config::default();
     cfg.load_from_env();
@@ -167,9 +136,9 @@ fn mode_binding_contract_uses_settings_when_env_path_is_overridden() {
 
     let _g0 = EnvGuard::set("CODESCRIBE_DATA_DIR", tmp.path().to_string_lossy().as_ref());
     let _g1 = EnvGuard::set("CODESCRIBE_ENV_PATH", env_path.to_string_lossy().as_ref());
-    let _g2 = EnvGuard::unset("WHISPER_LANGUAGE");
-    let _g3 = EnvGuard::unset("HOLD_MODS");
-    let _g4 = EnvGuard::unset("TOGGLE_TRIGGER");
+    let _g2 = EnvGuard::remove("WHISPER_LANGUAGE");
+    let _g3 = EnvGuard::remove("HOLD_MODS");
+    let _g4 = EnvGuard::remove("TOGGLE_TRIGGER");
 
     let cfg = Config::load();
     assert_eq!(cfg.whisper_language.as_str(), "en");
@@ -188,8 +157,8 @@ fn mode_binding_contract_uses_settings_when_env_path_is_overridden() {
 #[test]
 #[serial]
 fn env_alias_stt_endpoint_routes_by_scheme_with_warn() {
-    let _file = EnvGuard::unset("STT_FILE_ENDPOINT");
-    let _live = EnvGuard::unset("STT_LIVE_ENDPOINT");
+    let _file = EnvGuard::remove("STT_FILE_ENDPOINT");
+    let _live = EnvGuard::remove("STT_LIVE_ENDPOINT");
     for (url, file, live) in [
         (
             "https://example.com/stt",
@@ -223,9 +192,9 @@ fn stt_file_env_override_survives_repeated_load_and_settings_write() {
     let _root = EnvGuard::set("CODESCRIBE_DATA_DIR", tmp.path().to_str().unwrap());
     let env_path = tmp.path().join("test.env");
     let _env = EnvGuard::set("CODESCRIBE_ENV_PATH", env_path.to_str().unwrap());
-    let _file = EnvGuard::unset("STT_FILE_ENDPOINT");
-    let _live = EnvGuard::unset("STT_LIVE_ENDPOINT");
-    let _alias = EnvGuard::unset("STT_ENDPOINT");
+    let _file = EnvGuard::remove("STT_FILE_ENDPOINT");
+    let _live = EnvGuard::remove("STT_LIVE_ENDPOINT");
+    let _alias = EnvGuard::remove("STT_ENDPOINT");
     let _keychain = EnvGuard::set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
     UserSettings {
         stt_file_endpoint: Some("https://settings.example/stt".into()),

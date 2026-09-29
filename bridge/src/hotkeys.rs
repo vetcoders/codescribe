@@ -2476,51 +2476,8 @@ fn project_admission_readiness(
 mod admission_readiness_source_tests {
     use super::*;
     use serial_test::serial;
-    use std::ffi::{OsStr, OsString};
 
-    /// Restore one process environment variable, including its absent state.
-    struct EnvGuard {
-        key: &'static str,
-        previous: Option<OsString>,
-    }
-
-    impl EnvGuard {
-        /// Set `key` for this serialized test and remember the prior value.
-        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
-            let guard = Self {
-                key,
-                previous: std::env::var_os(key),
-            };
-            // SAFETY: the only test in this module that mutates process env is
-            // serialized and starts no background workers.
-            unsafe { std::env::set_var(key, value) };
-            guard
-        }
-
-        /// Clear `key` for this serialized test and remember the prior value.
-        fn unset(key: &'static str) -> Self {
-            let guard = Self {
-                key,
-                previous: std::env::var_os(key),
-            };
-            // SAFETY: same serialization invariant as `set` above.
-            unsafe { std::env::remove_var(key) };
-            guard
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            // SAFETY: restoration occurs before the serialized test releases
-            // its global serial_test lock.
-            unsafe {
-                match self.previous.take() {
-                    Some(value) => std::env::set_var(self.key, value),
-                    None => std::env::remove_var(self.key),
-                }
-            }
-        }
-    }
+    use codescribe_core::test_isolation::EnvGuard;
 
     /// Scratch product settings own the bridge source until process env
     /// explicitly overrides the same immutable snapshot input.
@@ -2531,8 +2488,8 @@ mod admission_readiness_source_tests {
 
         let scratch = tempfile::tempdir().expect("create scratch settings root");
         let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", scratch.path());
-        let _env_path = EnvGuard::unset("CODESCRIBE_ENV_PATH");
-        let _seal_lane_override = EnvGuard::unset(SEAL_LANE_ENV);
+        let _env_path = EnvGuard::remove("CODESCRIBE_ENV_PATH");
+        let _seal_lane_override = EnvGuard::remove(SEAL_LANE_ENV);
 
         UserSettings {
             seal_lane_armed: Some(true),

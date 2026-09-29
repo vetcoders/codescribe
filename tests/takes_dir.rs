@@ -9,31 +9,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-struct EnvGuard {
-    key: &'static str,
-    prev: Option<String>,
-}
-
-impl EnvGuard {
-    fn set(key: &'static str, value: &str) -> Self {
-        let prev = std::env::var(key).ok();
-        // SAFETY: this integration-test binary owns CODESCRIBE_DATA_DIR.
-        unsafe { std::env::set_var(key, value) };
-        Self { key, prev }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        if let Some(prev) = &self.prev {
-            // SAFETY: restore the value this test replaced.
-            unsafe { std::env::set_var(self.key, prev) };
-        } else {
-            // SAFETY: restore absence when the test introduced the var.
-            unsafe { std::env::remove_var(self.key) };
-        }
-    }
-}
+use codescribe_core::test_isolation::EnvGuard;
 
 fn recording_names_in(dir: &Path) -> BTreeSet<String> {
     let mut names = BTreeSet::new();

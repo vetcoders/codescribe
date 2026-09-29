@@ -952,50 +952,7 @@ mod tests {
         assert!(remove_model_directory(temp.path(), "../active", Some(&active)).is_err());
     }
 
-    /// Restores a single env var on drop; tests must run under `serial`.
-    struct EnvGuard {
-        key: &'static str,
-        prev: Option<String>,
-    }
-
-    impl EnvGuard {
-        /// Set `key` to `value`, remembering the previous value for `Drop`.
-        fn set(key: &'static str, value: &Path) -> Self {
-            let prev = std::env::var(key).ok();
-            // SAFETY: these tests run under `serial` and restore the prior env.
-            unsafe { std::env::set_var(key, value) };
-            Self { key, prev }
-        }
-
-        /// Set `key` to a literal string, including shell-like path syntax.
-        fn set_str(key: &'static str, value: &str) -> Self {
-            let prev = std::env::var(key).ok();
-            // SAFETY: these tests run under `serial` and restore the prior env.
-            unsafe { std::env::set_var(key, value) };
-            Self { key, prev }
-        }
-
-        /// Unset `key`, remembering the previous value for `Drop`.
-        fn unset(key: &'static str) -> Self {
-            let prev = std::env::var(key).ok();
-            // SAFETY: these tests run under `serial` and restore the prior env.
-            unsafe { std::env::remove_var(key) };
-            Self { key, prev }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        /// Restore the prior env value, or remove the key if it was unset.
-        fn drop(&mut self) {
-            if let Some(prev) = &self.prev {
-                // SAFETY: these tests run under `serial` and restore the prior env.
-                unsafe { std::env::set_var(self.key, prev) };
-            } else {
-                // SAFETY: these tests run under `serial` and restore the prior env.
-                unsafe { std::env::remove_var(self.key) };
-            }
-        }
-    }
+    use crate::test_isolation::EnvGuard;
 
     /// Create a directory that passes `is_complete_whisper_model_dir`.
     fn create_complete_whisper_model(path: &Path) {
@@ -1133,7 +1090,7 @@ mod tests {
 
         let _home = EnvGuard::set("HOME", &home);
         let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &data_dir);
-        let _models_dir = EnvGuard::unset("CODESCRIBE_MODELS_DIR");
+        let _models_dir = EnvGuard::remove("CODESCRIBE_MODELS_DIR");
 
         let manager = ModelManager::new().unwrap();
         assert_eq!(manager.models_dir(), installed.as_path());
@@ -1151,7 +1108,7 @@ mod tests {
         create_complete_whisper_model(&models_dir.join(DEFAULT_MODEL));
 
         let _home = EnvGuard::set("HOME", &home);
-        let _models_dir = EnvGuard::set_str("CODESCRIBE_MODELS_DIR", "~/custom-models");
+        let _models_dir = EnvGuard::set("CODESCRIBE_MODELS_DIR", "~/custom-models");
 
         let manager = ModelManager::new().unwrap();
         assert_eq!(manager.models_dir(), models_dir.as_path());
@@ -1511,9 +1468,9 @@ mod tests {
 
         let _home = EnvGuard::set("HOME", &home);
         let _cache = EnvGuard::set("CODESCRIBE_HF_CACHE", &cache);
-        let _hf_home = EnvGuard::unset("HF_HOME");
-        let _hf_hub = EnvGuard::unset("HF_HUB_CACHE");
-        let _huggingface_hub = EnvGuard::unset("HUGGINGFACE_HUB_CACHE");
+        let _hf_home = EnvGuard::remove("HF_HOME");
+        let _hf_hub = EnvGuard::remove("HF_HUB_CACHE");
+        let _huggingface_hub = EnvGuard::remove("HUGGINGFACE_HUB_CACHE");
 
         let snapshot = |repo: &str, revision: &str| {
             cache
@@ -1598,9 +1555,9 @@ mod tests {
 
         let _home = EnvGuard::set("HOME", &home);
         let _cache = EnvGuard::set("CODESCRIBE_HF_CACHE", &cache);
-        let _hf_home = EnvGuard::unset("HF_HOME");
-        let _hf_hub = EnvGuard::unset("HF_HUB_CACHE");
-        let _huggingface_hub = EnvGuard::unset("HUGGINGFACE_HUB_CACHE");
+        let _hf_home = EnvGuard::remove("HF_HOME");
+        let _hf_hub = EnvGuard::remove("HF_HUB_CACHE");
+        let _huggingface_hub = EnvGuard::remove("HUGGINGFACE_HUB_CACHE");
 
         let config_before = fs::read(destination.join("config.json")).unwrap();
         let weights_before = fs::read(destination.join("model.safetensors")).unwrap();
@@ -1687,7 +1644,7 @@ mod tests {
 
         let _env_override = EnvGuard::set("CODESCRIBE_MODEL_PATH", &env_model);
         let _models_dir = EnvGuard::set("CODESCRIBE_MODELS_DIR", &models_dir);
-        let _hf_cache = EnvGuard::unset("CODESCRIBE_HF_CACHE");
+        let _hf_cache = EnvGuard::remove("CODESCRIBE_HF_CACHE");
 
         let resolved = resolve_runtime_whisper_model_path(Some(DEFAULT_MODEL)).unwrap();
         assert_eq!(resolved, canonicalize_or_self(env_model));
@@ -1710,7 +1667,7 @@ mod tests {
             "CODESCRIBE_MODELS_DIR",
             temp_dir.path().join("models").as_path(),
         );
-        let _env_override = EnvGuard::unset("CODESCRIBE_MODEL_PATH");
+        let _env_override = EnvGuard::remove("CODESCRIBE_MODEL_PATH");
         let _hf_cache = EnvGuard::set("CODESCRIBE_HF_CACHE", &hf_cache);
 
         let resolved =
@@ -1736,9 +1693,9 @@ mod tests {
         vec![
             EnvGuard::set("HOME", &fake_home),
             EnvGuard::set("CODESCRIBE_HF_CACHE", &empty_hf_cache),
-            EnvGuard::unset("HUGGINGFACE_HUB_CACHE"),
-            EnvGuard::unset("HF_HUB_CACHE"),
-            EnvGuard::unset("HF_HOME"),
+            EnvGuard::remove("HUGGINGFACE_HUB_CACHE"),
+            EnvGuard::remove("HF_HUB_CACHE"),
+            EnvGuard::remove("HF_HOME"),
         ]
     }
 
@@ -1774,7 +1731,7 @@ mod tests {
         std::fs::create_dir_all(&empty_models_dir).unwrap();
 
         let _hf_isolation = isolate_from_real_hf_cache(temp_dir.path());
-        let _env_override = EnvGuard::unset("CODESCRIBE_MODEL_PATH");
+        let _env_override = EnvGuard::remove("CODESCRIBE_MODEL_PATH");
         let _models_dir = EnvGuard::set("CODESCRIBE_MODELS_DIR", &empty_models_dir);
 
         let err = resolve_runtime_whisper_model_path(Some(DEFAULT_MODEL))
