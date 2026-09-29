@@ -69,7 +69,7 @@ struct Composer: View {
           CSIconView(
             icon: .attach,
             size: ComposerControlMetrics.glyphSize,
-            color: store.pendingAttachments.isEmpty ? AgentChrome.tertiary : CSColor.chromeAccent
+            color: store.pendingAttachments.isEmpty ? CSColor.textTertiary : CSColor.chromeAccent
           )
           .frame(
             width: ComposerControlMetrics.hitTargetSize,
@@ -122,11 +122,11 @@ struct Composer: View {
       .padding(.leading, 13)
       .padding(.trailing, 11)
       .padding(.vertical, 6)
-      .background(AgentChrome.lift(isDragging ? 0.07 : 0.04))
+      .background(Color.primary.opacity(isDragging ? 0.07 : 0.04))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
           .strokeBorder(
-            isDragging ? CSColor.chromeAccent : AgentChrome.separator(0.09),
+            isDragging ? CSColor.chromeAccent : Color.primary.opacity(0.09),
             lineWidth: isDragging ? 1.5 : 1
           )
       )
@@ -152,14 +152,14 @@ struct Composer: View {
         ForEach(affordances, id: \.self) { item in
           Text(item)
             .font(CSFont.mono(10, .medium))
-            .foregroundStyle(AgentChrome.tertiary)
+            .foregroundStyle(CSColor.textTertiary)
         }
       }
     }
     .padding(.horizontal, 14)
     .padding(.vertical, 8)
     .overlay(alignment: .top) {
-      Rectangle().fill(AgentChrome.separator(0.06)).frame(height: 1)
+      Rectangle().fill(Color.primary.opacity(0.06)).frame(height: 1)
     }
     // Drag an image from Finder onto the composer to stage it (same path as
     // the 📎 picker). The whole bottom strip is the outer drop area — it
@@ -187,7 +187,7 @@ struct Composer: View {
           ScrollView {
             Text(document.text)
               .font(CSFont.mono(12, .regular))
-              .foregroundStyle(AgentChrome.tertiary)
+              .foregroundStyle(CSColor.textTertiary)
               .textSelection(.enabled)
               .frame(maxWidth: .infinity, alignment: .leading)
           }
@@ -216,7 +216,7 @@ struct Composer: View {
           .buttonStyle(.borderless)
         }
         .padding(8)
-        .background(AgentChrome.lift(0.04))
+        .background(Color.primary.opacity(0.04))
         .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer))
         .accessibilityIdentifier("composer.recovery.inspect." + document.id)
       }
@@ -237,7 +237,7 @@ struct Composer: View {
         CSIconView(icon: .warning, size: 11, color: CSColor.amber)
         Text(message)
           .font(CSFont.ui(11.5, .medium))
-          .foregroundStyle(AgentChrome.primary)
+          .foregroundStyle(Color.primary)
         Spacer(minLength: 8)
         Button("Enter license") {
           SettingsDeepLink.pendingSection = .license
@@ -249,7 +249,7 @@ struct Composer: View {
       }
       .padding(.horizontal, 11)
       .padding(.vertical, 8)
-      .background(AgentChrome.lift(0.04))
+      .background(Color.primary.opacity(0.04))
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
@@ -286,7 +286,7 @@ struct Composer: View {
         if entries.isEmpty {
           Text("Brak pozycji")
             .font(CSFont.ui(11.5, .regular))
-            .foregroundStyle(AgentChrome.tertiary)
+            .foregroundStyle(CSColor.textTertiary)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
         } else {
@@ -310,7 +310,7 @@ struct Composer: View {
       VStack(alignment: .leading, spacing: 0) { content() }
     }
     .frame(maxHeight: 190)
-    .background(AgentChrome.lift(0.05))
+    .background(Color.primary.opacity(0.05))
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
@@ -329,11 +329,11 @@ struct Composer: View {
         VStack(alignment: .leading, spacing: 1) {
           Text(title)
             .font(CSFont.mono(11.5, .semibold))
-            .foregroundStyle(AgentChrome.primary)
+            .foregroundStyle(Color.primary)
           if let subtitle, !subtitle.isEmpty {
             Text(subtitle)
               .font(CSFont.ui(11, .regular))
-              .foregroundStyle(AgentChrome.tertiary)
+              .foregroundStyle(CSColor.textTertiary)
           }
         }
         Spacer(minLength: 8)
@@ -402,11 +402,11 @@ struct Composer: View {
     {
       Text(live)
         .font(CSFont.ui(13, .regular))
-        .foregroundStyle(AgentChrome.primary)
+        .foregroundStyle(Color.primary)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(AgentChrome.lift(0.04))
+        .background(Color.primary.opacity(0.04))
         .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
         .accessibilityIdentifier("agent-live-capture")
     }
@@ -451,7 +451,7 @@ struct Composer: View {
       RippleMic(state: micState)
       if micState == .preparing {
         Circle()
-          .fill(AgentChrome.controlFill)
+          .fill(CSColor.controlFill)
           .frame(width: 10, height: 10)
           .overlay {
             ProgressView()
@@ -507,7 +507,7 @@ struct Composer: View {
                 CSIconView(icon: .photo, size: 11, color: CSColor.chromeAccent)
                 Text(attachment.name)
                   .font(CSFont.mono(10.5, .medium))
-                  .foregroundStyle(AgentChrome.primary)
+                  .foregroundStyle(Color.primary)
                   .lineLimit(1)
                   .truncationMode(.middle)
                   .frame(maxWidth: 160)
@@ -516,17 +516,17 @@ struct Composer: View {
             .csFocusRing()
             .help("Preview attachment")
             Button(action: { store.removeAttachment(attachment.id) }) {
-              CSIconView(icon: .close, size: 9, weight: .bold, color: AgentChrome.tertiary)
+              CSIconView(icon: .close, size: 9, weight: .bold, color: CSColor.textTertiary)
             }
             .csFocusRing()
             .help("Remove attachment")
           }
           .padding(.horizontal, 9)
           .padding(.vertical, 5)
-          .background(AgentChrome.lift(0.05))
+          .background(Color.primary.opacity(0.05))
           .overlay(
             RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
-              .strokeBorder(AgentChrome.separator(0.10), lineWidth: 1)
+              .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
           )
           .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
         }

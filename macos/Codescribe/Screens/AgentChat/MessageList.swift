@@ -404,6 +404,28 @@ struct MessageList: View {
   }
 }
 
+private let agentEmptyThreadTitle = "New thread"
+private let agentEmptyThreadDetail =
+  "Write in the composer, or dictate. The reply stays in this thread."
+
+/// Quiet first screen for a thread that has no turns yet.
+private struct AgentEmptyThread: View {
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text(agentEmptyThreadTitle)
+        .font(CSFont.ui(15, .semibold))
+        .foregroundStyle(Color.primary)
+      Text(agentEmptyThreadDetail)
+        .font(CSFont.ui(13, .regular))
+        .foregroundStyle(Color.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .frame(maxWidth: 420, alignment: .leading)
+    .padding(.top, 28)
+    .accessibilityElement(children: .combine)
+  }
+}
+
 /// Top-of-list pager for the bounded render window: names how much history is
 /// folded away and loads one more window per click. Deliberately a plain row,
 /// not infinite scroll — paging must stay an explicit operator action so the
@@ -418,17 +440,17 @@ private struct ShowEarlierButton: View {
       HStack(spacing: 6) {
         CSIconView(
           icon: .chevronRight, size: 8, weight: .semibold,
-          color: AgentChrome.tertiary)
+          color: CSColor.textTertiary)
         Text("Show earlier · \(hiddenCount) turn\(hiddenCount == 1 ? "" : "s")")
           .font(CSFont.mono(10.5, .medium))
-          .foregroundStyle(hovering ? AgentChrome.primary : AgentChrome.tertiary)
+          .foregroundStyle(hovering ? Color.primary : CSColor.textTertiary)
       }
       .padding(.horizontal, 11)
       .padding(.vertical, 6)
-      .background(AgentChrome.lift(0.04))
+      .background(Color.primary.opacity(0.04))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
-          .strokeBorder(AgentChrome.separator(0.10), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
       )
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
       .contentShape(Rectangle())
@@ -454,14 +476,14 @@ private struct JumpToCurrentButton: View {
           color: CSColor.chromeAccent)
         Text("Current")
           .font(CSFont.mono(10.5, .medium))
-          .foregroundStyle(hovering ? AgentChrome.primary : AgentChrome.secondary)
+          .foregroundStyle(hovering ? Color.primary : Color.secondary)
       }
       .padding(.horizontal, 11)
       .padding(.vertical, 6)
-      .background(AgentChrome.controlFill)
+      .background(CSColor.controlFill)
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
-          .strokeBorder(AgentChrome.separator(0.12), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
       )
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
     }
@@ -644,7 +666,7 @@ private struct YouTurn: View {
       // Calm surface, not an alarm plate (U17): the bubble sits on the
       // shared raised surface; terracotta stays on ACCENTS only — the
       // timestamp above and this thin border.
-      .background(AgentChrome.lift(0.06))
+      .background(Color.primary.opacity(0.06))
       .overlay(
         UnevenRoundedRectangle(
           topLeadingRadius: 14, bottomLeadingRadius: 14,
@@ -701,11 +723,11 @@ private struct ContextChip: View {
             icon: expanded ? .chevronDown : .chevronRight,
             size: 8,
             weight: .semibold,
-            color: AgentChrome.tertiary
+            color: CSColor.textTertiary
           )
           Text("context")
             .font(CSFont.mono(10, .medium))
-            .foregroundStyle(AgentChrome.tertiary)
+            .foregroundStyle(CSColor.textTertiary)
         }
         .contentShape(Rectangle())
       }
@@ -717,7 +739,7 @@ private struct ContextChip: View {
           if let app {
             Text("app · \(app)")
               .font(CSFont.mono(10.5, .medium))
-              .foregroundStyle(AgentChrome.secondary)
+              .foregroundStyle(Color.secondary)
           }
           if let selection {
             // Huge pasted selections (legacy assistive wires) must
@@ -728,7 +750,7 @@ private struct ContextChip: View {
                 OversizedMessageBody(fullText: selection) { head in
                   Text(head)
                     .font(CSFont.mono(10.5))
-                    .foregroundStyle(AgentChrome.primary)
+                    .foregroundStyle(Color.primary)
                     .lineSpacing(3)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -736,7 +758,7 @@ private struct ContextChip: View {
               } else {
                 Text(selection)
                   .font(CSFont.mono(10.5))
-                  .foregroundStyle(AgentChrome.primary)
+                  .foregroundStyle(Color.primary)
                   .textSelection(.enabled)
                   .lineSpacing(3)
                   .fixedSize(horizontal: false, vertical: true)
@@ -744,7 +766,7 @@ private struct ContextChip: View {
               }
             }
             .padding(8)
-            .background(AgentChrome.lift(0.05))
+            .background(Color.primary.opacity(0.05))
             .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
             .clipped()
           }
@@ -783,17 +805,17 @@ private struct AttachmentChip: View {
         }
         Text(attachment.name)
           .font(CSFont.mono(10.5, .medium))
-          .foregroundStyle(AgentChrome.primary)
+          .foregroundStyle(Color.primary)
           .lineLimit(1)
           .truncationMode(.middle)
           .frame(maxWidth: 160)
       }
       .padding(.horizontal, 9)
       .padding(.vertical, 5)
-      .background(AgentChrome.lift(0.05))
+      .background(Color.primary.opacity(0.05))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
-          .strokeBorder(AgentChrome.separator(0.10), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
       )
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
     }
@@ -838,11 +860,11 @@ struct AttachmentPreviewSheet: View {
         VStack(alignment: .leading, spacing: 4) {
           Text(attachment.name)
             .font(CSFont.mono(13, .semibold))
-            .foregroundStyle(AgentChrome.primary)
+            .foregroundStyle(Color.primary)
             .textSelection(.enabled)
           Text(attachment.type)
             .font(CSFont.mono(10.5, .medium))
-            .foregroundStyle(AgentChrome.tertiary)
+            .foregroundStyle(CSColor.textTertiary)
         }
         Spacer(minLength: 8)
         Button("Close") { dismiss() }
@@ -862,17 +884,17 @@ struct AttachmentPreviewSheet: View {
               .frame(maxWidth: .infinity, maxHeight: .infinity)
           }
           .frame(minHeight: 280, maxHeight: 480)
-          .background(AgentChrome.lift(0.04))
+          .background(Color.primary.opacity(0.04))
           .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
 
           HStack(spacing: 10) {
             Text("Zoom")
               .font(CSFont.mono(10.5, .medium))
-              .foregroundStyle(AgentChrome.tertiary)
+              .foregroundStyle(CSColor.textTertiary)
             Slider(value: $zoom, in: 0.5...3.0, step: 0.1)
             Text(String(format: "%.0f%%", zoom * 100))
               .font(CSFont.mono(10.5, .medium))
-              .foregroundStyle(AgentChrome.secondary)
+              .foregroundStyle(Color.secondary)
               .frame(width: 44, alignment: .trailing)
           }
         } else if attachment.url == nil {
@@ -898,17 +920,17 @@ struct AttachmentPreviewSheet: View {
       VStack(alignment: .leading, spacing: 4) {
         Text("Path")
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(AgentChrome.tertiary)
+          .foregroundStyle(CSColor.textTertiary)
         Text(pathText)
           .font(CSFont.mono(10.5))
-          .foregroundStyle(AgentChrome.primary)
+          .foregroundStyle(Color.primary)
           .textSelection(.enabled)
           .lineLimit(3)
           .truncationMode(.middle)
       }
       .padding(10)
       .frame(maxWidth: .infinity, alignment: .leading)
-      .background(AgentChrome.lift(0.04))
+      .background(Color.primary.opacity(0.04))
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
 
       HStack(spacing: 10) {
@@ -955,15 +977,15 @@ struct AttachmentPreviewSheet: View {
     VStack(alignment: .leading, spacing: 8) {
       Text(title)
         .font(CSFont.mono(12, .semibold))
-        .foregroundStyle(AgentChrome.brandLabel)
+        .foregroundStyle(CSColor.terracotta)
       Text(detail)
         .font(CSFont.mono(11))
-        .foregroundStyle(AgentChrome.secondary)
+        .foregroundStyle(Color.secondary)
         .fixedSize(horizontal: false, vertical: true)
     }
     .padding(CSSpace.card)
     .frame(maxWidth: .infinity, minHeight: 160, alignment: .leading)
-    .background(AgentChrome.lift(0.04))
+    .background(Color.primary.opacity(0.04))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .strokeBorder(CSColor.terracotta.opacity(0.22), lineWidth: 1)
@@ -1039,9 +1061,9 @@ private struct ToolLineRow: View {
     case .running:
       return CSColor.amber
     case .failed:
-      return AgentChrome.brandLabel
+      return CSColor.terracotta
     case .cancelled, .unknown:
-      return AgentChrome.tertiary
+      return CSColor.textTertiary
     case .succeeded:
       return CSColor.oliveLight
     }
@@ -1058,7 +1080,7 @@ private struct ToolLineRow: View {
           }
           (Text(line.verb).foregroundStyle(rowColor)
             + Text(" \(line.detail)\(isRunning ? " running..." : "")").foregroundStyle(
-              isQuiet ? AgentChrome.tertiary : ChatPalette.toolBody))
+              isQuiet ? CSColor.textTertiary : ChatPalette.toolBody))
             .font(CSFont.mono(11.5, .medium))
             .lineSpacing(4)
             .textSelection(.enabled)
@@ -1067,7 +1089,7 @@ private struct ToolLineRow: View {
           {
             Text(duration)
               .font(CSFont.mono(10, .medium))
-              .foregroundStyle(AgentChrome.tertiary)
+              .foregroundStyle(CSColor.textTertiary)
           }
           if canInspect {
             CSIconView(
@@ -1109,11 +1131,11 @@ private struct ToolInspectPanel: View {
         VStack(alignment: .leading, spacing: 2) {
           Text(line.state == .failed ? "error" : "result")
             .font(CSFont.mono(9.5, .semibold))
-            .foregroundStyle(AgentChrome.tertiary)
+            .foregroundStyle(CSColor.textTertiary)
             .textCase(.uppercase)
           Text(reason)
             .font(CSFont.mono(10.5, .medium))
-            .foregroundStyle(line.state == .failed ? AgentChrome.brandLabel : AgentChrome.primary)
+            .foregroundStyle(line.state == .failed ? CSColor.terracotta : Color.primary)
             .textSelection(.enabled)
             .lineSpacing(2)
             .fixedSize(horizontal: false, vertical: true)
@@ -1121,7 +1143,7 @@ private struct ToolInspectPanel: View {
       } else {
         Text("No result summary was stored for this call.")
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(AgentChrome.tertiary)
+          .foregroundStyle(CSColor.textTertiary)
       }
       // Honest residual: full request/response bodies and artifact store
       // links need bridge event fields beyond the current ToolLine contract.
@@ -1129,7 +1151,7 @@ private struct ToolInspectPanel: View {
         CopyMessageButton(text: line.technicalCopyText)
         Text("request/response bodies not on this event")
           .font(CSFont.mono(9.5, .medium))
-          .foregroundStyle(AgentChrome.tertiary)
+          .foregroundStyle(CSColor.textTertiary)
           .lineLimit(1)
       }
       .padding(.top, 2)
@@ -1139,11 +1161,11 @@ private struct ToolInspectPanel: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
       RoundedRectangle(cornerRadius: 8, style: .continuous)
-        .fill(AgentChrome.lift(0.04))
+        .fill(Color.primary.opacity(0.04))
     )
     .overlay(
       RoundedRectangle(cornerRadius: 8, style: .continuous)
-        .strokeBorder(AgentChrome.separator(0.06), lineWidth: 1)
+        .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
     )
   }
 
@@ -1151,12 +1173,12 @@ private struct ToolInspectPanel: View {
     HStack(alignment: .firstTextBaseline, spacing: 8) {
       Text(label)
         .font(CSFont.mono(9.5, .semibold))
-        .foregroundStyle(AgentChrome.tertiary)
+        .foregroundStyle(CSColor.textTertiary)
         .textCase(.uppercase)
         .frame(width: 64, alignment: .leading)
       Text(value)
         .font(CSFont.mono(10.5, .medium))
-        .foregroundStyle(AgentChrome.primary)
+        .foregroundStyle(Color.primary)
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -1179,7 +1201,7 @@ private struct ToolTurn: View {
       HStack(spacing: 8) {
         Text("Tool activity · \(message.timestamp)")
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(AgentChrome.tertiary)
+          .foregroundStyle(CSColor.textTertiary)
         CopyMessageButton(text: copyText)
         Spacer(minLength: 0)
       }
@@ -1200,7 +1222,7 @@ private struct ToolTurn: View {
             icon: hasRunning ? .more : hasCancelled ? .stop : .success,
             size: 11,
             color: hasRunning
-              ? CSColor.amber : hasCancelled ? AgentChrome.tertiary : CSColor.oliveLight
+              ? CSColor.amber : hasCancelled ? CSColor.textTertiary : CSColor.oliveLight
           )
           Text(message.toolTitle)
             .font(CSFont.mono(11, .semibold))
@@ -1212,10 +1234,10 @@ private struct ToolTurn: View {
         .contentShape(Rectangle())
       }
       .disclosureGroupStyle(FlatDisclosureStyle())
-      .background(AgentChrome.lift(0.025))
+      .background(Color.primary.opacity(0.025))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-          .strokeBorder(AgentChrome.separator(0.07), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
       )
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
       .clipped()
@@ -1246,7 +1268,7 @@ private struct FlatDisclosureStyle: DisclosureGroupStyle {
       .csFocusRing()
 
       if configuration.isExpanded {
-        Rectangle().fill(AgentChrome.separator(0.05)).frame(height: 1)
+        Rectangle().fill(Color.primary.opacity(0.05)).frame(height: 1)
         configuration.content
       }
     }
@@ -1288,7 +1310,7 @@ private struct AssistantTurn: View {
       HStack(spacing: 8) {
         Text("Assistant · \(message.timestamp)")
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(AgentChrome.tertiary)
+          .foregroundStyle(CSColor.textTertiary)
         speechButton
         if !message.isThinking {
           CopyMessageButton(text: message.text)
@@ -1325,7 +1347,7 @@ private struct AssistantTurn: View {
           if message.wasStopped, message.text == "Stopped" {
             Text("Stopped")
               .font(CSFont.mono(11, .medium))
-              .foregroundStyle(AgentChrome.tertiary)
+              .foregroundStyle(CSColor.textTertiary)
           } else if message.isStreaming {
             // A runaway stream keeps only its live tail in the
             // SwiftUI text stack — bounds both the per-delta
@@ -1360,14 +1382,14 @@ private struct AssistantTurn: View {
       }
       .padding(.horizontal, 15)
       .padding(.vertical, 13)
-      .background(AgentChrome.lift(0.03))
+      .background(Color.primary.opacity(0.03))
       .overlay(
         UnevenRoundedRectangle(
           topLeadingRadius: 14, bottomLeadingRadius: 4,
           bottomTrailingRadius: 14, topTrailingRadius: 14,
           style: .continuous
         )
-        .strokeBorder(AgentChrome.separator(0.07), lineWidth: 1)
+        .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
       )
       .clipShape(
         UnevenRoundedRectangle(
@@ -1442,10 +1464,10 @@ private struct ReasoningDisclosure: View {
     .onChange(of: isLive) { _, live in
       if live { expanded = true }
     }
-    .background(AgentChrome.lift(0.018))
+    .background(Color.primary.opacity(0.018))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .strokeBorder(AgentChrome.separator(0.055), lineWidth: 1)
+        .strokeBorder(Color.primary.opacity(0.055), lineWidth: 1)
     )
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
   }
@@ -1474,7 +1496,7 @@ private struct RawText: View {
     // raw mode must stay copyable like the markdown render.
     let content = Text(raw)
       .font(CSFont.mono(13 * textScale))
-      .foregroundStyle(AgentChrome.primary)
+      .foregroundStyle(Color.primary)
       .lineSpacing(4)
       .fixedSize(horizontal: false, vertical: true)
       .textSelection(.enabled)
@@ -1505,7 +1527,7 @@ private struct RenderModeButton: View {
         Text(mode == .raw ? "rich" : "raw")
           .font(CSFont.mono(10, .medium))
       }
-      .foregroundStyle(hovering ? AgentChrome.secondary : AgentChrome.tertiary)
+      .foregroundStyle(hovering ? Color.secondary : CSColor.textTertiary)
     }
     .csFocusRing()
     .onHover { hovering = $0 }
@@ -1558,7 +1580,7 @@ private struct CopyMessageButton: View {
 
   private var labelColor: Color {
     if copied { return CSColor.oliveLight }
-    return hovering ? AgentChrome.secondary : AgentChrome.tertiary
+    return hovering ? Color.secondary : CSColor.textTertiary
   }
 }
 
@@ -1609,7 +1631,7 @@ struct AssistantSpeechButton: View {
     )
     .buttonStyle(.plain)
     .font(CSFont.mono(10, .medium))
-    .foregroundStyle(AgentChrome.secondary)
+    .foregroundStyle(Color.secondary)
     .disabled(isDisabled)
     .help(help)
     .accessibilityIdentifier("assistant-speak-\(messageID)")

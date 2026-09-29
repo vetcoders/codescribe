@@ -213,7 +213,7 @@ private struct ThreadDetail: View {
       Composer(store: store, overlay: AppModel.shared.overlay.state)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(AgentChrome.windowCanvas)
+    .background(CSColor.windowCanvas)
     .alert(
       "Speech unavailable",
       isPresented: Binding(
@@ -242,7 +242,7 @@ private struct ThreadDetail: View {
           .font(.system(size: 13, weight: .medium))
       }
       .csFocusRing()
-      .foregroundStyle(isSidebarExpanded ? CSColor.chromeAccent : AgentChrome.tertiary)
+      .foregroundStyle(isSidebarExpanded ? CSColor.chromeAccent : CSColor.textTertiary)
       .keyboardShortcut("s", modifiers: [.command, .control])
       .help(isSidebarExpanded ? "Collapse sidebar (⌃⌘S)" : "Expand sidebar (⌃⌘S)")
       .accessibilityLabel("Toggle Sidebar")
@@ -258,7 +258,7 @@ private struct ThreadDetail: View {
       if turnCount > 0 {
         Text("· \(turnCount)")
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(AgentChrome.tertiary)
+          .foregroundStyle(CSColor.textTertiary)
           .fixedSize()
       }
 
@@ -275,7 +275,7 @@ private struct ThreadDetail: View {
         } label: {
           Image(systemName: isPinned ? "pin.fill" : "pin")
             .font(.system(size: 13, weight: .medium))
-            .foregroundStyle(isPinned ? CSColor.chromeAccent : AgentChrome.tertiary)
+            .foregroundStyle(isPinned ? CSColor.chromeAccent : CSColor.textTertiary)
         }
         .csFocusRing()
         .help(isPinned ? "Disable Always on Top" : "Enable Always on Top")
@@ -301,7 +301,7 @@ private struct ThreadDetail: View {
     .padding(.trailing, 12)
     .padding(.vertical, 6)
     .overlay(alignment: .bottom) {
-      Rectangle().fill(AgentChrome.separator(0.06)).frame(height: 1)
+      Rectangle().fill(Color.primary.opacity(0.06)).frame(height: 1)
     }
   }
 
@@ -374,9 +374,9 @@ private struct ThreadDetail: View {
   @ViewBuilder
   private var liveStatusPill: some View {
     if store.isCancelling {
-      StaticStatusPill(text: "Stopping", color: AgentChrome.tertiary)
+      StaticStatusPill(text: "Stopping", color: CSColor.textTertiary)
     } else if store.isStreaming {
-      StatusPill(text: "Streaming", color: AgentChrome.brandLabel, rippling: true)
+      StatusPill(text: "Streaming", color: CSColor.terracotta, rippling: true)
     } else if store.isThinking {
       StatusPill(text: "Thinking", color: CSColor.amber, rippling: true)
     }
@@ -404,14 +404,14 @@ private struct QueuedTurnRow: View {
         TextField("Queued message", text: $editText, axis: .vertical)
           .textFieldStyle(.plain)
           .font(CSFont.ui(12, .regular))
-          .foregroundStyle(AgentChrome.primary)
+          .foregroundStyle(Color.primary)
           .lineLimit(1...4)
           .onSubmit { commitEdit() }
           .onExitCommand { isEditing = false }
       } else {
         Text(turn.text.isEmpty ? "\(turn.attachments.count) attachment(s)" : turn.text)
           .font(CSFont.ui(12, .regular))
-          .foregroundStyle(AgentChrome.primary)
+          .foregroundStyle(Color.primary)
           .lineLimit(2)
           .truncationMode(.tail)
           .textSelection(.enabled)
@@ -426,12 +426,12 @@ private struct QueuedTurnRow: View {
         Button("Cancel") { isEditing = false }
           .csFocusRing()
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(AgentChrome.tertiary)
+          .foregroundStyle(CSColor.textTertiary)
       } else {
         Button(action: beginEdit) {
           Image(systemName: "pencil.circle.fill")
             .font(.system(size: 13))
-            .foregroundStyle(AgentChrome.tertiary)
+            .foregroundStyle(CSColor.textTertiary)
         }
         .csFocusRing()
         .help("Edit queued message")
@@ -440,7 +440,7 @@ private struct QueuedTurnRow: View {
       Button(action: cancel) {
         Image(systemName: "xmark.circle.fill")
           .font(.system(size: 13))
-          .foregroundStyle(AgentChrome.tertiary)
+          .foregroundStyle(CSColor.textTertiary)
       }
       .csFocusRing()
       .help("Cancel queued message")
@@ -448,10 +448,10 @@ private struct QueuedTurnRow: View {
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 7)
-    .background(AgentChrome.lift(0.04))
+    .background(Color.primary.opacity(0.04))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .strokeBorder(AgentChrome.separator(0.09), lineWidth: 1)
+        .strokeBorder(Color.primary.opacity(0.09), lineWidth: 1)
     )
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
   }
@@ -481,33 +481,33 @@ struct ToolApprovalCard: View {
         Spacer()
         Text(request.risk.replacingOccurrences(of: "_", with: " "))
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(AgentChrome.tertiary)
+          .foregroundStyle(CSColor.textTertiary)
       }
       Text("\(request.server) · \(request.tool)")
         .font(CSFont.mono(11.5, .semibold))
-        .foregroundStyle(AgentChrome.primary)
+        .foregroundStyle(Color.primary)
         .textSelection(.enabled)
       if !request.summary.isEmpty {
         Text(request.summary)
           .font(CSFont.ui(12, .regular))
-          .foregroundStyle(AgentChrome.primary)
+          .foregroundStyle(Color.primary)
       }
       if let command = request.command {
         Text("$ \(command)")
           .font(CSFont.mono(11, .medium))
-          .foregroundStyle(AgentChrome.brandLabel)
+          .foregroundStyle(CSColor.terracotta)
           .textSelection(.enabled)
       }
       if let cwd = request.cwd {
         Text("cwd: \(cwd)")
           .font(CSFont.mono(10.5, .medium))
-          .foregroundStyle(AgentChrome.tertiary)
+          .foregroundStyle(CSColor.textTertiary)
           .textSelection(.enabled)
       }
       ForEach(request.paths, id: \.self) { path in
         Text(path)
           .font(CSFont.mono(10.5, .medium))
-          .foregroundStyle(AgentChrome.tertiary)
+          .foregroundStyle(CSColor.textTertiary)
           .textSelection(.enabled)
       }
       HStack {
@@ -519,7 +519,7 @@ struct ToolApprovalCard: View {
       }
     }
     .padding(CSSpace.card)
-    .background(AgentChrome.lift(0.04))
+    .background(Color.primary.opacity(0.04))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .strokeBorder(CSColor.amber.opacity(0.35), lineWidth: 1)
@@ -532,9 +532,7 @@ struct ToolApprovalCard: View {
 
 #if DEBUG
   #Preview("Agent Chat") {
-    AgentChrome.host(
-      AgentChatView(store: AgentChatStore(engine: MockChatEngine()))
-        .frame(width: 840, height: 520)
-    )
+    AgentChatView(store: AgentChatStore(engine: MockChatEngine()))
+      .frame(width: 840, height: 520)
   }
 #endif

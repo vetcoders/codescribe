@@ -8,6 +8,8 @@ import SwiftUI
 // (terracotta, assistive violet, olive, amber) are appearance-fixed — they
 // carry app-owned mode, state, and brand meaning, not chrome meaning.
 // Decorative controls use the operator's macOS accent instead.
+// Window chrome (canvas, code wells, control fills) is the system semantic
+// NSColor directly — one owner, no per-surface appearance wrappers.
 // Assistive violet = voice routed to the agent. Olive/green = healthy status.
 // Amber = reasoning/format meta.
 // Never hardcode a replacement for the system accent: the operator owns it.
@@ -52,12 +54,6 @@ enum CSPalette {
   static let olive = NSColor(hex: 0x5F6B3E)
   static let indicatorRecording = NSColor(hex: 0xFF3B30)
   static let danger = NSColor(hex: 0xD84A4A)
-
-  // Floating-canvas recipe — appearance-FIXED dark. A panel floating over
-  // arbitrary desktop content (the dictation overlay) keeps one stable dark
-  // glass in both system modes; adaptivity there would let a light wallpaper
-  // flip the transcript canvas from under the reader.
-  static let forestInk = NSColor(hex: 0x090A0D)
 
   // Surfaces — warm ink in dark, warm paper in light.
   static let ink = adaptive(light: NSColor(hex: 0xF7F5F0), dark: NSColor(hex: 0x090A0D))
@@ -117,11 +113,13 @@ enum CSColor {
       ))
   }
 
-  /// Hairline for the floating canvas: always the dark-mode white veil, because
-  /// the forest glass itself never adapts (see `CSPalette.forestInk`).
-  static func forestHairline(_ a: Double = 0.07) -> Color {
-    Color.white.opacity(a)
-  }
+  // Native window chrome — the system semantic surfaces, shared so no screen
+  // needs its own appearance wrapper.
+  static let windowCanvas = Color(nsColor: .windowBackgroundColor)
+  static let codeWell = Color(nsColor: .textBackgroundColor)
+  static let controlFill = Color(nsColor: .controlBackgroundColor)
+  // SwiftUI ships no tertiary `Color` rung; the AppKit semantic lives here.
+  static let textTertiary = Color(nsColor: .tertiaryLabelColor)
 
   // App semantics — these colors carry information and do not follow macOS accent.
   static let terracotta = Color(nsColor: CSPalette.terracotta)  // dictation / processing / brand

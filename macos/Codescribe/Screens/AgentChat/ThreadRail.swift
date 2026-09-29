@@ -65,7 +65,7 @@ struct ThreadRail: View {
               Divider().padding(.horizontal, 6)
               Image(systemName: "sparkles")
                 .font(CSFont.ui(9, .semibold))
-                .foregroundStyle(AgentChrome.tertiary)
+                .foregroundStyle(CSColor.textTertiary)
                 .help(group.section.title)
                 .accessibilityLabel(group.section.title)
             }
@@ -84,7 +84,7 @@ struct ThreadRail: View {
                 }
                 .font(CSFont.ui(11, .semibold))
                 .foregroundStyle(
-                  isActive ? CSColor.chromeAccent : AgentChrome.secondary
+                  isActive ? CSColor.chromeAccent : Color.secondary
                 )
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
@@ -92,7 +92,7 @@ struct ThreadRail: View {
                 .background(
                   isActive
                     ? CSColor.chromeAccent.opacity(0.12)
-                    : AgentChrome.lift(0.03)
+                    : Color.primary.opacity(0.03)
                 )
                 .clipShape(
                   RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -102,7 +102,7 @@ struct ThreadRail: View {
                     .strokeBorder(
                       isActive
                         ? CSColor.chromeAccent.opacity(0.45)
-                        : AgentChrome.separator(0.08),
+                        : Color.primary.opacity(0.08),
                       lineWidth: 1
                     )
                 )
@@ -122,12 +122,12 @@ struct ThreadRail: View {
       Button(action: { store.newThread() }) {
         Text("+")
           .font(CSFont.ui(15, .semibold))
-          .foregroundStyle(AgentChrome.secondary)
+          .foregroundStyle(Color.secondary)
           .frame(width: 30, height: 30)
           .overlay(
             RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
               .strokeBorder(
-                AgentChrome.separator(0.14),
+                Color.primary.opacity(0.14),
                 style: StrokeStyle(lineWidth: 1, dash: [4, 3])
               )
           )
@@ -144,7 +144,7 @@ struct ThreadRail: View {
   private var expandedRail: some View {
     VStack(spacing: 0) {
       HStack(spacing: 9) {
-        AgentSidebarTitle()
+        Wordmark(size: 13)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       .padding(.horizontal, 12)
@@ -153,17 +153,17 @@ struct ThreadRail: View {
 
       HStack(spacing: 6) {
         Image(systemName: "magnifyingglass")
-          .foregroundStyle(AgentChrome.tertiary)
+          .foregroundStyle(CSColor.textTertiary)
           .imageScale(.small)
           .accessibilityHidden(true)
         TextField("Search threads", text: $search)
           .textFieldStyle(.plain)
           .font(CSFont.ui(13, .regular))
-          .foregroundStyle(AgentChrome.primary)
+          .foregroundStyle(Color.primary)
       }
       .padding(.horizontal, 8)
       .padding(.vertical, 5)
-      .background(AgentChrome.controlFill)
+      .background(CSColor.controlFill)
       .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
       .padding(.horizontal, 12)
       .padding(.bottom, 8)
@@ -171,7 +171,7 @@ struct ThreadRail: View {
       if let error = store.threadSearchError {
         Text(error)
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(AgentChrome.primary)
+          .foregroundStyle(Color.primary)
           .padding(.horizontal, 12)
           .padding(.bottom, 8)
           .accessibilityLabel(error)
@@ -182,7 +182,7 @@ struct ThreadRail: View {
         Text("THREADS")
           .font(CSFont.mono(10, .semibold))
           .tracking(1.0)
-          .foregroundStyle(AgentChrome.tertiary)
+          .foregroundStyle(CSColor.textTertiary)
         Spacer()
       }
       .padding(.horizontal, 12)
@@ -197,7 +197,7 @@ struct ThreadRail: View {
               Text(group.section.title)
                 .font(CSFont.mono(9, .semibold))
                 .tracking(0.8)
-                .foregroundStyle(AgentChrome.tertiary)
+                .foregroundStyle(CSColor.textTertiary)
               Spacer()
             }
             .padding(.horizontal, 2)
@@ -342,7 +342,7 @@ private struct ThreadRow: View {
         if thread.isMaxConsultation {
           Image(systemName: "sparkles")
             .font(CSFont.ui(11, .semibold))
-            .foregroundStyle(AgentChrome.secondary)
+            .foregroundStyle(Color.secondary)
             .accessibilityLabel("Max consultation")
         }
         if isActive {
@@ -375,7 +375,7 @@ private struct ThreadRow: View {
             icon: thread.isFavorite ? .starFill : .star,
             size: 11,
             weight: .semibold,
-            color: thread.isFavorite ? CSColor.oliveLight : AgentChrome.tertiary
+            color: thread.isFavorite ? CSColor.oliveLight : CSColor.textTertiary
           )
           .frame(width: 18, height: 18)
           .contentShape(Rectangle())
@@ -388,23 +388,25 @@ private struct ThreadRow: View {
         if let tag = ModelTag.display(for: thread.model) {
           Text(tag)
             .font(CSFont.mono(9, .semibold))
-            .foregroundStyle(isActive ? CSColor.modeAgent : AgentChrome.tertiary)
+            .foregroundStyle(isActive ? CSColor.modeAgent : CSColor.textTertiary)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(
-              (isActive ? CSColor.modeAgent : AgentChrome.tertiary).opacity(0.14)
+              (isActive ? CSColor.modeAgent : CSColor.textTertiary).opacity(0.14)
             )
             .clipShape(Capsule())
             .accessibilityLabel("model \(tag)")
         }
         Text(ThreadRailMeta.timeOnly(from: thread.meta))
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(isActive ? ChatPalette.activeThreadSub : AgentChrome.tertiary)
+          .foregroundStyle(isActive ? ChatPalette.activeThreadSub : CSColor.textTertiary)
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.horizontal, 12)
-    .padding(.vertical, AgentChrome.Sidebar.rowVerticalPadding)
+    // Two-line rail rows stay list-dense. 11pt of vertical padding plus the
+    // title and meta was reading as a stack of cards.
+    .padding(.vertical, 7)
     .background(isActive ? CSColor.chromeAccent.opacity(0.12) : .clear)
     .overlay(
       RoundedRectangle(cornerRadius: 10, style: .continuous)

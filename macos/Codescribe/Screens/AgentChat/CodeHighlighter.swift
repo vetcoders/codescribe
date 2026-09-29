@@ -36,7 +36,7 @@ enum CodeHighlighter {
   /// - Returns: the highlighted `AttributedString`, or `nil` on failure so the
   ///   caller keeps its plain-mono placeholder (never a crash, never empty).
   static func attributed(_ code: String, language: String?, dark: Bool) async -> AttributedString? {
-    let colors = HighlightColors.custom(css: AgentChrome.codeCSS(dark: dark))
+    let colors = HighlightColors.custom(css: dark ? CodeTheme.darkCSS : CodeTheme.lightCSS)
     do {
       if let rawHint = language?.trimmingCharacters(in: .whitespaces), !rawHint.isEmpty {
         let hint = rawHint.lowercased()

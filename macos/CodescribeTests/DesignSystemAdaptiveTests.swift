@@ -4,10 +4,9 @@ import XCTest
 @testable import Codescribe
 
 /// Locks the adaptive-native palette contract: surfaces, hairlines, and text
-/// follow the system appearance; brand and semantic hues stay fixed; the
-/// floating-canvas (forest) recipe never adapts. These tests resolve the
-/// dynamic `NSColor` providers under a forced light/dark appearance and
-/// compare exact sRGB components — no rendering, no screenshots.
+/// follow the system appearance; brand and semantic hues stay fixed. These
+/// tests resolve the dynamic `NSColor` providers under a forced light/dark
+/// appearance and compare exact sRGB components — no rendering, no screenshots.
 final class DesignSystemAdaptiveTests: XCTestCase {
 
   // MARK: - Resolution helpers
@@ -157,15 +156,17 @@ final class DesignSystemAdaptiveTests: XCTestCase {
     XCTAssertLessThan(luminance(hairline, dark: false), 0.1, "light-mode veil must be ink-based")
   }
 
-  // MARK: - Floating canvas
+  // MARK: - Native window chrome
 
-  func testForestRecipeStaysDarkAcrossAppearances() {
-    assertFixed(CSPalette.forestInk, "the floating overlay canvas must never adapt")
-    for dark in [false, true] {
-      XCTAssertLessThan(
-        luminance(CSPalette.forestInk, dark: dark), 0.02,
-        "the floating overlay canvas must stay near-black in every appearance"
-      )
+  func testWindowChromeRungsAreSystemSemantic() {
+    // The shared chrome rungs must be the dynamic system colors themselves —
+    // a fixed hex here would reintroduce the per-surface appearance wrappers.
+    for (name, color) in [
+      ("windowCanvas", NSColor.windowBackgroundColor),
+      ("codeWell", NSColor.textBackgroundColor),
+      ("controlFill", NSColor.controlBackgroundColor),
+    ] {
+      assertDiffers(color, "\(name) must follow the system appearance")
     }
   }
 }
