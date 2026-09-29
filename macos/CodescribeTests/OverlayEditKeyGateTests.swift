@@ -29,6 +29,7 @@ final class OverlayEditKeyGateTests: XCTestCase {
     root.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.1))
     let canvas = try XCTUnwrap(descendant(of: LiveTranscriptNativeTextView.self, in: root))
+    let backdrop = try XCTUnwrap(desktopEffect(in: root))
 
     // Live take: read-only; a click into the canvas selects, never edits.
     project("live words", phase: "listening", terminal: false, sequence: 1, to: state)
@@ -61,6 +62,7 @@ final class OverlayEditKeyGateTests: XCTestCase {
     XCTAssertEqual(state.formattedText, "final text", "typing never mutates projected truth")
     XCTAssertEqual(canvas.string, "final text!")
     XCTAssertTrue(panel.firstResponder === canvas)
+    XCTAssertTrue(backdrop === desktopEffect(in: root), "Editing keeps the same native material")
 
     // Leaving the canvas gives the keyboard back and ends the edit.
     XCTAssertTrue(panel.makeFirstResponder(nil))
@@ -137,6 +139,13 @@ final class OverlayEditKeyGateTests: XCTestCase {
   }
 
   // MARK: Helpers
+
+  private func desktopEffect(in root: NSView) -> NSView? {
+    if #available(macOS 26, *) {
+      return descendant(of: OverlayDesktopGlassView.self, in: root)
+    }
+    return descendant(of: OverlayDesktopEffectView.self, in: root)
+  }
 
   private func settle(_ root: NSView) {
     root.layoutSubtreeIfNeeded()

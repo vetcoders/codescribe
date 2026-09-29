@@ -118,32 +118,7 @@ mod tests {
     use serial_test::serial;
     use tempfile::TempDir;
 
-    /// Restores `CODESCRIBE_NOTES_DIR` after each serial test.
-    struct EnvGuard {
-        key: &'static str,
-        prev: Option<String>,
-    }
-
-    impl EnvGuard {
-        /// Snapshot then set an env var for the duration of the guard.
-        fn set(key: &'static str, value: &str) -> Self {
-            let prev = std::env::var(key).ok();
-            unsafe { std::env::set_var(key, value) };
-            Self { key, prev }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        /// Put the previous value back (or unset) when the guard leaves scope.
-        fn drop(&mut self) {
-            unsafe {
-                match &self.prev {
-                    Some(v) => std::env::set_var(self.key, v),
-                    None => std::env::remove_var(self.key),
-                }
-            }
-        }
-    }
+    use crate::test_isolation::EnvGuard;
 
     /// Entry is written verbatim with no date header or bullet scaffolding.
     #[test]

@@ -333,7 +333,6 @@ async fn transcribe_external(
                 .await;
             }
             error!("Audio validation failed: {}", validation_error);
-            crate::status::notify_status(crate::status::StatusSignal::Error);
             anyhow::bail!("Audio validation failed: {}", validation_error);
         }
         transcribe_multipart(endpoint_url, api_key, buffer, lang, filename).await
@@ -798,8 +797,6 @@ async fn transcribe_multipart(
                 );
 
                 if attempt < TRANSCRIPTION_MAX_RETRIES && is_retryable {
-                    crate::status::notify_status(crate::status::StatusSignal::Thinking);
-
                     let delay_ms = TRANSCRIPTION_RETRY_DELAY_MS * attempt as u64;
                     info!(
                         "[Multipart STT] retrying in {}ms (attempt {}/{})",
@@ -820,7 +817,6 @@ async fn transcribe_multipart(
         }
     }
 
-    crate::status::notify_status(crate::status::StatusSignal::Error);
     Err(last_error
         .unwrap_or_else(|| anyhow::anyhow!("Multipart STT transcription failed after all retries")))
 }

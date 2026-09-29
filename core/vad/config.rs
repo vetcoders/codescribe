@@ -110,49 +110,14 @@ mod tests {
     use super::*;
     use serial_test::serial;
 
-    /// Restores one process env key on drop so serial tests do not leak overrides.
-    struct EnvGuard {
-        key: &'static str,
-        prev: Option<String>,
-    }
-
-    impl EnvGuard {
-        /// Set `key=value`, remembering the previous value for restore.
-        fn set(key: &'static str, value: &str) -> Self {
-            let prev = std::env::var(key).ok();
-            // SAFETY: tests are serialized and intentionally mutate process env.
-            unsafe { std::env::set_var(key, value) };
-            Self { key, prev }
-        }
-
-        /// Remove `key`, remembering the previous value for restore.
-        fn unset(key: &'static str) -> Self {
-            let prev = std::env::var(key).ok();
-            // SAFETY: tests are serialized and intentionally mutate process env.
-            unsafe { std::env::remove_var(key) };
-            Self { key, prev }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        /// Restore the previous env value, or remove the key if it was absent.
-        fn drop(&mut self) {
-            if let Some(prev) = &self.prev {
-                // SAFETY: tests are serialized and intentionally mutate process env.
-                unsafe { std::env::set_var(self.key, prev) };
-            } else {
-                // SAFETY: tests are serialized and intentionally mutate process env.
-                unsafe { std::env::remove_var(self.key) };
-            }
-        }
-    }
+    use crate::test_isolation::EnvGuard;
 
     /// Pins every `SILERO_DEFAULT_*` field when the env knobs are unset.
     #[test]
     #[serial]
     fn test_default_config() {
-        let _gap = EnvGuard::unset("CODESCRIBE_UTTERANCE_GAP_SEC");
-        let _tail = EnvGuard::unset("CODESCRIBE_TAIL_SILENCE_SEC");
+        let _gap = EnvGuard::remove("CODESCRIBE_UTTERANCE_GAP_SEC");
+        let _tail = EnvGuard::remove("CODESCRIBE_TAIL_SILENCE_SEC");
         let config = VadConfig::default();
         assert!((config.threshold - SILERO_DEFAULT_THRESHOLD).abs() < f32::EPSILON);
         assert!(
@@ -177,8 +142,8 @@ mod tests {
     #[test]
     #[serial]
     fn test_sensitive_vs_conservative() {
-        let _gap = EnvGuard::unset("CODESCRIBE_UTTERANCE_GAP_SEC");
-        let _tail = EnvGuard::unset("CODESCRIBE_TAIL_SILENCE_SEC");
+        let _gap = EnvGuard::remove("CODESCRIBE_UTTERANCE_GAP_SEC");
+        let _tail = EnvGuard::remove("CODESCRIBE_TAIL_SILENCE_SEC");
         let sensitive = VadConfig::sensitive();
         let conservative = VadConfig::conservative();
         assert!(sensitive.threshold < conservative.threshold);

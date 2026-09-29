@@ -410,6 +410,7 @@ private struct QueuedTurnRow: View {
   let cancel: () -> Void
   @State private var isEditing = false
   @State private var editText = ""
+  @FocusState private var editFocused: Bool
 
   var body: some View {
     HStack(spacing: 10) {
@@ -419,6 +420,7 @@ private struct QueuedTurnRow: View {
       if isEditing {
         TextField("Queued message", text: $editText, axis: .vertical)
           .textFieldStyle(.plain)
+          .focused($editFocused)
           .font(CSFont.ui(12, .regular))
           .foregroundStyle(Color.primary)
           .lineLimit(1...4)
@@ -470,6 +472,9 @@ private struct QueuedTurnRow: View {
         .strokeBorder(Color.primary.opacity(0.09), lineWidth: 1)
     )
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
+    .overlay {
+      CSFocusOutline(isFocused: isEditing && editFocused, cornerRadius: CSRadius.card)
+    }
   }
 
   private func beginEdit() {

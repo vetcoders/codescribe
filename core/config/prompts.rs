@@ -737,36 +737,9 @@ pub fn open_prompts_folder() {
 mod tests {
     use super::*;
     use serial_test::serial;
-    use std::ffi::{OsStr, OsString};
     use tempfile::TempDir;
 
-    /// RAII override of `CODESCRIBE_DATA_DIR` for serialised prompt tests.
-    struct EnvGuard {
-        previous: Option<OsString>,
-    }
-
-    impl EnvGuard {
-        /// Install `value` as `CODESCRIBE_DATA_DIR`, restoring the prior env on drop.
-        fn set(value: impl AsRef<OsStr>) -> Self {
-            let previous = std::env::var_os("CODESCRIBE_DATA_DIR");
-            // SAFETY: every prompt test that mutates process env is serialized.
-            unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", value) };
-            Self { previous }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        /// Restore the previous `CODESCRIBE_DATA_DIR` (or remove it if it was unset).
-        fn drop(&mut self) {
-            // SAFETY: restores the serialized test's prior process environment.
-            unsafe {
-                match &self.previous {
-                    Some(value) => std::env::set_var("CODESCRIBE_DATA_DIR", value),
-                    None => std::env::remove_var("CODESCRIBE_DATA_DIR"),
-                }
-            }
-        }
-    }
+    use crate::test_isolation::EnvGuard;
 
     #[test]
     #[serial]
@@ -774,7 +747,7 @@ mod tests {
         use crate::config::{CapturedRuntimeInputs, Config, StartupAcquisitionProbe};
 
         let sandbox = TempDir::new().expect("prompt sandbox");
-        let _env = EnvGuard::set(sandbox.path());
+        let _env = EnvGuard::set("CODESCRIBE_DATA_DIR", sandbox.path());
         let dir = prompts_dir();
         fs::create_dir_all(&dir).unwrap();
         let files = [
@@ -848,7 +821,7 @@ mod tests {
 
         for policy in FormattingPolicy::ALL {
             let sandbox = TempDir::new().expect("prompt sandbox");
-            let _env = EnvGuard::set(sandbox.path());
+            let _env = EnvGuard::set("CODESCRIBE_DATA_DIR", sandbox.path());
             let dir = prompts_dir();
             fs::create_dir_all(&dir).unwrap();
             fs::write(dir.join("formatting_tuning.txt"), " Shared tuning \n").unwrap();
@@ -896,7 +869,7 @@ mod tests {
         use crate::config::{CapturedRuntimeInputs, Config, StartupAcquisitionProbe};
 
         let sandbox = TempDir::new().expect("prompt sandbox");
-        let _env = EnvGuard::set(sandbox.path());
+        let _env = EnvGuard::set("CODESCRIBE_DATA_DIR", sandbox.path());
         let dir = prompts_dir();
         fs::create_dir_all(&dir).unwrap();
         for kind in PromptKind::USER_OWNED {
@@ -961,7 +934,7 @@ mod tests {
     #[serial]
     fn captured_missing_blank_and_unreadable_rungs_retain_provenance() {
         let sandbox = TempDir::new().expect("prompt sandbox");
-        let _env = EnvGuard::set(sandbox.path());
+        let _env = EnvGuard::set("CODESCRIBE_DATA_DIR", sandbox.path());
         for state in ["missing", "blank", "unreadable"] {
             for kind in PromptKind::FORMATTING {
                 let path = prompts_dir().join(kind.filename());
@@ -1009,7 +982,7 @@ mod tests {
     /// Formatting/assistive path helpers resolve under the sandbox with policy suffixes.
     fn test_prompt_paths_api() {
         let sandbox = TempDir::new().expect("prompt sandbox");
-        let _env = EnvGuard::set(sandbox.path());
+        let _env = EnvGuard::set("CODESCRIBE_DATA_DIR", sandbox.path());
         // Test path functions (used by GUI apps and tests)
         let formatting_path = get_formatting_prompt_path();
         let assistive_path = get_assistive_prompt_path();
@@ -1037,7 +1010,7 @@ mod tests {
     /// Every formatting kind: exact-byte IO, rename-failure safety, backup, reset, audit.
     fn all_formatting_prompts_share_exact_byte_read_write_failure_and_reset_contract() {
         let sandbox = TempDir::new().expect("prompt sandbox");
-        let _env = EnvGuard::set(sandbox.path());
+        let _env = EnvGuard::set("CODESCRIBE_DATA_DIR", sandbox.path());
 
         for (index, kind) in PromptKind::FORMATTING.into_iter().enumerate() {
             let path = prompts_dir().join(kind.filename());
@@ -1124,7 +1097,7 @@ mod tests {
     /// Missing assistive prompt falls back in-memory and never creates a file on read.
     fn missing_prompt_uses_memory_fallback_without_creating_a_file() {
         let sandbox = TempDir::new().expect("prompt sandbox");
-        let _env = EnvGuard::set(sandbox.path());
+        let _env = EnvGuard::set("CODESCRIBE_DATA_DIR", sandbox.path());
         let path = get_assistive_prompt_path();
 
         let snapshot = prompt_snapshot(PromptKind::Assistive);
@@ -1142,7 +1115,7 @@ mod tests {
     /// Custom on-disk bytes survive every read probe without rewrite or re-encode.
     fn custom_prompt_bytes_survive_every_read_probe() {
         let sandbox = TempDir::new().expect("prompt sandbox");
-        let _env = EnvGuard::set(sandbox.path());
+        let _env = EnvGuard::set("CODESCRIBE_DATA_DIR", sandbox.path());
         let custom = b"custom prompt\nwith exact bytes\n";
         let path = get_assistive_prompt_path();
         fs::create_dir_all(path.parent().expect("prompt parent")).expect("create prompt dir");
@@ -1173,7 +1146,7 @@ mod tests {
     /// Atomic save keeps a backup and writes a reason-tagged digest audit receipt.
     fn atomic_save_keeps_backup_and_reason_tagged_digest_receipt() {
         let sandbox = TempDir::new().expect("prompt sandbox");
-        let _env = EnvGuard::set(sandbox.path());
+        let _env = EnvGuard::set("CODESCRIBE_DATA_DIR", sandbox.path());
         let path = get_formatting_prompt_path();
         fs::create_dir_all(path.parent().expect("prompt parent")).expect("create prompt dir");
         fs::write(&path, b"old prompt bytes").expect("seed old prompt");

@@ -270,7 +270,7 @@ struct CustomProviderForm: View {
 
       field("Name") {
         TextField("e.g. Libraxis", text: $name)
-          .settingsInputChrome()
+          .settingsInputChrome(isFocused: focus == .name)
           .focused($focus, equals: .name)
           .onSubmit { focus = .endpoint }
           .accessibilityLabel("Custom provider name")
@@ -286,14 +286,14 @@ struct CustomProviderForm: View {
       }
       field("Endpoint") {
         TextField("https://api.example.com/v1/responses", text: $endpoint)
-          .settingsInputChrome()
+          .settingsInputChrome(isFocused: focus == .endpoint)
           .focused($focus, equals: .endpoint)
           .onSubmit { focus = .key }
           .accessibilityLabel("Custom provider endpoint")
       }
       field("API key (optional)") {
         SecureField(isEdit ? "Leave empty to keep the stored key" : "Paste key…", text: $apiKey)
-          .settingsInputChrome()
+          .settingsInputChrome(isFocused: focus == .key)
           .focused($focus, equals: .key)
           .onSubmit(save)
           .accessibilityLabel("Custom provider API key")

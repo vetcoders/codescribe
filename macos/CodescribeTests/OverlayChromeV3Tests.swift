@@ -144,7 +144,9 @@ final class OverlayChromeV3Tests: XCTestCase {
       if #available(macOS 26, *) {
         let glass = try XCTUnwrap(descendant(OverlayDesktopGlassView.self, in: root))
         XCTAssertEqual(glass.style, .regular)
+        XCTAssertNil(glass.tintColor)
         XCTAssertNil(glass.hitTest(NSPoint(x: 100, y: 100)))
+        XCTAssertNil(descendant(OverlayDesktopEffectView.self, in: root))
       } else {
         let effect = try XCTUnwrap(descendant(OverlayDesktopEffectView.self, in: root))
         XCTAssertEqual(effect.blendingMode, .behindWindow)
@@ -164,6 +166,5 @@ final class OverlayChromeV3Tests: XCTestCase {
     if #available(macOS 26, *) {
       XCTAssertNil(descendant(OverlayDesktopGlassView.self, in: root))
     }
-
   }
 }

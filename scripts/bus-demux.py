@@ -274,7 +274,9 @@ def resolve_recipients(text: str, names: set[str]) -> tuple[set[str], str]:
         if abs(len(left) - len(right)) > 1:
             return False
         if len(left) == len(right):
-            differences = [i for i, pair in enumerate(zip(left, right)) if pair[0] != pair[1]]
+            differences = [
+                i for i, pair in enumerate(zip(left, right)) if pair[0] != pair[1]
+            ]
             return len(differences) <= 1 or (
                 len(differences) == 2
                 and differences[1] == differences[0] + 1
@@ -282,14 +284,20 @@ def resolve_recipients(text: str, names: set[str]) -> tuple[set[str], str]:
                 and left[differences[1]] == right[differences[0]]
             )
         shorter, longer = sorted((left, right), key=len)
-        return any(longer[:i] + longer[i + 1:] == shorter for i in range(len(longer)))
+        return any(longer[:i] + longer[i + 1 :] == shorter for i in range(len(longer)))
 
     candidates = {
-        name for name in names
+        name
+        for name in names
         if 4 <= len(name) <= 32
-        and any(one_edit(token, name + suffix) for suffix in ("", "ie", "owi", "a", "em", "u"))
+        and any(
+            one_edit(token, name + suffix)
+            for suffix in ("", "ie", "owi", "a", "em", "u")
+        )
     }
-    return candidates, "fuzzy" if len(candidates) == 1 else "ambiguous" if candidates else "none"
+    return candidates, "fuzzy" if len(
+        candidates
+    ) == 1 else "ambiguous" if candidates else "none"
 
 
 def registered_recipients(root: Path, bus: Path) -> set[str] | None:
@@ -853,10 +861,14 @@ class SessionLease:
                     or not re.fullmatch(r"[0-9a-f]{24}", payload["delivery_id"])
                     for payload in pending
                 ):
-                    raise ValueError("invalid pending deliveries; recovery state preserved")
+                    raise ValueError(
+                        "invalid pending deliveries; recovery state preserved"
+                    )
                 self.pending = {payload["delivery_id"]: payload for payload in pending}
                 if len(self.pending) != len(pending):
-                    raise ValueError("duplicate pending identities; recovery state preserved")
+                    raise ValueError(
+                        "duplicate pending identities; recovery state preserved"
+                    )
                 self.resumed = True
             elif follow_from_end:
                 try:
@@ -952,9 +964,12 @@ class SessionLease:
             len(json.dumps(item, ensure_ascii=False).encode("utf-8"))
             for item in self.pending.values()
         )
-        if len(self.pending) >= 256 or pending_bytes + len(
-            json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        ) > 8 * 1024 * 1024:
+        if (
+            len(self.pending) >= 256
+            or pending_bytes
+            + len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+            > 8 * 1024 * 1024
+        ):
             raise BufferError(
                 "pending mailbox is full; acknowledge received deliveries and resume "
                 "this same lease; the unread bus cursor is preserved"
@@ -965,7 +980,8 @@ class SessionLease:
 
     def collect_acknowledgments(self) -> None:
         completed = [
-            delivery_id for delivery_id in self.pending
+            delivery_id
+            for delivery_id in self.pending
             if delivery_acknowledged(self.root, self.lease_id, delivery_id)
         ]
         if completed:
@@ -1058,7 +1074,9 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
         or state.get("provider_session_id") != args.session
         or state.get("bus") != str(args.bus.expanduser().resolve(strict=False))
     ):
-        raise ValueError("acknowledgment does not belong to this provider session and bus")
+        raise ValueError(
+            "acknowledgment does not belong to this provider session and bus"
+        )
     if not delivery_acknowledged(args.bridge_home, lease_id, delivery_id):
         pending = state.get("pending", [])
         if not isinstance(pending, list) or not any(
@@ -1265,7 +1283,9 @@ def run(args: argparse.Namespace) -> int:
                 assert lease is not None
                 offset = lease.cursor
                 if not waiting_for_ack:
-                    sys.stderr.write("bus-demux: mailbox full; waiting for acknowledgment\n")
+                    sys.stderr.write(
+                        "bus-demux: mailbox full; waiting for acknowledgment\n"
+                    )
                 waiting_for_ack = True
             else:
                 waiting_for_ack = False
@@ -1381,7 +1401,9 @@ def _speak_xai(text: str, voice: str, speed: float) -> tuple[bool, str | None]:
     # The URL remains literal at the actual I/O call, with certificate and
     # hostname verification enabled explicitly by the default TLS context.
     opener = urllib.request.OpenerDirector()
-    opener.add_handler(urllib.request.HTTPSHandler(context=ssl.create_default_context()))
+    opener.add_handler(
+        urllib.request.HTTPSHandler(context=ssl.create_default_context())
+    )
     # Headers ride on the Request: opener.addheaders lose to the default
     # Content-Type that do_request_ installs first for any request with data,
     # and the API rejects a JSON body labelled x-www-form-urlencoded (415).
@@ -1486,18 +1508,46 @@ def live_follower_pid(root: Path, lease_id: str) -> int | None:
 def write_channel_binding(
     root: Path, channel: str, name: str, provider: str, provider_session_id: str
 ) -> Path:
-    """Bind one agent channel to this provider session, preserving the rest."""
+    """Claim a channel without replacing another session's routing."""
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = root / AUDIENCE_BINDING_FILENAME
-    state = read_json(path) or {}
-    bindings = state.get("bindings")
-    if not isinstance(bindings, dict):
-        bindings = {}
-    bindings[str(channel)] = {
-        "audience": name.casefold(),
-        "provider": provider.casefold(),
-        "provider_session_id": provider_session_id,
-    }
-    atomic_json(path, {"schema": AUDIENCE_BINDING_SCHEMA, "bindings": bindings})
+    # Lock a stable sibling: atomic_json replaces the data file's inode.
+    with open(path.with_suffix(".lock"), "a+b") as lock:
+        os.fchmod(lock.fileno(), 0o600)
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        state = read_json(path)
+        if path.exists() and (
+            not isinstance(state, dict)
+            or state.get("schema") != AUDIENCE_BINDING_SCHEMA
+            or not isinstance(state.get("bindings"), dict)
+        ):
+            raise OSError("channel bindings are unreadable or invalid; nothing changed")
+        bindings = state["bindings"] if state else {}
+        requested = {
+            "audience": name.casefold(),
+            "provider": provider.casefold(),
+            "provider_session_id": provider_session_id,
+        }
+        current = bindings.get(str(channel))
+        if str(channel) in bindings:
+            if not isinstance(current, dict) or any(
+                current.get(key) != value for key, value in requested.items()
+            ):
+                owner = (
+                    current.get("audience", "unknown")
+                    if isinstance(current, dict)
+                    else "unknown"
+                )
+                free = ", ".join(
+                    str(slot) for slot in range(1, 10) if str(slot) not in bindings
+                )
+                raise OSError(
+                    f"channel {channel} is occupied by {owner}; "
+                    f"free channels: {free or 'none'}; nothing changed"
+                )
+            return path
+        bindings[str(channel)] = requested
+        atomic_json(path, {"schema": AUDIENCE_BINDING_SCHEMA, "bindings": bindings})
     return path
 
 
@@ -1562,7 +1612,11 @@ def attach_command(args: argparse.Namespace) -> int:
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
             state = read_json(lease_path)
-            if state and state.get("schema") == LEASE_SCHEMA and state.get("pid") == pid:
+            if (
+                state
+                and state.get("schema") == LEASE_SCHEMA
+                and state.get("pid") == pid
+            ):
                 break
             if not process_is_alive(pid):
                 sys.stderr.write(
@@ -1699,7 +1753,9 @@ def main() -> int:
         help="exit zero only when the whole canonical Bus proves installation-safe",
     )
     parser.add_argument(
-        "--name", default=None, help="bound name; exact or unique bounded opening-name match"
+        "--name",
+        default=None,
+        help="bound name; exact or unique bounded opening-name match",
     )
     parser.add_argument("--all", action="store_true", help="promiscuous: every seal")
     parser.add_argument(

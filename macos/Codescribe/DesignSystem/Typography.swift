@@ -23,7 +23,6 @@ enum CSFont {
   // Named ramps from the handoff
   // -.03/-.04em tracking applied at call site
   static func hero(_ size: CGFloat = 64) -> Font { ui(size, .bold) }
-  static let h2 = ui(26, .bold)
   static let title = ui(15, .bold)
   static let bodyLg = ui(18, .regular)
   static let body = ui(14, .regular)

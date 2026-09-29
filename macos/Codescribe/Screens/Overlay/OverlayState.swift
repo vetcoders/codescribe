@@ -743,23 +743,10 @@ final class OverlayState {
     }
   }
 
-  /// Narrow-window projection of the same single phase truth. The full status
-  /// keeps level honesty at normal widths; the live waveform carries that
-  /// evidence at the 320 pt floor without forcing the pill into a vertical
-  /// capsule.
-  var compactStatusText: String {
-    statusText
-  }
   /// Only a reducer-projected listening phase may ripple.
   var statusRippling: Bool {
     mode == .listening
       && (audioReady || vadActive)
-  }
-
-  /// Footer left engine chip — last stop serving label when available, else
-  /// configured preference. Never a hardcoded "local whisper" (STT_CONTRACT).
-  var footerEngineLabel: String {
-    engineChip
   }
 
   private static func displayEngineChip(_ engine: String) -> String {

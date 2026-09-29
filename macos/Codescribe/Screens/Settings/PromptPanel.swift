@@ -116,6 +116,7 @@ private struct PromptEditor: View {
   /// returns to VIEW so the persisted prompt is shown rendered.
   @State private var editing = false
   @State private var confirmingRestore = false
+  @FocusState private var editorFocused: Bool
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -222,11 +223,15 @@ private struct PromptEditor: View {
   private var content: some View {
     if editing {
       TextEditor(text: $text)
+        .focused($editorFocused)
         .font(CSFont.mono(12.5, .regular))
         .foregroundStyle(Color.primary)
         .scrollContentBackground(.hidden)
         .frame(minHeight: 132)
         .settingsGroupedInset(padding: CSSpace.md)
+        .overlay {
+          CSFocusOutline(isFocused: editorFocused, cornerRadius: CSRadius.card)
+        }
     } else {
       // Reuse the chat markdown renderer (MarkdownText, ChatComponents.swift):
       // it is dependency-free (DesignSystem tokens only) and carries headings,

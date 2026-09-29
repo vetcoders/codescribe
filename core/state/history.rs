@@ -1299,7 +1299,7 @@ mod tests {
         use crate::pipeline::take_truth::{read_truth_sidecar, truth_sidecar_path};
 
         let tmp = TempDir::new().expect("tempdir");
-        let _guard = EnvGuard::set_to_temp_dir("CODESCRIBE_DATA_DIR", &tmp);
+        let _guard = EnvGuard::set("CODESCRIBE_DATA_DIR", tmp.path());
         let source_path = tmp.path().join("source.wav");
         fs::write(&source_path, b"take pcm").expect("source");
 
@@ -1534,7 +1534,7 @@ mod tests {
     fn concurrent_same_second_archives_keep_pairs_and_history_rows() {
         use std::sync::{Arc, Barrier};
         let tmp = TempDir::new().expect("tempdir");
-        let _guard = EnvGuard::set_to_temp_dir("CODESCRIBE_DATA_DIR", &tmp);
+        let _guard = EnvGuard::set("CODESCRIBE_DATA_DIR", tmp.path());
         let source_path = tmp.path().join("source.wav");
         fs::write(&source_path, b"same admitted voice").expect("source");
         let now = Local::now();
@@ -1625,7 +1625,7 @@ mod tests {
     #[serial]
     fn real_archive_classifies_outcomes_and_empty_success_falls_back() {
         let tmp = TempDir::new().expect("tempdir");
-        let _guard = EnvGuard::set_to_temp_dir("CODESCRIBE_DATA_DIR", &tmp);
+        let _guard = EnvGuard::set("CODESCRIBE_DATA_DIR", tmp.path());
         let source_path = tmp.path().join("source.wav");
         fs::write(&source_path, b"recover this voice").expect("source");
         for transcript in [
@@ -1692,41 +1692,14 @@ mod tests {
         writer.finalize().expect("finalize wav fixture");
     }
 
-    /// Restores a process env var on drop so serial history tests do not leak dirs.
-    struct EnvGuard {
-        key: &'static str,
-        prev: Option<String>,
-    }
-
-    impl EnvGuard {
-        /// Point `key` at a temp data dir, capturing the previous value for restore.
-        fn set_to_temp_dir(key: &'static str, dir: &TempDir) -> Self {
-            let prev = std::env::var(key).ok();
-            unsafe {
-                std::env::set_var(key, dir.path());
-            }
-            Self { key, prev }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        /// Restore or remove the env var when the guard leaves scope.
-        fn drop(&mut self) {
-            unsafe {
-                match &self.prev {
-                    Some(v) => std::env::set_var(self.key, v),
-                    None => std::env::remove_var(self.key),
-                }
-            }
-        }
-    }
+    use crate::test_isolation::EnvGuard;
 
     /// transcriptions_dir lives under CODESCRIBE_DATA_DIR and includes the day path.
     #[test]
     #[serial]
     fn test_transcriptions_dir() {
         let tmp = TempDir::new().expect("tempdir");
-        let _guard = EnvGuard::set_to_temp_dir("CODESCRIBE_DATA_DIR", &tmp);
+        let _guard = EnvGuard::set("CODESCRIBE_DATA_DIR", tmp.path());
         // Canonicalize to handle macOS /var → /private/var symlink
         let tmp_canon = tmp
             .path()
@@ -1743,7 +1716,7 @@ mod tests {
     #[serial]
     fn test_save_and_retrieve() {
         let tmp = TempDir::new().expect("tempdir");
-        let _guard = EnvGuard::set_to_temp_dir("CODESCRIBE_DATA_DIR", &tmp);
+        let _guard = EnvGuard::set("CODESCRIBE_DATA_DIR", tmp.path());
         // Canonicalize to handle macOS /var → /private/var symlink
         let tmp_canon = tmp
             .path()
@@ -1768,7 +1741,7 @@ mod tests {
     #[serial]
     fn test_save_entry_with_timestamp() {
         let tmp = TempDir::new().expect("tempdir");
-        let _guard = EnvGuard::set_to_temp_dir("CODESCRIBE_DATA_DIR", &tmp);
+        let _guard = EnvGuard::set("CODESCRIBE_DATA_DIR", tmp.path());
 
         let text = "Timestamped transcript";
         let now = Local::now();
@@ -1789,7 +1762,7 @@ mod tests {
     #[serial]
     fn test_recent_entries_collapse_same_second_save_family() {
         let tmp = TempDir::new().expect("tempdir");
-        let _guard = EnvGuard::set_to_temp_dir("CODESCRIBE_DATA_DIR", &tmp);
+        let _guard = EnvGuard::set("CODESCRIBE_DATA_DIR", tmp.path());
 
         // Raw draft and its post-processed final land in the same second with
         // the same slug → the second save collides into `…_raw_1.txt`.
@@ -1864,7 +1837,7 @@ mod tests {
     #[serial]
     fn session_archive_outcome_keeps_lane_diagnostic_out_of_history_and_copy() {
         let tmp = TempDir::new().expect("tempdir");
-        let _guard = EnvGuard::set_to_temp_dir("CODESCRIBE_DATA_DIR", &tmp);
+        let _guard = EnvGuard::set("CODESCRIBE_DATA_DIR", tmp.path());
         let now = Local::now();
         let user_words = "To są słowa Foundera";
         let lane_error = "Tool-enabled response failed (ConnectError: gateway unavailable)";
@@ -1906,7 +1879,7 @@ mod tests {
     #[serial]
     fn test_save_entry_with_slug_hint_consistency() {
         let tmp = TempDir::new().expect("tempdir");
-        let _guard = EnvGuard::set_to_temp_dir("CODESCRIBE_DATA_DIR", &tmp);
+        let _guard = EnvGuard::set("CODESCRIBE_DATA_DIR", tmp.path());
 
         let now = Local::now();
         let raw = save_entry_with_timestamp_and_slug(
@@ -1935,7 +1908,7 @@ mod tests {
     #[serial]
     fn test_recent_entries_parses_kind_from_filename_suffix() {
         let tmp = TempDir::new().expect("tempdir");
-        let _guard = EnvGuard::set_to_temp_dir("CODESCRIBE_DATA_DIR", &tmp);
+        let _guard = EnvGuard::set("CODESCRIBE_DATA_DIR", tmp.path());
 
         let now = Local::now();
         let _raw = save_entry_with_timestamp_and_slug(
@@ -1962,7 +1935,7 @@ mod tests {
     #[serial]
     fn test_latest_copyable_entry_skips_failed_artifacts() {
         let tmp = TempDir::new().expect("tempdir");
-        let _guard = EnvGuard::set_to_temp_dir("CODESCRIBE_DATA_DIR", &tmp);
+        let _guard = EnvGuard::set("CODESCRIBE_DATA_DIR", tmp.path());
 
         let now = Local::now();
         let raw = save_entry_with_timestamp_and_slug(
@@ -2053,7 +2026,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     fn test_save_audio_archives_m4a_smaller_and_decodable() {
         let tmp = TempDir::new().expect("tempdir");
-        let _guard = EnvGuard::set_to_temp_dir("CODESCRIBE_DATA_DIR", &tmp);
+        let _guard = EnvGuard::set("CODESCRIBE_DATA_DIR", tmp.path());
         let src_wav = tmp.path().join("source.wav");
         write_pcm16_sine_wav(&src_wav, 16_000, 5);
         let wav_size = fs::metadata(&src_wav).expect("wav metadata").len();

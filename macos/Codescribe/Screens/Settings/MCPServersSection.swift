@@ -303,6 +303,9 @@ private struct MCPAddServerForm: View {
   @State private var argsText: String = ""
   @State private var endpoint: String = ""
   @State private var token: String = ""
+  @FocusState private var focusedField: Field?
+
+  private enum Field { case name, endpoint, token, command, args }
 
   private var canAdd: Bool {
     !name.trimmingCharacters(in: .whitespaces).isEmpty
@@ -324,43 +327,20 @@ private struct MCPAddServerForm: View {
       }
       .pickerStyle(.segmented)
 
-      field(placeholder: "name (e.g. prview)", text: $name, mono: true)
+      field(placeholder: "name (e.g. prview)", text: $name, focus: .name)
       if remote {
-        field(placeholder: "endpoint (https://…/mcp)", text: $endpoint, mono: true)
+        field(placeholder: "endpoint (https://…/mcp)", text: $endpoint, focus: .endpoint)
         SecureField("bearer token (optional, saved in Keychain)", text: $token)
-          .textFieldStyle(.plain)
-          .font(CSFont.mono(12, .regular))
-          .foregroundStyle(Color.primary)
-          .padding(.horizontal, 11)
-          .padding(.vertical, 8)
-          .background(
-            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-              .fill(Color.primary.opacity(0.06))
-          )
+          .focused($focusedField, equals: .token)
+          .settingsInputChrome(isFocused: focusedField == .token)
       } else {
-        field(placeholder: "command (e.g. prview)", text: $command, mono: true)
-        field(placeholder: "args, space-separated (e.g. mcp)", text: $argsText, mono: true)
+        field(placeholder: "command (e.g. prview)", text: $command, focus: .command)
+        field(placeholder: "args, space-separated (e.g. mcp)", text: $argsText, focus: .args)
       }
 
       HStack {
         Spacer(minLength: 0)
-        Button(action: submit) {
-          Text("Add")
-            .font(CSFont.ui(12, .semibold))
-            .foregroundStyle(canAdd ? CSColor.oliveLight : Color.secondary)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            .background(
-              RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                .fill(CSColor.olive.opacity(canAdd ? 0.14 : 0.05))
-            )
-            .overlay(
-              RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                .strokeBorder(CSColor.olive.opacity(canAdd ? 0.28 : 0.10), lineWidth: 1)
-            )
-        }
-        .csFocusRing()
-        .disabled(!canAdd)
+        SettingsSaveButton(title: "Add", enabled: canAdd, action: submit)
       }
     }
     .padding(.horizontal, 15)
@@ -375,21 +355,12 @@ private struct MCPAddServerForm: View {
     )
   }
 
-  private func field(placeholder: String, text: Binding<String>, mono: Bool) -> some View {
+  private func field(
+    placeholder: String, text: Binding<String>, focus: Field
+  ) -> some View {
     TextField(placeholder, text: text)
-      .textFieldStyle(.plain)
-      .font(mono ? CSFont.mono(12, .regular) : CSFont.ui(12, .regular))
-      .foregroundStyle(Color.primary)
-      .padding(.horizontal, 11)
-      .padding(.vertical, 8)
-      .background(
-        RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-          .fill(Color.primary.opacity(0.06))
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
-      )
+      .focused($focusedField, equals: focus)
+      .settingsInputChrome(isFocused: focusedField == focus)
       .onSubmit(submit)
   }
 

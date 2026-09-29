@@ -5,6 +5,7 @@ struct ThreadRail: View {
   @ObservedObject var store: AgentChatStore
   var onContentWidthChanged: (CGFloat) -> Void = { _ in }
   @State private var search: String = ""
+  @FocusState private var searchFocused: Bool
   @State private var deleteCandidate: ChatThread?
   @State private var editingThreadID: UUID?
   @State private var renameDraft: String = ""
@@ -59,6 +60,7 @@ struct ThreadRail: View {
           .accessibilityHidden(true)
         TextField("Search threads", text: $search)
           .textFieldStyle(.plain)
+          .focused($searchFocused)
           .font(CSFont.ui(13, .regular))
           .foregroundStyle(Color.primary)
       }
@@ -66,6 +68,9 @@ struct ThreadRail: View {
       .padding(.vertical, 5)
       .background(CSColor.controlFill)
       .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+      .overlay {
+        CSFocusOutline(isFocused: searchFocused, cornerRadius: 6)
+      }
       .padding(.horizontal, 12)
       .padding(.bottom, 8)
 
@@ -252,6 +257,9 @@ private struct ThreadRow: View {
           .strokeBorder(isActive ? CSColor.chromeAccent.opacity(0.28) : .clear, lineWidth: 1)
       )
       .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+      .overlay {
+        CSFocusOutline(isFocused: isEditing && renameFieldFocused, cornerRadius: 10)
+      }
       .contextMenu {
         Button("Rename") {
           onBeginRename()

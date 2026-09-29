@@ -10,6 +10,7 @@ struct WorkspaceRootsSection: View {
 
   @State private var rows: [String] = []
   @State private var loaded = false
+  @FocusState private var focusedRoot: Int?
 
   private var isDirty: Bool {
     cleaned(rows) != cleaned(model.agentWorkspaceRoots)
@@ -77,6 +78,7 @@ struct WorkspaceRootsSection: View {
         )
       )
       .textFieldStyle(.plain)
+      .focused($focusedRoot, equals: index)
       .font(CSFont.mono(12, .regular))
       .foregroundStyle(Color.primary)
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -98,6 +100,9 @@ struct WorkspaceRootsSection: View {
       RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
         .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
     )
+    .overlay {
+      CSFocusOutline(isFocused: focusedRoot == index, cornerRadius: CSRadius.input)
+    }
   }
 
   /// Green when the (tilde-expanded) path is an existing directory, amber

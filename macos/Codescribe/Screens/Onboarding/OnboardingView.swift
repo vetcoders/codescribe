@@ -12,20 +12,15 @@ struct OnboardingView: View {
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
   var body: some View {
-    Group {
-      if #available(macOS 26, *) {
-        GlassEffectContainer(spacing: 0) { content }
-      } else {
-        content
-      }
-    }
+    content
     .frame(minWidth: 680, minHeight: 560)
     .background {
-      Color(nsColor: .windowBackgroundColor)
-      if !reduceTransparency {
-        LinearGradient(
-          colors: [Color.accentColor.opacity(0.18), .clear, CSColor.terracotta.opacity(0.12)],
-          startPoint: .topLeading, endPoint: .bottomTrailing)
+      if reduceTransparency {
+        Color(nsColor: .windowBackgroundColor)
+      } else if #available(macOS 26, *) {
+        Color.clear.glassEffect(.regular, in: .rect(cornerRadius: 0))
+      } else {
+        Rectangle().fill(.regularMaterial)
       }
     }
     .csFocusPolicy()
@@ -69,20 +64,20 @@ struct OnboardingView: View {
   }
 
   private var header: some View {
-    VStack(alignment: .leading, spacing: 18) {
+    VStack(alignment: .leading, spacing: 12) {
       HStack {
         Wordmark(size: 16)
         Spacer()
         Text(model.progressLabel).font(.callout).foregroundStyle(.secondary)
       }
-      HStack(spacing: 18) {
+      HStack(spacing: 12) {
         Image(systemName: chapter.symbol)
-          .font(.system(size: 28, weight: .medium))
-          .frame(width: 52, height: 52)
+          .font(.system(size: 17, weight: .medium))
+          .frame(width: 34, height: 34)
           .accessibilityHidden(true)
         VStack(alignment: .leading, spacing: 5) {
-          Text(chapter.title).font(.title2.weight(.semibold))
-          Text(chapter.purpose).font(.callout).foregroundStyle(.secondary)
+          Text(chapter.title).font(.headline)
+          Text(chapter.purpose).font(.subheadline).foregroundStyle(.secondary)
         }
         Spacer(minLength: 0)
       }
@@ -123,50 +118,19 @@ struct OnboardingView: View {
   private var footer: some View {
     HStack(spacing: 10) {
       if model.canGoBack {
-        Button("Back") { model.back() }.modifier(SetupActionStyle())
+        Button("Back") { model.back() }.csAction()
       }
       Spacer(minLength: 0)
       // The API-key step is skippable — a key can be added later in Settings.
       if case .apiKey = model.step {
-        Button("Skip") { model.advance() }.modifier(SetupActionStyle())
+        Button("Skip") { model.advance() }.csAction()
       }
       Button(model.primaryLabel) {
         model.primaryAction()
-      }.modifier(SetupActionStyle(prominent: true))
+      }.csAction(prominent: true)
     }
     .padding(.horizontal, CSSpace.page)
     .padding(.vertical, 18)
-  }
-}
-
-/// Native glass for the wizard's navigation and selection surfaces.
-struct SetupGlass: ViewModifier {
-  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-
-  func body(content: Content) -> some View {
-    if reduceTransparency {
-      content.background(Color(nsColor: .controlBackgroundColor), in: .rect(cornerRadius: 24))
-    } else if #available(macOS 26, *) {
-      content.glassEffect(.regular, in: .rect(cornerRadius: 24))
-    } else {
-      content.background(.regularMaterial, in: .rect(cornerRadius: 24))
-    }
-  }
-}
-
-struct SetupActionStyle: ViewModifier {
-  var prominent = false
-
-  func body(content: Content) -> some View {
-    if #available(macOS 26, *) {
-      if prominent { content.buttonStyle(.glassProminent) } else { content.buttonStyle(.glass) }
-    } else {
-      if prominent {
-        content.buttonStyle(.borderedProminent)
-      } else {
-        content.buttonStyle(.bordered)
-      }
-    }
   }
 }
 

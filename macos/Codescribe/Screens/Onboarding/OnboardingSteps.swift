@@ -52,7 +52,7 @@ struct WelcomeStepView: View {
     }
     .frame(maxWidth: .infinity, minHeight: 135, alignment: .topLeading)
     .padding(18)
-    .modifier(SetupGlass())
+
     .accessibilityElement(children: .combine)
   }
 }
@@ -109,7 +109,7 @@ struct OnboardingChoiceCard: View {
       .frame(maxWidth: .infinity, alignment: .leading)
       .padding(6)
     }
-    .modifier(SetupActionStyle())
+    .csAction()
     .accessibilityAddTraits(isSelected ? .isSelected : [])
   }
 }
@@ -250,42 +250,37 @@ struct AgenticReadinessStepView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      HStack(alignment: .firstTextBaseline, spacing: 10) {
-        OnboardingStepHeader(
-          eyebrow: "Agentic readiness",
-          title: "Meet your working companions.",
-          blurb: "Check your connections, then optionally connect a "
-            + "live session to your coding assistant.")
-        Spacer(minLength: 0)
-      }
-
-      if let readiness = model.readiness {
-        readinessPill(ready: readiness.ready)
-        statusCard(rows: readiness.rows)
-      }
-
       agentBridgeSetup
-
-      if let mcp = model.mcpStatus, mcp.configured {
-        Text("MCP servers")
-          .font(CSFont.mono(10, .semibold))
-          .tracking(0.4)
-          .foregroundStyle(CSColor.textFaint)
-          .padding(.top, 4)
-        statusCard(rows: mcp.rows)
-      } else if !model.mcpSetupDismissed {
-        mcpSetupPrompt
-          .padding(.top, 4)
+      DisclosureGroup("Connection details") {
+        VStack(alignment: .leading, spacing: 12) {
+          Text(model.agentBridgeExplanation)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+          Text(model.agentBridgeStatus.detail)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+          ForEach(model.agentBridgeStatus.installedPaths, id: \.self) { path in
+            Text(path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+              .font(.caption.monospaced())
+              .textSelection(.enabled)
+          }
+          if let readiness = model.readiness {
+            readinessPill(ready: readiness.ready)
+            statusCard(rows: readiness.rows)
+          }
+          if let mcp = model.mcpStatus, mcp.configured {
+            Text("MCP servers").font(.headline)
+            statusCard(rows: mcp.rows)
+          } else if !model.mcpSetupDismissed {
+            mcpSetupPrompt
+          }
+          Button("Refresh") { model.refreshReadiness() }.csAction()
+        }.padding(.top, 8)
       }
-
-      Button("Refresh") {
-        model.refreshReadiness()
-      }.modifier(SetupActionStyle())
-        .padding(.top, 2)
 
       OnboardingStepNote(
         text:
-          "Bridge install is explicit and optional — Continue whether or not everything is green.")
+          "This connection is optional. You can continue and set it up later.")
     }
   }
 
@@ -295,26 +290,26 @@ struct AgenticReadinessStepView: View {
   /// reinstall/update or a safe deselection.
   private var agentBridgeSetup: some View {
     VStack(alignment: .leading, spacing: 10) {
-      Text("LIVE AGENT BRIDGE")
+      Text("CODING ASSISTANTS")
         .font(CSFont.mono(10, .semibold))
         .tracking(0.4)
         .foregroundStyle(CSColor.textFaint)
       Text(model.agentBridgeTitle)
         .font(CSFont.ui(15, .bold))
         .foregroundStyle(.primary)
-      Text(model.agentBridgeExplanation)
-        .font(CSFont.ui(12.5))
-        .lineSpacing(3)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
+      Text(
+        "Choose where to send your dictation. Your assistant can listen as you speak; changes wait until you finish."
+      )
+      .font(CSFont.ui(12.5))
+      .lineSpacing(3)
+      .foregroundStyle(.secondary)
+      .fixedSize(horizontal: false, vertical: true)
 
       VStack(spacing: 8) {
         ForEach(AgentBridgeClient.allCases) { client in
           OnboardingChoiceCard(
             title: client.displayName,
-            subtitle: client == .codex
-              ? "~/.codex/skills/codescribe"
-              : "~/.claude/skills/codescribe",
+            subtitle: "Connect a live coding session",
             isSelected: model.selectedAgentClients.contains(client)
           ) { model.toggleAgentClient(client) }
         }
@@ -323,36 +318,18 @@ struct AgenticReadinessStepView: View {
       HStack(spacing: 10) {
         Button(model.agentBridgeButtonTitle) {
           model.installAgentBridge()
-        }.modifier(SetupActionStyle(prominent: true))
+        }.csAction(prominent: true)
           .disabled(
             model.selectedAgentClients.isEmpty || !model.agentBridgeStatus.payloadAvailable
           )
-        Text(model.agentBridgeStatus.detail)
-          .font(CSFont.mono(10.5, .medium))
-          .foregroundStyle(CSColor.textFaint)
-          .fixedSize(horizontal: false, vertical: true)
       }
 
-      if !model.agentBridgeStatus.installedPaths.isEmpty {
-        VStack(alignment: .leading, spacing: 3) {
-          ForEach(model.agentBridgeStatus.installedPaths, id: \.self) { path in
-            Text(path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
-              .font(CSFont.mono(9.5, .medium))
-              .foregroundStyle(CSColor.oliveLight)
-              .textSelection(.enabled)
-          }
-        }
-      }
       if let error = model.agentBridgeError {
         Text(error)
           .font(CSFont.mono(10.5, .medium))
           .foregroundStyle(CSColor.terracottaLight)
           .fixedSize(horizontal: false, vertical: true)
       }
-      Text("Stable helper: ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py")
-        .font(CSFont.mono(9.5, .medium))
-        .foregroundStyle(CSColor.textFaint)
-        .textSelection(.enabled)
     }
     .padding(CSSpace.card)
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -387,10 +364,10 @@ struct AgenticReadinessStepView: View {
         Button("Set up MCP servers") {
           model.prepareMcpSettingsDeepLink()
           openWindow(id: SettingsView.windowID)
-        }.modifier(SetupActionStyle(prominent: true))
+        }.csAction(prominent: true)
         Button("Skip for now") {
           model.dismissMcpSetupPrompt()
-        }.modifier(SetupActionStyle())
+        }.csAction()
       }
     }
     .padding(CSSpace.card)
@@ -491,7 +468,7 @@ struct PermissionStepView: View {
 
       if !state.isGranted {
         Button(primaryTitle) { model.grantPermission(for: kind) }
-          .modifier(SetupActionStyle(prominent: true))
+          .csAction(prominent: true)
       }
 
       if !state.isGranted {
@@ -539,6 +516,7 @@ struct PermissionStepView: View {
 
 struct ApiKeyStepView: View {
   @ObservedObject var model: OnboardingViewModel
+  @FocusState private var keyFocused: Bool
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
@@ -622,21 +600,10 @@ struct ApiKeyStepView: View {
       }
       HStack(spacing: 8) {
         SecureField(isSet ? "Replace key…" : "Paste key…", text: $model.apiKeyDraft)
-          .textFieldStyle(.plain)
-          .font(CSFont.mono(12))
-          .foregroundStyle(CSColor.textBody)
-          .padding(.horizontal, 11)
-          .padding(.vertical, 8)
-          .background(
-            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-              .fill(CSColor.surfaceRaised(0.03))
-          )
-          .overlay(
-            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-              .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
-          )
+          .focused($keyFocused)
+          .settingsInputChrome(isFocused: keyFocused)
           .onSubmit { model.saveApiKey() }
-        Button("Save key") { model.saveApiKey() }.modifier(SetupActionStyle(prominent: true))
+        Button("Save key") { model.saveApiKey() }.csAction(prominent: true)
       }
     }
     .padding(.horizontal, 15)

@@ -843,7 +843,7 @@ mod tests {
             .prefix(&format!("cs_account_auth_{tag}_"))
             .tempdir()
             .expect("create scratch settings dir");
-        (EnvGuard::set_path("CODESCRIBE_DATA_DIR", dir.path()), dir)
+        (EnvGuard::set("CODESCRIBE_DATA_DIR", dir.path()), dir)
     }
 
     /// Capability probe only: 401 means no Responses write; 400 means the
@@ -887,7 +887,7 @@ mod tests {
         let (_data_dir, _dir) = isolated_settings_dir("gate");
         // Pin the Anthropic env: the operator's dotenv is inherited by the
         // test process, so an unpinned var makes this pass or fail by machine.
-        let _anthropic_guard = EnvGuard::unset(ANTHROPIC_CLIENT_ID_ENV);
+        let _anthropic_guard = EnvGuard::remove(ANTHROPIC_CLIENT_ID_ENV);
         let anthropic = client_id_for_provider(ProviderKind::AnthropicMessages).unwrap_err();
         assert!(matches!(anthropic, AccountAuthError::NoClientId { .. }));
         assert!(anthropic.to_string().contains(NO_CLIENT_ID_MESSAGE));
@@ -951,8 +951,8 @@ mod tests {
         use base64::Engine;
         let (_data_dir, _dir) = isolated_settings_dir("status");
         let _disable = EnvGuard::set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
-        let _tokens = EnvGuard::unset(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
-        let _env = EnvGuard::unset(OPENAI_CLIENT_ID_ENV);
+        let _tokens = EnvGuard::remove(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
+        let _env = EnvGuard::remove(OPENAI_CLIENT_ID_ENV);
 
         // 1. OpenAI with no operator paste ⇒ Codex default is configured,
         //    sign-in is enabled, tokens absent.
@@ -1026,7 +1026,7 @@ mod tests {
     #[serial]
     fn keychain_mock_round_trips_serialized_account_tokens() {
         let _disable = EnvGuard::set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
-        let _tokens = EnvGuard::unset(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
+        let _tokens = EnvGuard::remove(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
         let tokens = AccountTokens::new(
             ProviderKind::OpenAiResponses,
             "access".to_string(),
@@ -1048,8 +1048,8 @@ mod tests {
     #[serial]
     fn provider_accounts_never_share_a_keychain_slot() {
         let _disable = EnvGuard::set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
-        let _openai = EnvGuard::unset(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
-        let _anthropic = EnvGuard::unset(ANTHROPIC_ACCOUNT_TOKENS_ACCOUNT);
+        let _openai = EnvGuard::remove(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
+        let _anthropic = EnvGuard::remove(ANTHROPIC_ACCOUNT_TOKENS_ACCOUNT);
 
         let openai = AccountTokens::new(
             ProviderKind::OpenAiResponses,
@@ -1098,9 +1098,9 @@ mod tests {
     #[serial]
     fn each_provider_reads_its_own_client_id_and_issuer() {
         let (_settings_guard, _dir) = isolated_settings_dir("provider_identity");
-        let _openai_env = EnvGuard::unset(OPENAI_CLIENT_ID_ENV);
+        let _openai_env = EnvGuard::remove(OPENAI_CLIENT_ID_ENV);
         let _anthropic_env = EnvGuard::set(ANTHROPIC_CLIENT_ID_ENV, "anthropic-from-env");
-        let _issuer = EnvGuard::unset(ANTHROPIC_ISSUER_ENV);
+        let _issuer = EnvGuard::remove(ANTHROPIC_ISSUER_ENV);
 
         // OpenAI has neither setting nor env ⇒ Codex public app id, never
         // Anthropic's env value.
@@ -1189,8 +1189,8 @@ mod tests {
     #[serial]
     fn each_row_reads_only_its_own_saved_client_id() {
         let (_data_dir, _dir) = isolated_settings_dir("row_accessor");
-        let _openai_env = EnvGuard::unset(OPENAI_CLIENT_ID_ENV);
-        let _anthropic_env = EnvGuard::unset(ANTHROPIC_CLIENT_ID_ENV);
+        let _openai_env = EnvGuard::remove(OPENAI_CLIENT_ID_ENV);
+        let _anthropic_env = EnvGuard::remove(ANTHROPIC_CLIENT_ID_ENV);
 
         UserSettings {
             openai_oauth_client_id: Some("openai-app".to_string()),
@@ -1238,7 +1238,7 @@ mod tests {
     #[serial]
     fn openai_resolves_codex_cli_client_id_without_settings() {
         let (_data_dir, _dir) = isolated_settings_dir("openai_default_client_id");
-        let _openai_env = EnvGuard::unset(OPENAI_CLIENT_ID_ENV);
+        let _openai_env = EnvGuard::remove(OPENAI_CLIENT_ID_ENV);
         UserSettings {
             openai_oauth_client_id: None,
             ..Default::default()
@@ -1289,49 +1289,7 @@ mod tests {
     }
 
     /// RAII env mutator for `#[serial]` tests; restores the prior value on drop.
-    #[derive(Debug)]
-    struct EnvGuard {
-        key: &'static str,
-        previous: Option<String>,
-    }
-
-    impl EnvGuard {
-        /// Set `key` to `value`, remembering the previous process-env state.
-        fn set(key: &'static str, value: &str) -> Self {
-            let previous = std::env::var(key).ok();
-            // SAFETY: these process-env tests are serialized with `serial`.
-            unsafe { std::env::set_var(key, value) };
-            Self { key, previous }
-        }
-
-        /// Set `key` to a filesystem path string, remembering the previous state.
-        fn set_path(key: &'static str, value: &std::path::Path) -> Self {
-            let previous = std::env::var(key).ok();
-            // SAFETY: these process-env tests are serialized with `serial`.
-            unsafe { std::env::set_var(key, value) };
-            Self { key, previous }
-        }
-
-        /// Remove `key` from the process env, remembering whether it was set.
-        fn unset(key: &'static str) -> Self {
-            let previous = std::env::var(key).ok();
-            // SAFETY: these process-env tests are serialized with `serial`.
-            unsafe { std::env::remove_var(key) };
-            Self { key, previous }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        /// Restore the captured prior value (or re-unset) so serial tests stay isolated.
-        fn drop(&mut self) {
-            match &self.previous {
-                // SAFETY: these process-env tests are serialized with `serial`.
-                Some(value) => unsafe { std::env::set_var(self.key, value) },
-                // SAFETY: these process-env tests are serialized with `serial`.
-                None => unsafe { std::env::remove_var(self.key) },
-            }
-        }
-    }
+    use crate::test_isolation::EnvGuard;
 
     /// The Codex backend needs the workspace id from the token claims; the
     /// codex-rs path wins, the opencode fallbacks follow, and a token with no

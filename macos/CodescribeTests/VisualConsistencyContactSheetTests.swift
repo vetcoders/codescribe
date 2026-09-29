@@ -189,25 +189,25 @@ private struct CellMeasurement: Codable {
   var pixelWidth: Int
   var pixelHeight: Int
   var scale: Double
-  var interiorLuminance: Double?
+  var interiorLuminance: Double? = nil
   var inkRatio: Double
   var inkSampleCount: Int
   var maxCornerAlpha: Double
   var resolvedAppearance: String
   var appearanceMatchesRequest: Bool
-  var hostFlipped: Bool
-  var schemeDelta: Double?
-  var schemeRequestHonored: Bool?
-  var headerDragRegionInsideTopBand: Bool?
-  var transcriptScrollsUnderHeader: Bool?
-  var headerAndBodyHitsDiffer: Bool?
-  var headerHitClass: String?
-  var bodyHitClass: String?
-  var bottomControlWidthRatio: Double?
-  var bottomControlsObserved: Bool
-  var compositorGlassProven: Bool
-  var views: [EvidenceView]
-  var notes: [String]
+  var hostFlipped: Bool = false
+  var schemeDelta: Double? = nil
+  var schemeRequestHonored: Bool? = nil
+  var headerDragRegionInsideTopBand: Bool? = nil
+  var transcriptScrollsUnderHeader: Bool? = nil
+  var headerAndBodyHitsDiffer: Bool? = nil
+  var headerHitClass: String? = nil
+  var bodyHitClass: String? = nil
+  var bottomControlWidthRatio: Double? = nil
+  var bottomControlsObserved: Bool = false
+  var compositorGlassProven: Bool = false
+  var views: [EvidenceView] = []
+  var notes: [String] = []
 }
 
 private struct EvidenceManifest: Codable {
@@ -474,24 +474,11 @@ private final class SheetRun {
         pixelWidth: 0,
         pixelHeight: 0,
         scale: 0,
-        interiorLuminance: nil,
         inkRatio: 0,
         inkSampleCount: 0,
         maxCornerAlpha: 0,
         resolvedAppearance: "none",
         appearanceMatchesRequest: false,
-        hostFlipped: false,
-        schemeDelta: nil,
-        schemeRequestHonored: nil,
-        headerDragRegionInsideTopBand: nil,
-        transcriptScrollsUnderHeader: nil,
-        headerAndBodyHitsDiffer: nil,
-        headerHitClass: nil,
-        bodyHitClass: nil,
-        bottomControlWidthRatio: nil,
-        bottomControlsObserved: false,
-        compositorGlassProven: false,
-        views: [],
         notes: notes
       )
     ]
@@ -508,14 +495,29 @@ private final class SheetRun {
     root: V
   ) {
     do {
-      let cell = try capture(
-        id: id,
-        surface: surface,
-        state: state,
-        sizeName: sizeName,
-        scheme: scheme,
-        size: size,
-        root:
+      let appearance =
+        NSAppearance(named: scheme.appearanceName) ?? NSAppearance(named: .aqua)!
+      let window = NSWindow(
+        contentRect: NSRect(origin: .zero, size: size),
+        styleMask: surface == "overlay" || surface == "tray"
+          ? [.borderless] : [.titled, .closable, .miniaturizable, .resizable],
+        backing: .buffered,
+        defer: false
+      )
+      window.isReleasedWhenClosed = false
+      window.isRestorable = false
+      window.isExcludedFromWindowsMenu = true
+      window.appearance = appearance
+      window.titleVisibility = .hidden
+      window.titlebarAppearsTransparent = true
+      defer {
+        window.orderOut(nil)
+        window.contentView = nil
+        window.close()
+      }
+
+      let host = NSHostingView(
+        rootView:
           root
           .environment(\.colorScheme, scheme.colorScheme)
           .preferredColorScheme(scheme.colorScheme)
@@ -526,155 +528,118 @@ private final class SheetRun {
           // NSWindow paints this canvas in the app; cacheDisplay captures only its content view.
           .background(surface == "settings" ? Color(nsColor: .windowBackgroundColor) : .clear)
       )
-      rendered.append(cell)
+      host.appearance = appearance
+      // The window owns the size. Hosting constraints on a resizable window chase
+      // fittingSize; DictationOverlayWindow keeps sizingOptions empty for that reason.
+      host.sizingOptions = surface == "tray" ? [.intrinsicContentSize] : []
+      host.safeAreaRegions = []
+      host.translatesAutoresizingMaskIntoConstraints = true
+      host.frame = NSRect(origin: .zero, size: size)
+      host.autoresizingMask = [.width, .height]
+      window.contentView = host
+      window.setContentSize(size)
+
+      var settled = size
+      var fittingNote: String?
+      for _ in 0..<layoutTurns {
+        host.layoutSubtreeIfNeeded()
+        window.layoutIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(layoutPulse))
+      }
+      if surface == "tray" {
+        let fitted = host.fittingSize
+        expect(fitted.height > 160, "\(id) intrinsic tray height was not resolved: \(fitted)")
+        let height = min(max(ceil(fitted.height), 160), 900)
+        settled = CGSize(width: trayWidth, height: height > 1 ? height : trayProbeHeight)
+        fittingNote =
+          "fittingSize \(fitted.width)×\(fitted.height); settled \(settled.width)×\(settled.height)"
+      }
+      window.setContentSize(settled)
+      host.frame = NSRect(origin: .zero, size: settled)
+      host.layoutSubtreeIfNeeded()
+
+      expect(!window.isVisible, "\(id) window became visible; capture stays unordered")
+      expect(
+        abs(host.bounds.width - settled.width) <= frameSlack
+          && abs(host.bounds.height - settled.height) <= frameSlack,
+        "\(id) host settled at \(host.bounds.size), requested \(settled)"
+      )
+
+      let resolved = appearanceToken(host.effectiveAppearance)
+      let appearanceMatches =
+        host.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua])
+        == scheme.appearanceName
+      expect(
+        appearanceMatches,
+        "\(id) effective appearance \(resolved) did not resolve to \(scheme.appearanceName.rawValue)"
+      )
+
+      let bitmap = try XCTUnwrap(
+        host.bitmapImageRepForCachingDisplay(in: host.bounds),
+        "\(id) produced no bitmap"
+      )
+      appearance.performAsCurrentDrawingAppearance {
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+      }
+      let png = try XCTUnwrap(
+        bitmap.representation(using: .png, properties: [:]),
+        "\(id) produced no PNG"
+      )
+
+      let scale = settled.width > 0 ? Double(bitmap.pixelsWide) / Double(settled.width) : 0
+      let scaleY = settled.height > 0 ? Double(bitmap.pixelsHigh) / Double(settled.height) : 0
+      expect(bitmap.pixelsWide > 0 && bitmap.pixelsHigh > 0, "\(id) bitmap is empty")
+      expect(abs(scale - scaleY) < 0.05, "\(id) pixel scale x \(scale) != y \(scaleY)")
+
+      let stats = scanPixels(bitmap)
+      expect(
+        stats.inkRatio > inkRatioFloor,
+        "\(id) ink ratio \(stats.inkRatio) over \(stats.sampleCount) samples looks blank (\(stats.alphaSource))"
+      )
+      if surface == "overlay" {
+        expect(
+          stats.maxCornerAlpha < 0.2,
+          "\(id) corner alpha \(stats.maxCornerAlpha) — rounded clip missing"
+        )
+      }
+
+      let geometry = inspect(host, surface: surface, state: state, id: id)
+      var measurement = CellMeasurement(
+        id: id,
+        surface: surface,
+        state: state,
+        sizeName: sizeName,
+        scheme: scheme,
+        requestedSize: EvidencePoint(CGRect(origin: .zero, size: size)),
+        settledSize: EvidencePoint(CGRect(origin: .zero, size: settled)),
+        pixelWidth: bitmap.pixelsWide,
+        pixelHeight: bitmap.pixelsHigh,
+        scale: scale,
+        interiorLuminance: stats.luminance,
+        inkRatio: stats.inkRatio,
+        inkSampleCount: stats.sampleCount,
+        maxCornerAlpha: stats.maxCornerAlpha,
+        resolvedAppearance: resolved,
+        appearanceMatchesRequest: appearanceMatches,
+        hostFlipped: host.isFlipped,
+        headerDragRegionInsideTopBand: geometry.headerDragInTopBand,
+        transcriptScrollsUnderHeader: geometry.transcriptUnderHeader,
+        headerAndBodyHitsDiffer: geometry.hitsDiffer,
+        headerHitClass: geometry.headerHitClass,
+        bodyHitClass: geometry.bodyHitClass,
+        bottomControlWidthRatio: geometry.bottomControlWidthRatio,
+        bottomControlsObserved: geometry.bottomControlsObserved,
+        views: geometry.views,
+        notes: geometry.notes
+      )
+      if let fittingNote {
+        measurement.notes.append(fittingNote)
+      }
+      measurement.notes.append("pixel alpha via \(stats.alphaSource)")
+      rendered.append(RenderedCell(measurement: measurement, png: png))
     } catch {
       failures.append("\(id) capture failed: \(error)")
     }
-  }
-
-  private func capture<V: View>(
-    id: String,
-    surface: String,
-    state: String,
-    sizeName: String,
-    scheme: EvidenceScheme,
-    size: CGSize,
-    root: V
-  ) throws -> RenderedCell {
-    let appearance =
-      NSAppearance(named: scheme.appearanceName) ?? NSAppearance(named: .aqua)!
-    let window = NSWindow(
-      contentRect: NSRect(origin: .zero, size: size),
-      styleMask: surface == "overlay" || surface == "tray"
-        ? [.borderless] : [.titled, .closable, .miniaturizable, .resizable],
-      backing: .buffered,
-      defer: false
-    )
-    window.isReleasedWhenClosed = false
-    window.isRestorable = false
-    window.isExcludedFromWindowsMenu = true
-    window.appearance = appearance
-    window.titleVisibility = .hidden
-    window.titlebarAppearsTransparent = true
-    defer {
-      window.orderOut(nil)
-      window.contentView = nil
-      window.close()
-    }
-
-    let host = NSHostingView(rootView: root)
-    host.appearance = appearance
-    // The window owns the size. Hosting constraints on a resizable window chase
-    // fittingSize; DictationOverlayWindow keeps sizingOptions empty for that reason.
-    host.sizingOptions = surface == "tray" ? [.intrinsicContentSize] : []
-    host.safeAreaRegions = []
-    host.translatesAutoresizingMaskIntoConstraints = true
-    host.frame = NSRect(origin: .zero, size: size)
-    host.autoresizingMask = [.width, .height]
-    window.contentView = host
-    window.setContentSize(size)
-
-    var settled = size
-    var fittingNote: String?
-    for _ in 0..<layoutTurns {
-      host.layoutSubtreeIfNeeded()
-      window.layoutIfNeeded()
-      RunLoop.main.run(until: Date().addingTimeInterval(layoutPulse))
-    }
-    if surface == "tray" {
-      let fitted = host.fittingSize
-      expect(fitted.height > 160, "\(id) intrinsic tray height was not resolved: \(fitted)")
-      let height = min(max(ceil(fitted.height), 160), 900)
-      settled = CGSize(width: trayWidth, height: height > 1 ? height : trayProbeHeight)
-      fittingNote =
-        "fittingSize \(fitted.width)×\(fitted.height); settled \(settled.width)×\(settled.height)"
-    }
-    window.setContentSize(settled)
-    host.frame = NSRect(origin: .zero, size: settled)
-    host.layoutSubtreeIfNeeded()
-
-    expect(!window.isVisible, "\(id) window became visible; capture stays unordered")
-    expect(
-      abs(host.bounds.width - settled.width) <= frameSlack
-        && abs(host.bounds.height - settled.height) <= frameSlack,
-      "\(id) host settled at \(host.bounds.size), requested \(settled)"
-    )
-
-    let resolved = appearanceToken(host.effectiveAppearance)
-    let appearanceMatches =
-      host.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua])
-      == scheme.appearanceName
-    expect(
-      appearanceMatches,
-      "\(id) effective appearance \(resolved) did not resolve to \(scheme.appearanceName.rawValue)"
-    )
-
-    let bitmap = try XCTUnwrap(
-      host.bitmapImageRepForCachingDisplay(in: host.bounds),
-      "\(id) produced no bitmap"
-    )
-    appearance.performAsCurrentDrawingAppearance {
-      host.cacheDisplay(in: host.bounds, to: bitmap)
-    }
-    let png = try XCTUnwrap(
-      bitmap.representation(using: .png, properties: [:]),
-      "\(id) produced no PNG"
-    )
-
-    let scale = settled.width > 0 ? Double(bitmap.pixelsWide) / Double(settled.width) : 0
-    let scaleY = settled.height > 0 ? Double(bitmap.pixelsHigh) / Double(settled.height) : 0
-    expect(bitmap.pixelsWide > 0 && bitmap.pixelsHigh > 0, "\(id) bitmap is empty")
-    expect(abs(scale - scaleY) < 0.05, "\(id) pixel scale x \(scale) != y \(scaleY)")
-
-    let stats = scanPixels(bitmap)
-    expect(
-      stats.inkRatio > inkRatioFloor,
-      "\(id) ink ratio \(stats.inkRatio) over \(stats.sampleCount) samples looks blank (\(stats.alphaSource))"
-    )
-    if surface == "overlay" {
-      expect(
-        stats.maxCornerAlpha < 0.2,
-        "\(id) corner alpha \(stats.maxCornerAlpha) — rounded clip missing"
-      )
-    }
-
-    let geometry = inspect(host, surface: surface, state: state, id: id)
-    var measurement = CellMeasurement(
-      id: id,
-      surface: surface,
-      state: state,
-      sizeName: sizeName,
-      scheme: scheme,
-      requestedSize: EvidencePoint(CGRect(origin: .zero, size: size)),
-      settledSize: EvidencePoint(CGRect(origin: .zero, size: settled)),
-      pixelWidth: bitmap.pixelsWide,
-      pixelHeight: bitmap.pixelsHigh,
-      scale: scale,
-      interiorLuminance: stats.luminance,
-      inkRatio: stats.inkRatio,
-      inkSampleCount: stats.sampleCount,
-      maxCornerAlpha: stats.maxCornerAlpha,
-      resolvedAppearance: resolved,
-      appearanceMatchesRequest: appearanceMatches,
-      hostFlipped: host.isFlipped,
-      schemeDelta: nil,
-      schemeRequestHonored: nil,
-      headerDragRegionInsideTopBand: geometry.headerDragInTopBand,
-      transcriptScrollsUnderHeader: geometry.transcriptUnderHeader,
-      headerAndBodyHitsDiffer: geometry.hitsDiffer,
-      headerHitClass: geometry.headerHitClass,
-      bodyHitClass: geometry.bodyHitClass,
-      bottomControlWidthRatio: geometry.bottomControlWidthRatio,
-      bottomControlsObserved: geometry.bottomControlsObserved,
-      compositorGlassProven: false,
-      views: geometry.views,
-      notes: geometry.notes
-    )
-    if let fittingNote {
-      measurement.notes.append(fittingNote)
-    }
-    measurement.notes.append("pixel alpha via \(stats.alphaSource)")
-    return RenderedCell(measurement: measurement, png: png)
   }
 
   private func inspect(
@@ -684,12 +649,10 @@ private final class SheetRun {
     let controls = descendants(of: host, where: { $0 is NSControl && !($0 is NSTextView) })
     let textViews = descendants(of: host, where: { $0 is NSTextView })
     let dragRegions = descendants(of: host, where: { $0 is OverlayWindowDragRegionView })
-    let effects = descendants(
-      of: host,
-      where: {
-        if #available(macOS 26, *), $0 is OverlayDesktopGlassView { return true }
-        return $0 is OverlayDesktopEffectView
-      })
+    let effects = descendants(of: host) {
+      if #available(macOS 26, *), $0 is OverlayDesktopGlassView { return true }
+      return $0 is OverlayDesktopEffectView
+    }
 
     for view in controls + dragRegions + effects {
       guard let placed = place(view, in: host) else { continue }
@@ -1074,64 +1037,42 @@ private func contactSheet(from cells: [RenderedCell]) throws -> Data {
     width: pad + CGFloat(columns) * (tileSize.width + pad),
     height: pad + CGFloat(rows) * (tileSize.height + labelHeight + pad)
   )
-  guard
-    let sheet = NSBitmapImageRep(
-      bitmapDataPlanes: nil,
-      pixelsWide: Int(canvas.width),
-      pixelsHigh: Int(canvas.height),
-      bitsPerSample: 8,
-      samplesPerPixel: 4,
-      hasAlpha: true,
-      isPlanar: false,
-      colorSpaceName: .deviceRGB,
-      bytesPerRow: 0,
-      bitsPerPixel: 0
-    ),
-    let context = NSGraphicsContext(bitmapImageRep: sheet)
-  else {
-    throw CocoaError(.coderInvalidValue)
-  }
-  sheet.size = canvas
-  NSGraphicsContext.saveGraphicsState()
-  NSGraphicsContext.current = context
-  NSColor(srgbRed: 0.12, green: 0.12, blue: 0.13, alpha: 1).setFill()
-  NSBezierPath(rect: CGRect(origin: .zero, size: canvas)).fill()
-  let attributes: [NSAttributedString.Key: Any] = [
-    .font: NSFont.monospacedSystemFont(ofSize: 9, weight: .regular),
-    .foregroundColor: NSColor.white,
-  ]
-  for (index, cell) in cells.enumerated() {
-    let column = index % columns
-    let row = index / columns
-    let x = pad + CGFloat(column) * (tileSize.width + pad)
-    let y = canvas.height - pad - CGFloat(row + 1) * (tileSize.height + labelHeight + pad)
-    let tileRect = CGRect(x: x, y: y + labelHeight, width: tileSize.width, height: tileSize.height)
-    if let cellImage = NSImage(data: cell.png) {
-      let aspect = CGSize(
-        width: max(cell.measurement.settledSize.width, 1),
-        height: max(cell.measurement.settledSize.height, 1)
-      )
-      cellImage.draw(
-        in: aspectFit(aspect, in: tileRect),
-        from: .zero,
-        operation: .sourceOver,
-        fraction: 1,
-        respectFlipped: false,
-        hints: nil
+  return try renderPNG(size: canvas) {
+    NSColor(srgbRed: 0.12, green: 0.12, blue: 0.13, alpha: 1).setFill()
+    NSBezierPath(rect: CGRect(origin: .zero, size: canvas)).fill()
+    let attributes: [NSAttributedString.Key: Any] = [
+      .font: NSFont.monospacedSystemFont(ofSize: 9, weight: .regular),
+      .foregroundColor: NSColor.white,
+    ]
+    for (index, cell) in cells.enumerated() {
+      let column = index % columns
+      let row = index / columns
+      let x = pad + CGFloat(column) * (tileSize.width + pad)
+      let y = canvas.height - pad - CGFloat(row + 1) * (tileSize.height + labelHeight + pad)
+      let tileRect = CGRect(
+        x: x, y: y + labelHeight, width: tileSize.width, height: tileSize.height)
+      if let cellImage = NSImage(data: cell.png) {
+        let aspect = CGSize(
+          width: max(cell.measurement.settledSize.width, 1),
+          height: max(cell.measurement.settledSize.height, 1)
+        )
+        cellImage.draw(
+          in: aspectFit(aspect, in: tileRect),
+          from: .zero,
+          operation: .sourceOver,
+          fraction: 1,
+          respectFlipped: false,
+          hints: nil
+        )
+      }
+      let luminance = cell.measurement.interiorLuminance.map { String(format: "%.3f", $0) } ?? "n/a"
+      let caption = "\(cell.measurement.id)\nL \(luminance)"
+      (caption as NSString).draw(
+        in: CGRect(x: x, y: y, width: tileSize.width, height: labelHeight),
+        withAttributes: attributes
       )
     }
-    let luminance = cell.measurement.interiorLuminance.map { String(format: "%.3f", $0) } ?? "n/a"
-    let caption = "\(cell.measurement.id)\nL \(luminance)"
-    (caption as NSString).draw(
-      in: CGRect(x: x, y: y, width: tileSize.width, height: labelHeight),
-      withAttributes: attributes
-    )
   }
-  NSGraphicsContext.restoreGraphicsState()
-  guard let png = sheet.representation(using: .png, properties: [:]) else {
-    throw CocoaError(.coderInvalidValue)
-  }
-  return png
 }
 
 private func aspectFit(_ imageSize: CGSize, in tile: CGRect) -> CGRect {
@@ -1147,11 +1088,18 @@ private func aspectFit(_ imageSize: CGSize, in tile: CGRect) -> CGRect {
 }
 
 private func solidPNG(width: Int, height: Int, color: NSColor) throws -> Data {
+  try renderPNG(size: NSSize(width: width, height: height)) {
+    color.setFill()
+    NSBezierPath(rect: NSRect(x: 0, y: 0, width: width, height: height)).fill()
+  }
+}
+
+private func renderPNG(size: CGSize, draw: () -> Void) throws -> Data {
   guard
     let bitmap = NSBitmapImageRep(
       bitmapDataPlanes: nil,
-      pixelsWide: width,
-      pixelsHigh: height,
+      pixelsWide: Int(size.width),
+      pixelsHigh: Int(size.height),
       bitsPerSample: 8,
       samplesPerPixel: 4,
       hasAlpha: true,
@@ -1164,11 +1112,10 @@ private func solidPNG(width: Int, height: Int, color: NSColor) throws -> Data {
   else {
     throw CocoaError(.coderInvalidValue)
   }
-  bitmap.size = NSSize(width: width, height: height)
+  bitmap.size = size
   NSGraphicsContext.saveGraphicsState()
   NSGraphicsContext.current = context
-  color.setFill()
-  NSBezierPath(rect: NSRect(x: 0, y: 0, width: width, height: height)).fill()
+  draw()
   NSGraphicsContext.restoreGraphicsState()
   guard let png = bitmap.representation(using: .png, properties: [:]) else {
     throw CocoaError(.coderInvalidValue)
@@ -1189,25 +1136,11 @@ private func fixtureMeasurement(id: String, width: Double, height: Double) -> Ce
     pixelWidth: Int(width),
     pixelHeight: Int(height),
     scale: 1,
-    interiorLuminance: nil,
     inkRatio: 1,
     inkSampleCount: 1,
     maxCornerAlpha: 1,
     resolvedAppearance: "fixture",
     appearanceMatchesRequest: true,
-    hostFlipped: false,
-    schemeDelta: nil,
-    schemeRequestHonored: nil,
-    headerDragRegionInsideTopBand: nil,
-    transcriptScrollsUnderHeader: nil,
-    headerAndBodyHitsDiffer: nil,
-    headerHitClass: nil,
-    bodyHitClass: nil,
-    bottomControlWidthRatio: nil,
-    bottomControlsObserved: false,
-    compositorGlassProven: false,
-    views: [],
-    notes: []
   )
 }
 

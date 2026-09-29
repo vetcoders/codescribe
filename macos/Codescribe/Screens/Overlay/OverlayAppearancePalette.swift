@@ -2,12 +2,11 @@ import SwiftUI
 
 /// Overlay-only contrast and material roles. They preserve the established
 /// warm paper palette while avoiding the app-wide dark-only `CSColor` surface
-/// tokens. The material remains the physical sheet; the 18% tint only steadies
-/// it over unusually bright or dark desktop content.
+/// tokens. Native glass owns translucency; desktopBackground is the opaque
+/// surface used when Reduce Transparency is enabled.
 struct OverlayAppearancePalette: Equatable, Sendable {
   let appearance: OverlayAppearance
   let desktopBackground: OverlayColorToken
-  let surfaceTint: OverlayColorToken
   let border: OverlayColorToken
   let primaryText: OverlayColorToken
   let bodyText: OverlayColorToken
@@ -22,7 +21,6 @@ struct OverlayAppearancePalette: Equatable, Sendable {
   static let light = OverlayAppearancePalette(
     appearance: .light,
     desktopBackground: OverlayColorToken(0xF6F3EE),
-    surfaceTint: OverlayColorToken(0xFFFFFF, alpha: 0.18),
     border: OverlayColorToken(0x5F5A52, alpha: 0.20),
     primaryText: OverlayColorToken(0x1C1B18),
     bodyText: OverlayColorToken(0x5F5A52),
@@ -38,7 +36,6 @@ struct OverlayAppearancePalette: Equatable, Sendable {
   static let dark = OverlayAppearancePalette(
     appearance: .dark,
     desktopBackground: OverlayColorToken(0x191919),
-    surfaceTint: OverlayColorToken(0x202020, alpha: 0.18),
     border: OverlayColorToken(0xF3F0EA, alpha: 0.16),
     primaryText: OverlayColorToken(0xF3F0EA),
     bodyText: OverlayColorToken(0xC8C1B8),
@@ -59,17 +56,8 @@ struct OverlayAppearancePalette: Equatable, Sendable {
     appearance == .dark ? .dark : .light
   }
 
-  /// Refused coverage reuses the caution amber rather than gaining a token of
-  /// its own. The choice is deliberate and it is a constraint, not a
-  /// preference: every token here is held to a measured contrast floor by
-  /// `OverlayAppearanceTests`, and a new pair of hex values authored under the
-  /// compile embargo would be two unverified colours shipped on the strength
-  /// of an agent's eye. Amber is already proven in both appearances and it is
-  /// the honest hue for "settled, but not complete".
-  ///
-  /// What matters far more than which warm colour it is: it must never be
-  /// `successStatus`. Green here would be the palette agreeing with a seal
-  /// that was refused.
+  /// Refused coverage uses caution amber, never the green success token.
+  /// Palette tests verify opaque contrast; glass needs live compositor checks.
   func statusToken(for mode: OverlayMode) -> OverlayColorToken {
     switch mode {
     case .listening: listeningStatus

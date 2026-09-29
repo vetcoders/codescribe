@@ -4,52 +4,20 @@ use codescribe_core::config::{
 };
 use serial_test::serial;
 use sha2::{Digest, Sha256};
-use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 use std::time::Duration;
 
-struct EnvGuard {
-    key: &'static str,
-    previous: Option<OsString>,
-}
-
-impl EnvGuard {
-    fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
-        let previous = std::env::var_os(key);
-        // SAFETY: these tests are serialized and restore every process variable.
-        unsafe { std::env::set_var(key, value) };
-        Self { key, previous }
-    }
-
-    fn unset(key: &'static str) -> Self {
-        let previous = std::env::var_os(key);
-        // SAFETY: these tests are serialized and restore every process variable.
-        unsafe { std::env::remove_var(key) };
-        Self { key, previous }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        // SAFETY: restores the serialized test's prior process environment.
-        unsafe {
-            match &self.previous {
-                Some(value) => std::env::set_var(self.key, value),
-                None => std::env::remove_var(self.key),
-            }
-        }
-    }
-}
+use codescribe_core::test_isolation::EnvGuard;
 
 /// Registry defaults are sealed by the loader when all four overlays are
 /// absent. Formatter and Agent execution only borrow these selected facts.
 #[test]
 #[serial]
 fn runtime_ai_execution_uses_registered_defaults() {
-    let _max_retries = EnvGuard::unset("CODESCRIBE_AI_MAX_RETRIES");
-    let _retry_delay = EnvGuard::unset("CODESCRIBE_AI_RETRY_DELAY_MS");
-    let _attempt_timeout = EnvGuard::unset("CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS");
-    let _inter_chunk_timeout = EnvGuard::unset("CODESCRIBE_AI_INTER_CHUNK_TIMEOUT_MS");
+    let _max_retries = EnvGuard::remove("CODESCRIBE_AI_MAX_RETRIES");
+    let _retry_delay = EnvGuard::remove("CODESCRIBE_AI_RETRY_DELAY_MS");
+    let _attempt_timeout = EnvGuard::remove("CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS");
+    let _inter_chunk_timeout = EnvGuard::remove("CODESCRIBE_AI_INTER_CHUNK_TIMEOUT_MS");
     let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
     let formatter = runtime_settings.ai_execution().formatter();
     let timing = runtime_settings.ai_execution().request_timing();
@@ -64,7 +32,7 @@ fn runtime_ai_execution_uses_registered_defaults() {
 fn formatting_policy_selects_exact_prompt() {
     let sandbox = tempfile::TempDir::new().expect("isolated prompt data");
     let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", sandbox.path());
-    let _runtime_policy = EnvGuard::unset("FORMATTING_LEVEL");
+    let _runtime_policy = EnvGuard::remove("FORMATTING_LEVEL");
     let config = Config::default();
     let fixtures = [
         (
@@ -136,7 +104,7 @@ fn formatting_policy_walkaround_receipt() {
     std::fs::create_dir_all(root).expect("create walkaround root");
 
     let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", root);
-    let _runtime_policy = EnvGuard::unset("FORMATTING_LEVEL");
+    let _runtime_policy = EnvGuard::remove("FORMATTING_LEVEL");
     let fixtures = [
         (
             FormattingPolicy::Correction,
@@ -227,7 +195,7 @@ async fn formatting_off_bypasses_llm() {
         .await;
     let _model = EnvGuard::set("LLM_FORMATTING_MODEL", "test-model");
     let _key = EnvGuard::set("LLM_OPENAI_API_KEY", "test-key");
-    let _policy = EnvGuard::unset("FORMATTING_LEVEL");
+    let _policy = EnvGuard::remove("FORMATTING_LEVEL");
     Config::default()
         .save_to_env("FORMATTING_LEVEL", FormattingPolicy::Off.as_str())
         .expect("persist Off formatting policy");
@@ -265,7 +233,7 @@ async fn max_uses_explicit_consultation_even_for_short_corrections() {
     }
     let sandbox = tempfile::TempDir::new().expect("isolated formatting data");
     let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", sandbox.path());
-    let _policy = EnvGuard::unset("FORMATTING_LEVEL");
+    let _policy = EnvGuard::remove("FORMATTING_LEVEL");
     let executor = Executor(AtomicUsize::new(0));
     for policy in FormattingPolicy::ALL {
         Config::default()

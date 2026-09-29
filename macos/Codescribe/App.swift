@@ -175,7 +175,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   // NSWorkspace sleep/wake bridge. The observer itself only coalesces one
   // next-tick callback; the async Rust hop happens outside AppKit's callout.
   private var sleepWakeObserver: SystemSleepWakeObserver?
-  private let popover = NSPopover()
+  private lazy var trayPanel = TrayPanel()
   private var shouldExitForDuplicate = false
   // First-run onboarding wizard host. Presented at launch when the core gate
   // (`shouldShowOnboarding`) reports setup is due.
@@ -234,11 +234,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       suspensionBehavior: .deliverImmediately
     )
 
-    popover.behavior = .transient
-    popover.contentSize = NSSize(width: 300, height: 460)
-    popover.contentViewController = NSHostingController(
-      rootView: TrayMenuView(viewModel: model.tray, trayStatus: trayStatus)
-    )
+    trayPanel.onDismiss = { [weak self] in self?.model.tray.collapseDisclosures() }
 
     model.tray.onIntent = { intent in
       switch intent {
@@ -510,6 +506,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // touching the lazy handle here would construct the bridge at teardown
     // purely to stop something that was never running.
     guard !shouldExitForDuplicate, !Self.isRunningTests else { return }
+    trayPanel.dismiss()
     model.chat.invalidate()
     appActionListener?.invalidate()
     voiceDeliveryListener?.invalidate()
@@ -714,13 +711,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private func showTray() {
     guard let button = statusItem.button else { return }
     NSApp.activate(ignoringOtherApps: true)
-    popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-    popover.contentViewController?.view.window?.makeKey()
+    trayPanel.present(from: button) {
+      TrayMenuView(viewModel: model.tray, trayStatus: trayStatus)
+    }
   }
 
   @objc private func toggleTray() {
-    if popover.isShown {
-      popover.performClose(nil)
+    if trayPanel.isVisible {
+      trayPanel.dismiss()
     } else {
       showTray()
     }

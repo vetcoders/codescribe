@@ -4,6 +4,7 @@ import SwiftUI
 struct LicensePanel: View {
   @ObservedObject var model: SettingsViewModel
   @State private var key = ""
+  @FocusState private var keyFocused: Bool
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -40,6 +41,7 @@ struct LicensePanel: View {
       SecureField("CSK1.…", text: $key)
         .font(CSFont.mono(11.5, .regular))
         .textFieldStyle(.plain)
+        .focused($keyFocused)
         .padding(CSSpace.md)
         .background(Color.primary.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
@@ -47,6 +49,9 @@ struct LicensePanel: View {
           RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
             .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
         )
+        .overlay {
+          CSFocusOutline(isFocused: keyFocused, cornerRadius: CSRadius.input)
+        }
         .padding(.top, CSSpace.control)
         .accessibilityLabel("Codescribe license key")
 

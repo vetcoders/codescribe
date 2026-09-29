@@ -187,6 +187,7 @@ private final class VoiceLabPlaybackDelegate: NSObject, NSSoundDelegate {
 struct VoiceLabPanel: View {
   @ObservedObject var model: SettingsViewModel
   @State private var editor = VoiceLabEditorState()
+  @FocusState private var focusedCorrectionID: String?
   @State private var correctionIndex = 0
   @State private var lexiconIndex = 0
   @State private var playbackSound: NSSound?
@@ -395,6 +396,7 @@ struct VoiceLabPanel: View {
                 .font(CSFont.mono(10, .semibold))
                 .foregroundStyle(CSColor.chromeAccent)
               TextEditor(text: $editor.canonical)
+                .focused($focusedCorrectionID, equals: row.id)
                 .font(CSFont.ui(13))
                 .scrollContentBackground(.hidden)
                 .frame(minHeight: 120, idealHeight: 180, maxHeight: 320)
@@ -408,6 +410,10 @@ struct VoiceLabPanel: View {
                     .strokeBorder(CSColor.chromeAccent.opacity(0.32), lineWidth: 1)
                 )
                 .onExitCommand { editor.cancel() }
+                .overlay {
+                  CSFocusOutline(
+                    isFocused: focusedCorrectionID == row.id, cornerRadius: CSRadius.input)
+                }
                 .accessibilityLabel("Correct the original transcript")
               HStack {
                 Spacer()

@@ -1,11 +1,6 @@
 import SwiftUI
 
-// Tray content. NSPopover owns the material, corner treatment, and shadow.
-//
-// Reusable content view: App.swift hosts this inside an `NSPopover`
-// (`NSHostingController(rootView: TrayMenuView(viewModel:))`) anchored to a
-// manual `NSStatusItem` — deliberately not `MenuBarExtra`, to sidestep the
-// WindowServer status-item session-state issue seen on this bundle id.
+// TrayPanel supplies the native glass and anchors this content to NSStatusItem.
 // 300pt wide, glass panel, status header bound to runtime, terracotta marking
 // ONLY the primary action ("Show Agent"), Notes / Diagnostics as nested
 // disclosure groups. Dictation toggle + quick config toggles are wired through
@@ -55,7 +50,6 @@ struct TrayMenuView: View {
         icon: .power,
         iconColor: CSColor.terracottaDeep,
         title: "Quit codescribe",
-        titleColor: CSColor.textMuted,
         shortcut: "⌘Q"
       ) { viewModel.onQuit() }
     }

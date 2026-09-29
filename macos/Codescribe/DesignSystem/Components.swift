@@ -114,23 +114,36 @@ extension View {
   }
 }
 
-/// Keyboard focus ring that follows the control's own rounded geometry.
-///
-/// AppKit's default ring is a squarish halo that ignores a custom chip's
-/// corner radius — on the dark glass surfaces it reads as a grey box stamped
-/// across the control (operator screenshots 2026-08-09, next to Claude
-/// Desktop's accent ring as the bar to clear). This style draws our ring —
-/// a thin accent stroke hugging the control 2pt out, rounded to
-/// `cornerRadius + 2` so the inner and outer curves stay concentric; the
-/// weight and offset are calibrated against Claude Desktop's ring, which the
-/// operator holds up as the reference ("olbrzymie i brzydkie" was the verdict
-/// on the first, thicker cut). Suppressing the system halo is the adopting
-/// Button's job: use `View.csFocusRing(cornerRadius:)`, never
-/// `.buttonStyle(.csFocusRing(...))` alone.
-///
-/// Keyboard-only by construction: `CSFocusPolicy` releases focus after
-/// pointer clicks, so the ring appears exactly when a keyboard user is
-/// navigating — the accessibility cue stays, only its geometry is ours.
+/// One physical pixel in the system accent, following the control's own shape.
+struct CSFocusOutline: View {
+  var isFocused: Bool
+  var cornerRadius: CGFloat
+  @Environment(\.displayScale) private var displayScale
+
+  var body: some View {
+    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+      .strokeBorder(
+        CSColor.chromeAccent.opacity(isFocused ? 1 : 0),
+        lineWidth: 1 / max(displayScale, 1)
+      )
+      .allowsHitTesting(false)
+      .accessibilityHidden(true)
+  }
+}
+
+/// Adds focus feedback without replacing a native glass or bordered button style.
+private struct CSFocusOutlineModifier: ViewModifier {
+  var cornerRadius: CGFloat
+  @FocusState private var isFocused: Bool
+
+  func body(content: Content) -> some View {
+    content
+      .focused($isFocused)
+      .focusEffectDisabled()
+      .overlay { CSFocusOutline(isFocused: isFocused, cornerRadius: cornerRadius) }
+  }
+}
+
 struct CSFocusRingButtonStyle: ButtonStyle {
   var cornerRadius: CGFloat
   @Environment(\.isFocused) private var isFocused
@@ -138,15 +151,7 @@ struct CSFocusRingButtonStyle: ButtonStyle {
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
       .opacity(configuration.isPressed ? 0.82 : 1)
-      .overlay(
-        RoundedRectangle(cornerRadius: cornerRadius + 2, style: .continuous)
-          .strokeBorder(
-            CSColor.chromeAccent.opacity(isFocused ? 0.9 : 0),
-            lineWidth: 1.5
-          )
-          .padding(-2)
-      )
-      .animation(.easeOut(duration: 0.12), value: isFocused)
+      .overlay { CSFocusOutline(isFocused: isFocused, cornerRadius: cornerRadius) }
   }
 }
 
@@ -159,32 +164,42 @@ extension ButtonStyle where Self == CSFocusRingButtonStyle {
 }
 
 extension View {
-  /// The one correct way to adopt the Codescribe focus ring on a Button.
-  ///
-  /// `focusEffectDisabled()` is an environment write and only flows DOWN the
-  /// tree — inside `makeBody` it reaches the label's descendants, never the
-  /// Button that actually draws AppKit's grey halo. So the kill switch must
-  /// ride on the Button itself, paired here with the style so the two can't
-  /// drift apart (adopting the style alone leaves the system ring stacked
-  /// on top of ours — operator screenshot 2026-08-09, the "stodoła").
+  /// Preserve the control's button style while replacing its focus halo.
+  func csFocusOutline(cornerRadius: CGFloat = CSRadius.chip) -> some View {
+    modifier(CSFocusOutlineModifier(cornerRadius: cornerRadius))
+  }
+
+  /// Custom plain buttons share the same outline as native controls.
   func csFocusRing(cornerRadius: CGFloat = CSRadius.chip) -> some View {
     buttonStyle(.csFocusRing(cornerRadius: cornerRadius))
       .focusEffectDisabled()
   }
+}
 
-  /// Settings / panel card chrome. Five panels used to re-declare the same
-  /// fill + hairline at 12/14/15pt padding. One modifier, one radius, one fill.
-  func csSettingsCard(padding: CGFloat = CSSpace.card) -> some View {
-    self
-      .padding(padding)
+/// Flat actions share the product's rounded, single-pixel keyboard focus.
+private struct CSActionButtonStyle: ButtonStyle {
+  let prominent: Bool
+  @Environment(\.isEnabled) private var isEnabled
+
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .font(.body.weight(prominent ? .semibold : .regular))
+      .foregroundStyle(prominent ? Color.accentColor : Color.primary)
+      .padding(.horizontal, 14)
+      .padding(.vertical, 8)
       .background(
-        RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-          .fill(CSColor.surfaceRaised(0.025))
+        Color.accentColor.opacity(prominent ? 0.12 : 0),
+        in: .rect(cornerRadius: CSRadius.chip)
       )
-      .overlay(
-        RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-          .strokeBorder(CSColor.hairline(), lineWidth: 1)
-      )
+      .contentShape(.rect(cornerRadius: CSRadius.chip))
+      .opacity(isEnabled ? (configuration.isPressed ? 0.65 : 1) : 0.4)
+  }
+}
+
+extension View {
+  func csAction(prominent: Bool = false) -> some View {
+    buttonStyle(CSActionButtonStyle(prominent: prominent))
+      .csFocusOutline()
   }
 }
 
