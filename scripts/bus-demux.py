@@ -1340,6 +1340,35 @@ def _xai_speech_key() -> str | None:
     return key or None
 
 
+def _openai_speech_key() -> str | None:
+    """Explicit env first, then a plain Keychain item — never the app bundle.
+
+    Codex OAuth carries no public audio permission, so the OpenAI speaker is
+    key-only. The app's Keychain bundle stays app-private by design; this
+    helper reads only the surfaces meant for external tools.
+    """
+    import subprocess
+
+    env_key = os.environ.get("LLM_OPENAI_API_KEY", "").strip()
+    if env_key:
+        return env_key
+    probe = subprocess.run(
+        [
+            "security",
+            "find-generic-password",
+            "-s",
+            "com.vetcoders.codescribe",
+            "-a",
+            "LLM_OPENAI_API_KEY",
+            "-w",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    key = probe.stdout.strip()
+    return key or None
+
+
 def bound_voice(root: Path, name: str | None) -> str:
     """Voice bound to a name in <bridge-home>/voices.json; the male default otherwise."""
     if name:
@@ -1379,11 +1408,8 @@ def _speak_xai(text: str, voice: str, speed: float) -> tuple[bool, str | None]:
     """Same TTS lane as the app (api.x.ai/v1/tts, PCM s16le 24 kHz), played via afplay."""
     import http.client
     import ssl
-    import subprocess
-    import tempfile
     import urllib.error
     import urllib.request
-    import wave
 
     key = _xai_speech_key()
     if not key:
@@ -1419,6 +1445,15 @@ def _speak_xai(text: str, voice: str, speed: float) -> tuple[bool, str | None]:
             pcm = response.read()
     except (OSError, urllib.error.URLError, http.client.HTTPException) as error:
         return False, f"tts request failed ({error.__class__.__name__})"
+    return _play_pcm_24k(pcm)
+
+
+def _play_pcm_24k(pcm: bytes) -> tuple[bool, str | None]:
+    """Wrap mono s16le 24 kHz PCM as WAV and play it via afplay."""
+    import subprocess
+    import tempfile
+    import wave
+
     wav_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
@@ -1440,6 +1475,46 @@ def _speak_xai(text: str, voice: str, speed: float) -> tuple[bool, str | None]:
     return True, None
 
 
+def _speak_openai(text: str, voice: str, speed: float) -> tuple[bool, str | None]:
+    """Same TTS lane as the app (api.openai.com/v1/audio/speech, PCM s16le 24 kHz)."""
+    import http.client
+    import ssl
+    import urllib.error
+    import urllib.request
+
+    key = _openai_speech_key()
+    if not key:
+        return False, "no OpenAI credential (add Keychain item LLM_OPENAI_API_KEY or export it)"
+    model = os.environ.get("SPEECH_TTS_MODEL_OPENAI", "").strip() or "gpt-4o-mini-tts-2025-12-15"
+    body = json.dumps(
+        {
+            "model": model,
+            "input": text,
+            "voice": voice,
+            "response_format": "pcm",
+            "speed": speed,
+        }
+    ).encode("utf-8")
+    # The same TLS-only opener discipline as the xAI speaker.
+    opener = urllib.request.OpenerDirector()
+    opener.add_handler(
+        urllib.request.HTTPSHandler(context=ssl.create_default_context())
+    )
+    request = urllib.request.Request(
+        "https://api.openai.com/v1/audio/speech",
+        data=body,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+    )
+    try:
+        with opener.open(request, timeout=60) as response:
+            if not 200 <= response.status < 300:
+                return False, f"tts request failed ({response.status})"
+            pcm = response.read()
+    except (OSError, urllib.error.URLError, http.client.HTTPException) as error:
+        return False, f"tts request failed ({error.__class__.__name__})"
+    return _play_pcm_24k(pcm)
+
+
 def say_reply(args: argparse.Namespace) -> int:
     """Append one agent-reply row to the canonical Bus, then speak it.
 
@@ -1449,6 +1524,7 @@ def say_reply(args: argparse.Namespace) -> int:
     profile = voice_profile(args.bridge_home, args.name)
     voice = args.voice or str(profile["voice"])
     speed = args.speed if args.speed is not None else float(profile["speed"])
+    vendor = args.tts_vendor or str(profile.get("provider") or "xai")
     reply: dict[str, Any] = {
         "schema": AGENT_REPLY_SCHEMA,
         "kind": "agent_reply",
@@ -1460,9 +1536,11 @@ def say_reply(args: argparse.Namespace) -> int:
         "text": args.say,
         "voice": voice,
         "speed": speed,
+        "tts_vendor": vendor,
         "spoken": False,
     }
-    spoken, error = _speak_xai(args.say, voice, speed)
+    speaker = _speak_openai if vendor == "openai" else _speak_xai
+    spoken, error = speaker(args.say, voice, speed)
     reply["spoken"] = spoken
     if error:
         reply["tts_error"] = error
@@ -1822,7 +1900,13 @@ def main() -> int:
     parser.add_argument("--interval", type=float, default=0.15)
     parser.add_argument(
         "--say",
-        help="append an agent reply to the canonical Bus and speak it through xAI TTS",
+        help="append an agent reply to the canonical Bus and speak it through vendor TTS",
+    )
+    parser.add_argument(
+        "--tts-vendor",
+        choices=("xai", "openai"),
+        default=None,
+        help="TTS speaker; defaults to the name's profile provider in voices.json, then xai",
     )
     parser.add_argument(
         "--voice",
