@@ -1,3 +1,5 @@
+import AppKit
+import SwiftUI
 import XCTest
 
 @testable import Codescribe
@@ -94,6 +96,35 @@ final class ChatLayoutPolicyTests: XCTestCase {
     XCTAssertEqual(AgentSidebarMode.expanded.minimumWidth, 267)
     XCTAssertEqual(AgentSidebarMode.expanded.idealWidth, 300)
     XCTAssertEqual(AgentSidebarMode.expanded.maximumWidth, 360)
+  }
+
+  @MainActor
+  func testNativeSidebarItemEnforcesBoundsAfterWindowAttachment() throws {
+    final class LayoutEngine: ChatEngineFixture {}
+    let store = AgentChatStore(
+      engine: LayoutEngine(), threads: [ChatThread(title: "A thread", meta: "now")])
+    let host = NSHostingController(rootView: AgentChatView(store: store))
+    let window = NSWindow(contentViewController: host)
+    window.setContentSize(NSSize(width: 1120, height: 720))
+    window.orderFrontRegardless()
+    defer { window.orderOut(nil) }
+    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    func find(_ view: NSView) -> NSSplitViewController? {
+      if let split = view as? NSSplitView { return split.delegate as? NSSplitViewController }
+      return view.subviews.lazy.compactMap { find($0) }.first
+    }
+    let split = try XCTUnwrap(find(host.view), "Native split must be reachable after attachment")
+    let item = try XCTUnwrap(split.splitViewItems.first(where: { $0.behavior == .sidebar }))
+    XCTAssertEqual(item.minimumThickness, 267)
+    XCTAssertEqual(item.maximumThickness, 360)
+    for proposed in [850.0, 50.0] {
+      split.splitView.setPosition(proposed, ofDividerAt: 0)
+      split.splitView.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+      let width = item.viewController.view.frame.width
+      XCTAssertGreaterThanOrEqual(width, 266)
+      XCTAssertLessThanOrEqual(width, 361)
+    }
   }
 
   // MARK: - R1 window-collapse clamps

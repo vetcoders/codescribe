@@ -147,8 +147,8 @@ private struct AgentWindowCapabilities: NSViewRepresentable {
   private func configure(_ window: NSWindow?) {
     guard let window else { return }
     window.level = AgentWindowLevelPolicy.level(isPinned: isPinned)
-    guard let split = Self.splitController(in: window.contentViewController),
-      let sidebar = split.splitViewItems.first
+    guard let split = Self.splitController(in: window.contentView),
+      let sidebar = split.splitViewItems.first(where: { $0.behavior == .sidebar })
     else { return }
     sidebar.minimumThickness = AgentSidebarMode.expanded.minimumWidth
     sidebar.maximumThickness = AgentSidebarMode.expanded.maximumWidth
@@ -160,11 +160,14 @@ private struct AgentWindowCapabilities: NSViewRepresentable {
     }
   }
 
-  private static func splitController(in controller: NSViewController?) -> NSSplitViewController? {
-    guard let controller else { return nil }
-    if let split = controller as? NSSplitViewController { return split }
-    return controller.children.lazy.compactMap { splitController(in: $0) }.first
+  private static func splitController(in view: NSView?) -> NSSplitViewController? {
+    guard let view else { return nil }
+    if let split = view as? NSSplitView, let controller = split.delegate as? NSSplitViewController {
+      return controller
+    }
+    return view.subviews.lazy.compactMap { splitController(in: $0) }.first
   }
+
 }
 
 // MARK: - Detail (chrome · messages · composer)
