@@ -234,6 +234,24 @@ pub(super) fn repair_settings(path: &Path, pack: Option<&Path>) -> RepairReceipt
                 else {
                     continue;
                 };
+                // The legacy endpoint is only a seed for the one-shot lane
+                // migration, and the typed serializer drops it on every save.
+                // Re-seeding it after the lanes exist made each settings save
+                // mint a fresh backup (285 on one machine, 2026-09-29), so it
+                // is seeded only while the migration still has work to do.
+                if key == "cloud_transcription_endpoint" {
+                    let migrated = ["file_transcription_endpoint", "live_transcription_endpoint"]
+                        .iter()
+                        .any(|lane| {
+                            value
+                                .pointer(&format!("/speech/engine/{lane}"))
+                                .and_then(Value::as_str)
+                                .is_some_and(|s| !s.trim().is_empty())
+                        });
+                    if migrated {
+                        continue;
+                    }
+                }
                 if value
                     .pointer(&pointer)
                     .is_none_or(|v| v.is_null() || v.as_str().is_some_and(|s| s.trim().is_empty()))
@@ -526,6 +544,40 @@ mod tests {
         assert_eq!(
             repair_settings(&path, Some(&pack)),
             RepairReceipt::default()
+        );
+    }
+
+    #[test]
+    fn a_migrated_config_is_never_reseeded_or_backed_up_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let pack = dir.path().join("pack.json");
+        // The one-shot migration already produced a live lane; the typed
+        // serializer then dropped the legacy key on an ordinary save.
+        fs::write(
+            &path,
+            r#"{"schema_version":3,"speech":{"engine":{"live_transcription_endpoint":"wss://example.test/v1/audio/transcribe"}}}"#,
+        )
+        .unwrap();
+        fs::write(
+            &pack,
+            r#"{"speech":{"engine":{"cloud_transcription_endpoint":"wss://example.test/v1/audio/transcribe"}}}"#,
+        )
+        .unwrap();
+        let receipt = repair_settings(&path, Some(&pack));
+        assert_eq!(receipt, RepairReceipt::default(), "{receipt:?}");
+        assert_eq!(
+            fs::read_dir(dir.path())
+                .unwrap()
+                .filter(|e| e
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".bak-"))
+                .count(),
+            0,
+            "a no-op load mints no backup graveyard"
         );
     }
 }
