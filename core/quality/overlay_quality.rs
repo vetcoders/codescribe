@@ -1814,6 +1814,46 @@ mod tests {
         }
     }
 
+    /// Owns only data-dir isolation; each scenario decides which files exist.
+    struct QualityFixture {
+        // Fields drop in order: restore the environment before deleting its directory.
+        _environment: EnvRestore,
+        _directory: tempfile::TempDir,
+    }
+
+    impl QualityFixture {
+        fn new(message: &str) -> Self {
+            let directory = tempfile::tempdir().expect(message);
+            let environment = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+            let root = directory.path().canonicalize().unwrap();
+            // SAFETY: callers retain #[serial]; the guard restores the previous binding.
+            unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", &root) };
+            Self {
+                _environment: environment,
+                _directory: directory,
+            }
+        }
+    }
+
+    fn replay_record(
+        timestamp_ms: u64,
+        formatting_level: &str,
+        raw_text: &str,
+        delivered_text: &str,
+        edited_text: &str,
+    ) -> String {
+        serde_json::json!({
+            "timestamp_ms": timestamp_ms,
+            "mode": "overlay",
+            "formatting_level": formatting_level,
+            "raw_text": raw_text,
+            "delivered_text": delivered_text,
+            "edited_text": edited_text,
+            "meta": {"action": "copy"}
+        })
+        .to_string()
+    }
+
     /// Short multi-word mishearing collapses to one variant→canonical pair.
     #[test]
     fn test_extract_candidates_basic() {
@@ -1992,12 +2032,7 @@ mod tests {
     #[test]
     #[serial]
     fn teach_span_requires_three_identical_corrections_and_gap_is_evidence_only() {
-        let temp_dir = tempfile::tempdir().expect("temp");
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-        let temp_root = temp_dir.path().canonicalize().unwrap();
-        unsafe {
-            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
-        }
+        let _fixture = QualityFixture::new("temp");
 
         let first = super::teach_span("uni agentka", "Junie", "lexicon_corrected")
             .expect("first teach lexicon span");
@@ -2080,10 +2115,7 @@ mod tests {
     #[test]
     #[serial]
     fn ledger_receipted_overlay_edits_vote_three_times_and_promote_once() {
-        let temp_dir = tempfile::tempdir().expect("temp");
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-        let temp_root = temp_dir.path().canonicalize().unwrap();
-        unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root) };
+        let _fixture = QualityFixture::new("temp");
 
         let commit = |action: &str, provenance: Option<&str>| {
             commit_overlay_correction(OverlayCorrectionInput {
@@ -2168,10 +2200,7 @@ mod tests {
     #[test]
     #[serial]
     fn concurrent_promotion_insert_reports_exactly_one_new_rule() {
-        let temp_dir = tempfile::tempdir().expect("temp");
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-        let temp_root = temp_dir.path().canonicalize().unwrap();
-        unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root) };
+        let _fixture = QualityFixture::new("temp");
 
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
         let handles = (0..2)
@@ -2196,12 +2225,7 @@ mod tests {
     #[test]
     #[serial]
     fn long_dictation_e2e_pair_learned_and_applied_by_lexicon() {
-        let temp_dir = tempfile::tempdir().expect("temp");
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-        let temp_root = temp_dir.path().canonicalize().unwrap();
-        unsafe {
-            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
-        }
+        let _fixture = QualityFixture::new("temp");
 
         let mut body = String::new();
         while body.chars().count() < 480 {
@@ -2260,12 +2284,7 @@ mod tests {
     #[test]
     #[serial]
     fn same_variant_with_different_canonical_does_not_promote_the_first_pair() {
-        let temp_dir = tempfile::tempdir().expect("temp");
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-        let temp_root = temp_dir.path().canonicalize().unwrap();
-        unsafe {
-            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
-        }
+        let _fixture = QualityFixture::new("temp");
 
         teach_span("zazdroszczę", "życzliwość", "lexicon_corrected").unwrap();
         teach_span("ZAZDROSZCZĘ", "życzliwość", "lexicon_corrected").unwrap();
@@ -2284,12 +2303,7 @@ mod tests {
     #[test]
     #[serial]
     fn overlay_teach_dictionary_action_requires_three_identical_corrections() {
-        let temp_dir = tempfile::tempdir().expect("temp");
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-        let temp_root = temp_dir.path().canonicalize().unwrap();
-        unsafe {
-            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
-        }
+        let _fixture = QualityFixture::new("temp");
 
         for expected in [0, 0, 1] {
             let outcome = commit_overlay_correction(OverlayCorrectionInput {
@@ -2317,12 +2331,7 @@ mod tests {
     #[test]
     #[serial]
     fn overlay_copy_and_close_do_not_increment_the_human_teach_counter() {
-        let temp_dir = tempfile::tempdir().expect("temp");
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-        let temp_root = temp_dir.path().canonicalize().unwrap();
-        unsafe {
-            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
-        }
+        let _fixture = QualityFixture::new("temp");
 
         teach_span("pansiwe", "Pensieve", "lexicon_corrected").unwrap();
         for action in ["copy", "close"] {
@@ -2354,12 +2363,7 @@ mod tests {
     #[test]
     #[serial]
     fn apply_custom_lexicon_rewrites_grog_to_grok() {
-        let temp_dir = tempfile::tempdir().expect("temp");
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-        let temp_root = temp_dir.path().canonicalize().unwrap();
-        unsafe {
-            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
-        }
+        let _fixture = QualityFixture::new("temp");
         let lexicon_path = Config::config_dir().join("lexicon.custom.jsonl");
         fs::create_dir_all(lexicon_path.parent().expect("lexicon parent")).expect("lexicon dir");
         fs::write(
@@ -2384,12 +2388,7 @@ mod tests {
     #[test]
     #[serial]
     fn husk_rows_are_dropped_on_next_upsert() {
-        let temp_dir = tempfile::tempdir().expect("temp");
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-        let temp_root = temp_dir.path().canonicalize().unwrap();
-        unsafe {
-            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
-        }
+        let _fixture = QualityFixture::new("temp");
 
         let path = Config::config_dir().join("lexicon.custom.jsonl");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -2498,12 +2497,7 @@ mod tests {
     #[test]
     #[serial]
     fn a_cleared_lexicon_is_not_resurrected_by_the_writer() {
-        let temp_dir = tempfile::tempdir().expect("temp");
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-        let root = temp_dir.path().canonicalize().unwrap();
-        unsafe {
-            std::env::set_var("CODESCRIBE_DATA_DIR", &root);
-        }
+        let _fixture = QualityFixture::new("temp");
         let config_dir = Config::config_dir();
         fs::create_dir_all(&config_dir).unwrap();
 
@@ -2531,12 +2525,7 @@ mod tests {
     #[test]
     #[serial]
     fn a_first_run_with_no_history_may_create_the_lexicon() {
-        let temp_dir = tempfile::tempdir().expect("temp");
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-        let root = temp_dir.path().canonicalize().unwrap();
-        unsafe {
-            std::env::set_var("CODESCRIBE_DATA_DIR", &root);
-        }
+        let _fixture = QualityFixture::new("temp");
         let config_dir = Config::config_dir();
         fs::create_dir_all(&config_dir).unwrap();
 
@@ -2559,12 +2548,7 @@ mod tests {
     #[test]
     #[serial]
     fn replay_dry_run_on_fixture_corpus_produces_expected_table() {
-        let temp_dir = tempfile::tempdir().expect("temp");
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-        let temp_root = temp_dir.path().canonicalize().unwrap();
-        unsafe {
-            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
-        }
+        let _fixture = QualityFixture::new("temp");
 
         let quality = quality_dir();
         fs::create_dir_all(&quality).unwrap();
@@ -2580,46 +2564,16 @@ mod tests {
         let heard = format!("{body}grypa");
         let meant = format!("{body}grepa");
         let lines = [
-            serde_json::json!({
-                "timestamp_ms": 1,
-                "mode": "overlay",
-                "formatting_level": "correction",
-                "raw_text": delivered,
-                "delivered_text": delivered,
-                "edited_text": edited,
-                "meta": {"action": "copy"}
-            })
-            .to_string(),
-            serde_json::json!({
-                "timestamp_ms": 2,
-                "mode": "overlay",
-                "formatting_level": "correction",
-                "raw_text": "alpha beta gamma delta epsilon zeta eta theta",
-                "delivered_text": "alpha beta gamma delta epsilon zeta eta theta",
-                "edited_text": "one two three four five six seven eight",
-                "meta": {"action": "copy"}
-            })
-            .to_string(),
-            serde_json::json!({
-                "timestamp_ms": 3,
-                "mode": "overlay",
-                "formatting_level": "smart",
-                "raw_text": "x",
-                "delivered_text": "smart var",
-                "edited_text": "Smart Canon",
-                "meta": {"action": "copy"}
-            })
-            .to_string(),
-            serde_json::json!({
-                "timestamp_ms": 4,
-                "mode": "overlay",
-                "formatting_level": "correction",
-                "raw_text": heard,
-                "delivered_text": heard,
-                "edited_text": meant,
-                "meta": {"action": "copy"}
-            })
-            .to_string(),
+            replay_record(1, "correction", &delivered, &delivered, &edited),
+            replay_record(
+                2,
+                "correction",
+                "alpha beta gamma delta epsilon zeta eta theta",
+                "alpha beta gamma delta epsilon zeta eta theta",
+                "one two three four five six seven eight",
+            ),
+            replay_record(3, "smart", "x", "smart var", "Smart Canon"),
+            replay_record(4, "correction", &heard, &heard, &meant),
         ];
         fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
 
@@ -2660,12 +2614,7 @@ mod tests {
     #[test]
     #[serial]
     fn off_level_edits_teach_while_smart_and_max_stay_out() {
-        let temp_dir = tempfile::tempdir().expect("temp");
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-        let temp_root = temp_dir.path().canonicalize().unwrap();
-        unsafe {
-            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
-        }
+        let _fixture = QualityFixture::new("temp");
         let quality = quality_dir();
         fs::create_dir_all(&quality).unwrap();
         let path = quality.join("corrections.jsonl");
@@ -2676,36 +2625,9 @@ mod tests {
         let heard = format!("{body}a Cloud już ogarnia bus");
         let meant = format!("{body}a Klaudiusz ogarnia bus");
         let lines = [
-            serde_json::json!({
-                "timestamp_ms": 1,
-                "mode": "overlay",
-                "formatting_level": "off",
-                "raw_text": heard,
-                "delivered_text": heard,
-                "edited_text": meant,
-                "meta": {"action": "copy"}
-            })
-            .to_string(),
-            serde_json::json!({
-                "timestamp_ms": 2,
-                "mode": "overlay",
-                "formatting_level": "smart",
-                "raw_text": "x",
-                "delivered_text": "smart var",
-                "edited_text": "Smart Canon",
-                "meta": {"action": "copy"}
-            })
-            .to_string(),
-            serde_json::json!({
-                "timestamp_ms": 3,
-                "mode": "overlay",
-                "formatting_level": "max",
-                "raw_text": "y",
-                "delivered_text": "max var",
-                "edited_text": "Max Canon",
-                "meta": {"action": "copy"}
-            })
-            .to_string(),
+            replay_record(1, "off", &heard, &heard, &meant),
+            replay_record(2, "smart", "x", "smart var", "Smart Canon"),
+            replay_record(3, "max", "y", "max var", "Max Canon"),
         ];
         fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
 
@@ -3079,10 +3001,7 @@ mod tests {
     #[test]
     #[serial]
     fn overlay_copy_records_every_level_and_never_teaches_lexicon() {
-        let temp_dir = tempfile::tempdir().expect("temp quality root");
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-        let temp_root = temp_dir.path().canonicalize().unwrap();
-        unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root) };
+        let _fixture = QualityFixture::new("temp quality root");
 
         for (level, delivered, edited) in [
             ("correction", "korrvariant", "CorrCanonical"),
@@ -3115,10 +3034,7 @@ mod tests {
     #[test]
     #[serial]
     fn overlay_correction_of_garbled_take_is_evidence_only() {
-        let temp_dir = tempfile::tempdir().expect("temp quality root");
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-        let temp_root = temp_dir.path().canonicalize().unwrap();
-        unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root) };
+        let _fixture = QualityFixture::new("temp quality root");
 
         let outcome = commit_overlay_correction(OverlayCorrectionInput {
             raw_text: "A to jest pierwsze w oknie nie wybu słów tylko poprawiamy lokal power Meksyku.".to_string(),
@@ -3141,12 +3057,9 @@ mod tests {
     #[test]
     #[serial]
     fn correction_learning_uses_raw_stt_not_formatted_delivery() {
-        let temp_dir = tempfile::tempdir().expect("temp quality root");
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let _fixture = QualityFixture::new("temp quality root");
         let _min_guard = EnvRestore::capture(LEXICON_MIN_CORRECTIONS_ENV);
-        let temp_root = temp_dir.path().canonicalize().unwrap();
         unsafe {
-            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
             std::env::set_var(LEXICON_MIN_CORRECTIONS_ENV, "1");
         };
 
@@ -3171,12 +3084,9 @@ mod tests {
     #[test]
     #[serial]
     fn voice_lab_revision_keeps_raw_stt_as_dictionary_source() {
-        let temp_dir = tempfile::tempdir().expect("temp quality root");
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let _fixture = QualityFixture::new("temp quality root");
         let _min_guard = EnvRestore::capture(LEXICON_MIN_CORRECTIONS_ENV);
-        let temp_root = temp_dir.path().canonicalize().unwrap();
         unsafe {
-            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
             // This fixture isolates the raw-source writer behavior; the product
             // threshold itself is covered by the three-save Voice Lab test.
             std::env::set_var(LEXICON_MIN_CORRECTIONS_ENV, "1");
@@ -3212,12 +3122,9 @@ mod tests {
     #[test]
     #[serial]
     fn finalizing_correction_appends_revision_and_leaves_one_active_mapping() {
-        let temp_dir = tempfile::tempdir().expect("temp data dir for Voice Lab edit");
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let _fixture = QualityFixture::new("temp data dir for Voice Lab edit");
         let _min_guard = EnvRestore::capture(LEXICON_MIN_CORRECTIONS_ENV);
-        let temp_root = temp_dir.path().canonicalize().unwrap();
         unsafe {
-            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
             // This regression is the one-write supersession fixture, not the
             // product threshold contract.
             std::env::set_var(LEXICON_MIN_CORRECTIONS_ENV, "1");
@@ -3284,12 +3191,7 @@ mod tests {
     #[test]
     #[serial]
     fn voice_lab_requires_three_identical_human_saves_before_learning() {
-        let temp_dir = tempfile::tempdir().expect("temp data dir for Voice Lab threshold");
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-        let temp_root = temp_dir.path().canonicalize().unwrap();
-        unsafe {
-            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
-        }
+        let _fixture = QualityFixture::new("temp data dir for Voice Lab threshold");
 
         let ids = (0..3)
             .map(|_| seed_voice_lab_record("uni agentka", "uni agentka"))
@@ -3354,12 +3256,7 @@ mod tests {
         // The 2026-07-28 failing shape: a ~500-char delivered text with a
         // slightly longer human revision died on the whole-edit lexicon gate
         // before anything was persisted. Saving is not learning.
-        let temp_dir = tempfile::tempdir().expect("temp data dir");
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-        let temp_root = temp_dir.path().canonicalize().unwrap();
-        unsafe {
-            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
-        }
+        let _fixture = QualityFixture::new("temp data dir");
 
         let filler = "w badaniu klinicznym stwierdzono prawidłowy stan ogólny oraz dobrą kondycję pacjenta po zabiegu ";
         let delivered = format!(
@@ -3394,12 +3291,9 @@ mod tests {
     #[test]
     #[serial]
     fn pairs_are_gated_individually_not_as_one_edit() {
-        let temp_dir = tempfile::tempdir().expect("temp data dir");
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let _fixture = QualityFixture::new("temp data dir");
         let _min_guard = EnvRestore::capture(LEXICON_MIN_CORRECTIONS_ENV);
-        let temp_root = temp_dir.path().canonicalize().unwrap();
         unsafe {
-            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
             // This is an extractor/write-primitive fixture; the product
             // threshold itself is covered separately below.
             std::env::set_var(LEXICON_MIN_CORRECTIONS_ENV, "1");
@@ -3426,12 +3320,7 @@ mod tests {
     #[test]
     #[serial]
     fn whitespace_only_edit_saves_with_zero_pairs_and_untouched_lexicon() {
-        let temp_dir = tempfile::tempdir().expect("temp data dir");
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-        let temp_root = temp_dir.path().canonicalize().unwrap();
-        unsafe {
-            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
-        }
+        let _fixture = QualityFixture::new("temp data dir");
 
         let id = seed_voice_lab_record("uni agentka", "uni agentka");
         let outcome = finalize_voice_lab_correction(&id, "uni  agentka")
@@ -3450,12 +3339,9 @@ mod tests {
     #[test]
     #[serial]
     fn lexicon_write_failure_never_vetoes_the_human_save() {
-        let temp_dir = tempfile::tempdir().expect("temp data dir");
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let _fixture = QualityFixture::new("temp data dir");
         let _min_guard = EnvRestore::capture(LEXICON_MIN_CORRECTIONS_ENV);
-        let temp_root = temp_dir.path().canonicalize().unwrap();
         unsafe {
-            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
             // Force the writer path: this fixture verifies that an I/O failure
             // after an eligible promotion cannot veto the human revision.
             std::env::set_var(LEXICON_MIN_CORRECTIONS_ENV, "1");
@@ -3499,19 +3385,6 @@ mod tests {
         );
     }
 
-    /// Isolate config + data dirs into a fresh tempdir and return it, so a test
-    /// that teaches never reads or writes the operator's real lexicon.
-    fn isolated_config_dir(guard: &EnvRestore) -> tempfile::TempDir {
-        let _ = guard;
-        let temp_dir = tempfile::tempdir().expect("temp");
-        let temp_root = temp_dir.path().canonicalize().unwrap();
-        unsafe {
-            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
-        }
-        fs::create_dir_all(Config::config_dir().join("quality")).unwrap();
-        temp_dir
-    }
-
     /// Batch multi-pair upsert equals sequential upserts, including supersession.
     #[test]
     #[serial]
@@ -3528,8 +3401,8 @@ mod tests {
 "#;
 
         let sequential = {
-            let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-            let temp = isolated_config_dir(&_guard);
+            let temp = QualityFixture::new("temp");
+            fs::create_dir_all(Config::config_dir().join("quality")).unwrap();
             let path = Config::config_dir().join("lexicon.custom.jsonl");
             fs::write(&path, seed).unwrap();
             for (variant, canonical) in pairs {
@@ -3541,8 +3414,8 @@ mod tests {
         };
 
         let batched = {
-            let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-            let temp = isolated_config_dir(&_guard);
+            let temp = QualityFixture::new("temp");
+            fs::create_dir_all(Config::config_dir().join("quality")).unwrap();
             let path = Config::config_dir().join("lexicon.custom.jsonl");
             fs::write(&path, seed).unwrap();
             upsert_corrections_in_custom_lexicon(&pairs).unwrap();
@@ -3570,8 +3443,8 @@ mod tests {
         // First core-level coverage of teach_dictionary_from_store: before this,
         // the only test of the Teach button was a Swift mock, so nothing proved
         // the rules actually reached the lexicon.
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-        let _temp = isolated_config_dir(&_guard);
+        let _temp = QualityFixture::new("temp");
+        fs::create_dir_all(Config::config_dir().join("quality")).unwrap();
         let config_dir = Config::config_dir();
 
         fs::write(
@@ -3622,8 +3495,8 @@ mod tests {
     #[test]
     #[serial]
     fn teach_on_empty_store_is_a_no_op_not_an_error() {
-        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-        let _temp = isolated_config_dir(&_guard);
+        let _temp = QualityFixture::new("temp");
+        fs::create_dir_all(Config::config_dir().join("quality")).unwrap();
 
         let result = teach_dictionary_from_store().expect("teach on empty store");
         assert_eq!(result.from_proposed, 0);
