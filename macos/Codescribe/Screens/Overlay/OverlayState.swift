@@ -1373,15 +1373,17 @@ final class OverlayState {
       // Pass action through to meta (over-correct P2-03). try? because FFI throws on err but
       // quality write is best-effort; never block UI action.
       let result = try? commitOverlayQualityRecord(
-        rawText: rawForRecord,
-        deliveredText: delivered,
-        editedText: edited,
-        action: recordedAction,
-        formattingLevel: formattingLevel,
-        editProvenance: editProvenance,
-        avgLogprob: avgLogprob,
-        speechPct: speechPct,
-        confidenceFlags: confidenceFlags
+        input: CsOverlayCorrectionInput(
+          rawText: rawForRecord,
+          deliveredText: delivered,
+          editedText: edited,
+          action: recordedAction,
+          formattingLevel: formattingLevel,
+          editProvenance: editProvenance,
+          avgLogprob: avgLogprob,
+          speechPct: speechPct,
+          confidenceFlags: confidenceFlags
+        )
       )
       if let acknowledgement = result?.acknowledgement, !acknowledgement.isEmpty {
         await MainActor.run {

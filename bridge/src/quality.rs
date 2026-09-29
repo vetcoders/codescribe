@@ -13,9 +13,8 @@ use codescribe_core::pipeline::highlight::{
 };
 use codescribe_core::quality::overlay_quality::{
     CustomLexiconEntry, DictionaryTeachResult, OverlayCorrectionCommit, OverlayCorrectionInput,
-    QualityRecord, SttConfidence, VoiceLabSaveOutcome, commit_overlay_correction_with_provenance,
-    custom_lexicon_entries, finalize_voice_lab_correction, recent_quality_records,
-    teach_dictionary_from_store, teach_span,
+    QualityRecord, VoiceLabSaveOutcome, commit_overlay_correction, custom_lexicon_entries,
+    finalize_voice_lab_correction, recent_quality_records, teach_dictionary_from_store, teach_span,
 };
 
 use crate::CsError;
@@ -173,40 +172,40 @@ pub struct CsTokenConfidence {
 /// The confidence fields (`avg_logprob`, `speech_pct`, `confidence_flags`) are
 /// stored alongside the text so later analysis can correlate corrections with how
 /// unsure the engine was.
+/// The nine columns of one quality receipt, carried as one record so the
+/// Swift overlay states them by name and the export needs no argument
+/// telescope. Mode and model stay bridge-owned ("overlay", none).
+#[derive(uniffi::Record)]
+pub struct CsOverlayCorrectionInput {
+    pub raw_text: String,
+    pub delivered_text: String,
+    pub edited_text: String,
+    pub action: String,
+    pub formatting_level: String,
+    pub edit_provenance: Option<String>,
+    pub avg_logprob: Option<f32>,
+    pub speech_pct: Option<f32>,
+    pub confidence_flags: Vec<String>,
+}
+
 #[uniffi::export]
-// allow(too_many_arguments): WHY — Swift overlay calls this flat nine-argument
-// UniFFI export. A generated record would change that Swift signature.
-// WHEN — kept 2026-09-29. The Rust writer now takes `OverlayCorrectionInput`;
-// this export is the remaining flat boundary. WHERE — `macos/` callers are
-// outside this cut, so the export stays positional.
-#[allow(clippy::too_many_arguments)]
 pub fn commit_overlay_quality_record(
-    raw_text: String,
-    delivered_text: String,
-    edited_text: String,
-    action: String,
-    formatting_level: String,
-    edit_provenance: Option<String>,
-    avg_logprob: Option<f32>,
-    speech_pct: Option<f32>,
-    confidence_flags: Vec<String>,
+    input: CsOverlayCorrectionInput,
 ) -> Result<CsQualityCommitResult, CsError> {
     // Delegate to core. Model/mode are best-effort for MVP (overlay always).
     // action carried for meta (over-correct for P2-03: "captureQualityIfEdited gubi action").
-    commit_overlay_correction_with_provenance(OverlayCorrectionInput {
-        raw_text: &raw_text,
-        delivered_text: &delivered_text,
-        edited_text: &edited_text,
-        mode: "overlay",
+    commit_overlay_correction(OverlayCorrectionInput {
+        raw_text: input.raw_text,
+        delivered_text: input.delivered_text,
+        edited_text: input.edited_text,
+        mode: "overlay".to_string(),
         model: None,
-        action: Some(&action),
-        formatting_level: Some(&formatting_level),
-        edit_provenance: edit_provenance.as_deref(),
-        confidence: SttConfidence {
-            avg_logprob,
-            speech_pct,
-            flags: confidence_flags,
-        },
+        action: Some(input.action),
+        formatting_level: Some(input.formatting_level),
+        edit_provenance: input.edit_provenance,
+        avg_logprob: input.avg_logprob,
+        speech_pct: input.speech_pct,
+        confidence_flags: input.confidence_flags,
     })
     .map(Into::into)
     .map_err(|e| CsError::Quality {
@@ -408,17 +407,17 @@ mod tests {
         // restores its exact previous value before returning.
         unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root) };
 
-        let result = commit_overlay_quality_record(
-            "synthetic raw".into(),
-            "synthetic variant".into(),
-            "synthetic canonical".into(),
-            "copy".into(),
-            "creative".into(),
-            None,
-            Some(-1.2),
-            Some(0.75),
-            vec!["test_flag".into()],
-        );
+        let result = commit_overlay_quality_record(CsOverlayCorrectionInput {
+            raw_text: "synthetic raw".into(),
+            delivered_text: "synthetic variant".into(),
+            edited_text: "synthetic canonical".into(),
+            action: "copy".into(),
+            formatting_level: "creative".into(),
+            edit_provenance: None,
+            avg_logprob: Some(-1.2),
+            speech_pct: Some(0.75),
+            confidence_flags: vec!["test_flag".into()],
+        });
         let records = recent_quality_records(10).expect("read committed quality record");
         let lexicon = custom_lexicon_entries().expect("read custom lexicon");
 
@@ -448,17 +447,17 @@ mod tests {
     /// Unknown formatting_level fails closed before any quality write lands.
     #[test]
     fn commit_overlay_quality_record_rejects_unknown_level_before_write() {
-        let error = commit_overlay_quality_record(
-            "raw".into(),
-            "variant".into(),
-            "canonical".into(),
-            "close".into(),
-            "mystery".into(),
-            None,
-            None,
-            None,
-            vec![],
-        )
+        let error = commit_overlay_quality_record(CsOverlayCorrectionInput {
+            raw_text: "raw".into(),
+            delivered_text: "variant".into(),
+            edited_text: "canonical".into(),
+            action: "close".into(),
+            formatting_level: "mystery".into(),
+            edit_provenance: None,
+            avg_logprob: None,
+            speech_pct: None,
+            confidence_flags: vec![],
+        })
         .expect_err("unknown level must be rejected");
 
         assert!(error.to_string().contains("unknown FORMATTING_LEVEL"));

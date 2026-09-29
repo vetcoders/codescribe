@@ -9705,6 +9705,105 @@ public func FfiConverterTypeCsModelOption_lower(_ value: CsModelOption) -> RustB
 
 
 /**
+ * Persist one overlay correction: the quality record always lands, while lexicon
+ * learning is gated by explicit teach action plus the N-correction threshold.
+ *
+ * Word pairs can be proposed by an explicit Teach gesture, a legacy
+ * `manual_human` edit, or a reducer-authenticated `user-edit-*` receipt; an
+ * auto-format result without that provenance is only evidence. Automatic
+ * promotion waits until the same normalized pair reaches the configured
+ * correction threshold. The separate Dictionary Teach command is an explicit
+ * bulk-promotion override. An unrecognised `formatting_level` is rejected
+ * before anything is written.
+ *
+ * The confidence fields (`avg_logprob`, `speech_pct`, `confidence_flags`) are
+ * stored alongside the text so later analysis can correlate corrections with how
+ * unsure the engine was.
+ * The nine columns of one quality receipt, carried as one record so the
+ * Swift overlay states them by name and the export needs no argument
+ * telescope. Mode and model stay bridge-owned ("overlay", none).
+ */
+public struct CsOverlayCorrectionInput: Equatable, Hashable {
+    public var rawText: String
+    public var deliveredText: String
+    public var editedText: String
+    public var action: String
+    public var formattingLevel: String
+    public var editProvenance: String?
+    public var avgLogprob: Float?
+    public var speechPct: Float?
+    public var confidenceFlags: [String]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(rawText: String, deliveredText: String, editedText: String, action: String, formattingLevel: String, editProvenance: String?, avgLogprob: Float?, speechPct: Float?, confidenceFlags: [String]) {
+        self.rawText = rawText
+        self.deliveredText = deliveredText
+        self.editedText = editedText
+        self.action = action
+        self.formattingLevel = formattingLevel
+        self.editProvenance = editProvenance
+        self.avgLogprob = avgLogprob
+        self.speechPct = speechPct
+        self.confidenceFlags = confidenceFlags
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsOverlayCorrectionInput: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsOverlayCorrectionInput: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsOverlayCorrectionInput {
+        return
+            try CsOverlayCorrectionInput(
+                rawText: FfiConverterString.read(from: &buf),
+                deliveredText: FfiConverterString.read(from: &buf),
+                editedText: FfiConverterString.read(from: &buf),
+                action: FfiConverterString.read(from: &buf),
+                formattingLevel: FfiConverterString.read(from: &buf),
+                editProvenance: FfiConverterOptionString.read(from: &buf),
+                avgLogprob: FfiConverterOptionFloat.read(from: &buf),
+                speechPct: FfiConverterOptionFloat.read(from: &buf),
+                confidenceFlags: FfiConverterSequenceString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsOverlayCorrectionInput, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.rawText, into: &buf)
+        FfiConverterString.write(value.deliveredText, into: &buf)
+        FfiConverterString.write(value.editedText, into: &buf)
+        FfiConverterString.write(value.action, into: &buf)
+        FfiConverterString.write(value.formattingLevel, into: &buf)
+        FfiConverterOptionString.write(value.editProvenance, into: &buf)
+        FfiConverterOptionFloat.write(value.avgLogprob, into: &buf)
+        FfiConverterOptionFloat.write(value.speechPct, into: &buf)
+        FfiConverterSequenceString.write(value.confidenceFlags, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsOverlayCorrectionInput_lift(_ buf: RustBuffer) throws -> CsOverlayCorrectionInput {
+    return try FfiConverterTypeCsOverlayCorrectionInput.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsOverlayCorrectionInput_lower(_ value: CsOverlayCorrectionInput) -> RustBuffer {
+    return FfiConverterTypeCsOverlayCorrectionInput.lower(value)
+}
+
+
+/**
  * Span-based canvas highlight. Sample fields are the 3A PCM identity;
  * char offsets are the Swift adapter onto already-committed utterance text.
  */
@@ -16142,34 +16241,10 @@ public func audioInputSnapshot()throws  -> CsAudioInputSnapshot  {
     )
 })
 }
-/**
- * Persist one overlay correction: the quality record always lands, while lexicon
- * learning is gated by explicit teach action plus the N-correction threshold.
- *
- * Word pairs can be proposed by an explicit Teach gesture, a legacy
- * `manual_human` edit, or a reducer-authenticated `user-edit-*` receipt; an
- * auto-format result without that provenance is only evidence. Automatic
- * promotion waits until the same normalized pair reaches the configured
- * correction threshold. The separate Dictionary Teach command is an explicit
- * bulk-promotion override. An unrecognised `formatting_level` is rejected
- * before anything is written.
- *
- * The confidence fields (`avg_logprob`, `speech_pct`, `confidence_flags`) are
- * stored alongside the text so later analysis can correlate corrections with how
- * unsure the engine was.
- */
-public func commitOverlayQualityRecord(rawText: String, deliveredText: String, editedText: String, action: String, formattingLevel: String, editProvenance: String?, avgLogprob: Float?, speechPct: Float?, confidenceFlags: [String])throws  -> CsQualityCommitResult  {
+public func commitOverlayQualityRecord(input: CsOverlayCorrectionInput)throws  -> CsQualityCommitResult  {
     return try  FfiConverterTypeCsQualityCommitResult_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_func_commit_overlay_quality_record(
-        FfiConverterString.lower(rawText),
-        FfiConverterString.lower(deliveredText),
-        FfiConverterString.lower(editedText),
-        FfiConverterString.lower(action),
-        FfiConverterString.lower(formattingLevel),
-        FfiConverterOptionString.lower(editProvenance),
-        FfiConverterOptionFloat.lower(avgLogprob),
-        FfiConverterOptionFloat.lower(speechPct),
-        FfiConverterSequenceString.lower(confidenceFlags),$0
+        FfiConverterTypeCsOverlayCorrectionInput_lower(input),$0
     )
 })
 }
@@ -16434,7 +16509,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_audio_input_snapshot() != 64324) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_func_commit_overlay_quality_record() != 16069) {
+    if (uniffi_codescribe_ffi_checksum_func_commit_overlay_quality_record() != 43704) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_config_repair_receipt_json() != 45672) {
