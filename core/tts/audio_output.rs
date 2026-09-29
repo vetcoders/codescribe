@@ -5,6 +5,7 @@
 
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -112,6 +113,13 @@ impl AudioPlayer {
             _ => return Err(anyhow!("Unsupported sample format")),
         };
 
+        let rate_hz = f64::from(device_rate).max(1.0);
+        let seconds = (samples.len() as f64 / rate_hz).min(3600.0);
+        if seconds.is_finite() {
+            crate::audio::tts_duck::arm_for(
+                Duration::from_secs_f64(seconds).saturating_add(Duration::from_millis(250)),
+            );
+        }
         stream.play().context("Failed to start audio stream")?;
 
         // Wait for playback to complete.

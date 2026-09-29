@@ -374,8 +374,16 @@ pub struct StreamingRecorder {
     last_window_closed: Option<oneshot::Receiver<()>>,
 }
 
-/// Subscriber feeds behind one lock: id -> bounded PCM sender.
-type PcmFeedRegistry = StdMutex<Vec<(CaptureSubscriberId, mpsc::Sender<Vec<f32>>)>>;
+/// One subscriber's PCM sender. `kind` lets the callback drop channel blocks
+/// while agent speech owns the speaker without touching a take feed.
+struct PcmFeed {
+    id: CaptureSubscriberId,
+    kind: CaptureSubscriberKind,
+    sender: mpsc::Sender<Vec<f32>>,
+}
+
+/// Subscriber feeds behind one lock.
+type PcmFeedRegistry = StdMutex<Vec<PcmFeed>>;
 
 /// One agent-channel transcription task riding the shared capture.
 struct ChannelTask {
@@ -538,7 +546,11 @@ impl StreamingRecorder {
         self.pcm_feeds
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push((id, pcm_feed));
+            .push(PcmFeed {
+                id,
+                kind,
+                sender: pcm_feed,
+            });
         id
     }
 
@@ -555,7 +567,7 @@ impl StreamingRecorder {
         self.pcm_feeds
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|(held, _)| *held != id);
+            .retain(|feed| feed.id != id);
         if self.take_subscriber == Some(id) {
             self.take_subscriber = None;
         }
@@ -1179,19 +1191,21 @@ impl StreamingRecorder {
 /// Bounded and non-blocking — capture never branches on a consumer (the
 /// `RecorderLayer1Lane::offer_pcm` contract): a full feed drops the block and
 /// counts it on `dropped`, a closed feed is reaped from the registry.
-fn offer_pcm_to_feeds(
-    feeds: &mut Vec<(CaptureSubscriberId, mpsc::Sender<Vec<f32>>)>,
-    data: &[f32],
-    dropped: &AtomicU64,
-) {
+fn offer_pcm_to_feeds(feeds: &mut Vec<PcmFeed>, data: &[f32], dropped: &AtomicU64) {
+    let duck_channels = crate::audio::tts_duck::channel_capture_should_drop();
     let mut full = 0_u64;
-    feeds.retain(|(_, feed)| match feed.try_send(data.to_vec()) {
-        Ok(()) => true,
-        Err(mpsc::error::TrySendError::Full(_)) => {
-            full += 1;
-            true
+    feeds.retain(|feed| {
+        if duck_channels && feed.kind == CaptureSubscriberKind::Channel {
+            return true;
         }
-        Err(mpsc::error::TrySendError::Closed(_)) => false,
+        match feed.sender.try_send(data.to_vec()) {
+            Ok(()) => true,
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                full += 1;
+                true
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => false,
+        }
     });
     if full > 0 {
         let n = dropped.fetch_add(full, Ordering::Relaxed);
@@ -1247,7 +1261,9 @@ mod tests {
     }
 
     #[test]
+    #[serial(tts_duck)]
     fn channel_feed_owes_a_physical_open_and_shares_blocks_with_a_take() {
+        crate::audio::tts_duck::clear();
         let mut recorder = StreamingRecorder::new().expect("recorder");
         let mut channel = recorder.register_channel_feed();
         assert!(channel.needs_physical_open);
@@ -1269,6 +1285,43 @@ mod tests {
         assert!(recorder.has_take_subscriber());
         assert!(!recorder.has_non_take_subscriber());
         assert_eq!(recorder.capture_subscriber_count(), 1);
+    }
+
+    #[test]
+    #[serial(tts_duck)]
+    fn channel_pcm_is_held_while_agent_speech_owns_the_speaker() {
+        crate::audio::tts_duck::clear();
+        let mut recorder = StreamingRecorder::new().expect("recorder");
+        let mut channel = recorder.register_channel_feed();
+        let (take_tx, mut take_rx) = mpsc::channel(4);
+        recorder.acquire_capture_subscriber(CaptureSubscriberKind::Take, take_tx);
+        let block = vec![0.25_f32, -0.25];
+        crate::audio::tts_duck::arm_for(Duration::from_secs(30));
+        {
+            let mut feeds = recorder.pcm_feeds.lock().expect("feeds");
+            offer_pcm_to_feeds(&mut feeds, &block, &recorder.dropped_chunks);
+        }
+        assert!(
+            channel.receiver.try_recv().is_err(),
+            "channel capture stays quiet while speech plays"
+        );
+        assert_eq!(
+            take_rx.try_recv().expect("take still hears the room"),
+            block
+        );
+        crate::audio::tts_duck::clear();
+        {
+            let mut feeds = recorder.pcm_feeds.lock().expect("feeds");
+            offer_pcm_to_feeds(&mut feeds, &block, &recorder.dropped_chunks);
+        }
+        assert_eq!(
+            channel
+                .receiver
+                .try_recv()
+                .expect("channel hears after speech"),
+            block
+        );
+        assert_eq!(take_rx.try_recv().expect("take still hears"), block);
     }
 
     struct TransportOnlyAgent;
@@ -1553,18 +1606,30 @@ mod tests {
     #[test]
     fn pcm_fanout_drops_full_feeds_and_reaps_closed_ones() {
         let dropped = AtomicU64::new(0);
-        let mut feeds: Vec<(CaptureSubscriberId, mpsc::Sender<Vec<f32>>)> = Vec::new();
+        let mut feeds: Vec<PcmFeed> = Vec::new();
 
         let (open_tx, mut open_rx) = mpsc::channel::<Vec<f32>>(1);
-        feeds.push((CaptureSubscriberId(1), open_tx));
+        feeds.push(PcmFeed {
+            id: CaptureSubscriberId(1),
+            kind: CaptureSubscriberKind::Take,
+            sender: open_tx,
+        });
         let (full_tx, _full_rx) = mpsc::channel::<Vec<f32>>(1);
         full_tx
             .try_send(vec![0.0])
             .expect("prefill the bounded feed to capacity");
-        feeds.push((CaptureSubscriberId(2), full_tx));
+        feeds.push(PcmFeed {
+            id: CaptureSubscriberId(2),
+            kind: CaptureSubscriberKind::Take,
+            sender: full_tx,
+        });
         let (closed_tx, closed_rx) = mpsc::channel::<Vec<f32>>(1);
         drop(closed_rx);
-        feeds.push((CaptureSubscriberId(3), closed_tx));
+        feeds.push(PcmFeed {
+            id: CaptureSubscriberId(3),
+            kind: CaptureSubscriberKind::Take,
+            sender: closed_tx,
+        });
 
         offer_pcm_to_feeds(&mut feeds, &[1.0, 2.0, 3.0], &dropped);
 
@@ -1582,8 +1647,8 @@ mod tests {
             2,
             "closed feed reaped, full feed retained for the next block"
         );
-        assert!(feeds.iter().any(|(id, _)| *id == CaptureSubscriberId(1)));
-        assert!(feeds.iter().any(|(id, _)| *id == CaptureSubscriberId(2)));
+        assert!(feeds.iter().any(|feed| feed.id == CaptureSubscriberId(1)));
+        assert!(feeds.iter().any(|feed| feed.id == CaptureSubscriberId(2)));
     }
 
     /// One dictation take at a time: a second `start_event_session` is refused

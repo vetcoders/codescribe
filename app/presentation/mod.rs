@@ -4,6 +4,7 @@
 //! delta encoding for overlays, etc. The engine emits `EngineEvent`s (what happened),
 //! and this module decides how to show them.
 
+pub mod agent_ack;
 pub mod cli_transcript_lane;
 pub mod emitter;
 pub mod status_projection;

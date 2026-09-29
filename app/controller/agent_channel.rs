@@ -1,13 +1,18 @@
 //! Fn+digit agent channel.
 //!
 //! The channel is not a dictation take and not a `State` variant. It subscribes
-//! to the shared capture, seals on a repeated digit or on its own utterance
-//! silence, and stamps `audience` on Bus rows. Paste and the overlay document
-//! stay off. The hold badge is the only preview.
+//! to the shared capture, seals on a repeated digit, on its own utterance
+//! silence, or after `CODESCRIBE_CHANNEL_AUTOSEAL_SECS` without new channel
+//! text, and stamps `audience` on Bus rows. Paste and the overlay document
+//! stay off. The hold badge is the preview; `ChannelHudState` is the open-mic
+//! fact the overlay paints from.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
+use std::sync::atomic::Ordering;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Result, anyhow};
 use codescribe_core::pipeline::acoustic_ledger::AcousticLedger;
@@ -98,13 +103,75 @@ struct BindingEntry {
     provider_session_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub(crate) struct OpenAgentChannel {
     pub subscriber: CaptureSubscriberId,
     pub audience: String,
     pub silence_sec: f32,
     pub provider: Option<String>,
     pub provider_session_id: Option<String>,
+    pub opened_at: SystemTime,
+    pub last_voice_at: Arc<StdMutex<SystemTime>>,
+    pub session_id: Option<String>,
+}
+
+/// Open-channel fact for the overlay. W2 exposes it; the overlay paint is separate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelHudState {
+    pub open: bool,
+    pub loud: bool,
+    pub channel: String,
+    pub audience: String,
+    pub label: String,
+    /// `0` means the silence cap is off.
+    pub autoseal_secs: u64,
+    pub autoseal_deadline: Option<SystemTime>,
+    pub tts_ducking: bool,
+    pub opened_at: SystemTime,
+    /// Utterance silence configured for this channel, in milliseconds.
+    pub utterance_silence_ms: u32,
+    pub provider: Option<String>,
+    pub provider_session_id: Option<String>,
+}
+
+fn utterance_silence_ms(seconds: f32) -> u32 {
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return 0;
+    }
+    let millis = (f64::from(seconds) * 1000.0).round();
+    if millis >= f64::from(u32::MAX) {
+        u32::MAX
+    } else {
+        millis as u32
+    }
+}
+
+pub const CHANNEL_AUTOSEAL_SECS_ENV: &str = "CODESCRIBE_CHANNEL_AUTOSEAL_SECS";
+pub const CHANNEL_AUTOSEAL_SECS_DEFAULT: u64 = 120;
+
+pub fn channel_open_label(digit: u8) -> String {
+    format!("CHANNEL {digit} OPEN — mic is live")
+}
+
+/// Silence cap for an open channel session.
+///
+/// Unset or unreadable values use [`CHANNEL_AUTOSEAL_SECS_DEFAULT`]. `0`
+/// disables the cap: a zero threshold would seal on the opening tick.
+pub fn channel_autoseal_secs() -> u64 {
+    match std::env::var(CHANNEL_AUTOSEAL_SECS_ENV) {
+        Ok(value) => value
+            .trim()
+            .parse()
+            .unwrap_or(CHANNEL_AUTOSEAL_SECS_DEFAULT),
+        Err(_) => CHANNEL_AUTOSEAL_SECS_DEFAULT,
+    }
+}
+
+fn silence_is_due(last_voice: SystemTime, now: SystemTime, secs: u64) -> bool {
+    if secs == 0 {
+        return false;
+    }
+    now.duration_since(last_voice).unwrap_or_default() >= Duration::from_secs(secs)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,6 +275,9 @@ impl RecordingController {
         let bound = resolve_digit(digit, binding_file).map_err(refusal)?;
         let runtime_settings = self.runtime_settings_arc().await;
         let silence_sec = runtime_settings.values().toggle_silence_sec;
+        let opened_at = SystemTime::now();
+        let last_voice_at = Arc::new(StdMutex::new(opened_at));
+        let mut session_id = None;
         let mut recorder_guard = self.recorder.lock().await;
         let recorder = recorder_guard.as_mut().ok_or_else(|| {
             anyhow!("agent channel refused: recording controller has no recorder")
@@ -216,7 +286,8 @@ impl RecordingController {
         let subscriber = match mode {
             ChannelOpenMode::AttachedOnly => recorder.register_channel_feed().id,
             ChannelOpenMode::Live => {
-                let session_id = format!("agent-channel-{digit}-{}", uuid::Uuid::new_v4());
+                let session_label = format!("agent-channel-{digit}-{}", uuid::Uuid::new_v4());
+                session_id = Some(session_label.clone());
                 let ledger = Arc::new(std::sync::Mutex::new(AcousticLedger::new()));
                 let sentence_pause = runtime_settings.values().light_plus_sentence_pause_sec;
                 let language = runtime_settings
@@ -225,7 +296,7 @@ impl RecordingController {
                     .whisper_hint()
                     .map(str::to_string);
                 let bus = TranscriptBus::open(TranscriptSession {
-                    session_id: session_id.clone(),
+                    session_id: session_label.clone(),
                     mode: TranscriptMode::Agent,
                     has_latched_target: false,
                     latched_target_is_self: false,
@@ -235,6 +306,9 @@ impl RecordingController {
                 .map(Arc::new);
                 hold_badge::show_badge_for_mode(BadgeMode::Assistive);
                 let cursor_token = hold_badge::take_token();
+                let open_label = channel_open_label(digit);
+                hold_badge::update_transcript(cursor_token, &open_label, false);
+                let voice_clock = Arc::clone(&last_voice_at);
                 let emitter = Arc::new(
                     PresentationEmitter::new_with_authority(
                         Arc::new(TokioMutex::new(String::new())),
@@ -245,6 +319,13 @@ impl RecordingController {
                         None,
                     )
                     .with_cursor_observer(Arc::new(move |projection| {
+                        if projection.text.trim().is_empty() {
+                            hold_badge::update_transcript(cursor_token, &open_label, false);
+                            return;
+                        }
+                        *voice_clock
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner()) = SystemTime::now();
                         hold_badge::update_transcript(
                             cursor_token,
                             &projection.text,
@@ -256,7 +337,7 @@ impl RecordingController {
                 let sink: Arc<dyn EventSink> = emitter;
                 match recorder
                     .begin_channel_session(
-                        session_id,
+                        session_label,
                         runtime_settings,
                         sink,
                         language,
@@ -276,6 +357,10 @@ impl RecordingController {
             }
         };
 
+        let audience = bound.audience.clone();
+        let receipt_session = session_id.clone();
+        let receipt_provider = bound.provider.clone();
+        let receipt_provider_session = bound.provider_session_id.clone();
         channels.insert(
             digit,
             OpenAgentChannel {
@@ -284,8 +369,33 @@ impl RecordingController {
                 silence_sec,
                 provider: bound.provider,
                 provider_session_id: bound.provider_session_id,
+                opened_at,
+                last_voice_at,
+                session_id,
             },
         );
+        drop(recorder_guard);
+        drop(channels);
+        if matches!(mode, ChannelOpenMode::Live) {
+            let line = crate::presentation::agent_ack::channel_session_line(
+                "open",
+                "opened",
+                &digit.to_string(),
+                &audience,
+                receipt_session.as_deref(),
+                channel_autoseal_secs(),
+                opened_at,
+                silence_sec,
+                receipt_provider.as_deref(),
+                receipt_provider_session.as_deref(),
+            );
+            if let Err(error) = crate::presentation::agent_ack::append_json_line(
+                &crate::presentation::transcript_bus::transcript_bus_path(),
+                &line,
+            ) {
+                tracing::warn!(%error, digit, "channel open receipt was not appended");
+            }
+        }
         Ok(())
     }
 
@@ -302,6 +412,138 @@ impl RecordingController {
             hold_badge::hide_hold_badge();
         }
         Ok(())
+    }
+
+    /// Ack watcher plus the channel silence cap. Started once, from the live
+    /// controller, so unit tests that only construct a controller do not scan
+    /// the real bridge home.
+    pub fn spawn_channel_guards(self: &Arc<Self>, handle: tokio::runtime::Handle) {
+        if self.channel_guards_started.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let controller = Arc::clone(self);
+        handle.spawn(async move {
+            loop {
+                if controller.shutdown_requested.load(Ordering::SeqCst) {
+                    break;
+                }
+                let bridge = active_names::bridge_home();
+                let bus = crate::presentation::transcript_bus::transcript_bus_path();
+                let seal_bus = bus.clone();
+                match tokio::task::spawn_blocking(move || {
+                    crate::presentation::agent_ack::scan(&bridge, &bus)
+                })
+                .await
+                {
+                    Ok(Ok(stats)) if stats.appended > 0 => {
+                        tracing::info!(appended = stats.appended, "agent ack rows appended");
+                    }
+                    Ok(Ok(_)) => {}
+                    Ok(Err(error)) => tracing::warn!(%error, "agent ack scan failed"),
+                    Err(error) => tracing::warn!(%error, "agent ack scan task stopped"),
+                }
+                let _sealed = controller
+                    .poll_channel_autoseal(SystemTime::now(), &seal_bus)
+                    .await;
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        });
+    }
+
+    pub(crate) async fn poll_channel_autoseal(&self, now: SystemTime, bus: &Path) -> Vec<u8> {
+        self.seal_channels_silent_for(now, bus, channel_autoseal_secs())
+            .await
+    }
+
+    pub(crate) async fn seal_channels_silent_for(
+        &self,
+        now: SystemTime,
+        bus: &Path,
+        secs: u64,
+    ) -> Vec<u8> {
+        let due: Vec<(u8, OpenAgentChannel)> = {
+            let mut channels = self.agent_channels.lock().await;
+            let digits: Vec<u8> = channels
+                .iter()
+                .filter(|(_, open)| {
+                    let last = *open
+                        .last_voice_at
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    silence_is_due(last, now, secs)
+                })
+                .map(|(digit, _)| *digit)
+                .collect();
+            digits
+                .into_iter()
+                .filter_map(|digit| channels.remove(&digit).map(|open| (digit, open)))
+                .collect()
+        };
+        let mut sealed = Vec::new();
+        for (digit, open) in due {
+            let channel = digit.to_string();
+            let agent = open.audience.clone();
+            let session_id = open.session_id.clone();
+            let opened_at = open.opened_at;
+            let silence_sec = open.silence_sec;
+            let provider = open.provider.clone();
+            let provider_session_id = open.provider_session_id.clone();
+            if let Err(error) = self.close_open_channel(open).await {
+                tracing::warn!(%error, digit, "channel auto-seal could not close the capture");
+                continue;
+            }
+            let line = crate::presentation::agent_ack::channel_session_line(
+                "sealed",
+                "silence",
+                &channel,
+                &agent,
+                session_id.as_deref(),
+                secs,
+                opened_at,
+                silence_sec,
+                provider.as_deref(),
+                provider_session_id.as_deref(),
+            );
+            if let Err(error) = crate::presentation::agent_ack::append_json_line(bus, &line) {
+                tracing::warn!(%error, digit, "channel silence receipt was not appended");
+            }
+            sealed.push(digit);
+        }
+        sealed
+    }
+
+    pub async fn channel_hud_states(&self) -> Vec<ChannelHudState> {
+        let secs = channel_autoseal_secs();
+        let ducking = crate::audio::tts_duck::channel_capture_should_drop();
+        let channels = self.agent_channels.lock().await;
+        let mut digits: Vec<u8> = channels.keys().copied().collect();
+        digits.sort_unstable();
+        digits
+            .into_iter()
+            .filter_map(|digit| {
+                let open = channels.get(&digit)?;
+                let last = *open
+                    .last_voice_at
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                Some(ChannelHudState {
+                    open: true,
+                    loud: true,
+                    channel: digit.to_string(),
+                    audience: open.audience.clone(),
+                    label: channel_open_label(digit),
+                    autoseal_secs: secs,
+                    autoseal_deadline: (secs > 0)
+                        .then(|| last.checked_add(Duration::from_secs(secs)))
+                        .flatten(),
+                    tts_ducking: ducking,
+                    opened_at: open.opened_at,
+                    utterance_silence_ms: utterance_silence_ms(open.silence_sec),
+                    provider: open.provider.clone(),
+                    provider_session_id: open.provider_session_id.clone(),
+                })
+            })
+            .collect()
     }
 
     /// Conversation and energy calibration stay exclusive owners.
@@ -348,6 +590,8 @@ impl RecordingController {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+    use std::time::{Duration, SystemTime};
 
     fn write_binding(dir: &Path, body: &str) -> PathBuf {
         let path = dir.join(BINDING_FILENAME);
@@ -495,5 +739,160 @@ mod tests {
         assert!(message.contains("conversation"), "{message}");
         assert!(controller.agent_channel_snapshot(1).await.is_some());
         assert_eq!(controller.current_state().await, super::super::State::Idle);
+    }
+
+    #[test]
+    #[serial(agent_ack_duck)]
+    fn channel_autoseal_knob_defaults_to_the_brief_and_zero_disables() {
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                unsafe { std::env::remove_var(CHANNEL_AUTOSEAL_SECS_ENV) };
+            }
+        }
+        let _restore = Restore;
+        unsafe { std::env::remove_var(CHANNEL_AUTOSEAL_SECS_ENV) };
+        assert_eq!(channel_autoseal_secs(), CHANNEL_AUTOSEAL_SECS_DEFAULT);
+        unsafe { std::env::set_var(CHANNEL_AUTOSEAL_SECS_ENV, "15") };
+        assert_eq!(channel_autoseal_secs(), 15);
+        unsafe { std::env::set_var(CHANNEL_AUTOSEAL_SECS_ENV, "0") };
+        assert_eq!(channel_autoseal_secs(), 0);
+        unsafe { std::env::set_var(CHANNEL_AUTOSEAL_SECS_ENV, "nope") };
+        assert_eq!(channel_autoseal_secs(), CHANNEL_AUTOSEAL_SECS_DEFAULT);
+        unsafe { std::env::set_var(CHANNEL_AUTOSEAL_SECS_ENV, " 40 ") };
+        assert_eq!(channel_autoseal_secs(), 40);
+
+        let opened = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        assert!(!super::silence_is_due(
+            opened,
+            opened + Duration::from_secs(119),
+            120
+        ));
+        assert!(super::silence_is_due(
+            opened,
+            opened + Duration::from_secs(120),
+            120
+        ));
+        assert!(!super::silence_is_due(
+            opened,
+            opened + Duration::from_secs(10_000),
+            0
+        ));
+    }
+
+    #[tokio::test]
+    #[serial(agent_ack_duck)]
+    async fn silence_past_the_cap_seals_the_channel_and_clears_the_open_state() {
+        crate::audio::tts_duck::clear();
+        let controller = RecordingController::new_without_keychain();
+        let dir = tempfile::tempdir().expect("temp");
+        let path = write_binding(
+            dir.path(),
+            r#"{"schema":"vc.agent-audience-binding.v1","bindings":{"3":{"audience":"Leon","provider":"codex","provider_session_id":"leon-session"}}}"#,
+        );
+        controller
+            .dispatch_agent_channel(3, &path, ChannelOpenMode::AttachedOnly)
+            .await
+            .expect("open");
+        let hud = controller.channel_hud_states().await;
+        assert_eq!(hud.len(), 1);
+        assert!(hud[0].open && hud[0].loud, "{hud:?}");
+        assert_eq!(hud[0].channel, "3");
+        assert_eq!(hud[0].audience, "Leon");
+        assert!(hud[0].label.contains("CHANNEL 3 OPEN"), "{}", hud[0].label);
+        assert!(!hud[0].tts_ducking);
+        assert_eq!(hud[0].provider.as_deref(), Some("codex"));
+        assert_eq!(hud[0].provider_session_id.as_deref(), Some("leon-session"));
+
+        let bus = dir.path().join("bus.jsonl");
+        let opened = controller
+            .agent_channel_snapshot(3)
+            .await
+            .expect("open")
+            .opened_at;
+        let still_open = controller
+            .seal_channels_silent_for(opened + Duration::from_secs(10), &bus, 120)
+            .await;
+        assert!(still_open.is_empty());
+        assert!(controller.agent_channel_snapshot(3).await.is_some());
+        let disabled = controller
+            .seal_channels_silent_for(opened + Duration::from_secs(10_000), &bus, 0)
+            .await;
+        assert!(disabled.is_empty(), "0 disables the cap");
+        assert!(controller.channel_hud_states().await[0].loud);
+
+        let sealed = controller
+            .seal_channels_silent_for(opened + Duration::from_secs(120), &bus, 120)
+            .await;
+        assert_eq!(sealed, vec![3]);
+        assert!(controller.agent_channel_snapshot(3).await.is_none());
+        assert!(controller.channel_hud_states().await.is_empty());
+        let (count, channel, _) = controller.capture_subscriber_view().await;
+        assert_eq!(count, 0);
+        assert!(!channel);
+        let again = controller
+            .seal_channels_silent_for(opened + Duration::from_secs(500), &bus, 120)
+            .await;
+        assert!(again.is_empty());
+
+        let text = std::fs::read_to_string(&bus).expect("sealed receipt");
+        let rows: Vec<serde_json::Value> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("json"))
+            .collect();
+        assert_eq!(rows.len(), 1, "{text}");
+        let row = &rows[0];
+        assert_eq!(
+            row.get("schema").and_then(|value| value.as_str()),
+            Some("codescribe.channel-session.v1")
+        );
+        assert_eq!(
+            row.get("kind").and_then(|value| value.as_str()),
+            Some("channel_session")
+        );
+        assert_eq!(
+            row.get("state").and_then(|value| value.as_str()),
+            Some("sealed")
+        );
+        assert_eq!(
+            row.get("reason").and_then(|value| value.as_str()),
+            Some("silence")
+        );
+        assert_eq!(
+            row.get("channel").and_then(|value| value.as_str()),
+            Some("3")
+        );
+        assert_eq!(
+            row.get("agent").and_then(|value| value.as_str()),
+            Some("Leon")
+        );
+        assert_eq!(
+            row.get("provider").and_then(|value| value.as_str()),
+            Some("codex")
+        );
+        assert_eq!(
+            row.get("provider_session_id")
+                .and_then(|value| value.as_str()),
+            Some("leon-session")
+        );
+        assert!(
+            row.get("opened_at")
+                .and_then(|value| value.as_str())
+                .is_some_and(|stamp| stamp.ends_with('Z')),
+            "{row}"
+        );
+        assert_eq!(
+            row.get("loud").and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            row.get("autoseal_secs").and_then(|value| value.as_u64()),
+            Some(120)
+        );
+        let emitted_at = row
+            .get("emitted_at")
+            .and_then(|value| value.as_str())
+            .unwrap();
+        assert!(emitted_at.ends_with('Z'), "{emitted_at}");
     }
 }
