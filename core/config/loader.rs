@@ -29,9 +29,7 @@ use super::settings::{
     SettingsSnapshotValidationError, UserSettings, normalize_agent_workspace_roots,
     parse_agent_workspace_roots,
 };
-use super::types::{
-    Config, DeferredInsertShortcut, Language, OverlayPositionMode, TranscriptSendMode,
-};
+use super::types::{Config, DeferredInsertShortcut};
 use crate::llm::account_auth;
 use crate::llm::provider::{LlmMode, ProviderKind, ProviderRef, ProviderRegistry, WireFamily};
 
@@ -1036,134 +1034,93 @@ impl Config {
 
     /// Load configuration values from environment variables.
     pub fn load_from_env(&mut self) {
+        macro_rules! env_flag {
+            ($key:literal, $field:expr) => {
+                if let Ok(val) = Self::config_runtime_env_var($key) {
+                    $field = matches!(val.as_str(), "1" | "true" | "yes" | "on");
+                }
+            };
+        }
+        macro_rules! env_flag_enabled {
+            ($key:literal, $field:expr) => {
+                if let Ok(val) = Self::config_runtime_env_var($key) {
+                    $field = matches!(val.as_str(), "1" | "true" | "yes" | "on" | "enabled");
+                }
+            };
+        }
+        macro_rules! env_parse {
+            ($key:literal, $field:expr) => {
+                if let Ok(val) = Self::config_runtime_env_var($key)
+                    && let Ok(parsed) = val.parse()
+                {
+                    $field = parsed;
+                }
+            };
+        }
+        macro_rules! env_set {
+            ($key:literal, $field:expr) => {
+                if let Ok(val) = Self::config_runtime_env_var($key) {
+                    $field = val;
+                }
+            };
+        }
+
         // Hotkeys
-        if let Ok(val) = Self::config_runtime_env_var("HOLD_EXCLUSIVE") {
-            self.hold_exclusive = matches!(val.as_str(), "1" | "true" | "yes" | "on");
-        }
-        if let Ok(val) = Self::config_runtime_env_var("HOLD_ARM_MODIFIER")
-            && let Ok(arm) = val.parse()
-        {
-            self.hold_arm_modifier = arm;
-        }
-        if let Ok(val) = Self::config_runtime_env_var("AGENT_CHANNEL_MODIFIER")
-            && let Ok(modifier) = val.parse()
-        {
-            self.channel_modifier = modifier;
-        }
-        if let Ok(val) = Self::config_runtime_env_var("FN_TAP_TOGGLES_DICTATION") {
-            self.fn_tap_toggles_dictation = matches!(val.as_str(), "1" | "true" | "yes" | "on");
-        }
-        if let Ok(val) = Self::config_runtime_env_var("MIDDLE_MOUSE_ACTS_AS_FN") {
-            self.middle_mouse_acts_as_fn = matches!(val.as_str(), "1" | "true" | "yes" | "on");
-        }
-        if let Ok(val) = Self::config_runtime_env_var("HOLD_START_DELAY_MS")
-            && let Ok(ms) = val.parse()
-        {
-            self.hold_start_delay_ms = ms;
-        }
-        if let Ok(val) = Self::config_runtime_env_var("DOUBLE_TAP_INTERVAL_MS")
-            && let Ok(ms) = val.parse()
-        {
-            self.double_tap_interval_ms = ms;
-        }
-        if let Ok(val) = Self::config_runtime_env_var("TOGGLE_SILENCE_SEC")
-            && let Ok(sec) = val.parse()
-        {
-            self.toggle_silence_sec = sec;
-        }
-        if let Ok(val) = Self::config_runtime_env_var("WHISPER_CONTEXT_WINDOW_SEC")
-            && let Ok(sec) = val.parse::<f32>()
-        {
-            self.whisper_context_window_sec = sec;
-        }
-        if let Ok(val) = Self::config_runtime_env_var("LIGHT_PLUS_SENTENCE_PAUSE_SEC")
-            && let Ok(sec) = val.parse::<f32>()
-        {
-            self.light_plus_sentence_pause_sec = sec;
-        }
-        if let Ok(val) = Self::config_runtime_env_var("CODESCRIBE_DEFERRED_INSERT_SHORTCUT")
-            && let Ok(shortcut) = val.parse::<DeferredInsertShortcut>()
-        {
-            self.deferred_insert_shortcut = shortcut;
-        }
+        env_flag!("HOLD_EXCLUSIVE", self.hold_exclusive);
+        env_parse!("HOLD_ARM_MODIFIER", self.hold_arm_modifier);
+        env_parse!("AGENT_CHANNEL_MODIFIER", self.channel_modifier);
+        env_flag!("FN_TAP_TOGGLES_DICTATION", self.fn_tap_toggles_dictation);
+        env_flag!("MIDDLE_MOUSE_ACTS_AS_FN", self.middle_mouse_acts_as_fn);
+        env_parse!("HOLD_START_DELAY_MS", self.hold_start_delay_ms);
+        env_parse!("DOUBLE_TAP_INTERVAL_MS", self.double_tap_interval_ms);
+        env_parse!("TOGGLE_SILENCE_SEC", self.toggle_silence_sec);
+        env_parse!(
+            "WHISPER_CONTEXT_WINDOW_SEC",
+            self.whisper_context_window_sec
+        );
+        env_parse!(
+            "LIGHT_PLUS_SENTENCE_PAUSE_SEC",
+            self.light_plus_sentence_pause_sec
+        );
+        env_parse!(
+            "CODESCRIBE_DEFERRED_INSERT_SHORTCUT",
+            self.deferred_insert_shortcut
+        );
 
         // Language
-        if let Ok(val) = Self::config_runtime_env_var("WHISPER_LANGUAGE")
-            && let Ok(lang) = val.parse::<Language>()
-        {
-            self.whisper_language = lang;
-        }
+        env_parse!("WHISPER_LANGUAGE", self.whisper_language);
 
         // AI Formatting
-        if let Ok(val) = Self::config_runtime_env_var("AI_FORMATTING_ENABLED") {
-            self.ai_formatting_enabled =
-                matches!(val.as_str(), "1" | "true" | "yes" | "on" | "enabled");
-        }
-        if let Ok(val) = Self::config_runtime_env_var("AUTO_PASTE_ENABLED") {
-            self.auto_paste_enabled =
-                matches!(val.as_str(), "1" | "true" | "yes" | "on" | "enabled");
-        }
-        if let Ok(val) = Self::config_runtime_env_var("TRANSCRIPT_SEND_MODE")
-            && let Ok(mode) = val.parse::<TranscriptSendMode>()
-        {
-            self.transcript_send_mode = mode;
-        }
-        if let Ok(val) = Self::config_runtime_env_var("CODESCRIBE_TRANSCRIPT_TAGGING") {
-            self.transcript_tagging_enabled =
-                matches!(val.as_str(), "1" | "true" | "yes" | "on" | "enabled");
-        }
-        if let Ok(val) = Self::config_runtime_env_var("CODESCRIBE_TRANSCRIPT_TAG_TEMPLATE") {
-            self.transcript_tag_template = val;
-        }
-        if let Ok(val) = Self::config_runtime_env_var("AI_MAX_TOKENS")
-            && let Ok(tokens) = val.parse()
-        {
-            self.ai_max_tokens = tokens;
-        }
-        if let Ok(val) = Self::config_runtime_env_var("AI_ASSISTIVE_MAX_TOKENS")
-            && let Ok(tokens) = val.parse()
-        {
-            self.ai_assistive_max_tokens = tokens;
-        }
+        env_flag_enabled!("AI_FORMATTING_ENABLED", self.ai_formatting_enabled);
+        env_flag_enabled!("AUTO_PASTE_ENABLED", self.auto_paste_enabled);
+        env_parse!("TRANSCRIPT_SEND_MODE", self.transcript_send_mode);
+        env_flag_enabled!(
+            "CODESCRIBE_TRANSCRIPT_TAGGING",
+            self.transcript_tagging_enabled
+        );
+        env_set!(
+            "CODESCRIBE_TRANSCRIPT_TAG_TEMPLATE",
+            self.transcript_tag_template
+        );
+        env_parse!("AI_MAX_TOKENS", self.ai_max_tokens);
+        env_parse!("AI_ASSISTIVE_MAX_TOKENS", self.ai_assistive_max_tokens);
 
-        // UI
+        // UI. `bool::parse` accepts only "true"/"false", so a missing or
+        // unparseable tray/history/clipboard flag stays on.
         if let Ok(val) = Self::config_runtime_env_var("SHOW_TRAY_GLYPH") {
             self.show_tray_glyph = val.parse().unwrap_or(true);
         }
-        if let Ok(val) = Self::config_runtime_env_var("SHOW_DOCK_ICON") {
-            self.show_dock_icon = matches!(val.as_str(), "1" | "true" | "yes" | "on");
-        }
-        if let Ok(val) = Self::config_runtime_env_var("TRANSCRIPTION_OVERLAY_ENABLED") {
-            self.transcription_overlay_enabled =
-                matches!(val.as_str(), "1" | "true" | "yes" | "on");
-        }
-        if let Ok(val) = Self::config_runtime_env_var("TRAY_START_ASSISTIVE") {
-            self.tray_start_assistive = matches!(val.as_str(), "1" | "true" | "yes" | "on");
-        }
-        if let Ok(val) = Self::config_runtime_env_var("HOLD_INDICATOR") {
-            self.hold_indicator = matches!(val.as_str(), "1" | "true" | "yes" | "on");
-        }
-        if let Ok(val) = Self::config_runtime_env_var("HOLD_BADGE_SIZE")
-            && let Ok(size) = val.parse()
-        {
-            self.hold_badge_size = size;
-        }
-        if let Ok(val) = Self::config_runtime_env_var("HOLD_BADGE_OFFSET_X")
-            && let Ok(offset) = val.parse()
-        {
-            self.hold_badge_offset_x = offset;
-        }
-        if let Ok(val) = Self::config_runtime_env_var("HOLD_BADGE_OFFSET_Y")
-            && let Ok(offset) = val.parse()
-        {
-            self.hold_badge_offset_y = offset;
-        }
-
-        if let Ok(val) = Self::config_runtime_env_var("OVERLAY_POSITION_MODE")
-            && let Ok(mode) = val.parse::<OverlayPositionMode>()
-        {
-            self.overlay_position_mode = mode;
-        }
+        env_flag!("SHOW_DOCK_ICON", self.show_dock_icon);
+        env_flag!(
+            "TRANSCRIPTION_OVERLAY_ENABLED",
+            self.transcription_overlay_enabled
+        );
+        env_flag!("TRAY_START_ASSISTIVE", self.tray_start_assistive);
+        env_flag!("HOLD_INDICATOR", self.hold_indicator);
+        env_parse!("HOLD_BADGE_SIZE", self.hold_badge_size);
+        env_parse!("HOLD_BADGE_OFFSET_X", self.hold_badge_offset_x);
+        env_parse!("HOLD_BADGE_OFFSET_Y", self.hold_badge_offset_y);
+        env_parse!("OVERLAY_POSITION_MODE", self.overlay_position_mode);
         if let Ok(val) = Self::config_runtime_env_var("OVERLAY_CUSTOM_X")
             && let Ok(x) = val.parse()
         {
@@ -1176,23 +1133,11 @@ impl Config {
         }
 
         // Sound
-        if let Ok(val) = Self::config_runtime_env_var("BEEP_ON_START") {
-            self.beep_on_start = matches!(val.as_str(), "1" | "true" | "yes" | "on");
-        }
-        if let Ok(val) = Self::config_runtime_env_var("AGENT_ENTER_SENDS") {
-            self.agent_enter_sends = matches!(val.as_str(), "1" | "true" | "yes" | "on");
-        }
-        if let Ok(val) = Self::config_runtime_env_var("AGENT_AUTO_SEND") {
-            self.agent_auto_send = matches!(val.as_str(), "1" | "true" | "yes" | "on");
-        }
-        if let Ok(val) = Self::config_runtime_env_var("SOUND_NAME") {
-            self.sound_name = val;
-        }
-        if let Ok(val) = Self::config_runtime_env_var("SOUND_VOLUME")
-            && let Ok(volume) = val.parse()
-        {
-            self.sound_volume = volume;
-        }
+        env_flag!("BEEP_ON_START", self.beep_on_start);
+        env_flag!("AGENT_ENTER_SENDS", self.agent_enter_sends);
+        env_flag!("AGENT_AUTO_SEND", self.agent_auto_send);
+        env_set!("SOUND_NAME", self.sound_name);
+        env_parse!("SOUND_VOLUME", self.sound_volume);
 
         // Audio
         if let Ok(val) = Self::config_runtime_env_var("AUDIO_INPUT_DEVICE") {
@@ -1209,12 +1154,8 @@ impl Config {
         }
 
         // Quick Notes (default: off)
-        if let Ok(val) = Self::config_runtime_env_var("QUICK_NOTES_ENABLED") {
-            self.quick_notes_enabled = matches!(val.as_str(), "1" | "true" | "yes" | "on");
-        }
-        if let Ok(val) = Self::config_runtime_env_var("QUICK_NOTES_SAVE_ONLY") {
-            self.quick_notes_save_only = matches!(val.as_str(), "1" | "true" | "yes" | "on");
-        }
+        env_flag!("QUICK_NOTES_ENABLED", self.quick_notes_enabled);
+        env_flag!("QUICK_NOTES_SAVE_ONLY", self.quick_notes_save_only);
 
         // Current lane rows override the warned legacy aliases through 2026-10-15.
         if let Ok(raw) = Self::config_runtime_env_var("STT_ENDPOINT") {
@@ -1237,47 +1178,41 @@ impl Config {
             .or_else(|| super::keychain::cached_runtime_key("STT_API_KEY"))
         {
             static WARN: std::sync::Once = std::sync::Once::new();
-            WARN.call_once(|| warn!("STT_API_KEY is retired; use STT_FILE_API_KEY / STT_LIVE_API_KEY (removed after 2026-10-15)"));
+            WARN.call_once(|| {
+                warn!(
+                    "STT_API_KEY is retired; use STT_FILE_API_KEY / STT_LIVE_API_KEY (removed after 2026-10-15)"
+                )
+            });
             for target in [&mut self.stt_file_api_key, &mut self.stt_live_api_key] {
                 if target.as_deref().is_none_or(|v| v.trim().is_empty()) {
                     *target = Some(key.clone());
                 }
             }
         }
-        if let Ok(val) = Self::config_runtime_env_var("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED") {
-            self.stt_initial_prompt_enabled =
-                matches!(val.as_str(), "1" | "true" | "yes" | "on" | "enabled");
-        }
+        env_flag_enabled!(
+            "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED",
+            self.stt_initial_prompt_enabled
+        );
 
         // Local STT (Pure Rust Whisper)
-        if let Ok(val) = Self::config_runtime_env_var("USE_LOCAL_STT") {
-            self.use_local_stt = matches!(val.as_str(), "1" | "true" | "yes" | "on");
-        }
-        if let Ok(val) = Self::config_runtime_env_var("LOCAL_MODEL") {
-            self.local_model = val;
-        }
+        env_flag!("USE_LOCAL_STT", self.use_local_stt);
+        env_set!("LOCAL_MODEL", self.local_model);
 
         // Clipboard
         if let Ok(val) = Self::config_runtime_env_var("RESTORE_CLIPBOARD") {
             self.restore_clipboard = val.parse().unwrap_or(true);
         }
-        if let Ok(val) = Self::config_runtime_env_var("RESTORE_CLIPBOARD_DELAY_MS")
-            && let Ok(delay) = val.parse()
-        {
-            self.restore_clipboard_delay_ms = delay;
-        }
+        env_parse!(
+            "RESTORE_CLIPBOARD_DELAY_MS",
+            self.restore_clipboard_delay_ms
+        );
 
         // System
-        if let Ok(val) = Self::config_runtime_env_var("START_AT_LOGIN") {
-            self.start_at_login = matches!(val.as_str(), "1" | "true" | "yes" | "on");
-        }
+        env_flag!("START_AT_LOGIN", self.start_at_login);
 
         // Debugging (default: on to keep paired .wav with transcripts)
-        if let Ok(val) = Self::config_runtime_env_var("DUMP_AUDIO_LOGS") {
-            self.dump_audio_logs = matches!(val.as_str(), "1" | "true" | "yes" | "on");
-        }
+        env_flag!("DUMP_AUDIO_LOGS", self.dump_audio_logs);
     }
-
     /// Set an env var from settings, with basic validation.
     /// Rejects empty strings and strings longer than 4096 chars.
     fn safe_set_env(key: &str, value: &str) {
@@ -1319,6 +1254,24 @@ impl Config {
                 }
             };
         }
+        macro_rules! apply_copy {
+            ($key:literal, $field:expr, $value:expr) => {
+                if Self::config_runtime_env_var($key).is_err()
+                    && let Some(v) = $value
+                {
+                    $field = v;
+                }
+            };
+        }
+        macro_rules! apply_clone {
+            ($key:literal, $field:expr, $value:expr) => {
+                if Self::config_runtime_env_var($key).is_err()
+                    && let Some(ref v) = $value
+                {
+                    $field = v.clone();
+                }
+            };
+        }
 
         // Language
         apply_parsed_if_no_env!(
@@ -1327,36 +1280,36 @@ impl Config {
             settings.whisper_language
         );
         // Hotkeys
-        if Self::config_runtime_env_var("HOLD_START_DELAY_MS").is_err()
-            && let Some(v) = settings.hold_start_delay_ms
-        {
-            self.hold_start_delay_ms = v;
-        }
-        if Self::config_runtime_env_var("DOUBLE_TAP_INTERVAL_MS").is_err()
-            && let Some(v) = settings.double_tap_interval_ms
-        {
-            self.double_tap_interval_ms = v;
-        }
-        if Self::config_runtime_env_var("TOGGLE_SILENCE_SEC").is_err()
-            && let Some(v) = settings.toggle_silence_sec
-        {
-            self.toggle_silence_sec = v;
-        }
-        if Self::config_runtime_env_var("WHISPER_CONTEXT_WINDOW_SEC").is_err()
-            && let Some(v) = settings.whisper_context_window_sec
-        {
-            self.whisper_context_window_sec = v;
-        }
-        if Self::config_runtime_env_var("LIGHT_PLUS_SENTENCE_PAUSE_SEC").is_err()
-            && let Some(v) = settings.light_plus_sentence_pause_sec
-        {
-            self.light_plus_sentence_pause_sec = v;
-        }
-        if Self::config_runtime_env_var("HOLD_EXCLUSIVE").is_err()
-            && let Some(v) = settings.hold_exclusive
-        {
-            self.hold_exclusive = v;
-        }
+        apply_copy!(
+            "HOLD_START_DELAY_MS",
+            self.hold_start_delay_ms,
+            settings.hold_start_delay_ms
+        );
+        apply_copy!(
+            "DOUBLE_TAP_INTERVAL_MS",
+            self.double_tap_interval_ms,
+            settings.double_tap_interval_ms
+        );
+        apply_copy!(
+            "TOGGLE_SILENCE_SEC",
+            self.toggle_silence_sec,
+            settings.toggle_silence_sec
+        );
+        apply_copy!(
+            "WHISPER_CONTEXT_WINDOW_SEC",
+            self.whisper_context_window_sec,
+            settings.whisper_context_window_sec
+        );
+        apply_copy!(
+            "LIGHT_PLUS_SENTENCE_PAUSE_SEC",
+            self.light_plus_sentence_pause_sec,
+            settings.light_plus_sentence_pause_sec
+        );
+        apply_copy!(
+            "HOLD_EXCLUSIVE",
+            self.hold_exclusive,
+            settings.hold_exclusive
+        );
         if Self::config_runtime_env_var("HOLD_ARM_MODIFIER").is_err()
             && let Some(ref v) = settings.hold_arm_modifier
             && let Ok(arm) = v.parse()
@@ -1369,37 +1322,37 @@ impl Config {
         {
             self.channel_modifier = modifier;
         }
-        if Self::config_runtime_env_var("FN_TAP_TOGGLES_DICTATION").is_err()
-            && let Some(v) = settings.fn_tap_toggles_dictation
-        {
-            self.fn_tap_toggles_dictation = v;
-        }
-        if Self::config_runtime_env_var("MIDDLE_MOUSE_ACTS_AS_FN").is_err()
-            && let Some(v) = settings.middle_mouse_acts_as_fn
-        {
-            self.middle_mouse_acts_as_fn = v;
-        }
+        apply_copy!(
+            "FN_TAP_TOGGLES_DICTATION",
+            self.fn_tap_toggles_dictation,
+            settings.fn_tap_toggles_dictation
+        );
+        apply_copy!(
+            "MIDDLE_MOUSE_ACTS_AS_FN",
+            self.middle_mouse_acts_as_fn,
+            settings.middle_mouse_acts_as_fn
+        );
         // AI
-        if Self::config_runtime_env_var("AI_FORMATTING_ENABLED").is_err()
-            && let Some(v) = settings.ai_formatting_enabled
-        {
-            self.ai_formatting_enabled = v;
-        }
-        if Self::config_runtime_env_var("AUTO_PASTE_ENABLED").is_err()
-            && let Some(v) = settings.auto_paste_enabled
-        {
-            self.auto_paste_enabled = v;
-        }
-        if Self::config_runtime_env_var("CODESCRIBE_TRANSCRIPT_TAGGING").is_err()
-            && let Some(v) = settings.transcript_tagging_enabled
-        {
-            self.transcript_tagging_enabled = v;
-        }
-        if Self::config_runtime_env_var("CODESCRIBE_TRANSCRIPT_TAG_TEMPLATE").is_err()
-            && let Some(ref v) = settings.transcript_tag_template
-        {
-            self.transcript_tag_template = v.clone();
-        }
+        apply_copy!(
+            "AI_FORMATTING_ENABLED",
+            self.ai_formatting_enabled,
+            settings.ai_formatting_enabled
+        );
+        apply_copy!(
+            "AUTO_PASTE_ENABLED",
+            self.auto_paste_enabled,
+            settings.auto_paste_enabled
+        );
+        apply_copy!(
+            "CODESCRIBE_TRANSCRIPT_TAGGING",
+            self.transcript_tagging_enabled,
+            settings.transcript_tagging_enabled
+        );
+        apply_clone!(
+            "CODESCRIBE_TRANSCRIPT_TAG_TEMPLATE",
+            self.transcript_tag_template,
+            settings.transcript_tag_template
+        );
         if Self::config_runtime_env_var("FORMATTING_LEVEL").is_err()
             && let Some(ref v) = settings.formatting_level
         {
@@ -1409,42 +1362,38 @@ impl Config {
             }
         }
         // Sound
-        if Self::config_runtime_env_var("BEEP_ON_START").is_err()
-            && let Some(v) = settings.beep_on_start
-        {
-            self.beep_on_start = v;
-        }
-        if Self::config_runtime_env_var("SHOW_DOCK_ICON").is_err()
-            && let Some(v) = settings.show_dock_icon
-        {
-            self.show_dock_icon = v;
-        }
+        apply_copy!("BEEP_ON_START", self.beep_on_start, settings.beep_on_start);
+        apply_copy!(
+            "SHOW_DOCK_ICON",
+            self.show_dock_icon,
+            settings.show_dock_icon
+        );
         if Self::config_runtime_env_var("TRANSCRIPTION_OVERLAY_ENABLED").is_err()
             && let Some(v) = settings.transcription_overlay_enabled
         {
             self.transcription_overlay_enabled = v;
             Self::safe_set_env("TRANSCRIPTION_OVERLAY_ENABLED", if v { "1" } else { "0" });
         }
-        if Self::config_runtime_env_var("HOLD_INDICATOR").is_err()
-            && let Some(v) = settings.hold_indicator
-        {
-            self.hold_indicator = v;
-        }
+        apply_copy!(
+            "HOLD_INDICATOR",
+            self.hold_indicator,
+            settings.hold_indicator
+        );
         if Self::config_runtime_env_var("HOLD_BADGE_SIZE").is_err()
             && let Some(v) = settings.hold_badge_size
         {
             self.hold_badge_size = v.min(u32::MAX as u64) as u32;
         }
-        if Self::config_runtime_env_var("RESTORE_CLIPBOARD").is_err()
-            && let Some(v) = settings.restore_clipboard
-        {
-            self.restore_clipboard = v;
-        }
-        if Self::config_runtime_env_var("RESTORE_CLIPBOARD_DELAY_MS").is_err()
-            && let Some(v) = settings.restore_clipboard_delay_ms
-        {
-            self.restore_clipboard_delay_ms = v;
-        }
+        apply_copy!(
+            "RESTORE_CLIPBOARD",
+            self.restore_clipboard,
+            settings.restore_clipboard
+        );
+        apply_copy!(
+            "RESTORE_CLIPBOARD_DELAY_MS",
+            self.restore_clipboard_delay_ms,
+            settings.restore_clipboard_delay_ms
+        );
         if Self::config_runtime_env_var("CODESCRIBE_DEFERRED_INSERT_SHORTCUT").is_err()
             && let Some(raw) = settings.deferred_insert_shortcut.as_deref()
             && let Ok(shortcut) = raw.parse::<DeferredInsertShortcut>()
@@ -1461,11 +1410,7 @@ impl Config {
             // background threads.
             self.tray_start_assistive = v;
         }
-        if Self::config_runtime_env_var("SOUND_VOLUME").is_err()
-            && let Some(v) = settings.sound_volume
-        {
-            self.sound_volume = v;
-        }
+        apply_copy!("SOUND_VOLUME", self.sound_volume, settings.sound_volume);
         // LLM lanes are not seeded into process env: the loader resolves them
         // from settings.json + explicit env through one path (`resolve_runtime_llm_lane`).
         // ── Promoted fields (previously .env only) ──
@@ -1477,11 +1422,7 @@ impl Config {
             self.use_local_stt = v;
             Self::config_init_set_env("USE_LOCAL_STT", if v { "1" } else { "0" });
         }
-        if Self::config_runtime_env_var("LOCAL_MODEL").is_err()
-            && let Some(ref v) = settings.local_model
-        {
-            self.local_model = v.clone();
-        }
+        apply_clone!("LOCAL_MODEL", self.local_model, settings.local_model);
 
         for (name, target, value) in [
             (
@@ -1518,37 +1459,33 @@ impl Config {
         }
 
         // Sound name
-        if Self::config_runtime_env_var("SOUND_NAME").is_err()
-            && let Some(ref v) = settings.sound_name
-        {
-            self.sound_name = v.clone();
-        }
+        apply_clone!("SOUND_NAME", self.sound_name, settings.sound_name);
 
         // History
-        if Self::config_runtime_env_var("HISTORY_ENABLED").is_err()
-            && let Some(v) = settings.history_enabled
-        {
-            self.history_enabled = v;
-        }
+        apply_copy!(
+            "HISTORY_ENABLED",
+            self.history_enabled,
+            settings.history_enabled
+        );
 
         // Quick Notes
-        if Self::config_runtime_env_var("QUICK_NOTES_ENABLED").is_err()
-            && let Some(v) = settings.quick_notes_enabled
-        {
-            self.quick_notes_enabled = v;
-        }
-        if Self::config_runtime_env_var("QUICK_NOTES_SAVE_ONLY").is_err()
-            && let Some(v) = settings.quick_notes_save_only
-        {
-            self.quick_notes_save_only = v;
-        }
+        apply_copy!(
+            "QUICK_NOTES_ENABLED",
+            self.quick_notes_enabled,
+            settings.quick_notes_enabled
+        );
+        apply_copy!(
+            "QUICK_NOTES_SAVE_ONLY",
+            self.quick_notes_save_only,
+            settings.quick_notes_save_only
+        );
 
         // System
-        if Self::config_runtime_env_var("START_AT_LOGIN").is_err()
-            && let Some(v) = settings.start_at_login
-        {
-            self.start_at_login = v;
-        }
+        apply_copy!(
+            "START_AT_LOGIN",
+            self.start_at_login,
+            settings.start_at_login
+        );
         if Self::config_runtime_env_var("QUBE_DAEMON_AUTOSTART").is_err()
             && let Some(v) = settings.qube_daemon_autostart
         {
@@ -1559,16 +1496,16 @@ impl Config {
         {
             Self::safe_set_env("CODESCRIBE_QUBE_DONOR", v);
         }
-        if Self::config_runtime_env_var("AGENT_ENTER_SENDS").is_err()
-            && let Some(v) = settings.agent_enter_sends
-        {
-            self.agent_enter_sends = v;
-        }
-        if Self::config_runtime_env_var("AGENT_AUTO_SEND").is_err()
-            && let Some(v) = settings.agent_auto_send
-        {
-            self.agent_auto_send = v;
-        }
+        apply_copy!(
+            "AGENT_ENTER_SENDS",
+            self.agent_enter_sends,
+            settings.agent_enter_sends
+        );
+        apply_copy!(
+            "AGENT_AUTO_SEND",
+            self.agent_auto_send,
+            settings.agent_auto_send
+        );
 
         // ── Voice Lab survivors (runtime env vars, not Config struct fields) ──
         if Self::config_runtime_env_var("CODESCRIBE_BUFFER_DELAY_MS").is_err()
@@ -1662,61 +1599,7 @@ impl Config {
                 settings.save()?;
                 return Ok(());
             }
-            // Route to appropriate setter based on value type
-            match key {
-                "HOLD_START_DELAY_MS"
-                | "DOUBLE_TAP_INTERVAL_MS"
-                | "CODESCRIBE_BUFFER_DELAY_MS"
-                | "CODESCRIBE_EMIT_WORDS_MAX"
-                | "BACKEND_MAX_UPLOAD_MB"
-                | "HOLD_BADGE_SIZE"
-                | "RESTORE_CLIPBOARD_DELAY_MS" => {
-                    if let Ok(v) = value.parse::<u64>() {
-                        settings.set_u64(key, v);
-                    }
-                }
-                "SOUND_VOLUME"
-                | "TOGGLE_SILENCE_SEC"
-                | "WHISPER_CONTEXT_WINDOW_SEC"
-                | "LIGHT_PLUS_SENTENCE_PAUSE_SEC"
-                | "CODESCRIBE_TYPING_CPS"
-                | "CODESCRIBE_BUFFERED_INTERIM_SEC" => {
-                    if let Ok(v) = value.parse::<f32>() {
-                        settings.set_f32(key, v);
-                    }
-                }
-                "AI_FORMATTING_ENABLED"
-                | "AUTO_PASTE_ENABLED"
-                | "TRANSCRIPT_TAGGING_ENABLED"
-                | "BEEP_ON_START"
-                | "SHOW_DOCK_ICON"
-                | "TRANSCRIPTION_OVERLAY_ENABLED"
-                | "TRAY_START_ASSISTIVE"
-                | "HOLD_EXCLUSIVE"
-                | "FN_TAP_TOGGLES_DICTATION"
-                | "MIDDLE_MOUSE_ACTS_AS_FN"
-                | "USE_LOCAL_STT"
-                | "HISTORY_ENABLED"
-                | "QUICK_NOTES_ENABLED"
-                | "QUICK_NOTES_SAVE_ONLY"
-                | "START_AT_LOGIN"
-                | "QUBE_DAEMON_AUTOSTART"
-                | "AGENT_ENTER_SENDS"
-                | "AGENT_AUTO_SEND"
-                | "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED"
-                | "HOLD_INDICATOR"
-                | "RESTORE_CLIPBOARD"
-                | SILERO_FUSION_ENV => {
-                    let bool_val = matches!(value, "1" | "true" | "yes" | "on");
-                    settings.set_bool(key, bool_val);
-                }
-                "HOLD_ARM_MODIFIER" | "AGENT_CHANNEL_MODIFIER" => {
-                    settings.set_string(key, value);
-                }
-                _ => {
-                    settings.set_string(key, value);
-                }
-            }
+            settings.write_wire(key, value)?;
             return Ok(());
         }
 
@@ -1787,210 +1670,18 @@ impl Config {
                 if Self::apply_optional_override(settings_ref, key, value) {
                     continue;
                 }
+                // Same assignment as the single-key setters. ASR mode, consent,
+                // and the gateway URL still go through set_string so a later
+                // rejected endpoint keeps the prefix already committed.
                 match *key {
-                    // ── Strings ──
-                    "WHISPER_LANGUAGE" => {
-                        settings_ref.whisper_language = Some((*value).to_string())
-                    }
-                    "FORMATTING_LEVEL" => {
-                        settings_ref.formatting_level =
-                            Some(FormattingPolicy::parse(value)?.as_str().to_string())
-                    }
-                    "LOCAL_MODEL" => settings_ref.local_model = Some((*value).to_string()),
-                    "STT_FILE_ENDPOINT" | "STT_LIVE_ENDPOINT" => {
-                        let lane = if *key == "STT_FILE_ENDPOINT" {
-                            crate::stt::SttLane::File
-                        } else {
-                            crate::stt::SttLane::Live
-                        };
-                        let endpoint = if value.trim().is_empty() {
-                            None
-                        } else {
-                            Some(crate::stt::validate_stt_endpoint(lane, value)?)
-                        };
-                        match lane {
-                            crate::stt::SttLane::File => settings_ref.stt_file_endpoint = endpoint,
-                            crate::stt::SttLane::Live => settings_ref.stt_live_endpoint = endpoint,
-                        }
-                    }
-                    "STT_ENDPOINT" => {
-                        (
-                            settings_ref.stt_file_endpoint,
-                            settings_ref.stt_live_endpoint,
-                        ) = super::stt_migration::split_retired_stt_endpoint(value);
-                    }
-                    "TRANSCRIPT_SEND_MODE" => {
-                        settings_ref.transcript_send_mode = Some((*value).to_string())
-                    }
-                    "TRANSCRIPT_TAG_TEMPLATE" => {
-                        settings_ref.transcript_tag_template = Some((*value).to_string())
-                    }
-                    "AUDIO_INPUT_DEVICE" => {
-                        settings_ref.audio_input_device = Some((*value).to_string())
-                    }
-                    "SOUND_NAME" => settings_ref.sound_name = Some((*value).to_string()),
-                    "WHISPER_MODEL" => settings_ref.whisper_model = Some((*value).to_string()),
-                    "AGENT_WORKSPACE_ROOTS" => {
-                        let roots = parse_agent_workspace_roots(value);
-                        settings_ref.agent_workspace_roots = (!roots.is_empty()).then_some(roots);
-                    }
-                    "HOLD_ARM_MODIFIER" => {
-                        if let Ok(arm) = value.parse::<crate::config::HoldArmModifier>() {
-                            settings_ref.hold_arm_modifier = Some(arm.as_str().to_string());
-                        }
-                    }
-                    "AGENT_CHANNEL_MODIFIER" => {
-                        if let Ok(modifier) = value.parse::<crate::config::ChannelModifier>() {
-                            settings_ref.channel_modifier = Some(modifier.as_str().to_string());
-                        }
-                    }
-                    // C2: same validated writes as the single-key set_string
-                    // path — a batch write must not bypass mode/consent/URL
-                    // validation or silently drop these keys.
                     "CODESCRIBE_ASR_MODE"
                     | "CODESCRIBE_CLOUD_CONSENT"
                     | "CODESCRIBE_ASR_GATEWAY_URL" => {
                         settings_ref.set_string(key, value);
                     }
-                    // ── u64 ──
-                    "HOLD_START_DELAY_MS" => {
-                        if let Ok(v) = value.parse::<u64>() {
-                            settings_ref.hold_start_delay_ms = Some(v);
-                        }
+                    _ => {
+                        settings_ref.assign_wire(key, value, true)?;
                     }
-                    "DOUBLE_TAP_INTERVAL_MS" => {
-                        if let Ok(v) = value.parse::<u64>() {
-                            settings_ref.double_tap_interval_ms = Some(v);
-                        }
-                    }
-                    "CODESCRIBE_BUFFER_DELAY_MS" => {
-                        if let Ok(v) = value.parse::<u64>() {
-                            settings_ref.buffer_delay_ms = Some(v);
-                        }
-                    }
-                    "CODESCRIBE_EMIT_WORDS_MAX" => {
-                        if let Ok(v) = value.parse::<u64>() {
-                            settings_ref.emit_words_max = Some(v);
-                        }
-                    }
-                    "BACKEND_MAX_UPLOAD_MB" => {
-                        if let Ok(v) = value.parse::<u64>() {
-                            settings_ref.backend_max_upload_mb = Some(v);
-                        }
-                    }
-                    "HOLD_BADGE_SIZE" => {
-                        if let Ok(v) = value.parse::<u64>() {
-                            settings_ref.hold_badge_size = Some(v);
-                        }
-                    }
-                    "RESTORE_CLIPBOARD_DELAY_MS" => {
-                        if let Ok(v) = value.parse::<u64>() {
-                            settings_ref.restore_clipboard_delay_ms = Some(v);
-                        }
-                    }
-                    "CODESCRIBE_DEFERRED_INSERT_SHORTCUT" => {
-                        if let Ok(shortcut) = value.parse::<DeferredInsertShortcut>() {
-                            settings_ref.deferred_insert_shortcut =
-                                Some(shortcut.wire_id().to_string());
-                        }
-                    }
-                    // ── f32 ──
-                    "TOGGLE_SILENCE_SEC" => {
-                        if let Ok(v) = value.parse::<f32>() {
-                            settings_ref.toggle_silence_sec = Some(v);
-                        }
-                    }
-                    "WHISPER_CONTEXT_WINDOW_SEC" => {
-                        if let Ok(v) = value.parse::<f32>() {
-                            settings_ref.whisper_context_window_sec =
-                                Some(super::normalize_whisper_context_window_sec(v));
-                        }
-                    }
-                    "LIGHT_PLUS_SENTENCE_PAUSE_SEC" => {
-                        if let Ok(v) = value.parse::<f32>() {
-                            settings_ref.light_plus_sentence_pause_sec =
-                                Some(super::normalize_light_plus_sentence_pause_sec(v));
-                        }
-                    }
-                    "CODESCRIBE_TYPING_CPS" => {
-                        if let Ok(v) = value.parse::<f32>() {
-                            settings_ref.typing_cps = Some(v);
-                        }
-                    }
-                    "CODESCRIBE_BUFFERED_INTERIM_SEC" => {
-                        if let Ok(v) = value.parse::<f32>() {
-                            settings_ref.buffered_interim_sec = Some(v);
-                        }
-                    }
-                    "SOUND_VOLUME" => {
-                        if let Ok(v) = value.parse::<f32>() {
-                            settings_ref.sound_volume = Some(v);
-                        }
-                    }
-                    // ── Bools ──
-                    "AI_FORMATTING_ENABLED"
-                    | "AUTO_PASTE_ENABLED"
-                    | "TRANSCRIPT_TAGGING_ENABLED"
-                    | "BEEP_ON_START"
-                    | "SHOW_DOCK_ICON"
-                    | "TRANSCRIPTION_OVERLAY_ENABLED"
-                    | "TRAY_START_ASSISTIVE"
-                    | "HOLD_EXCLUSIVE"
-                    | "FN_TAP_TOGGLES_DICTATION"
-                    | "MIDDLE_MOUSE_ACTS_AS_FN"
-                    | "USE_LOCAL_STT"
-                    | "HISTORY_ENABLED"
-                    | "QUICK_NOTES_ENABLED"
-                    | "QUICK_NOTES_SAVE_ONLY"
-                    | "START_AT_LOGIN"
-                    | "QUBE_DAEMON_AUTOSTART"
-                    | "AGENT_ENTER_SENDS"
-                    | "AGENT_AUTO_SEND"
-                    | "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED"
-                    | "HOLD_INDICATOR"
-                    | "RESTORE_CLIPBOARD"
-                    | SILERO_FUSION_ENV => {
-                        let bv = matches!(*value, "1" | "true" | "yes" | "on");
-                        match *key {
-                            "AI_FORMATTING_ENABLED" => {
-                                settings_ref.ai_formatting_enabled = Some(bv)
-                            }
-                            "AUTO_PASTE_ENABLED" => settings_ref.auto_paste_enabled = Some(bv),
-                            "BEEP_ON_START" => settings_ref.beep_on_start = Some(bv),
-                            "SHOW_DOCK_ICON" => settings_ref.show_dock_icon = Some(bv),
-                            "TRANSCRIPTION_OVERLAY_ENABLED" => {
-                                settings_ref.transcription_overlay_enabled = Some(bv)
-                            }
-                            "TRAY_START_ASSISTIVE" => settings_ref.tray_start_assistive = Some(bv),
-                            "HOLD_EXCLUSIVE" => settings_ref.hold_exclusive = Some(bv),
-                            "FN_TAP_TOGGLES_DICTATION" => {
-                                settings_ref.fn_tap_toggles_dictation = Some(bv)
-                            }
-                            "MIDDLE_MOUSE_ACTS_AS_FN" => {
-                                settings_ref.middle_mouse_acts_as_fn = Some(bv)
-                            }
-                            "USE_LOCAL_STT" => settings_ref.use_local_stt = Some(bv),
-                            "HISTORY_ENABLED" => settings_ref.history_enabled = Some(bv),
-                            "QUICK_NOTES_ENABLED" => settings_ref.quick_notes_enabled = Some(bv),
-                            "QUICK_NOTES_SAVE_ONLY" => {
-                                settings_ref.quick_notes_save_only = Some(bv)
-                            }
-                            "START_AT_LOGIN" => settings_ref.start_at_login = Some(bv),
-                            "QUBE_DAEMON_AUTOSTART" => {
-                                settings_ref.qube_daemon_autostart = Some(bv)
-                            }
-                            "AGENT_ENTER_SENDS" => settings_ref.agent_enter_sends = Some(bv),
-                            "AGENT_AUTO_SEND" => settings_ref.agent_auto_send = Some(bv),
-                            "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED" => {
-                                settings_ref.stt_initial_prompt_enabled = Some(bv)
-                            }
-                            "HOLD_INDICATOR" => settings_ref.hold_indicator = Some(bv),
-                            "RESTORE_CLIPBOARD" => settings_ref.restore_clipboard = Some(bv),
-                            SILERO_FUSION_ENV => settings_ref.seal_lane_armed = Some(bv),
-                            _ => {}
-                        }
-                    }
-                    _ => {}
                 }
                 continue;
             }
@@ -3526,23 +3217,44 @@ mod tests {
         let _model = TestEnvGuard::unset("LLM_ASSISTIVE_MODEL");
         let _workspace_roots = TestEnvGuard::unset("AGENT_WORKSPACE_ROOTS");
 
+        let _tagging = TestEnvGuard::unset("TRANSCRIPT_TAGGING_ENABLED");
+        let _onboarding = TestEnvGuard::unset("ONBOARDING_MODE");
+        let _openai = TestEnvGuard::unset("LLM_OPENAI_OAUTH_CLIENT_ID");
+        let _anthropic = TestEnvGuard::unset("LLM_ANTHROPIC_OAUTH_CLIENT_ID");
+        let _xai = TestEnvGuard::unset("LLM_XAI_OAUTH_CLIENT_ID");
         Config::default()
             .save_to_env_many(&[
                 ("LLM_ASSISTIVE_MODEL", "batch-model"),
                 ("AGENT_WORKSPACE_ROOTS", "/tmp/a:/tmp/b"),
+                ("TRANSCRIPT_TAGGING_ENABLED", "1"),
+                ("ONBOARDING_MODE", "agentic"),
+                ("LLM_OPENAI_OAUTH_CLIENT_ID", "app_batch"),
+                ("LLM_ANTHROPIC_OAUTH_CLIENT_ID", "ant_batch"),
+                ("LLM_XAI_OAUTH_CLIENT_ID", "xai_batch"),
             ])
             .expect("save settings batch");
 
         assert!(std::env::var("LLM_ASSISTIVE_MODEL").is_err());
         assert!(std::env::var("AGENT_WORKSPACE_ROOTS").is_err());
+        assert!(std::env::var("TRANSCRIPT_TAGGING_ENABLED").is_err());
+        assert!(std::env::var("ONBOARDING_MODE").is_err());
+        assert!(std::env::var("LLM_OPENAI_OAUTH_CLIENT_ID").is_err());
+        assert!(std::env::var("LLM_ANTHROPIC_OAUTH_CLIENT_ID").is_err());
+        assert!(std::env::var("LLM_XAI_OAUTH_CLIENT_ID").is_err());
+        let loaded = UserSettings::load();
+        assert_eq!(loaded.llm_assistive_model.as_deref(), Some("batch-model"));
         assert_eq!(
-            UserSettings::load().llm_assistive_model.as_deref(),
-            Some("batch-model")
-        );
-        assert_eq!(
-            UserSettings::load().agent_workspace_roots,
+            loaded.agent_workspace_roots,
             Some(vec!["/tmp/a".to_string(), "/tmp/b".to_string()])
         );
+        assert_eq!(loaded.transcript_tagging_enabled, Some(true));
+        assert_eq!(loaded.onboarding_mode.as_deref(), Some("agentic"));
+        assert_eq!(loaded.openai_oauth_client_id.as_deref(), Some("app_batch"));
+        assert_eq!(
+            loaded.anthropic_oauth_client_id.as_deref(),
+            Some("ant_batch")
+        );
+        assert_eq!(loaded.xai_oauth_client_id.as_deref(), Some("xai_batch"));
         assert!(
             !Config::env_path().exists(),
             "a fully promoted settings batch must not create a legacy .env"
