@@ -56,10 +56,10 @@ struct DesignGallery: View {
           StaticStatusPill(text: "reasoned · 2.1s", color: CSColor.amber)
         }
 
-        GlassPanel {
+        GroupBox("Native container") {
           VStack(alignment: .leading, spacing: CSSpace.sm) {
             Wordmark()
-            Text("GlassPanel — dark glass, hairline, deep shadow")
+            Text("System surfaces own their material and borders.")
               .font(CSFont.body).foregroundStyle(CSColor.textBody)
           }
           .padding(CSSpace.lg)
