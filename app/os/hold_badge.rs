@@ -226,7 +226,7 @@ mod tests {
 /// keeps a queued show from resurrecting a badge the user already dismissed.
 #[cfg(target_os = "macos")]
 mod imp {
-    use super::{BadgeMode, HoldBadgeConfig};
+    use super::HoldBadgeConfig;
 
     use core_foundation::base::TCFType;
     use core_foundation::string::CFString;
@@ -762,11 +762,6 @@ mod imp {
         show_hold_badge_with_config(HoldBadgeConfig::default());
     }
 
-    /// Show badge for specific mode with appropriate color/animation
-    pub fn show_badge_for_mode(mode: BadgeMode) {
-        show_hold_badge_with_config(HoldBadgeConfig::from_mode(mode));
-    }
-
     /// Internal implementation that must run on the main thread.
     ///
     /// `generation` is the show generation captured when this show was requested.
@@ -1005,8 +1000,7 @@ mod imp {
 #[cfg(target_os = "macos")]
 pub use imp::{
     focused_element_accepts_text, get_caret_position, get_cursor_position, hide_hold_badge,
-    show_badge_for_mode, show_hold_badge, show_hold_badge_with_config, take_token,
-    update_transcript,
+    show_hold_badge, show_hold_badge_with_config, take_token, update_transcript,
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -1048,7 +1042,6 @@ mod stubs {
     pub fn show_hold_badge() {}
 
     /// No-op on non-macOS platforms.
-    pub fn show_badge_for_mode(_mode: BadgeMode) {}
 
     /// No-op on non-macOS platforms.
     pub fn show_hold_badge_with_config(_config: HoldBadgeConfig) {}
@@ -1060,6 +1053,5 @@ mod stubs {
 #[cfg(not(target_os = "macos"))]
 pub use stubs::{
     focused_element_accepts_text, get_caret_position, get_cursor_position, hide_hold_badge,
-    show_badge_for_mode, show_hold_badge, show_hold_badge_with_config, take_token,
-    update_transcript,
+    show_hold_badge, show_hold_badge_with_config, take_token, update_transcript,
 };
