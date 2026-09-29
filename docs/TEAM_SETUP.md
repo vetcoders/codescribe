@@ -92,15 +92,10 @@ entry point:
 codescribe --help          # transcribe · bus · lexicon · report · daemon · teach · corpus
 ```
 
-The standalone binaries still exist and run the same code, so old scripts and
-muscle memory keep working:
-
-| Unified             | Legacy binary        |
-| ------------------- | -------------------- |
-| `codescribe report` | `qube-report`        |
-| `codescribe daemon` | `qube-daemon`        |
-| `codescribe teach`  | `codescribe-teacher` |
-| `codescribe corpus` | `codescribe-corpus`  |
+`codescribe <subcommand>` is the single authoritative surface for these jobs.
+The four standalone binaries (`qube-report`, `qube-daemon`,
+`codescribe-teacher`, `codescribe-corpus`) run the same functions but are
+slated for removal under the one-throne rule — write nothing new against them.
 
 ## Quality & Tools
 

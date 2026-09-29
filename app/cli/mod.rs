@@ -1,4 +1,4 @@
-//! Command surfaces shared by `codescribe <subcommand>` and the legacy bins.
+//! Command surfaces behind `codescribe <subcommand>` — the authoritative CLI.
 //!
 //! WHY THIS EXISTS. The crate shipped five binaries — `codescribe`,
 //! `qube-report`, `qube-daemon`, `codescribe-teacher`, `codescribe-corpus` —
@@ -7,8 +7,9 @@
 //! discoverable only if you already knew its binary existed.
 //!
 //! Each module here owns one job's arguments and dispatch. `bin/codescribe.rs`
-//! mounts them as subcommands; the legacy bins stay as one-line shims over the
-//! same functions, so both spellings run identical code rather than drifting.
+//! mounts them as subcommands, which are the single authority for these jobs.
+//! The four standalone binaries still call the same functions and are slated
+//! for removal under the one-throne rule; nothing new may depend on them.
 //!
 //! A process-level consequence matters for the engine: a unified entry point
 //! loads Whisper once per invocation instead of once per binary in a pipeline.

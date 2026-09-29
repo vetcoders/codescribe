@@ -18,6 +18,11 @@ pub fn assert_test_write_allowed(path: &Path) {
             path.display()
         );
     };
+    // The candidate below compares in physical form, so the fence's own
+    // anchor must be physical too: a symlinked account home would otherwise
+    // never prefix-match the canonicalized candidate and the fence would
+    // wave the write through.
+    let home = home.canonicalize().unwrap_or(home);
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
