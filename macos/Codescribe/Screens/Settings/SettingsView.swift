@@ -2,22 +2,9 @@ import AppKit
 import Combine
 import SwiftUI
 
-// Settings window: a NATIVE `NavigationSplitView` whose sidebar is a real
-// `List(selection:)` in `.sidebar` style — the same chrome the Agent window
-// already uses, and the reason that window survives an OS bump without visual
-// drift while this one used to.
-//
-// The previous shell was a plain `HStack` with a 212pt hand-drawn rail. It was
-// written that way to dodge one concrete problem: a NavigationSplitView reserves
-// a toolbar strip above the sidebar, which pushed the rail ~70px down. Dropping
-// the split view took the whole native surface with it — no collapse, no search,
-// no section headers, no system material, no keyboard navigation, and a rail
-// that had to re-implement selection state by hand.
-//
-// The strip is not dead space, it is the toolbar: the wordmark and version live
-// in it, and it hosts the system sidebar toggle. That turns the reason for the
-// fork into the feature the operator asked for.
+// Shared Settings content, hosted by the app’s single resizable Settings window.
 struct SettingsView: View {
+  static let windowID = "codescribe-settings"
   @StateObject private var model: SettingsViewModel
   @State private var columnVisibility: NavigationSplitViewVisibility = .all
   @State private var search: String = ""
@@ -46,7 +33,6 @@ struct SettingsView: View {
     .csFocusPolicy()
     .controlSize(.regular)
     .frame(minWidth: 880, maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)
-    .background(SettingsWindowCapabilities())
     .onAppear {
       model.refresh()
       consumePendingDeepLink()
@@ -173,54 +159,6 @@ struct SettingsView: View {
       LabPanel()
     case .dictation, .agent:
       EmptyView()
-    }
-  }
-}
-
-/// SwiftUI's Settings scene can silently keep the content-sized AppKit style
-/// mask even when `.windowResizability` is present (notably after restoring an
-/// older saved frame). Enforce normal macOS window capabilities on the actual
-/// host window so Settings can resize, zoom and enter native full screen.
-private struct SettingsWindowCapabilities: NSViewRepresentable {
-  func makeNSView(context: Context) -> NSView {
-    WindowProbe(frame: .zero)
-  }
-
-  func updateNSView(_ nsView: NSView, context: Context) {
-    DispatchQueue.main.async { Self.configure(nsView.window) }
-  }
-
-  private class WindowProbe: NSView {
-    override func viewDidMoveToWindow() {
-      super.viewDidMoveToWindow()
-      DispatchQueue.main.async { [weak self] in
-        SettingsWindowCapabilities.configure(self?.window)
-      }
-    }
-  }
-
-  private static func configure(_ window: NSWindow?) {
-    guard let window else { return }
-    window.styleMask.formUnion([.resizable, .miniaturizable, .fullSizeContentView])
-    window.collectionBehavior.insert(.fullScreenPrimary)
-    let minimum = NSSize(width: 880, height: 620)
-    window.minSize = minimum
-    window.contentMaxSize = NSSize(
-      width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-    window.maxSize = NSSize(
-      width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-    window.level = .normal
-    window.standardWindowButton(.zoomButton)?.isEnabled = true
-    window.standardWindowButton(.miniaturizeButton)?.isEnabled = true
-
-    var frame = window.frame
-    frame.size.width = max(frame.width, minimum.width)
-    frame.size.height = max(frame.height, minimum.height)
-    if let screen = window.screen ?? NSScreen.main {
-      frame = window.constrainFrameRect(frame, to: screen)
-    }
-    if frame != window.frame {
-      window.setFrame(frame, display: false)
     }
   }
 }

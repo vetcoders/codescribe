@@ -15,7 +15,7 @@ struct TrayMenuView: View {
   @ObservedObject var trayStatus: TrayStatusStore
   // macOS 14+ action to open the app's Settings scene — replaces the fragile
   // private `showSettingsWindow:` selector that stopped working on newer macOS.
-  @Environment(\.openSettings) private var openSettings
+  @Environment(\.openWindow) private var openWindow
 
   var body: some View {
     GlassPanel(cornerRadius: CSRadius.tray) {
@@ -36,7 +36,7 @@ struct TrayMenuView: View {
 
         TrayDivider()
         TrayRow(icon: .settings, title: "Settings…", shortcut: "⌘,") {
-          openSettings()
+          openWindow(id: SettingsView.windowID)
         }
         if DeveloperSurface.isEnabled() {
           TrayRow(icon: .diagnostics, title: "Voice Lab…") {

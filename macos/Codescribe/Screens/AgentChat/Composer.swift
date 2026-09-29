@@ -23,7 +23,7 @@ struct Composer: View {
   /// composer input tracks the message bodies. Chrome (chips, affordance hints,
   /// icons) keeps its intrinsic size.
   @Environment(\.csTextScale) private var textScale
-  @Environment(\.openSettings) private var openSettings
+  @Environment(\.openWindow) private var openWindow
   @State private var fieldHeight = ComposerTextLayout.minimumHeight(fontSize: 13.5)
   @State private var previewAttachment: PendingAttachment?
 
@@ -241,7 +241,7 @@ struct Composer: View {
         Spacer(minLength: 8)
         Button("Enter license") {
           SettingsDeepLink.pendingSection = .license
-          openSettings()
+          openWindow(id: SettingsView.windowID)
         }
         .csFocusRing()
         .font(CSFont.mono(10.5, .semibold))

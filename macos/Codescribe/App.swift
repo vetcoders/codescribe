@@ -80,13 +80,18 @@ final class AgentAppActionListener: CsAppActionListener, Sendable {
 @main
 struct CodescribeApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+  @Environment(\.openWindow) private var openWindow
 
   init() {
     FontLoader.register()
   }
 
   var body: some Scene {
-    Settings {
+    settingsWindow
+  }
+
+  private var settingsWindow: some Scene {
+    Window("Settings", id: SettingsView.windowID) {
       SettingsView(
         model: SettingsViewModel(
           engine: RealSettingsEngine(),
@@ -96,10 +101,14 @@ struct CodescribeApp: App {
           licenseService: LicenseService.shared
         ))
     }
-    // Make the Settings window user-resizable: the content's `.frame` floor
-    // becomes the window minimum, and it can grow from there (default is a
-    // fixed content-sized window). SwiftUI restores the frame across launches.
+    .defaultSize(width: 1000, height: 720)
     .windowResizability(.contentMinSize)
+    .commands {
+      CommandGroup(replacing: .appSettings) {
+        Button("Settings…") { openWindow(id: SettingsView.windowID) }
+          .keyboardShortcut(",", modifiers: .command)
+      }
+    }
   }
 }
 
@@ -194,6 +203,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     )
     NSApp.terminate(nil)
   }
+
+  func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool { false }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     guard !shouldExitForDuplicate, !Self.isRunningTests else { return }

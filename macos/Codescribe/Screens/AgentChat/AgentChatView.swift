@@ -172,7 +172,7 @@ private struct ThreadDetail: View {
   let isSidebarExpanded: Bool
   @Binding var isPinned: Bool
   let toggleSidebar: () -> Void
-  @Environment(\.openSettings) private var openSettings
+  @Environment(\.openWindow) private var openWindow
   @State private var isRenaming = false
   @State private var renameText = ""
   /// Shared with `MessageList` via `ChatLayoutPolicy.defaultsKey`.
@@ -295,7 +295,7 @@ private struct ThreadDetail: View {
         )
         .accessibilityValue(isPinned ? "Pinned" : "Unpinned")
 
-        Button(action: { openSettings() }) {
+        Button(action: { openWindow(id: SettingsView.windowID) }) {
           CSIconView(icon: .settings, size: 14)
         }
         .csFocusRing()
