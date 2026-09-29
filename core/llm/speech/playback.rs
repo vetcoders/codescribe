@@ -46,8 +46,9 @@ pub fn play(samples: Vec<f32>, sample_rate: u32, ticket: u64) -> anyhow::Result<
             })
             .collect()
     };
+    let sample_count = source.len();
     let deadline =
-        Instant::now() + Duration::from_secs_f64(source.len() as f64 / f64::from(rate) + 5.0);
+        Instant::now() + Duration::from_secs_f64(sample_count as f64 / f64::from(rate) + 5.0);
     let state = Arc::new(AtomicU8::new(0));
     let stream = match config.sample_format() {
         cpal::SampleFormat::F32 => {
@@ -63,6 +64,13 @@ pub fn play(samples: Vec<f32>, sample_rate: u32, ticket: u64) -> anyhow::Result<
     };
     if !current(ticket) {
         return Ok(false);
+    }
+    let rate_hz = f64::from(rate).max(1.0);
+    let seconds = (sample_count as f64 / rate_hz).min(3600.0);
+    if seconds.is_finite() {
+        crate::audio::tts_duck::arm_for(
+            Duration::from_secs_f64(seconds).saturating_add(Duration::from_millis(250)),
+        );
     }
     stream.play()?;
     while current(ticket) && state.load(Ordering::Acquire) == 0 && Instant::now() < deadline {

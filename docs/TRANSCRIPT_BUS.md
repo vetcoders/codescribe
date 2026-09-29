@@ -747,6 +747,44 @@ These mechanics do not supply provider wakeup, and upgrading the source helper
 does not upgrade an already running follower. A generation without acknowledgment
 support must not be reported as using this protocol.
 
+## Agent receipt on the bus
+
+The app watches `acknowledgments/<lease_id>/`. For a marker whose delivery is a
+seal — still pending on the lease as `kind: seal`, remembered from an earlier
+scan, or present on a bus row as `transcript_sealed` / `kind: seal` — it appends
+one row:
+
+```json
+{
+  "schema": "codescribe.agent-ack.v1",
+  "kind": "agent_ack",
+  "channel": "2",
+  "delivery_id": "<24 lowercase hex>",
+  "agent": "<audience>",
+  "emitted_at": "<utc>"
+}
+```
+
+The channel and `agent` come from `vc.agent-audience-binding.v1.json`: the
+lease's `provider_session_id` selects the digit. A draft or revised marker does
+not emit. The same `delivery_id` is appended once. Restart memory is
+`runtime/agent-ack-cursor.json` under the agent-bridge home; existing bus rows
+are the duplicate fence if that file is removed. Rows already on the bus are
+not rewritten.
+
+An open channel session also appends `codescribe.channel-session.v1` (`kind: channel_session`). `state: open` with `loud: true` means the microphone is
+live. `state: sealed` with `reason: silence` means
+`CODESCRIBE_CHANNEL_AUTOSEAL_SECS` elapsed without new channel text. `0`
+disables that cap. The row names `opened_at`, `provider`,
+`provider_session_id`, and `utterance_silence_sec`. `ChannelHudState` carries
+the same open fact, including provider and session, for the overlay. The
+overlay paint itself is a separate cut.
+
+While in-process agent speech is playing, channel PCM is not offered to the
+channel feed. A bus `agent_reply` with `spoken: true` is written after the
+external speaker returns, so that row arms only a short tail. It does not
+cancel echo that already entered the microphone.
+
 ## C11 evidence boundary
 
 `484095ce` was the last executable-code cut before documentation successor
