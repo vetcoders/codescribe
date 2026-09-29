@@ -4,8 +4,8 @@ import SwiftUI
 // mock: rows are 9×12 padded, 9pt-radius, 11pt icon→label gap, 18pt icon column.
 
 /// The one tray tint that is not a fixed hex: the primary-row keycap follows
-/// the operator's system accent. Secondary text uses the shared `CSColor`
-/// ramp (`textMuted` for child rows and the Quit label) so the tray cannot
+/// the system accent. Secondary text uses the shared `CSColor`
+/// ramp (`textMuted` for child rows) so the tray cannot
 /// drift off the locked palette.
 private enum TrayLocal {
   static var primaryShortcut: Color { CSColor.chromeAccent.opacity(0.78) }
@@ -83,11 +83,12 @@ struct TrayRow: View {
       )
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-          .strokeBorder(borderColor, lineWidth: 1)
+          .strokeBorder(borderColor, lineWidth: 0.5)
       )
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
+    .csFocusOutline(cornerRadius: CSRadius.input)
     .accessibilityLabel(title)
     .accessibilityValue(disclosureExpanded.map { $0 ? "Expanded" : "Collapsed" } ?? shortcut ?? "")
     .onHover { hovering = $0 }
@@ -106,6 +107,7 @@ struct TrayChildRow: View {
     if let action {
       Button(action: action) { label }
         .buttonStyle(.plain)
+        .csFocusOutline()
         .onHover { hovering = $0 }
     } else {
       label

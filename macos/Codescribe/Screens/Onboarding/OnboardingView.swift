@@ -14,7 +14,7 @@ struct OnboardingView: View {
   var body: some View {
     Group {
       if #available(macOS 26, *) {
-        GlassEffectContainer(spacing: 20) { content }
+        GlassEffectContainer(spacing: 0) { content }
       } else {
         content
       }
@@ -68,20 +68,21 @@ struct OnboardingView: View {
   }
 
   private var header: some View {
-    VStack(alignment: .leading, spacing: 18) {
+    VStack(alignment: .leading, spacing: 12) {
       HStack {
         Wordmark(size: 16)
         Spacer()
         Text(model.progressLabel).font(.callout).foregroundStyle(.secondary)
       }
-      HStack(spacing: 18) {
+      HStack(spacing: 12) {
         Image(systemName: chapter.symbol)
-          .font(.system(size: 28, weight: .medium))
-          .frame(width: 52, height: 52)
+          .font(.system(size: 17, weight: .medium))
+          .frame(width: 34, height: 34)
+          .modifier(SetupGlass())
           .accessibilityHidden(true)
         VStack(alignment: .leading, spacing: 5) {
-          Text(chapter.title).font(.title2.weight(.semibold))
-          Text(chapter.purpose).font(.callout).foregroundStyle(.secondary)
+          Text(chapter.title).font(.headline)
+          Text(chapter.purpose).font(.subheadline).foregroundStyle(.secondary)
         }
         Spacer(minLength: 0)
       }
@@ -89,8 +90,8 @@ struct OnboardingView: View {
         .controlSize(.small)
         .accessibilityLabel("Setup progress")
     }
-    .padding(22)
-    .modifier(SetupGlass())
+    .padding(.horizontal, 4)
+    .padding(.vertical, 6)
   }
 
   // MARK: - Step dispatch
@@ -156,6 +157,11 @@ struct SetupActionStyle: ViewModifier {
   var prominent = false
 
   func body(content: Content) -> some View {
+    styled(content).csFocusOutline()
+  }
+
+  @ViewBuilder
+  private func styled(_ content: Content) -> some View {
     if #available(macOS 26, *) {
       if prominent { content.buttonStyle(.glassProminent) } else { content.buttonStyle(.glass) }
     } else {

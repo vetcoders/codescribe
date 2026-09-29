@@ -50,7 +50,6 @@ struct TrayMenuView: View {
         icon: .power,
         iconColor: CSColor.terracottaDeep,
         title: "Quit codescribe",
-        titleColor: CSColor.textMuted,
         shortcut: "⌘Q"
       ) { viewModel.onQuit() }
     }

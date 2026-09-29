@@ -272,6 +272,9 @@ struct CustomProviderForm: View {
         TextField("e.g. Libraxis", text: $name)
           .settingsInputChrome()
           .focused($focus, equals: .name)
+          .overlay {
+            CSFocusOutline(isFocused: focus == .name, cornerRadius: CSRadius.input)
+          }
           .onSubmit { focus = .endpoint }
           .accessibilityLabel("Custom provider name")
       }
@@ -288,6 +291,9 @@ struct CustomProviderForm: View {
         TextField("https://api.example.com/v1/responses", text: $endpoint)
           .settingsInputChrome()
           .focused($focus, equals: .endpoint)
+          .overlay {
+            CSFocusOutline(isFocused: focus == .endpoint, cornerRadius: CSRadius.input)
+          }
           .onSubmit { focus = .key }
           .accessibilityLabel("Custom provider endpoint")
       }
@@ -295,6 +301,9 @@ struct CustomProviderForm: View {
         SecureField(isEdit ? "Leave empty to keep the stored key" : "Paste key…", text: $apiKey)
           .settingsInputChrome()
           .focused($focus, equals: .key)
+          .overlay {
+            CSFocusOutline(isFocused: focus == .key, cornerRadius: CSRadius.input)
+          }
           .onSubmit(save)
           .accessibilityLabel("Custom provider API key")
       }

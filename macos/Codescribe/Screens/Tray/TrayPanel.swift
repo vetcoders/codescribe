@@ -44,6 +44,7 @@ final class TrayPanel: NSPanel, NSWindowDelegate {
       })
     reposition()
     makeKeyAndOrderFront(nil)
+    makeFirstResponder(nil)
     button.highlight(true)
     clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) {
       [weak self] event in

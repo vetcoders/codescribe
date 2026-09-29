@@ -250,42 +250,37 @@ struct AgenticReadinessStepView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      HStack(alignment: .firstTextBaseline, spacing: 10) {
-        OnboardingStepHeader(
-          eyebrow: "Agentic readiness",
-          title: "Meet your working companions.",
-          blurb: "Check your connections, then optionally connect a "
-            + "live session to your coding assistant.")
-        Spacer(minLength: 0)
-      }
-
-      if let readiness = model.readiness {
-        readinessPill(ready: readiness.ready)
-        statusCard(rows: readiness.rows)
-      }
-
       agentBridgeSetup
-
-      if let mcp = model.mcpStatus, mcp.configured {
-        Text("MCP servers")
-          .font(CSFont.mono(10, .semibold))
-          .tracking(0.4)
-          .foregroundStyle(CSColor.textFaint)
-          .padding(.top, 4)
-        statusCard(rows: mcp.rows)
-      } else if !model.mcpSetupDismissed {
-        mcpSetupPrompt
-          .padding(.top, 4)
+      DisclosureGroup("Connection details") {
+        VStack(alignment: .leading, spacing: 12) {
+          Text(model.agentBridgeExplanation)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+          Text(model.agentBridgeStatus.detail)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+          ForEach(model.agentBridgeStatus.installedPaths, id: \.self) { path in
+            Text(path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+              .font(.caption.monospaced())
+              .textSelection(.enabled)
+          }
+          if let readiness = model.readiness {
+            readinessPill(ready: readiness.ready)
+            statusCard(rows: readiness.rows)
+          }
+          if let mcp = model.mcpStatus, mcp.configured {
+            Text("MCP servers").font(.headline)
+            statusCard(rows: mcp.rows)
+          } else if !model.mcpSetupDismissed {
+            mcpSetupPrompt
+          }
+          Button("Refresh") { model.refreshReadiness() }.modifier(SetupActionStyle())
+        }.padding(.top, 8)
       }
-
-      Button("Refresh") {
-        model.refreshReadiness()
-      }.modifier(SetupActionStyle())
-        .padding(.top, 2)
 
       OnboardingStepNote(
         text:
-          "Bridge install is explicit and optional — Continue whether or not everything is green.")
+          "This connection is optional. You can continue and set it up later.")
     }
   }
 
@@ -295,26 +290,26 @@ struct AgenticReadinessStepView: View {
   /// reinstall/update or a safe deselection.
   private var agentBridgeSetup: some View {
     VStack(alignment: .leading, spacing: 10) {
-      Text("LIVE AGENT BRIDGE")
+      Text("CODING ASSISTANTS")
         .font(CSFont.mono(10, .semibold))
         .tracking(0.4)
         .foregroundStyle(CSColor.textFaint)
       Text(model.agentBridgeTitle)
         .font(CSFont.ui(15, .bold))
         .foregroundStyle(.primary)
-      Text(model.agentBridgeExplanation)
-        .font(CSFont.ui(12.5))
-        .lineSpacing(3)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
+      Text(
+        "Choose where to send your dictation. Your assistant can listen as you speak; changes wait until you finish."
+      )
+      .font(CSFont.ui(12.5))
+      .lineSpacing(3)
+      .foregroundStyle(.secondary)
+      .fixedSize(horizontal: false, vertical: true)
 
       VStack(spacing: 8) {
         ForEach(AgentBridgeClient.allCases) { client in
           OnboardingChoiceCard(
             title: client.displayName,
-            subtitle: client == .codex
-              ? "~/.codex/skills/codescribe"
-              : "~/.claude/skills/codescribe",
+            subtitle: "Connect a live coding session",
             isSelected: model.selectedAgentClients.contains(client)
           ) { model.toggleAgentClient(client) }
         }
@@ -327,32 +322,14 @@ struct AgenticReadinessStepView: View {
           .disabled(
             model.selectedAgentClients.isEmpty || !model.agentBridgeStatus.payloadAvailable
           )
-        Text(model.agentBridgeStatus.detail)
-          .font(CSFont.mono(10.5, .medium))
-          .foregroundStyle(CSColor.textFaint)
-          .fixedSize(horizontal: false, vertical: true)
       }
 
-      if !model.agentBridgeStatus.installedPaths.isEmpty {
-        VStack(alignment: .leading, spacing: 3) {
-          ForEach(model.agentBridgeStatus.installedPaths, id: \.self) { path in
-            Text(path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
-              .font(CSFont.mono(9.5, .medium))
-              .foregroundStyle(CSColor.oliveLight)
-              .textSelection(.enabled)
-          }
-        }
-      }
       if let error = model.agentBridgeError {
         Text(error)
           .font(CSFont.mono(10.5, .medium))
           .foregroundStyle(CSColor.terracottaLight)
           .fixedSize(horizontal: false, vertical: true)
       }
-      Text("Stable helper: ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py")
-        .font(CSFont.mono(9.5, .medium))
-        .foregroundStyle(CSColor.textFaint)
-        .textSelection(.enabled)
     }
     .padding(CSSpace.card)
     .frame(maxWidth: .infinity, alignment: .leading)

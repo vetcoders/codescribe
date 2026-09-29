@@ -79,7 +79,7 @@ struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
         }
         .contentShape(Rectangle())
     }
-    .buttonStyle(.plain)
+    .csFocusRing()
     .accessibilityLabel(title)
     .accessibilityIdentifier(id)
     .onHover { hovered = $0 }
