@@ -76,6 +76,7 @@ private struct LLMLaneEditor: View {
   let lane: LLMLane
 
   @State private var modelDraft = ""
+  @FocusState private var modelFocused: Bool
 
   private var laneModel: LLMLaneModel { model.llmLane(lane) }
 
@@ -159,7 +160,8 @@ private struct LLMLaneEditor: View {
           // list does not know is still a valid model for the lane (D2).
           HStack(spacing: 8) {
             TextField(laneModel.resolvedModel, text: $modelDraft)
-              .settingsInputChrome()
+              .settingsInputChrome(isFocused: modelFocused)
+              .focused($modelFocused)
               .onSubmit(saveModel)
               .accessibilityLabel("\(lane.title) model ID")
             SettingsSaveButton(enabled: !modelDraft.isEmpty, action: saveModel)

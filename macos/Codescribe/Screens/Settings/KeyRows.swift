@@ -10,6 +10,8 @@ import SwiftUI
 
 /// Input chrome shared by every editable settings row (text and secure fields).
 private struct SettingsInputChrome: ViewModifier {
+  let isFocused: Bool
+
   func body(content: Content) -> some View {
     content
       .textFieldStyle(.plain)
@@ -26,11 +28,16 @@ private struct SettingsInputChrome: ViewModifier {
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
           .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
       )
+      .overlay {
+        CSFocusOutline(isFocused: isFocused, cornerRadius: CSRadius.input)
+      }
   }
 }
 
 extension View {
-  func settingsInputChrome() -> some View { modifier(SettingsInputChrome()) }
+  func settingsInputChrome(isFocused: Bool) -> some View {
+    modifier(SettingsInputChrome(isFocused: isFocused))
+  }
 }
 
 /// Accent "Save": dimmed until there is something to save.
@@ -112,6 +119,7 @@ struct SettingsUrlRow: View {
   let onSave: (String) -> Void
 
   @State private var draft: String = ""
+  @FocusState private var isFocused: Bool
   @State private var loadedInitial = false
 
   private var isSet: Bool { !current.isEmpty }
@@ -135,7 +143,8 @@ struct SettingsUrlRow: View {
 
       HStack(spacing: 8) {
         TextField(placeholder, text: $draft)
-          .settingsInputChrome()
+          .settingsInputChrome(isFocused: isFocused)
+          .focused($isFocused)
           .onSubmit { onSave(draft) }
           .accessibilityLabel(title)
         SettingsSaveButton(enabled: draft != current) { onSave(draft) }
@@ -176,6 +185,7 @@ struct KeyRow: View {
   let onTest: () -> Void
 
   @State private var draft: String = ""
+  @FocusState private var isFocused: Bool
 
   private var accent: Color {
     isSet ? CSColor.olive : (optional ? Color.secondary : CSColor.terracotta)
@@ -202,7 +212,8 @@ struct KeyRow: View {
 
       HStack(spacing: 8) {
         SecureField(isSet ? "Replace key…" : "Paste key…", text: $draft)
-          .settingsInputChrome()
+          .settingsInputChrome(isFocused: isFocused)
+          .focused($isFocused)
           .onSubmit(save)
           .accessibilityLabel("\(label) secret")
 

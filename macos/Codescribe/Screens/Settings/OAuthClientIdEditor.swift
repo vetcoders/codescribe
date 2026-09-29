@@ -8,6 +8,7 @@ struct OAuthClientIdEditor: View {
   let savedClientId: String
   @Binding var draft: String
   let onSave: () -> Void
+  @FocusState private var isFocused: Bool
 
   var body: some View {
     VStack(alignment: .leading, spacing: CSSpace.sm) {
@@ -20,7 +21,8 @@ struct OAuthClientIdEditor: View {
         .fixedSize(horizontal: false, vertical: true)
       HStack(spacing: 8) {
         TextField(placeholder, text: $draft)
-          .settingsInputChrome()
+          .settingsInputChrome(isFocused: isFocused)
+          .focused($isFocused)
           .onSubmit(onSave)
           .accessibilityLabel("\(accountBrand) OAuth client id")
         SettingsChipButton(
