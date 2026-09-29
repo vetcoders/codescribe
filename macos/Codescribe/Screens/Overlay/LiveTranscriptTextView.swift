@@ -20,15 +20,51 @@ enum LiveTranscriptSelectionPolicy {
   }
 }
 
-/// Read-only AppKit transcript surface used while recording.
+/// The one AppKit transcript surface: read-only while recording, an editor for
+/// the formatted take.
 ///
 /// `Text` plus SwiftUI's selection overlay loses its selection whenever the
 /// rapidly-changing value is rebuilt. A real `NSTextView` owns the responder
 /// chain instead: drag selection, Cmd-C, Select All and the standard context
 /// menu keep working while the recording and transcript updates continue.
+///
+/// In the editable phase the same view carries the local revision draft:
+/// keystrokes flow out through `onTextChange`, focus transitions through
+/// `onEditingChanged` (the panel becomes key only inside that window), and
+/// Escape through `onCancelEdit`. Bytes still arrive from the caller — the
+/// view never invents transcript truth.
 struct LiveTranscriptTextView: NSViewRepresentable {
-  let runs: [OverlayCanvasRun]
+  let text: String
+  /// SwiftUI diffs `String` by canonical equivalence, so "é" and "e\u{301}"
+  /// look like no change and `updateNSView` is skipped. The engine owns its
+  /// bytes; this identity makes every byte-level revision reach the canvas.
+  private let utf8Identity: [UInt8]
+  let isEditable: Bool
+  let appearance: OverlayAppearance
+  let contentInsets: NSEdgeInsets
+  let onEditingChanged: ((Bool) -> Void)?
+  let onTextChange: ((String) -> Void)?
+  let onCancelEdit: (() -> Void)?
   @Environment(\.csTextScale) private var textScale
+
+  init(
+    text: String,
+    isEditable: Bool = false,
+    appearance: OverlayAppearance,
+    contentInsets: NSEdgeInsets = NSEdgeInsetsZero,
+    onEditingChanged: ((Bool) -> Void)? = nil,
+    onTextChange: ((String) -> Void)? = nil,
+    onCancelEdit: (() -> Void)? = nil
+  ) {
+    self.text = text
+    self.utf8Identity = Array(text.utf8)
+    self.isEditable = isEditable
+    self.appearance = appearance
+    self.contentInsets = contentInsets
+    self.onEditingChanged = onEditingChanged
+    self.onTextChange = onTextChange
+    self.onCancelEdit = onCancelEdit
+  }
 
   func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -37,6 +73,8 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     textView.delegate = context.coordinator
 
     let scrollView = NSScrollView()
+    scrollView.automaticallyAdjustsContentInsets = false
+    scrollView.contentInsets = contentInsets
     scrollView.borderType = .noBorder
     scrollView.drawsBackground = false
     scrollView.hasHorizontalScroller = false
@@ -50,8 +88,22 @@ struct LiveTranscriptTextView: NSViewRepresentable {
   }
 
   func updateNSView(_ scrollView: NSScrollView, context: Context) {
+    let oldInsets = scrollView.contentInsets
+    let insetsChanged =
+      oldInsets.top != contentInsets.top || oldInsets.bottom != contentInsets.bottom
+      || oldInsets.left != contentInsets.left || oldInsets.right != contentInsets.right
+    scrollView.contentInsets = contentInsets
     guard let textView = scrollView.documentView as? LiveTranscriptNativeTextView else { return }
     update(textView, coordinator: context.coordinator)
+    if insetsChanged {
+      let coordinator = context.coordinator
+      DispatchQueue.main.async { [weak textView, weak coordinator] in
+        guard let textView, let coordinator, coordinator.followsTail, !coordinator.isEditing,
+          textView.selectedRange().length == 0
+        else { return }
+        textView.revealTranscriptTail()
+      }
+    }
   }
 
   static func makeTextView() -> LiveTranscriptNativeTextView {
@@ -77,19 +129,61 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     return textView
   }
 
-  private func update(
+  func update(
     _ textView: LiveTranscriptNativeTextView,
     coordinator: Coordinator
   ) {
-    let rendered = attributedTranscript()
-    guard textView.attributedString() != rendered else { return }
+    coordinator.onEditingChanged = onEditingChanged
+    coordinator.onTextChange = onTextChange
+    coordinator.onCancelEdit = onCancelEdit
+    let attributes = transcriptAttributes()
+    textView.isEditable = isEditable
+    textView.allowsUndo = isEditable
+    textView.typingAttributes = attributes
+    textView.insertionPointColor = OverlayAppearancePalette.resolve(appearance).bodyText.nsColor
+
+    let sameBytes = textView.string.utf8.elementsEqual(text.utf8)
+    let sameAttributes =
+      coordinator.renderedAttributes.map {
+        NSDictionary(dictionary: $0).isEqual(to: attributes)
+      } ?? false
+    // While the caret is in the canvas the bytes we are handed are the bytes
+    // the user just typed; repainting storage would throw the caret away.
+    if sameBytes, coordinator.isEditing { return }
+    guard !sameBytes || !sameAttributes else { return }
 
     let previousSelection = textView.selectedRange()
     let wasFollowingTail = coordinator.followsTail
     coordinator.applyingUpdate = true
-    textView.textStorage?.setAttributedString(rendered)
+    let previous = textView.string as NSString
+    let incoming = text as NSString
+    if sameAttributes {
+      // Preserve the recorded prefix in TextKit. Replacing the whole storage
+      // invalidates every paragraph on each live append or open-tail revision.
+      // Compare UTF-16 units, not Characters: canonical Unicode equivalence
+      // must never hide a byte-level revision from the engine.
+      var prefix = 0
+      let sharedLength = min(previous.length, incoming.length)
+      while prefix < sharedLength, previous.character(at: prefix) == incoming.character(at: prefix)
+      {
+        prefix += 1
+      }
+      if prefix > 0, prefix < incoming.length,
+        (0xDC00...0xDFFF).contains(incoming.character(at: prefix))
+      {
+        prefix -= 1  // Do not split a surrogate pair at the changed boundary.
+      }
+      let tail = NSAttributedString(
+        string: incoming.substring(from: prefix), attributes: attributes)
+      textView.textStorage?.replaceCharacters(
+        in: NSRange(location: prefix, length: previous.length - prefix), with: tail)
+    } else {
+      textView.textStorage?.setAttributedString(
+        NSAttributedString(string: text, attributes: attributes))
+    }
+    coordinator.renderedAttributes = attributes
 
-    let updatedLength = rendered.length
+    let updatedLength = incoming.length
     if previousSelection.length > 0 || !wasFollowingTail {
       textView.setSelectedRange(
         LiveTranscriptSelectionPolicy.preservedRange(
@@ -101,14 +195,16 @@ struct LiveTranscriptTextView: NSViewRepresentable {
       let tail = NSRange(location: updatedLength, length: 0)
       textView.setSelectedRange(tail)
       DispatchQueue.main.async { [weak textView, weak coordinator] in
-        guard let textView, coordinator?.followsTail == true else { return }
-        textView.scrollRangeToVisible(tail)
+        guard let textView, coordinator?.followsTail == true,
+          (textView.string as NSString).length == tail.location
+        else { return }
+        textView.revealTranscriptTail()
       }
     }
     coordinator.applyingUpdate = false
   }
 
-  private func attributedTranscript() -> NSAttributedString {
+  private func transcriptAttributes() -> [NSAttributedString.Key: Any] {
     let size = 15 * textScale
     let descriptor = NSFontDescriptor(fontAttributes: [
       .family: FontLoader.spaceGrotesk,
@@ -119,42 +215,22 @@ struct LiveTranscriptTextView: NSViewRepresentable {
       ?? .systemFont(ofSize: size, weight: .medium)
     let paragraph = NSMutableParagraphStyle()
     paragraph.lineSpacing = 5
-    let result = NSMutableAttributedString()
-
-    for run in runs {
-      let text: String
-      let color: NSColor
-      var extra: [NSAttributedString.Key: Any] = [:]
-      switch run {
-      case .text(let value):
-        text = value
-        color = NSColor(CSColor.textBody)
-      case .highlight(let highlight):
-        text = highlight.after
-        switch highlight.kind {
-        case .lexiconCorrected:
-          color = NSColor(highlight.taught ? CSColor.oliveLight : CSColor.terracottaLight)
-        case .speechGap:
-          color = NSColor(CSColor.amber)
-          extra[.underlineStyle] = NSUnderlineStyle.single.rawValue
-          extra[.underlineColor] = NSColor(CSColor.amber)
-        }
-      }
-      var attributes: [NSAttributedString.Key: Any] = [
-        .font: font,
-        .foregroundColor: color,
-        .paragraphStyle: paragraph,
-      ]
-      attributes.merge(extra) { _, replacement in replacement }
-      result.append(NSAttributedString(string: text, attributes: attributes))
-    }
-    return result
+    return [
+      .font: font,
+      .foregroundColor: OverlayAppearancePalette.resolve(appearance).bodyText.nsColor,
+      .paragraphStyle: paragraph,
+    ]
   }
 
   @MainActor
   final class Coordinator: NSObject, NSTextViewDelegate {
     var followsTail = true
     var applyingUpdate = false
+    var isEditing = false
+    var renderedAttributes: [NSAttributedString.Key: Any]?
+    var onEditingChanged: ((Bool) -> Void)?
+    var onTextChange: ((String) -> Void)?
+    var onCancelEdit: (() -> Void)?
 
     func textViewDidChangeSelection(_ notification: Notification) {
       guard !applyingUpdate,
@@ -165,14 +241,91 @@ struct LiveTranscriptTextView: NSViewRepresentable {
         textLength: (textView.string as NSString).length
       )
     }
+
+    func textDidChange(_ notification: Notification) {
+      guard !applyingUpdate, let textView = notification.object as? NSTextView else { return }
+      // Native edits (including rich paste) can change attributes independently
+      // of the projection. Reapply the transcript style when editing finishes.
+      renderedAttributes = nil
+      onTextChange?(textView.string)
+    }
+
+    func textView(
+      _ textView: NSTextView, doCommandBy commandSelector: Selector
+    ) -> Bool {
+      // Escape: NSTextView routes it as `cancelOperation:` first and falls
+      // back to `complete:` (word completion) — both mean "drop the draft".
+      let isEscape =
+        commandSelector == #selector(NSResponder.cancelOperation(_:))
+        || commandSelector == #selector(NSTextView.complete(_:))
+      guard isEscape else { return false }
+      onCancelEdit?()
+      textView.window?.makeFirstResponder(nil)
+      return true
+    }
   }
 }
 
 /// First-click selection is important because the overlay is deliberately a
 /// non-activating panel: it must not steal focus merely by appearing, but an
 /// explicit click in the transcript must immediately begin a drag selection.
+///
+/// When editable, gaining first responder is what makes the hosting
+/// `FloatingOverlayPanel` key; resigning gives the keyboard back.
 final class LiveTranscriptNativeTextView: NSTextView {
+  func revealTranscriptTail() {
+    let length = (string as NSString).length
+    let range = NSRange(location: max(0, length - 1), length: min(1, length))
+    scrollRangeToVisible(range)
+    guard length > 0, let scroll = enclosingScrollView, let window else { return }
+    // TextKit may reveal the insertion point while the glyph's descent still
+    // extends into the bottom content inset. Measure the full glyph on screen.
+    let glyph = firstRect(forCharacterRange: range, actualRange: nil)
+    let viewport = window.convertToScreen(scroll.convert(scroll.bounds, to: nil))
+    let overlap = viewport.minY + scroll.contentInsets.bottom - glyph.minY
+    guard overlap > 0, glyph.height > 0 else { return }
+    var origin = scroll.contentView.bounds.origin
+    origin.y += isFlipped ? overlap : -overlap
+    scroll.contentView.scroll(to: origin)
+    scroll.reflectScrolledClipView(scroll.contentView)
+  }
+
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+  private var editCoordinator: LiveTranscriptTextView.Coordinator? {
+    delegate as? LiveTranscriptTextView.Coordinator
+  }
+
+  func beginEditingIfNeeded() {
+    guard isEditable, let coordinator = editCoordinator, !coordinator.isEditing else { return }
+    (window as? FloatingOverlayPanel)?.takeKeyForEdit()
+    coordinator.isEditing = true
+    coordinator.onEditingChanged?(true)
+  }
+
+  override func becomeFirstResponder() -> Bool {
+    guard super.becomeFirstResponder() else { return false }
+    beginEditingIfNeeded()
+    return true
+  }
+
+  override func mouseDown(with event: NSEvent) {
+    super.mouseDown(with: event)
+    // AppKit can preselect this view while the take is still read-only. An
+    // explicit later click must open the edit gate even if responder identity
+    // does not change and becomeFirstResponder is therefore not called again.
+    if window?.firstResponder === self { beginEditingIfNeeded() }
+  }
+
+  override func resignFirstResponder() -> Bool {
+    guard super.resignFirstResponder() else { return false }
+    if let coordinator = editCoordinator, coordinator.isEditing {
+      coordinator.isEditing = false
+      coordinator.onEditingChanged?(false)
+      (window as? FloatingOverlayPanel)?.releaseKeyAfterEdit()
+    }
+    return true
+  }
 
   @discardableResult
   func copySelection(to pasteboard: NSPasteboard) -> Bool {

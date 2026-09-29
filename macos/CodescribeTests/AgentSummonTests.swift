@@ -80,6 +80,17 @@ final class AgentSummonTests: XCTestCase {
     await fulfillment(of: [delivered], timeout: 1.0)
   }
 
+  func testMaxApprovalInvalidationDoesNotInvokeTheChatSummonAction() async {
+    let delivered = expectation(description: "Max pending state refreshed")
+    let listener = AgentAppActionListener(
+      maxApprovalsChanged: { delivered.fulfill() },
+      summonAgent: { XCTFail("Max must not select or focus the chat composer") }
+    )
+    listener.onMaxApprovalsChanged()
+    await fulfillment(of: [delivered], timeout: 1.0)
+    listener.invalidate()
+  }
+
   func testAgentPinMapsToFloatingAndNormalWindowLevels() {
     XCTAssertEqual(
       AgentWindowLevelPolicy.level(isPinned: true).rawValue,

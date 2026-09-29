@@ -40,6 +40,8 @@ mod notes;
 mod quality;
 /// Dictation / STT streaming into the Swift app.
 mod recording;
+/// Vendor speech synthesis and cancellation.
+mod speech;
 /// Thread persistence and history for agent chats.
 mod threads;
 /// Menu-bar tray status payloads and listener.
@@ -57,6 +59,8 @@ pub use quality::{
     overlay_highlights_enabled, quality_finalize_correction, quality_recent_records,
     quality_teach_span,
 };
+pub use recording::{CsCaptureHandle, CsConditionalStop, CsTranscriptDelivery};
+pub use speech::{CsSpeechResult, speak_text, speech_availability, stop_speaking};
 pub use tray_status::{
     CodescribeTrayStatus, CsTrayStatusKind, CsTrayStatusListener, CsTrayStatusPayload,
     CsTrayStatusTone,
@@ -98,7 +102,32 @@ impl std::error::Error for CsError {}
 /// shut down it cannot be restarted in the same process.
 #[uniffi::export]
 pub fn start_application_runtime() -> Result<CsApplicationRuntimeSnapshot, CsError> {
-    application_runtime::start()
+    start_application_runtime_with_compaction(|| {
+        let path = codescribe::presentation::transcript_bus::transcript_bus_path();
+        if let Err(error) =
+            codescribe::presentation::transcript_bus_maintenance::compact_bus_if_enabled(
+                &path, "startup",
+            )
+        {
+            tracing::warn!(%error, "startup bus compaction unavailable");
+        }
+    })
+}
+
+/// Inject the startup compaction work for the thread-ordering test. The app
+/// uses the production closure above; both paths use the same spawn boundary.
+#[doc(hidden)]
+pub fn start_application_runtime_with_compaction(
+    compaction: impl FnOnce() + Send + 'static,
+) -> Result<CsApplicationRuntimeSnapshot, CsError> {
+    let snapshot = application_runtime::start()?;
+    if let Err(error) = std::thread::Builder::new()
+        .name("codescribe-bus-compaction".to_string())
+        .spawn(compaction)
+    {
+        tracing::warn!(%error, "startup bus compaction thread unavailable");
+    }
+    Ok(snapshot)
 }
 
 /// Content-free lifecycle snapshot used by diagnostics and delivery probes.
@@ -111,6 +140,7 @@ pub fn application_runtime_snapshot() -> Result<CsApplicationRuntimeSnapshot, Cs
 #[uniffi::export]
 pub fn shutdown_application_runtime() -> Result<CsApplicationRuntimeSnapshot, CsError> {
     config::cancel_pending_account_login_for_shutdown();
+    speech::stop_speaking();
     hotkeys::shutdown_application_controller()?;
     application_runtime::shutdown()
 }
@@ -127,6 +157,14 @@ impl From<anyhow::Error> for CsError {
 impl From<std::io::Error> for CsError {
     /// Map I/O failures onto the Config error variant.
     fn from(error: std::io::Error) -> Self {
+        CsError::Config {
+            msg: error.to_string(),
+        }
+    }
+}
+
+impl From<codescribe_core::config::SettingsSnapshotValidationError> for CsError {
+    fn from(error: codescribe_core::config::SettingsSnapshotValidationError) -> Self {
         CsError::Config {
             msg: error.to_string(),
         }
@@ -167,13 +205,30 @@ impl From<CsLanguage> for codescribe_core::config::Language {
     }
 }
 
-impl CsLanguage {
-    /// Two-letter code (`"pl"` / `"en"`) as the core uses it.
-    pub fn as_code(&self) -> &'static str {
-        match self {
-            CsLanguage::Auto => "auto",
-            CsLanguage::Polish => "pl",
-            CsLanguage::English => "en",
-        }
+#[cfg(test)]
+mod startup_tests {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn startup_returns_while_compaction_thread_is_held_at_entry() {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let snapshot = super::start_application_runtime_with_compaction(move || {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            finished_tx.send(()).unwrap();
+        })
+        .unwrap();
+
+        assert_eq!(snapshot.state, "running");
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(
+            matches!(finished_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
+            "compaction must still be held after startup returned"
+        );
+        release_tx.send(()).unwrap();
+        finished_rx.recv_timeout(Duration::from_secs(5)).unwrap();
     }
 }

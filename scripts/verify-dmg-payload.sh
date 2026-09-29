@@ -6,18 +6,28 @@
 # refuses an incomplete public artifact.
 #
 # Payload contract (core/build.rs + Makefile release-codescribe):
-#   slim: Silero VAD embedded + MiniLM signed runtime resource; Whisper runtime
-#   full: Silero + Whisper embedded + MiniLM signed runtime resource
-# MiniLM is checked directly under Contents/Resources/models/embedder; Cargo
-# target size is no longer used as a proxy for product completeness.
+#   slim: Silero VAD embedded; Whisper runtime; NO MiniLM
+#   full: Silero + Whisper embedded;             NO MiniLM
+# MiniLM left the default payload on 2026-09-18: no runtime path in the app, the
+# FFI or the sidecars loads `embedder::*`, so a 471 MB weight file was shipping
+# for tests and two examples. Builds that ask for it (build-dmg.sh
+# --bundle-embedder) must verify with --expect-embedder, and the gate then
+# checks Contents/Resources/models/embedder directly. Without the flag the gate
+# refuses a bundle that carries it, so intent and artifact cannot drift apart.
+#
+# CONSEQUENCE, stated plainly: DMG size is no longer proof of completeness for
+# slim. The 0.13.2 regression (≈85 MB) is now inside the legitimate slim range,
+# so the fail-closed signal moved to structure — dylib floor (Silero must be
+# embedded), required binaries, and the embedder present/absent assertion.
 #
 # Probe mechanism (calibrated 2026-08-04 on fixtures):
 #   Silero/optional Whisper land in libcodescribe_ffi.dylib. MiniLM is a normal
 #   signed app resource loaded at runtime. Hard file-presence/size checks plus
 #   DMG/dylib floors are the fail-closed signal:
-#     BAD 0.13.2:      dmg≈85 MB,  dylib≈29 MB
-#     expected slim:    dmg≈501 MB, dylib≈30 MB, MiniLM≈471 MB resource
-#     expected full:    dmg≈1.3 GB, dylib≈800+ MB, MiniLM≈471 MB resource
+#     BAD 0.13.2:      dmg≈85 MB,  dylib≈29 MB  (dylib floor still catches it)
+#     expected slim:    dmg≈60 MB,  dylib≈30 MB, no MiniLM
+#     slim + embedder:  dmg≈501 MB, dylib≈30 MB, MiniLM≈471 MB resource
+#     expected full:    dmg≈1.3 GB, dylib≈800+ MB, no MiniLM
 #
 # Usage:
 #   ./scripts/verify-dmg-payload.sh <dmg> --variant slim|full --version X.Y.Z
@@ -34,7 +44,8 @@ set -euo pipefail
 # The slim dylib contains code + Silero only; MiniLM has its own direct resource
 # gate below. Keep a low engine-presence floor instead of forcing model bytes
 # through Cargo artifacts.
-readonly SLIM_DMG_MIN=$((400 * 1024 * 1024))
+readonly SLIM_DMG_MIN=$((40 * 1024 * 1024))
+readonly SLIM_WITH_EMBEDDER_DMG_MIN=$((400 * 1024 * 1024))
 readonly SLIM_DYLIB_MIN=$((20 * 1024 * 1024))
 # Whisper large-v3-turbo + code/Silero remains in the full dylib.
 readonly FULL_DMG_MIN=$((1000 * 1024 * 1024))
@@ -49,6 +60,7 @@ DMG=""
 VARIANT=""
 VERSION=""
 SKIP_NOTARY=0
+EXPECT_EMBEDDER=0
 MOUNT_POINT=""
 FAILED=0
 FAILURES=()
@@ -60,9 +72,10 @@ Usage: $0 <dmg> --variant slim|full --version X.Y.Z [--skip-notary]
 Fail-closed payload gate for Codescribe release DMGs.
 
   <dmg>               Path to Codescribe_*.dmg
-  --variant slim|full slim = Silero + MiniLM resource; full = +Whisper embedded
+  --variant slim|full slim = Silero embedded; full = +Whisper embedded
   --version X.Y.Z     Expected CFBundleShortVersionString
   --skip-notary       Skip stapler + spctl (pre-notarization smoke)
+  --expect-embedder   Require the MiniLM app resource (builds using --bundle-embedder)
 
 SPARKLE_ED_PUBLIC_KEY, when set, must match the non-empty SUPublicEDKey in the
 mounted app. An empty bundle key is always refused.
@@ -119,6 +132,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-notary)
       SKIP_NOTARY=1
+      shift
+      ;;
+    --expect-embedder)
+      EXPECT_EMBEDDER=1
       shift
       ;;
     --*)
@@ -178,14 +195,18 @@ echo "▶ DMG size floor ($VARIANT)"
 DMG_BYTES=$(stat -f%z "$DMG")
 case "$VARIANT" in
   slim)
-    MIN_DMG=$SLIM_DMG_MIN
+    if (( EXPECT_EMBEDDER == 1 )); then
+      MIN_DMG=$SLIM_WITH_EMBEDDER_DMG_MIN
+    else
+      MIN_DMG=$SLIM_DMG_MIN
+    fi
     ;;
   full)
     MIN_DMG=$FULL_DMG_MIN
     ;;
 esac
 if (( DMG_BYTES < MIN_DMG )); then
-  fail "DMG too small for $VARIANT: $(human_mb "$DMG_BYTES") MB < $(human_mb "$MIN_DMG") MB floor — missing MiniLM resource and/or Whisper payload"
+  fail "DMG too small for $VARIANT: $(human_mb "$DMG_BYTES") MB < $(human_mb "$MIN_DMG") MB floor — truncated artifact, missing Whisper payload, or a --expect-embedder build without its resource"
 else
   ok "DMG size $(human_mb "$DMG_BYTES") MB ≥ $(human_mb "$MIN_DMG") MB"
 fi
@@ -393,20 +414,26 @@ PY
     fail "agent bridge payload incomplete: $AGENT_BRIDGE_VERIFY"
   fi
 
-  # Model resource payload
+  # Model resource payload — asserted in whichever direction the build intended.
   echo ""
-  echo "▶ MiniLM runtime resource proof"
+  echo "▶ MiniLM app resource ($([[ "$EXPECT_EMBEDDER" == 1 ]] && echo required || echo "must be absent"))"
   EMBEDDER_DIR="$APP_PATH/Contents/Resources/models/embedder"
   EMBEDDER_WEIGHTS="$EMBEDDER_DIR/model.safetensors"
-  if [[ ! -f "$EMBEDDER_DIR/config.json" || ! -f "$EMBEDDER_DIR/tokenizer.json" || ! -f "$EMBEDDER_WEIGHTS" ]]; then
-    fail "MiniLM runtime resource incomplete at Contents/Resources/models/embedder"
-  else
-    EMBEDDER_BYTES=$(stat -f%z "$EMBEDDER_WEIGHTS")
-    if (( EMBEDDER_BYTES < EMBEDDER_WEIGHTS_MIN )); then
-      fail "MiniLM weights too small: $(human_mb "$EMBEDDER_BYTES") MB < $(human_mb "$EMBEDDER_WEIGHTS_MIN") MB"
+  if (( EXPECT_EMBEDDER == 1 )); then
+    if [[ ! -f "$EMBEDDER_DIR/config.json" || ! -f "$EMBEDDER_DIR/tokenizer.json" || ! -f "$EMBEDDER_WEIGHTS" ]]; then
+      fail "MiniLM runtime resource incomplete at Contents/Resources/models/embedder"
     else
-      ok "MiniLM runtime resource complete ($(human_mb "$EMBEDDER_BYTES") MB weights)"
+      EMBEDDER_BYTES=$(stat -f%z "$EMBEDDER_WEIGHTS")
+      if (( EMBEDDER_BYTES < EMBEDDER_WEIGHTS_MIN )); then
+        fail "MiniLM weights too small: $(human_mb "$EMBEDDER_BYTES") MB < $(human_mb "$EMBEDDER_WEIGHTS_MIN") MB"
+      else
+        ok "MiniLM runtime resource complete ($(human_mb "$EMBEDDER_BYTES") MB weights)"
+      fi
     fi
+  elif [[ -e "$EMBEDDER_DIR" ]]; then
+    fail "MiniLM resource present at Contents/Resources/models/embedder but this build did not ask for it — rebuild without CODESCRIBE_BUNDLE_EMBEDDER or verify with --expect-embedder"
+  else
+    ok "MiniLM absent, as the default payload contract requires"
   fi
 
   # dylib payload
@@ -420,7 +447,7 @@ PY
     case "$VARIANT" in
       slim)
         MIN_DYLIB=$SLIM_DYLIB_MIN
-        EXPECT_LABEL="engine code + embedded Silero (MiniLM is checked as a resource)"
+        EXPECT_LABEL="engine code + embedded Silero"
         ;;
       full)
         MIN_DYLIB=$FULL_DYLIB_MIN
@@ -444,10 +471,12 @@ PY
       fail "silero marker absent from dylib (Silero VAD must always be embedded)"
     fi
 
+    # The resolver string stays in the dylib whether or not weights ship; it is
+    # informational only, never a payload assertion.
     if grep -a -q -F "$MARKER_MINILM" "$DYLIB" 2>/dev/null; then
-      ok "minilm runtime resolver marker present in dylib (secondary)"
+      echo "  · note: MiniLM resolver string present in dylib (informational)"
     else
-      echo "  · note: MiniLM repo marker absent from dylib — direct resource gate already applied"
+      echo "  · note: MiniLM resolver string absent from dylib (informational)"
     fi
 
     if [[ "$VARIANT" == "full" ]]; then

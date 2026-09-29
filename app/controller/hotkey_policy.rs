@@ -25,12 +25,6 @@ pub(super) fn effective_hold_start_delay_ms(configured_ms: u64, assistive: bool)
     }
 }
 
-/// Test accessor for the adjudication budget.
-#[cfg(test)]
-pub(super) fn toggle_stop_adjudicate_timeout() -> Duration {
-    STOP_TIMEOUT
-}
-
 /// Whether the toggle stop path runs a Whisper final pass (`CODESCRIBE_TOGGLE_FINAL_PASS`).
 ///
 /// Defaults to enabled; only an explicit falsey value (`0`, `false`, `no`, `off`,

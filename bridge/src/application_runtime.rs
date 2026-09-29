@@ -23,6 +23,19 @@ const WORKER_PREFIX: &str = "codescribe-app-worker-";
 const WORKER_START_TIMEOUT: Duration = Duration::from_secs(2);
 const RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
+#[cfg(not(test))]
+fn application_runtime_install_interlock_path() -> std::path::PathBuf {
+    codescribe_core::config::install_interlock_path()
+}
+
+#[cfg(test)]
+fn application_runtime_install_interlock_path() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "codescribe-application-runtime-test-{}.lock",
+        std::process::id()
+    ))
+}
+
 /// Observable, content-free runtime lifecycle evidence for Swift and probes.
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct CsApplicationRuntimeSnapshot {
@@ -41,6 +54,7 @@ pub struct CsApplicationRuntimeSnapshot {
 #[derive(Default)]
 struct RuntimeState {
     runtime: Option<Runtime>,
+    install_interlock: Option<codescribe_core::config::AppRuntimeInstallLease>,
     permanently_stopped: bool,
 }
 
@@ -94,8 +108,19 @@ impl RuntimeMetrics {
             .insert(name);
     }
 
-    fn wait_for_workers(&self) -> Result<(), CsError> {
-        let deadline = Instant::now() + WORKER_START_TIMEOUT;
+    fn reset_worker_lifecycle(&self) {
+        self.worker_names
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        self.stopped_worker_names
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+    }
+
+    fn wait_for_workers(&self, timeout: Duration) -> Result<(), CsError> {
+        let deadline = Instant::now() + timeout;
         let mut names = self.worker_names.lock().unwrap_or_else(|e| e.into_inner());
         while names.len() < self.worker_count {
             let now = Instant::now();
@@ -133,6 +158,14 @@ impl ApplicationRuntime {
     }
 
     fn start(&self) -> Result<CsApplicationRuntimeSnapshot, CsError> {
+        self.start_with_policy(self.metrics.worker_count, WORKER_START_TIMEOUT)
+    }
+
+    fn start_with_policy(
+        &self,
+        worker_threads: usize,
+        worker_start_timeout: Duration,
+    ) -> Result<CsApplicationRuntimeSnapshot, CsError> {
         let mut state = self.state.lock().map_err(|_| {
             runtime_error("application runtime lifecycle lock poisoned".to_string())
         })?;
@@ -145,12 +178,21 @@ impl ApplicationRuntime {
             return Ok(self.snapshot_for(&state));
         }
 
+        let install_interlock_path = application_runtime_install_interlock_path();
+        let install_interlock =
+            codescribe_core::config::acquire_app_runtime_install_lease_at(&install_interlock_path)
+                .map_err(|error| {
+                    runtime_error(format!(
+                        "application runtime cannot overlap Codescribe installation: {error:#}"
+                    ))
+                })?;
+        self.metrics.reset_worker_lifecycle();
         let name_counter = Arc::new(AtomicUsize::new(0));
         let name_counter_for_runtime = Arc::clone(&name_counter);
         let metrics_for_start = Arc::clone(&self.metrics);
         let metrics_for_stop = Arc::clone(&self.metrics);
         let runtime = Builder::new_multi_thread()
-            .worker_threads(self.metrics.worker_count)
+            .worker_threads(worker_threads)
             .thread_name_fn(move || {
                 let index = name_counter_for_runtime.fetch_add(1, Ordering::SeqCst) + 1;
                 format!("{WORKER_PREFIX}{index}")
@@ -165,7 +207,13 @@ impl ApplicationRuntime {
                 ))
             })?;
         state.runtime = Some(runtime);
-        self.metrics.wait_for_workers()?;
+        if let Err(error) = self.metrics.wait_for_workers(worker_start_timeout) {
+            if let Some(runtime) = state.runtime.take() {
+                runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
+            }
+            return Err(error);
+        }
+        state.install_interlock = Some(install_interlock);
         let snapshot = self.snapshot_for(&state);
         tracing::info!(
             worker_count = snapshot.worker_count,
@@ -241,7 +289,7 @@ impl ApplicationRuntime {
     }
 
     fn shutdown(&self) -> Result<CsApplicationRuntimeSnapshot, CsError> {
-        let runtime = {
+        let (runtime, install_interlock) = {
             let mut state = self.state.lock().map_err(|_| {
                 runtime_error("application runtime lifecycle lock poisoned".to_string())
             })?;
@@ -249,12 +297,13 @@ impl ApplicationRuntime {
                 return Ok(self.snapshot_for(&state));
             }
             state.permanently_stopped = true;
-            state.runtime.take()
+            (state.runtime.take(), state.install_interlock.take())
         };
 
         if let Some(runtime) = runtime {
             runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
         }
+        drop(install_interlock);
         let state = self.state.lock().map_err(|_| {
             runtime_error("application runtime lifecycle lock poisoned".to_string())
         })?;
@@ -491,7 +540,10 @@ mod tests {
         drop(task);
 
         let deadline = Instant::now() + Duration::from_secs(1);
-        while !dropped.load(Ordering::SeqCst) && Instant::now() < deadline {
+        while (!dropped.load(Ordering::SeqCst)
+            || runtime.snapshot().expect("snapshot").active_tasks != 0)
+            && Instant::now() < deadline
+        {
             std::thread::yield_now();
         }
         assert!(dropped.load(Ordering::SeqCst));
@@ -502,6 +554,27 @@ mod tests {
         assert_eq!(stopped.active_tasks, 0);
         assert_eq!(stopped.stopped_worker_names, stopped.worker_names);
         assert!(runtime.start().is_err(), "shutdown is terminal");
+    }
+
+    #[test]
+    fn failed_worker_start_rolls_back_and_allows_a_real_retry() {
+        let runtime = ApplicationRuntime::new(2);
+        let error = runtime
+            .start_with_policy(1, Duration::from_millis(25))
+            .expect_err("one worker cannot satisfy a two-worker start policy");
+        let CsError::Runtime { msg } = error else {
+            panic!("worker start failure must be a runtime error");
+        };
+        assert!(msg.contains("only 1/2 named workers"), "{msg}");
+        assert_eq!(
+            runtime.snapshot().expect("snapshot").state,
+            "not_started",
+            "failed start must not leave a false running runtime"
+        );
+
+        let started = runtime.start().expect("retry starts the full runtime");
+        assert_eq!(started.worker_names.len(), 2);
+        runtime.shutdown().expect("retry runtime shuts down");
     }
 
     #[test]

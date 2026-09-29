@@ -11,10 +11,14 @@
 //! — decides allow / ask / deny, and [`thread_delivery`] persists the finished
 //! turn into [`thread_store`].
 
+/// Pending tool approvals shared by UI and consultation hosts.
+pub mod approval;
 /// On-disk store for image attachments referenced from conversation history.
 pub mod assets;
 /// Provider-neutral capability broker for canonical ops (`fs.read`, `repo.status`).
 pub mod capabilities;
+/// Serialized Max consultation ownership over the existing Agent session.
+pub mod consultation;
 /// Streaming events: provider-level [`AgentEvent`] and UI-level [`AgentUiEvent`].
 pub mod event;
 /// Tool permission policy — the allow / ask / deny gateway.
@@ -44,6 +48,7 @@ mod tool_output;
 /// Core conversation types: [`Role`], [`Message`], [`ContentBlock`].
 pub mod types;
 
+pub use approval::ApprovalBroker;
 pub use assets::AgentAssetStore;
 pub use capabilities::{
     AgentCapabilityPreferences, CapabilityOp, CapabilityProvider, CapabilityResolution,

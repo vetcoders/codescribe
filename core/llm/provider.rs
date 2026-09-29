@@ -1,36 +1,29 @@
-//! Canonical LLM provider identity and per-model capability policy.
+//! Canonical LLM provider registry and per-model capability policy.
 //!
-//! This module is the single source of truth for *which* LLM wire protocol a
-//! request targets ([`ProviderKind`]) and *what* that protocol will accept for a
-//! given model ([`CapabilityPolicy`]). It exists because OpenAI Responses and
-//! Anthropic Messages disagree on request shape — and, critically, because two
-//! Anthropic models disagree *with each other*:
+//! One provider model (ADR 2026-08-14, provider-registry-v2): a provider is
+//! **credential + endpoint + wire**. Vendors ([`ProviderKind`]) have their
+//! endpoint pinned in code; Custom providers ([`CustomProvider`]) carry theirs
+//! in `settings.json`. A lane points at a [`ProviderRef`] and a model; the model
+//! belongs to the lane, never to the provider, so no provider vetoes a model id.
 //!
-//! - `claude-opus-4-8` (assistive) rejects `temperature`/`top_p`/`top_k` and a
-//!   manual `thinking.budget_tokens` with HTTP 400.
-//! - `claude-sonnet-4-6` (formatting) still accepts `temperature` and only
-//!   *deprecates* `budget_tokens` (not a hard 400).
-//!
-//! Encoding that asymmetry here keeps the request builders (OpenAI today,
-//! Anthropic in W2/W3) from sharing unsafe assumptions. This layer is pure data +
-//! parsing: it performs **no** HTTP and holds **no** provider implementation.
-//!
-//! OpenAI is the default everywhere. Nothing in this module changes the OpenAI
-//! request path — [`capability_policy`] returns a permissive policy for
-//! [`ProviderKind::OpenAiResponses`] so the existing Responses builder keeps
-//! sending `temperature` and using `previous_response_id` exactly as before.
+//! This layer is pure data + parsing: it performs **no** HTTP and holds **no**
+//! provider implementation. Request builders branch on [`WireFamily`], never on
+//! a vendor name, and consult [`capability_policy`] before emitting a request.
 
+use std::borrow::Cow;
 use std::str::FromStr;
 
+use serde::{Deserialize, Serialize};
+
+use crate::config::UserSettings;
 use crate::llm::account_auth;
+use crate::llm::vendors;
 
-use tracing::warn;
-
-/// Canonical LLM provider identity — one variant per vendor product.
+/// Canonical LLM vendor identity — one variant per pinned vendor.
 ///
-/// The variant is only a handle: every property of a provider lives in its
-/// [`ProviderIdentity`] row in [`PROVIDER_REGISTRY`]. Adding a vendor is a row
-/// plus a variant, never a new arm in `as_str`/`display_name`/`api_key_env_key`.
+/// The variant is only a handle: every property of a vendor lives in its
+/// registry row. Adding a vendor is a row plus a variant plus a `vendors::`
+/// module, never a new arm in `as_str`/`display_name`/`api_key_account`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProviderKind {
     /// OpenAI Responses API (`/v1/responses`). The default.
@@ -39,6 +32,9 @@ pub enum ProviderKind {
     AnthropicMessages,
     /// xAI Grok, served over the OpenAI Responses protocol at `api.x.ai`.
     XaiResponses,
+    /// Libraxis gateway on the OpenAI Responses protocol at `api.libraxis.com`.
+    /// Last in the picker until I1 promotes it on a live keyed witness (§B.3).
+    LibraxisResponses,
 }
 
 /// The request/response protocol a provider speaks.
@@ -46,129 +42,182 @@ pub enum ProviderKind {
 /// Deliberately separate from [`ProviderKind`]: several vendors ship the same
 /// wire protocol (xAI serves the OpenAI Responses shape), so request builders
 /// and capability policy branch on the *family*, never on the vendor name.
-/// Without this split, every protocol-compatible vendor would fork the request
-/// layer for no reason.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum WireFamily {
     /// OpenAI Responses (`/v1/responses`, `previous_response_id` chaining).
+    #[serde(rename = "responses")]
     OpenAiResponses,
     /// Anthropic Messages (`/v1/messages`, adaptive thinking, refusal stops).
+    #[serde(rename = "messages")]
     AnthropicMessages,
 }
 
-/// Everything the identity layer knows about one provider, as data.
-///
-/// This is the row a new vendor adds. Keep it free of behaviour: OAuth details
-/// live in `account_auth::ProviderOAuthConfig`, per-model request limits in
-/// [`CapabilityPolicy`].
-#[derive(Debug, Clone, Copy)]
-pub struct ProviderIdentity {
-    /// The enum handle this row describes.
-    pub kind: ProviderKind,
-    /// Canonical lowercase-kebab spelling used in env vars and persisted config.
-    pub canonical: &'static str,
-    /// Extra accepted spellings (already lowercased) for [`FromStr`]. The bare
-    /// vendor name belongs here so `LLM_ASSISTIVE_PROVIDER=openai` keeps working.
-    pub aliases: &'static [&'static str],
-    /// Human-readable label for provider pickers (Settings UI).
-    pub display_name: &'static str,
-    /// Env var / Keychain account holding the assistive-lane API key. Every
-    /// provider owns a distinct account so the secrets coexist and switching
-    /// providers never overwrites a key.
-    pub api_key_env_key: &'static str,
-    /// Protocol this provider speaks — what request builders branch on.
-    pub wire_family: WireFamily,
-    /// Model-id prefixes this vendor serves. A configured model matching another
-    /// row's prefix is refused for this provider, because sending it would 404
-    /// on the wire and read to the user as a broken key.
-    ///
-    /// Empty ⇒ this is the **catch-all** row: it accepts every id no other row
-    /// claims. OpenAI holds that position, which is why a future `o5-preview`
-    /// works without this table learning about it.
-    pub model_prefixes: &'static [&'static str],
-    /// Env override for this provider's wire endpoint.
-    pub endpoint_env: &'static str,
-    /// Endpoint used when neither the env override nor — for the default
-    /// provider only — the generic lane settings supply one.
-    pub default_endpoint: &'static str,
-    /// Seed model for the formatting lane before live discovery runs.
-    pub formatting_model: &'static str,
-    /// Seed model for the assistive lane before live discovery runs.
-    pub assistive_model: &'static str,
+impl WireFamily {
+    /// Canonical spelling persisted in `settings.json` (`providers.custom[].wire`).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            WireFamily::OpenAiResponses => "responses",
+            WireFamily::AnthropicMessages => "messages",
+        }
+    }
+
+    /// Parse the canonical spelling or the vendor-flavoured aliases.
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "responses" | "openai-responses" => Some(WireFamily::OpenAiResponses),
+            "messages" | "anthropic-messages" => Some(WireFamily::AnthropicMessages),
+            _ => None,
+        }
+    }
+
+    /// The path every endpoint on this wire ends with.
+    pub const fn canonical_suffix(self) -> &'static str {
+        match self {
+            WireFamily::OpenAiResponses => "/v1/responses",
+            WireFamily::AnthropicMessages => "/v1/messages",
+        }
+    }
+
+    /// Normalize an operator-provided base URL to this wire's canonical path:
+    /// trim, strip a known protocol suffix (or a bare `/v1`), append the
+    /// canonical one. Pure string work — no settings, env, or Keychain.
+    pub fn normalize_endpoint(self, raw: &str) -> String {
+        let known: &[&str] = match self {
+            WireFamily::OpenAiResponses => {
+                &["/v1/responses", "/v1/chat/completions", "/v1/completions"]
+            }
+            WireFamily::AnthropicMessages => &["/v1/messages", "/v1/responses"],
+        };
+        let mut base = raw.trim().trim_end_matches('/').to_string();
+        for suffix in known {
+            if base.ends_with(suffix) {
+                base.truncate(base.len() - suffix.len());
+                return format!("{base}{}", self.canonical_suffix());
+            }
+        }
+        if base.ends_with("/v1") {
+            base.truncate(base.len() - "/v1".len());
+        }
+        format!("{base}{}", self.canonical_suffix())
+    }
 }
 
-/// Anthropic's own wire defaults. They live beside the row that uses them so a
-/// vendor's endpoint and models are one block to read, not three files.
-const DEFAULT_ANTHROPIC_MESSAGES_ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
+impl std::fmt::Display for WireFamily {
+    /// Write the canonical spelling (`responses` / `messages`).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Everything the registry knows about one vendor, as data.
+#[derive(Debug, Clone, Copy)]
+struct ProviderIdentity {
+    kind: ProviderKind,
+    canonical: &'static str,
+    aliases: &'static [&'static str],
+    display_name: &'static str,
+    api_key_account: &'static str,
+    wire_family: WireFamily,
+    /// Pinned. Never read from env or settings.
+    endpoint: &'static str,
+    /// Every host this vendor answers on; legacy endpoints on one of them
+    /// migrate to the vendor row. Empty ⇒ only the endpoint's own host.
+    extra_hosts: &'static [&'static str],
+    formatting_model: &'static str,
+    assistive_model: &'static str,
+}
+
+/// OpenAI Responses endpoint. Pinned here until I1 rewires the row to
+/// `vendors::openai` (cut W1-OA).
+pub const DEFAULT_OPENAI_RESPONSES_ENDPOINT: &str = "https://api.openai.com/v1/responses";
+/// OpenAI formatting-lane seed until live discovery answers.
+pub const DEFAULT_FORMATTING_MODEL: &str = "gpt-4.1";
+/// OpenAI assistive-lane seed until live discovery answers.
+pub const DEFAULT_ASSISTIVE_MODEL: &str = "gpt-5.5";
 /// xAI serves the Responses protocol from its OpenAI-compatible base URL.
+/// Pinned here until I1 rewires the row to `vendors::xai` (cut W1-XA).
 const DEFAULT_XAI_RESPONSES_ENDPOINT: &str = "https://api.x.ai/v1/responses";
-/// Current Grok model at the time of this cut. Both lanes share it: it is only
-/// a seed until Settings runs live discovery, and naming one verified id beats
-/// guessing a cheaper one that may already be retired. An operator who wants a
-/// lighter formatting model sets `LLM_FORMATTING_MODEL` after discovery.
+/// Current Grok model at the time of this cut; both lanes share the seed.
 const DEFAULT_XAI_MODEL: &str = "grok-4.5";
 
-/// Registry row for OpenAI Responses — catch-all prefixes and default-lane seeds.
+const LIBRAXIS_IDENTITY: ProviderIdentity = ProviderIdentity {
+    kind: ProviderKind::LibraxisResponses,
+    canonical: vendors::libraxis::CANONICAL,
+    aliases: vendors::libraxis::ALIASES,
+    display_name: vendors::libraxis::DISPLAY_NAME,
+    api_key_account: vendors::libraxis::API_KEY_ACCOUNT,
+    wire_family: WireFamily::OpenAiResponses,
+    endpoint: vendors::libraxis::ENDPOINT,
+    extra_hosts: vendors::libraxis::HOSTS,
+    formatting_model: vendors::libraxis::DEFAULT_FORMATTING_MODEL,
+    assistive_model: vendors::libraxis::DEFAULT_ASSISTIVE_MODEL,
+};
+
 const OPENAI_IDENTITY: ProviderIdentity = ProviderIdentity {
     kind: ProviderKind::OpenAiResponses,
     canonical: "openai-responses",
     aliases: &["openai", "openai_responses"],
     display_name: "OpenAI (Responses)",
-    api_key_env_key: "LLM_ASSISTIVE_API_KEY",
+    api_key_account: "LLM_OPENAI_API_KEY",
     wire_family: WireFamily::OpenAiResponses,
-    // Catch-all row: OpenAI serves every id no other vendor claims.
-    model_prefixes: &[],
-    endpoint_env: "LLM_ASSISTIVE_ENDPOINT",
-    default_endpoint: crate::config::DEFAULT_OPENAI_RESPONSES_ENDPOINT,
-    formatting_model: crate::config::DEFAULT_FORMATTING_MODEL,
-    assistive_model: crate::config::DEFAULT_ASSISTIVE_MODEL,
+    endpoint: DEFAULT_OPENAI_RESPONSES_ENDPOINT,
+    extra_hosts: &[],
+    formatting_model: DEFAULT_FORMATTING_MODEL,
+    assistive_model: DEFAULT_ASSISTIVE_MODEL,
 };
 
-/// Registry row for Anthropic Messages — claude prefixes and dual-lane seeds.
-const ANTHROPIC_IDENTITY: ProviderIdentity = ProviderIdentity {
-    kind: ProviderKind::AnthropicMessages,
-    canonical: "anthropic-messages",
-    aliases: &["anthropic", "anthropic_messages"],
-    display_name: "Anthropic (Messages)",
-    api_key_env_key: "LLM_ANTHROPIC_API_KEY",
-    wire_family: WireFamily::AnthropicMessages,
-    model_prefixes: &["claude"],
-    endpoint_env: "LLM_ANTHROPIC_ENDPOINT",
-    default_endpoint: DEFAULT_ANTHROPIC_MESSAGES_ENDPOINT,
-    formatting_model: "claude-sonnet-4-6",
-    assistive_model: "claude-opus-4-8",
-};
-
-/// Registry row for xAI Grok on the Responses wire — grok prefixes, shared seeds.
 const XAI_IDENTITY: ProviderIdentity = ProviderIdentity {
     kind: ProviderKind::XaiResponses,
     canonical: "xai-responses",
     aliases: &["xai", "grok", "xai_responses"],
     display_name: "xAI (Grok)",
-    api_key_env_key: "LLM_XAI_API_KEY",
-    // Same protocol as OpenAI: request builders and capability policy reach xAI
-    // through the wire family, so no send path learns the word "xai".
+    api_key_account: "LLM_XAI_API_KEY",
     wire_family: WireFamily::OpenAiResponses,
-    model_prefixes: &["grok"],
-    endpoint_env: "LLM_XAI_ENDPOINT",
-    default_endpoint: DEFAULT_XAI_RESPONSES_ENDPOINT,
+    endpoint: DEFAULT_XAI_RESPONSES_ENDPOINT,
+    extra_hosts: &[],
     formatting_model: DEFAULT_XAI_MODEL,
     assistive_model: DEFAULT_XAI_MODEL,
 };
 
-/// Every provider identity, in Settings-picker order. One row per vendor —
-/// this array plus the matching `ProviderKind` variant is the whole cost of a
-/// new provider at the identity layer.
-pub const PROVIDER_REGISTRY: [ProviderIdentity; 3] =
-    [OPENAI_IDENTITY, ANTHROPIC_IDENTITY, XAI_IDENTITY];
+const ANTHROPIC_IDENTITY: ProviderIdentity = ProviderIdentity {
+    kind: ProviderKind::AnthropicMessages,
+    canonical: vendors::anthropic::CANONICAL,
+    aliases: vendors::anthropic::ALIASES,
+    display_name: vendors::anthropic::DISPLAY_NAME,
+    api_key_account: vendors::anthropic::API_KEY_ACCOUNT,
+    wire_family: WireFamily::AnthropicMessages,
+    endpoint: vendors::anthropic::ENDPOINT,
+    extra_hosts: &[],
+    formatting_model: vendors::anthropic::DEFAULT_FORMATTING_MODEL,
+    assistive_model: vendors::anthropic::DEFAULT_ASSISTIVE_MODEL,
+};
+
+/// Every vendor row, in picker order.
+const PROVIDER_REGISTRY: [ProviderIdentity; 4] = [
+    LIBRAXIS_IDENTITY,
+    OPENAI_IDENTITY,
+    XAI_IDENTITY,
+    ANTHROPIC_IDENTITY,
+];
+
+/// Every vendor handle, in picker order: Libraxis, OpenAI, xAI, Anthropic.
+/// Libraxis earned the first slot on a live two-part witness at integration
+/// (2026-09-07 18:16Z: `GET /v1/models` 200 with 8 aliases, one Responses call
+/// completed); the lane default stays OpenAI (`ProviderKind::default`).
+pub const ALL_PROVIDERS: [ProviderKind; 4] = [
+    ProviderKind::LibraxisResponses,
+    ProviderKind::OpenAiResponses,
+    ProviderKind::XaiResponses,
+    ProviderKind::AnthropicMessages,
+];
 
 impl ProviderKind {
-    /// This provider's registry row.
-    pub const fn identity(self) -> &'static ProviderIdentity {
+    const fn identity(self) -> &'static ProviderIdentity {
         match self {
             ProviderKind::OpenAiResponses => &OPENAI_IDENTITY,
             ProviderKind::AnthropicMessages => &ANTHROPIC_IDENTITY,
             ProviderKind::XaiResponses => &XAI_IDENTITY,
+            ProviderKind::LibraxisResponses => &LIBRAXIS_IDENTITY,
         }
     }
 
@@ -182,39 +231,25 @@ impl ProviderKind {
         self.identity().display_name
     }
 
-    /// Env var / Keychain account holding the assistive-lane API key for this
-    /// provider. OpenAI shares the assistive-lane key; Anthropic has its own so
-    /// the two secrets coexist and switching providers never overwrites a key.
-    pub const fn api_key_env_key(self) -> &'static str {
-        self.identity().api_key_env_key
-    }
-
-    /// The protocol this provider speaks. Branch on this, not on the variant,
+    /// The protocol this vendor speaks. Branch on this, not on the variant,
     /// whenever the question is "what shape does the request take".
     pub const fn wire_family(self) -> WireFamily {
         self.identity().wire_family
     }
 
-    /// Whether `model` is an id this provider actually serves.
-    ///
-    /// A row that declares prefixes owns exactly those. The catch-all row (no
-    /// prefixes) owns everything the other rows do not claim, so OpenAI keeps
-    /// accepting unreleased ids while still refusing `claude-*` and `grok-*`.
-    pub fn owns_model(self, model: &str) -> bool {
-        let prefixes = self.identity().model_prefixes;
-        if !prefixes.is_empty() {
-            return prefixes.iter().any(|prefix| model.starts_with(prefix));
-        }
-        !PROVIDER_REGISTRY.iter().any(|row| {
-            row.kind != self
-                && row
-                    .model_prefixes
-                    .iter()
-                    .any(|prefix| model.starts_with(prefix))
-        })
+    /// The vendor's pinned wire endpoint. There is no override: a different
+    /// host is a [`CustomProvider`].
+    pub const fn endpoint(self) -> &'static str {
+        self.identity().endpoint
     }
 
-    /// This provider's seed model for `lane`, used until live discovery answers.
+    /// Keychain account holding this vendor's API key. Every vendor owns a
+    /// distinct account so switching providers never overwrites a key.
+    pub const fn api_key_account(self) -> &'static str {
+        self.identity().api_key_account
+    }
+
+    /// This vendor's seed model for `lane`, used until live discovery answers.
     pub const fn default_model(self, lane: LlmMode) -> &'static str {
         match lane {
             LlmMode::Formatting => self.identity().formatting_model,
@@ -222,99 +257,36 @@ impl ProviderKind {
         }
     }
 
-    /// Whether the un-prefixed lane configuration (`LLM_ENDPOINT`, `LLM_MODEL`,
-    /// `settings.llm_endpoint`, …) describes this provider.
-    ///
-    /// Those keys predate multi-provider support, so they mean the default
-    /// provider and nothing else. This is a guard, not a formality: an operator
-    /// whose `LLM_ENDPOINT` points at `api.openai.com` and who then switches the
-    /// lane to Anthropic must not have Anthropic traffic sent to OpenAI's host.
-    pub fn owns_generic_lane_config(self) -> bool {
-        self == ProviderKind::default()
+    /// Host of the pinned endpoint, for legacy endpoint → vendor migration.
+    pub fn host(self) -> &'static str {
+        endpoint_host(self.endpoint())
+    }
+
+    /// Whether `host` is one this vendor answers on (pinned host plus any
+    /// extra hosts the vendor row declares, e.g. Libraxis' `.cloud`).
+    pub fn matches_host(self, host: &str) -> bool {
+        host.eq_ignore_ascii_case(self.host())
+            || self
+                .identity()
+                .extra_hosts
+                .iter()
+                .any(|candidate| host.eq_ignore_ascii_case(candidate))
     }
 }
 
-/// How a provider authenticates requests for a lane.
-///
-/// `ApiKey` is the default and preserves the existing request builders. The
-/// provider-account path is an explicit opt-in foundation for future ChatGPT
-/// sign-in; it does not change any caller until a request path chooses this
-/// mode and asks for a bearer header.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum AuthMode {
-    /// Static API key from env or Keychain. The default and the only mode any
-    /// request builder uses today.
-    #[default]
-    ApiKey,
-    /// OAuth tokens obtained by signing in to the provider account, refreshed
-    /// on demand by `account_auth`.
-    ProviderAccount,
+/// Host component of a URL (`https://api.x.ai/v1/responses` → `api.x.ai`).
+pub fn endpoint_host(endpoint: &str) -> &str {
+    endpoint
+        .split("://")
+        .nth(1)
+        .unwrap_or(endpoint)
+        .split(['/', ':', '?', '#'])
+        .next()
+        .unwrap_or_default()
 }
-
-impl AuthMode {
-    /// Canonical kebab spelling used in env vars and persisted config.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            AuthMode::ApiKey => "api-key",
-            AuthMode::ProviderAccount => "provider-account",
-        }
-    }
-}
-
-impl std::fmt::Display for AuthMode {
-    /// Write the canonical kebab spelling (`api-key` / `provider-account`).
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// Error returned when an auth-mode string cannot be mapped to an [`AuthMode`].
-/// Carries the normalised (trimmed, lowercased) input so the message names what
-/// the operator actually configured.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParseAuthModeError(pub String);
-
-impl std::fmt::Display for ParseAuthModeError {
-    /// Operator-facing message naming the rejected auth-mode string.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "unknown auth mode '{}' (expected 'api-key' or 'provider-account')",
-            self.0
-        )
-    }
-}
-
-impl std::error::Error for ParseAuthModeError {}
-
-impl FromStr for AuthMode {
-    /// Error type for unknown auth-mode spellings.
-    type Err = ParseAuthModeError;
-
-    /// Parse kebab/snake/bare aliases into [`AuthMode`]; unknown spellings err.
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "api-key" | "api_key" | "apikey" | "key" => Ok(AuthMode::ApiKey),
-            "provider-account" | "provider_account" | "account" | "chatgpt" => {
-                Ok(AuthMode::ProviderAccount)
-            }
-            other => Err(ParseAuthModeError(other.to_string())),
-        }
-    }
-}
-
-/// Every provider handle, in [`PROVIDER_REGISTRY`] order. Settings discovers
-/// model options via live provider APIs. Kept as its own const because Rust has
-/// no stable const `map`; `registry_and_all_providers_stay_in_lockstep` is the
-/// test that keeps the two from drifting.
-pub const ALL_PROVIDERS: [ProviderKind; PROVIDER_REGISTRY.len()] = [
-    ProviderKind::OpenAiResponses,
-    ProviderKind::AnthropicMessages,
-    ProviderKind::XaiResponses,
-];
 
 impl Default for ProviderKind {
-    /// OpenAI Responses is the default provider — never regress this without a
+    /// OpenAI Responses is the default vendor — never regress this without a
     /// test that explicitly configures another provider.
     fn default() -> Self {
         ProviderKind::OpenAiResponses
@@ -347,13 +319,11 @@ impl std::fmt::Display for ParseProviderError {
 impl std::error::Error for ParseProviderError {}
 
 impl FromStr for ProviderKind {
-    /// Error type for unknown provider identity strings.
     type Err = ParseProviderError;
 
-    /// Parse a provider identity against the registry. Case-insensitive,
+    /// Parse a vendor identity against the registry. Case-insensitive,
     /// surrounding whitespace trimmed. Accepts each row's canonical kebab
-    /// spelling plus its declared aliases. Anything else is an error (callers
-    /// decide whether to fall back to the default — see [`resolve_provider`]).
+    /// spelling plus its declared aliases.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let needle = s.trim().to_ascii_lowercase();
         PROVIDER_REGISTRY
@@ -361,6 +331,293 @@ impl FromStr for ProviderKind {
             .find(|row| row.canonical == needle || row.aliases.contains(&needle.as_str()))
             .map(|row| row.kind)
             .ok_or(ParseProviderError(needle))
+    }
+}
+
+/// What a lane points at: a pinned vendor or a Custom provider row by id.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ProviderRef {
+    /// One of [`ALL_PROVIDERS`].
+    Vendor(ProviderKind),
+    /// `settings.providers.custom[]` row, by its immutable slug id.
+    Custom(String),
+}
+
+/// Prefix of a Custom provider reference as persisted in settings and env.
+const CUSTOM_REF_PREFIX: &str = "custom:";
+
+impl ProviderRef {
+    /// Persisted spelling: the vendor's canonical id or `custom:<id>`.
+    pub fn as_string(&self) -> String {
+        self.as_str().into_owned()
+    }
+
+    /// Same as [`Self::as_string`] without allocating for vendors.
+    pub fn as_str(&self) -> Cow<'_, str> {
+        match self {
+            ProviderRef::Vendor(kind) => Cow::Borrowed(kind.as_str()),
+            ProviderRef::Custom(id) => Cow::Owned(format!("{CUSTOM_REF_PREFIX}{id}")),
+        }
+    }
+
+    /// Parse the persisted spelling. Vendor aliases are accepted; a custom id
+    /// is taken verbatim after `custom:` (trimmed, lowercased) and must be a
+    /// non-empty slug.
+    pub fn parse(raw: &str) -> Option<Self> {
+        let trimmed = raw.trim();
+        if let Some(id) = trimmed
+            .strip_prefix(CUSTOM_REF_PREFIX)
+            .or_else(|| trimmed.strip_prefix("CUSTOM:"))
+        {
+            let id = id.trim().to_ascii_lowercase();
+            return (!id.is_empty() && slug(&id) == id).then_some(ProviderRef::Custom(id));
+        }
+        ProviderKind::from_str(trimmed)
+            .ok()
+            .map(ProviderRef::Vendor)
+    }
+
+    /// The vendor, if this is a vendor reference.
+    pub fn vendor(&self) -> Option<ProviderKind> {
+        match self {
+            ProviderRef::Vendor(kind) => Some(*kind),
+            ProviderRef::Custom(_) => None,
+        }
+    }
+
+    /// The custom row id, if this is a custom reference.
+    pub fn custom_id(&self) -> Option<&str> {
+        match self {
+            ProviderRef::Vendor(_) => None,
+            ProviderRef::Custom(id) => Some(id),
+        }
+    }
+}
+
+impl Default for ProviderRef {
+    /// The default vendor, so a fresh install and a removed custom row both
+    /// land on OpenAI.
+    fn default() -> Self {
+        ProviderRef::Vendor(ProviderKind::OpenAiResponses)
+    }
+}
+
+impl std::fmt::Display for ProviderRef {
+    /// Write the persisted spelling.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.as_str())
+    }
+}
+
+/// An operator-defined provider: any host speaking a known wire.
+///
+/// The `id` is derived from the name once and never changes, because it is
+/// the Keychain account suffix and the lane pointer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomProvider {
+    pub id: String,
+    pub name: String,
+    pub wire: WireFamily,
+    pub endpoint: String,
+}
+
+impl CustomProvider {
+    /// Validate and build a row: `id = slug(name)` must be non-empty, the
+    /// endpoint is normalized onto the wire's canonical path and must carry an
+    /// `http(s)` scheme and a host.
+    pub fn new(name: &str, wire: WireFamily, endpoint: &str) -> Result<Self, ProviderError> {
+        let name = name.trim();
+        let id = slug(name);
+        if id.is_empty() {
+            return Err(ProviderError::EmptyName);
+        }
+        let endpoint = wire.normalize_endpoint(endpoint);
+        let scheme_ok = endpoint.starts_with("http://") || endpoint.starts_with("https://");
+        if !scheme_ok || endpoint_host(&endpoint).is_empty() {
+            return Err(ProviderError::InvalidEndpoint(endpoint));
+        }
+        Ok(Self {
+            id,
+            name: name.to_string(),
+            wire,
+            endpoint,
+        })
+    }
+
+    /// Keychain account holding this row's API key.
+    pub fn key_account(&self) -> String {
+        custom_key_account(&self.id)
+    }
+}
+
+/// Lowercase `[a-z0-9-]` slug: every other run of characters becomes one `-`,
+/// leading/trailing dashes are dropped.
+fn slug(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut pending_dash = false;
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if pending_dash && !out.is_empty() {
+                out.push('-');
+            }
+            pending_dash = false;
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            pending_dash = true;
+        }
+    }
+    out
+}
+
+/// Keychain account for a Custom provider id: `LLM_CUSTOM_<ID>_API_KEY` with
+/// the slug uppercased and dashes turned into underscores.
+pub fn custom_key_account(id: &str) -> String {
+    format!(
+        "LLM_CUSTOM_{}_API_KEY",
+        id.to_ascii_uppercase().replace('-', "_")
+    )
+}
+
+/// Whether an account name has the Custom provider shape.
+pub fn is_custom_key_account(account: &str) -> bool {
+    account
+        .strip_prefix("LLM_CUSTOM_")
+        .and_then(|rest| rest.strip_suffix("_API_KEY"))
+        .is_some_and(|middle| !middle.is_empty())
+}
+
+/// Everything that can go wrong building or resolving a provider row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderError {
+    /// The name slugs to nothing (`""`, `"---"`, `"  "`).
+    EmptyName,
+    /// Missing `http(s)` scheme or host; carries the normalized endpoint.
+    InvalidEndpoint(String),
+    /// A row with this id already exists.
+    DuplicateId(String),
+    /// No vendor or custom row answers to this reference.
+    UnknownProvider(String),
+}
+
+impl std::fmt::Display for ProviderError {
+    /// Operator-facing sentence for Settings error rows.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProviderError::EmptyName => f.write_str("provider name must contain a letter or digit"),
+            ProviderError::InvalidEndpoint(endpoint) => {
+                write!(
+                    f,
+                    "endpoint '{endpoint}' needs an http(s) scheme and a host"
+                )
+            }
+            ProviderError::DuplicateId(id) => {
+                write!(f, "a custom provider with id '{id}' already exists")
+            }
+            ProviderError::UnknownProvider(reference) => {
+                write!(f, "unknown provider '{reference}'")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ProviderError {}
+
+/// A [`ProviderRef`] resolved against the registry: everything a lane, a
+/// probe, or model discovery needs, with no further lookups.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedProvider {
+    pub reference: ProviderRef,
+    pub display_name: String,
+    pub wire: WireFamily,
+    pub endpoint: String,
+    pub key_account: String,
+    /// Vendors always need a key (or a signed-in account); a Custom host may
+    /// be key-optional, so the lane stays available without one.
+    pub key_required: bool,
+    /// `Some` only for vendors with a row in the OAuth registry.
+    pub oauth_vendor: Option<ProviderKind>,
+}
+
+impl ResolvedProvider {
+    /// Whether `model` accepts image input on this provider. Vendors answer
+    /// through [`capability_policy`]; a Custom host is permissive — it returns
+    /// a real error, and guessing would silently drop attachments.
+    pub fn supports_vision(&self, model: &str) -> bool {
+        match self.reference.vendor() {
+            Some(kind) => provider_supports_vision(kind, model),
+            None => true,
+        }
+    }
+}
+
+/// The three pinned vendors plus the operator's Custom rows.
+#[derive(Clone, Debug, Default)]
+pub struct ProviderRegistry {
+    custom: Vec<CustomProvider>,
+}
+
+impl ProviderRegistry {
+    /// Build from custom rows in settings order.
+    pub fn new(custom: Vec<CustomProvider>) -> Self {
+        Self { custom }
+    }
+
+    /// Build from the persisted `providers.custom[]` rows.
+    pub fn from_settings(settings: &UserSettings) -> Self {
+        Self::new(settings.llm_custom_providers.clone())
+    }
+
+    /// Resolve a reference. `None` means a Custom id that no longer exists —
+    /// the loader turns that into an unavailable lane, not a crash.
+    pub fn resolve(&self, reference: &ProviderRef) -> Option<ResolvedProvider> {
+        match reference {
+            ProviderRef::Vendor(kind) => Some(Self::resolve_vendor(*kind)),
+            ProviderRef::Custom(id) => self
+                .custom
+                .iter()
+                .find(|row| row.id == *id)
+                .map(Self::resolve_custom),
+        }
+    }
+
+    /// Vendors in [`ALL_PROVIDERS`] order, then custom rows in settings order.
+    pub fn all(&self) -> Vec<ResolvedProvider> {
+        ALL_PROVIDERS
+            .iter()
+            .map(|kind| Self::resolve_vendor(*kind))
+            .chain(self.custom.iter().map(Self::resolve_custom))
+            .collect()
+    }
+
+    /// The custom rows this registry was built from.
+    pub fn custom(&self) -> &[CustomProvider] {
+        &self.custom
+    }
+
+    fn resolve_vendor(kind: ProviderKind) -> ResolvedProvider {
+        ResolvedProvider {
+            reference: ProviderRef::Vendor(kind),
+            display_name: kind.display_name().to_string(),
+            wire: kind.wire_family(),
+            endpoint: kind.endpoint().to_string(),
+            key_account: kind.api_key_account().to_string(),
+            key_required: true,
+            oauth_vendor: account_auth::provider_oauth_config(kind)
+                .ok()
+                .map(|row| row.provider),
+        }
+    }
+
+    fn resolve_custom(row: &CustomProvider) -> ResolvedProvider {
+        ResolvedProvider {
+            reference: ProviderRef::Custom(row.id.clone()),
+            display_name: row.name.clone(),
+            wire: row.wire,
+            endpoint: row.endpoint.clone(),
+            key_account: row.key_account(),
+            key_required: false,
+            oauth_vendor: None,
+        }
     }
 }
 
@@ -405,18 +662,13 @@ pub struct CapabilityPolicy {
     pub previous_response_id: bool,
     /// Whether this `(provider, model)` accepts image (vision) input blocks.
     /// `false` ⇒ the send path must surface a readable error instead of silently
-    /// dropping attached images. Unknown Anthropic models default to the current
-    /// vision-capable policy; this flag is the honest seam for a future text-only
-    /// model family.
+    /// dropping attached images.
     pub supports_vision: bool,
 }
 
 impl CapabilityPolicy {
     /// Sanitize a requested temperature against this policy: returns the value
     /// only when sampling params are allowed, otherwise `None` (omit the param).
-    ///
-    /// This is the seam W2/W3 call when building an Anthropic request so a
-    /// non-default `temperature` never reaches an Opus-4.8 send.
     pub fn sanitize_temperature(&self, requested: Option<f32>) -> Option<f32> {
         if self.allow_sampling_params {
             requested
@@ -436,8 +688,6 @@ impl CapabilityPolicy {
 fn anthropic_policy_for_model(model: &str) -> CapabilityPolicy {
     let m = model.to_ascii_lowercase();
     if m.contains("sonnet") {
-        // claude-sonnet-4-6 (formatting): tolerates temperature; budget_tokens
-        // deprecated (not a hard 400).
         CapabilityPolicy {
             allow_sampling_params: true,
             budget_tokens: BudgetTokensPolicy::Deprecated,
@@ -448,8 +698,6 @@ fn anthropic_policy_for_model(model: &str) -> CapabilityPolicy {
             supports_vision: true,
         }
     } else {
-        // claude-opus-4-8 (assistive) and unknown Anthropic models: strict.
-        // Sampling params → 400; manual budget_tokens → 400.
         CapabilityPolicy {
             allow_sampling_params: false,
             budget_tokens: BudgetTokensPolicy::Hard400,
@@ -476,20 +724,16 @@ const fn openai_policy() -> CapabilityPolicy {
     }
 }
 
-/// Whether the given `(provider, model)` accepts image (vision) input. Thin
+/// Whether the given `(vendor, model)` accepts image (vision) input. Thin
 /// accessor over [`capability_policy`] for send paths that only need the vision
-/// gate (e.g. the composer-attachment bridge). Keeps the vision decision in the
-/// capability layer rather than duplicated at the FFI boundary.
+/// gate. Custom providers go through [`ResolvedProvider::supports_vision`].
 pub fn provider_supports_vision(provider: ProviderKind, model: &str) -> bool {
     capability_policy(provider, model).supports_vision
 }
 
-/// Resolve the capability policy for a `(provider, model)` pair.
-///
-/// This is the per-model matrix from CORRECTION.md, keyed by [`WireFamily`] so
-/// a vendor that serves an existing protocol inherits its policy instead of
-/// forking one. OpenAI Responses ignores `model` (its policy is uniform and
-/// permissive); Anthropic Messages branches on model family.
+/// Resolve the capability policy for a `(vendor, model)` pair, keyed by
+/// [`WireFamily`] so a vendor that serves an existing protocol inherits its
+/// policy instead of forking one.
 pub fn capability_policy(provider: ProviderKind, model: &str) -> CapabilityPolicy {
     match provider.wire_family() {
         WireFamily::OpenAiResponses => openai_policy(),
@@ -500,14 +744,14 @@ pub fn capability_policy(provider: ProviderKind, model: &str) -> CapabilityPolic
 /// Which formatting/assistive lane a provider value is being resolved for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmMode {
-    /// Fast/cheap formatting path (`LLM_FORMATTING_PROVIDER`).
+    /// Fast/cheap formatting path.
     Formatting,
-    /// Assistive / agent path (`LLM_ASSISTIVE_PROVIDER`).
+    /// Assistive / agent path.
     Assistive,
 }
 
 impl LlmMode {
-    /// The env var carrying the provider identity for this lane.
+    /// The env var carrying the provider reference for this lane.
     pub const fn provider_env_key(self) -> &'static str {
         match self {
             LlmMode::Formatting => "LLM_FORMATTING_PROVIDER",
@@ -515,177 +759,343 @@ impl LlmMode {
         }
     }
 
-    /// The env var carrying the auth mode for this lane.
-    pub const fn auth_mode_env_key(self) -> &'static str {
+    /// The env var carrying the model id for this lane.
+    pub const fn model_env_key(self) -> &'static str {
         match self {
-            LlmMode::Formatting => "LLM_FORMATTING_AUTH_MODE",
-            LlmMode::Assistive => "LLM_ASSISTIVE_AUTH_MODE",
+            LlmMode::Formatting => "LLM_FORMATTING_MODEL",
+            LlmMode::Assistive => "LLM_ASSISTIVE_MODEL",
         }
     }
 }
 
-/// Resolve the configured provider for a lane from process env, defaulting to
-/// OpenAI.
-///
-/// An unset/empty value ⇒ [`ProviderKind::OpenAiResponses`]. An *invalid*
-/// value is logged and also falls back to OpenAI — misconfiguration must never
-/// silently route to an unintended provider, and OpenAI is the protected
-/// default. Callers wanting strict validation should use [`ProviderKind::from_str`]
-/// directly.
-pub fn resolve_provider(mode: LlmMode) -> ProviderKind {
-    let key = mode.provider_env_key();
-    match std::env::var(key) {
-        Ok(raw) if !raw.trim().is_empty() => match ProviderKind::from_str(&raw) {
-            Ok(kind) => kind,
-            Err(e) => {
-                warn!("{key}: {e}; falling back to {}", ProviderKind::default());
-                ProviderKind::default()
-            }
-        },
-        _ => ProviderKind::default(),
-    }
-}
-
-/// Resolve the configured auth mode for a lane from process env, defaulting to
-/// API keys. Invalid values are logged and fall back to `ApiKey`, so account
-/// auth can never become active by typo.
-pub fn resolve_auth_mode(mode: LlmMode) -> AuthMode {
-    let key = mode.auth_mode_env_key();
-    match std::env::var(key) {
-        Ok(raw) if !raw.trim().is_empty() => match AuthMode::from_str(&raw) {
-            Ok(kind) => kind,
-            Err(e) => {
-                warn!("{key}: {e}; falling back to {}", AuthMode::default());
-                AuthMode::default()
-            }
-        },
-        _ => AuthMode::default(),
-    }
-}
-
-/// Optional Authorization header for the provider-account path.
-///
-/// Request builders are intentionally unchanged in this wave. Future callers can
-/// ask this helper for a bearer header when `AuthMode=ProviderAccount`; the
-/// default `ApiKey` mode returns `Ok(None)` and preserves the current API-key
-/// behavior exactly.
-pub async fn provider_account_authorization_header(
-    provider: ProviderKind,
-    mode: LlmMode,
-) -> Result<Option<String>, account_auth::AccountAuthError> {
-    if resolve_auth_mode(mode) != AuthMode::ProviderAccount {
-        return Ok(None);
-    }
-    account_auth::authorization_header(provider).await.map(Some)
-}
-
-/// Unit tests pinning registry identity, capability policy, and env resolution.
+/// Unit tests pinning registry identity, references, custom rows, and policy.
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serial_test::serial;
 
-    // ---- identity defaults ----
-
-    /// OpenAI Responses is Default; AuthMode defaults to ApiKey.
+    /// OpenAI Responses is the default vendor and the default reference.
     #[test]
     fn default_provider_is_openai() {
         assert_eq!(ProviderKind::default(), ProviderKind::OpenAiResponses);
-        assert_eq!(ProviderKind::default().as_str(), "openai-responses");
-        assert_eq!(AuthMode::default(), AuthMode::ApiKey);
+        assert_eq!(
+            ProviderRef::default(),
+            ProviderRef::Vendor(ProviderKind::OpenAiResponses)
+        );
+        assert_eq!(ProviderRef::default().as_string(), "openai-responses");
     }
 
-    /// Canonical `as_str` values parse back through `FromStr`.
+    /// Every canonical and alias spelling resolves to its registry row, and no
+    /// two rows share a spelling, a key account, or a label.
     #[test]
-    fn as_str_roundtrips_through_from_str() {
-        for kind in [
-            ProviderKind::OpenAiResponses,
-            ProviderKind::AnthropicMessages,
-        ] {
-            assert_eq!(ProviderKind::from_str(kind.as_str()), Ok(kind));
+    fn registry_spellings_and_accounts_are_unique_and_parse_back() {
+        let mut spellings: Vec<&str> = Vec::new();
+        let mut accounts: Vec<&str> = Vec::new();
+        for row in PROVIDER_REGISTRY {
+            assert_eq!(ProviderKind::from_str(row.canonical), Ok(row.kind));
+            for alias in row.aliases {
+                assert_eq!(
+                    ProviderKind::from_str(&alias.to_ascii_uppercase()),
+                    Ok(row.kind)
+                );
+            }
+            spellings.push(row.canonical);
+            spellings.extend(row.aliases);
+            accounts.push(row.api_key_account);
+        }
+        for list in [spellings, accounts] {
+            let mut sorted = list.clone();
+            sorted.sort_unstable();
+            sorted.dedup();
+            assert_eq!(
+                sorted.len(),
+                list.len(),
+                "duplicate registry value in {list:?}"
+            );
+        }
+        assert_eq!(
+            ProviderKind::from_str("gemini").unwrap_err(),
+            ParseProviderError("gemini".to_string())
+        );
+    }
+
+    /// The one assertion on picker order: `ALL_PROVIDERS` matches the row
+    /// table and reads OpenAI, xAI, Anthropic, Libraxis (§B.3 correction);
+    /// the lane default stays OpenAI.
+    #[test]
+    fn all_providers_follow_registry_order() {
+        let from_registry: Vec<ProviderKind> =
+            PROVIDER_REGISTRY.iter().map(|row| row.kind).collect();
+        assert_eq!(from_registry, ALL_PROVIDERS.to_vec());
+        assert_eq!(
+            ALL_PROVIDERS,
+            [
+                ProviderKind::LibraxisResponses,
+                ProviderKind::OpenAiResponses,
+                ProviderKind::XaiResponses,
+                ProviderKind::AnthropicMessages,
+            ]
+        );
+    }
+
+    /// Vendor endpoints are compile-time constants with a distinct key account
+    /// each; the Anthropic row reads its vendor module.
+    #[test]
+    fn vendor_rows_pin_endpoint_account_and_host() {
+        let libraxis = ProviderKind::LibraxisResponses;
+        assert_eq!(libraxis.as_str(), "libraxis-responses");
+        assert_eq!(ProviderKind::from_str("lbrx"), Ok(libraxis));
+        assert_eq!(libraxis.endpoint(), "https://api.libraxis.com/v1/responses");
+        assert_eq!(libraxis.api_key_account(), "LLM_LIBRAXIS_API_KEY");
+        assert_eq!(libraxis.wire_family(), WireFamily::OpenAiResponses);
+        assert_eq!(libraxis.default_model(LlmMode::Assistive), "buddy");
+        assert!(libraxis.matches_host("api.libraxis.com"));
+        assert!(libraxis.matches_host("API.libraxis.cloud"));
+        assert!(!libraxis.matches_host("api.openai.com"));
+        assert!(!ProviderKind::OpenAiResponses.matches_host("api.libraxis.cloud"));
+        assert_eq!(
+            ProviderKind::OpenAiResponses.endpoint(),
+            "https://api.openai.com/v1/responses"
+        );
+        assert_eq!(
+            ProviderKind::OpenAiResponses.api_key_account(),
+            "LLM_OPENAI_API_KEY"
+        );
+        assert_eq!(ProviderKind::OpenAiResponses.host(), "api.openai.com");
+        assert_eq!(
+            ProviderKind::XaiResponses.endpoint(),
+            "https://api.x.ai/v1/responses"
+        );
+        assert_eq!(
+            ProviderKind::XaiResponses.api_key_account(),
+            "LLM_XAI_API_KEY"
+        );
+        assert_eq!(
+            ProviderKind::XaiResponses.wire_family(),
+            WireFamily::OpenAiResponses
+        );
+        assert_eq!(
+            ProviderKind::AnthropicMessages.endpoint(),
+            vendors::anthropic::ENDPOINT
+        );
+        assert_eq!(
+            ProviderKind::AnthropicMessages.api_key_account(),
+            "LLM_ANTHROPIC_API_KEY"
+        );
+        assert_eq!(ProviderKind::AnthropicMessages.host(), "api.anthropic.com");
+        assert_eq!(
+            ProviderKind::AnthropicMessages.default_model(LlmMode::Formatting),
+            "claude-sonnet-5"
+        );
+        assert_eq!(
+            ProviderKind::AnthropicMessages.default_model(LlmMode::Assistive),
+            "claude-opus-5"
+        );
+        for kind in ALL_PROVIDERS {
+            for lane in [LlmMode::Formatting, LlmMode::Assistive] {
+                assert!(!kind.default_model(lane).is_empty());
+            }
         }
     }
 
-    // ---- provider parsing ----
-
-    /// Accepts canonical kebab plus vendor aliases, case- and whitespace-tolerant.
+    /// Wire spellings round-trip and both normalizers land on the canonical path.
     #[test]
-    fn parses_canonical_and_alias_spellings() {
+    fn wire_family_parses_and_normalizes_endpoints() {
+        for wire in [WireFamily::OpenAiResponses, WireFamily::AnthropicMessages] {
+            assert_eq!(WireFamily::parse(wire.as_str()), Some(wire));
+        }
         assert_eq!(
-            ProviderKind::from_str("openai-responses"),
-            Ok(ProviderKind::OpenAiResponses)
+            WireFamily::parse("openai-responses"),
+            Some(WireFamily::OpenAiResponses)
         );
         assert_eq!(
-            ProviderKind::from_str("  OpenAI  "),
-            Ok(ProviderKind::OpenAiResponses)
+            WireFamily::parse("Anthropic-Messages"),
+            Some(WireFamily::AnthropicMessages)
+        );
+        assert_eq!(WireFamily::parse("grpc"), None);
+        let responses = WireFamily::OpenAiResponses;
+        assert_eq!(
+            responses.normalize_endpoint("https://api.libraxis.com/v1/chat/completions/"),
+            "https://api.libraxis.com/v1/responses"
         );
         assert_eq!(
-            ProviderKind::from_str("anthropic-messages"),
-            Ok(ProviderKind::AnthropicMessages)
+            responses.normalize_endpoint(" http://localhost:8080/v1 "),
+            "http://localhost:8080/v1/responses"
         );
         assert_eq!(
-            ProviderKind::from_str("ANTHROPIC"),
-            Ok(ProviderKind::AnthropicMessages)
+            responses.normalize_endpoint("http://localhost:8080"),
+            "http://localhost:8080/v1/responses"
+        );
+        assert_eq!(
+            WireFamily::AnthropicMessages.normalize_endpoint("https://proxy.example/v1/responses"),
+            "https://proxy.example/v1/messages"
+        );
+        assert_eq!(
+            serde_json::to_string(&WireFamily::AnthropicMessages).unwrap(),
+            "\"messages\""
         );
     }
 
-    /// Unknown provider spellings surface `ParseProviderError`, not a silent pick.
+    /// `custom:<id>` and vendor spellings round-trip through `parse`.
     #[test]
-    fn invalid_provider_is_an_error() {
-        let err = ProviderKind::from_str("gemini").unwrap_err();
-        assert_eq!(err, ParseProviderError("gemini".to_string()));
-        assert!(err.to_string().contains("gemini"));
-    }
-
-    /// Auth-mode aliases map correctly; unknown values reject.
-    #[test]
-    fn parses_auth_mode_spellings() {
-        assert_eq!(AuthMode::from_str("api-key"), Ok(AuthMode::ApiKey));
+    fn provider_ref_round_trips_through_its_persisted_spelling() {
+        let custom = ProviderRef::Custom("api-libraxis-com".to_string());
+        assert_eq!(custom.as_string(), "custom:api-libraxis-com");
+        assert_eq!(custom.as_str(), Cow::<str>::Owned(custom.as_string()));
         assert_eq!(
-            AuthMode::from_str("provider_account"),
-            Ok(AuthMode::ProviderAccount)
+            ProviderRef::parse(" custom:API-Libraxis-com "),
+            Some(custom.clone())
         );
-        assert!(AuthMode::from_str("oauth-ish").is_err());
+        assert_eq!(custom.custom_id(), Some("api-libraxis-com"));
+        assert_eq!(custom.vendor(), None);
+        let xai = ProviderRef::Vendor(ProviderKind::XaiResponses);
+        assert_eq!(ProviderRef::parse("grok"), Some(xai.clone()));
+        assert!(matches!(xai.as_str(), Cow::Borrowed("xai-responses")));
+        assert_eq!(xai.vendor(), Some(ProviderKind::XaiResponses));
+        assert_eq!(ProviderRef::parse("custom:"), None);
+        assert_eq!(ProviderRef::parse("custom:not a slug"), None);
+        assert_eq!(ProviderRef::parse("gemini"), None);
     }
 
-    // ---- per-model capability policy ----
+    /// A custom row slugs its name, normalizes its endpoint, and refuses
+    /// empty names or endpoints without scheme/host.
+    #[test]
+    fn custom_provider_slugs_name_and_validates_endpoint() {
+        let row = CustomProvider::new(
+            "api.libraxis.com",
+            WireFamily::OpenAiResponses,
+            "https://api.libraxis.com/v1/responses",
+        )
+        .unwrap();
+        assert_eq!(row.id, "api-libraxis-com");
+        assert_eq!(row.name, "api.libraxis.com");
+        assert_eq!(row.endpoint, "https://api.libraxis.com/v1/responses");
+        assert_eq!(row.key_account(), "LLM_CUSTOM_API_LIBRAXIS_COM_API_KEY");
+        let local = CustomProvider::new(
+            "  My Local  LLM ",
+            WireFamily::OpenAiResponses,
+            "http://localhost:8080",
+        )
+        .unwrap();
+        assert_eq!(local.id, "my-local-llm");
+        assert_eq!(local.endpoint, "http://localhost:8080/v1/responses");
+        assert_eq!(
+            CustomProvider::new("---", WireFamily::OpenAiResponses, "http://h"),
+            Err(ProviderError::EmptyName)
+        );
+        assert_eq!(
+            CustomProvider::new("x", WireFamily::OpenAiResponses, "localhost:8080"),
+            Err(ProviderError::InvalidEndpoint(
+                "localhost:8080/v1/responses".to_string()
+            ))
+        );
+        assert_eq!(
+            CustomProvider::new("x", WireFamily::AnthropicMessages, "https:///v1/messages"),
+            Err(ProviderError::InvalidEndpoint(
+                "https:///v1/messages".to_string()
+            ))
+        );
+        let json = serde_json::to_value(&row).unwrap();
+        assert_eq!(json["wire"], "responses");
+        assert_eq!(serde_json::from_value::<CustomProvider>(json).unwrap(), row);
+    }
+
+    /// Custom key accounts follow one shape and only that shape is recognised.
+    #[test]
+    fn custom_key_account_shape() {
+        assert_eq!(
+            custom_key_account("api-libraxis-com"),
+            "LLM_CUSTOM_API_LIBRAXIS_COM_API_KEY"
+        );
+        assert!(is_custom_key_account("LLM_CUSTOM_API_LIBRAXIS_COM_API_KEY"));
+        assert!(!is_custom_key_account("LLM_CUSTOM__API_KEY"));
+        assert!(!is_custom_key_account("LLM_OPENAI_API_KEY"));
+        assert!(!is_custom_key_account("LLM_CUSTOM_X"));
+    }
+
+    /// The registry lists vendors first in picker order, then custom rows in
+    /// settings order, and resolves both shapes with the contract's fields.
+    #[test]
+    fn registry_resolves_vendors_and_custom_rows() {
+        let libraxis = CustomProvider::new(
+            "api.libraxis.com",
+            WireFamily::OpenAiResponses,
+            "https://api.libraxis.com/v1/responses",
+        )
+        .unwrap();
+        let row = libraxis;
+        let registry = ProviderRegistry::new(vec![row.clone()]);
+        let all = registry.all();
+        assert_eq!(all.len(), 5);
+        assert_eq!(
+            all.iter()
+                .map(|p| p.reference.as_string())
+                .collect::<Vec<_>>(),
+            [
+                "libraxis-responses",
+                "openai-responses",
+                "xai-responses",
+                "anthropic-messages",
+                "custom:api-libraxis-com",
+            ]
+        );
+        let libraxis = registry
+            .resolve(&ProviderRef::Vendor(ProviderKind::LibraxisResponses))
+            .unwrap();
+        assert!(libraxis.key_required);
+        assert_eq!(libraxis.oauth_vendor, None);
+        assert!(libraxis.supports_vision("buddy"));
+        let openai = registry.resolve(&ProviderRef::default()).unwrap();
+        assert!(openai.key_required);
+        assert_eq!(openai.oauth_vendor, Some(ProviderKind::OpenAiResponses));
+        assert_eq!(openai.endpoint, "https://api.openai.com/v1/responses");
+        assert_eq!(openai.key_account, "LLM_OPENAI_API_KEY");
+        let custom = registry
+            .resolve(&ProviderRef::Custom("api-libraxis-com".to_string()))
+            .unwrap();
+        assert_eq!(custom.display_name, "api.libraxis.com");
+        assert_eq!(custom.wire, WireFamily::OpenAiResponses);
+        assert_eq!(custom.endpoint, row.endpoint);
+        assert_eq!(custom.key_account, row.key_account());
+        assert!(!custom.key_required);
+        assert_eq!(custom.oauth_vendor, None);
+        assert!(custom.supports_vision("anything"));
+        assert_eq!(
+            registry.resolve(&ProviderRef::Custom("gone".to_string())),
+            None
+        );
+        assert_eq!(registry.custom(), &[row]);
+    }
 
     /// OpenAI policy stays permissive so the Responses request path is untouched.
     #[test]
     fn openai_policy_is_permissive_and_unchanged() {
-        // The OpenAI request path must not be perturbed: sampling allowed,
-        // previous_response_id chaining kept, no Anthropic-only concepts.
         let p = capability_policy(ProviderKind::OpenAiResponses, "gpt-5.5");
         assert!(p.allow_sampling_params);
         assert!(p.previous_response_id);
         assert!(!p.refusal_stop_reason);
         assert!(!p.adaptive_thinking);
         assert_eq!(p.budget_tokens, BudgetTokensPolicy::NotApplicable);
-        assert!(
-            p.supports_vision,
-            "OpenAI Responses models accept image input by default"
-        );
-        // Model must not matter for OpenAI.
+        assert!(p.supports_vision);
         assert_eq!(
             capability_policy(ProviderKind::OpenAiResponses, "gpt-4.1"),
             p
         );
+        // xAI shares the Responses wire and therefore the Responses policy.
+        let xai = capability_policy(ProviderKind::XaiResponses, "grok-4.5");
+        assert!(xai.previous_response_id);
+        assert!(!xai.refusal_stop_reason);
     }
 
     /// Opus-4.8: no sampling params, hard-400 budget_tokens, strip temperature.
     #[test]
     fn opus_4_8_rejects_sampling_and_hard_400s_budget_tokens() {
         let p = capability_policy(ProviderKind::AnthropicMessages, "claude-opus-4-8");
-        assert!(
-            !p.allow_sampling_params,
-            "Opus-4.8 rejects temperature/top_p/top_k"
-        );
+        assert!(!p.allow_sampling_params);
         assert_eq!(p.budget_tokens, BudgetTokensPolicy::Hard400);
         assert!(p.adaptive_thinking);
         assert!(p.effort);
         assert!(p.refusal_stop_reason);
         assert!(!p.previous_response_id);
-        // A non-default temperature is stripped for Opus.
         assert_eq!(p.sanitize_temperature(Some(0.7)), None);
     }
 
@@ -693,425 +1103,21 @@ mod tests {
     #[test]
     fn sonnet_4_6_tolerates_temperature_and_deprecates_budget_tokens() {
         let p = capability_policy(ProviderKind::AnthropicMessages, "claude-sonnet-4-6");
-        assert!(p.allow_sampling_params, "Sonnet-4.6 tolerates temperature");
+        assert!(p.allow_sampling_params);
         assert_eq!(p.budget_tokens, BudgetTokensPolicy::Deprecated);
-        assert!(p.adaptive_thinking);
-        assert!(p.effort);
-        assert!(p.refusal_stop_reason);
-        assert!(!p.previous_response_id);
-        // Temperature survives for Sonnet.
         assert_eq!(p.sanitize_temperature(Some(0.3)), Some(0.3));
     }
 
-    /// Unrecognised Anthropic models inherit the strict (Opus) policy.
+    /// Unrecognised Anthropic models inherit the strict (Opus) policy and stay
+    /// vision-capable.
     #[test]
     fn unknown_anthropic_model_falls_back_to_strict_policy() {
-        // Safety: omitting sampling can't 400; sending it can. Unknown ⇒ strict.
         let p = capability_policy(ProviderKind::AnthropicMessages, "claude-future-9");
         assert!(!p.allow_sampling_params);
         assert_eq!(p.budget_tokens, BudgetTokensPolicy::Hard400);
-    }
-
-    // ---- provider identity (display / key account) ----
-
-    /// Every handle exposes a non-empty display label and key-account env name.
-    #[test]
-    fn every_provider_has_display_name_and_key_account() {
-        for kind in ALL_PROVIDERS {
-            assert!(!kind.display_name().is_empty());
-            assert!(!kind.api_key_env_key().is_empty());
-        }
-    }
-
-    /// `ALL_PROVIDERS` is hand-written (no stable const `map`), so it can only
-    /// stay honest if a test pins it to the registry — order included, because
-    /// Settings renders the picker in that order.
-    #[test]
-    fn registry_and_all_providers_stay_in_lockstep() {
-        let from_registry: Vec<ProviderKind> =
-            PROVIDER_REGISTRY.iter().map(|row| row.kind).collect();
-        assert_eq!(from_registry, ALL_PROVIDERS.to_vec());
-        for row in PROVIDER_REGISTRY {
-            assert_eq!(
-                row.kind.identity().canonical,
-                row.canonical,
-                "{} resolves to a different registry row than it declares",
-                row.canonical
-            );
-        }
-    }
-
-    /// A new vendor copy-pasting a row is the realistic mistake: two providers
-    /// sharing a spelling would make `from_str` pick one arbitrarily, and a
-    /// shared key account would let one vendor read the other's secret.
-    #[test]
-    fn registry_rows_never_share_a_spelling_or_a_key_account() {
-        let mut spellings: Vec<&str> = Vec::new();
-        let mut accounts: Vec<&str> = Vec::new();
-        let mut labels: Vec<&str> = Vec::new();
-        for row in PROVIDER_REGISTRY {
-            spellings.push(row.canonical);
-            spellings.extend(row.aliases);
-            accounts.push(row.api_key_env_key);
-            labels.push(row.display_name);
-        }
-        for list in [&spellings, &accounts, &labels] {
-            let mut sorted = list.clone();
-            sorted.sort_unstable();
-            let before = sorted.len();
-            sorted.dedup();
-            assert_eq!(before, sorted.len(), "duplicate registry value in {list:?}");
-        }
-    }
-
-    /// Every canonical and alias spelling resolves to its registry row.
-    #[test]
-    fn every_registry_spelling_parses_back_to_its_row() {
-        for row in PROVIDER_REGISTRY {
-            assert_eq!(ProviderKind::from_str(row.canonical), Ok(row.kind));
-            for alias in row.aliases {
-                assert_eq!(ProviderKind::from_str(alias), Ok(row.kind));
-                assert_eq!(
-                    ProviderKind::from_str(&alias.to_ascii_uppercase()),
-                    Ok(row.kind)
-                );
-            }
-        }
-    }
-
-    /// xAI is a registry row, not a fork: it speaks the Responses protocol, so
-    /// every request builder must reach it through [`WireFamily`] and never
-    /// through a vendor name. The spellings are pinned because they are written
-    /// into `settings.json` and env by operators.
-    #[test]
-    fn xai_is_a_registry_row_on_the_responses_wire() {
-        let xai = ProviderKind::XaiResponses;
-        assert_eq!(xai.as_str(), "xai-responses");
-        assert_eq!(ProviderKind::from_str("xai"), Ok(xai));
-        assert_eq!(ProviderKind::from_str("grok"), Ok(xai));
-        assert_eq!(xai.wire_family(), WireFamily::OpenAiResponses);
-        assert_eq!(xai.api_key_env_key(), "LLM_XAI_API_KEY");
-        assert_eq!(
-            xai.identity().default_endpoint,
-            "https://api.x.ai/v1/responses"
-        );
-        // Sharing the Responses wire must also hand xAI the Responses policy —
-        // chaining via `previous_response_id`, no Anthropic refusal branch.
-        let policy = capability_policy(xai, "grok-4.5");
-        assert!(policy.previous_response_id);
-        assert!(!policy.refusal_stop_reason);
-    }
-
-    /// A model id belongs to exactly one vendor. Without this, a lane switched
-    /// to xAI would happily send `claude-opus-4-8` to `api.x.ai` (and the other
-    /// way round) — a guaranteed 404 that looks like a broken key.
-    #[test]
-    fn model_prefixes_route_each_model_id_to_its_vendor() {
-        use ProviderKind::*;
-        assert!(AnthropicMessages.owns_model("claude-opus-4-8"));
-        assert!(!AnthropicMessages.owns_model("gpt-5.5"));
-        assert!(!AnthropicMessages.owns_model("grok-4.5"));
-
-        assert!(XaiResponses.owns_model("grok-4.5"));
-        assert!(!XaiResponses.owns_model("gpt-5.5"));
-        assert!(!XaiResponses.owns_model("claude-opus-4-8"));
-
-        // OpenAI is the catch-all row: it keeps accepting every id no other row
-        // claims, so a future `o5-preview` needs no table edit.
-        assert!(OpenAiResponses.owns_model("gpt-5.5"));
-        assert!(OpenAiResponses.owns_model("o5-preview"));
-        assert!(!OpenAiResponses.owns_model("claude-opus-4-8"));
-        assert!(!OpenAiResponses.owns_model("grok-4.5"));
-    }
-
-    /// The un-prefixed `LLM_ENDPOINT` / `LLM_MODEL` keys predate multi-provider
-    /// support, so they describe the default provider and nobody else. Letting a
-    /// second vendor read them would point its traffic at an OpenAI host.
-    #[test]
-    fn generic_lane_config_belongs_to_the_default_provider() {
-        for kind in ALL_PROVIDERS {
-            assert_eq!(
-                kind.owns_generic_lane_config(),
-                kind == ProviderKind::default(),
-                "{kind} disagrees with the default provider about the generic lane keys"
-            );
-        }
-    }
-
-    /// Every row must name a lane default it actually serves — a seed pointing
-    /// at another vendor's model would 404 before live discovery ever runs.
-    #[test]
-    fn every_row_seeds_lane_defaults_it_owns() {
-        for kind in ALL_PROVIDERS {
-            for lane in [LlmMode::Formatting, LlmMode::Assistive] {
-                let seed = kind.default_model(lane);
-                assert!(!seed.is_empty(), "{kind} has no {lane:?} default model");
-                assert!(
-                    kind.owns_model(seed),
-                    "{kind} seeds {lane:?} with '{seed}', which belongs to another vendor"
-                );
-            }
-        }
-    }
-
-    /// Capability policy is keyed by wire family, so a future vendor speaking
-    /// the Responses protocol inherits the OpenAI policy instead of forking it.
-    #[test]
-    fn capability_policy_follows_the_wire_family() {
-        assert_eq!(
-            ProviderKind::OpenAiResponses.wire_family(),
-            WireFamily::OpenAiResponses
-        );
-        assert_eq!(
-            ProviderKind::AnthropicMessages.wire_family(),
-            WireFamily::AnthropicMessages
-        );
-        for row in PROVIDER_REGISTRY {
-            let policy = capability_policy(row.kind, "claude-opus-4-8");
-            match row.wire_family {
-                WireFamily::OpenAiResponses => {
-                    assert!(policy.previous_response_id);
-                    assert!(!policy.refusal_stop_reason);
-                }
-                WireFamily::AnthropicMessages => {
-                    assert!(!policy.previous_response_id);
-                    assert!(policy.refusal_stop_reason);
-                }
-            }
-        }
-    }
-
-    /// Anthropic keeps a separate Keychain/env account from OpenAI.
-    #[test]
-    fn anthropic_key_account_is_distinct_from_openai() {
-        assert_eq!(
-            ProviderKind::OpenAiResponses.api_key_env_key(),
-            "LLM_ASSISTIVE_API_KEY"
-        );
-        assert_eq!(
-            ProviderKind::AnthropicMessages.api_key_env_key(),
-            "LLM_ANTHROPIC_API_KEY"
-        );
-    }
-
-    /// Default OpenAI and Anthropic models (incl. unknown) accept vision input.
-    #[test]
-    fn default_and_unknown_models_are_vision_capable() {
-        assert!(provider_supports_vision(
-            ProviderKind::OpenAiResponses,
-            "gpt-5.5"
-        ));
-        assert!(provider_supports_vision(
-            ProviderKind::AnthropicMessages,
-            "claude-opus-4-8"
-        ));
         assert!(provider_supports_vision(
             ProviderKind::AnthropicMessages,
             "claude-future-9"
         ));
-    }
-
-    // ---- env resolution (serialized: mutates process env) ----
-
-    /// Unset/empty provider env falls back to OpenAI for both lanes.
-    #[test]
-    #[serial]
-    fn resolve_provider_defaults_to_openai_when_unset() {
-        let prev_f = std::env::var("LLM_FORMATTING_PROVIDER").ok();
-        let prev_a = std::env::var("LLM_ASSISTIVE_PROVIDER").ok();
-        unsafe {
-            std::env::remove_var("LLM_FORMATTING_PROVIDER");
-            std::env::remove_var("LLM_ASSISTIVE_PROVIDER");
-        }
-
-        assert_eq!(
-            resolve_provider(LlmMode::Formatting),
-            ProviderKind::OpenAiResponses
-        );
-        assert_eq!(
-            resolve_provider(LlmMode::Assistive),
-            ProviderKind::OpenAiResponses
-        );
-
-        restore("LLM_FORMATTING_PROVIDER", prev_f);
-        restore("LLM_ASSISTIVE_PROVIDER", prev_a);
-    }
-
-    /// Formatting and assistive provider env keys resolve independently.
-    #[test]
-    #[serial]
-    fn resolve_provider_reads_mode_specific_values() {
-        let prev_f = std::env::var("LLM_FORMATTING_PROVIDER").ok();
-        let prev_a = std::env::var("LLM_ASSISTIVE_PROVIDER").ok();
-        unsafe {
-            std::env::set_var("LLM_FORMATTING_PROVIDER", "openai-responses");
-            std::env::set_var("LLM_ASSISTIVE_PROVIDER", "anthropic-messages");
-        }
-
-        assert_eq!(
-            resolve_provider(LlmMode::Formatting),
-            ProviderKind::OpenAiResponses
-        );
-        assert_eq!(
-            resolve_provider(LlmMode::Assistive),
-            ProviderKind::AnthropicMessages
-        );
-
-        restore("LLM_FORMATTING_PROVIDER", prev_f);
-        restore("LLM_ASSISTIVE_PROVIDER", prev_a);
-    }
-
-    /// Invalid provider env logs and falls back to OpenAI, never another vendor.
-    #[test]
-    #[serial]
-    fn resolve_provider_falls_back_to_openai_on_invalid() {
-        let prev = std::env::var("LLM_ASSISTIVE_PROVIDER").ok();
-        unsafe { std::env::set_var("LLM_ASSISTIVE_PROVIDER", "not-a-provider") };
-
-        assert_eq!(
-            resolve_provider(LlmMode::Assistive),
-            ProviderKind::OpenAiResponses
-        );
-
-        restore("LLM_ASSISTIVE_PROVIDER", prev);
-    }
-
-    /// Unset auth-mode env defaults both lanes to ApiKey.
-    #[test]
-    #[serial]
-    fn resolve_auth_mode_defaults_to_api_key_when_unset() {
-        let prev_f = std::env::var("LLM_FORMATTING_AUTH_MODE").ok();
-        let prev_a = std::env::var("LLM_ASSISTIVE_AUTH_MODE").ok();
-        unsafe {
-            std::env::remove_var("LLM_FORMATTING_AUTH_MODE");
-            std::env::remove_var("LLM_ASSISTIVE_AUTH_MODE");
-        }
-
-        assert_eq!(resolve_auth_mode(LlmMode::Formatting), AuthMode::ApiKey);
-        assert_eq!(resolve_auth_mode(LlmMode::Assistive), AuthMode::ApiKey);
-
-        restore("LLM_FORMATTING_AUTH_MODE", prev_f);
-        restore("LLM_ASSISTIVE_AUTH_MODE", prev_a);
-    }
-
-    /// Per-lane auth-mode env works; invalid values fall back to ApiKey.
-    #[test]
-    #[serial]
-    fn resolve_auth_mode_reads_mode_specific_values_and_falls_back_on_invalid() {
-        let prev_f = std::env::var("LLM_FORMATTING_AUTH_MODE").ok();
-        let prev_a = std::env::var("LLM_ASSISTIVE_AUTH_MODE").ok();
-        unsafe {
-            std::env::set_var("LLM_FORMATTING_AUTH_MODE", "provider-account");
-            std::env::set_var("LLM_ASSISTIVE_AUTH_MODE", "bad-mode");
-        }
-
-        assert_eq!(
-            resolve_auth_mode(LlmMode::Formatting),
-            AuthMode::ProviderAccount
-        );
-        assert_eq!(resolve_auth_mode(LlmMode::Assistive), AuthMode::ApiKey);
-
-        restore("LLM_FORMATTING_AUTH_MODE", prev_f);
-        restore("LLM_ASSISTIVE_AUTH_MODE", prev_a);
-    }
-
-    /// ApiKey mode yields no Authorization header from the account path.
-    #[tokio::test]
-    #[serial]
-    async fn api_key_mode_returns_no_provider_account_header() {
-        let prev = std::env::var("LLM_ASSISTIVE_AUTH_MODE").ok();
-        unsafe { std::env::remove_var("LLM_ASSISTIVE_AUTH_MODE") };
-
-        let header = provider_account_authorization_header(
-            ProviderKind::OpenAiResponses,
-            LlmMode::Assistive,
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(header, None);
-        restore("LLM_ASSISTIVE_AUTH_MODE", prev);
-    }
-
-    /// ProviderAccount mode refreshes an expired token and returns Bearer.
-    #[tokio::test]
-    #[serial]
-    async fn provider_account_mode_refreshes_expired_token_and_returns_bearer() {
-        use crate::llm::account_auth::{
-            AccountTokens, OPENAI_ACCOUNT_TOKENS_ACCOUNT, OPENAI_CLIENT_ID_ENV, OPENAI_ISSUER_ENV,
-            load_account_tokens, store_account_tokens,
-        };
-
-        let prev_mode = std::env::var("LLM_ASSISTIVE_AUTH_MODE").ok();
-        let prev_client = std::env::var(OPENAI_CLIENT_ID_ENV).ok();
-        let prev_issuer = std::env::var(OPENAI_ISSUER_ENV).ok();
-        let prev_disable = std::env::var("CODESCRIBE_DISABLE_KEYCHAIN").ok();
-        let prev_tokens = std::env::var(OPENAI_ACCOUNT_TOKENS_ACCOUNT).ok();
-        // Isolate the settings store: client_id resolution reads settings.json
-        // first, and this test must not see an operator-configured client id.
-        let prev_data_dir = std::env::var("CODESCRIBE_DATA_DIR").ok();
-        let scratch_data_dir = tempfile::TempDir::new().expect("scratch settings dir");
-        let mut server = mockito::Server::new_async().await;
-        let _refresh = server
-            .mock("POST", "/oauth/token")
-            .match_body(mockito::Matcher::AllOf(vec![
-                mockito::Matcher::UrlEncoded("grant_type".to_string(), "refresh_token".to_string()),
-                mockito::Matcher::UrlEncoded("client_id".to_string(), "client".to_string()),
-                mockito::Matcher::UrlEncoded(
-                    "refresh_token".to_string(),
-                    "old-refresh".to_string(),
-                ),
-            ]))
-            .with_status(200)
-            .with_body(
-                r#"{"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600}"#,
-            )
-            .expect(1)
-            .create_async()
-            .await;
-
-        unsafe {
-            std::env::set_var("CODESCRIBE_DISABLE_KEYCHAIN", "1");
-            std::env::set_var("LLM_ASSISTIVE_AUTH_MODE", "provider-account");
-            std::env::set_var(OPENAI_CLIENT_ID_ENV, "client");
-            std::env::set_var(OPENAI_ISSUER_ENV, server.url());
-            std::env::set_var("CODESCRIBE_DATA_DIR", scratch_data_dir.path());
-        }
-        let expired = AccountTokens {
-            provider: ProviderKind::OpenAiResponses.as_str().to_string(),
-            access_token: "old-access".to_string(),
-            refresh_token: Some("old-refresh".to_string()),
-            id_token: None,
-            token_type: "Bearer".to_string(),
-            expires_at_unix: Some(0),
-        };
-        store_account_tokens(ProviderKind::OpenAiResponses, &expired).unwrap();
-
-        let header = provider_account_authorization_header(
-            ProviderKind::OpenAiResponses,
-            LlmMode::Assistive,
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(header.as_deref(), Some("Bearer new-access"));
-        let stored = load_account_tokens(ProviderKind::OpenAiResponses).unwrap();
-        assert_eq!(stored.access_token, "new-access");
-        assert_eq!(stored.refresh_token.as_deref(), Some("new-refresh"));
-
-        restore("LLM_ASSISTIVE_AUTH_MODE", prev_mode);
-        restore(OPENAI_CLIENT_ID_ENV, prev_client);
-        restore(OPENAI_ISSUER_ENV, prev_issuer);
-        restore("CODESCRIBE_DISABLE_KEYCHAIN", prev_disable);
-        restore(OPENAI_ACCOUNT_TOKENS_ACCOUNT, prev_tokens);
-        restore("CODESCRIBE_DATA_DIR", prev_data_dir);
-    }
-
-    /// Restore a process env var to its previous value (or remove if unset).
-    fn restore(key: &str, prev: Option<String>) {
-        match prev {
-            Some(v) => unsafe { std::env::set_var(key, v) },
-            None => unsafe { std::env::remove_var(key) },
-        }
     }
 }

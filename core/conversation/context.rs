@@ -54,24 +54,6 @@ impl Turn {
             embedding: None,
         }
     }
-
-    /// Set audio codes
-    pub fn with_audio_codes(mut self, codes: Vec<Vec<u32>>) -> Self {
-        self.audio_codes = Some(codes);
-        self
-    }
-
-    /// Set duration
-    pub fn with_duration(mut self, duration: Duration) -> Self {
-        self.duration = duration;
-        self
-    }
-
-    /// Set embedding
-    pub fn with_embedding(mut self, embedding: Vec<f32>) -> Self {
-        self.embedding = Some(embedding);
-        self
-    }
 }
 
 /// Conversation context manager
@@ -127,13 +109,6 @@ impl ConversationContext {
         }
     }
 
-    /// Create with a system prompt
-    pub fn with_system_prompt(prompt: &str) -> Self {
-        let mut ctx = Self::new();
-        ctx.system_prompt = Some(prompt.to_string());
-        ctx
-    }
-
     /// Add a turn to history
     pub fn add_turn(&mut self, turn: Turn) {
         // Track total speaking time
@@ -179,24 +154,9 @@ impl ConversationContext {
         self.state = state;
     }
 
-    /// Check if user is currently speaking
-    pub fn is_user_speaking(&self) -> bool {
-        self.state == ConversationState::UserSpeaking
-    }
-
-    /// Check if assistant is currently speaking
-    pub fn is_assistant_speaking(&self) -> bool {
-        self.state == ConversationState::AssistantSpeaking
-    }
-
     /// Get elapsed time since conversation started
     pub fn duration(&self) -> Duration {
         self.started_at.elapsed()
-    }
-
-    /// Get total speaking duration (sum of all turn durations)
-    pub fn total_speaking_duration(&self) -> Duration {
-        self.total_duration
     }
 
     /// Get number of turns
@@ -216,38 +176,6 @@ impl ConversationContext {
         self.system_prompt = None;
         self.state = ConversationState::Idle;
         self.started_at = Instant::now();
-    }
-
-    /// Build context string for LLM (text-based fallback)
-    pub fn build_text_context(&self, max_chars: usize) -> String {
-        let mut context = String::new();
-
-        if let Some(ref prompt) = self.system_prompt {
-            context.push_str("System: ");
-            context.push_str(prompt);
-            context.push('\n');
-        }
-
-        // Add history in order (oldest first)
-        for turn in &self.history {
-            if let Some(ref text) = turn.text {
-                let prefix = if turn.speaker == "user" {
-                    "User: "
-                } else {
-                    "Assistant: "
-                };
-                context.push_str(prefix);
-                context.push_str(text);
-                context.push('\n');
-            }
-
-            // Stop if we exceed max chars
-            if context.len() > max_chars {
-                break;
-            }
-        }
-
-        context
     }
 }
 

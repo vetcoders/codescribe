@@ -15,7 +15,7 @@
 //! it, while the destination of each event is decided by the controller.
 
 use super::config::HotkeyRuntimeConfig;
-use crate::config::{DeferredInsertShortcut, ShortcutBinding};
+use crate::config::{ChannelModifier, DeferredInsertShortcut, ShortcutBinding};
 use std::time::{Duration, Instant};
 
 // --- Constants ---
@@ -77,6 +77,11 @@ pub enum HotkeyEvent {
     ToggleRaw,
     /// Assistive toggle gesture (double-tap right Option)
     ToggleAssistive,
+    /// Configured modifier + 0..9 toggles one agent channel. This is not a dictation take.
+    ///
+    /// The modifier is [`ChannelModifier`] on the hotkey runtime config (Ctrl by
+    /// default, Fn optional). Command never opens a channel.
+    AgentChannel { digit: u8 },
     /// A double-tap gesture was detected but could not be routed.
     DoubleTapBlocked {
         gesture: DoubleTapGesture,
@@ -185,17 +190,6 @@ impl ModifierFlags {
         }
     }
 
-    /// Control held, everything else released — the shape of the default
-    /// dictation hold.
-    pub fn ctrl_only() -> Self {
-        Self {
-            ctrl: true,
-            alt: false,
-            shift: false,
-            cmd: false,
-        }
-    }
-
     /// Check if the current flags match the required flags
     ///
     /// `exclusive` decides the comparison: exact equality (extra modifiers
@@ -258,6 +252,8 @@ pub enum HotkeyPhysicalKey {
     Fn,
     Space,
     V,
+    /// Top-row or keypad digit. `0` is the broadcast channel.
+    Digit(u8),
     Other,
 }
 
@@ -303,6 +299,13 @@ pub enum HotkeyDetectorInput {
         key: HotkeyPhysicalKey,
         modifiers: HotkeyModifierSnapshot,
     },
+    /// Mouse button 2. Ignored unless `middle_mouse_acts_as_fn` is set, in
+    /// which case press and release follow the Fn path.
+    MiddleButton {
+        now: Instant,
+        pressed: bool,
+        modifiers: HotkeyModifierSnapshot,
+    },
 }
 
 /// The gesture state machine: fed one event at a time, emits at most one
@@ -335,6 +338,15 @@ pub struct HotkeyDetector {
     /// Last sampled arm-modifier state while a hold is active, so a Shift
     /// (or Cmd) pulse can attach another `{selection_N}` without flipping mode.
     arm_modifier_down: bool,
+    /// Digit currently held with the channel modifier, so key-repeat does not toggle twice.
+    agent_channel_digit_down: Option<u8>,
+    /// Fn (or middle-as-Fn) went down and the tap/hold choice is still open.
+    fn_press_pending: bool,
+    /// When the pending Fn press began.
+    fn_press_started: Option<Instant>,
+    /// Hold Down was emitted on release because the threshold poll had not
+    /// run yet. The next [`HotkeyDetector::poll`] emits the matching Hold Up.
+    hold_up_owed: bool,
 }
 
 impl Default for HotkeyDetector {
@@ -357,7 +369,41 @@ impl Default for HotkeyDetector {
             insert_here_v_down: false,
             wrong_arm_logged: false,
             arm_modifier_down: false,
+            agent_channel_digit_down: None,
+            fn_press_pending: false,
+            fn_press_started: None,
+            hold_up_owed: false,
         }
+    }
+}
+
+/// macOS virtual keycode for a digit, top row or keypad.
+///
+/// The event tap already delivers every key. This only names the digits the
+/// Fn channel chord cares about.
+pub fn digit_from_virtual_keycode(keycode: i64) -> Option<u8> {
+    match keycode {
+        29 => Some(0),
+        18 => Some(1),
+        19 => Some(2),
+        20 => Some(3),
+        21 => Some(4),
+        23 => Some(5),
+        22 => Some(6),
+        26 => Some(7),
+        28 => Some(8),
+        25 => Some(9),
+        82 => Some(0),
+        83 => Some(1),
+        84 => Some(2),
+        85 => Some(3),
+        86 => Some(4),
+        87 => Some(5),
+        88 => Some(6),
+        89 => Some(7),
+        91 => Some(8),
+        92 => Some(9),
+        _ => None,
     }
 }
 
@@ -380,6 +426,11 @@ impl HotkeyDetector {
                 modifiers,
             } => self.handle_key_down(now, key, modifiers, config),
             HotkeyDetectorInput::KeyUp { key, modifiers } => {
+                if let HotkeyPhysicalKey::Digit(digit) = key
+                    && self.agent_channel_digit_down == Some(digit)
+                {
+                    self.agent_channel_digit_down = None;
+                }
                 if key == HotkeyPhysicalKey::Space {
                     self.show_agent_space_down = false;
                 }
@@ -396,12 +447,61 @@ impl HotkeyDetector {
                 key,
                 modifiers,
             } => self.handle_flags_changed(now, key, modifiers, config),
+            HotkeyDetectorInput::MiddleButton {
+                now,
+                pressed,
+                modifiers,
+            } => {
+                if !config.middle_mouse_acts_as_fn {
+                    return None;
+                }
+                let mut modifiers = modifiers;
+                modifiers.fn_key = pressed || modifiers.fn_key;
+                self.handle_flags_changed(now, HotkeyPhysicalKey::Fn, modifiers, config)
+            }
         }
     }
 
-    /// Whether a hold gesture is currently running.
-    pub fn is_combo_active(&self) -> bool {
-        self.hold_active
+    /// Promote a pending Fn press once it has crossed the hold delay.
+    ///
+    /// The platform calls this on a short timer. A press that is still pending
+    /// and younger than `hold_start_delay_ms` stays a possible tap. Crossing
+    /// the delay emits the same Hold Down a Fn hold emits when tap-to-toggle
+    /// is off. When a release already owed Hold Up, that event is returned
+    /// instead.
+    pub fn poll(&mut self, now: Instant, config: HotkeyRuntimeConfig) -> Option<HotkeyEvent> {
+        if self.hold_up_owed {
+            self.hold_up_owed = false;
+            self.hold_active = false;
+            self.hold_active_ts = None;
+            self.arm_modifier_down = false;
+            let mode = self.hold_mode;
+            return Some(HotkeyEvent::Hold {
+                action: HoldAction::Up,
+                mode,
+            });
+        }
+        if !config.fn_tap_toggles_dictation || !self.fn_press_pending {
+            return None;
+        }
+        let started = self.fn_press_started?;
+        if elapsed_between(now, started) < Duration::from_millis(config.hold_start_delay_ms) {
+            return None;
+        }
+        self.fn_press_pending = false;
+        self.fn_press_started = None;
+        if config.mode_bindings.dictation != ShortcutBinding::HoldFn {
+            return None;
+        }
+        self.hold_active = true;
+        self.hold_active_ts = Some(started);
+        self.hold_mode = HoldMode::Raw;
+        self.hold_event_sent = true;
+        self.arm_modifier_down = false;
+        Some(HotkeyEvent::Hold {
+            action: HoldAction::Down,
+            mode: HoldMode::Raw,
+        })
     }
 
     /// Handle a non-modifier key press.
@@ -418,6 +518,23 @@ impl HotkeyDetector {
         modifiers: HotkeyModifierSnapshot,
         config: HotkeyRuntimeConfig,
     ) -> Option<HotkeyEvent> {
+        if let HotkeyPhysicalKey::Digit(digit) = key
+            && channel_chord_matches(config.channel_modifier, modifiers)
+        {
+            self.fn_press_pending = false;
+            self.fn_press_started = None;
+            if self.agent_channel_digit_down == Some(digit) {
+                return None;
+            }
+            self.agent_channel_digit_down = Some(digit);
+            return Some(HotkeyEvent::AgentChannel { digit });
+        }
+        if self.fn_press_pending {
+            self.fn_press_pending = false;
+            self.fn_press_started = None;
+            self.key_pressed_during_modifier = true;
+        }
+
         if key == HotkeyPhysicalKey::V
             && deferred_insert_modifiers_match(config.deferred_insert_shortcut, modifiers)
         {
@@ -538,8 +655,34 @@ impl HotkeyDetector {
 
         let arm_now = arm_modifier_is_down(modifiers, config.hold_arm_modifier);
 
+        let clean_fn_down = key == HotkeyPhysicalKey::Fn
+            && modifiers.fn_key
+            && !modifiers.ctrl
+            && !modifiers.option
+            && !modifiers.shift
+            && !modifiers.cmd;
+        if config.fn_tap_toggles_dictation
+            && clean_fn_down
+            && !self.hold_active
+            && !self.fn_press_pending
+            && !self.hold_up_owed
+        {
+            self.fn_press_pending = true;
+            self.fn_press_started = Some(now);
+        }
+
         let mut emitted = None;
-        if combo_active && !self.hold_active {
+        let still_a_clean_fn = modifiers.fn_key
+            && !modifiers.ctrl
+            && !modifiers.option
+            && !modifiers.shift
+            && !modifiers.cmd;
+        let suppress_hold_down = self.fn_press_pending && still_a_clean_fn && !self.hold_active;
+        if self.fn_press_pending && modifiers.fn_key && !still_a_clean_fn {
+            self.fn_press_pending = false;
+            self.fn_press_started = None;
+        }
+        if combo_active && !self.hold_active && !suppress_hold_down {
             self.hold_active = true;
             self.hold_active_ts = Some(now);
             self.hold_mode = mode_now;
@@ -568,6 +711,32 @@ impl HotkeyDetector {
                 });
             }
             self.hold_active_ts = None;
+        }
+
+        if !modifiers.fn_key && self.fn_press_pending {
+            let held_for = self
+                .fn_press_started
+                .take()
+                .map(|ts| elapsed_between(now, ts))
+                .unwrap_or_default();
+            self.fn_press_pending = false;
+            if config.fn_tap_toggles_dictation
+                && held_for < Duration::from_millis(config.hold_start_delay_ms)
+            {
+                emitted = emitted.or(Some(HotkeyEvent::ToggleRaw));
+            } else if config.mode_bindings.dictation == ShortcutBinding::HoldFn
+                && held_for >= Duration::from_millis(config.hold_start_delay_ms)
+            {
+                self.hold_active = true;
+                self.hold_active_ts = Some(now);
+                self.hold_mode = HoldMode::Raw;
+                self.hold_event_sent = true;
+                self.hold_up_owed = true;
+                emitted = emitted.or(Some(HotkeyEvent::Hold {
+                    action: HoldAction::Down,
+                    mode: HoldMode::Raw,
+                }));
+            }
         }
 
         if raw_toggle_enabled {
@@ -717,6 +886,18 @@ impl HotkeyDetector {
 /// Matching is exclusive in both directions — every modifier the chord needs
 /// must be down and every one it does not must be up — so `Cmd+Opt+V` cannot
 /// be satisfied by `Cmd+Opt+Shift+V`, which belongs to the app underneath.
+/// Digit opens a channel only with the configured modifier, never with Command,
+/// and never with the modifier that was not selected.
+fn channel_chord_matches(modifier: ChannelModifier, modifiers: HotkeyModifierSnapshot) -> bool {
+    if modifiers.cmd {
+        return false;
+    }
+    match modifier {
+        ChannelModifier::Ctrl => modifiers.ctrl && !modifiers.fn_key,
+        ChannelModifier::Fn => modifiers.fn_key && !modifiers.ctrl,
+    }
+}
+
 fn deferred_insert_modifiers_match(
     shortcut: DeferredInsertShortcut,
     modifiers: HotkeyModifierSnapshot,
@@ -946,6 +1127,9 @@ mod tests {
             hold_start_delay_ms: 800,
             double_tap_interval_ms: 200,
             deferred_insert_shortcut: DeferredInsertShortcut::CommandOptionV,
+            channel_modifier: ChannelModifier::Ctrl,
+            fn_tap_toggles_dictation: false,
+            middle_mouse_acts_as_fn: false,
         }
     }
 
@@ -964,6 +1148,72 @@ mod tests {
             cmd,
             fn_key,
         }
+    }
+
+    #[test]
+    fn fn_digit_toggles_an_agent_channel_once_per_press() {
+        let mut config = test_config(
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::DoubleRightOption,
+        );
+        config.channel_modifier = ChannelModifier::Fn;
+        let now = Instant::now();
+        let mut detector = HotkeyDetector::default();
+        let down = |detector: &mut HotkeyDetector, key, modifiers| {
+            detector.feed(
+                HotkeyDetectorInput::KeyDown {
+                    now,
+                    key,
+                    modifiers,
+                },
+                config,
+            )
+        };
+        assert_eq!(
+            down(
+                &mut detector,
+                HotkeyPhysicalKey::Digit(3),
+                mods(false, false, false, false, true)
+            ),
+            Some(HotkeyEvent::AgentChannel { digit: 3 })
+        );
+        assert_eq!(
+            down(
+                &mut detector,
+                HotkeyPhysicalKey::Digit(3),
+                mods(false, false, false, false, true)
+            ),
+            None,
+            "key repeat must not seal the channel"
+        );
+        detector.feed(
+            HotkeyDetectorInput::KeyUp {
+                key: HotkeyPhysicalKey::Digit(3),
+                modifiers: mods(false, false, false, false, true),
+            },
+            config,
+        );
+        assert_eq!(
+            down(
+                &mut detector,
+                HotkeyPhysicalKey::Digit(3),
+                mods(false, false, false, false, true)
+            ),
+            Some(HotkeyEvent::AgentChannel { digit: 3 })
+        );
+        assert_eq!(
+            down(
+                &mut detector,
+                HotkeyPhysicalKey::Digit(3),
+                mods(false, false, false, false, false)
+            ),
+            None
+        );
+        assert_eq!(digit_from_virtual_keycode(20), Some(3));
+        assert_eq!(digit_from_virtual_keycode(29), Some(0));
+        assert_eq!(digit_from_virtual_keycode(85), Some(3));
+        assert_eq!(digit_from_virtual_keycode(49), None);
     }
 
     #[test]
@@ -1229,7 +1479,7 @@ mod tests {
                 mode: HoldMode::Raw,
             })
         );
-        assert!(!detector.is_combo_active());
+        assert!(!detector.hold_active);
     }
 
     #[test]
@@ -1413,19 +1663,14 @@ mod tests {
     }
 
     #[test]
-    /// ModifierFlags::ctrl_only marks only the Control bit.
-    fn test_modifier_flags_ctrl_only() {
-        let flags = ModifierFlags::ctrl_only();
-        assert!(flags.ctrl);
-        assert!(!flags.alt);
-        assert!(!flags.shift);
-        assert!(!flags.cmd);
-    }
-
-    #[test]
     /// Exclusive match requires exact flag equality with the binding requirement.
     fn test_matches_exclusive_mode() {
-        let required = ModifierFlags::ctrl_only();
+        let required = ModifierFlags {
+            ctrl: true,
+            alt: false,
+            shift: false,
+            cmd: false,
+        };
         let current = ModifierFlags {
             ctrl: true,
             alt: false,
@@ -1454,7 +1699,12 @@ mod tests {
     #[test]
     /// Non-exclusive match allows extra modifiers beyond the required set.
     fn test_matches_non_exclusive_mode() {
-        let required = ModifierFlags::ctrl_only();
+        let required = ModifierFlags {
+            ctrl: true,
+            alt: false,
+            shift: false,
+            cmd: false,
+        };
         let current = ModifierFlags {
             ctrl: true,
             alt: true,
@@ -1940,7 +2190,7 @@ mod tests {
             ),
             None
         );
-        assert!(!detector.is_combo_active());
+        assert!(!detector.hold_active);
     }
 
     #[test]
@@ -1965,10 +2215,7 @@ mod tests {
             ),
             None
         );
-        assert!(
-            !detector.is_combo_active(),
-            "Ctrl alone must not arm HoldCtrlAlt"
-        );
+        assert!(!detector.hold_active, "Ctrl alone must not arm HoldCtrlAlt");
 
         assert_eq!(
             detector.feed(
@@ -1984,7 +2231,7 @@ mod tests {
                 mode: HoldMode::Raw,
             })
         );
-        assert!(detector.is_combo_active());
+        assert!(detector.hold_active);
     }
 
     #[test]
@@ -2236,5 +2483,302 @@ mod tests {
             ),
             Some(HotkeyEvent::ToggleRaw)
         );
+    }
+
+    fn digit_down(
+        detector: &mut HotkeyDetector,
+        config: HotkeyRuntimeConfig,
+        now: Instant,
+        digit: u8,
+        modifiers: HotkeyModifierSnapshot,
+    ) -> Option<HotkeyEvent> {
+        detector.feed(
+            HotkeyDetectorInput::KeyDown {
+                now,
+                key: HotkeyPhysicalKey::Digit(digit),
+                modifiers,
+            },
+            config,
+        )
+    }
+
+    #[test]
+    fn ctrl_digit_opens_channel_and_fn_digit_does_not_when_ctrl_selected() {
+        let config = test_config(
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::DoubleRightOption,
+        );
+        assert_eq!(config.channel_modifier, ChannelModifier::Ctrl);
+        let now = Instant::now();
+        let mut detector = HotkeyDetector::default();
+        let ctrl = mods(true, false, false, false, false);
+        assert_eq!(
+            digit_down(&mut detector, config, now, 4, ctrl),
+            Some(HotkeyEvent::AgentChannel { digit: 4 })
+        );
+        assert_eq!(
+            digit_down(&mut detector, config, now, 4, ctrl),
+            None,
+            "key repeat must not open the channel twice"
+        );
+        detector.feed(
+            HotkeyDetectorInput::KeyUp {
+                key: HotkeyPhysicalKey::Digit(4),
+                modifiers: ctrl,
+            },
+            config,
+        );
+        assert_eq!(
+            digit_down(
+                &mut detector,
+                config,
+                now,
+                4,
+                mods(false, false, false, false, true)
+            ),
+            None
+        );
+        assert_eq!(
+            digit_down(
+                &mut detector,
+                config,
+                now,
+                4,
+                mods(false, false, false, false, false)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn fn_digit_opens_channel_when_fn_selected_and_ctrl_digit_does_not() {
+        let mut config = test_config(
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::DoubleRightOption,
+        );
+        config.channel_modifier = ChannelModifier::Fn;
+        let now = Instant::now();
+        let mut detector = HotkeyDetector::default();
+        assert_eq!(
+            digit_down(
+                &mut detector,
+                config,
+                now,
+                7,
+                mods(false, false, false, false, true)
+            ),
+            Some(HotkeyEvent::AgentChannel { digit: 7 })
+        );
+        detector.feed(
+            HotkeyDetectorInput::KeyUp {
+                key: HotkeyPhysicalKey::Digit(7),
+                modifiers: mods(false, false, false, false, true),
+            },
+            config,
+        );
+        assert_eq!(
+            digit_down(
+                &mut detector,
+                config,
+                now,
+                7,
+                mods(true, false, false, false, false)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn cmd_digit_never_opens_a_channel_under_any_configuration() {
+        let base = test_config(
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::DoubleRightOption,
+        );
+        let now = Instant::now();
+        for modifier in [ChannelModifier::Ctrl, ChannelModifier::Fn] {
+            let mut config = base;
+            config.channel_modifier = modifier;
+            let mut detector = HotkeyDetector::default();
+            for modifiers in [
+                mods(false, false, false, true, false),
+                mods(true, false, false, true, false),
+                mods(false, false, false, true, true),
+            ] {
+                assert_eq!(
+                    digit_down(&mut detector, config, now, 1, modifiers),
+                    None,
+                    "cmd must not open a channel under {modifier:?} with {modifiers:?}"
+                );
+            }
+        }
+    }
+
+    fn fn_edge(
+        detector: &mut HotkeyDetector,
+        config: HotkeyRuntimeConfig,
+        now: Instant,
+        down: bool,
+    ) -> Option<HotkeyEvent> {
+        detector.feed(
+            HotkeyDetectorInput::FlagsChanged {
+                now,
+                key: HotkeyPhysicalKey::Fn,
+                modifiers: mods(false, false, false, false, down),
+            },
+            config,
+        )
+    }
+
+    #[test]
+    fn fn_tap_below_threshold_toggles_dictation_only_when_enabled() {
+        let mut config = test_config(
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::DoubleRightOption,
+        );
+        let base = Instant::now();
+        let mut held = HotkeyDetector::default();
+        assert_eq!(
+            fn_edge(&mut held, config, base, true),
+            Some(HotkeyEvent::Hold {
+                action: HoldAction::Down,
+                mode: HoldMode::Raw,
+            })
+        );
+        assert_eq!(
+            fn_edge(&mut held, config, base + Duration::from_millis(100), false),
+            Some(HotkeyEvent::Hold {
+                action: HoldAction::Up,
+                mode: HoldMode::Raw,
+            })
+        );
+
+        config.fn_tap_toggles_dictation = true;
+        let mut tapped = HotkeyDetector::default();
+        assert_eq!(fn_edge(&mut tapped, config, base, true), None);
+        assert_eq!(
+            fn_edge(
+                &mut tapped,
+                config,
+                base + Duration::from_millis(100),
+                false
+            ),
+            Some(HotkeyEvent::ToggleRaw)
+        );
+        assert_eq!(
+            fn_edge(&mut tapped, config, base + Duration::from_millis(200), true),
+            None
+        );
+        assert_eq!(
+            fn_edge(
+                &mut tapped,
+                config,
+                base + Duration::from_millis(280),
+                false
+            ),
+            Some(HotkeyEvent::ToggleRaw)
+        );
+    }
+
+    #[test]
+    fn fn_hold_past_threshold_stays_hold_to_talk_with_tap_enabled() {
+        let mut config = test_config(
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::DoubleRightOption,
+        );
+        config.fn_tap_toggles_dictation = true;
+        let base = Instant::now();
+        let mut detector = HotkeyDetector::default();
+        assert_eq!(fn_edge(&mut detector, config, base, true), None);
+        assert_eq!(
+            detector.poll(base + Duration::from_millis(800), config),
+            Some(HotkeyEvent::Hold {
+                action: HoldAction::Down,
+                mode: HoldMode::Raw,
+            })
+        );
+        assert_eq!(
+            fn_edge(
+                &mut detector,
+                config,
+                base + Duration::from_millis(1200),
+                false
+            ),
+            Some(HotkeyEvent::Hold {
+                action: HoldAction::Up,
+                mode: HoldMode::Raw,
+            })
+        );
+    }
+
+    fn middle(
+        detector: &mut HotkeyDetector,
+        config: HotkeyRuntimeConfig,
+        now: Instant,
+        pressed: bool,
+    ) -> Option<HotkeyEvent> {
+        detector.feed(
+            HotkeyDetectorInput::MiddleButton {
+                now,
+                pressed,
+                modifiers: mods(false, false, false, false, false),
+            },
+            config,
+        )
+    }
+
+    #[test]
+    fn middle_button_press_release_mirrors_fn_hold_semantics_when_enabled() {
+        let mut config = test_config(
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::DoubleRightOption,
+        );
+        config.middle_mouse_acts_as_fn = true;
+        let base = Instant::now();
+        let mut detector = HotkeyDetector::default();
+        assert_eq!(
+            middle(&mut detector, config, base, true),
+            Some(HotkeyEvent::Hold {
+                action: HoldAction::Down,
+                mode: HoldMode::Raw,
+            })
+        );
+        assert_eq!(
+            middle(&mut detector, config, base + Duration::from_secs(1), false),
+            Some(HotkeyEvent::Hold {
+                action: HoldAction::Up,
+                mode: HoldMode::Raw,
+            })
+        );
+        assert!(!detector.hold_active);
+    }
+
+    #[test]
+    fn middle_button_is_inert_when_the_option_is_off() {
+        let config = test_config(
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::DoubleRightOption,
+        );
+        assert!(!config.middle_mouse_acts_as_fn);
+        let base = Instant::now();
+        let mut detector = HotkeyDetector::default();
+        assert_eq!(middle(&mut detector, config, base, true), None);
+        assert_eq!(
+            middle(
+                &mut detector,
+                config,
+                base + Duration::from_millis(40),
+                false
+            ),
+            None
+        );
+        assert!(!detector.hold_active);
+        assert!(!detector.fn_press_pending);
     }
 }

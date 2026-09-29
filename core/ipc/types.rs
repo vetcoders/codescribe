@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::pipeline::contracts::{
-    AnnotationKind, DropKind, EngineEvent, LayerSource, LayerSummary, SidebandEvidence,
+    AnnotationKind, DropKind, EngineEvent, LayerSource, LayerSummary, PreviewPin, SidebandEvidence,
     TranscriptSegment, TranscriptionConfidenceFlag,
 };
 
@@ -28,8 +28,9 @@ pub struct IpcEvent {
 /// What an [`IpcEvent`] carries, tagged by the `event` field.
 ///
 /// [`Engine`] is the transcription pipeline's own event stream; the remaining
-/// variants are surfaces that exist only across this boundary (authoritative
-/// post-stop transcript, context markers, capture-level metering) and have no
+/// variants are surfaces that exist only across this boundary (context markers,
+/// capture-level metering, typed presentation status, and ledger-owned
+/// projections) and have no
 /// [`EngineEvent`] counterpart.
 ///
 /// [`Engine`]: IpcEventPayload::Engine
@@ -40,12 +41,6 @@ pub enum IpcEventPayload {
     Engine(EngineEventWire),
     #[serde(rename = "state_change")]
     StateChange { from: String, to: String },
-    /// Authoritative post-stop transcript (the LocalFinalPass `final_formatted_text`
-    /// that is pasted and written to history). Emitted once per dictation stop so
-    /// external surfaces (the SwiftUI overlay) can show the SAME clean text as the
-    /// delivery/Copy paths instead of the raw per-utterance streaming hypotheses.
-    #[serde(rename = "final_transcript")]
-    FinalTranscript { text: String },
     /// A context-bucket reference captured during live dictation. `position` is
     /// the transcript character offset snapshotted at combo press.
     #[serde(rename = "context_marker")]
@@ -57,16 +52,27 @@ pub enum IpcEventPayload {
     /// capture measurement that never enters the transcription pipeline.
     #[serde(rename = "audio_level")]
     AudioLevel { rms: f32 },
+    /// Byte-for-byte `TranscriptBusEvidenceEvent` JSON. Core transports the
+    /// owner schema without defining a second projection model.
+    #[serde(rename = "transcript_projection")]
+    TranscriptProjection { json: String },
+    /// Byte-for-byte `PresentationStatusProjection` JSON. This shares the
+    /// product event stream without impersonating ledger/reducer truth.
+    #[serde(rename = "presentation_status")]
+    PresentationStatus { json: String },
+    /// Passive, capture-bound `CompactProjection` paint; no document authority.
+    #[serde(rename = "compact_projection")]
+    CompactProjection { json: String },
 }
 
 /// Serializable mirror of [`EngineEvent`], tagged by `type` in snake_case.
 ///
-/// Built exclusively through the [`From`] impl below, which is where the
-/// engine→wire narrowing happens: `UtteranceFinal` drops `raw_text` so the
-/// unfiltered transcript never leaves the process. Variants retired from the
-/// engine are also retired here — the deserialize path must reject them
-/// (`vad_fallback`, `delta`, `worker_status`) instead of accepting stale
-/// clients.
+/// Built exclusively through the partial [`TryFrom`] impl below, which is where
+/// the engine→wire narrowing happens: ledger-internal events are explicitly
+/// ineligible, and `UtteranceFinal` drops `raw_text` so the unfiltered
+/// transcript never leaves the process. Variants retired from the engine are
+/// also retired here — the deserialize path must reject them (`vad_fallback`,
+/// `delta`, `worker_status`) instead of accepting stale clients.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EngineEventWire {
@@ -87,6 +93,7 @@ pub enum EngineEventWire {
     Preview {
         rev: u64,
         text: String,
+        pin: PreviewPin,
     },
     Correction {
         rev: u64,
@@ -102,10 +109,7 @@ pub enum EngineEventWire {
         vad_speech_pct: Option<f32>,
         avg_logprob: Option<f32>,
         compression_ratio: Option<f32>,
-        quality_gate_dropped: bool,
         confidence_flags: Vec<TranscriptionConfidenceFlag>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        acoustic: Option<crate::pipeline::contracts::AcousticTranscriptIdentity>,
     },
     ReplaceRange {
         utterance_id: u64,
@@ -132,7 +136,6 @@ pub enum EngineEventWire {
     Stats {
         dropped_audio_chunks: u64,
         hallucination_drops: u64,
-        semantic_gate_drops: u64,
         filtered_empty_drops: u64,
         corrections_applied: u64,
         total_utterances: u64,
@@ -150,10 +153,27 @@ pub enum EngineEventWire {
     },
 }
 
-impl From<&EngineEvent> for EngineEventWire {
-    /// Narrow `EngineEvent` to wire form; drops `UtteranceFinal::raw_text` at the boundary.
-    fn from(value: &EngineEvent) -> Self {
-        match value {
+/// Expected in-process events that have no external IPC representation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IpcIneligibleEngineEvent;
+
+impl TryFrom<&EngineEvent> for EngineEventWire {
+    type Error = IpcIneligibleEngineEvent;
+
+    /// Narrow an eligible `EngineEvent` to wire form and drop
+    /// `UtteranceFinal::raw_text` at the boundary.
+    fn try_from(value: &EngineEvent) -> Result<Self, Self::Error> {
+        let wire = match value {
+            EngineEvent::LedgerMutation { .. }
+            | EngineEvent::LedgerSeal { .. }
+            | EngineEvent::SealCoverage { .. }
+            | EngineEvent::SpeechIntegrity { .. }
+            | EngineEvent::OccurrenceLabelProposal { .. }
+            | EngineEvent::ContextMarker { .. }
+            | EngineEvent::PreviewDisposition { .. }
+            | EngineEvent::UnadmittedAppleWords { .. } => {
+                return Err(IpcIneligibleEngineEvent);
+            }
             EngineEvent::VadStart { speech_prob, ts_ms } => Self::VadStart {
                 speech_prob: *speech_prob,
                 ts_ms: *ts_ms,
@@ -168,9 +188,10 @@ impl From<&EngineEvent> for EngineEventWire {
             EngineEvent::NoSpeech { reason } => Self::NoSpeech {
                 reason: reason.clone(),
             },
-            EngineEvent::Preview { rev, text } => Self::Preview {
+            EngineEvent::Preview { rev, text, pin } => Self::Preview {
                 rev: *rev,
                 text: text.clone(),
+                pin: pin.clone(),
             },
             EngineEvent::Correction {
                 rev,
@@ -190,9 +211,7 @@ impl From<&EngineEvent> for EngineEventWire {
                 vad_speech_pct,
                 avg_logprob,
                 compression_ratio,
-                quality_gate_dropped,
                 confidence_flags,
-                acoustic,
                 ..
             } => Self::UtteranceFinal {
                 utterance_id: *utterance_id,
@@ -203,9 +222,7 @@ impl From<&EngineEvent> for EngineEventWire {
                 vad_speech_pct: *vad_speech_pct,
                 avg_logprob: *avg_logprob,
                 compression_ratio: *compression_ratio,
-                quality_gate_dropped: *quality_gate_dropped,
                 confidence_flags: confidence_flags.clone(),
-                acoustic: acoustic.clone(),
             },
             EngineEvent::Drop { kind, text, reason } => Self::Drop {
                 kind: drop_kind_to_wire(kind).to_string(),
@@ -215,7 +232,6 @@ impl From<&EngineEvent> for EngineEventWire {
             EngineEvent::Stats {
                 dropped_audio_chunks,
                 hallucination_drops,
-                semantic_gate_drops,
                 filtered_empty_drops,
                 corrections_applied,
                 total_utterances,
@@ -229,7 +245,6 @@ impl From<&EngineEvent> for EngineEventWire {
             } => Self::Stats {
                 dropped_audio_chunks: *dropped_audio_chunks,
                 hallucination_drops: *hallucination_drops,
-                semantic_gate_drops: *semantic_gate_drops,
                 filtered_empty_drops: *filtered_empty_drops,
                 corrections_applied: *corrections_applied,
                 total_utterances: *total_utterances,
@@ -276,7 +291,8 @@ impl From<&EngineEvent> for EngineEventWire {
                 code: code.clone(),
                 message: message.clone(),
             },
-        }
+        };
+        Ok(wire)
     }
 }
 
@@ -297,10 +313,10 @@ fn drop_kind_to_wire(kind: &DropKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::contracts::{
-        AcousticSpanGrain, AcousticTranscriptIdentity, AcousticTranscriptSpan, NonSpeechEvidence,
-        SidebandEvidenceKind, SidebandProvenance,
+    use crate::pipeline::acoustic_ledger::{
+        MutationReceipt, ObservationIdentity, ObservationProducer, OccurrenceIdentity,
     };
+    use crate::pipeline::contracts::{NonSpeechEvidence, SidebandEvidenceKind, SidebandProvenance};
     use crate::stt::tail_provider::TailSampleRange;
     use serde_json::Value;
 
@@ -311,7 +327,7 @@ mod tests {
 
     /// Pins that unfiltered `raw_text` never serializes on the IPC utterance_final wire.
     #[test]
-    fn utterance_final_wire_omits_raw_text() {
+    fn utterance_final_wire_omits_private_raw_and_unowned_acoustic_identity() {
         let event = EngineEvent::UtteranceFinal {
             utterance_id: 42,
             text: "hello world".to_string(),
@@ -326,29 +342,10 @@ mod tests {
             vad_speech_pct: Some(5.0),
             avg_logprob: Some(-0.3),
             compression_ratio: Some(1.1),
-            quality_gate_dropped: false,
             confidence_flags: vec![TranscriptionConfidenceFlag::VeryLowSpeech],
-            acoustic: Some(AcousticTranscriptIdentity {
-                range: TailSampleRange {
-                    session: "ipc-session".into(),
-                    capture_epoch: 8,
-                    sample_start: 48_000,
-                    sample_end: 120_000,
-                },
-                spans: vec![AcousticTranscriptSpan {
-                    text: "hello world".into(),
-                    range: TailSampleRange {
-                        session: "ipc-session".into(),
-                        capture_epoch: 8,
-                        sample_start: 48_000,
-                        sample_end: 120_000,
-                    },
-                    grain: AcousticSpanGrain::Phrase,
-                }],
-            }),
         };
 
-        let wire = EngineEventWire::from(&event);
+        let wire = EngineEventWire::try_from(&event).expect("utterance final is wire-eligible");
         let json = serde_json::to_value(&wire).expect("serialize wire event");
         let obj = must_object(json);
 
@@ -362,13 +359,9 @@ mod tests {
         );
         assert_eq!(obj.get("text").and_then(Value::as_str), Some("hello world"));
         assert!(obj.get("segments").is_some(), "segments must be present");
-        assert_eq!(
-            obj.get("acoustic")
-                .and_then(|value| value.get("range"))
-                .and_then(|value| value.get("capture_epoch"))
-                .and_then(Value::as_u64),
-            Some(8),
-            "PCM identity must survive IPC while raw text stays private"
+        assert!(
+            obj.get("acoustic").is_none(),
+            "UtteranceFinal IPC cannot project identity owned by the acoustic ledger"
         );
         assert_eq!(
             obj.get("vad_speech_pct")
@@ -385,10 +378,6 @@ mod tests {
             "confidence metadata must survive IPC boundary"
         );
         assert_eq!(
-            obj.get("quality_gate_dropped").and_then(Value::as_bool),
-            Some(false)
-        );
-        assert_eq!(
             obj.get("confidence_flags").and_then(Value::as_array),
             Some(&vec![Value::String("very_low_speech".to_string())])
         );
@@ -400,6 +389,12 @@ mod tests {
         let payload = IpcEventPayload::Engine(EngineEventWire::Preview {
             rev: 7,
             text: "preview".to_string(),
+            pin: PreviewPin::open_occurrence(TailSampleRange {
+                session: "take".into(),
+                capture_epoch: 1,
+                sample_start: 0,
+                sample_end: 8_000,
+            }),
         });
 
         let value = serde_json::to_value(payload).expect("serialize payload");
@@ -443,7 +438,7 @@ mod tests {
         let event = EngineEvent::NoSpeech {
             reason: "vad_no_speech_detected".to_string(),
         };
-        let wire = EngineEventWire::from(&event);
+        let wire = EngineEventWire::try_from(&event).expect("no-speech is wire-eligible");
         let json = serde_json::to_value(&wire).expect("serialize no_speech");
         let obj = must_object(json);
         assert_eq!(obj.get("type").and_then(Value::as_str), Some("no_speech"));
@@ -459,7 +454,6 @@ mod tests {
         let event = EngineEvent::Stats {
             dropped_audio_chunks: 3,
             hallucination_drops: 2,
-            semantic_gate_drops: 1,
             filtered_empty_drops: 4,
             corrections_applied: 5,
             total_utterances: 6,
@@ -471,7 +465,7 @@ mod tests {
             partial_coalesced_count: 12,
             partial_dropped_count: 13,
         };
-        let wire = EngineEventWire::from(&event);
+        let wire = EngineEventWire::try_from(&event).expect("stats is wire-eligible");
         let json = serde_json::to_value(&wire).expect("serialize stats");
         let obj = must_object(json);
         assert_eq!(obj.get("type").and_then(Value::as_str), Some("stats"));
@@ -511,7 +505,7 @@ mod tests {
             },
         };
 
-        let wire = EngineEventWire::from(&event);
+        let wire = EngineEventWire::try_from(&event).expect("sideband is wire-eligible");
         let json = serde_json::to_value(&wire).expect("serialize sideband wire");
         let obj = must_object(json);
         assert_eq!(
@@ -548,7 +542,7 @@ mod tests {
             source: LayerSource::TailPatch,
         };
 
-        let wire = EngineEventWire::from(&event);
+        let wire = EngineEventWire::try_from(&event).expect("replace-range is wire-eligible");
         let json = serde_json::to_value(&wire).expect("serialize replace_range");
         let obj = must_object(json);
 
@@ -576,7 +570,7 @@ mod tests {
             kind: AnnotationKind::HesitationPause,
         };
 
-        let wire = EngineEventWire::from(&event);
+        let wire = EngineEventWire::try_from(&event).expect("annotation is wire-eligible");
         let json = serde_json::to_value(&wire).expect("serialize insert_annotation");
         let obj = must_object(json);
 
@@ -604,10 +598,11 @@ mod tests {
                 inline_llm_replacements: 3,
                 final_bam_replacements: 4,
                 annotations_inserted: 5,
+                ..LayerSummary::default()
             },
         };
 
-        let wire = EngineEventWire::from(&event);
+        let wire = EngineEventWire::try_from(&event).expect("session finality is wire-eligible");
         let json = serde_json::to_value(&wire).expect("serialize session_finalised");
         let obj = must_object(json);
 
@@ -688,5 +683,64 @@ mod tests {
                 "expected error to mention rejected variant `{variant}`, got: {err_text}"
             );
         }
+    }
+
+    #[test]
+    fn apple_mirror_cannot_cross_ipc_or_serde_boundary() {
+        let event = EngineEvent::UnadmittedAppleWords {
+            revision: 1,
+            closed_phrases: Default::default(),
+            words: vec![crate::pipeline::contracts::UnadmittedAppleWord {
+                text: "private words".into(),
+                sample_start: 0,
+                sample_end: 16_000,
+                source: crate::pipeline::contracts::UnadmittedAppleWordSource::Unmatched,
+            }],
+        };
+        assert!(matches!(
+            EngineEventWire::try_from(&event),
+            Err(IpcIneligibleEngineEvent)
+        ));
+        assert!(serde_json::to_value(&event).is_err());
+    }
+
+    /// Ledger receipts stay on the in-process fanout; ordinary telemetry still
+    /// crosses the explicitly partial IPC boundary.
+    #[test]
+    fn ledger_internal_event_is_ineligible_without_panicking() {
+        let occurrence = OccurrenceIdentity::new("session", 1, 10, 20);
+        let event = EngineEvent::LedgerMutation {
+            observation: ObservationIdentity::new(
+                ObservationProducer::Apple,
+                7,
+                0,
+                occurrence.clone(),
+            ),
+            label: "Iwo".to_string(),
+            receipt: MutationReceipt::Insert { occurrence },
+        };
+        assert!(matches!(
+            EngineEventWire::try_from(&event),
+            Err(IpcIneligibleEngineEvent)
+        ));
+
+        let pin = PreviewPin::from_segments(TailSampleRange {
+            session: "take".into(),
+            capture_epoch: 1,
+            sample_start: 4_000,
+            sample_end: 12_000,
+        });
+        let preview = EngineEvent::Preview {
+            rev: 1,
+            text: "ephemeral".to_string(),
+            pin: pin.clone(),
+        };
+        assert!(matches!(
+            EngineEventWire::try_from(&preview),
+            Ok(EngineEventWire::Preview { rev: 1, pin: wire_pin, .. }) if wire_pin == pin
+        ));
+        let wire = serde_json::to_value(EngineEventWire::try_from(&preview).unwrap()).unwrap();
+        assert_eq!(wire["pin"]["range"]["sample_start"], 4_000);
+        assert_eq!(wire["pin"]["grain"], "word");
     }
 }

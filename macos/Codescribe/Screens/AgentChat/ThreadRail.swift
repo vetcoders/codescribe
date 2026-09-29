@@ -27,6 +27,11 @@ struct ThreadRail: View {
     .onChange(of: search) { _, newValue in
       store.searchThreads(newValue)
     }
+    .onChange(of: store.threadSearchQuery) { _, newValue in
+      if search.trimmingCharacters(in: .whitespacesAndNewlines) != newValue {
+        search = newValue
+      }
+    }
     .confirmationDialog(
       "Delete this thread?",
       isPresented: Binding(
@@ -54,18 +59,33 @@ struct ThreadRail: View {
   private var compactRail: some View {
     VStack(spacing: 0) {
       ModeDot(color: CSColor.terracotta, size: 9)
-        .padding(.top, 18)
-        .padding(.bottom, 14)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
 
       ScrollView {
         LazyVStack(spacing: 6) {
-          ForEach(filteredThreads) { thread in
-            let title = ThreadRowTitle.displayTitle(for: thread)
-            let isActive = thread.id == store.selectedThreadID
-            Button {
-              store.select(thread.id)
-            } label: {
-              Text(ThreadRowTitle.compactMonogram(for: thread))
+          ForEach(sectionedThreads, id: \.section) { group in
+            if group.section == .maxConsultations {
+              Divider().padding(.horizontal, 6)
+              Image(systemName: "sparkles")
+                .font(CSFont.ui(9, .semibold))
+                .foregroundStyle(CSColor.textFaintAlt)
+                .help(group.section.title)
+                .accessibilityLabel(group.section.title)
+            }
+            ForEach(group.threads) { thread in
+              let title = ThreadRowTitle.displayTitle(for: thread)
+              let isActive = thread.id == store.selectedThreadID
+              Button {
+                store.select(thread.id)
+              } label: {
+                Group {
+                  if thread.isMaxConsultation {
+                    Image(systemName: "sparkles")
+                  } else {
+                    Text(ThreadRowTitle.compactMonogram(for: thread))
+                  }
+                }
                 .font(CSFont.ui(11, .semibold))
                 .foregroundStyle(
                   isActive ? CSColor.chromeAccent : CSColor.textMuted
@@ -91,11 +111,12 @@ struct ThreadRail: View {
                     )
                 )
                 .contentShape(Rectangle())
+              }
+              .csFocusRing()
+              .help(title)
+              .accessibilityLabel(title)
+              .accessibilityAddTraits(isActive ? [.isSelected] : [])
             }
-            .csFocusRing(cornerRadius: 8)
-            .help(title)
-            .accessibilityLabel(title)
-            .accessibilityAddTraits(isActive ? [.isSelected] : [])
           }
         }
         .padding(.vertical, 4)
@@ -116,10 +137,10 @@ struct ThreadRail: View {
           )
           .contentShape(Rectangle())
       }
-      .csFocusRing(cornerRadius: 8)
+      .csFocusRing()
       .help("New thread")
       .accessibilityLabel("New thread")
-      .padding(.vertical, 12)
+      .padding(.vertical, 8)
       .overlay(alignment: .top) {
         Rectangle().fill(CSColor.hairline(0.06)).frame(height: 1)
       }
@@ -131,12 +152,12 @@ struct ThreadRail: View {
     VStack(spacing: 0) {
       // Wordmark header
       HStack(spacing: 9) {
-        Wordmark(size: 15)
+        Wordmark(size: 14)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(.horizontal, 16)
-      .padding(.top, 16)
-      .padding(.bottom, 12)
+      .padding(.horizontal, 12)
+      .padding(.top, 10)
+      .padding(.bottom, 8)
 
       // Search field
       HStack(spacing: 8) {
@@ -146,14 +167,14 @@ struct ThreadRail: View {
           prompt:
             Text("search threads")
             .font(CSFont.mono(12, .medium))
-            .foregroundColor(CSColor.textFaint)
+            .foregroundStyle(CSColor.textFaint)
         )
         .textFieldStyle(.plain)
         .font(CSFont.mono(12, .medium))
         .foregroundStyle(CSColor.textBody)
       }
       .padding(.horizontal, 11)
-      .padding(.vertical, 8)
+      .padding(.vertical, 6)
       .background(CSColor.surfaceRaised(0.04))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
@@ -161,7 +182,16 @@ struct ThreadRail: View {
       )
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
       .padding(.horizontal, 12)
-      .padding(.bottom, 10)
+      .padding(.bottom, 8)
+
+      if let error = store.threadSearchError {
+        Text(error)
+          .font(CSFont.mono(10, .medium))
+          .foregroundStyle(CSColor.textBody)
+          .padding(.horizontal, 12)
+          .padding(.bottom, 8)
+          .accessibilityLabel(error)
+      }
 
       // Section eyebrow
       HStack {
@@ -172,8 +202,8 @@ struct ThreadRail: View {
         Spacer()
       }
       .padding(.horizontal, 12)
-      .padding(.top, 6)
-      .padding(.bottom, 4)
+      .padding(.top, 4)
+      .padding(.bottom, 2)
 
       // Thread list — search-filtered first, then grouped by recency
       ScrollView {
@@ -230,9 +260,9 @@ struct ThreadRail: View {
               )
           )
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
       }
-      .padding(12)
+      .padding(8)
       .overlay(alignment: .top) {
         Rectangle().fill(CSColor.hairline(0.06)).frame(height: 1)
       }
@@ -249,19 +279,9 @@ struct ThreadRail: View {
     }
   }
 
-  /// Groups the (already search-filtered) threads into recency sections,
-  /// preserving the store's updated-desc order inside each group. Local-only
-  /// drafts carry no `updatedAt` and group under Today.
+  /// Agent recency sections precede the separate Max consultation section.
   private var sectionedThreads: [(section: ThreadSection, threads: [ChatThread])] {
-    let now = Date()
-    var groups: [ThreadSection: [ChatThread]] = [:]
-    for thread in filteredThreads {
-      groups[ThreadSection.section(for: thread.updatedAt ?? now, now: now), default: []]
-        .append(thread)
-    }
-    return ThreadSection.allCases.compactMap { section in
-      groups[section].map { (section, $0) }
-    }
+    ThreadSection.railGroups(filteredThreads)
   }
 
   // MARK: Rename (inline edit)
@@ -349,6 +369,12 @@ private struct ThreadRow: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 4) {
       HStack(spacing: 7) {
+        if thread.isMaxConsultation {
+          Image(systemName: "sparkles")
+            .font(CSFont.ui(11, .semibold))
+            .foregroundStyle(CSColor.textMuted)
+            .accessibilityLabel("Max consultation")
+        }
         if isActive {
           Circle().fill(CSColor.chromeAccent).frame(width: 6, height: 6)
         }
@@ -384,7 +410,7 @@ private struct ThreadRow: View {
           .frame(width: 18, height: 18)
           .contentShape(Rectangle())
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .opacity(thread.isFavorite || isActive ? 1 : 0.38)
         .help(thread.isFavorite ? "Unfavorite thread" : "Favorite thread")
       }
@@ -445,9 +471,9 @@ enum ModelTag {
 
 // MARK: - Recency sections (pure, unit-tested)
 
-/// Time buckets for the rail's section headers, ordered newest-first.
+/// Agent recency buckets followed by the Max consultation section.
 enum ThreadSection: CaseIterable, Hashable {
-  case today, yesterday, thisWeek, older
+  case today, yesterday, thisWeek, older, maxConsultations
 
   var title: String {
     switch self {
@@ -455,6 +481,23 @@ enum ThreadSection: CaseIterable, Hashable {
     case .yesterday: "Yesterday"
     case .thisWeek: "This week"
     case .older: "Older"
+    case .maxConsultations: "Max consultations"
+    }
+  }
+
+  static func railGroups(
+    _ threads: [ChatThread], now: Date = Date(), calendar: Calendar = .current
+  ) -> [(section: ThreadSection, threads: [ChatThread])] {
+    var groups: [ThreadSection: [ChatThread]] = [:]
+    for thread in threads {
+      let section: ThreadSection =
+        thread.isMaxConsultation
+        ? .maxConsultations
+        : Self.section(for: thread.updatedAt ?? now, now: now, calendar: calendar)
+      groups[section, default: []].append(thread)
+    }
+    return allCases.compactMap { section in
+      groups[section].map { (section, $0) }
     }
   }
 
@@ -544,7 +587,7 @@ enum ThreadRailMeta {
       return "yesterday"
     case .today:
       return string(from: date, via: todayFormatter, calendar: calendar)
-    case .thisWeek, .older:
+    case .thisWeek, .older, .maxConsultations:
       return string(from: date, via: monthDayFormatter, calendar: calendar)
     }
   }

@@ -41,6 +41,7 @@ use tracing::{info, warn};
 use crate::config::models::resolve_runtime_whisper_model_path;
 use crate::config::{Config, UserSettings};
 use crate::pipeline::contracts::{FileTranscriptionOptions, RawTranscript, TranscriptionVerdict};
+use crate::stt::LocalExecutionControl;
 
 use super::engine::LocalWhisperEngine;
 use super::params::DecodingParams;
@@ -311,20 +312,52 @@ fn reaper_loop() {
 
 /// Run `f` with the engine, loading it on demand and refreshing the idle clock.
 fn with_engine<R>(f: impl FnOnce(&mut LocalWhisperEngine) -> Result<R>) -> Result<R> {
+    with_engine_controlled(&LocalExecutionControl::default(), f)
+}
+
+/// Poll only our own admission. A waiter must not acquire a foreign holder's
+/// engine after its deadline, nor install cancellation on that holder.
+fn acquire_controlled<'a, T>(
+    mutex: &'a Mutex<T>,
+    control: &LocalExecutionControl,
+) -> Result<std::sync::MutexGuard<'a, T>> {
+    loop {
+        control.check()?;
+        match mutex.try_lock() {
+            Ok(guard) => {
+                control.check()?;
+                return Ok(guard);
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err(anyhow!("Failed to lock poisoned Whisper engine"));
+            }
+        }
+    }
+}
+
+fn with_engine_controlled<R>(
+    control: &LocalExecutionControl,
+    f: impl FnOnce(&mut LocalWhisperEngine) -> Result<R>,
+) -> Result<R> {
     let lock_started = Instant::now();
-    let mut guard = slot()
-        .lock()
-        .map_err(|e| anyhow!("Failed to lock engine: {}", e))?;
+    let mut guard = acquire_controlled(slot(), control)?;
     let lock_wait_ms = lock_started.elapsed().as_millis() as u64;
     let mut model_load_ms = 0u64;
     let cold_load = guard.engine.is_none();
     if cold_load {
+        control.check()?;
         let load_started = Instant::now();
         guard.engine = Some(load_engine()?);
         model_load_ms = load_started.elapsed().as_millis() as u64;
         ensure_reaper();
         record_residency_load(model_load_ms);
     }
+    // Loading/native Metal calls cannot be preempted. Ownership stays here
+    // until they return; expiry then prevents entering the decoder.
+    control.check()?;
     super::timing::record_engine_acquire(lock_wait_ms, model_load_ms, cold_load);
     let engine = guard
         .engine
@@ -347,13 +380,7 @@ fn with_engine_initial_prompt<R>(
     initial_prompt: Option<String>,
     f: impl FnOnce(&mut LocalWhisperEngine) -> Result<R>,
 ) -> Result<R> {
-    with_engine(|engine| {
-        let previous = engine.decoding_params.initial_prompt.clone();
-        engine.decoding_params.initial_prompt = initial_prompt;
-        let result = f(engine);
-        engine.decoding_params.initial_prompt = previous;
-        result
-    })
+    with_engine(|engine| engine.with_request(initial_prompt, f))
 }
 
 /// Full-file decoding is deliberately prompt-free. The live A/B measured a
@@ -401,12 +428,6 @@ pub fn init() -> Result<()> {
 }
 
 #[cfg(test)]
-pub(crate) fn reset_test_init_calls() {
-    TEST_INIT_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
-    TEST_LOAD_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
-}
-
-#[cfg(test)]
 pub(crate) fn test_init_calls() -> usize {
     TEST_INIT_CALLS.load(std::sync::atomic::Ordering::SeqCst)
 }
@@ -449,19 +470,46 @@ pub fn transcribe_with_segments_with_initial_prompt(
     language: Option<&str>,
     initial_prompt: Option<String>,
 ) -> Result<RawTranscript> {
-    with_engine_initial_prompt(initial_prompt, |engine| {
-        engine.transcribe_long_with_language_segments(samples, sample_rate, language)
-    })
+    transcribe_controlled(
+        samples,
+        sample_rate,
+        language,
+        initial_prompt,
+        &LocalExecutionControl::default(),
+    )
 }
 
-/// Transcribe with streaming callback
-pub fn transcribe_streaming<'a>(
+pub(crate) fn transcribe_controlled(
     samples: &[f32],
     sample_rate: u32,
     language: Option<&str>,
-    callback: Option<super::engine::ChunkCallback<'a>>,
-) -> Result<String> {
-    with_engine(|engine| engine.transcribe_long_streaming(samples, sample_rate, language, callback))
+    initial_prompt: Option<String>,
+    control: &LocalExecutionControl,
+) -> Result<RawTranscript> {
+    with_engine_controlled(control, |engine| {
+        engine.with_request(initial_prompt, |engine| {
+            engine.transcribe_long_controlled(samples, sample_rate, language, control)
+        })
+    })
+}
+
+/// L1 tail window. Phrase segments stay on the transcript. Word segments are
+/// measured only when the checkpoint's alignment heads produce a DTW path.
+pub(crate) fn transcribe_tail_window(
+    samples: &[f32],
+    sample_rate: u32,
+    language: Option<&str>,
+    initial_prompt: Option<String>,
+    control: &LocalExecutionControl,
+) -> Result<(
+    RawTranscript,
+    Option<Vec<crate::pipeline::contracts::TranscriptSegment>>,
+)> {
+    with_engine_controlled(control, |engine| {
+        engine.with_request(initial_prompt, |engine| {
+            engine.transcribe_tail_window(samples, sample_rate, language, control)
+        })
+    })
 }
 
 /// Transcribe a file with full structured verdict (VAD stats, confidence, provenance).
@@ -470,8 +518,18 @@ pub fn transcribe_file_verdict(
     language: Option<&str>,
     options: FileTranscriptionOptions,
 ) -> Result<TranscriptionVerdict> {
+    transcribe_file_verdict_observed(path, language, options, &mut |_| Ok(()))
+}
+
+/// Streaming observes the process-owned engine instead of creating a second model.
+pub fn transcribe_file_verdict_observed(
+    path: &std::path::Path,
+    language: Option<&str>,
+    options: FileTranscriptionOptions,
+    on_segments: &mut dyn FnMut(&[crate::pipeline::contracts::TranscriptSegment]) -> Result<()>,
+) -> Result<TranscriptionVerdict> {
     with_engine_initial_prompt(file_transcription_initial_prompt(), |engine| {
-        engine.transcribe_file_with_language(path, language, options)
+        engine.transcribe_file_with_language_observed(path, language, options, on_segments)
     })
 }
 
@@ -542,17 +600,13 @@ mod tests {
     fn file_transcription_initial_prompt_defaults_off() {
         let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
         let _env_path = EnvRestore::capture("CODESCRIBE_ENV_PATH");
-        let _prompt_enabled = EnvRestore::capture(
-            crate::pipeline::stream_postprocess::STT_INITIAL_PROMPT_ENABLED_ENV,
-        );
+        let _prompt_enabled = EnvRestore::capture("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED");
         let temp_dir = tempfile::tempdir().expect("temp data dir");
 
         unsafe {
             std::env::set_var("CODESCRIBE_DATA_DIR", temp_dir.path());
             std::env::remove_var("CODESCRIBE_ENV_PATH");
-            std::env::remove_var(
-                crate::pipeline::stream_postprocess::STT_INITIAL_PROMPT_ENABLED_ENV,
-            );
+            std::env::remove_var("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED");
         }
 
         assert_eq!(file_transcription_initial_prompt(), None);
@@ -564,18 +618,13 @@ mod tests {
     fn file_transcription_initial_prompt_stays_off_when_window_prompt_is_opted_in() {
         let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
         let _env_path = EnvRestore::capture("CODESCRIBE_ENV_PATH");
-        let _prompt_enabled = EnvRestore::capture(
-            crate::pipeline::stream_postprocess::STT_INITIAL_PROMPT_ENABLED_ENV,
-        );
+        let _prompt_enabled = EnvRestore::capture("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED");
         let temp_dir = tempfile::tempdir().expect("temp data dir");
 
         unsafe {
             std::env::set_var("CODESCRIBE_DATA_DIR", temp_dir.path());
             std::env::remove_var("CODESCRIBE_ENV_PATH");
-            std::env::set_var(
-                crate::pipeline::stream_postprocess::STT_INITIAL_PROMPT_ENABLED_ENV,
-                "1",
-            );
+            std::env::set_var("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED", "1");
         }
 
         assert_eq!(
@@ -691,5 +740,203 @@ mod tests {
             text.is_empty(),
             "empty input should stay empty after no-op load"
         );
+    }
+
+    /// Real Metal footprint of large-v3-turbo: after load, after ≥60 s of
+    /// speech in Relay's 4 s windows, and after `reclaim_metal_buffer_pool`
+    /// with the weights still resident.
+    ///
+    /// Ignored because it loads the on-disk Whisper weights and decodes about
+    /// a minute of audio. Skip reason when the model file is absent is printed
+    /// before return. Run with `--ignored`.
+    #[test]
+    #[ignore = "loads the real Whisper weights and decodes 60s on Metal"]
+    #[serial]
+    fn whisper_metal_pool_footprint_with_resident_weights() {
+        let _ttl = EnvRestore::capture("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS");
+        // Keep the weights resident for the whole measurement. The reaper's
+        // 30-minute unload must not race this bench.
+        unsafe { std::env::set_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS", "0") };
+
+        let model = match resolve_model_path_fallback() {
+            Ok(path) => path,
+            Err(err) => {
+                println!(
+                    "skip: whisper model file absent ({err:#}) — named reason: runtime Whisper weights are not installed"
+                );
+                return;
+            }
+        };
+        if !model.join("weights.safetensors").is_file()
+            && !model.join("model.safetensors").is_file()
+        {
+            println!(
+                "skip: whisper model file absent at {} — named reason: weights file missing",
+                model.display()
+            );
+            return;
+        }
+
+        let pcm = match relay_speech_pcm() {
+            Some(pcm) => pcm,
+            None => {
+                println!(
+                    "skip: speech fixture absent — named reason: tests/assets/synthetic_speech_tts.wav is missing or silent"
+                );
+                return;
+            }
+        };
+
+        let window = (crate::pipeline::streaming::layer1_window::Layer1Coalesce::MAX_AUDIO_SECS
+            * 16_000.0) as usize;
+        assert_eq!(window, 64_000, "Relay window is 4 s at 16 kHz");
+        let covered = 60 * 16_000;
+        assert!(pcm.len() >= covered, "fixture must cover at least 60 s");
+        let windows = covered / window;
+        assert_eq!(windows * window, covered);
+
+        init().expect("Whisper weights load");
+        assert!(is_initialized(), "weights resident after load");
+        let after_load = crate::memory::phys_footprint_bytes().expect("phys_footprint after load");
+
+        let control = LocalExecutionControl::default();
+        let mut first_text = String::new();
+        for index in 0..windows {
+            let start = index * window;
+            let (transcript, _) = transcribe_tail_window(
+                &pcm[start..start + window],
+                16_000,
+                Some("pl"),
+                None,
+                &control,
+            )
+            .expect("Relay window decode");
+            if index == 0 {
+                first_text = transcript.text;
+            }
+        }
+        assert!(
+            !first_text.trim().is_empty(),
+            "first 4 s window produced no text; the fixture did not exercise a decode"
+        );
+        let after_decode =
+            crate::memory::phys_footprint_bytes().expect("phys_footprint after decode");
+        // Same wait as the post-prune sample, with the pool still untouched,
+        // so a later drop can be told apart from the process just settling.
+        std::thread::sleep(Duration::from_secs(2));
+        let after_decode_settled =
+            crate::memory::phys_footprint_bytes().expect("phys_footprint after decode settled");
+
+        {
+            let guard = slot().lock().expect("whisper slot");
+            assert!(
+                guard.engine.is_some(),
+                "prune must run while the weights are still loaded"
+            );
+            let device = super::super::engine::cached_process_device()
+                .expect("process Metal device after a resident load");
+            crate::memory::reclaim_metal_buffer_pool(&device);
+            assert!(guard.engine.is_some(), "prune must not drop the weights");
+        }
+        assert!(is_initialized(), "weights still resident after prune");
+        let after_prune =
+            crate::memory::phys_footprint_bytes().expect("phys_footprint after prune");
+        std::thread::sleep(Duration::from_secs(2));
+        let after_prune_settled =
+            crate::memory::phys_footprint_bytes().expect("phys_footprint after prune settled");
+
+        let (again, _) = transcribe_tail_window(&pcm[..window], 16_000, Some("pl"), None, &control)
+            .expect("decode after prune");
+        assert_eq!(
+            again.text, first_text,
+            "decode after a resident-weight prune diverged from the pre-prune decode"
+        );
+
+        let reclaimed = after_decode_settled.saturating_sub(after_prune_settled);
+        println!(
+            "WHISPER_METAL_FOOTPRINT after_load_bytes={after_load} after_decode_bytes={after_decode} after_decode_settled_bytes={after_decode_settled} after_prune_bytes={after_prune} after_prune_settled_bytes={after_prune_settled} reclaimed_vs_settled_decode_bytes={reclaimed} windows={windows} window_samples={window} weights_still_loaded=true"
+        );
+    }
+
+    /// Tile the checked-in 16 kHz mono speech clip out to at least 60 s.
+    fn relay_speech_pcm() -> Option<Vec<f32>> {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/assets/synthetic_speech_tts.wav");
+        let mut reader = hound::WavReader::open(path).ok()?;
+        let spec = reader.spec();
+        if spec.channels != 1 || spec.sample_rate != 16_000 {
+            return None;
+        }
+        let samples = reader
+            .samples::<i16>()
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        if samples.is_empty() {
+            return None;
+        }
+        let pcm: Vec<f32> = samples
+            .into_iter()
+            .map(|sample| f32::from(sample) / f32::from(i16::MAX))
+            .collect();
+        let energy: f32 = pcm.iter().map(|sample| sample * sample).sum();
+        let rms = (energy / pcm.len() as f32).sqrt();
+        if rms < 0.01 {
+            return None;
+        }
+        let mut tiled = Vec::new();
+        while tiled.len() < 60 * 16_000 {
+            tiled.extend_from_slice(&pcm);
+        }
+        Some(tiled)
+    }
+}
+
+#[cfg(test)]
+mod local_execution_contention_tests {
+    use super::*;
+
+    #[test]
+    fn cancelled_and_expired_waiters_exit_before_foreign_holder_release() {
+        for expire in [false, true] {
+            // The exact acquisition helper used by the singleton, with a
+            // separately held slot. No process-global engine/model fixture.
+            let held = std::sync::Arc::new(Mutex::new("foreign prompt/cache"));
+            let holder_slot = std::sync::Arc::clone(&held);
+            let (held_tx, held_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let holder = std::thread::spawn(move || {
+                let guard = holder_slot.lock().unwrap();
+                held_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                assert_eq!(*guard, "foreign prompt/cache");
+            });
+            held_rx.recv().unwrap();
+            let control = LocalExecutionControl::default();
+            let waiter_control = control.clone();
+            let waiter_slot = std::sync::Arc::clone(&held);
+            let (started_tx, started_rx) = std::sync::mpsc::channel();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let waiter = std::thread::spawn(move || {
+                started_tx.send(()).unwrap();
+                let result = acquire_controlled(&waiter_slot, &waiter_control);
+                done_tx.send(result.is_err()).unwrap();
+            });
+            started_rx.recv().unwrap();
+            if expire {
+                control.limit_until(Instant::now());
+            } else {
+                control.cancel();
+            }
+            // Release even on failure so the falsifier itself cannot strand a
+            // native thread when an assertion fails.
+            let result = done_rx.recv_timeout(Duration::from_secs(1));
+            release_tx.send(()).unwrap();
+            holder.join().unwrap();
+            waiter.join().unwrap();
+            assert!(result.unwrap());
+            assert_eq!(*held.lock().unwrap(), "foreign prompt/cache");
+            assert!(acquire_controlled(&held, &control).is_err());
+            assert!(acquire_controlled(&held, &LocalExecutionControl::default()).is_ok());
+        }
     }
 }

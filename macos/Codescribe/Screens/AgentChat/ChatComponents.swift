@@ -10,7 +10,6 @@ enum ChatPalette {
   static var activeThreadSub: Color { CSColor.chromeAccent.opacity(0.78) }
   static let toolBody = Color(hex: 0x9AA093)  // tool-activity detail text
   static let thinking = Color(hex: 0x8A8D87)  // "thinking…" label
-  static let sendGlyph = Color(hex: 0x0A0A0A)
 }
 
 enum ComposerMicVisualState: CaseIterable, Equatable {
@@ -608,7 +607,7 @@ private struct CodeBlockView: View {
       .font(CSFont.mono(size - 1))
       // Base colour for runs the theme leaves unstyled; the highlighter's
       // per-token foreground colours win over this modifier.
-      .foregroundColor(CSColor.textBodyAlt)
+      .foregroundStyle(CSColor.textBodyAlt)
       .lineSpacing(4)
       .textSelection(.enabled)
       .fixedSize(horizontal: false, vertical: true)
@@ -686,7 +685,7 @@ private struct CodeBlockView: View {
           .strokeBorder(CSColor.hairline(0.10), lineWidth: 1)
       )
     }
-    .csFocusRing(cornerRadius: 8)
+    .csFocusRing()
     .help("Copy code")
   }
 }

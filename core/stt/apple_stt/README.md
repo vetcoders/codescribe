@@ -2,7 +2,7 @@
 
 This directory contains the Apple STT backend for codescribe:
 
-- `mod.rs` — Rust `TranscriptionAdapter` + subprocess bridge client + final-pass verdict helper.
+- `mod.rs` — Rust subprocess bridge client + direct transcription and final-pass verdict helpers.
 - `codescribe-stt-bridge.swift` — Swift bridge executable with per-locale backend selection.
 
 ## Backend selection (per locale)
@@ -79,10 +79,11 @@ When the override is unset, the resolver checks the bundled helper beside the
 current `.app` executable first, then falls back to `codescribe-stt-bridge` on
 `PATH`.
 
+The router probes Apple runtime and bridge availability automatically. Settings
+selects ASR mode to choose the Layer 1 refiner, not a direct recognizer.
+
 ## Runtime Env
 
-- `CODESCRIBE_STT_ENGINE=auto` uses Apple on-device on supported macOS and falls back to Candle Whisper when unavailable.
-- `CODESCRIBE_STT_ENGINE=apple` forces the Apple path while preserving runtime fallback to Candle.
 - `CODESCRIBE_APPLE_STT_BRIDGE=/absolute/path/to/codescribe-stt-bridge` (optional dev override; wins over bundled helper and `PATH`)
 - `CODESCRIBE_APPLE_STT_LOCALE=pl-PL` (optional; defaults to `pl-PL`)
 - `CODESCRIBE_APPLE_STT_ALLOW_DOWNLOAD=1` (allow SpeechTranscriber asset install via `AssetInventory`)

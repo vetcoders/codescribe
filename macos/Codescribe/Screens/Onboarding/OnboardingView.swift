@@ -15,14 +15,14 @@ struct OnboardingView: View {
       ScrollView {
         stepBody
           .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(.horizontal, 32)
+          .padding(.horizontal, CSSpace.page)
           .padding(.vertical, 26)
       }
       Divider().overlay(CSColor.hairline(0.08))
       footer
     }
     .frame(minWidth: 680, minHeight: 560)
-    .background(SettingsView.windowGradient.ignoresSafeArea())
+    .background(CSColor.windowWash.ignoresSafeArea())
     .onAppear { model.refreshForCurrentStep() }
   }
 
@@ -39,8 +39,8 @@ struct OnboardingView: View {
       }
       OnboardingProgressBar(current: model.stepIndex, total: model.totalSteps)
     }
-    .padding(.horizontal, 32)
-    .padding(.top, 22)
+    .padding(.horizontal, CSSpace.page)
+    .padding(.top, CSSpace.section)
     .padding(.bottom, 16)
   }
 
@@ -83,7 +83,7 @@ struct OnboardingView: View {
         model.primaryAction()
       }
     }
-    .padding(.horizontal, 32)
+    .padding(.horizontal, CSSpace.page)
     .padding(.vertical, 16)
   }
 }
@@ -100,15 +100,16 @@ struct OnboardingProgressBar: View {
   }
 
   var body: some View {
-    GeometryReader { geo in
-      ZStack(alignment: .leading) {
-        Capsule().fill(CSColor.surfaceRaised(0.05))
+    Capsule()
+      .fill(CSColor.surfaceRaised(0.05))
+      .frame(height: CSSpace.xxs)
+      .overlay(alignment: .leading) {
         Capsule()
           .fill(CSColor.chromeAccent.opacity(0.85))
-          .frame(width: max(6, geo.size.width * fraction))
+          .containerRelativeFrame(.horizontal) { length, _ in
+            max(CSSpace.xs, length * fraction)
+          }
       }
-    }
-    .frame(height: 4)
   }
 }
 

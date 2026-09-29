@@ -5,7 +5,7 @@ import XCTest
 
 @MainActor
 final class TrayViewModelTests: XCTestCase {
-  func testHoldBadgeCyclePostsConfigBusForSettingsSync() {
+  func testHoldBadgeCyclePersistsAndUpdatesTrayState() {
     let engine = TrackingTrayEngine(
       showDockIcon: true,
       overlayEnabled: true,
@@ -19,16 +19,7 @@ final class TrayViewModelTests: XCTestCase {
     model.refreshStatus()
     XCTAssertEqual(model.holdBadgeOption, .eight)
 
-    let exp = expectation(description: "hold badge bus fire")
-    let token = NotificationCenter.default.addObserver(
-      forName: ConfigChangeBus.holdBadgeDidChange,
-      object: nil,
-      queue: .main
-    ) { _ in exp.fulfill() }
-    defer { NotificationCenter.default.removeObserver(token) }
-
     model.setHoldBadgeOption(.four)
-    wait(for: [exp], timeout: 1.0)
     XCTAssertEqual(model.holdBadgeOption, .four)
     XCTAssertEqual(engine.holdBadgeWrites.last, .four)
   }
@@ -79,10 +70,12 @@ final class TrayViewModelTests: XCTestCase {
     settings.refresh()
 
     tray.setHoldBadgeOption(.four)
-    XCTAssertEqual(settings.holdBadgeOption, .four, "tray write must refresh Settings")
+    settings.refresh()
+    XCTAssertEqual(settings.holdBadgeOption, .four, "Settings must re-read persisted tray truth")
 
     settings.setHoldBadgeOption(.twelve)
-    XCTAssertEqual(tray.holdBadgeOption, .twelve, "Settings write must refresh tray")
+    tray.refreshStatus()
+    XCTAssertEqual(tray.holdBadgeOption, .twelve, "tray must re-read persisted Settings truth")
   }
 
   /// The tray's Auto Format row cycles the full wheel: Off → Correction →
@@ -227,6 +220,33 @@ final class TrayViewModelTests: XCTestCase {
       agentProcessing,
       equals: NSColor(srgbRed: 242.0 / 255.0, green: 140.0 / 255.0, blue: 69.0 / 255.0, alpha: 1)
     )
+  }
+
+  /// The header pill already paints idle / success / listening / processing.
+  /// A second "Status: Idle" row is the duplicate the operator saw; keep the
+  /// extra row only for warning / critical kinds that need an attention banner.
+  func testDetailStatusRowShowsOnlyForWarningAndCriticalKinds() {
+    let cases: [(CsTrayStatusKind, Bool)] = [
+      (.starting, false),
+      (.idle, false),
+      (.listening, false),
+      (.processing, false),
+      (.success, false),
+      (.error, true),
+      (.thermal, true),
+      (.hotkeyConflict, true),
+    ]
+    for (kind, expected) in cases {
+      XCTAssertEqual(
+        TrayStatusStore.preview(kind: kind).showsDetailStatusRow,
+        expected,
+        "showsDetailStatusRow for \(String(describing: kind))"
+      )
+    }
+
+    let idle = TrayStatusStore.preview(kind: .idle, label: "Status: Idle")
+    XCTAssertEqual(idle.compactLabel, "Idle")
+    XCTAssertFalse(idle.showsDetailStatusRow)
   }
 
   func testRefreshStatusReadsEntirePersistedTraySnapshot() {

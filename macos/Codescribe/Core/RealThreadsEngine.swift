@@ -4,16 +4,16 @@ import Foundation
 // ThreadStore via the UniFFI bridge (CodescribeThreads). Lists/searches thread
 // summaries for the rail, loads messages on demand, and forwards lightweight
 // thread mutations that already exist in the core.
-final class RealThreadsEngine: ChatThreadsProviding {
+final class RealThreadsEngine: BackgroundThreadListing {
   private let threads = CodescribeThreads()
 
-  func listThreads() -> [ChatThread] {
-    guard let list = try? threads.listThreads(filter: nil) else { return [] }
+  func listThreads() throws -> [ChatThread] {
+    let list = try threads.listThreads(filter: nil)
     return list.map(Self.thread)
   }
 
-  func searchThreads(query: String) -> [ChatThread] {
-    guard let list = try? threads.searchThreads(query: query) else { return [] }
+  func searchThreads(query: String) throws -> [ChatThread] {
+    let list = try threads.searchThreads(query: query)
     return list.map(Self.thread)
   }
 
@@ -80,7 +80,7 @@ final class RealThreadsEngine: ChatThreadsProviding {
     try? threads.exportThreadMarkdown(id: backendId, assistantOnly: assistantOnly)
   }
 
-  private static func thread(from summary: CsThreadSummary) -> ChatThread {
+  static func thread(from summary: CsThreadSummary) -> ChatThread {
     let updatedAt = Date(timeIntervalSince1970: Double(summary.updatedAtMs) / 1000.0)
     var thread = ChatThread(
       title: summary.title.isEmpty ? "Untitled" : summary.title,
@@ -95,6 +95,8 @@ final class RealThreadsEngine: ChatThreadsProviding {
     thread.updatedAt = updatedAt
     thread.model = summary.model
     thread.totalTokens = summary.totalTokens
+    thread.mode = summary.mode
+    thread.tags = summary.tags
     return thread
   }
 

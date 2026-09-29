@@ -1,42 +1,106 @@
-# Attach and mailbox
+# Attach, naming and recovery
 
-## Bus path
+## One-command attach (engine)
 
-1. `CODESCRIBE_TRANSCRIPT_BUS_PATH`
-2. `$XDG_STATE_HOME/codescribe/transcript-events.jsonl`
-3. `~/.codescribe/transcript-events.jsonl`
-
-Schema `codescribe.transcript.v1`. File mode `0600`. Observer only — no mic.
-
-## Follower
-
-From the stable product install (no checkout dependency):
+With a known name and channel, one call replaces the manual saga below:
 
 ```bash
 python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
-  --provider codex --session <provider-session-id> --become --drafts --follow
+  --attach --channel <1-9> --name <name> \
+  --provider <claude-code|codex|...> --session <provider-session-id>
+```
+
+It atomically writes the channel's entry in
+`~/.codescribe/agent-bridge/vc.agent-audience-binding.v1.json`, ensures exactly
+one live follower for the session's lease (pidfile and log under
+`agent-bridge/runtime/followers/`), and prints an attach receipt: `lease_id`,
+`cursor`, `resumed`, `follower_pid`, `follower_spawned`, `follower_log`, and
+the `voice` profile from `voices.json`. A second attach with a live follower
+reuses it (`follower_spawned: false`). The spawned follower always coalesces
+(`--coalesce`): the newest draft/revision replaces its predecessors per
+document, while every seal stays its own envelope. Pass
+`--on-seal '<cmd>'` to forward a detached wake hook to the spawned follower;
+the hook receives `CODESCRIBE_SEAL_DELIVERY_ID`, `CODESCRIBE_SEAL_SESSION_ID`
+and `CODESCRIBE_SEAL_TEXT`, and fires exactly once per freshly queued seal.
+
+Read the channel's one truthful state at any time:
+
+```bash
 python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
-  --provider codex --session <provider-session-id> --name james --drafts --follow
+  --status --provider <provider> --session <provider-session-id>
+```
+
+`backlog` there is pending minus acknowledgment markers; the raw `pending`
+length of the lease file overstates it, because acknowledged envelopes stay
+in the file until the follower's next sweep. The receipt never proves
+listening — verify with a fresh named take before claiming it.
+
+## Preflight
+
+Confirm the app is running and inspect the installed helper:
+
+```bash
+pgrep -x Codescribe
+python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py --help
+python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py --print-bus-path
 python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py --active-names
 ```
 
-`--become` hears seals until a name assignment, then filters. Unnamed → exit 2.
+Use the printed bus path. Resolution is explicit override, then
+`CODESCRIBE_TRANSCRIPT_BUS_PATH`, then
+`$XDG_STATE_HOME/codescribe/transcript-events.jsonl`, then
+`~/.codescribe/transcript-events.jsonl`. Inspect recent schema names without
+dumping transcripts. If the app or bus is unavailable, explain the missing
+prerequisite; do not claim listening.
 
-The first line is an attach receipt. Preserve its `lease_id` and the follower
-handle. After provider recovery, poll the original handle; if it is gone,
-reattach with the same provider/session/name. A resumed cursor catches events
-written during recovery without replaying the old command. Different provider
-sessions — even with the same human name — own different leases and cursors.
+Current schema families include `codescribe.transcript.v1` and
+`codescribe.transcript-evidence.v1`. Source text mentioning a schema is a
+preflight hint, not proof of parsing. Prove support through a real emitted
+envelope. If the installed helper cannot read the schema, an inspected checkout
+`scripts/bus-demux.py` may be selected explicitly; report the exact path.
+Reinstallation is a separate action, not an automatic attach step.
 
-Do not grep the jsonl as the protocol. The script parses the schema.
+## Name and lease
 
-## Naming
+Reuse a name already chosen in this conversation. Otherwise ask once; if the
+Founder delegates naming, choose a pronounceable name and proceed.
+The helper normalizes names; inspect the attach receipt rather than assuming
+case-sensitive routing. Human display name Roman can have bus stem `roman`.
+Do not promise inflected-name matching without testing the actual helper.
 
-The human asks the agent what it wants to be called. Bind that stem.
-`james` on the bus; `james.codescribe` as the long id. Collisions across forks
-are the operator's problem.
+Obtain the real stable provider session/thread id from the provider's exposed
+session context. Do not invent an id or reuse another conversation's lease.
 
-## Overlay
+With a known name, attach directly:
 
-On Fn, overlay may be visible. It must not become the key app. Replies land in
-the agent session, not the panel.
+```bash
+python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
+  --provider codex --session <provider-session-id> \
+  --name roman --drafts --follow
+```
+
+Use the provider token actually in use (`codex` or `claude-code`).
+The command is the follower; connect it to the mechanism in
+[Monitor](monitor.md). A shell handle alone is insufficient.
+
+For a temporary greeting window while choosing a name, use `--become`
+instead of `--name`. Before binding the name, stop that follower and wait for
+its handle to close. Reattach with the same provider session and receipt:
+
+```bash
+python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
+  --provider codex --session <provider-session-id> --lease <lease-id> \
+  --name roman --drafts --follow
+```
+
+## Recovery and stop
+
+Retain helper path, bus path, provider/session, lease id, cursor, name, follower
+handle and monitor handle. If the follower lives, reuse it; never create a
+duplicate for the same lease. If its handle is gone, reattach with the same
+identity. `resumed: true` proves cursor recovery, not notification delivery.
+Reverify the monitor separately.
+
+Preserve the established delivery identity when recovering; do not execute a
+previously handled command again. On an explicit stop, close the owned monitor
+and follower using their handles. Do not broadly kill the app or other readers.

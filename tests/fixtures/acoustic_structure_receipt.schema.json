@@ -1,0 +1,368 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetcoders.io/schemas/codescribe/acoustic-structure-receipt.v1.json",
+  "title": "Codescribe acoustic throne structural receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "residueRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "file",
+        "line",
+        "matched_identifier",
+        "needle",
+        "relation",
+        "match_role",
+        "scope_classification",
+        "class",
+        "fail_gate",
+        "review_required",
+        "reason"
+      ],
+      "properties": {
+        "file": { "type": "string", "minLength": 1 },
+        "line": { "type": "integer", "minimum": 1 },
+        "matched_identifier": { "type": "string", "minLength": 1 },
+        "needle": { "type": "string", "minLength": 1 },
+        "relation": {
+          "enum": [
+            "snake_infix",
+            "snake_prefix",
+            "snake_suffix",
+            "pascal_twin",
+            "filename",
+            "verbatim_substring"
+          ]
+        },
+        "match_role": { "type": "string", "minLength": 1 },
+        "scope_classification": { "type": "string", "minLength": 1 },
+        "class": {
+          "enum": [
+            "executable_authority",
+            "executable_consumer",
+            "canonical_edge",
+            "harmless_historical_name",
+            "diagnostic_or_log_label",
+            "comment_or_string",
+            "test_only_mutant",
+            "fixture",
+            "verifier_self_literal",
+            "unclassified_requires_review"
+          ]
+        },
+        "fail_gate": { "const": false },
+        "review_required": { "type": "boolean" },
+        "reason": { "type": "string", "minLength": 1 }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "class": { "const": "unclassified_requires_review" }
+            },
+            "required": ["class"]
+          },
+          "then": {
+            "properties": { "review_required": { "const": true } }
+          },
+          "else": {
+            "properties": { "review_required": { "const": false } }
+          }
+        }
+      ]
+    },
+    "residueRows": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/residueRow" }
+    },
+    "residueSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidence_complete",
+        "query_count",
+        "complete_query_count",
+        "truncated_query_count",
+        "total_count",
+        "unclassified_count",
+        "review_required_count",
+        "class_counts",
+        "needle_counts"
+      ],
+      "properties": {
+        "evidence_complete": { "const": true },
+        "query_count": { "type": "integer", "minimum": 0 },
+        "complete_query_count": { "type": "integer", "minimum": 0 },
+        "truncated_query_count": { "const": 0 },
+        "total_count": { "type": "integer", "minimum": 0 },
+        "unclassified_count": { "type": "integer", "minimum": 0 },
+        "review_required_count": { "type": "integer", "minimum": 0 },
+        "class_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "executable_authority",
+            "executable_consumer",
+            "canonical_edge",
+            "harmless_historical_name",
+            "diagnostic_or_log_label",
+            "comment_or_string",
+            "test_only_mutant",
+            "fixture",
+            "verifier_self_literal",
+            "unclassified_requires_review"
+          ],
+          "properties": {
+            "executable_authority": { "type": "integer", "minimum": 0 },
+            "executable_consumer": { "type": "integer", "minimum": 0 },
+            "canonical_edge": { "type": "integer", "minimum": 0 },
+            "harmless_historical_name": { "type": "integer", "minimum": 0 },
+            "diagnostic_or_log_label": { "type": "integer", "minimum": 0 },
+            "comment_or_string": { "type": "integer", "minimum": 0 },
+            "test_only_mutant": { "type": "integer", "minimum": 0 },
+            "fixture": { "type": "integer", "minimum": 0 },
+            "verifier_self_literal": { "type": "integer", "minimum": 0 },
+            "unclassified_requires_review": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "needle_counts": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        }
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "stage",
+    "scope",
+    "verdict",
+    "expected_verdict",
+    "conformant",
+    "repo",
+    "branch",
+    "head",
+    "dirty_fingerprint",
+    "loctree_version",
+    "loctree_snapshot_fingerprint",
+    "expected_parts",
+    "observed_parts",
+    "expected_owners",
+    "observed_owners",
+    "forbidden_symbols",
+    "forbidden_hits",
+    "forbidden_literal_hits",
+    "residue_by_substring",
+    "consumer_paths",
+    "corridor_paths",
+    "bypass_paths",
+    "unwired_paths",
+    "dangling_references",
+    "unresolved_module_declarations",
+    "canary_rows_observed",
+    "unclassified_canary_rows",
+    "failures",
+    "assessment",
+    "command_inventory",
+    "command_policy"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schema": { "const": "codescribe.acoustic-structure-receipt.v1" },
+    "stage": { "enum": ["demolished", "assembled", "wired"] },
+    "scope": {
+      "oneOf": [
+        { "enum": ["settings", "acoustic", "document", "text-delivery"] },
+        { "type": "null" }
+      ]
+    },
+    "verdict": {
+      "enum": [
+        "OLD_AUTHORITY_REMOVED",
+        "STRUCTURALLY_COMPLETE_NOT_WIRED",
+        "STRUCTURALLY_WIRED",
+        "STRUCTURALLY_NONCONFORMANT"
+      ]
+    },
+    "expected_verdict": {
+      "enum": [
+        "OLD_AUTHORITY_REMOVED",
+        "STRUCTURALLY_COMPLETE_NOT_WIRED",
+        "STRUCTURALLY_WIRED"
+      ]
+    },
+    "conformant": { "type": "boolean" },
+    "repo": { "type": ["string", "null"] },
+    "branch": { "type": ["string", "null"] },
+    "head": { "type": ["string", "null"] },
+    "dirty_fingerprint": { "type": ["string", "null"] },
+    "loctree_version": { "type": ["string", "null"] },
+    "loctree_snapshot_fingerprint": { "type": ["string", "null"] },
+    "expected_parts": { "type": "array", "items": { "type": "string" } },
+    "observed_parts": { "type": "object" },
+    "expected_owners": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "observed_owners": {
+      "type": "object",
+      "additionalProperties": { "type": "array" }
+    },
+    "forbidden_symbols": { "type": "array", "items": { "type": "string" } },
+    "forbidden_hits": { "type": "object" },
+    "forbidden_literal_hits": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "string", "minLength": 1 }
+      }
+    },
+    "residue_by_substring": {
+      "type": "object",
+      "required": ["summary"],
+      "properties": {
+        "summary": { "$ref": "#/$defs/residueSummary" }
+      },
+      "additionalProperties": { "$ref": "#/$defs/residueRows" }
+    },
+    "consumer_paths": { "type": "object" },
+    "corridor_paths": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["hops", "invocations"],
+        "properties": {
+          "hops": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "symbol",
+                "file",
+                "signature_contains",
+                "body_count",
+                "start_line",
+                "production_definition",
+                "required_code",
+                "missing_code",
+                "required_code_in_order",
+                "dead_code_markers",
+                "unreachable_required_code"
+              ],
+              "properties": {
+                "symbol": { "type": "string", "minLength": 1 },
+                "file": { "type": "string", "minLength": 1 },
+                "signature_contains": { "type": ["string", "null"] },
+                "body_count": { "type": "integer", "minimum": 0 },
+                "start_line": { "type": ["integer", "null"], "minimum": 1 },
+                "production_definition": { "type": "boolean" },
+                "required_code": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": { "type": "string", "minLength": 1 }
+                },
+                "missing_code": {
+                  "type": "array",
+                  "items": { "type": "string", "minLength": 1 }
+                },
+                "required_code_in_order": { "type": "boolean" },
+                "dead_code_markers": {
+                  "type": "array",
+                  "items": { "type": "string", "minLength": 1 }
+                },
+                "unreachable_required_code": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["required_code", "reason"],
+                    "properties": {
+                      "required_code": { "type": "string", "minLength": 1 },
+                      "reason": { "type": "string", "minLength": 1 }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "invocations": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "callee",
+                "callee_file",
+                "caller",
+                "caller_file",
+                "minimum_count",
+                "callee_definition_in_file",
+                "observed_count",
+                "observed_lines"
+              ],
+              "properties": {
+                "callee": { "type": "string", "minLength": 1 },
+                "callee_file": { "type": "string", "minLength": 1 },
+                "caller": { "type": "string", "minLength": 1 },
+                "caller_file": { "type": "string", "minLength": 1 },
+                "minimum_count": { "type": "integer", "minimum": 1 },
+                "callee_definition_in_file": { "type": "boolean" },
+                "observed_count": { "type": "integer", "minimum": 0 },
+                "observed_lines": {
+                  "type": "array",
+                  "items": { "type": "integer", "minimum": 1 }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "bypass_paths": { "type": "object" },
+    "unwired_paths": { "type": "object" },
+    "dangling_references": {
+      "oneOf": [{ "type": "array" }, { "type": "string" }]
+    },
+    "unresolved_module_declarations": { "type": "array" },
+    "canary_rows_observed": { "type": "integer", "minimum": 0 },
+    "unclassified_canary_rows": {
+      "oneOf": [{ "type": "array" }, { "type": "string" }]
+    },
+    "failures": { "type": "array", "items": { "type": "string" } },
+    "assessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["build", "lint", "unit", "swift", "runtime"],
+      "properties": {
+        "build": { "const": "NOT_ASSESSED" },
+        "lint": { "const": "NOT_ASSESSED" },
+        "unit": { "const": "NOT_ASSESSED" },
+        "swift": { "const": "NOT_ASSESSED" },
+        "runtime": { "const": "NOT_ASSESSED" }
+      }
+    },
+    "command_inventory": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "pattern": "^loct (context|occurrences|find|body)"
+      }
+    },
+    "command_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowed_executable", "all_commands_allowed"],
+      "properties": {
+        "allowed_executable": { "const": "loct" },
+        "all_commands_allowed": { "const": true }
+      }
+    }
+  }
+}

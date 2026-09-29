@@ -153,6 +153,18 @@ struct ComposerTextView: NSViewRepresentable {
     textView.isRichText = false
     textView.importsGraphics = false
     textView.allowsUndo = true
+    // The composer accepts the user's words; system prediction and rewriting
+    // must not compete with explicit Agent or dictation actions.
+    textView.inlinePredictionType = .no
+    textView.isAutomaticTextCompletionEnabled = false
+    textView.isAutomaticTextReplacementEnabled = false
+    textView.isAutomaticSpellingCorrectionEnabled = false
+    textView.isAutomaticQuoteSubstitutionEnabled = false
+    textView.isAutomaticDashSubstitutionEnabled = false
+    if #available(macOS 15.0, *) {
+      textView.writingToolsBehavior = .none
+      textView.mathExpressionCompletionType = .no
+    }
     textView.drawsBackground = false
     textView.isHorizontallyResizable = false
     textView.isVerticallyResizable = true

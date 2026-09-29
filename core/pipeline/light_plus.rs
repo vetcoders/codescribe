@@ -40,9 +40,9 @@ pub fn apply(text: &str) -> String {
     apply_with_left_context("", text)
 }
 
-/// Shape a sealed span while honouring the left context already committed.
+/// Shape a complete span while honouring the left context already committed.
 ///
-/// Progressive seals run Light+ **per span**, not over the whole transcript.
+/// Progressive presentation runs Light+ **per span** during capture.
 /// Casing at the span's first word must see whether the preceding sealed text
 /// ended mid-sentence or on a terminal — otherwise a lexicon-corrected word
 /// at a true sentence start stays lowercase, and a continuation after a
@@ -51,6 +51,16 @@ pub fn apply(text: &str) -> String {
 /// Returns only the shaped span (not the left context concatenated). When
 /// `left_context` is empty this is identical to [`apply`].
 pub fn apply_with_left_context(left_context: &str, span: &str) -> String {
+    let mut shaped = apply_live_span(left_context, span, false);
+    if !shaped.is_empty() && !ends_with_terminal_punctuation(&shaped) {
+        shaped.push('.');
+    }
+    shaped
+}
+
+/// Shape a live occurrence. A period belongs to the following PCM boundary,
+/// so an open last occurrence never invents a sentence end during capture.
+pub fn apply_live_span(left_context: &str, span: &str, sentence_break_before: bool) -> String {
     let trimmed = span.trim();
     if trimmed.is_empty() {
         return String::new();
@@ -62,17 +72,18 @@ pub fn apply_with_left_context(left_context: &str, span: &str) -> String {
     }
 
     let tightened = tighten_punctuation(&joined);
-    let tightened = tightened.trim();
+    let punctuated = place_polish_commas(&tightened);
+    let tightened = punctuated.trim();
     if tightened.is_empty() {
         return String::new();
     }
 
     // Open-sentence detection from the left neighbour: a terminal (or empty
     // left) means this span starts a sentence and must capitalise.
-    let at_sentence_start = left_ends_sentence(left_context);
+    let at_sentence_start = sentence_break_before || left_ends_sentence(left_context);
     let mut shaped = capitalize_span(tightened, at_sentence_start);
-    if !ends_with_terminal_punctuation(&shaped) {
-        shaped.push('.');
+    if sentence_break_before && !left_context.is_empty() && !left_ends_sentence(left_context) {
+        shaped.insert_str(0, ". ");
     }
     shaped
 }
@@ -110,18 +121,26 @@ fn capitalize_span(text: &str, open_at_start: bool) -> String {
     out
 }
 
-/// Drop hesitation sounds and immediately repeated words, and normalise every
-/// run of whitespace to a single space.
+/// Drop hesitation sounds and normalise every run of whitespace to a single
+/// space.
+///
+/// A second rule used to live here: an immediately repeated word was deleted as
+/// a seam artifact. It is gone, and for the same reason the Python original's
+/// filler deletion was never ported — it deletes user words. Worse, it decides
+/// by content alone. "Iwo Iwo Iwo Iwo Iwo" is five acoustic occurrences of a
+/// name and this pass turned it into one, every time, with no evidence beyond
+/// the strings being equal. Nothing in a bare string can tell an operator
+/// saying a word twice apart from a concatenation duplicating it.
+///
+/// Duplication introduced by joining overlapping engine output is real, but it
+/// is decided where the PCM ranges are — the tail patcher and the span
+/// idempotence ledger — not here. Hesitations stay because a hesitation is a
+/// non-lexical sound rather than an occurrence of a word, and the punctuation
+/// pass stays because it collapses characters, not tokens.
 fn collapse_tokens(text: &str) -> String {
     let mut kept: Vec<&str> = Vec::new();
     for token in text.split_whitespace() {
         if is_hesitation(token) {
-            continue;
-        }
-        if kept
-            .last()
-            .is_some_and(|previous| is_same_word(previous, token))
-        {
             continue;
         }
         kept.push(token);
@@ -152,20 +171,6 @@ fn is_hesitation(token: &str) -> bool {
         core.as_str(),
         "hm" | "hmm" | "hmmm" | "mhm" | "mhmm" | "uh" | "uhm" | "um" | "umm"
     )
-}
-
-/// Are these the same word, ignoring case and any punctuation hanging off them?
-/// Punctuation-only tokens never count as repeats — `. .` is the character
-/// pass's problem, and treating them as words would eat real ellipses.
-fn is_same_word(a: &str, b: &str) -> bool {
-    let normalize = |s: &str| -> String {
-        s.chars()
-            .filter(|c| c.is_alphanumeric())
-            .flat_map(char::to_lowercase)
-            .collect()
-    };
-    let (left, right) = (normalize(a), normalize(b));
-    !left.is_empty() && left == right
 }
 
 /// Collapse repeated punctuation and pull marks back onto the preceding word.
@@ -199,6 +204,98 @@ fn tighten_punctuation(text: &str) -> String {
     out
 }
 
+/// Place conservative Polish clause commas. This only inserts punctuation;
+/// occurrence labels and their word order remain untouched.
+fn place_polish_commas(text: &str) -> String {
+    const CLAUSE_WORDS: &[&str] = &[
+        "że",
+        "iż",
+        "żeby",
+        "aby",
+        "bo",
+        "ponieważ",
+        "gdyż",
+        "który",
+        "która",
+        "które",
+        "którego",
+        "której",
+        "którym",
+        "którą",
+        "których",
+        "którymi",
+        "ale",
+        "lecz",
+        "więc",
+        "czyli",
+        "gdy",
+        "kiedy",
+        "jeśli",
+        "jeżeli",
+        "chociaż",
+        "choć",
+        "zanim",
+        "dopóki",
+        "gdyby",
+        "jakby",
+    ];
+    const COMPOUNDS: &[&[&str]] = &[
+        &["mimo", "że"],
+        &["chyba", "że"],
+        &["zwłaszcza", "że"],
+        &["tak", "że"],
+        &["tylko", "że"],
+        &["podczas", "gdy"],
+        &["dlatego", "że"],
+        &["po", "to", "żeby"],
+        &["po", "to", "aby"],
+    ];
+    const NO_COMMA_AFTER: &[&str] = &["i", "oraz", "lub", "albo", "ani", "czy", "a", "no"];
+
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let words: Vec<String> = tokens
+        .iter()
+        .map(|token| {
+            token
+                .trim_matches(|ch: char| !ch.is_alphabetic())
+                .to_lowercase()
+        })
+        .collect();
+    let mut insert = vec![false; tokens.len()];
+    let mut inner = vec![false; tokens.len()];
+    for index in 0..tokens.len() {
+        if let Some(compound) = COMPOUNDS.iter().find(|compound| {
+            words[index..].starts_with(
+                &compound
+                    .iter()
+                    .map(|word| (*word).to_string())
+                    .collect::<Vec<_>>(),
+            )
+        }) {
+            insert[index] = true;
+            for offset in 1..compound.len() {
+                inner[index + offset] = true;
+            }
+        } else if CLAUSE_WORDS.contains(&words[index].as_str()) && !inner[index] {
+            insert[index] = true;
+        }
+    }
+    let mut out = String::with_capacity(text.len() + tokens.len());
+    for (index, token) in tokens.iter().enumerate() {
+        if index > 0 {
+            if insert[index]
+                && !NO_COMMA_AFTER.contains(&words[index - 1].as_str())
+                && !tokens[index - 1].ends_with([',', ';', ':', '.', '!', '?'])
+            {
+                out.push(',');
+            }
+            out.push(' ');
+        }
+        out.push_str(token);
+    }
+    out
+}
+
 /// Does the text already close on a mark that makes a trailing period wrong?
 ///
 /// `:` counts — a list header (`Lista:`) is finished, not a fragment.
@@ -212,6 +309,54 @@ fn ends_with_terminal_punctuation(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn polish_clauses_gain_commas_without_losing_words() {
+        let source = "to jest fajne bo VNC jak stosuję to zazwyczaj nie potrzebuję wiedzieć że program który działa jest otwarty";
+        let shaped = apply(source);
+        assert_eq!(
+            shaped,
+            "To jest fajne, bo VNC jak stosuję to zazwyczaj nie potrzebuję wiedzieć, że program, który działa jest otwarty."
+        );
+        assert_eq!(apply(&shaped), shaped);
+        let words = |text: &str| {
+            text.split_whitespace()
+                .map(|word| {
+                    word.trim_matches(|ch: char| ch.is_ascii_punctuation())
+                        .to_lowercase()
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(words(source), words(&shaped));
+    }
+
+    #[test]
+    fn compound_conjunctions_are_not_split() {
+        assert_eq!(
+            apply("robię to mimo że pada i że wieje"),
+            "Robię to, mimo że pada i że wieje."
+        );
+        assert_eq!(
+            apply("czekam podczas gdy działa"),
+            "Czekam, podczas gdy działa."
+        );
+    }
+
+    #[test]
+    fn live_span_waits_for_pcm_boundary_before_adding_a_period() {
+        assert_eq!(
+            apply_live_span("", "pierwsze słowa", false),
+            "Pierwsze słowa"
+        );
+        assert_eq!(
+            apply_live_span("Pierwsze słowa", "drugie słowa", false),
+            "drugie słowa"
+        );
+        assert_eq!(
+            apply_live_span("Pierwsze słowa drugie słowa", "trzecie słowa", true),
+            ". Trzecie słowa"
+        );
+    }
 
     /// Unpunctuated stream gains a capital start and a closing period.
     #[test]
@@ -264,12 +409,26 @@ mod tests {
         );
     }
 
-    /// Drops repeated words/punct seams; does not invent or delete content words.
+    /// Collapses punctuation seams; never deletes a word.
+    ///
+    /// The repeated-word rule this pass used to carry is gone: it decided by
+    /// content alone, so it could not tell a concatenation artifact from an
+    /// operator saying the same word twice, and it always chose deletion.
     #[test]
-    fn collapses_seam_artifacts_without_touching_words() {
-        assert_eq!(apply("to to jest jest test"), "To jest test.");
+    fn collapses_punctuation_seams_without_touching_words() {
         assert_eq!(apply("koniec.. naprawdę??"), "Koniec. Naprawdę?");
         assert_eq!(apply("słowo , potem"), "Słowo, potem.");
+    }
+
+    /// The conservation law, at the layer that used to break it hardest: five
+    /// spoken occurrences of one name stay five tokens.
+    #[test]
+    fn intentional_repetition_is_never_deleted_by_content() {
+        assert_eq!(apply("Iwo Iwo Iwo Iwo Iwo"), "Iwo Iwo Iwo Iwo Iwo.");
+        assert_eq!(apply("to to jest jest test"), "To to jest jest test.");
+        // Still idempotent: shaping the shaped text changes nothing.
+        let once = apply("Iwo Iwo Iwo Iwo Iwo");
+        assert_eq!(apply(&once), once);
     }
 
     /// Hesitation sounds drop; content fillers like `tak`/`no` survive.
@@ -311,5 +470,63 @@ mod tests {
     fn empty_and_whitespace_stay_empty() {
         assert_eq!(apply(""), "");
         assert_eq!(apply("   \n  "), "");
+    }
+
+    /// A span that shapes to nothing returns an empty string rather than a
+    /// lone period. The live per-occurrence caller reads that emptiness as
+    /// "refuse", so a hesitation-only utterance keeps its spoken label instead
+    /// of being deleted from the document by a formatting pass.
+    #[test]
+    fn a_span_that_shapes_to_nothing_returns_nothing() {
+        for hesitation in ["yyy", "  eee ", "hmm", "\n"] {
+            assert_eq!(
+                apply_with_left_context("Zdanie przed.", hesitation),
+                "",
+                "a shape that consumed every word must be empty, not punctuation"
+            );
+        }
+    }
+
+    /// Left context that closes on a comma is an unfinished clause: the span
+    /// continues it and must not rise to a capital.
+    #[test]
+    fn a_span_after_an_unclosed_clause_stays_lowercase() {
+        let shaped = apply_with_left_context("Zaczynamy od tego,", "że to jest ciag dalszy");
+        assert!(
+            shaped.starts_with("że"),
+            "a continuation after a comma stays lowercase: {shaped}"
+        );
+        assert!(shaped.ends_with('.'), "the span still closes: {shaped}");
+    }
+
+    /// The incremental path is idempotent too: re-shaping an already shaped
+    /// span against the same left context yields the same bytes, so a repeated
+    /// seal observation cannot make the document drift.
+    #[test]
+    fn reshaping_a_shaped_span_with_the_same_left_context_is_stable() {
+        let left = "Pierwsze zdanie.";
+        let once = apply_with_left_context(left, "drugie zdanie bez kropki");
+        assert_eq!(once, "Drugie zdanie bez kropki.");
+        assert_eq!(apply_with_left_context(left, &once), once);
+    }
+
+    /// Spans shaped one at a time, as their occurrences close, join into the
+    /// same readable document a single whole-transcript pass would produce.
+    /// This is the property the live Light+ floor is built on.
+    #[test]
+    fn spans_shaped_one_by_one_join_into_a_readable_document() {
+        let spoken = ["to jest pierwsze zdanie", "a to jest drugie"];
+        let mut document = String::new();
+        for span in spoken {
+            let shaped = apply_with_left_context(&document, span);
+            if !document.is_empty() {
+                document.push(' ');
+            }
+            document.push_str(&shaped);
+        }
+        assert_eq!(document, "To jest pierwsze zdanie. A to jest drugie.");
+        // And the whole-document pass leaves that result alone, so the terminal
+        // Light+ gate mints nothing on top of it.
+        assert_eq!(apply(&document), document);
     }
 }

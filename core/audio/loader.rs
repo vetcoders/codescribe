@@ -8,10 +8,8 @@
 
 use anyhow::{Result, anyhow};
 use std::path::Path;
-use symphonia::core::audio::{AudioBufferRef, Signal};
-use symphonia::core::conv::FromSample;
+use symphonia::core::formats::probe::Hint;
 use symphonia::core::io::MediaSourceStream;
-use symphonia::core::probe::Hint;
 
 use crate::safe_path;
 
@@ -31,18 +29,25 @@ pub fn load_audio_file(path: &Path) -> Result<(Vec<f32>, u32)> {
     }
 
     let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &Default::default(), &Default::default())
+        .probe(&hint, mss, Default::default(), Default::default())
         .map_err(|e| anyhow!("Failed to probe audio format: {}", e))?;
 
-    let mut format = probed.format;
+    let mut format = probed;
     let track = format
         .tracks()
         .iter()
-        .find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
+        .find(|t| t.codec_params.as_ref().and_then(|p| p.audio()).is_some())
         .ok_or_else(|| anyhow!("No supported audio track found"))?;
 
     let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &Default::default())
+        .make_audio_decoder(
+            track
+                .codec_params
+                .as_ref()
+                .and_then(|p| p.audio())
+                .ok_or_else(|| anyhow!("Audio track has no codec parameters"))?,
+            &Default::default(),
+        )
         .map_err(|e| anyhow!("Failed to create decoder: {}", e))?;
 
     let track_id = track.id;
@@ -51,7 +56,8 @@ pub fn load_audio_file(path: &Path) -> Result<(Vec<f32>, u32)> {
 
     loop {
         let packet = match format.next_packet() {
-            Ok(packet) => packet,
+            Ok(Some(packet)) => packet,
+            Ok(None) => break,
             Err(symphonia::core::errors::Error::IoError(ref e))
                 if e.kind() == std::io::ErrorKind::UnexpectedEof =>
             {
@@ -60,128 +66,27 @@ pub fn load_audio_file(path: &Path) -> Result<(Vec<f32>, u32)> {
             Err(e) => return Err(anyhow!("Failed to decode packet: {}", e)),
         };
 
-        if packet.track_id() != track_id {
+        if packet.track_id != track_id {
             continue;
         }
 
         match decoder.decode(&packet) {
             Ok(decoded) => {
                 if sample_rate == 0 {
-                    sample_rate = decoded.spec().rate;
+                    sample_rate = decoded.spec().rate();
                 }
 
-                match decoded {
-                    AudioBufferRef::F32(buf) => {
-                        let channels = buf.spec().channels.count();
-                        let frames = buf.frames();
-                        for i in 0..frames {
-                            let mut sum = 0.0f32;
-                            for ch in 0..channels {
-                                sum += buf.chan(ch)[i];
-                            }
-                            samples.push(sum / channels as f32);
-                        }
-                    }
-                    AudioBufferRef::U8(buf) => {
-                        let channels = buf.spec().channels.count();
-                        let frames = buf.frames();
-                        for i in 0..frames {
-                            let mut sum = 0.0f32;
-                            for ch in 0..channels {
-                                sum += f32::from_sample(buf.chan(ch)[i]);
-                            }
-                            samples.push(sum / channels as f32);
-                        }
-                    }
-                    AudioBufferRef::U16(buf) => {
-                        let channels = buf.spec().channels.count();
-                        let frames = buf.frames();
-                        for i in 0..frames {
-                            let mut sum = 0.0f32;
-                            for ch in 0..channels {
-                                sum += f32::from_sample(buf.chan(ch)[i]);
-                            }
-                            samples.push(sum / channels as f32);
-                        }
-                    }
-                    AudioBufferRef::U24(buf) => {
-                        let channels = buf.spec().channels.count();
-                        let frames = buf.frames();
-                        for i in 0..frames {
-                            let mut sum = 0.0f32;
-                            for ch in 0..channels {
-                                sum += f32::from_sample(buf.chan(ch)[i]);
-                            }
-                            samples.push(sum / channels as f32);
-                        }
-                    }
-                    AudioBufferRef::U32(buf) => {
-                        let channels = buf.spec().channels.count();
-                        let frames = buf.frames();
-                        for i in 0..frames {
-                            let mut sum = 0.0f32;
-                            for ch in 0..channels {
-                                sum += f32::from_sample(buf.chan(ch)[i]);
-                            }
-                            samples.push(sum / channels as f32);
-                        }
-                    }
-                    AudioBufferRef::S8(buf) => {
-                        let channels = buf.spec().channels.count();
-                        let frames = buf.frames();
-                        for i in 0..frames {
-                            let mut sum = 0.0f32;
-                            for ch in 0..channels {
-                                sum += f32::from_sample(buf.chan(ch)[i]);
-                            }
-                            samples.push(sum / channels as f32);
-                        }
-                    }
-                    AudioBufferRef::S16(buf) => {
-                        let channels = buf.spec().channels.count();
-                        let frames = buf.frames();
-                        for i in 0..frames {
-                            let mut sum = 0.0f32;
-                            for ch in 0..channels {
-                                sum += f32::from_sample(buf.chan(ch)[i]);
-                            }
-                            samples.push(sum / channels as f32);
-                        }
-                    }
-                    AudioBufferRef::S24(buf) => {
-                        let channels = buf.spec().channels.count();
-                        let frames = buf.frames();
-                        for i in 0..frames {
-                            let mut sum = 0.0f32;
-                            for ch in 0..channels {
-                                sum += f32::from_sample(buf.chan(ch)[i]);
-                            }
-                            samples.push(sum / channels as f32);
-                        }
-                    }
-                    AudioBufferRef::S32(buf) => {
-                        let channels = buf.spec().channels.count();
-                        let frames = buf.frames();
-                        for i in 0..frames {
-                            let mut sum = 0.0f32;
-                            for ch in 0..channels {
-                                sum += f32::from_sample(buf.chan(ch)[i]);
-                            }
-                            samples.push(sum / channels as f32);
-                        }
-                    }
-                    AudioBufferRef::F64(buf) => {
-                        let channels = buf.spec().channels.count();
-                        let frames = buf.frames();
-                        for i in 0..frames {
-                            let mut sum = 0.0f32;
-                            for ch in 0..channels {
-                                sum += f32::from_sample(buf.chan(ch)[i]);
-                            }
-                            samples.push(sum / channels as f32);
-                        }
-                    }
+                let channels = decoded.spec().channels().count();
+                if channels == 0 {
+                    return Err(anyhow!("Decoded audio has no channels"));
                 }
+                let mut interleaved = vec![0.0f32; decoded.samples_interleaved()];
+                decoded.copy_to_slice_interleaved(&mut interleaved);
+                samples.extend(
+                    interleaved
+                        .chunks_exact(channels)
+                        .map(|frame| frame.iter().sum::<f32>() / channels as f32),
+                );
             }
             Err(e) => return Err(anyhow!("Failed to decode audio frame: {}", e)),
         }
@@ -232,4 +137,61 @@ pub fn resample_to_16k(samples: &[f32], original_rate: u32) -> Vec<f32> {
     }
 
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_integer_stereo_to_mono_with_original_sample_rate() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("stereo.wav");
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 48_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&path, spec)?;
+        for sample in [16384i16, -16384, 8192, 24576] {
+            writer.write_sample(sample)?;
+        }
+        writer.finalize()?;
+        let (samples, rate) = load_audio_file(&path)?;
+        assert_eq!(rate, 48_000);
+        assert_eq!(samples, vec![0.0, 0.5]);
+        Ok(())
+    }
+
+    #[test]
+    fn decodes_float_mono_without_clipping_or_resampling() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("float.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let expected = [0.25f32, -0.5, 1.25];
+        let mut writer = hound::WavWriter::create(&path, spec)?;
+        for sample in expected {
+            writer.write_sample(sample)?;
+        }
+        writer.finalize()?;
+        let (samples, rate) = load_audio_file(&path)?;
+        assert_eq!(rate, 16_000);
+        assert_eq!(samples, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn refuses_unrecognized_audio() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("invalid.wav");
+        std::fs::write(&path, b"not a wave file")?;
+        assert!(load_audio_file(&path).is_err());
+        Ok(())
+    }
 }

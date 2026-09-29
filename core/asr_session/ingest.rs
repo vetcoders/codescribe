@@ -105,15 +105,13 @@ impl SessionIngest {
 
     /// Apply one event and report what was decided.
     pub fn ingest(&mut self, event: AsrSessionEvent) -> IngestVerdict {
-        let identity = event.identity();
-
-        if identity.session_id() != &self.session_id {
+        if event.session_id() != &self.session_id {
             self.foreign_rejection_count += 1;
             return IngestVerdict::RejectedForeignSession;
         }
 
-        let utterance_id = identity.utterance_id();
-        let sequence_id = identity.sequence_id();
+        let utterance_id = event.utterance_id();
+        let sequence_id = event.sequence_id();
         let sealed_final = self.sealed.get(&utterance_id);
 
         // Rule 2: the reconnect resend. Position in the stream is irrelevant —

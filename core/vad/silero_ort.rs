@@ -50,7 +50,8 @@ fn embedded_session() -> Result<Arc<Mutex<Session>>> {
         embedded::MODEL.len()
     );
     let session = Session::builder()?
-        .with_intra_threads(1)?
+        .with_intra_threads(1)
+        .map_err(ort::Error::<()>::from)?
         .commit_from_memory(embedded::MODEL)
         .context("Failed to load embedded Silero VAD ONNX model")?;
     debug!("Silero VAD model loaded successfully (embedded, shared)");
@@ -153,7 +154,8 @@ impl SileroVad {
     pub fn new(model_path: &Path, config: VadConfig) -> Result<Self> {
         info!("Loading Silero VAD model from: {}", model_path.display());
         let session = Session::builder()?
-            .with_intra_threads(1)?
+            .with_intra_threads(1)
+            .map_err(ort::Error::<()>::from)?
             .commit_from_file(model_path)
             .context("Failed to load Silero VAD ONNX model")?;
 
@@ -419,6 +421,41 @@ impl AccumulatingVad {
                 self.last_prob = prob;
                 max_prob = max_prob.max(prob);
                 processed_any = true;
+            }
+        }
+        // No full chunk available this call (or all predicts errored): fall back
+        // to the latest known probability, matching `feed`'s sub-chunk behavior.
+        if processed_any {
+            max_prob
+        } else {
+            self.last_prob
+        }
+    }
+
+    /// Sibling of [`feed_max`](Self::feed_max): same resampling, accumulator
+    /// drain, predict loop, `last_prob` updates and return value, plus a
+    /// hop-order push of every 512-sample chunk probability into `sink`.
+    ///
+    /// One call replaces `feed_max` when a caller needs both the 500 ms max
+    /// and Silero's native 32 ms timeline. Feeding the same window twice
+    /// would advance Silero v6 state and change the second result.
+    pub fn feed_trace(&mut self, samples: &[f32], sink: &mut Vec<f32>) -> f32 {
+        let resampled = if let Some(ref mut r) = self.resampler {
+            r.resample(samples)
+        } else {
+            samples.to_vec()
+        };
+        self.accumulator.extend_from_slice(&resampled);
+
+        let mut max_prob = 0.0f32;
+        let mut processed_any = false;
+        while self.accumulator.len() >= CHUNK_SIZE {
+            let chunk: Vec<f32> = self.accumulator.drain(..CHUNK_SIZE).collect();
+            if let Ok(prob) = self.vad.predict(&chunk) {
+                self.last_prob = prob;
+                max_prob = max_prob.max(prob);
+                processed_any = true;
+                sink.push(prob);
             }
         }
         // No full chunk available this call (or all predicts errored): fall back

@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import os
 
 @testable import Codescribe
 
@@ -8,33 +9,36 @@ import XCTest
 /// survive an app death (restart replays what never reached a terminal).
 @MainActor
 final class AgentChatQueueTests: XCTestCase {
-  private final class GatedState: @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuations: [CheckedContinuation<String, Error>] = []
-    private var storedStarts: [(text: String, threadId: String)] = []
+  private final class GatedState: Sendable {
+    private struct Storage {
+      var continuations: [CheckedContinuation<String, Error>] = []
+      var starts: [(text: String, threadId: String)] = []
+    }
+
+    private let storage = OSAllocatedUnfairLock(initialState: Storage())
 
     var starts: [(text: String, threadId: String)] {
-      lock.withLock { storedStarts }
+      storage.withLock { $0.starts }
     }
 
     func recordStart(text: String, threadId: String) {
-      lock.withLock { storedStarts.append((text, threadId)) }
+      storage.withLock { $0.starts.append((text, threadId)) }
     }
 
     func suspend(_ continuation: CheckedContinuation<String, Error>) {
-      lock.withLock { continuations.append(continuation) }
+      storage.withLock { $0.continuations.append(continuation) }
     }
 
     func finishNext(_ result: String) {
-      let continuation = lock.withLock {
-        continuations.isEmpty ? nil : continuations.removeFirst()
+      let continuation = storage.withLock {
+        $0.continuations.isEmpty ? nil : $0.continuations.removeFirst()
       }
       continuation?.resume(returning: result)
     }
 
     func failNext(_ error: Error) {
-      let continuation = lock.withLock {
-        continuations.isEmpty ? nil : continuations.removeFirst()
+      let continuation = storage.withLock {
+        $0.continuations.isEmpty ? nil : $0.continuations.removeFirst()
       }
       continuation?.resume(throwing: error)
     }

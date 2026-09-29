@@ -3,7 +3,8 @@
 //! Model dropdowns must come from the provider's own `/models` API for the
 //! user's key. Static model catalogs go stale exactly when new releases matter,
 //! so this module is the single discovery path plus a last-good cache for
-//! offline/error states.
+//! offline/error states. It runs for **every** provider — vendor or Custom —
+//! against the resolved row's endpoint, not against a sealed lane.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
@@ -18,8 +19,8 @@ use tokio::sync::oneshot;
 use tracing::warn;
 
 use crate::config::Config;
-use crate::llm::lane_truth;
-use crate::llm::provider::{LlmMode, ProviderKind, WireFamily};
+use crate::llm::provider::{ProviderRef, ResolvedProvider, WireFamily};
+use crate::llm::vendors;
 
 /// 5s client timeout for live /models discovery.
 /// P2-09: short to keep Settings responsive. If provider is slow, we degrade to
@@ -30,10 +31,6 @@ use crate::llm::provider::{LlmMode, ProviderKind, WireFamily};
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 /// Last-good models cache filename under the Codescribe config dir.
 const CACHE_FILE_NAME: &str = "model_discovery_cache.json";
-/// Anthropic Models API URL (not OpenAI-compatible `/v1/models`).
-const ANTHROPIC_MODELS_ENDPOINT: &str = "https://api.anthropic.com/v1/models";
-/// Required `anthropic-version` header for the Models endpoint.
-const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 /// One discovered provider model. `id` is sent on the wire; `display_name` is
 /// provider-provided when available and otherwise falls back to `id`.
@@ -53,7 +50,7 @@ pub enum ModelDiscoveryStatus {
 /// Successful model discovery result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelDiscoveryResult {
-    pub provider: ProviderKind,
+    pub provider: ProviderRef,
     pub models: Vec<DiscoveredModel>,
     pub status: ModelDiscoveryStatus,
 }
@@ -62,44 +59,46 @@ pub struct ModelDiscoveryResult {
 /// API key material.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelDiscoveryError {
+    /// A vendor row without a key. Custom rows never produce this: a
+    /// key-optional host is asked without `Authorization` instead.
     NoKey {
-        provider: ProviderKind,
-        env_key: &'static str,
+        provider: ProviderRef,
+        env_key: String,
     },
     Network {
-        provider: ProviderKind,
+        provider: ProviderRef,
         message: String,
     },
     HttpStatus {
-        provider: ProviderKind,
+        provider: ProviderRef,
         status: u16,
         message: String,
     },
     Parse {
-        provider: ProviderKind,
+        provider: ProviderRef,
         message: String,
     },
     Cache {
-        provider: ProviderKind,
+        provider: ProviderRef,
         message: String,
     },
     /// A newer discovery request for the same provider superseded this one.
     /// The stale request is aborted and its result never touches cache/state;
     /// callers should drop this outcome silently (the newer request answers).
-    Cancelled { provider: ProviderKind },
+    Cancelled { provider: ProviderRef },
 }
 
 impl ModelDiscoveryError {
     /// Which provider failed. Needed because Settings refreshes several
     /// providers at once and must attribute each failure to its own row.
-    pub const fn provider(&self) -> ProviderKind {
+    pub const fn provider(&self) -> &ProviderRef {
         match self {
             Self::NoKey { provider, .. }
             | Self::Network { provider, .. }
             | Self::HttpStatus { provider, .. }
             | Self::Parse { provider, .. }
             | Self::Cache { provider, .. }
-            | Self::Cancelled { provider } => *provider,
+            | Self::Cancelled { provider } => provider,
         }
     }
 
@@ -118,7 +117,7 @@ impl ModelDiscoveryError {
 
     /// Operator-facing explanation. Also the `reason` recorded when a failure
     /// degrades to [`ModelDiscoveryStatus::Cached`], which is why it never
-    /// interpolates key material — only the env key's name.
+    /// interpolates key material — only the account's name.
     pub fn message(&self) -> String {
         match self {
             Self::NoKey { env_key, .. } => format!("{env_key} is not configured"),
@@ -135,25 +134,18 @@ impl std::fmt::Display for ModelDiscoveryError {
     /// `provider: code: message` — never interpolates key material.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NoKey { provider, env_key } => {
-                write!(f, "{provider}: no_key: {env_key} is not configured")
-            }
-            Self::Network { provider, message } => {
-                write!(f, "{provider}: network: {message}")
-            }
             Self::HttpStatus {
                 provider,
                 status,
                 message,
             } => write!(f, "{provider}: http_status {status}: {message}"),
-            Self::Parse { provider, message } => write!(f, "{provider}: parse: {message}"),
-            Self::Cache { provider, message } => write!(f, "{provider}: cache: {message}"),
-            Self::Cancelled { provider } => {
-                write!(
-                    f,
-                    "{provider}: cancelled: superseded by a newer discovery request"
-                )
-            }
+            other => write!(
+                f,
+                "{}: {}: {}",
+                other.provider(),
+                other.code(),
+                other.message()
+            ),
         }
     }
 }
@@ -168,43 +160,21 @@ struct CachedProviderModels {
     models: Vec<DiscoveredModel>,
 }
 
-/// On-disk shape of the discovery cache. Keyed by provider so one provider's
-/// failure can never invalidate another's last-good list; `BTreeMap` keeps the
-/// serialized file diff-stable.
+/// On-disk shape of the discovery cache. Keyed by provider reference
+/// (`openai-responses`, `custom:<id>`) so one provider's failure can never
+/// invalidate another's last-good list; `BTreeMap` keeps the file diff-stable.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct DiscoveryCacheFile {
     providers: BTreeMap<String, CachedProviderModels>,
 }
 
-/// Envelope of `GET /v1/models` on the OpenAI wire family.
-#[derive(Debug, Deserialize)]
-struct OpenAiModelsResponse {
-    data: Vec<OpenAiModel>,
-}
-
-/// One OpenAI-family model. Only `id` is read: the protocol carries no display
-/// name, so the picker falls back to the id itself.
-#[derive(Debug, Deserialize)]
-struct OpenAiModel {
-    id: String,
-}
-
 /// One page of Anthropic's `/v1/models`. Unlike the OpenAI family this endpoint
 /// paginates, so `has_more` and `last_id` drive the fetch loop.
 #[derive(Debug, Deserialize)]
-struct AnthropicModelsResponse {
-    data: Vec<AnthropicModel>,
+struct AnthropicModelsPage {
     #[serde(default)]
     has_more: bool,
     last_id: Option<String>,
-}
-
-/// One Anthropic model. `display_name` is optional on the wire, hence the
-/// fallback to `id` when it is absent or blank.
-#[derive(Debug, Deserialize)]
-struct AnthropicModel {
-    id: String,
-    display_name: Option<String>,
 }
 
 /// Per-provider discovery generation: `current` is the newest claimed request,
@@ -217,20 +187,20 @@ struct GenerationSlot {
 /// P2-08: generations are per-provider because Settings discovers several
 /// providers in one refresh batch — an Anthropic refresh must never abort an
 /// in-flight OpenAI fetch (mirrors the per-provider counters in Swift).
-fn generation_registry() -> &'static Mutex<HashMap<ProviderKind, GenerationSlot>> {
+fn generation_registry() -> &'static Mutex<HashMap<ProviderRef, GenerationSlot>> {
     /// Process-wide per-provider discovery generation + cancel handles.
-    static REGISTRY: OnceLock<Mutex<HashMap<ProviderKind, GenerationSlot>>> = OnceLock::new();
+    static REGISTRY: OnceLock<Mutex<HashMap<ProviderRef, GenerationSlot>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Claim the next discovery generation for `provider`, firing the cancel
 /// signal of the previous in-flight request (if any).
-fn claim_generation(provider: ProviderKind) -> (u64, oneshot::Receiver<()>) {
+fn claim_generation(provider: &ProviderRef) -> (u64, oneshot::Receiver<()>) {
     let (cancel_tx, cancel_rx) = oneshot::channel();
     let mut registry = generation_registry()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let slot = registry.entry(provider).or_insert(GenerationSlot {
+    let slot = registry.entry(provider.clone()).or_insert(GenerationSlot {
         current: 0,
         cancel: None,
     });
@@ -244,11 +214,11 @@ fn claim_generation(provider: ProviderKind) -> (u64, oneshot::Receiver<()>) {
 
 /// Mark `generation` as finished. Returns false when a newer generation
 /// superseded it mid-flight — the caller must then discard its result.
-fn finish_generation(provider: ProviderKind, generation: u64) -> bool {
+fn finish_generation(provider: &ProviderRef, generation: u64) -> bool {
     let mut registry = generation_registry()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    match registry.get_mut(&provider) {
+    match registry.get_mut(provider) {
         Some(slot) if slot.current == generation => {
             slot.cancel = None;
             true
@@ -260,7 +230,7 @@ fn finish_generation(provider: ProviderKind, generation: u64) -> bool {
 /// One-shot callback fired right after a generation is claimed. `FnOnce` so a
 /// test cannot accidentally arm the same interference twice.
 #[cfg(test)]
-type AfterClaimHook = Box<dyn FnOnce(ProviderKind) + Send>;
+type AfterClaimHook = Box<dyn FnOnce(&ProviderRef) + Send>;
 
 /// Process-wide slot holding the armed hook. Tests using it run `#[serial]`,
 /// since the slot — like the generation registry — is global state.
@@ -274,7 +244,7 @@ fn test_after_claim_hook() -> &'static Mutex<Option<AfterClaimHook>> {
 /// Test seam: lets a test supersede the just-claimed generation before the
 /// fetch starts, making the cancel path deterministic without real network.
 #[cfg(test)]
-fn run_test_after_claim(provider: ProviderKind) {
+fn run_test_after_claim(provider: &ProviderRef) {
     let hook = test_after_claim_hook()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -284,42 +254,47 @@ fn run_test_after_claim(provider: ProviderKind) {
     }
 }
 
-/// Discover models for a provider using the already-supported config/key path.
+/// Discover models for one resolved provider row with the key the caller
+/// read for its account (`cached_runtime_key(provider.key_account)`).
 ///
-/// `Config::load()` is intentionally the first operation: it provides the live
-/// settings snapshot consumed by `lane_truth` exactly like the provider runtime.
-/// Missing keys are hard `no_key` failures and do not fall back to stale cache;
-/// network/http/parse failures return last-good cache when available.
+/// A vendor without a key is a hard `no_key` failure and does not fall back
+/// to stale cache. A Custom row without a key is asked without
+/// `Authorization` — a key-optional local host answers, a keyed one returns
+/// 401 with its own words. Network/http/parse failures return last-good
+/// cache when available.
 ///
 /// P2-08: each call claims a per-provider generation; a newer call for the same
 /// provider aborts the in-flight fetch (`tokio::select!` on the cancel channel)
 /// and a superseded result never writes cache — it surfaces as `Cancelled`.
 pub fn discover_models(
-    provider: ProviderKind,
+    provider: &ResolvedProvider,
+    api_key: Option<&str>,
 ) -> Result<ModelDiscoveryResult, ModelDiscoveryError> {
-    let config = Config::load();
-    let key_name = provider.api_key_env_key();
-    let api_key = lane_truth::secret(key_name).ok_or(ModelDiscoveryError::NoKey {
-        provider,
-        env_key: key_name,
-    })?;
+    let reference = &provider.reference;
+    let api_key = api_key.map(str::trim).filter(|key| !key.is_empty());
+    if api_key.is_none() && provider.key_required {
+        return Err(ModelDiscoveryError::NoKey {
+            provider: reference.clone(),
+            env_key: provider.key_account.clone(),
+        });
+    }
 
-    let (generation, cancelled) = claim_generation(provider);
+    let (generation, cancelled) = claim_generation(reference);
     #[cfg(test)]
-    run_test_after_claim(provider);
+    run_test_after_claim(reference);
 
     let client = Client::builder()
         .timeout(DISCOVERY_TIMEOUT)
         .build()
         .map_err(|error| ModelDiscoveryError::Network {
-            provider,
+            provider: reference.clone(),
             message: format!("failed to create HTTP client: {error}"),
         })?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|error| ModelDiscoveryError::Network {
-            provider,
+            provider: reference.clone(),
             message: format!("failed to start discovery runtime: {error}"),
         })?;
 
@@ -327,11 +302,13 @@ pub fn discover_models(
         let fetch = async {
             // Discovery follows the protocol, not the vendor: every Responses
             // provider serves the same OpenAI-compatible `/v1/models`.
-            match provider.wire_family() {
+            match provider.wire {
                 WireFamily::OpenAiResponses => {
-                    fetch_openai_models(&client, &config, provider, &api_key).await
+                    fetch_openai_models(&client, provider, api_key).await
                 }
-                WireFamily::AnthropicMessages => fetch_anthropic_models(&client, &api_key).await,
+                WireFamily::AnthropicMessages => {
+                    fetch_anthropic_models(&client, provider, api_key.unwrap_or_default()).await
+                }
             }
         };
         // `biased` polls the cancel channel first: a pre-fired cancel aborts
@@ -345,21 +322,25 @@ pub fn discover_models(
     });
 
     let Some(fetched) = fetched else {
-        return Err(ModelDiscoveryError::Cancelled { provider });
+        return Err(ModelDiscoveryError::Cancelled {
+            provider: reference.clone(),
+        });
     };
-    commit_fetch_outcome(provider, generation, fetched)
+    commit_fetch_outcome(reference, generation, fetched)
 }
 
 /// Apply a finished fetch to module state (cache write / cache fallback).
 /// A generation superseded between fetch completion and commit must not leak:
 /// no cache write, no cache fallback — plain `Cancelled`.
 fn commit_fetch_outcome(
-    provider: ProviderKind,
+    provider: &ProviderRef,
     generation: u64,
     fetched: Result<Vec<DiscoveredModel>, ModelDiscoveryError>,
 ) -> Result<ModelDiscoveryResult, ModelDiscoveryError> {
     if !finish_generation(provider, generation) {
-        return Err(ModelDiscoveryError::Cancelled { provider });
+        return Err(ModelDiscoveryError::Cancelled {
+            provider: provider.clone(),
+        });
     }
 
     match fetched {
@@ -369,14 +350,14 @@ fn commit_fetch_outcome(
                 warn!("{error}");
             }
             Ok(ModelDiscoveryResult {
-                provider,
+                provider: provider.clone(),
                 models,
                 status: ModelDiscoveryStatus::Fresh,
             })
         }
         Err(error) => match read_cached_models(provider) {
             Ok(models) if !models.is_empty() => Ok(ModelDiscoveryResult {
-                provider,
+                provider: provider.clone(),
                 models,
                 status: ModelDiscoveryStatus::Cached {
                     reason: error.message(),
@@ -388,36 +369,37 @@ fn commit_fetch_outcome(
 }
 
 /// Fetch models from an OpenAI-family provider, deriving the `/models` URL from
-/// the endpoint the runtime already uses for this lane — so a custom proxy or
-/// gateway is discovered against the same host that will serve inference.
+/// the row's inference endpoint — so a Custom proxy or gateway is discovered
+/// against the same host that will serve inference. No key ⇒ no
+/// `Authorization` header (key-optional Custom host).
 async fn fetch_openai_models(
     client: &Client,
-    config: &Config,
-    provider: ProviderKind,
-    api_key: &str,
+    provider: &ResolvedProvider,
+    api_key: Option<&str>,
 ) -> Result<Vec<DiscoveredModel>, ModelDiscoveryError> {
-    let endpoint = lane_truth::provider_endpoint(LlmMode::Assistive, provider, config);
-    let endpoint = openai_models_endpoint(&endpoint)?;
-
-    let response = client
-        .get(endpoint)
-        .bearer_auth(api_key)
+    let reference = &provider.reference;
+    let endpoint = provider_models_endpoint(provider)?;
+    let mut request = client.get(endpoint);
+    if let Some(api_key) = api_key {
+        request = request.bearer_auth(api_key);
+    }
+    let response = request
         .send()
         .await
-        .map_err(|error| network_error(provider, error))?;
-    let body = response_body_or_error(provider, response).await?;
-    let parsed: OpenAiModelsResponse =
+        .map_err(|error| network_error(reference, error))?;
+    let body = response_body_or_error(reference, response).await?;
+    let parsed: serde_json::Value =
         serde_json::from_str(&body).map_err(|error| ModelDiscoveryError::Parse {
-            provider,
-            message: format!("failed to parse OpenAI models response: {error}"),
+            provider: reference.clone(),
+            message: format!("failed to parse models response: {error}"),
         })?;
-
-    Ok(parsed
-        .data
+    // The Responses family carries no display name; every vendor on this
+    // wire (OpenAI, xAI, Libraxis) is read by the same `data[].id` rule.
+    Ok(vendors::libraxis::models_from_response(&parsed)
         .into_iter()
-        .map(|model| DiscoveredModel {
-            display_name: model.id.clone(),
-            id: model.id,
+        .map(|(id, _)| DiscoveredModel {
+            display_name: id.clone(),
+            id,
         })
         .collect())
 }
@@ -427,18 +409,21 @@ async fn fetch_openai_models(
 /// parse error rather than a silent truncation of the picker.
 async fn fetch_anthropic_models(
     client: &Client,
+    provider: &ResolvedProvider,
     api_key: &str,
 ) -> Result<Vec<DiscoveredModel>, ModelDiscoveryError> {
-    let provider = ProviderKind::AnthropicMessages;
-    let endpoint = anthropic_models_endpoint();
+    let reference = &provider.reference;
+    let endpoint = provider_models_endpoint(provider)?;
     let mut after_id: Option<String> = None;
     let mut models = Vec::new();
 
     loop {
         let mut request = client
             .get(&endpoint)
-            .header("x-api-key", api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION);
+            .header(vendors::anthropic::AUTH_HEADER, api_key);
+        for (name, value) in vendors::anthropic::EXTRA_HEADERS {
+            request = request.header(*name, *value);
+        }
         if let Some(after) = after_id.as_deref() {
             request = request.query(&[("after_id", after)]);
         }
@@ -446,37 +431,38 @@ async fn fetch_anthropic_models(
         let response = request
             .send()
             .await
-            .map_err(|error| network_error(provider, error))?;
-        let body = response_body_or_error(provider, response).await?;
-        let parsed: AnthropicModelsResponse =
+            .map_err(|error| network_error(reference, error))?;
+        let body = response_body_or_error(reference, response).await?;
+        let parsed: serde_json::Value =
             serde_json::from_str(&body).map_err(|error| ModelDiscoveryError::Parse {
-                provider,
+                provider: reference.clone(),
                 message: format!("failed to parse Anthropic models response: {error}"),
             })?;
-
-        let next_after_id = parsed
+        let page: AnthropicModelsPage =
+            serde_json::from_value(parsed.clone()).map_err(|error| ModelDiscoveryError::Parse {
+                provider: reference.clone(),
+                message: format!("failed to parse Anthropic models page: {error}"),
+            })?;
+        let rows = vendors::anthropic::models_from_response(&parsed);
+        let next_after_id = page
             .last_id
             .clone()
-            .or_else(|| parsed.data.last().map(|model| model.id.clone()));
+            .or_else(|| rows.last().map(|(id, _)| id.clone()));
 
-        models.extend(parsed.data.into_iter().map(|model| {
-            let display_name = model
-                .display_name
+        models.extend(rows.into_iter().map(|(id, display_name)| {
+            let display_name = display_name
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| model.id.clone());
-            DiscoveredModel {
-                id: model.id,
-                display_name,
-            }
+                .unwrap_or_else(|| id.clone());
+            DiscoveredModel { id, display_name }
         }));
 
-        if !parsed.has_more {
+        if !page.has_more {
             break;
         }
 
         after_id = Some(next_after_id.ok_or_else(|| ModelDiscoveryError::Parse {
-            provider,
+            provider: reference.clone(),
             message:
                 "Anthropic models response has has_more=true without last_id or data".to_string(),
         })?);
@@ -489,7 +475,7 @@ async fn fetch_anthropic_models(
 /// error body usually holds the provider's own explanation, which is more use
 /// to the operator than a bare status line.
 async fn response_body_or_error(
-    provider: ProviderKind,
+    provider: &ProviderRef,
     response: reqwest::Response,
 ) -> Result<String, ModelDiscoveryError> {
     let status = response.status();
@@ -506,9 +492,9 @@ async fn response_body_or_error(
 
 /// Wrap a transport failure (DNS, TLS, timeout) as a `Network` error — the
 /// class that is allowed to fall back to last-good cache.
-fn network_error(provider: ProviderKind, error: reqwest::Error) -> ModelDiscoveryError {
+fn network_error(provider: &ProviderRef, error: reqwest::Error) -> ModelDiscoveryError {
     ModelDiscoveryError::Network {
-        provider,
+        provider: provider.clone(),
         message: error.to_string(),
     }
 }
@@ -517,7 +503,7 @@ fn network_error(provider: ProviderKind, error: reqwest::Error) -> ModelDiscover
 /// excerpt of the body — enough to diagnose, small enough for a status label,
 /// and with the status reason as fallback when the body is empty.
 fn http_status_error(
-    provider: ProviderKind,
+    provider: &ProviderRef,
     status: StatusCode,
     body: &str,
 ) -> ModelDiscoveryError {
@@ -533,28 +519,32 @@ fn http_status_error(
             .to_string();
     }
     ModelDiscoveryError::HttpStatus {
-        provider,
+        provider: provider.clone(),
         status: status.as_u16(),
         message,
     }
 }
 
-/// Derive the `/models` URL from a configured inference endpoint.
+/// Derive the `/models` URL from the row's inference endpoint.
 ///
-/// Operators paste whatever their provider documents — `/v1/responses`,
-/// `/v1/chat/completions`, or a bare proxy base — so the trailing inference
-/// segment is swapped for `models` rather than assumed. Query and fragment are
-/// dropped: they belong to the inference call, not to discovery.
-fn openai_models_endpoint(endpoint: &str) -> Result<String, ModelDiscoveryError> {
-    let provider = ProviderKind::OpenAiResponses;
+/// Vendor endpoints are pinned on the wire path; Custom rows are normalized
+/// onto it too, so the trailing inference segment is swapped for `models`
+/// rather than assumed. Query and fragment are dropped: they belong to the
+/// inference call, not to discovery.
+fn provider_models_endpoint(provider: &ResolvedProvider) -> Result<String, ModelDiscoveryError> {
+    let reference = &provider.reference;
+    let endpoint = provider.endpoint.as_str();
     let mut url = reqwest::Url::parse(endpoint).map_err(|error| ModelDiscoveryError::Parse {
-        provider,
-        message: format!("invalid OpenAI endpoint '{endpoint}': {error}"),
+        provider: reference.clone(),
+        message: format!(
+            "invalid {} endpoint '{endpoint}': {error}",
+            provider.display_name
+        ),
     })?;
     url.set_query(None);
     url.set_fragment(None);
 
-    let segments: Vec<String> = url
+    let mut next: Vec<String> = url
         .path_segments()
         .map(|parts| {
             parts
@@ -563,14 +553,12 @@ fn openai_models_endpoint(endpoint: &str) -> Result<String, ModelDiscoveryError>
                 .collect()
         })
         .unwrap_or_default();
-    let mut next = segments;
 
     if next.last().is_some_and(|segment| segment == "models") {
         // already right
-    } else if next
-        .last()
-        .is_some_and(|segment| segment == "responses" || segment == "completions")
-    {
+    } else if next.last().is_some_and(|segment| {
+        segment == "responses" || segment == "completions" || segment == "messages"
+    }) {
         next.pop();
         if next.last().is_some_and(|segment| segment == "chat") {
             next.pop();
@@ -582,8 +570,11 @@ fn openai_models_endpoint(endpoint: &str) -> Result<String, ModelDiscoveryError>
 
     url.path_segments_mut()
         .map_err(|_| ModelDiscoveryError::Parse {
-            provider,
-            message: format!("invalid OpenAI endpoint base '{endpoint}'"),
+            provider: reference.clone(),
+            message: format!(
+                "invalid {} endpoint base '{endpoint}'",
+                provider.display_name
+            ),
         })?
         .clear()
         .extend(next.iter().map(String::as_str));
@@ -623,18 +614,18 @@ fn cache_path() -> std::path::PathBuf {
 
 /// Read the whole cache file. A missing file is an empty cache, not an error —
 /// first run must not surface as a discovery failure.
-fn read_cache_file() -> Result<DiscoveryCacheFile, ModelDiscoveryError> {
+fn read_cache_file(provider: &ProviderRef) -> Result<DiscoveryCacheFile, ModelDiscoveryError> {
     let path = cache_path();
     match fs::read_to_string(&path) {
         Ok(raw) => serde_json::from_str(&raw).map_err(|error| ModelDiscoveryError::Cache {
-            provider: ProviderKind::OpenAiResponses,
+            provider: provider.clone(),
             message: format!("failed to parse {}: {error}", path.display()),
         }),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             Ok(DiscoveryCacheFile::default())
         }
         Err(error) => Err(ModelDiscoveryError::Cache {
-            provider: ProviderKind::OpenAiResponses,
+            provider: provider.clone(),
             message: format!("failed to read {}: {error}", path.display()),
         }),
     }
@@ -642,14 +633,10 @@ fn read_cache_file() -> Result<DiscoveryCacheFile, ModelDiscoveryError> {
 
 /// Last-good models for one provider, re-normalized on read. Absent entry
 /// yields an empty list, which callers treat as "no cache to fall back to".
-fn read_cached_models(provider: ProviderKind) -> Result<Vec<DiscoveredModel>, ModelDiscoveryError> {
-    let cache = read_cache_file().map_err(|error| ModelDiscoveryError::Cache {
-        provider,
-        message: error.message(),
-    })?;
-    Ok(cache
+fn read_cached_models(provider: &ProviderRef) -> Result<Vec<DiscoveredModel>, ModelDiscoveryError> {
+    Ok(read_cache_file(provider)?
         .providers
-        .get(provider.as_str())
+        .get(provider.as_str().as_ref())
         .map(|entry| normalize_models(entry.models.clone()))
         .unwrap_or_default())
 }
@@ -658,20 +645,20 @@ fn read_cached_models(provider: ProviderKind) -> Result<Vec<DiscoveredModel>, Mo
 /// A failure here is logged rather than propagated: losing the cache write
 /// must not turn a successful live discovery into a failed one.
 fn write_cache(
-    provider: ProviderKind,
+    provider: &ProviderRef,
     models: &[DiscoveredModel],
 ) -> Result<(), ModelDiscoveryError> {
     let path = cache_path();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| ModelDiscoveryError::Cache {
-            provider,
+            provider: provider.clone(),
             message: format!("failed to create {}: {error}", parent.display()),
         })?;
     }
 
-    let mut cache = read_cache_file().unwrap_or_default();
+    let mut cache = read_cache_file(provider).unwrap_or_default();
     cache.providers.insert(
-        provider.as_str().to_string(),
+        provider.as_string(),
         CachedProviderModels {
             fetched_at: Utc::now().to_rfc3339(),
             models: models.to_vec(),
@@ -679,38 +666,17 @@ fn write_cache(
     );
 
     let raw = serde_json::to_string_pretty(&cache).map_err(|error| ModelDiscoveryError::Cache {
-        provider,
+        provider: provider.clone(),
         message: format!("failed to serialize model discovery cache: {error}"),
     })?;
     fs::write(&path, raw).map_err(|error| ModelDiscoveryError::Cache {
-        provider,
+        provider: provider.clone(),
         message: format!("failed to write {}: {error}", path.display()),
     })
 }
 
-/// Read an env var, treating whitespace-only as unset.
-#[cfg(test)]
-fn env_non_empty(key: &str) -> Option<String> {
-    std::env::var(key)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
-/// Anthropic's models endpoint. Unlike the OpenAI family it is not derived from
-/// configuration — the Messages wire has no per-lane endpoint setting — so the
-/// override exists only under `cfg(test)`, to point at a mock server.
-fn anthropic_models_endpoint() -> String {
-    #[cfg(test)]
-    if let Some(endpoint) = env_non_empty("CODESCRIBE_TEST_ANTHROPIC_MODELS_ENDPOINT") {
-        return endpoint;
-    }
-
-    ANTHROPIC_MODELS_ENDPOINT.to_string()
-}
-
 /// Discovery is exercised against a mock HTTP server and an isolated data dir,
-/// so no case depends on a real provider or on the operator's own config.
+/// with provider rows built directly — no env, no settings file, no lane seal.
 ///
 /// Every test touching the module's global generation registry is `#[serial]`:
 /// the counters are process-wide, and a parallel run would cancel generations
@@ -718,34 +684,53 @@ fn anthropic_models_endpoint() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::provider::{CustomProvider, ProviderKind, ProviderRegistry};
     use mockito::Matcher;
     use serial_test::serial;
     use tempfile::TempDir;
 
-    /// Live OpenAI discovery reports `Fresh` and lands in the cache verbatim,
-    /// so the next offline refresh has something to fall back to.
+    /// A Custom row on `wire` at the mock server's base URL.
+    fn custom_row(server: &mockito::Server, wire: WireFamily) -> ResolvedProvider {
+        let row = CustomProvider::new("Mock Box", wire, &server.url()).expect("valid custom row");
+        let id = row.id.clone();
+        ProviderRegistry::new(vec![row])
+            .resolve(&ProviderRef::Custom(id))
+            .expect("custom row resolves")
+    }
+
+    /// The Custom row shaped like a vendor (key required) so the vendor-only
+    /// `no_key` and cache paths can be driven against a mock host.
+    fn keyed_row(server: &mockito::Server, wire: WireFamily) -> ResolvedProvider {
+        ResolvedProvider {
+            key_required: true,
+            ..custom_row(server, wire)
+        }
+    }
+
+    fn openai_ref() -> ProviderRef {
+        ProviderRef::Vendor(ProviderKind::OpenAiResponses)
+    }
+
+    /// Live Responses-family discovery reports `Fresh` and lands in the cache
+    /// verbatim, keyed by the reference, so the next offline refresh has
+    /// something to fall back to.
     #[test]
     #[serial]
-    fn openai_models_parse_and_cache_round_trips() {
-        let mut env = TestEnv::new();
+    fn responses_models_parse_and_cache_round_trips() {
+        let _env = IsolatedDataDir::new();
         let mut server = mockito::Server::new();
-        env.set("LLM_ASSISTIVE_API_KEY", "sk-test");
-        env.set(
-            "LLM_ASSISTIVE_ENDPOINT",
-            &format!("{}/v1/responses", server.url()),
-        );
-
         let _mock = server
             .mock("GET", "/v1/models")
             .match_header("authorization", "Bearer sk-test")
             .with_status(200)
             .with_body(r#"{"object":"list","data":[{"id":"gpt-live"},{"id":"gpt-other"}]}"#)
             .create();
+        let provider = custom_row(&server, WireFamily::OpenAiResponses);
 
-        let result = discover_models(ProviderKind::OpenAiResponses)
-            .expect("discover_models should succeed in OpenAI test path");
+        let result = discover_models(&provider, Some("sk-test")).expect("fresh discovery");
 
         assert_eq!(result.status, ModelDiscoveryStatus::Fresh);
+        assert_eq!(result.provider, provider.reference);
         assert_eq!(
             result.models,
             vec![
@@ -759,11 +744,31 @@ mod tests {
                 },
             ]
         );
-
-        let cached = read_cached_models(ProviderKind::OpenAiResponses)
-            .expect("read_cached_models should succeed after fresh discovery write");
+        let cached = read_cached_models(&provider.reference).expect("cache read");
         assert_eq!(cached, result.models);
-        env.keepalive();
+    }
+
+    /// Effect witness (§B): a Custom row without a key is asked without
+    /// `Authorization` instead of failing `no_key` — a key-optional local host
+    /// is a first-class provider.
+    #[test]
+    #[serial]
+    fn custom_provider_without_key_discovers_without_authorization() {
+        let _env = IsolatedDataDir::new();
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/v1/models")
+            .match_header("authorization", Matcher::Missing)
+            .with_status(200)
+            .with_body(r#"{"data":[{"id":"qwen-local"}]}"#)
+            .expect(1)
+            .create();
+        let provider = custom_row(&server, WireFamily::OpenAiResponses);
+
+        let result = discover_models(&provider, None).expect("key-optional discovery");
+
+        assert_eq!(result.models[0].id, "qwen-local");
+        mock.assert();
     }
 
     /// Pagination is followed to the end and display names survive, including
@@ -772,18 +777,13 @@ mod tests {
     #[test]
     #[serial]
     fn anthropic_models_parse_display_names_and_pagination() {
-        let mut env = TestEnv::new();
+        let _env = IsolatedDataDir::new();
         let mut server = mockito::Server::new();
-        env.set("LLM_ANTHROPIC_API_KEY", "anthropic-test");
-        env.set(
-            "CODESCRIBE_TEST_ANTHROPIC_MODELS_ENDPOINT",
-            &format!("{}/v1/models", server.url()),
-        );
-
+        let version = vendors::anthropic::EXTRA_HEADERS[0].1;
         let _page_1 = server
             .mock("GET", "/v1/models")
             .match_header("x-api-key", "anthropic-test")
-            .match_header("anthropic-version", ANTHROPIC_VERSION)
+            .match_header("anthropic-version", version)
             .with_status(200)
             .with_body(
                 r#"{"data":[{"id":"claude-a","display_name":"Claude A"}],"has_more":true,"last_id":"claude-a"}"#,
@@ -793,15 +793,15 @@ mod tests {
             .mock("GET", "/v1/models")
             .match_query(Matcher::UrlEncoded("after_id".to_string(), "claude-a".to_string()))
             .match_header("x-api-key", "anthropic-test")
-            .match_header("anthropic-version", ANTHROPIC_VERSION)
+            .match_header("anthropic-version", version)
             .with_status(200)
             .with_body(
                 r#"{"data":[{"id":"claude-b","display_name":"Claude B"},{"id":"claude-c"}],"has_more":false}"#,
             )
             .create();
+        let provider = custom_row(&server, WireFamily::AnthropicMessages);
 
-        let result = discover_models(ProviderKind::AnthropicMessages)
-            .expect("discover_models should succeed in Anthropic test path");
+        let result = discover_models(&provider, Some("anthropic-test")).expect("paged discovery");
 
         assert_eq!(result.status, ModelDiscoveryStatus::Fresh);
         assert_eq!(
@@ -821,29 +821,26 @@ mod tests {
                 },
             ]
         );
-        env.keepalive();
     }
 
-    /// A missing key fails before anything reaches the wire — asserted by the
-    /// mock's `expect(0)`, not merely by the returned error code.
+    /// A vendor (key required) without a key fails before anything reaches the
+    /// wire — asserted by the mock's `expect(0)`, not merely by the error code.
     #[test]
     #[serial]
-    fn no_key_returns_error_without_request() {
-        let mut env = TestEnv::new();
+    fn vendor_without_key_returns_error_without_request() {
+        let _env = IsolatedDataDir::new();
         let mut server = mockito::Server::new();
-        env.remove("LLM_ANTHROPIC_API_KEY");
-        env.set(
-            "CODESCRIBE_TEST_ANTHROPIC_MODELS_ENDPOINT",
-            &format!("{}/v1/models", server.url()),
-        );
         let _mock = server.mock("GET", "/v1/models").expect(0).create();
+        let provider = keyed_row(&server, WireFamily::AnthropicMessages);
 
-        let err = discover_models(ProviderKind::AnthropicMessages)
-            .expect_err("discover_models should fail without key in this Anthropic error test");
+        let err = discover_models(&provider, Some("  ")).expect_err("no key must fail closed");
 
         assert_eq!(err.code(), "no_key");
-        assert_eq!(err.provider(), ProviderKind::AnthropicMessages);
-        env.keepalive();
+        assert_eq!(err.provider(), &provider.reference);
+        assert_eq!(
+            err.message(),
+            "LLM_CUSTOM_MOCK_BOX_API_KEY is not configured"
+        );
     }
 
     /// A provider outage degrades the picker to the last-good list with the
@@ -851,21 +848,15 @@ mod tests {
     #[test]
     #[serial]
     fn network_error_uses_last_good_cache() {
-        let mut env = TestEnv::new();
+        let _env = IsolatedDataDir::new();
         let mut server = mockito::Server::new();
-        env.set("LLM_ASSISTIVE_API_KEY", "sk-test");
-        env.set(
-            "LLM_ASSISTIVE_ENDPOINT",
-            &format!("{}/v1/responses", server.url()),
-        );
-
+        let provider = custom_row(&server, WireFamily::OpenAiResponses);
         let _ok = server
             .mock("GET", "/v1/models")
             .with_status(200)
             .with_body(r#"{"data":[{"id":"gpt-cached"}]}"#)
             .create();
-        let fresh = discover_models(ProviderKind::OpenAiResponses)
-            .expect("discover_models should succeed for cache freshness test");
+        let fresh = discover_models(&provider, Some("sk-test")).expect("seed cache");
         assert_eq!(fresh.status, ModelDiscoveryStatus::Fresh);
 
         let _fail = server
@@ -873,8 +864,7 @@ mod tests {
             .with_status(503)
             .with_body("temporarily unavailable")
             .create();
-        let cached = discover_models(ProviderKind::OpenAiResponses)
-            .expect("discover_models should return cached result without network");
+        let cached = discover_models(&provider, Some("sk-test")).expect("cache fallback");
 
         assert_eq!(
             cached.status,
@@ -883,7 +873,6 @@ mod tests {
             }
         );
         assert_eq!(cached.models, fresh.models);
-        env.keepalive();
     }
 
     /// A superseded request is abandoned before a single byte goes out — the
@@ -892,19 +881,15 @@ mod tests {
     #[test]
     #[serial]
     fn superseding_generation_cancels_inflight_discovery() {
-        let mut env = TestEnv::new();
+        let _env = IsolatedDataDir::new();
         let mut server = mockito::Server::new();
-        env.set("LLM_ASSISTIVE_API_KEY", "sk-test");
-        env.set(
-            "LLM_ASSISTIVE_ENDPOINT",
-            &format!("{}/v1/responses", server.url()),
-        );
         let mock = server
             .mock("GET", "/v1/models")
             .with_status(200)
             .with_body(r#"{"data":[{"id":"gpt-should-never-land"}]}"#)
             .expect(0)
             .create();
+        let provider = custom_row(&server, WireFamily::OpenAiResponses);
 
         // Supersede the claimed generation before the fetch starts — the
         // biased select must abort without a single request on the wire.
@@ -914,19 +899,17 @@ mod tests {
             let _ = claim_generation(provider);
         }));
 
-        let err = discover_models(ProviderKind::OpenAiResponses)
+        let err = discover_models(&provider, Some("sk-test"))
             .expect_err("superseded discovery must return cancelled");
 
         assert_eq!(err.code(), "cancelled");
-        assert_eq!(err.provider(), ProviderKind::OpenAiResponses);
+        assert_eq!(err.provider(), &provider.reference);
         mock.assert();
-        let cached = read_cached_models(ProviderKind::OpenAiResponses)
-            .expect("cache read should succeed after cancelled discovery");
+        let cached = read_cached_models(&provider.reference).expect("cache read");
         assert!(
             cached.is_empty(),
             "cancelled discovery must not write cache"
         );
-        env.keepalive();
     }
 
     /// The other half of the cancel race: a fetch that was superseded *after*
@@ -935,26 +918,20 @@ mod tests {
     #[test]
     #[serial]
     fn stale_generation_result_does_not_overwrite_cache() {
-        let mut env = TestEnv::new();
+        let _env = IsolatedDataDir::new();
         let mut server = mockito::Server::new();
-        env.set("LLM_ASSISTIVE_API_KEY", "sk-test");
-        env.set(
-            "LLM_ASSISTIVE_ENDPOINT",
-            &format!("{}/v1/responses", server.url()),
-        );
+        let provider = custom_row(&server, WireFamily::OpenAiResponses);
         let _ok = server
             .mock("GET", "/v1/models")
             .with_status(200)
             .with_body(r#"{"data":[{"id":"gpt-last-good"}]}"#)
             .create();
-        let fresh = discover_models(ProviderKind::OpenAiResponses)
-            .expect("seed discovery should succeed before staleness test");
+        let fresh = discover_models(&provider, Some("sk-test")).expect("seed cache");
 
-        // A fetch that completes after being superseded must commit nothing.
-        let (stale_generation, _stale_cancel) = claim_generation(ProviderKind::OpenAiResponses);
-        let (_newer_generation, _newer_cancel) = claim_generation(ProviderKind::OpenAiResponses);
+        let (stale_generation, _stale_cancel) = claim_generation(&provider.reference);
+        let (_newer_generation, _newer_cancel) = claim_generation(&provider.reference);
         let err = commit_fetch_outcome(
-            ProviderKind::OpenAiResponses,
+            &provider.reference,
             stale_generation,
             Ok(vec![DiscoveredModel {
                 id: "gpt-stale-arrival".to_string(),
@@ -964,10 +941,8 @@ mod tests {
         .expect_err("stale generation must not commit its result");
 
         assert_eq!(err.code(), "cancelled");
-        let cached = read_cached_models(ProviderKind::OpenAiResponses)
-            .expect("cache read should succeed after stale commit attempt");
+        let cached = read_cached_models(&provider.reference).expect("cache read");
         assert_eq!(cached, fresh.models, "stale result must not mutate cache");
-        env.keepalive();
     }
 
     /// The cancel channel stays silent while a request is the newest one, and
@@ -975,7 +950,7 @@ mod tests {
     #[test]
     #[serial]
     fn newer_generation_fires_cancel_signal() {
-        let (_first, mut first_cancel) = claim_generation(ProviderKind::OpenAiResponses);
+        let (_first, mut first_cancel) = claim_generation(&openai_ref());
         assert!(
             matches!(
                 first_cancel.try_recv(),
@@ -984,7 +959,7 @@ mod tests {
             "cancel must stay silent until a newer generation claims"
         );
 
-        let (_second, _second_cancel) = claim_generation(ProviderKind::OpenAiResponses);
+        let (_second, _second_cancel) = claim_generation(&openai_ref());
         assert!(
             first_cancel.try_recv().is_ok(),
             "newer generation must fire the previous cancel signal"
@@ -992,15 +967,14 @@ mod tests {
     }
 
     /// Generations are per-provider: Settings refreshes several providers in
-    /// one batch, and an Anthropic claim must not abort an in-flight OpenAI
-    /// fetch (the reason the registry is a map, not a single counter).
+    /// one batch, and a Custom claim must not abort an in-flight OpenAI fetch
+    /// (the reason the registry is a map, not a single counter).
     #[test]
     #[serial]
     fn cross_provider_generations_are_independent() {
-        let (openai_generation, mut openai_cancel) =
-            claim_generation(ProviderKind::OpenAiResponses);
-        let (_anthropic_generation, _anthropic_cancel) =
-            claim_generation(ProviderKind::AnthropicMessages);
+        let (openai_generation, mut openai_cancel) = claim_generation(&openai_ref());
+        let (_custom_generation, _custom_cancel) =
+            claim_generation(&ProviderRef::Custom("my-box".to_string()));
 
         assert!(
             matches!(
@@ -1010,103 +984,66 @@ mod tests {
             "another provider's discovery must not cancel this one"
         );
         assert!(
-            finish_generation(ProviderKind::OpenAiResponses, openai_generation),
-            "OpenAI generation must stay current across Anthropic claims"
+            finish_generation(&openai_ref(), openai_generation),
+            "OpenAI generation must stay current across Custom claims"
         );
     }
 
-    /// The three endpoint shapes operators actually paste — Responses, legacy
-    /// chat completions, and a bare proxy base — all resolve to `/models`.
+    /// Vendor rows derive `/models` from their pinned wire endpoint; a Custom
+    /// row pasted as a bare proxy base gets `/models` appended.
     #[test]
-    fn openai_endpoint_normalizes_common_api_paths() {
+    fn models_endpoint_derives_from_the_resolved_endpoint() {
+        let registry = ProviderRegistry::default();
+        let openai = registry.resolve(&openai_ref()).expect("openai row");
         assert_eq!(
-            openai_models_endpoint("https://api.openai.com/v1/responses").unwrap(),
+            provider_models_endpoint(&openai).unwrap(),
             "https://api.openai.com/v1/models"
         );
+        let anthropic = registry
+            .resolve(&ProviderRef::Vendor(ProviderKind::AnthropicMessages))
+            .expect("anthropic row");
         assert_eq!(
-            openai_models_endpoint("https://api.openai.com/v1/chat/completions").unwrap(),
-            "https://api.openai.com/v1/models"
+            provider_models_endpoint(&anthropic).unwrap(),
+            vendors::anthropic::MODELS_ENDPOINT
         );
+        let proxy = ResolvedProvider {
+            endpoint: "https://proxy.example/openai".to_string(),
+            ..anthropic
+        };
         assert_eq!(
-            openai_models_endpoint("https://proxy.example/openai").unwrap(),
+            provider_models_endpoint(&proxy).unwrap(),
             "https://proxy.example/openai/models"
         );
     }
 
-    /// Isolated environment for one test: a temp data dir plus the env vars
-    /// discovery reads, each restored on drop. The temp dir is held so it
-    /// outlives the cache reads and writes performed during the test.
-    struct TestEnv {
+    /// A fresh temp data dir for the cache file, restored on drop. Held for the
+    /// whole test so it outlives every cache read and write.
+    struct IsolatedDataDir {
         _tmp: TempDir,
-        guards: Vec<EnvGuard>,
+        previous: Option<String>,
     }
 
-    impl TestEnv {
-        /// Point the data dir at a fresh temp directory, disable the keychain,
-        /// and clear every key/endpoint var so the test starts from a known
-        /// state rather than inheriting the operator's own configuration.
+    impl IsolatedDataDir {
         fn new() -> Self {
             let tmp = tempfile::tempdir().unwrap();
-            let mut this = Self {
+            let previous = std::env::var("CODESCRIBE_DATA_DIR").ok();
+            // SAFETY: serial tests; restored on drop.
+            unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", tmp.path()) };
+            Self {
                 _tmp: tmp,
-                guards: Vec::new(),
-            };
-            let data_dir = this._tmp.path().to_string_lossy().to_string();
-            this.set("CODESCRIBE_DATA_DIR", &data_dir);
-            this.set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
-            this.remove("LLM_ASSISTIVE_API_KEY");
-            this.remove("LLM_ANTHROPIC_API_KEY");
-            this.remove("CODESCRIBE_TEST_ANTHROPIC_MODELS_ENDPOINT");
-            this.remove("LLM_ASSISTIVE_ENDPOINT");
-            this.remove("LLM_ENDPOINT");
-            this
-        }
-
-        /// Set a var for the duration of the test.
-        fn set(&mut self, key: &'static str, value: &str) {
-            self.guards.push(EnvGuard::set(key, value));
-        }
-
-        /// Unset a var for the duration of the test.
-        fn remove(&mut self, key: &'static str) {
-            self.guards.push(EnvGuard::remove(key));
-        }
-
-        /// Drop-order pin, not dead code: called at the end of a test so the
-        /// guards cannot be dropped — and the environment restored — before the
-        /// assertions above have run.
-        fn keepalive(&self) {}
-    }
-
-    /// One env var borrowed and given back. Restoring the previous value on
-    /// drop is what keeps `#[serial]` tests from leaking state into each other.
-    struct EnvGuard {
-        key: &'static str,
-        prev: Option<String>,
-    }
-
-    impl EnvGuard {
-        /// Remember the current value, then set the new one.
-        fn set(key: &'static str, value: &str) -> Self {
-            let prev = std::env::var(key).ok();
-            unsafe { std::env::set_var(key, value) };
-            Self { key, prev }
-        }
-
-        /// Remember the current value, then unset the var.
-        fn remove(key: &'static str) -> Self {
-            let prev = std::env::var(key).ok();
-            unsafe { std::env::remove_var(key) };
-            Self { key, prev }
+                previous,
+            }
         }
     }
 
-    impl Drop for EnvGuard {
-        /// Restores or clears the env var so serial tests stay isolated.
+    impl Drop for IsolatedDataDir {
         fn drop(&mut self) {
-            match self.prev.as_deref() {
-                Some(value) => unsafe { std::env::set_var(self.key, value) },
-                None => unsafe { std::env::remove_var(self.key) },
+            // SAFETY: serial tests; puts the previous value back.
+            unsafe {
+                match self.previous.as_deref() {
+                    Some(value) => std::env::set_var("CODESCRIBE_DATA_DIR", value),
+                    None => std::env::remove_var("CODESCRIBE_DATA_DIR"),
+                }
             }
         }
     }

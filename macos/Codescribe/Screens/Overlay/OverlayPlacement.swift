@@ -4,8 +4,7 @@ import AppKit
 //
 // Two modes, deliberately binary (no hidden third state):
 // - Anchored (default): the origin is ALWAYS derived from one of six screen
-//   anchors on every show(). A drag in this mode is ephemeral — the next show
-//   snaps back to the anchor. Predictability over cleverness.
+//   anchors on every show(). Dropping a user drag selects Free motion.
 // - Free motion: the user's last dragged origin is persisted and restored
 //   (clamped to the visible frame); the anchor is ignored.
 //
@@ -29,6 +28,17 @@ enum OverlayAnchor: String, CaseIterable, Identifiable {
     case .bottomLeft: return "Bottom Left"
     case .bottomCenter: return "Bottom Center"
     case .bottomRight: return "Bottom Right"
+    }
+  }
+
+  var systemImage: String {
+    switch self {
+    case .topLeft: return "arrow.up.left"
+    case .topCenter: return "arrow.up"
+    case .topRight: return "arrow.up.right"
+    case .bottomLeft: return "arrow.down.left"
+    case .bottomCenter: return "arrow.down"
+    case .bottomRight: return "arrow.down.right"
     }
   }
 }
@@ -88,16 +98,23 @@ enum OverlayPlacement {
   }
 
   /// Free-motion memory: the last dragged origin, restored on show.
-  static func persistOrigin(_ point: NSPoint) {
-    let defaults = UserDefaults.standard
+  static func persistOrigin(_ point: NSPoint, defaults: UserDefaults = .standard) {
     defaults.set(Double(point.x), forKey: originKey + ".x")
     defaults.set(Double(point.y), forKey: originKey + ".y")
   }
 
+  static func clearPersistedOrigin(defaults: UserDefaults = .standard) {
+    defaults.removeObject(forKey: originKey + ".x")
+    defaults.removeObject(forKey: originKey + ".y")
+  }
+
   /// Restore the persisted free-motion origin, clamped so the panel stays
   /// fully inside the screen's visible frame (displays may have changed).
-  static func restoredOrigin(size: NSSize, on screen: NSScreen?) -> NSPoint? {
-    let defaults = UserDefaults.standard
+  static func restoredOrigin(
+    size: NSSize,
+    on screen: NSScreen?,
+    defaults: UserDefaults = .standard
+  ) -> NSPoint? {
     guard defaults.object(forKey: originKey + ".x") != nil,
       defaults.object(forKey: originKey + ".y") != nil
     else { return nil }

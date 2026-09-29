@@ -71,6 +71,25 @@ final class ChatLayoutPolicyTests: XCTestCase {
     XCTAssertEqual(ChatLayoutPolicy.defaultsKey, "codescribe.chatWidthMode")
   }
 
+  // MARK: - Agent window floor (chrome density)
+
+  func testAgentWindowFloorFitsExpandedRailAndReadableColumn() {
+    XCTAssertEqual(AgentWindowMetrics.minWidth, 640)
+    XCTAssertEqual(AgentWindowMetrics.minHeight, 440)
+    let detailAtFloor =
+      AgentWindowMetrics.minWidth - AgentSidebarMode.expanded.minimumWidth
+    XCTAssertGreaterThanOrEqual(
+      detailAtFloor,
+      ChatLayoutPolicy.minimumReadable,
+      "640pt floor must still fit the expanded rail min plus a readable detail column"
+    )
+    XCTAssertGreaterThan(
+      AgentWindowMetrics.minWidth,
+      AgentSidebarMode.expanded.maximumWidth,
+      "window floor must stay wider than a fully dragged rail so native collapse is not the only way to keep detail visible"
+    )
+  }
+
   // MARK: - R1 window-collapse clamps
 
   func testDocumentWidthNeverExceedsContainer() {

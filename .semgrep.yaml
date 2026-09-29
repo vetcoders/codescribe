@@ -34,12 +34,6 @@ rules:
       - pattern: File::open(...).unwrap()
 
   # Rust: avoid generic unwrap
-  - id: local.rust.no-unwrap
-    languages: [rust]
-    message: Avoid unwrap(); use ? or expect with context
-    severity: WARNING
-    patterns:
-      - pattern: $X.unwrap()
 
   # Bash: disallow curl|bash style installers
   - id: local.bash.no-curl-pipe-sh

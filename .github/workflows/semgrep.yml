@@ -42,4 +42,4 @@ jobs:
           "$RUNNER_TEMP/semgrep-venv/bin/semgrep" --version
 
       - name: Run Semgrep
-        run: semgrep scan --config auto --error .
+        run: semgrep scan --config auto --config .semgrep.yaml --error .

@@ -59,7 +59,10 @@ pub fn active_names() -> Vec<String> {
     cache.names.clone()
 }
 
-fn bridge_home() -> PathBuf {
+/// Runtime agent-bridge home: `CODESCRIBE_AGENT_BRIDGE_HOME`, otherwise
+/// `~/.codescribe/agent-bridge`. The audience binding file sits here, beside
+/// the leases the Bus followers already use.
+pub fn bridge_home() -> PathBuf {
     if let Ok(value) = std::env::var(BRIDGE_HOME_ENV) {
         let value = value.trim();
         if !value.is_empty() {
@@ -93,7 +96,12 @@ fn canonical_name(value: &str) -> Option<String> {
     }
     let mut chars = value.chars();
     let first = chars.next()?;
-    Some(first.to_uppercase().chain(chars).collect())
+    Some(
+        first
+            .to_uppercase()
+            .chain(chars.flat_map(char::to_lowercase))
+            .collect(),
+    )
 }
 
 fn read_active_names_at(root: &Path, now: f64, ttl_seconds: f64) -> Vec<String> {

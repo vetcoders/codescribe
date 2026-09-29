@@ -24,12 +24,12 @@ struct LabPanel: View {
         .font(CSFont.ui(13, .medium))
 
       Button("Open Voice Lab") {
-        VoiceLabRuntime.openConsole()
+        Task { await VoiceLabRuntime.shared.openConsole() }
       }
       .font(CSFont.mono(11, .semibold))
       .foregroundStyle(CSColor.chromeAccent)
     }
-    .padding(28)
+    .padding(CSSpace.xl)
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 }

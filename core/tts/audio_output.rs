@@ -5,6 +5,7 @@
 
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -112,6 +113,13 @@ impl AudioPlayer {
             _ => return Err(anyhow!("Unsupported sample format")),
         };
 
+        let rate_hz = f64::from(device_rate).max(1.0);
+        let seconds = (samples.len() as f64 / rate_hz).min(3600.0);
+        if seconds.is_finite() {
+            crate::audio::tts_duck::arm_for(
+                Duration::from_secs_f64(seconds).saturating_add(Duration::from_millis(250)),
+            );
+        }
         stream.play().context("Failed to start audio stream")?;
 
         // Wait for playback to complete.
@@ -142,7 +150,7 @@ impl AudioPlayer {
         let config = self.config.config();
 
         let stream = self.device.build_output_stream(
-            &config,
+            config,
             move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
                 // Poison-recovery inside the real-time audio callback: a panic
                 // must not poison the position lock and silence all further
@@ -206,40 +214,6 @@ impl AudioPlayer {
 
         info!(
             "Saved {} samples to {} ({:.2}s @ {}Hz)",
-            samples.len(),
-            path.display(),
-            samples.len() as f32 / sample_rate as f32,
-            sample_rate
-        );
-
-        Ok(())
-    }
-
-    /// Save audio samples to WAV file with 16-bit PCM format
-    ///
-    /// More compatible format for older players.
-    pub fn save_wav_pcm16(samples: &[f32], sample_rate: u32, path: &Path) -> Result<()> {
-        let spec = WavSpec {
-            channels: 1,
-            sample_rate,
-            bits_per_sample: 16,
-            sample_format: SampleFormat::Int,
-        };
-
-        let mut writer = WavWriter::create(path, spec)
-            .with_context(|| format!("Failed to create WAV file: {}", path.display()))?;
-
-        for &sample in samples {
-            // Convert f32 [-1.0, 1.0] to i16 [-32768, 32767]
-            let clamped = sample.clamp(-1.0, 1.0);
-            let pcm16 = (clamped * 32767.0) as i16;
-            writer.write_sample(pcm16)?;
-        }
-
-        writer.finalize()?;
-
-        info!(
-            "Saved {} samples (PCM16) to {} ({:.2}s @ {}Hz)",
             samples.len(),
             path.display(),
             samples.len() as f32 / sample_rate as f32,

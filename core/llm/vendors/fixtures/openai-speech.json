@@ -1,0 +1,7 @@
+{
+  "model": "gpt-4o-mini-tts-2025-12-15",
+  "input": "Hello.",
+  "voice": "cedar",
+  "response_format": "pcm",
+  "speed": 1.25
+}

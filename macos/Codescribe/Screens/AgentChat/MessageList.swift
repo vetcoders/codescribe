@@ -193,6 +193,10 @@ struct MessageList: View {
   let messages: [ChatMessage]
   /// Flips a bubble between raw mono and rich markdown. State lives in the
   /// store (per-message `renderMode`), never in this view.
+  var speechUnavailableReason: String? = "Speech engine is unavailable."
+  var speakingMessageID: UUID?
+  var onSpeak: (ChatMessage) -> Void = { _ in }
+  var onStopSpeaking: () -> Void = {}
   var onToggleRenderMode: (UUID) -> Void = { _ in }
 
   /// Follow-tail with pause-on-scroll (the overlay transcript pattern): auto-scroll
@@ -386,7 +390,11 @@ struct MessageList: View {
         message: message,
         containerWidth: containerWidth,
         mode: mode,
-        onToggleRenderMode: onToggleRenderMode
+        onToggleRenderMode: onToggleRenderMode,
+        speechUnavailableReason: speechUnavailableReason,
+        speakingMessageID: speakingMessageID,
+        onSpeak: onSpeak,
+        onStopSpeaking: onStopSpeaking
       )
     }
   }
@@ -473,6 +481,7 @@ private struct ChatBottomKey: PreferenceKey {
 /// macOS 14-compatible user-intent detector. SwiftUI's geometry preference
 /// reports position but cannot distinguish a wheel/trackpad/scrollbar gesture
 /// from `ScrollViewProxy.scrollTo`; AppKit live-scroll notifications can.
+@MainActor
 private struct ChatLiveScrollObserver: NSViewRepresentable {
   let onEvent: (StreamScrollFollowState.Event) -> Void
 
@@ -497,6 +506,7 @@ private struct ChatLiveScrollObserver: NSViewRepresentable {
     coordinator.detach()
   }
 
+  @MainActor
   final class AttachmentView: NSView {
     var onAttach: ((NSScrollView) -> Void)?
 
@@ -506,17 +516,19 @@ private struct ChatLiveScrollObserver: NSViewRepresentable {
     }
 
     func attachWhenReady() {
-      DispatchQueue.main.async { [weak self] in
+      Task { @MainActor [weak self] in
+        await Task.yield()
         guard let self, let scrollView = enclosingScrollView else { return }
         onAttach?(scrollView)
       }
     }
   }
 
+  @MainActor
   final class Coordinator {
     var onEvent: (StreamScrollFollowState.Event) -> Void
     private weak var scrollView: NSScrollView?
-    private var observers: [NSObjectProtocol] = []
+    private var observationTasks: [Task<Void, Never>] = []
 
     init(onEvent: @escaping (StreamScrollFollowState.Event) -> Void) {
       self.onEvent = onEvent
@@ -526,36 +538,36 @@ private struct ChatLiveScrollObserver: NSViewRepresentable {
       guard self.scrollView !== scrollView else { return }
       detach()
       self.scrollView = scrollView
-      let center = NotificationCenter.default
-      observers = [
-        center.addObserver(
-          forName: NSScrollView.willStartLiveScrollNotification,
-          object: scrollView,
-          queue: .main
-        ) { [weak self] _ in
-          self?.onEvent(.userScrollBegan)
+      observationTasks = [
+        observe(NSScrollView.willStartLiveScrollNotification, in: scrollView) { coordinator in
+          coordinator.onEvent(.userScrollBegan)
         },
-        center.addObserver(
-          forName: NSScrollView.didLiveScrollNotification,
-          object: scrollView,
-          queue: .main
-        ) { [weak self] _ in
-          self?.reportViewport(asScrollEnd: true)
+        observe(NSScrollView.didLiveScrollNotification, in: scrollView) { coordinator in
+          coordinator.reportViewport(asScrollEnd: true)
         },
-        center.addObserver(
-          forName: NSScrollView.didEndLiveScrollNotification,
-          object: scrollView,
-          queue: .main
-        ) { [weak self] _ in
-          self?.reportViewport()
+        observe(NSScrollView.didEndLiveScrollNotification, in: scrollView) { coordinator in
+          coordinator.reportViewport()
         },
       ]
     }
 
+    private func observe(
+      _ name: Notification.Name,
+      in scrollView: NSScrollView,
+      action: @escaping @MainActor (Coordinator) -> Void
+    ) -> Task<Void, Never> {
+      Task { @MainActor [weak self, weak scrollView] in
+        guard let scrollView else { return }
+        for await _ in NotificationCenter.default.notifications(named: name, object: scrollView) {
+          guard !Task.isCancelled, let self else { return }
+          action(self)
+        }
+      }
+    }
+
     func detach() {
-      let center = NotificationCenter.default
-      observers.forEach(center.removeObserver)
-      observers.removeAll()
+      for task in observationTasks { task.cancel() }
+      observationTasks.removeAll()
       scrollView = nil
     }
 
@@ -568,10 +580,6 @@ private struct ChatLiveScrollObserver: NSViewRepresentable {
         asScrollEnd
           ? .userScrollEnded(isAtLiveEdge: isAtLiveEdge)
           : .userViewportChanged(isAtLiveEdge: isAtLiveEdge))
-    }
-
-    deinit {
-      detach()
     }
   }
 }
@@ -698,7 +706,7 @@ private struct ContextChip: View {
         }
         .contentShape(Rectangle())
       }
-      .csFocusRing(cornerRadius: 8)
+      .csFocusRing()
       .help("Selection and app captured with this voice turn")
 
       if expanded {
@@ -950,7 +958,7 @@ struct AttachmentPreviewSheet: View {
         .foregroundStyle(CSColor.textMuted)
         .fixedSize(horizontal: false, vertical: true)
     }
-    .padding(14)
+    .padding(CSSpace.card)
     .frame(maxWidth: .infinity, minHeight: 160, alignment: .leading)
     .background(CSColor.surfaceRaised(0.04))
     .overlay(
@@ -1045,8 +1053,8 @@ private struct ToolLineRow: View {
           if isRunning {
             PulseDot()
           }
-          (Text(line.verb).foregroundColor(rowColor)
-            + Text(" \(line.detail)\(isRunning ? " running..." : "")").foregroundColor(
+          (Text(line.verb).foregroundStyle(rowColor)
+            + Text(" \(line.detail)\(isRunning ? " running..." : "")").foregroundStyle(
               isQuiet ? CSColor.textFaintAlt : ChatPalette.toolBody))
             .font(CSFont.mono(11.5, .medium))
             .lineSpacing(4)
@@ -1069,7 +1077,7 @@ private struct ToolLineRow: View {
         }
         .contentShape(Rectangle())
       }
-      .csFocusRing(cornerRadius: 8)
+      .csFocusRing()
       .disabled(!canInspect)
 
       if canInspect, showInspect {
@@ -1232,7 +1240,7 @@ private struct FlatDisclosureStyle: DisclosureGroupStyle {
       } label: {
         configuration.label
       }
-      .csFocusRing(cornerRadius: 8)
+      .csFocusRing()
 
       if configuration.isExpanded {
         Rectangle().fill(CSColor.hairline(0.05)).frame(height: 1)
@@ -1249,6 +1257,28 @@ private struct AssistantTurn: View {
   let containerWidth: CGFloat
   let mode: ChatWidthMode
   let onToggleRenderMode: (UUID) -> Void
+  let speechUnavailableReason: String?
+  let speakingMessageID: UUID?
+  let onSpeak: (ChatMessage) -> Void
+  let onStopSpeaking: () -> Void
+
+  private var speechReason: String? {
+    speechUnavailableReason
+      ?? (message.isThinking || message.isStreaming ? "Wait for this response to finish." : nil)
+      ?? (message.text.isEmpty ? "This response has no text to speak." : nil)
+      ?? (speakingMessageID != nil && speakingMessageID != message.id
+        ? "Another response is being spoken." : nil)
+  }
+
+  private var speechButton: some View {
+    AssistantSpeechButton(
+      messageID: message.id,
+      isSpeaking: speakingMessageID == message.id,
+      unavailableReason: speechReason
+    ) {
+      if speakingMessageID == message.id { onStopSpeaking() } else { onSpeak(message) }
+    }
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 5) {
@@ -1256,6 +1286,7 @@ private struct AssistantTurn: View {
         Text("Assistant · \(message.timestamp)")
           .font(CSFont.mono(10, .medium))
           .foregroundStyle(CSColor.textFaintAlt)
+        speechButton
         if !message.isThinking {
           CopyMessageButton(text: message.text)
           if !message.text.isEmpty {
@@ -1342,7 +1373,10 @@ private struct AssistantTurn: View {
           style: .continuous
         )
       )
-      .contextMenu { CopyButton(text: message.text) }
+      .contextMenu {
+        CopyButton(text: message.text)
+        speechButton
+      }
       .clipped()
     }
     .frame(
@@ -1470,7 +1504,7 @@ private struct RenderModeButton: View {
       }
       .foregroundStyle(hovering ? CSColor.textMuted : CSColor.textFaintAlt)
     }
-    .csFocusRing(cornerRadius: 8)
+    .csFocusRing()
     .onHover { hovering = $0 }
     .help(mode == .raw ? "Render as markdown" : "Show raw text")
   }
@@ -1513,7 +1547,7 @@ private struct CopyMessageButton: View {
       }
       .foregroundStyle(labelColor)
     }
-    .csFocusRing(cornerRadius: 8)
+    .csFocusRing()
     .disabled(text.isEmpty)
     .onHover { hovering = $0 }
     .help("Copy message")
@@ -1552,5 +1586,29 @@ private struct PulseDot: View {
       .frame(width: 6, height: 6)
       .opacity(pulse ? 1 : 0.6)
       .onAppear { withAnimation(CSMotion.softpulse) { pulse = true } }
+  }
+}
+
+/// Shared by the permanent turn action and its context-menu entry.
+struct AssistantSpeechButton: View {
+  let messageID: UUID
+  let isSpeaking: Bool
+  let unavailableReason: String?
+  let action: () -> Void
+
+  var isDisabled: Bool { !isSpeaking && unavailableReason != nil }
+  var help: String { unavailableReason ?? "Speak this response. AI-generated voice." }
+
+  var body: some View {
+    Button(
+      isSpeaking ? "Stop speaking" : "Speak",
+      systemImage: isSpeaking ? "stop.fill" : "speaker.wave.2", action: action
+    )
+    .buttonStyle(.plain)
+    .font(CSFont.mono(10, .medium))
+    .foregroundStyle(CSColor.textMuted)
+    .disabled(isDisabled)
+    .help(help)
+    .accessibilityIdentifier("assistant-speak-\(messageID)")
   }
 }

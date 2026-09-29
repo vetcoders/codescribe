@@ -19,7 +19,7 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 use tokio::time::Instant;
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::vad;
 
@@ -62,11 +62,11 @@ pub(crate) enum SpeechEvent {
     /// path. Never produced while buffered (utterance) mode is the only wiring.
     Chunk(Vec<f32>),
     /// Interim utterance slice emitted during long continuous speech to keep streaming responsive.
-    Utterance(Vec<f32>),
+    Utterance,
     /// Final utterance slice emitted when VAD determines the segment ended (or on flush).
     ///
     /// Consumers can use this to distinguish "preview" from "commit" boundaries.
-    UtteranceFinal(Vec<f32>),
+    UtteranceFinal,
 }
 
 // FORGOTTEN-GEM(vc-prune 2026-06-10): parked code, intentionally kept —
@@ -133,18 +133,14 @@ pub(crate) struct GateConfig {
     pub mode: VadGateMode,
 }
 
-/// VAD failure telemetry drained by the caller.
-///
-/// Split into pending (since last drain) and total (session lifetime) counters
-/// so a consumer can both rate-limit warnings and report a session summary.
+/// VAD failure telemetry drained by tests.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct VadErrorStats {
     /// `predict()` failures since the last drain.
     pub predict_errors: u64,
     /// Frames processed with no VAD model loaded, since the last drain.
     pub unavailable_frames: u64,
-    /// `predict()` failures over the whole session.
-    pub total_predict_errors: u64,
     /// Frames processed with no VAD model loaded, over the whole session.
     pub total_unavailable_frames: u64,
 }
@@ -167,6 +163,26 @@ pub(crate) enum VadBoundaryKind {
     SpeechStart,
     SpeechEnd,
 }
+
+/// Why the single VAD closed an utterance; only silence proves a commit fence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UtteranceCloseCause {
+    SilenceFence,
+    MaxUtteranceSplit,
+    EndOfCapture,
+}
+
+/// Close decision on the raw capture clock, separate from padded speech bounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UtteranceCloseReceipt {
+    pub decision_sample: u64,
+    pub cause: UtteranceCloseCause,
+}
+
+/// Hard memory bound for sideband observations when a caller does not drain
+/// them (the legacy VAD/scheduler path). Fusion drains every callback, so this
+/// cap is a safety net rather than normal backpressure.
+const MAX_PENDING_VAD_BOUNDARIES: usize = 512;
 
 // ═══════════════════════════════════════════════════════════
 // SpeechSession
@@ -210,6 +226,10 @@ pub(crate) struct SpeechSession {
     raw_cursor: usize,
     segment_start: Option<usize>,
     pending_end: Option<usize>,
+    pending_close_receipt: Option<UtteranceCloseReceipt>,
+    last_close_receipt: Option<UtteranceCloseReceipt>,
+    /// Exact segment finalized by the most recent Supervisor feed call.
+    last_closed_segment_raw_range: Option<(u64, u64)>,
     pre_roll_raw: usize,
     speech_pad_raw: usize,
     last_emit_raw: usize,
@@ -230,8 +250,6 @@ pub(crate) struct SpeechSession {
     /// Boundary observations waiting for the session-level Silero ingress.
     /// FIFO order is the PCM order in which the iterator produced them.
     vad_boundaries: VecDeque<VadBoundaryEvidence>,
-    /// Wall-clock instant when this session was created.
-    session_start: Instant,
     /// Total number of Silero predict() errors in this session.
     vad_predict_errors_total: u64,
     /// Predict errors since last telemetry drain.
@@ -245,6 +263,11 @@ pub(crate) struct SpeechSession {
     /// After a max-utterance force seal, re-open the segment so continuous speech
     /// is not lost waiting for a fresh Silero Start.
     force_reopen_after_seal: bool,
+    /// Test-only probability script. When non-empty, [`Self::predict_speech_prob`]
+    /// consumes these instead of the ONNX model so a unit test can hold a
+    /// segment open past the max-duration split without depending on weights.
+    #[cfg(test)]
+    scripted_speech_probs: VecDeque<f32>,
 }
 
 impl SpeechSession {
@@ -326,6 +349,9 @@ impl SpeechSession {
             raw_cursor: 0,
             segment_start: None,
             pending_end: None,
+            pending_close_receipt: None,
+            last_close_receipt: None,
+            last_closed_segment_raw_range: None,
             pre_roll_raw,
             speech_pad_raw,
             last_emit_raw: 0,
@@ -338,13 +364,14 @@ impl SpeechSession {
             segment_peak_prob: 0.0,
             last_boundary_prob: 0.0,
             vad_boundaries: VecDeque::new(),
-            session_start: Instant::now(),
             vad_predict_errors_total: 0,
             vad_predict_errors_pending: 0,
             vad_unavailable_frames_total: 0,
             vad_unavailable_frames_pending: 0,
             vad_unavailable_logged: false,
             force_reopen_after_seal: false,
+            #[cfg(test)]
+            scripted_speech_probs: VecDeque::new(),
         }
     }
 
@@ -359,6 +386,7 @@ impl SpeechSession {
     /// Same as [`Self::new_utterance`] but with the closing-silence threshold
     /// pinned by the caller (clamped to 0.1–10 s), so a lane that knows its own
     /// pause cadence is not bound to the global default.
+    #[cfg(test)]
     pub fn new_utterance_with_silence(sample_rate: u32, max_silence_sec: f32) -> Self {
         let interim_sec = utterance_interim_sec();
         Self::new_utterance_with_interim_and_silence(
@@ -453,6 +481,9 @@ impl SpeechSession {
             raw_cursor: 0,
             segment_start: None,
             pending_end: None,
+            pending_close_receipt: None,
+            last_close_receipt: None,
+            last_closed_segment_raw_range: None,
             pre_roll_raw: (sample_rate as f32 * config.pre_roll_sec).round().max(0.0) as usize,
             speech_pad_raw: (sample_rate as f32 * config.speech_pad_sec)
                 .round()
@@ -467,14 +498,22 @@ impl SpeechSession {
             segment_peak_prob: 0.0,
             last_boundary_prob: 0.0,
             vad_boundaries: VecDeque::new(),
-            session_start: Instant::now(),
             vad_predict_errors_total: 0,
             vad_predict_errors_pending: 0,
             vad_unavailable_frames_total: 0,
             vad_unavailable_frames_pending: 0,
             vad_unavailable_logged: false,
             force_reopen_after_seal: false,
+            #[cfg(test)]
+            scripted_speech_probs: VecDeque::new(),
         }
+    }
+
+    /// Queue one Silero probability the next VAD frame will read instead of
+    /// running the model. One value per 512-sample (16 kHz) frame.
+    #[cfg(test)]
+    pub(crate) fn push_scripted_speech_prob_for_test(&mut self, prob: f32) {
+        self.scripted_speech_probs.push_back(prob);
     }
 
     /// Push one capture callback's worth of audio and collect whatever events it
@@ -537,9 +576,9 @@ impl SpeechSession {
                     if self.pending_samples.len() >= max_utterance_samples {
                         events.push(self.emit_final());
                     } else if self.pending_samples.len() >= interim_limit {
-                        let chunk = std::mem::take(&mut self.pending_samples);
+                        let _chunk = std::mem::take(&mut self.pending_samples);
                         self.last_append_at = Instant::now();
-                        events.push(SpeechEvent::Utterance(chunk));
+                        events.push(SpeechEvent::Utterance);
                     }
                 }
             }
@@ -557,6 +596,8 @@ impl SpeechSession {
     /// every emit so a long dictation cannot grow it without bound.
     fn feed_supervisor(&mut self, audio: &[f32]) -> Vec<SpeechEvent> {
         let mut events = Vec::new();
+        self.last_closed_segment_raw_range = None;
+        self.last_close_receipt = None;
         if audio.is_empty() {
             return events;
         }
@@ -589,7 +630,8 @@ impl SpeechSession {
             );
 
             let mut start_event: Option<usize> = None;
-            let mut end_event: Option<usize> = None;
+            let mut end_event = None;
+            let mut speech_continues = false;
 
             debug_assert!(
                 self.iter_state.is_some(),
@@ -601,8 +643,14 @@ impl SpeechSession {
                     VadIterEvent::Start { start_sample } => {
                         start_event = Some(start_sample);
                     }
-                    VadIterEvent::End { end_sample } => {
-                        end_event = Some(end_sample);
+                    VadIterEvent::End {
+                        end_sample,
+                        decision_sample,
+                        cause,
+                        speech_continues: continues,
+                    } => {
+                        end_event = Some((end_sample, decision_sample, cause));
+                        speech_continues = continues;
                     }
                     VadIterEvent::None => {}
                 }
@@ -613,7 +661,7 @@ impl SpeechSession {
 
             if let Some(start_sample) = start_event {
                 let raw_boundary = self.vad_to_raw_index(start_sample);
-                self.vad_boundaries.push_back(VadBoundaryEvidence {
+                self.record_vad_boundary(VadBoundaryEvidence {
                     kind: VadBoundaryKind::SpeechStart,
                     sample: raw_boundary as u64,
                     speech_probability: speech_prob,
@@ -625,15 +673,30 @@ impl SpeechSession {
                 self.segment_peak_prob = speech_prob;
             }
 
-            if let Some(end_sample) = end_event {
+            if let Some((end_sample, decision_sample, cause)) = end_event {
                 let raw_boundary = self.vad_to_raw_index(end_sample);
-                self.vad_boundaries.push_back(VadBoundaryEvidence {
+                self.record_vad_boundary(VadBoundaryEvidence {
                     kind: VadBoundaryKind::SpeechEnd,
                     sample: raw_boundary as u64,
                     speech_probability: speech_prob,
                 });
                 self.pending_end = Some(raw_boundary.saturating_add(self.speech_pad_raw));
+                self.pending_close_receipt = Some(UtteranceCloseReceipt {
+                    decision_sample: self.vad_to_raw_index(decision_sample) as u64,
+                    cause,
+                });
                 self.last_boundary_prob = speech_prob;
+                if speech_continues {
+                    self.force_reopen_after_seal = true;
+                    info!(
+                        end_raw = raw_boundary,
+                        closed_end = self.pending_end.unwrap_or(raw_boundary),
+                        reopen_start = self.pending_end.unwrap_or(raw_boundary),
+                        speech_probability = speech_prob,
+                        cursor = self.raw_cursor,
+                        "silero forced boundary: max-duration split while speech continues"
+                    );
+                }
             }
 
             // Speech-time integrity: count Silero-positive VAD frames while a
@@ -695,10 +758,7 @@ impl SpeechSession {
                         chunk.len(),
                         chunk.len() as f32 / self.output_sample_rate as f32
                     );
-                    self.push_event_with_speech_vad_samples(
-                        &mut events,
-                        SpeechEvent::Utterance(chunk),
-                    );
+                    self.push_event_with_speech_vad_samples(&mut events, SpeechEvent::Utterance);
                 }
                 self.last_emit_raw = end;
                 self.trim_raw_buffer(end.saturating_sub(self.pre_roll_raw));
@@ -715,15 +775,21 @@ impl SpeechSession {
                 && self.pending_end.is_none()
                 && self.raw_cursor.saturating_sub(start) >= max_utterance_samples
             {
-                debug!(
-                    "Utterance max-duration force seal at {}s (start={}, cursor={})",
-                    max_utterance_samples as f32 / self.output_sample_rate as f32,
-                    start,
-                    self.raw_cursor
-                );
                 self.pending_end = Some(self.raw_cursor);
+                self.pending_close_receipt = Some(UtteranceCloseReceipt {
+                    decision_sample: self.raw_cursor as u64,
+                    cause: UtteranceCloseCause::MaxUtteranceSplit,
+                });
                 self.last_boundary_prob = speech_prob;
                 self.force_reopen_after_seal = true;
+                info!(
+                    segment_start = start,
+                    end_raw = self.raw_cursor,
+                    closed_end = self.raw_cursor,
+                    reopen_start = self.raw_cursor,
+                    speech_probability = speech_prob,
+                    "silero forced boundary: max-duration split while speech continues"
+                );
             }
         }
 
@@ -735,19 +801,33 @@ impl SpeechSession {
             self.force_reopen_after_seal = false;
 
             if let Some(start) = self.segment_start.take()
-                && let Some((emit_start, emit_end)) = self.supervisor_emit_range(start, end)
-                && let Some(chunk) = self.raw_slice(emit_start, emit_end)
+                && end > start
             {
                 match self.mode {
-                    SpeechMode::Stream { .. } => self
-                        .push_event_with_speech_vad_samples(&mut events, SpeechEvent::Chunk(chunk)),
-                    SpeechMode::Utterance { .. } => self.push_event_with_speech_vad_samples(
-                        &mut events,
-                        SpeechEvent::UtteranceFinal(chunk),
-                    ),
+                    SpeechMode::Stream { .. } => {
+                        if let Some((emit_start, emit_end)) = self.supervisor_emit_range(start, end)
+                            && let Some(chunk) = self.raw_slice(emit_start, emit_end)
+                        {
+                            self.push_event_with_speech_vad_samples(
+                                &mut events,
+                                SpeechEvent::Chunk(chunk),
+                            );
+                        }
+                    }
+                    SpeechMode::Utterance { .. } => {
+                        // This is a boundary, not an audio payload. Interim
+                        // retention must not erase the observed end of speech.
+                        self.push_event_with_speech_vad_samples(
+                            &mut events,
+                            SpeechEvent::UtteranceFinal,
+                        );
+                        self.last_closed_segment_raw_range = Some((start as u64, end as u64));
+                        self.last_close_receipt = self.pending_close_receipt.take();
+                    }
                 }
             }
             self.pending_end = None;
+            self.pending_close_receipt = None;
             self.last_emit_raw = end;
             self.segment_peak_prob = 0.0;
             self.pending_event_speech_vad_samples = 0;
@@ -783,6 +863,21 @@ impl SpeechSession {
         Some((start as u64, self.raw_cursor as u64))
     }
 
+    pub(crate) fn last_closed_segment_raw_range(&self) -> Option<(u64, u64)> {
+        self.last_closed_segment_raw_range
+    }
+
+    pub(crate) fn last_close_receipt(&self) -> Option<UtteranceCloseReceipt> {
+        self.last_close_receipt
+    }
+
+    fn record_vad_boundary(&mut self, boundary: VadBoundaryEvidence) {
+        if self.vad_boundaries.len() >= MAX_PENDING_VAD_BOUNDARIES {
+            self.vad_boundaries.pop_front();
+        }
+        self.vad_boundaries.push_back(boundary);
+    }
+
     /// Drain exact Silero start/end observations in production order.
     ///
     /// Reading these observations never gates PCM. An empty vector therefore
@@ -799,11 +894,24 @@ impl SpeechSession {
     /// degraded guess — a deliberate choice, since sending unvalidated silence
     /// to STT produces hallucinated text.
     pub fn flush(&mut self) -> Option<SpeechEvent> {
+        self.last_close_receipt = None;
         if self.gate_mode == VadGateMode::Supervisor {
             if let Some(start) = self.segment_start.take() {
                 // VAD fired Start but recording ended before End — emit what we have.
                 let end = self.pending_end.take().unwrap_or(self.raw_cursor);
                 let end = end.min(self.raw_cursor);
+                if matches!(self.mode, SpeechMode::Utterance { .. }) && end > start {
+                    self.pending_close_receipt = None;
+                    self.last_close_receipt = Some(UtteranceCloseReceipt {
+                        decision_sample: self.raw_cursor as u64,
+                        cause: UtteranceCloseCause::EndOfCapture,
+                    });
+                    let speech_vad_samples = self.take_pending_event_speech_vad_samples();
+                    self.event_speech_vad_samples.push_back(speech_vad_samples);
+                    self.segment_peak_prob = 0.0;
+                    self.last_emit_raw = end;
+                    return Some(SpeechEvent::UtteranceFinal);
+                }
                 if let Some((emit_start, emit_end)) = self.supervisor_emit_range(start, end)
                     && let Some(chunk) = self.raw_slice(emit_start, emit_end)
                 {
@@ -821,7 +929,7 @@ impl SpeechSession {
                     self.last_emit_raw = emit_end;
                     return Some(match self.mode {
                         SpeechMode::Stream { .. } => SpeechEvent::Chunk(chunk),
-                        SpeechMode::Utterance { .. } => SpeechEvent::UtteranceFinal(chunk),
+                        SpeechMode::Utterance { .. } => SpeechEvent::UtteranceFinal,
                     });
                 }
                 self.last_emit_raw = end;
@@ -872,7 +980,7 @@ impl SpeechSession {
         self.last_append_at = Instant::now();
         match self.mode {
             SpeechMode::Stream { .. } => SpeechEvent::Chunk(chunk),
-            SpeechMode::Utterance { .. } => SpeechEvent::UtteranceFinal(chunk),
+            SpeechMode::Utterance { .. } => SpeechEvent::UtteranceFinal,
         }
     }
 
@@ -926,6 +1034,10 @@ impl SpeechSession {
     /// Assuming speech would be the dangerous default: it opens segments on
     /// silence and feeds STT audio nobody spoke. `gate` only labels the warning.
     fn predict_speech_prob(&mut self, frame: &[f32], gate: &str) -> f32 {
+        #[cfg(test)]
+        if let Some(prob) = self.scripted_speech_probs.pop_front() {
+            return prob;
+        }
         match self.vad.as_mut() {
             Some(vad) => match vad.predict(frame) {
                 Ok(prob) => prob,
@@ -1088,7 +1200,7 @@ impl SpeechSession {
             self.pending_samples.extend_from_slice(audio);
         }
 
-        if let VadIterEvent::End { end_sample } = event {
+        if let VadIterEvent::End { end_sample, .. } = event {
             if let Some(start_sample) = self.iter_speech_start.take() {
                 let speech_len = end_sample.saturating_sub(start_sample);
                 let mut target_len = self
@@ -1133,12 +1245,6 @@ impl SpeechSession {
         }
     }
 
-    /// Sample rate of the audio carried by emitted events. In Supervisor mode
-    /// this is the capture rate, not Silero's 16 kHz working rate.
-    pub fn output_sample_rate(&self) -> u32 {
-        self.output_sample_rate
-    }
-
     /// Whether Silero actually loaded for this session.
     ///
     /// A missing model is not fatal here — [`Self::predict_speech_prob`] reads
@@ -1149,33 +1255,15 @@ impl SpeechSession {
         self.vad.is_some()
     }
 
-    /// Speech probability at the last VAD Start/End boundary.
-    pub(crate) fn boundary_prob(&self) -> f32 {
-        self.last_boundary_prob
-    }
-
-    /// Milliseconds elapsed since session creation (wall-clock).
-    pub(crate) fn session_elapsed_ms(&self) -> u64 {
-        self.session_start.elapsed().as_millis() as u64
-    }
-
-    /// Peak speech probability for the current utterance/segment.
-    pub(crate) fn segment_speech_prob(&self) -> f32 {
-        let prob = self.segment_peak_prob.max(self.last_boundary_prob);
-        if prob > 0.0 {
-            prob
-        } else {
-            self.max_speech_prob
-        }
-    }
-
     /// Silero-positive speech samples (16k domain) for the next emitted speech event.
+    #[cfg(test)]
     pub(crate) fn take_event_speech_vad_samples(&mut self) -> u64 {
         self.event_speech_vad_samples.pop_front().unwrap_or(0)
     }
 
     /// Drain VAD failure telemetry, or `None` when nothing failed since the last
     /// call. The pending counters reset; the totals do not.
+    #[cfg(test)]
     pub(crate) fn take_vad_error_stats(&mut self) -> Option<VadErrorStats> {
         let predict_errors = std::mem::take(&mut self.vad_predict_errors_pending);
         let unavailable_frames = std::mem::take(&mut self.vad_unavailable_frames_pending);
@@ -1185,7 +1273,6 @@ impl SpeechSession {
         Some(VadErrorStats {
             predict_errors,
             unavailable_frames,
-            total_predict_errors: self.vad_predict_errors_total,
             total_unavailable_frames: self.vad_unavailable_frames_total,
         })
     }
@@ -1512,7 +1599,16 @@ enum VadIterEvent {
     /// A segment opened at this VAD-domain sample.
     Start { start_sample: usize },
     /// A segment closed at this VAD-domain sample.
-    End { end_sample: usize },
+    ///
+    /// `speech_continues` is a max-duration split while speech is still open.
+    /// The iterator stays triggered, so the caller must reopen its segment:
+    /// `Start` only fires on the false→true edge and will not arrive on its own.
+    End {
+        end_sample: usize,
+        decision_sample: usize,
+        cause: UtteranceCloseCause,
+        speech_continues: bool,
+    },
 }
 
 impl VadIterState {
@@ -1577,12 +1673,11 @@ impl VadIterState {
 
     /// Advance one frame and report any boundary it produced.
     ///
-    /// Three exits, in priority order: speech above `threshold` (opens a segment
-    /// or cancels a pending end); an open segment past `max_speech_samples`
-    /// (forced split, preferring a previously confirmed end over an arbitrary
-    /// cut); and speech below the hysteresis floor for `min_silence_samples`
-    /// (confirmed end, ignored when the speech run was shorter than
-    /// `min_speech_samples`).
+    /// Three exits, in priority order: speech above `threshold` opens a segment
+    /// or cancels a pending end; an open segment past `max_speech_samples` is
+    /// split even while the frame is still speech; speech below the hysteresis
+    /// floor for `min_silence_samples` confirms an end, ignored when the run
+    /// was shorter than `min_speech_samples`.
     fn update(&mut self, speech_prob: f32) -> VadIterEvent {
         self.current_sample = self
             .current_sample
@@ -1605,32 +1700,17 @@ impl VadIterState {
                     start_sample: frame_start,
                 };
             }
-            return VadIterEvent::None;
         }
 
         if self.triggered
             && (self.current_sample.saturating_sub(self.speech_start) as f32)
                 > self.params.max_speech_samples
         {
-            if self.prev_end > 0 {
-                let end = self.prev_end;
-                if self.next_start < self.prev_end {
-                    self.triggered = false;
-                } else {
-                    self.speech_start = self.next_start;
-                }
-                self.prev_end = 0;
-                self.next_start = 0;
-                self.temp_end = 0;
-                return VadIterEvent::End { end_sample: end };
-            }
+            return self.split_at_max(speech_prob);
+        }
 
-            let end = self.current_sample;
-            self.triggered = false;
-            self.prev_end = 0;
-            self.next_start = 0;
-            self.temp_end = 0;
-            return VadIterEvent::End { end_sample: end };
+        if speech_prob > self.params.threshold {
+            return VadIterEvent::None;
         }
 
         let neg_threshold = (self.params.threshold - 0.15).max(0.05);
@@ -1651,12 +1731,94 @@ impl VadIterState {
                     self.prev_end = 0;
                     self.next_start = 0;
                     self.temp_end = 0;
-                    return VadIterEvent::End { end_sample: end };
+                    return VadIterEvent::End {
+                        end_sample: end,
+                        decision_sample: self.current_sample,
+                        cause: UtteranceCloseCause::SilenceFence,
+                        speech_continues: false,
+                    };
                 }
             }
         }
 
         VadIterEvent::None
+    }
+
+    /// Cut an over-long segment. Speech that is still open keeps the iterator
+    /// triggered and restarts the duration clock at the cut, so the next frame
+    /// is not another split and does not wait for a silence edge.
+    fn split_at_max(&mut self, speech_prob: f32) -> VadIterEvent {
+        let neg_threshold = (self.params.threshold - 0.15).max(0.05);
+        // The open segment's hold band, not a new onset. A frame that would
+        // have kept the segment open must not become silence just because the
+        // length ceiling cut it.
+        let holds = speech_prob >= neg_threshold;
+        if self.prev_end > 0 {
+            let end = self.prev_end;
+            let resumed = self.next_start >= self.prev_end || holds;
+            if resumed {
+                let candidate = if self.next_start >= end {
+                    self.next_start
+                } else {
+                    self.current_sample
+                        .saturating_sub(self.params.frame_size_samples)
+                };
+                self.arm_continued_segment(candidate);
+                return VadIterEvent::End {
+                    end_sample: end,
+                    decision_sample: self.current_sample,
+                    cause: UtteranceCloseCause::MaxUtteranceSplit,
+                    speech_continues: true,
+                };
+            }
+            self.triggered = false;
+            self.prev_end = 0;
+            self.next_start = 0;
+            self.temp_end = 0;
+            return VadIterEvent::End {
+                end_sample: end,
+                decision_sample: self.current_sample,
+                cause: UtteranceCloseCause::MaxUtteranceSplit,
+                speech_continues: false,
+            };
+        }
+
+        let end = self.current_sample;
+        if holds {
+            self.arm_continued_segment(self.current_sample);
+            return VadIterEvent::End {
+                end_sample: end,
+                decision_sample: self.current_sample,
+                cause: UtteranceCloseCause::MaxUtteranceSplit,
+                speech_continues: true,
+            };
+        }
+        self.triggered = false;
+        self.prev_end = 0;
+        self.next_start = 0;
+        self.temp_end = 0;
+        VadIterEvent::End {
+            end_sample: end,
+            decision_sample: self.current_sample,
+            cause: UtteranceCloseCause::MaxUtteranceSplit,
+            speech_continues: false,
+        }
+    }
+
+    /// Keep the iterator in speech and start the max-duration clock over.
+    /// A candidate that is already past the ceiling snaps to the cursor so the
+    /// following frame is not immediately another forced split.
+    fn arm_continued_segment(&mut self, candidate_start: usize) {
+        let elapsed = self.current_sample.saturating_sub(candidate_start) as f32;
+        self.speech_start = if elapsed > self.params.max_speech_samples {
+            self.current_sample
+        } else {
+            candidate_start
+        };
+        self.triggered = true;
+        self.prev_end = 0;
+        self.next_start = 0;
+        self.temp_end = 0;
     }
 }
 
@@ -1669,6 +1831,118 @@ impl VadIterState {
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    #[test]
+    fn silence_close_receipt_preserves_the_decision_on_each_raw_clock() {
+        for rate in [16_000, 48_000] {
+            let mut session = SpeechSession::new_utterance(rate);
+            session.speech_pad_raw = 0;
+            session.pre_roll_raw = 0;
+            session.mode = SpeechMode::Utterance {
+                interim_limit: rate as usize * 30,
+                max_utterance_samples: rate as usize * 60,
+            };
+            let params = &mut session.iter_state.as_mut().unwrap().params;
+            params.min_silence_samples = 3_200;
+            params.min_speech_samples = 512;
+            params.max_speech_samples = 16_000.0 * 60.0;
+            session.scripted_speech_probs.extend([0.9; 10]);
+            session.scripted_speech_probs.extend([0.01; 100]);
+            let frame = vec![0.0; 512 * rate as usize / 16_000];
+            let mut receipt = None;
+            for _ in 0..100 {
+                session.feed(&frame, 0);
+                if session.last_close_receipt().is_some() {
+                    receipt = session.last_close_receipt();
+                    break;
+                }
+            }
+            let receipt = receipt.expect("script must close through the silence fence");
+            let speech_end = session
+                .take_vad_boundaries()
+                .into_iter()
+                .find(|edge| edge.kind == VadBoundaryKind::SpeechEnd)
+                .unwrap()
+                .sample;
+            assert_eq!(receipt.cause, UtteranceCloseCause::SilenceFence);
+            assert!(receipt.decision_sample >= speech_end + u64::from(rate) / 5);
+            assert!(receipt.decision_sample <= session.raw_cursor as u64);
+            assert_eq!(
+                receipt.decision_sample,
+                session.vad_to_raw_index(session.iter_state.as_ref().unwrap().current_sample)
+                    as u64
+            );
+        }
+    }
+
+    #[test]
+    fn supervisor_max_utterance_close_is_never_a_silence_receipt() {
+        let mut session = SpeechSession::new_utterance(16_000);
+        session.speech_pad_raw = 0;
+        session.pre_roll_raw = 0;
+        session.mode = SpeechMode::Utterance {
+            interim_limit: 16_000,
+            max_utterance_samples: 2_048,
+        };
+        session
+            .iter_state
+            .as_mut()
+            .unwrap()
+            .params
+            .max_speech_samples = 960_000.0;
+        session.scripted_speech_probs.extend([0.9; 4]);
+        for _ in 0..4 {
+            session.feed(&[0.2; 512], 0);
+        }
+        assert_eq!(
+            session.last_close_receipt(),
+            Some(UtteranceCloseReceipt {
+                decision_sample: 2_048,
+                cause: UtteranceCloseCause::MaxUtteranceSplit,
+            })
+        );
+        assert!(session.open_segment_raw_range().is_some());
+    }
+
+    #[test]
+    fn iterator_max_split_cause_does_not_depend_on_continuing_speech() {
+        for probability in [0.9, 0.01] {
+            let config = hardcoded_utterance_gate_config();
+            let mut state = VadIterState::new(&config, 16_000);
+            state.params.max_speech_samples = 1_024.0;
+            state.update(0.9);
+            state.update(0.9);
+            let VadIterEvent::End {
+                decision_sample,
+                cause,
+                ..
+            } = state.update(probability)
+            else {
+                panic!("duration ceiling must close the iterator");
+            };
+            assert_eq!(decision_sample, 1_536);
+            assert_eq!(cause, UtteranceCloseCause::MaxUtteranceSplit);
+        }
+    }
+
+    #[test]
+    fn supervisor_stop_receipt_uses_capture_end() {
+        let mut session = SpeechSession::new_utterance(16_000);
+        session.scripted_speech_probs.extend([0.9; 4]);
+        for _ in 0..4 {
+            session.feed(&[0.2; 512], 0);
+        }
+        assert!(matches!(session.flush(), Some(SpeechEvent::UtteranceFinal)));
+        assert_eq!(
+            session.last_close_receipt(),
+            Some(UtteranceCloseReceipt {
+                decision_sample: 2_048,
+                cause: UtteranceCloseCause::EndOfCapture,
+            })
+        );
+        assert!(session.flush().is_none());
+        assert!(session.last_close_receipt().is_none());
+    }
 
     #[test]
     fn vad_boundary_evidence_drains_once_in_pcm_order() {
@@ -1693,6 +1967,22 @@ mod tests {
         assert_eq!(drained[1].kind, VadBoundaryKind::SpeechEnd);
         assert_eq!(drained[1].sample, 16_384);
         assert!(session.take_vad_boundaries().is_empty());
+    }
+
+    #[test]
+    fn vad_boundary_evidence_is_memory_bounded_without_a_consumer() {
+        let mut session = SpeechSession::new_utterance(16_000);
+        for sample in 0..(MAX_PENDING_VAD_BOUNDARIES as u64 + 37) {
+            session.record_vad_boundary(VadBoundaryEvidence {
+                kind: VadBoundaryKind::SpeechStart,
+                sample,
+                speech_probability: 0.9,
+            });
+        }
+
+        let drained = session.take_vad_boundaries();
+        assert_eq!(drained.len(), MAX_PENDING_VAD_BOUNDARIES);
+        assert_eq!(drained.first().map(|edge| edge.sample), Some(37));
     }
 
     /// RAII guard that restores an env var on drop.
@@ -1871,17 +2161,17 @@ mod tests {
         );
     }
 
-    /// Chunk, Utterance, and UtteranceFinal carry sample vectors as constructed.
+    /// Chunk carries sample vector, Utterance and UtteranceFinal are unit boundary discriminants.
     #[test]
     fn speech_event_variants() {
         let chunk = SpeechEvent::Chunk(vec![1.0, 2.0]);
         assert!(matches!(chunk, SpeechEvent::Chunk(v) if v.len() == 2));
 
-        let utt = SpeechEvent::Utterance(vec![3.0]);
-        assert!(matches!(utt, SpeechEvent::Utterance(v) if v.len() == 1));
+        let utt = SpeechEvent::Utterance;
+        assert!(matches!(utt, SpeechEvent::Utterance));
 
-        let final_utt = SpeechEvent::UtteranceFinal(vec![4.0, 5.0, 6.0]);
-        assert!(matches!(final_utt, SpeechEvent::UtteranceFinal(v) if v.len() == 3));
+        let final_utt = SpeechEvent::UtteranceFinal;
+        assert!(matches!(final_utt, SpeechEvent::UtteranceFinal));
     }
 
     /// Verify that raw_buffer is trimmed during long continuous speech in stream mode.
@@ -1989,6 +2279,50 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_supervisor_final_boundary_survives_trimmed_audio() {
+        let mut session = SpeechSession::new_utterance(16000);
+        session.gate_mode = VadGateMode::Supervisor;
+        session.raw_cursor = 3200;
+        session.raw_buffer_start = 3200;
+        session.last_emit_raw = 3200;
+        session.segment_start = Some(0);
+        session.pending_end = Some(1600);
+        session.raw_buffer.clear();
+
+        let events = session.feed(&[0.0], 16000);
+        assert!(matches!(events.as_slice(), [SpeechEvent::UtteranceFinal]));
+        assert!(session.open_segment_raw_range().is_none());
+        assert!(session.feed(&[0.0], 16000).is_empty());
+        assert!(session.flush().is_none());
+    }
+
+    #[test]
+    fn test_supervisor_flush_boundary_survives_trimmed_audio() {
+        let mut session = SpeechSession::new_utterance(16000);
+        session.gate_mode = VadGateMode::Supervisor;
+        session.raw_cursor = 3200;
+        session.raw_buffer_start = 3200;
+        session.last_emit_raw = 3200;
+        session.segment_start = Some(0);
+        session.raw_buffer.clear();
+
+        assert!(matches!(session.flush(), Some(SpeechEvent::UtteranceFinal)));
+        assert!(session.flush().is_none());
+    }
+
+    #[test]
+    fn test_supervisor_flush_does_not_finalize_empty_reopened_segment() {
+        let mut session = SpeechSession::new_utterance(16000);
+        session.gate_mode = VadGateMode::Supervisor;
+        session.raw_cursor = 3200;
+        session.raw_buffer_start = 3200;
+        session.last_emit_raw = 3200;
+        session.segment_start = Some(3200);
+        session.raw_buffer.clear();
+        assert!(session.flush().is_none());
+    }
+
     /// Regression guard: completed segments must clear peak state.
     #[test]
     fn test_supervisor_segment_completion_resets_fallback_peak() {
@@ -2012,7 +2346,7 @@ mod tests {
         // feed() requires non-empty input to run supervisor bookkeeping.
         let events = session.feed(&[0.0], sr);
         assert!(
-            matches!(events.as_slice(), [SpeechEvent::UtteranceFinal(_)]),
+            matches!(events.as_slice(), [SpeechEvent::UtteranceFinal]),
             "Expected completed segment emission, got {} events",
             events.len()
         );
@@ -2048,7 +2382,7 @@ mod tests {
 
         let flush = session.flush();
         assert!(
-            matches!(flush, Some(SpeechEvent::UtteranceFinal(_))),
+            matches!(flush, Some(SpeechEvent::UtteranceFinal)),
             "flush should emit the open Supervisor segment"
         );
         assert_eq!(
@@ -2086,18 +2420,13 @@ mod tests {
         session.pending_event_speech_vad_samples = vad::VAD_SAMPLE_RATE as u64 * 2;
 
         let flush = session.flush();
-        let tail_len = match flush {
-            Some(SpeechEvent::UtteranceFinal(samples)) => samples.len(),
-            Some(SpeechEvent::Utterance(_)) | Some(SpeechEvent::Chunk(_)) => {
+        match flush {
+            Some(SpeechEvent::UtteranceFinal) => (),
+            Some(SpeechEvent::Utterance) | Some(SpeechEvent::Chunk(_)) => {
                 panic!("flush must emit UtteranceFinal in utterance mode")
             }
             None => panic!("flush should emit the active Supervisor segment"),
         };
-        assert_eq!(
-            tail_len,
-            total_samples - already_emitted,
-            "flush should emit only the previously un-emitted tail"
-        );
         assert_eq!(
             session.take_event_speech_vad_samples(),
             vad::VAD_SAMPLE_RATE as u64,
@@ -2137,18 +2466,13 @@ mod tests {
         session.pending_event_speech_vad_samples = vad::VAD_SAMPLE_RATE as u64;
 
         let flush = session.flush();
-        let len = match flush {
-            Some(SpeechEvent::UtteranceFinal(samples)) => samples.len(),
-            Some(SpeechEvent::Utterance(_)) | Some(SpeechEvent::Chunk(_)) => {
+        match flush {
+            Some(SpeechEvent::UtteranceFinal) => (),
+            Some(SpeechEvent::Utterance) | Some(SpeechEvent::Chunk(_)) => {
                 panic!("flush must emit UtteranceFinal in utterance mode")
             }
             None => panic!("flush should emit tail even when segment start is trimmed"),
         };
-        assert_eq!(
-            len,
-            session.raw_cursor - tail_start,
-            "flush should emit from last emitted boundary to raw_cursor"
-        );
         assert_eq!(
             session.take_event_speech_vad_samples(),
             vad::VAD_SAMPLE_RATE as u64,
@@ -2182,17 +2506,13 @@ mod tests {
         session.pending_event_speech_vad_samples = 0;
 
         let flush = session.flush();
-        let len = match flush {
-            Some(SpeechEvent::UtteranceFinal(samples)) => samples.len(),
-            Some(SpeechEvent::Utterance(_)) | Some(SpeechEvent::Chunk(_)) => {
+        match flush {
+            Some(SpeechEvent::UtteranceFinal) => (),
+            Some(SpeechEvent::Utterance) | Some(SpeechEvent::Chunk(_)) => {
                 panic!("flush must emit UtteranceFinal in utterance mode")
             }
             None => panic!("flush should emit a final boundary window"),
         };
-        assert_eq!(
-            len, preroll,
-            "flush should emit preroll-sized context when no unseen tail remains"
-        );
         assert_eq!(
             session.take_event_speech_vad_samples(),
             0,

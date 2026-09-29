@@ -24,7 +24,7 @@ fn main() {
         .unwrap_or_else(|| "dev@codescribe.local".to_string())
         .trim()
         .to_lowercase();
-    let email_hash = format!("{:x}", Sha256::digest(email.as_bytes()));
+    let email_hash = hex::encode(Sha256::digest(email.as_bytes()));
     let claims = LicenseClaims {
         v: 1,
         sku: DEFAULT_AGENTIC_SKU.to_string(),

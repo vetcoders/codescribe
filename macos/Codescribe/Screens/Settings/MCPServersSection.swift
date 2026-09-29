@@ -21,7 +21,7 @@ struct MCPServersSection: View {
         .padding(.top, 4)
 
       if model.mcpServers.isEmpty {
-        emptyState.padding(.top, 11)
+        emptyState.padding(.top, CSSpace.control)
       } else {
         VStack(spacing: 8) {
           ForEach(model.mcpServers, id: \.name) { server in
@@ -35,7 +35,7 @@ struct MCPServersSection: View {
             )
           }
         }
-        .padding(.top, 11)
+        .padding(.top, CSSpace.control)
       }
 
       MCPAddServerForm { name, command, args, endpoint, token in
@@ -53,7 +53,7 @@ struct MCPServersSection: View {
           .font(CSFont.mono(10.5, .semibold))
           .foregroundStyle(CSColor.dangerLight)
       }
-      .csFocusRing(cornerRadius: 8)
+      .csFocusRing()
       .padding(.top, 13)
       .accessibilityHint("Moves only mcp.json to Trash after confirmation.")
     }
@@ -245,7 +245,7 @@ private struct MCPServerRow: View {
             .strokeBorder(accent.opacity(0.22), lineWidth: 1)
         )
     }
-    .csFocusRing(cornerRadius: 8)
+    .csFocusRing()
     .help(server.enabled ? "Disable this server" : "Enable this server")
   }
 
@@ -265,7 +265,7 @@ private struct MCPServerRow: View {
             .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
         )
     }
-    .csFocusRing(cornerRadius: 8)
+    .csFocusRing()
     .disabled(pending)
     .help("Spawn the server and list its tools")
   }
@@ -283,7 +283,7 @@ private struct MCPServerRow: View {
             .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
         )
     }
-    .csFocusRing(cornerRadius: 8)
+    .csFocusRing()
     .help("Remove this server from mcp.json")
   }
 }
@@ -359,7 +359,7 @@ private struct MCPAddServerForm: View {
                 .strokeBorder(CSColor.olive.opacity(canAdd ? 0.28 : 0.10), lineWidth: 1)
             )
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .disabled(!canAdd)
       }
     }
