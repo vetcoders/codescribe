@@ -87,6 +87,20 @@ enum CSPalette {
   static let amber = adaptive(light: NSColor(hex: 0x9A7B1E), dark: NSColor(hex: 0xD6B24E))
   static let modeProcessing = adaptive(light: NSColor(hex: 0xB96A24), dark: NSColor(hex: 0xF28C45))
   static let dangerLight = adaptive(light: NSColor(hex: 0xB3261E), dark: NSColor(hex: 0xFFAAA5))
+
+  /// Primary-action wash: the operator's accent on paper; on ink the same
+  /// accent lifted halfway to white. A translucent accent wash alone paints
+  /// the same mid-tone on both appearances, which reads as a highlight on
+  /// paper but sinks into dark glass. The lift is the dark-mode raise, the way
+  /// `surfaceRaised` lifts with a white veil. Callers own the wash alpha.
+  static let accentWash = NSColor(name: nil) { appearance in
+    var accent = NSColor.controlAccentColor
+    appearance.performAsCurrentDrawingAppearance {
+      accent = NSColor.controlAccentColor.usingColorSpace(.sRGB) ?? accent
+    }
+    guard appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua else { return accent }
+    return accent.blended(withFraction: 0.5, of: .white) ?? accent
+  }
 }
 
 enum CSColor {
@@ -145,6 +159,8 @@ enum CSColor {
 
   // UI chrome — selection, focus, and interactive controls follow macOS.
   static var chromeAccent: Color { Color(nsColor: .controlAccentColor) }
+  /// The one primary action's fill tint (apply the wash alpha at the call site).
+  static let accentWash = Color(nsColor: CSPalette.accentWash)
 
   // Status — olive / green
   static let olive = Color(nsColor: CSPalette.olive)  // healthy base

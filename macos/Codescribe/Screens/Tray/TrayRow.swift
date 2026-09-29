@@ -45,7 +45,7 @@ struct TrayRow: View {
 
   private var fillColor: Color {
     switch style {
-    case .primary: return CSColor.chromeAccent.opacity(0.13)
+    case .primary: return CSColor.accentWash.opacity(0.13)
     case .raised: return CSColor.surfaceRaised(0.04)
     case .plain: return hovering ? CSColor.surfaceRaised(0.05) : .clear
     }

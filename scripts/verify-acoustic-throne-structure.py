@@ -34,6 +34,9 @@ AST_COMMAND = (
 AST_IDENTITY = "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=2"
 AST_BODIES = {
     "paste_text_from_overlay": "app/controller/mod.rs",
+    # The overlay early return calls `OverlayPasteResult::noop()`; the
+    # constructor body is proven, never trusted by name.
+    "noop": "app/controller/delivery_route.rs",
     "execute_clipboard_paste": "app/controller/mod.rs",
     "stop": "core/audio/streaming_recorder.rs",
     "complete_stop": "core/audio/streaming_recorder.rs",
@@ -1713,9 +1716,10 @@ def verify_code_corridors(
             if ast_contract is not None:
                 evidence = structural_ast_evidence(verifier)
                 ast_result = next(row for row in evidence["contracts"] if row["symbol"] == symbol)
-                companion = {"paste_text_from_overlay": "execute_clipboard_paste", "stop": "complete_stop"}.get(symbol)
+                companions = {"paste_text_from_overlay": ("execute_clipboard_paste", "noop"),
+                              "stop": ("complete_stop",)}.get(symbol, ())
                 companion_failures = [failure for row in evidence["contracts"]
-                                      if row["symbol"] == companion for failure in row["failures"]]
+                                      if row["symbol"] in companions for failure in row["failures"]]
                 if not ast_result["accepted"] or evidence["failures"] or companion_failures:
                     failures.append(f"corridor {name} AST {symbol} refused: {ast_result['failures'] + evidence['failures'] + companion_failures}")
                 # This hop has no fragment-order claim; the complete AST contract

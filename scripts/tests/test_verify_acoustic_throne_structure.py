@@ -2288,7 +2288,7 @@ class NeutralAstTests(unittest.TestCase):
             row = occurrence(ident, file=file)
             self.assertEqual(VERIFIER.classify_substring_residue(row, "overlay_paste")[0], expected)
 
-    def test_real_chain_requires_callsite_receipts_as_well_as_ast(self):
+    def ast_corridor_contracts(self):
         manifest = json.loads((self.repo / VERIFIER.DEFAULT_MANIFEST).read_text())
         contracts = []
         for corridor in manifest["stages"]["wired"]["required_corridors"]:
@@ -2299,6 +2299,56 @@ class NeutralAstTests(unittest.TestCase):
                 "required_invocations": [row for row in corridor["required_invocations"]
                     if row["caller"] in VERIFIER.AST_BODIES and row["callee"] in
                     {"execute_clipboard_paste", "paste_and_restore", "complete_stop", "terminal_finality"}]})
+        return contracts
+
+    def test_overlay_noop_constructor_is_proven_by_its_body_not_its_name(self):
+        """The empty/archive early return is `Ok(OverlayPasteResult::noop())`.
+
+        That call discharges "only empty/archive early success is Noop" only
+        together with the constructor's own body: a Noop constructor that
+        claims a transport or reports a target, a differently named
+        constructor, an inline transport result, or a widened guard all refuse.
+        """
+        evidence = self.run_payload(self.payload)
+        overlay = next(row for row in evidence["contracts"]
+                       if row["symbol"] == "paste_text_from_overlay")
+        self.assertIn("only empty/archive early success is Noop", overlay["events"])
+        noop = next(row for row in evidence["contracts"] if row["symbol"] == "noop")
+        self.assertTrue(noop["accepted"], noop)
+        inline_paste = ("OverlayPasteResult { delivery: OverlayPasteDelivery::Pasted, "
+                        "target_app_name: None, frontmost_app_name: None, "
+                        "deferred_insert_shortcut: None, deferred_insert_failure: None, }")
+        cases = [
+            ("noop_claims_paste", "noop", "OverlayPasteDelivery::Noop", "OverlayPasteDelivery::Pasted"),
+            ("noop_reports_target", "noop", "target_app_name: None", "target_app_name: Some(String::new())"),
+            ("noop_public_surface", "noop", "pub(crate) fn noop", "pub fn noop"),
+            ("renamed_constructor", "paste_text_from_overlay", "OverlayPasteResult::noop()", "OverlayPasteResult::pasted()"),
+            ("inline_transport_result", "paste_text_from_overlay", "OverlayPasteResult::noop()", inline_paste),
+            ("widened_guard", "paste_text_from_overlay",
+             "trimmed.is_empty() || decision.route == DeliveryRoute::ArchiveOnly", "true"),
+        ]
+        for name, symbol, old, new in cases:
+            with self.subTest(mutation=name):
+                refused = self.run_payload(self.mutate(symbol, old, new))
+                self.assertFalse(refused["accepted"], name)
+                contract = next(row for row in refused["contracts"] if row["symbol"] == symbol)
+                self.assertFalse(contract["accepted"], name)
+
+    def test_overlay_hop_refuses_when_only_the_noop_constructor_is_refused(self):
+        refused = self.run_payload(self.mutate(
+            "noop", "OverlayPasteDelivery::Noop", "OverlayPasteDelivery::Pasted"))
+        overlay = next(row for row in refused["contracts"]
+                       if row["symbol"] == "paste_text_from_overlay")
+        self.assertTrue(overlay["accepted"], overlay)
+        live = VERIFIER.StructuralVerifier(self.repo)
+        live._structural_ast_evidence = refused
+        _, failures = VERIFIER.verify_code_corridors(live, self.ast_corridor_contracts())
+        self.assertTrue(any("AST paste_text_from_overlay refused" in failure
+                            and "Noop result constructor" in failure for failure in failures),
+                        failures)
+
+    def test_real_chain_requires_callsite_receipts_as_well_as_ast(self):
+        contracts = self.ast_corridor_contracts()
         live = VERIFIER.StructuralVerifier(self.repo)
         observed, failures = VERIFIER.verify_code_corridors(live, contracts)
         self.assertFalse(failures, failures)
@@ -2986,6 +3036,78 @@ class CaptureOrderingProofTests(unittest.TestCase):
         for invocation in corridor["required_invocations"]:
             self.assertNotEqual(
                 invocation["caller"], "seal_utterance_final",
+                "an edge is declared on a caller the provider cannot attribute")
+
+
+class OverlayRailCallsiteLimitTests(unittest.TestCase):
+    """A declared instrument limit on the overlay rail, pinned like the
+    capture corridor's local-const limit.
+
+    `DictationOverlayView.swift` declares several `var body` members. Loctree
+    attributes every callsite in `DictationOverlayView.body` to the computed
+    property declared just above it (`railIntents`), never to `body`. The edges
+    `body -> OverlayIntentRail` and `body -> relayIntent` would therefore observe
+    zero production callsites, so they are deliberately NOT declared; the
+    `DictationOverlayView` hop proves, in order, the projection, the rail
+    intents, the rail and its relay inside the view instead.
+
+    The body below proves both calls exist. When the provider attributes them
+    to `body`, this test goes red and forces the corridor to declare the edges.
+    """
+
+    VIEW = "macos/Codescribe/Screens/Overlay/DictationOverlayView.swift"
+    CORRIDOR = "seal_to_delivery"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        require_loct()
+        cls.repo = SCRIPT.parents[1]
+        cls.live = VERIFIER.StructuralVerifier(cls.repo)
+        cls.live.context()
+
+    def test_rail_callsite_attribution_limit_is_declared(self):
+        bodies = VERIFIER.corridor_body_rows(
+            self.live.body("body", self.VIEW),
+            symbol="body",
+            file=self.VIEW,
+            signature_contains=None,
+        )
+        rail = [
+            row for row in bodies
+            if "OverlayIntentRail(" in VERIFIER.code_without_comments_or_strings(row["source"])
+        ]
+        self.assertEqual(len(rail), 1, bodies)
+        source = VERIFIER.code_without_comments_or_strings(rail[0]["source"])
+        for present in ("OverlayIntentRail(", "intents:railIntents", "onIntent:state.relayIntent"):
+            self.assertIn(present, source, present)
+        span = range(rail[0]["start_line"], rail[0]["end_line"] + 1)
+        for callee in ("OverlayIntentRail", "relayIntent"):
+            with self.subTest(callee=callee):
+                inside = [
+                    row
+                    for row in VERIFIER.production_occurrences(self.live.occurrences(callee))
+                    if row.get("file") == self.VIEW
+                    and row.get("match_role") == "reference"
+                    and row.get("line") in span
+                ]
+                self.assertTrue(inside, f"{callee}: the call left DictationOverlayView.body")
+                attributed = [
+                    row for row in inside
+                    if isinstance(row.get("enclosing_symbol"), dict)
+                    and row["enclosing_symbol"].get("name") == "body"
+                ]
+                self.assertEqual(
+                    attributed, [],
+                    f"{callee}: provider now attributes this caller; declare the edge")
+        manifest = json.loads((self.repo / VERIFIER.DEFAULT_MANIFEST).read_text())
+        corridor = next(
+            row
+            for row in manifest["stages"]["wired"]["required_corridors"]
+            if row["name"] == self.CORRIDOR
+        )
+        for invocation in corridor["required_invocations"]:
+            self.assertFalse(
+                invocation["caller"] == "body" and invocation["caller_file"] == self.VIEW,
                 "an edge is declared on a caller the provider cannot attribute")
 
 

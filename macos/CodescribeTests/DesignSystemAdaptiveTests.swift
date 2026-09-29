@@ -82,6 +82,7 @@ final class DesignSystemAdaptiveTests: XCTestCase {
       ("amber", CSPalette.amber),
       ("modeProcessing", CSPalette.modeProcessing),
       ("dangerLight", CSPalette.dangerLight),
+      ("accentWash", CSPalette.accentWash),
     ]
     for (name, token) in adaptiveTokens {
       assertDiffers(token, "\(name) must resolve differently in light and dark appearances")

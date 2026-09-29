@@ -1650,6 +1650,7 @@ mod tests {
     #[serial]
     fn inline_image_roundtrips_through_disk_backed_asset() -> Result<()> {
         let tmp = TempDir::new()?;
+        let _data_dir = crate::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", tmp.path());
         let store = ThreadStore::new_in(tmp.path().join("threads"))?;
         let image_bytes = format!("w5a-inline-roundtrip-bytes-{}", std::process::id()).into_bytes();
 
@@ -1688,8 +1689,6 @@ mod tests {
         let raw = fs::read_to_string(store.thread_file_path(&thread.id)?)?;
         assert!(raw.contains("image_asset"));
         assert!(!raw.contains("data_omitted"));
-
-        fs::remove_file(&asset.path).ok();
         Ok(())
     }
 
@@ -1697,6 +1696,8 @@ mod tests {
     #[test]
     #[serial]
     fn inline_image_asset_is_written_once_across_saves() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let _data_dir = crate::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", tmp.path());
         let block = ContentBlock::Image {
             data: b"w5a-dedup-bytes".to_vec(),
             media_type: "image/png".to_string(),
@@ -1724,8 +1725,6 @@ mod tests {
             b"sentinel",
             "existing asset must be referenced, not rewritten"
         );
-
-        fs::remove_file(&path).ok();
         Ok(())
     }
 

@@ -1288,12 +1288,15 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     /// Tool-result image assets load and encode as base64 inside the result content.
     fn tool_result_carries_image_asset_as_base64() {
         let _env_serial = crate::test_env::data_dir_env_serial();
+        let data_dir = tempfile::TempDir::new().expect("tempdir");
+        let _data_dir =
+            codescribe_core::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", data_dir.path());
         let asset = AgentAssetStore::save_image(b"png bytes", "image/png")
             .expect("image asset should save");
-        let path = asset.path.clone();
         let message = Message::new(
             Role::User,
             vec![ContentBlock::ToolResult {
@@ -1305,7 +1308,6 @@ mod tests {
         let blocks = message_content_blocks(&message).unwrap();
         assert_eq!(blocks[0]["content"][0]["type"], "image");
         assert_eq!(blocks[0]["content"][0]["source"]["type"], "base64");
-        std::fs::remove_file(path).ok();
     }
 
     #[test]
@@ -1337,15 +1339,18 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     /// ImageAsset paths are read from disk when the request body is built, not earlier.
     fn request_body_loads_image_asset_from_disk_at_request_time() {
         let _env_serial = crate::test_env::data_dir_env_serial();
+        let data_dir = tempfile::TempDir::new().expect("tempdir");
+        let _data_dir =
+            codescribe_core::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", data_dir.path());
         // D8: an ImageAsset (screenshot pipeline, C9) rides through
         // build_request_body as base64 read from disk at request time — the
         // asset reference itself never reaches the wire.
         let asset = AgentAssetStore::save_image(b"asset bytes on disk", "image/png")
             .expect("image asset should save");
-        let path = asset.path.clone();
         let messages = vec![Message::new(
             Role::User,
             vec![
@@ -1367,13 +1372,16 @@ mod tests {
             content[1]["source"]["data"].as_str().unwrap(),
             BASE64.encode(b"asset bytes on disk")
         );
-        std::fs::remove_file(path).ok();
     }
 
     #[test]
+    #[serial_test::serial]
     /// Persisted thread images rehydrate as assets and still enter the next-turn prompt.
     fn restored_thread_inline_image_reaches_prompt_on_next_turn() {
         let _env_serial = crate::test_env::data_dir_env_serial();
+        let data_dir = tempfile::TempDir::new().expect("tempdir");
+        let _data_dir =
+            codescribe_core::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", data_dir.path());
         // Turn 2 on a restored thread: an inline composer image persisted via
         // the thread store must come back as a disk-backed asset and still
         // reach the request payload instead of being skipped as byteless.
@@ -1394,10 +1402,6 @@ mod tests {
             blocks[0]["source"]["data"].as_str().unwrap(),
             BASE64.encode(&image_bytes)
         );
-
-        if let ContentBlock::ImageAsset(asset) = &restored.content[0] {
-            std::fs::remove_file(&asset.path).ok();
-        }
     }
 
     #[test]

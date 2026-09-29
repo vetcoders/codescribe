@@ -1188,8 +1188,12 @@ mod tests {
 
     /// Restored thread images still serialize as native input_image data URIs.
     #[test]
+    #[serial_test::serial]
     fn restored_thread_inline_image_reaches_prompt_on_next_turn() {
         let _env_serial = crate::test_env::data_dir_env_serial();
+        let data_dir = tempfile::TempDir::new().expect("tempdir");
+        let _data_dir =
+            codescribe_core::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", data_dir.path());
         // Turn 2 on a restored thread: an inline composer image persisted via
         // the thread store must come back as a disk-backed asset and still
         // reach the request payload instead of being skipped as byteless.
@@ -1212,20 +1216,19 @@ mod tests {
             .as_str()
             .expect("image_url should be a string");
         assert_eq!(image_url, to_data_uri(&image_bytes, "image/png"));
-
-        if let ContentBlock::ImageAsset(asset) = &restored.content[0] {
-            std::fs::remove_file(&asset.path).ok();
-        }
     }
 
     /// Disk-backed tool image assets add a native input_image item beside output.
     #[test]
+    #[serial_test::serial]
     fn tool_result_image_asset_adds_native_input_image_item() {
         let _env_serial = crate::test_env::data_dir_env_serial();
+        let data_dir = tempfile::TempDir::new().expect("tempdir");
+        let _data_dir =
+            codescribe_core::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", data_dir.path());
         let asset = AgentAssetStore::save_image(b"png bytes", "image/png")
             .expect("image asset should save");
         let asset_id = asset.asset_id.clone();
-        let asset_path = asset.path.clone();
         let messages = vec![Message::new(
             Role::User,
             vec![ContentBlock::ToolResult {
@@ -1254,7 +1257,6 @@ mod tests {
                 .expect("image_url should be a string")
                 .starts_with("data:image/png;base64,")
         );
-        std::fs::remove_file(asset_path).ok();
     }
 
     /// Empty restored tool images are dropped, never empty data URIs.

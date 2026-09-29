@@ -73,6 +73,14 @@ enum OverlayPlacement {
 
   /// Pure anchor→origin math over a visible frame, split from the NSScreen
   /// wrapper so it is unit-testable without a display.
+  ///
+  /// This is the one rounding site for anchored placement. AppKit puts window
+  /// frames on whole points: it floors the origin and rounds the size up
+  /// (measured on a 2x display: a requested x of 808.5 or 808.75 lands at 808,
+  /// a width of 470.3 becomes 471). A center anchor with an odd restored width,
+  /// or any fractional restored size, therefore used to land up to a point away
+  /// from this math. Flooring here yields the origin the panel actually gets, for
+  /// the size asked for and for the size AppKit rounds it up to alike.
   static func origin(for anchor: OverlayAnchor, size: NSSize, in visible: NSRect) -> NSPoint {
     let x: CGFloat
     switch anchor {
@@ -90,7 +98,7 @@ enum OverlayPlacement {
     case .bottomLeft, .bottomCenter, .bottomRight:
       y = visible.minY + margin
     }
-    return NSPoint(x: x, y: y)
+    return NSPoint(x: x.rounded(.down), y: y.rounded(.down))
   }
 
   static func origin(for anchor: OverlayAnchor, size: NSSize, on screen: NSScreen?) -> NSPoint? {

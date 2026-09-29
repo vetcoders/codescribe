@@ -496,14 +496,23 @@ final class LiveTranscriptNativeTextView: NSTextView {
     // final glyph. Revealing only that glyph can leave the viewport one line
     // short of the document's live edge, so place the document extent at the
     // viewport bottom after TextKit has laid out the requested tail range.
-    var origin = scroll.contentView.bounds.origin
-    origin.y = Self.liveBottomScrollOrigin(
-      documentMaxY: bounds.maxY,
-      clipHeight: scroll.contentView.bounds.height,
-      contentInsets: scroll.contentView.contentInsets
-    )
-    scroll.contentView.scroll(to: origin)
-    scroll.reflectScrolledClipView(scroll.contentView)
+    // TextKit 2 lays that trailing line out only once the viewport reaches it,
+    // so the document grows after the scroll that uncovered it. Lay the new
+    // viewport out and re-place the bottom while the extent still moves; the
+    // growth is the uncovered tail, so the second pass settles.
+    for _ in 0..<3 {
+      let documentMaxY = bounds.maxY
+      var origin = scroll.contentView.bounds.origin
+      origin.y = Self.liveBottomScrollOrigin(
+        documentMaxY: documentMaxY,
+        clipHeight: scroll.contentView.bounds.height,
+        contentInsets: scroll.contentView.contentInsets
+      )
+      scroll.contentView.scroll(to: origin)
+      scroll.reflectScrolledClipView(scroll.contentView)
+      textLayoutManager?.textViewportLayoutController.layoutViewport()
+      if bounds.maxY == documentMaxY { return }
+    }
   }
 
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }

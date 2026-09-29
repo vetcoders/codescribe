@@ -2208,6 +2208,13 @@ mod tests {
             .with_writer(move || log_file.try_clone().unwrap())
             .finish();
         tracing::subscriber::with_default(subscriber, || {
+            // Sibling tests hit the same warn callsites with no subscriber. A
+            // first hit racing this scoped subscriber's registration can cache
+            // `Interest::never` for the callsite (it registers after the rebuild
+            // but computed its interest before this dispatcher existed). Recompute
+            // interest now that this dispatcher is registered, so the capture
+            // does not depend on parallel test scheduling.
+            tracing::callsite::rebuild_interest_cache();
             let bus = TranscriptBus::open_with_path(
                 session("diagnostic-fault"),
                 temp.path().to_path_buf(),
