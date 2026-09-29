@@ -1459,11 +1459,27 @@ def follower_pidfile(root: Path, lease_id: str) -> Path:
 
 
 def live_follower_pid(root: Path, lease_id: str) -> int | None:
-    """Live follower pid recorded for a lease; a stale pidfile reports None."""
+    """Live follower pid for a lease: pidfile first, then the lease heartbeat.
+
+    A manually started follower has no pidfile but still owns the lease lock;
+    spawning next to it would only produce a child that loses the lock and
+    dies, so the lease's own fresh heartbeat also counts as a live follower.
+    """
     value = read_json(follower_pidfile(root, lease_id))
     pid = value.get("pid") if isinstance(value, dict) else None
     if isinstance(pid, int) and process_is_alive(pid):
         return pid
+    state = read_json(root / "leases" / f"{lease_id}.json")
+    if isinstance(state, dict) and state.get("active") is True:
+        heartbeat = state.get("heartbeat_unix")
+        lease_pid = state.get("pid")
+        if (
+            isinstance(heartbeat, (int, float))
+            and time.time() - float(heartbeat) <= DEFAULT_LEASE_TTL_SECONDS
+            and isinstance(lease_pid, int)
+            and process_is_alive(lease_pid)
+        ):
+            return lease_pid
     return None
 
 
@@ -1569,7 +1585,7 @@ def attach_command(args: argparse.Namespace) -> int:
             "resumed": resumed,
             "follower_pid": pid,
             "follower_spawned": spawned,
-            "follower_log": str(log_path),
+            "follower_log": str(log_path) if spawned else None,
             "coalesce_requested": True,
             "on_seal_hook": bool(args.on_seal),
             "voice": voice_profile(root, name),

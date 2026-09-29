@@ -1155,6 +1155,18 @@ o = json.loads(sys.argv[1])
 assert o["follower_spawned"] is False, o
 assert o["follower_pid"] == int(sys.argv[2]), o
 PY
+# A live lease heartbeat counts as a follower even without a pidfile, so a
+# manually started follower is reused instead of spawning a doomed sibling.
+rm -f "$ATTACH_HOME"/runtime/followers/*.pid
+receipt3="$(python3 "$DEMUX" --bus "$BUS" --bridge-home "$ATTACH_HOME" \
+  --provider codex --session codex-attach --name james \
+  --attach --channel 3)"
+python3 - "$receipt3" "$follower_pid" <<'PY'
+import json, sys
+o = json.loads(sys.argv[1])
+assert o["follower_spawned"] is False, o
+assert o["follower_pid"] == int(sys.argv[2]), o
+PY
 kill "$follower_pid" 2>/dev/null || true
 
 # --say resolves voice and speed from the profile store, not from hardcodes.

@@ -1,5 +1,40 @@
 # Attach, naming and recovery
 
+## One-command attach (engine)
+
+With a known name and channel, one call replaces the manual saga below:
+
+```bash
+python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
+  --attach --channel <1-9> --name <name> \
+  --provider <claude-code|codex|...> --session <provider-session-id>
+```
+
+It atomically writes the channel's entry in
+`~/.codescribe/agent-bridge/vc.agent-audience-binding.v1.json`, ensures exactly
+one live follower for the session's lease (pidfile and log under
+`agent-bridge/runtime/followers/`), and prints an attach receipt: `lease_id`,
+`cursor`, `resumed`, `follower_pid`, `follower_spawned`, `follower_log`, and
+the `voice` profile from `voices.json`. A second attach with a live follower
+reuses it (`follower_spawned: false`). The spawned follower always coalesces
+(`--coalesce`): the newest draft/revision replaces its predecessors per
+document, while every seal stays its own envelope. Pass
+`--on-seal '<cmd>'` to forward a detached wake hook to the spawned follower;
+the hook receives `CODESCRIBE_SEAL_DELIVERY_ID`, `CODESCRIBE_SEAL_SESSION_ID`
+and `CODESCRIBE_SEAL_TEXT`, and fires exactly once per freshly queued seal.
+
+Read the channel's one truthful state at any time:
+
+```bash
+python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
+  --status --provider <provider> --session <provider-session-id>
+```
+
+`backlog` there is pending minus acknowledgment markers; the raw `pending`
+length of the lease file overstates it, because acknowledged envelopes stay
+in the file until the follower's next sweep. The receipt never proves
+listening — verify with a fresh named take before claiming it.
+
 ## Preflight
 
 Confirm the app is running and inspect the installed helper:

@@ -8,7 +8,7 @@ description: >
   Editing this skill or the app is a repository task, not an instruction to
   start another listener.
 metadata:
-  version: "0.6.0"
+  version: "0.7.0"
   loctree_value: "primary repo map for structural/literal repository work"
   aicx_value: "intent, session, and decision-context retrieval"
   dogfooding: "required for repo-impacting work"
@@ -44,6 +44,38 @@ distinct in messages and receipts.
 - Attach or recover this chat's named voice mailbox.
 - Diagnose which hop lost a spoken message.
 - Consume a transcript through the explicit CLI surface.
+
+## One-Command Attach (positional arguments)
+
+`/codescribe <Name> <channel> [voice]` — the Founder's surface: one command
+and the engine does everything. With positional arguments present, skip the
+manual attach saga and drive the engine:
+
+1. Validate: `<Name>` is the agent's pronounceable name, `<channel>` is one
+   digit 1-9, `[voice]` is optional and defaults to the name's profile in
+   `~/.codescribe/agent-bridge/voices.json` (`profiles`, then `bindings`).
+2. One engine call writes the channel binding, ensures exactly one coalescing
+   follower for this provider session, and prints an attach receipt:
+
+   ```bash
+   python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
+     --attach --channel <channel> --name <name> \
+     --provider <claude-code|codex|...> --session <provider-session-id>
+   ```
+
+   The receipt carries lease, cursor, voice profile, follower pid and its log
+   path. The follower runs with `--coalesce`: a reducer storm folds into one
+   envelope per document, so restatements cannot fill the mailbox.
+
+3. Arm the wakeup for this provider ([Monitor](references/monitor.md)). The
+   engine's `--on-seal '<cmd>'` follower hook is the provider-agnostic wake
+   surface; a harness monitor polling the lease works where hooks cannot reach.
+4. Read one truth with `--status`: backlog is pending minus acknowledgment
+   markers, never the raw pending length the lease file shows before a sweep.
+5. Verify with a fresh named take on the channel before claiming listening;
+   the receipt alone is `attached_unverified`.
+6. When `[voice]` is given, pass it as `--voice` on `--say`; without it,
+   `--say` reads the profile. Changing a stored profile is the Founder's call.
 
 For app or skill edits, use the repository's implementation workflow.
 For screencast analysis, use `vc-screenscribe`. In-app Agent and Assistive
@@ -98,8 +130,10 @@ include successful delivery, unavailable wakeup, and seal refusal.
    terminal process handle or diagnostic tail does not satisfy this step.
 3. Reuse the session's name, or ask once if none is established. If the Founder
    asks the agent to choose, choose a pronounceable name and bind it directly.
-4. Attach one follower with drafts enabled. Retain provider/session, lease,
-   cursor, helper path, follower handle, and monitor handle.
+4. Attach one follower with drafts enabled — prefer the one-command
+   `--attach --channel <n>` engine surface over a manual follower. Retain
+   provider/session, lease, cursor, helper path, follower handle, and
+   monitor handle.
 5. Verify a fresh named take reaches this conversation without a typed nudge.
    Distinguish live receipt from terminal permission; respond accordingly.
    After accepting each complete envelope, acknowledge its delivery ID as
