@@ -270,7 +270,7 @@ struct DictationOverlayView: View {
             .allowsHitTesting(false)
         }
       }
-      .modifier(OverlayHeaderChrome(palette: palette, atTop: false))
+      .modifier(OverlayHeaderChrome(atTop: false))
       .onGeometryChange(for: CGFloat.self) {
         $0.size.height
       } action: {
@@ -338,7 +338,7 @@ struct DictationOverlayView: View {
     // Keep the explicit drag region above the passive glass background.
     // OverlayResizeHitTests verifies header dragging across its width.
     .background { OverlayWindowDragRegion(identifier: "overlay-header-drag-region") }
-    .modifier(OverlayHeaderChrome(palette: palette))
+    .modifier(OverlayHeaderChrome())
     // The cached panel survives orderOut. Observe its window outside
     // ViewThatFits so hidden header candidates cannot compete for visibility.
     .background {
@@ -759,7 +759,6 @@ private struct OverlayRenderVisibility: NSViewRepresentable {
 }
 
 private struct OverlayHeaderChrome: ViewModifier {
-  let palette: OverlayAppearancePalette
   var atTop = true
 
   func body(content: Content) -> some View {
@@ -787,14 +786,10 @@ private struct OverlayHeaderChrome: ViewModifier {
     }
   }
 
-  @ViewBuilder
   private var chrome: some View {
-    if #available(macOS 26.0, *) {
-      // Only the material fades; text, controls and their hit regions stay intact.
-      Color.clear.glassEffect(.regular, in: Rectangle())
-    } else {
-      palette.surfaceTint.color
-    }
+    // Broad scroll-edge shading must not join the controls' glass composition.
+    // A masked glassEffect here can paint over the header foreground.
+    Rectangle().fill(.regularMaterial)
   }
 }
 
