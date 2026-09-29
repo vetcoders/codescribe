@@ -9,6 +9,7 @@ struct SettingsView: View {
   @State private var columnVisibility: NavigationSplitViewVisibility = .all
   @State private var search: String = ""
   @State private var pendingScrollAnchor: SettingsAnchor?
+  @State private var hostWindow: NSWindow?
 
   init(model: SettingsViewModel? = nil) {
     _model = StateObject(wrappedValue: model ?? SettingsViewModel())
@@ -42,8 +43,16 @@ struct SettingsView: View {
       // admission verdict even when Audio is not the selected section.
       await model.refreshAdmission()
     }
-    .onReceive(NotificationCenter.default.publisher(for: SettingsDeepLink.pendingSectionDidChange))
-    { _ in
+    .background(HostingWindowReader { hostWindow = $0 })
+    .onReceive(
+      NotificationCenter.default.publisher(
+        for: SettingsDeepLink.pendingSectionDidChange,
+        object: SettingsDeepLinkMailbox.shared)
+    ) { _ in
+      // Only a Settings surface the user can actually see may take the one-shot
+      // target. A hosted-but-hidden instance (closed scene, XCTest host) must
+      // leave it for whichever surface opens next.
+      guard hostWindow?.isVisible == true else { return }
       consumePendingDeepLink()
     }
   }
@@ -359,3 +368,33 @@ struct RuntimeRow: View {
       .frame(width: 960, height: 620)
   }
 #endif
+
+/// Hands the hosting NSWindow to SwiftUI so event handlers can ask whether this
+/// surface is actually on screen. The callback fires on every window move,
+/// including detach (nil), so a stale handle cannot pass the visibility gate.
+private struct HostingWindowReader: NSViewRepresentable {
+  let onWindow: (NSWindow?) -> Void
+
+  func makeNSView(context: Context) -> WindowReportingView {
+    let view = WindowReportingView()
+    view.onWindow = onWindow
+    return view
+  }
+
+  func updateNSView(_ view: WindowReportingView, context: Context) {
+    view.onWindow = onWindow
+  }
+
+  final class WindowReportingView: NSView {
+    var onWindow: ((NSWindow?) -> Void)?
+
+    override func viewDidMoveToWindow() {
+      super.viewDidMoveToWindow()
+      let window = self.window
+      DispatchQueue.main.async { [weak self] in
+        guard let self else { return }
+        self.onWindow?(window ?? self.window)
+      }
+    }
+  }
+}

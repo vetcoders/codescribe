@@ -481,39 +481,63 @@ struct SettingsDeepLinkTarget: Equatable {
   let anchor: SettingsAnchor?
 }
 
-/// One-shot deep-link target for the Settings window. A surface outside Settings
-/// can name both the owning section and an exact repair surface inside it.
+/// One-shot mailbox holding the pending deep-link target. The app routes
+/// through one shared instance; tests exercise their own instance so the live
+/// Settings window (which legitimately consumes the shared one the moment a
+/// target is posted) cannot race their assertions.
 @MainActor
-enum SettingsDeepLink {
-  static let pendingSectionDidChange = Notification.Name(
-    "codescribe.settingsDeepLink.pendingSectionDidChange")
-  static let agentConfigurationSection: SettingsSection = .agent
+final class SettingsDeepLinkMailbox {
+  static let shared = SettingsDeepLinkMailbox()
 
-  private static var pendingTarget: SettingsDeepLinkTarget? {
+  private var pendingTarget: SettingsDeepLinkTarget? {
     didSet {
       guard pendingTarget != nil else { return }
-      NotificationCenter.default.post(name: pendingSectionDidChange, object: nil)
+      NotificationCenter.default.post(
+        name: SettingsDeepLink.pendingSectionDidChange, object: self)
     }
   }
 
   /// Compatibility surface for section-only callers. Assigning it deliberately
   /// clears any older anchor so unrelated deep links cannot inherit one.
-  static var pendingSection: SettingsSection? {
+  var pendingSection: SettingsSection? {
     get { pendingTarget?.section }
     set {
       pendingTarget = newValue.map { SettingsDeepLinkTarget(section: $0, anchor: nil) }
     }
   }
 
-  static func present(_ section: SettingsSection, anchor: SettingsAnchor? = nil) {
+  func present(_ section: SettingsSection, anchor: SettingsAnchor? = nil) {
     pendingTarget = SettingsDeepLinkTarget(section: section, anchor: anchor)
   }
 
   /// Take the pending target (if any), clearing it so a later open is unaffected.
-  static func consume() -> SettingsDeepLinkTarget? {
+  func consume() -> SettingsDeepLinkTarget? {
     guard let target = pendingTarget else { return nil }
     pendingTarget = nil
     return target
+  }
+}
+
+/// App-facing facade over the shared mailbox. Callers outside Settings keep
+/// this one-line surface; the notification carries the posting mailbox as its
+/// object, so a subscriber can listen to the shared instance alone.
+@MainActor
+enum SettingsDeepLink {
+  static let pendingSectionDidChange = Notification.Name(
+    "codescribe.settingsDeepLink.pendingSectionDidChange")
+  static let agentConfigurationSection: SettingsSection = .agent
+
+  static var pendingSection: SettingsSection? {
+    get { SettingsDeepLinkMailbox.shared.pendingSection }
+    set { SettingsDeepLinkMailbox.shared.pendingSection = newValue }
+  }
+
+  static func present(_ section: SettingsSection, anchor: SettingsAnchor? = nil) {
+    SettingsDeepLinkMailbox.shared.present(section, anchor: anchor)
+  }
+
+  static func consume() -> SettingsDeepLinkTarget? {
+    SettingsDeepLinkMailbox.shared.consume()
   }
 }
 

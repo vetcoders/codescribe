@@ -602,21 +602,23 @@ final class SettingsTruthTests: XCTestCase {
   }
 
   func testLegacyKeysAndAgentDeepLinksResolveToDedicatedPanels() {
-    SettingsDeepLink.pendingSection = nil
-    defer { SettingsDeepLink.pendingSection = nil }
+    // A dedicated mailbox: the live Settings window consumes the SHARED one
+    // synchronously on every post, so asserting round-trips against the
+    // shared instance races the product's own (correct) consumption.
+    let mailbox = SettingsDeepLinkMailbox()
 
-    SettingsDeepLink.pendingSection = .keys
-    XCTAssertEqual(SettingsDeepLink.consume()?.section.destination, .providers)
-    XCTAssertNil(SettingsDeepLink.consume())
+    mailbox.pendingSection = .keys
+    XCTAssertEqual(mailbox.consume()?.section.destination, .providers)
+    XCTAssertNil(mailbox.consume())
 
     XCTAssertEqual(SettingsDeepLink.agentConfigurationSection, .agent)
-    SettingsDeepLink.pendingSection = SettingsDeepLink.agentConfigurationSection
-    XCTAssertEqual(SettingsDeepLink.consume()?.section.destination, .agent)
-    XCTAssertNil(SettingsDeepLink.consume())
+    mailbox.pendingSection = SettingsDeepLink.agentConfigurationSection
+    XCTAssertEqual(mailbox.consume()?.section.destination, .agent)
+    XCTAssertNil(mailbox.consume())
 
-    SettingsDeepLink.present(.audio, anchor: .audioReadiness)
+    mailbox.present(.audio, anchor: .audioReadiness)
     XCTAssertEqual(
-      SettingsDeepLink.consume(),
+      mailbox.consume(),
       SettingsDeepLinkTarget(section: .audio, anchor: .audioReadiness)
     )
   }
