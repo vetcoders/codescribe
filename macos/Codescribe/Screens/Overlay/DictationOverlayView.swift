@@ -133,7 +133,6 @@ struct DictationOverlayView: View {
         .accessibilityHidden(state.isCollapsed)
       VStack(spacing: 0) {
         header
-        hairline(0.06)
         if !state.isCollapsed,
           let label = OverlayActionsPresentation.finishingLabel(
             mode: state.mode, transcribing: state.transcribing, terminal: state.terminal)
@@ -271,7 +270,7 @@ struct DictationOverlayView: View {
             .allowsHitTesting(false)
         }
       }
-      .modifier(OverlayHeaderChrome(palette: palette))
+      .modifier(OverlayHeaderChrome(palette: palette, atTop: false))
       .onGeometryChange(for: CGFloat.self) {
         $0.size.height
       } action: {
@@ -326,11 +325,6 @@ struct DictationOverlayView: View {
     .onChange(of: state.captureGeneration) { _, _ in actions.reset() }
   }
 
-  /// 1px separator matching the mock's hairline borders.
-  private func hairline(_ alpha: Double) -> some View {
-    palette.border.color.opacity(alpha / max(palette.border.alpha, 0.001)).frame(height: 1)
-  }
-
   // MARK: Header
 
   private var header: some View {
@@ -341,13 +335,8 @@ struct DictationOverlayView: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.horizontal, 16)
     .padding(.vertical, 10)
-    // Drag region BETWEEN the content and the chrome. `OverlayHeaderChrome` is
-    // `glassEffect` on macOS 26, and a glass surface is hit-testable: with the
-    // region attached after the modifier it sat under the glass, so every
-    // header point outside the brand block answered `NSHostingView` and the
-    // window's drag intercept never fired (Founder, build 849: "header chrome
-    // overlaya nadal nie oferuje drag area"). Falsifier:
-    // OverlayResizeHitTests.testHeaderIsAWindowDragHandleAcrossItsWidth.
+    // Keep the explicit drag region above the passive glass background.
+    // OverlayResizeHitTests verifies header dragging across its width.
     .background { OverlayWindowDragRegion(identifier: "overlay-header-drag-region") }
     .modifier(OverlayHeaderChrome(palette: palette))
     // The cached panel survives orderOut. Observe its window outside
@@ -771,19 +760,40 @@ private struct OverlayRenderVisibility: NSViewRepresentable {
 
 private struct OverlayHeaderChrome: ViewModifier {
   let palette: OverlayAppearancePalette
+  var atTop = true
+
+  func body(content: Content) -> some View {
+    content.background {
+      GeometryReader { geometry in
+        let fade: CGFloat = 24
+        let height = geometry.size.height + fade
+        chrome
+          .frame(height: height)
+          .mask {
+            LinearGradient(
+              stops: [
+                .init(color: .black, location: 0),
+                .init(color: .black, location: max(0, 1 - fade / height)),
+                .init(color: .clear, location: 1),
+              ],
+              startPoint: atTop ? .top : .bottom,
+              endPoint: atTop ? .bottom : .top
+            )
+          }
+          .offset(y: atTop ? 0 : -fade)
+      }
+      .allowsHitTesting(false)
+      .accessibilityHidden(true)
+    }
+  }
 
   @ViewBuilder
-  func body(content: Content) -> some View {
+  private var chrome: some View {
     if #available(macOS 26.0, *) {
-      content.glassEffect(
-        .regular,
-        in: RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-      )
+      // Only the material fades; text, controls and their hit regions stay intact.
+      Color.clear.glassEffect(.regular, in: Rectangle())
     } else {
-      content.background(
-        palette.surfaceTint.color,
-        in: RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-      )
+      palette.surfaceTint.color
     }
   }
 }
