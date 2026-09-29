@@ -29,9 +29,12 @@ struct AgentChatView: View {
   var body: some View {
     NavigationSplitView(columnVisibility: $columnVisibility) {
       ThreadRail(store: store, mode: .expanded)
-        // Drag-resizable within the expanded bounds. The rail view
-        // itself carries no fixed width — a hardcoded 236 inside a
-        // resizable column left a dead band between rail and detail.
+        // Constrain the column content as well as its preferred split width;
+        // the native divider can otherwise drag beyond the preference bounds.
+        .frame(
+          minWidth: AgentSidebarMode.expanded.minimumWidth,
+          maxWidth: AgentSidebarMode.expanded.maximumWidth
+        )
         .navigationSplitViewColumnWidth(
           min: AgentSidebarMode.expanded.minimumWidth,
           ideal: AgentSidebarMode.expanded.idealWidth,
@@ -95,7 +98,7 @@ private struct MaxPermissionPresentation: View {
 }
 
 /// Desktop-utility window floor for Agent. Named so the split-view rail
-/// (expanded min 200) plus a usable detail column stay a single invariant.
+/// (expanded min 267) plus a usable detail column stay a single invariant.
 enum AgentWindowMetrics {
   static let minWidth: CGFloat = 640
   static let minHeight: CGFloat = 440
@@ -117,8 +120,8 @@ enum AgentSidebarMode: Equatable {
   static let compactWidth: CGFloat = 56
 
   var isExpanded: Bool { self == .expanded }
-  var minimumWidth: CGFloat { isExpanded ? 200 : Self.compactWidth }
-  var idealWidth: CGFloat { isExpanded ? 236 : Self.compactWidth }
+  var minimumWidth: CGFloat { isExpanded ? 267 : Self.compactWidth }
+  var idealWidth: CGFloat { isExpanded ? 300 : Self.compactWidth }
   var maximumWidth: CGFloat { isExpanded ? 360 : Self.compactWidth }
 
   static func toggled(_ mode: AgentSidebarMode) -> AgentSidebarMode {

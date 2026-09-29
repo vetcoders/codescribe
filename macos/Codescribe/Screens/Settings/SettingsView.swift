@@ -37,14 +37,10 @@ struct SettingsView: View {
     }
     .navigationTitle("")
     .toolbar {
-      ToolbarItem(placement: .navigation) {
-        HStack(spacing: 9) {
-          Wordmark(size: 14)
-            .fixedSize(horizontal: true, vertical: false)
-          Text("v\(model.appVersion)")
-            .font(CSFont.mono(10, .medium))
-            .foregroundStyle(Color.secondary)
-        }
+      if #available(macOS 26.0, *) {
+        brandToolbar.sharedBackgroundVisibility(.hidden)
+      } else {
+        brandToolbar
       }
     }
     .csFocusPolicy()
@@ -63,6 +59,20 @@ struct SettingsView: View {
     .onReceive(NotificationCenter.default.publisher(for: SettingsDeepLink.pendingSectionDidChange))
     { _ in
       consumePendingDeepLink()
+    }
+  }
+
+  private var brandToolbar: some ToolbarContent {
+    ToolbarItem(placement: .navigation) {
+      HStack(spacing: 16) {
+        Wordmark(size: 16)
+          .fixedSize(horizontal: true, vertical: false)
+        Text("v\(model.appVersion)")
+          .font(CSFont.mono(10, .medium))
+          .foregroundStyle(Color.secondary)
+      }
+      .padding(.horizontal, 12)
+      .padding(.vertical, 6)
     }
   }
 
@@ -173,21 +183,32 @@ struct SettingsView: View {
 /// host window so Settings can resize, zoom and enter native full screen.
 private struct SettingsWindowCapabilities: NSViewRepresentable {
   func makeNSView(context: Context) -> NSView {
-    let view = NSView(frame: .zero)
-    DispatchQueue.main.async { configure(view.window) }
-    return view
+    WindowProbe(frame: .zero)
   }
 
   func updateNSView(_ nsView: NSView, context: Context) {
-    DispatchQueue.main.async { configure(nsView.window) }
+    DispatchQueue.main.async { Self.configure(nsView.window) }
   }
 
-  private func configure(_ window: NSWindow?) {
+  private class WindowProbe: NSView {
+    override func viewDidMoveToWindow() {
+      super.viewDidMoveToWindow()
+      DispatchQueue.main.async { [weak self] in
+        SettingsWindowCapabilities.configure(self?.window)
+      }
+    }
+  }
+
+  private static func configure(_ window: NSWindow?) {
     guard let window else { return }
     window.styleMask.formUnion([.resizable, .miniaturizable, .fullSizeContentView])
     window.collectionBehavior.insert(.fullScreenPrimary)
     let minimum = NSSize(width: 880, height: 620)
     window.minSize = minimum
+    window.contentMaxSize = NSSize(
+      width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+    window.maxSize = NSSize(
+      width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
     window.level = .normal
     window.standardWindowButton(.zoomButton)?.isEnabled = true
     window.standardWindowButton(.miniaturizeButton)?.isEnabled = true

@@ -90,6 +90,12 @@ final class ChatLayoutPolicyTests: XCTestCase {
     )
   }
 
+  func testSidebarHasReadableFloorAndBoundedExpansion() {
+    XCTAssertEqual(AgentSidebarMode.expanded.minimumWidth, 267)
+    XCTAssertEqual(AgentSidebarMode.expanded.idealWidth, 300)
+    XCTAssertEqual(AgentSidebarMode.expanded.maximumWidth, 360)
+  }
+
   // MARK: - R1 window-collapse clamps
 
   func testDocumentWidthNeverExceedsContainer() {

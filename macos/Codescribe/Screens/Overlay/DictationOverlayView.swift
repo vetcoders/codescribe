@@ -236,9 +236,11 @@ struct DictationOverlayView: View {
             // The AppKit edge intercept and existing header/body drag regions stay in place.
             .frame(maxWidth: .infinity, alignment: .center)
             .padding(.horizontal, OverlayResizeChrome.actionsBottomInset)
-            footerMessageRow
-              .frame(height: 18)
-              .padding(.horizontal, 20)
+            if footerMessage != nil || bottomChromeSlots.showsCoverageWarning {
+              footerMessageRow
+                .frame(height: 18)
+                .padding(.horizontal, 20)
+            }
 
           }
           .padding(.bottom, OverlayResizeChrome.actionsBottomInset)

@@ -387,6 +387,8 @@ private struct ThreadRow: View {
       HStack(spacing: 6) {
         if let tag = ModelTag.display(for: thread.model) {
           Text(tag)
+            .lineLimit(1)
+            .truncationMode(.tail)
             .font(CSFont.mono(9, .semibold))
             .foregroundStyle(isActive ? CSColor.modeAgent : CSColor.textTertiary)
             .padding(.horizontal, 6)
@@ -398,6 +400,8 @@ private struct ThreadRow: View {
             .accessibilityLabel("model \(tag)")
         }
         Text(ThreadRailMeta.timeOnly(from: thread.meta))
+          .lineLimit(1)
+          .fixedSize(horizontal: true, vertical: false)
           .font(CSFont.mono(10, .medium))
           .foregroundStyle(isActive ? ChatPalette.activeThreadSub : CSColor.textTertiary)
       }
