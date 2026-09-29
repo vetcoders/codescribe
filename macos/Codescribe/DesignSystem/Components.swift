@@ -188,9 +188,13 @@ extension View {
   }
 }
 
-/// Dark glass container: ultraThinMaterial tinted + hairline border + deep shadow.
-/// Overlay passes `sitsInForest` so the panel drinks the desktop instead of
-/// painting an opaque under-layer that killed the original glass.
+/// Glass container: material + adaptive tint + hairline border + deep shadow.
+/// Window glass (default) lets `.ultraThinMaterial` follow the system
+/// appearance — no forced scheme — and drinks the adaptive `glassUnder` /
+/// `glassBase` tints, so Settings, Agent, and Tray panels are native in both
+/// light and dark. The overlay passes `sitsInForest`: a floating panel hangs
+/// over arbitrary desktop content, so it keeps ONE deliberate dark-glass
+/// canvas that stays readable regardless of what is behind it.
 struct GlassPanel<Content: View>: View {
   var cornerRadius: CGFloat = CSRadius.window
   var blurTint: Double = 0.84
@@ -203,10 +207,10 @@ struct GlassPanel<Content: View>: View {
         ZStack {
           if sitsInForest {
             Rectangle().fill(.ultraThinMaterial).environment(\.colorScheme, .dark)
-            CSColor.ink.opacity(0.22)
+            Color(nsColor: CSPalette.forestInk).opacity(0.22)
           } else {
             CSColor.glassUnder
-            Rectangle().fill(.ultraThinMaterial).environment(\.colorScheme, .dark)
+            Rectangle().fill(.ultraThinMaterial)
             CSColor.glassBase.opacity(blurTint - 0.6)
           }
         }
@@ -214,7 +218,10 @@ struct GlassPanel<Content: View>: View {
       .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-          .strokeBorder(CSColor.hairline(sitsInForest ? 0.07 : 0.09), lineWidth: 1)
+          .strokeBorder(
+            sitsInForest ? CSColor.forestHairline(0.07) : CSColor.hairline(0.09),
+            lineWidth: 1
+          )
       )
       .shadow(
         color: .black.opacity(sitsInForest ? 0.22 : 0.6),
