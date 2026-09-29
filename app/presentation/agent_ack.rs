@@ -48,6 +48,9 @@ struct BusMark {
     offset: u64,
     head_len: u32,
     head_hash: u64,
+    /// Unix inode of the file the mark belongs to. A rename-style rotation
+    /// changes it even when length and head bytes happen to match.
+    ino: u64,
 }
 
 struct ChannelBinding {
@@ -284,6 +287,7 @@ fn load_cursor(bridge_home: &Path) -> io::Result<Cursor> {
                                 .and_then(Value::as_str)?
                                 .parse()
                                 .ok()?,
+                            ino: mark.get("ino").and_then(Value::as_str)?.parse().ok()?,
                         },
                     ))
                 })
@@ -314,8 +318,9 @@ fn write_cursor(bridge_home: &Path, cursor: &Cursor) -> io::Result<()> {
                     json!({
                         "offset": mark.offset,
                         "head_len": mark.head_len,
-                        // u64 does not survive JSON floats; keep it textual.
+                        // u64 does not survive JSON floats; keep these textual.
                         "head_hash": mark.head_hash.to_string(),
+                        "ino": mark.ino.to_string(),
                     }),
                 )
             })
@@ -487,13 +492,26 @@ fn load_channels(bridge_home: &Path) -> BTreeMap<String, ChannelBinding> {
 
 /// Feed `on_line` every complete JSON line the bus gained since the mark,
 /// then advance the mark past the last consumed newline. A rotated or
-/// truncated file (shorter than the mark, or with different first bytes)
-/// resets the mark and replays from the start — the cursor's emitted set
-/// keeps replays from double-appending. A trailing partial line is left for
-/// the next pass.
-fn fold_bus_delta(
+/// truncated file (shorter than the mark, different inode, or different
+/// first bytes) resets the mark and replays from the start — the cursor's
+/// emitted set keeps replays from double-appending. A trailing partial line
+/// is left for the next pass.
+///
+/// Reads are chunked and each pass consumes at most `budget` bytes of
+/// complete lines (always at least one complete line), so neither a 20 GB
+/// backlog nor a rotation reset ever pulls the whole file into memory: the
+/// 500 ms loop drains large histories a slice at a time.
+const FOLD_CHUNK: usize = 4 << 20;
+const FOLD_PASS_BUDGET: u64 = 64 << 20;
+
+fn fold_bus_delta(path: &Path, mark: &mut BusMark, on_line: impl FnMut(&Value)) -> io::Result<()> {
+    fold_bus_delta_budgeted(path, mark, FOLD_PASS_BUDGET, on_line)
+}
+
+fn fold_bus_delta_budgeted(
     path: &Path,
     mark: &mut BusMark,
+    budget: u64,
     mut on_line: impl FnMut(&Value),
 ) -> io::Result<()> {
     let mut file = match fs::File::open(path) {
@@ -501,9 +519,11 @@ fn fold_bus_delta(
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
     };
-    let len = file.metadata()?.len();
+    let metadata = file.metadata()?;
+    let len = metadata.len();
+    let ino = file_ino(&metadata);
     if mark.offset > 0 {
-        let rotated = len < mark.offset || {
+        let rotated = len < mark.offset || ino != mark.ino || {
             let mut head = vec![0_u8; mark.head_len as usize];
             file.read_exact(&mut head)?;
             hash_bytes(&head) != mark.head_hash
@@ -516,31 +536,58 @@ fn fold_bus_delta(
         return Ok(());
     }
     file.seek(SeekFrom::Start(mark.offset))?;
-    let mut delta = Vec::with_capacity(usize::try_from(len - mark.offset).unwrap_or(0));
-    file.read_to_end(&mut delta)?;
-    let consumed = match delta.iter().rposition(|byte| *byte == b'\n') {
-        Some(last_newline) => last_newline + 1,
-        None => return Ok(()),
-    };
-    for line in delta[..consumed].split(|byte| *byte == b'\n') {
-        let line = match std::str::from_utf8(line) {
-            Ok(line) => line.trim(),
-            Err(_) => continue,
-        };
-        if line.is_empty() {
-            continue;
+
+    let fresh = mark.offset == 0;
+    let mut chunk = vec![0_u8; FOLD_CHUNK];
+    let mut carry: Vec<u8> = Vec::new();
+    let mut consumed: u64 = 0;
+    'passes: loop {
+        let read = file.read(&mut chunk)?;
+        if read == 0 {
+            break;
         }
-        if let Ok(value) = serde_json::from_str::<Value>(line) {
-            on_line(&value);
+        carry.extend_from_slice(&chunk[..read]);
+        while let Some(newline) = carry.iter().position(|byte| *byte == b'\n') {
+            if fresh && consumed == 0 {
+                let head_len = (newline + 1).min(256);
+                mark.head_len = head_len as u32;
+                mark.head_hash = hash_bytes(&carry[..head_len]);
+                mark.ino = ino;
+            }
+            {
+                let line = &carry[..newline];
+                if let Ok(line) = std::str::from_utf8(line) {
+                    let line = line.trim();
+                    if !line.is_empty()
+                        && let Ok(value) = serde_json::from_str::<Value>(line)
+                    {
+                        on_line(&value);
+                    }
+                }
+            }
+            carry.drain(..=newline);
+            consumed += newline as u64 + 1;
+            // Budget bounds one pass, never a single line: with at least one
+            // line consumed the mark advances and the next pass continues.
+            if consumed >= budget {
+                break 'passes;
+            }
         }
     }
-    if mark.offset == 0 {
-        let head_len = consumed.min(256);
-        mark.head_len = head_len as u32;
-        mark.head_hash = hash_bytes(&delta[..head_len]);
-    }
-    mark.offset += consumed as u64;
+    mark.offset += consumed;
     Ok(())
+}
+
+fn file_ino(metadata: &fs::Metadata) -> u64 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        metadata.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        0
+    }
 }
 
 fn hash_bytes(bytes: &[u8]) -> u64 {
@@ -1044,5 +1091,54 @@ mod tests {
         file.write_all(tail.as_bytes()).unwrap();
         drop(file);
         assert_eq!(scan(&bridge, &bus).unwrap().appended, 1);
+    }
+
+    #[test]
+    fn a_pass_budget_drains_a_backlog_across_scans() {
+        let root = tempfile::tempdir().unwrap();
+        let bus = root.path().join("bus.jsonl");
+        let rows: String = (0..40).map(|_| seal_row(SEAL_ID)).collect();
+        fs::write(&bus, &rows).unwrap();
+        let line_len = seal_row(SEAL_ID).len() as u64;
+
+        let mut mark = BusMark::default();
+        let mut seen = 0_usize;
+        // Budget below one line still consumes exactly one complete line.
+        fold_bus_delta_budgeted(&bus, &mut mark, 1, |_| seen += 1).unwrap();
+        assert_eq!(seen, 1);
+        assert_eq!(mark.offset, line_len);
+        // A three-line budget takes three more; nothing is re-read.
+        fold_bus_delta_budgeted(&bus, &mut mark, line_len * 3, |_| seen += 1).unwrap();
+        assert_eq!(seen, 4);
+        assert_eq!(mark.offset, line_len * 4);
+        // A large budget drains the rest in one pass.
+        fold_bus_delta_budgeted(&bus, &mut mark, u64::MAX, |_| seen += 1).unwrap();
+        assert_eq!(seen, 40);
+        assert_eq!(mark.offset, line_len * 40);
+    }
+
+    #[test]
+    fn a_rename_rotation_with_an_identical_head_is_still_detected() {
+        let root = tempfile::tempdir().unwrap();
+        let bus = root.path().join("bus.jsonl");
+        let first_line = seal_row(SEAL_ID);
+        fs::write(&bus, &first_line).unwrap();
+        let mut mark = BusMark::default();
+        let mut seen = 0_usize;
+        fold_bus_delta(&bus, &mut mark, |_| seen += 1).unwrap();
+        assert_eq!(seen, 1);
+
+        // A new, LONGER file with a byte-identical head replaces the bus via
+        // rename: length and fingerprint both match, only the inode differs.
+        let staged = root.path().join("bus.jsonl.new");
+        fs::write(&staged, format!("{first_line}{}", seal_row(ROTATED_ID))).unwrap();
+        fs::rename(&staged, &bus).unwrap();
+        let mut replayed = 0_usize;
+        fold_bus_delta(&bus, &mut mark, |_| replayed += 1).unwrap();
+        assert_eq!(replayed, 2, "the rename rotation went unnoticed");
+        assert_eq!(
+            mark.offset,
+            (first_line.len() + seal_row(ROTATED_ID).len()) as u64
+        );
     }
 }
