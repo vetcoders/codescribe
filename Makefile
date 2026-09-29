@@ -1071,6 +1071,12 @@ verify:
 	bash scripts/tests/test-isolation-not-shipped-test.sh; \
 	echo "=== Verify (Whisper model promotion) ==="; \
 	bash scripts/tests/download-model-test.sh; \
+	echo "=== Verify (bus demux: routing, lease, coalesce, attach) ==="; \
+	bash scripts/tests/bus-demux-test.sh; \
+	echo "=== Verify (bench STT stage fixture hard-links) ==="; \
+	bash scripts/tests/bench-stt-stage-test.sh; \
+	echo "=== Verify (model share tokenizer hard-link) ==="; \
+	bash scripts/tests/share-new-model-tokenizer-test.sh; \
 	echo "=== Verify (env registry) ==="; \
 	python3 -m unittest scripts/tests/test_env_registry.py; \
 	python3 -m unittest scripts/tests/test_data_asset_references.py; \
