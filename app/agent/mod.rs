@@ -5,7 +5,7 @@
 //! new vendor speaking an existing protocol needs no new client here.
 
 use anyhow::Result;
-use codescribe_core::agent::AgentProvider;
+use codescribe_core::agent::{AgentProvider, ContentBlock, Message, Role};
 use codescribe_core::config::{
     FormattingPolicy, RuntimeLlmLane, RuntimeLlmLaneKind, RuntimeSettingsSnapshot,
 };
@@ -75,4 +75,31 @@ pub fn assistive_unavailable_reason(lane: &RuntimeLlmLane) -> Option<String> {
             .unwrap_or("assistive runtime lane is unavailable")
             .to_string()
     })
+}
+
+/// In-memory user turn carrying one tool result.
+///
+/// The Messages client and the Responses client both park tool output in a
+/// user turn. Each provider still encodes its own wire body.
+pub(crate) fn user_tool_result(
+    call_id: &str,
+    content: Vec<ContentBlock>,
+    is_error: bool,
+) -> Message {
+    Message::new(
+        Role::User,
+        vec![ContentBlock::ToolResult {
+            tool_use_id: call_id.to_string(),
+            content,
+            is_error,
+        }],
+    )
+}
+
+/// In-memory image block. Empty bytes stay here; request builders skip them.
+pub(crate) fn image_block(data: &[u8], media_type: &str) -> ContentBlock {
+    ContentBlock::Image {
+        data: data.to_vec(),
+        media_type: media_type.to_string(),
+    }
 }

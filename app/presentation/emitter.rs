@@ -3374,14 +3374,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let bus = Arc::new(
             TranscriptBus::open_at(
-                TranscriptSession {
-                    session_id: "take".into(),
-                    mode: TranscriptMode::Dictation,
-                    has_latched_target: false,
-                    latched_target_is_self: false,
-                    audience: None,
-                    badge_only: false,
-                },
+                dictation_session("take", false),
                 temp.path().join("cursor.jsonl"),
                 None,
             )
@@ -3611,14 +3604,7 @@ mod tests {
 
         let temp = tempfile::tempdir().unwrap();
         let bus = TranscriptBus::open_at(
-            TranscriptSession {
-                session_id: "group-live".into(),
-                mode: TranscriptMode::Dictation,
-                has_latched_target: true,
-                latched_target_is_self: false,
-                audience: None,
-                badge_only: false,
-            },
+            dictation_session("group-live", true),
             temp.path().join("groups.jsonl"),
             None,
         )
@@ -3755,17 +3741,7 @@ mod tests {
 
     #[tokio::test]
     async fn stop_canvas_keeps_preview_only_words_raw_without_a_user_revision() {
-        let delivery = Arc::new(Mutex::new(String::new()));
-        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
-        let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::clone(&delivery),
-            None,
-            None,
-            None,
-            Some(Arc::clone(&ledger)),
-            None,
-        );
-        emitter.on_capture_opened("take", 7);
+        let (mut emitter, delivery, ledger) = opened_delivery_take();
         emitter.on_event(&partial_mirror(1, "one two three four five", 0, 16_000));
         let frozen = emitter.visible_canvas_snapshot().expect("opened take");
         assert_eq!(frozen.session_id, "take");
@@ -3792,17 +3768,7 @@ mod tests {
 
     #[tokio::test]
     async fn stop_canvas_with_committed_and_preview_words_skips_light_plus() {
-        let delivery = Arc::new(Mutex::new(String::new()));
-        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
-        let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::clone(&delivery),
-            None,
-            None,
-            None,
-            Some(Arc::clone(&ledger)),
-            None,
-        );
-        emitter.on_capture_opened("take", 7);
+        let (mut emitter, delivery, ledger) = opened_delivery_take();
         let mutation = admitted_mutation(
             &mut ledger.lock().unwrap(),
             OccurrenceIdentity::new("take", 7, 0, 16_000),
@@ -3833,17 +3799,7 @@ mod tests {
 
     #[tokio::test]
     async fn stop_canvas_counts_only_visible_unanchored_words_as_preview() {
-        let delivery = Arc::new(Mutex::new(String::new()));
-        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
-        let mut emitter = PresentationEmitter::new_with_authority(
-            delivery,
-            None,
-            None,
-            None,
-            Some(Arc::clone(&ledger)),
-            None,
-        );
-        emitter.on_capture_opened("take", 7);
+        let (mut emitter, _delivery, ledger) = opened_delivery_take();
         let mutation = admitted_mutation(
             &mut ledger.lock().unwrap(),
             OccurrenceIdentity::new("take", 7, 0, 16_000),
@@ -3918,14 +3874,7 @@ mod tests {
                 "speech",
             );
         }
-        let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::new(Mutex::new(String::new())),
-            None,
-            None,
-            None,
-            Some(Arc::clone(&ledger)),
-            None,
-        );
+        let mut emitter = emitter_on_ledger(&ledger);
         emitter.on_capture_opened("take", 7);
         let frozen = emitter.visible_canvas_snapshot().unwrap();
         assert!(frozen.text.is_empty());
@@ -3941,14 +3890,7 @@ mod tests {
         let bus_path = temp.path().join("paste.jsonl");
         let bus = Arc::new(
             TranscriptBus::open_at(
-                TranscriptSession {
-                    session_id: "paste-take".to_string(),
-                    mode: TranscriptMode::Dictation,
-                    has_latched_target: true,
-                    latched_target_is_self: false,
-                    audience: None,
-                    badge_only: false,
-                },
+                dictation_session("paste-take", true),
                 bus_path.clone(),
                 None,
             )
@@ -3998,14 +3940,7 @@ mod tests {
         let bus_path = temp.path().join("late.jsonl");
         let bus = Arc::new(
             TranscriptBus::open_at(
-                TranscriptSession {
-                    session_id: "late-paste".to_string(),
-                    mode: TranscriptMode::Dictation,
-                    has_latched_target: true,
-                    latched_target_is_self: false,
-                    audience: None,
-                    badge_only: false,
-                },
+                dictation_session("late-paste", true),
                 bus_path.clone(),
                 None,
             )
@@ -4053,17 +3988,7 @@ mod tests {
 
     #[tokio::test]
     async fn frozen_stop_canvas_remains_a_prefix_of_five_occurrence_revision() {
-        let delivery = Arc::new(Mutex::new(String::new()));
-        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
-        let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::clone(&delivery),
-            None,
-            None,
-            None,
-            Some(Arc::clone(&ledger)),
-            None,
-        );
-        emitter.on_capture_opened("take", 7);
+        let (mut emitter, delivery, ledger) = opened_delivery_take();
         for index in 0..5 {
             let mutation = {
                 let mut ledger = ledger.lock().unwrap();
@@ -4092,17 +4017,7 @@ mod tests {
 
     #[tokio::test]
     async fn stop_canvas_includes_the_third_occurrence_open_at_release() {
-        let delivery = Arc::new(Mutex::new(String::new()));
-        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
-        let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::clone(&delivery),
-            None,
-            None,
-            None,
-            Some(Arc::clone(&ledger)),
-            None,
-        );
-        emitter.on_capture_opened("take", 7);
+        let (mut emitter, _delivery, ledger) = opened_delivery_take();
         for index in 0..2 {
             let mutation = {
                 let mut ledger = ledger.lock().unwrap();
@@ -4151,17 +4066,7 @@ mod tests {
 
     #[tokio::test]
     async fn single_occurrence_closed_at_release_is_the_first_deliverable_canvas() {
-        let delivery = Arc::new(Mutex::new(String::new()));
-        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
-        let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::clone(&delivery),
-            None,
-            None,
-            None,
-            Some(Arc::clone(&ledger)),
-            None,
-        );
-        emitter.on_capture_opened("take", 7);
+        let (mut emitter, _delivery, ledger) = opened_delivery_take();
         emitter.on_event(&partial_mirror(1, "last words", 0, 16_000));
         // Stop paste v2 (R3): preview-only words are visible at stop, with no
         // committed document behind them.
@@ -4196,17 +4101,7 @@ mod tests {
 
     #[tokio::test]
     async fn stop_snapshot_equals_the_last_overlay_paint() {
-        let delivery = Arc::new(Mutex::new(String::new()));
-        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
-        let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::clone(&delivery),
-            None,
-            None,
-            None,
-            Some(Arc::clone(&ledger)),
-            None,
-        );
-        emitter.on_capture_opened("take", 7);
+        let (mut emitter, delivery, ledger) = opened_delivery_take();
         let mut paint_count = 0;
         let mut assert_paint = |expected_text: &str, expected_preview_words: usize| {
             let frozen = emitter.visible_canvas_snapshot().unwrap();
@@ -4280,14 +4175,7 @@ mod tests {
     #[tokio::test]
     async fn mutation_without_paint_keeps_the_preview_in_the_stop_snapshot() {
         let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
-        let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::new(Mutex::new(String::new())),
-            None,
-            None,
-            None,
-            Some(Arc::clone(&ledger)),
-            None,
-        );
+        let mut emitter = emitter_on_ledger(&ledger);
         emitter.on_capture_opened("take", 7);
         let occurrence = OccurrenceIdentity::new("take", 7, 0, 16_000);
         let first = admitted_mutation(&mut ledger.lock().unwrap(), occurrence.clone(), 1, "Iwo");
@@ -4343,14 +4231,7 @@ mod tests {
     #[tokio::test]
     async fn stop_snapshot_zero_width_paint_includes_unanchored_words() {
         let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
-        let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::new(Mutex::new(String::new())),
-            None,
-            None,
-            None,
-            Some(Arc::clone(&ledger)),
-            None,
-        );
+        let mut emitter = emitter_on_ledger(&ledger);
         emitter.on_capture_opened("take", 7);
         let first = admitted_mutation(
             &mut ledger.lock().unwrap(),
@@ -4415,19 +4296,61 @@ mod tests {
         }
     }
 
+    /// Dictation bus session. `latched_target` is the only field these fixtures vary.
+    fn dictation_session(session_id: impl Into<String>, latched_target: bool) -> TranscriptSession {
+        TranscriptSession {
+            session_id: session_id.into(),
+            mode: TranscriptMode::Dictation,
+            has_latched_target: latched_target,
+            latched_target_is_self: false,
+            audience: None,
+            badge_only: false,
+        }
+    }
+
+    /// Empty delivery buffer bound to an existing ledger. No bus, sink, or callback.
+    fn emitter_on_ledger(ledger: &Arc<StdMutex<AcousticLedger>>) -> PresentationEmitter {
+        PresentationEmitter::new_with_authority(
+            Arc::new(Mutex::new(String::new())),
+            None,
+            None,
+            None,
+            Some(Arc::clone(ledger)),
+            None,
+        )
+    }
+
+    /// Literal-delivery mirror opened on `session` at capture epoch 7.
+    fn mirror_session(session: &str) -> (PresentationEmitter, Arc<StdMutex<AcousticLedger>>) {
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let emitter = emitter_on_ledger(&ledger);
+        emitter.set_literal_delivery(true);
+        emitter.on_capture_opened(session, 7);
+        (emitter, ledger)
+    }
+
     fn mirror_take() -> (PresentationEmitter, Arc<StdMutex<AcousticLedger>>) {
+        mirror_session("take")
+    }
+
+    /// Delivery buffer and ledger, opened on take/7, with literal delivery left off.
+    fn opened_delivery_take() -> (
+        PresentationEmitter,
+        Arc<Mutex<String>>,
+        Arc<StdMutex<AcousticLedger>>,
+    ) {
+        let delivery = Arc::new(Mutex::new(String::new()));
         let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
         let emitter = PresentationEmitter::new_with_authority(
-            Arc::new(Mutex::new(String::new())),
+            Arc::clone(&delivery),
             None,
             None,
             None,
             Some(Arc::clone(&ledger)),
             None,
         );
-        emitter.set_literal_delivery(true);
         emitter.on_capture_opened("take", 7);
-        (emitter, ledger)
+        (emitter, delivery, ledger)
     }
 
     #[tokio::test]
@@ -5416,17 +5339,7 @@ mod tests {
 
     #[tokio::test]
     async fn relabel_in_place_during_the_wait_is_accounted_not_a_defect() {
-        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
-        let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::new(Mutex::new(String::new())),
-            None,
-            None,
-            None,
-            Some(Arc::clone(&ledger)),
-            None,
-        );
-        emitter.set_literal_delivery(true);
-        emitter.on_capture_opened("take", 7);
+        let (mut emitter, ledger) = mirror_take();
         let occurrence = OccurrenceIdentity::new("take", 7, 0, 16_000);
         let mutation =
             admitted_mutation(&mut ledger.lock().unwrap(), occurrence.clone(), 1, "before");
@@ -5455,18 +5368,8 @@ mod tests {
 
     #[tokio::test]
     async fn stop_wait_accounts_for_shaping_relabel_and_untouched_occurrences() {
-        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
-        let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::new(Mutex::new(String::new())),
-            None,
-            None,
-            None,
-            Some(Arc::clone(&ledger)),
-            None,
-        );
         // Hold presentation until the seal arrives during the STOP wait.
-        emitter.set_literal_delivery(true);
-        emitter.on_capture_opened("take", 7);
+        let (mut emitter, ledger) = mirror_take();
         let occurrences = (0..3)
             .map(|index| OccurrenceIdentity::new("take", 7, index * 16_000, (index + 1) * 16_000))
             .collect::<Vec<_>>();
@@ -5531,17 +5434,7 @@ mod tests {
 
     #[tokio::test]
     async fn removed_committed_occurrence_without_successor_is_unaccounted() {
-        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
-        let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::new(Mutex::new(String::new())),
-            None,
-            None,
-            None,
-            Some(Arc::clone(&ledger)),
-            None,
-        );
-        emitter.set_literal_delivery(true);
-        emitter.on_capture_opened("take", 7);
+        let (mut emitter, ledger) = mirror_take();
         let removed = OccurrenceIdentity::new("take", 7, 0, 16_000);
         let survivor = OccurrenceIdentity::new("take", 7, 16_000, 32_000);
         for (index, occurrence) in [&removed, &survivor].iter().enumerate() {
@@ -5599,17 +5492,7 @@ mod tests {
 
     #[tokio::test]
     async fn document_revision_accounts_for_member_occurrences() {
-        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
-        let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::new(Mutex::new(String::new())),
-            None,
-            None,
-            None,
-            Some(Arc::clone(&ledger)),
-            None,
-        );
-        emitter.set_literal_delivery(true);
-        emitter.on_capture_opened("take", 7);
+        let (mut emitter, ledger) = mirror_take();
         let first = OccurrenceIdentity::new("take", 7, 0, 16_000);
         let second = OccurrenceIdentity::new("take", 7, 16_000, 32_000);
         for (index, occurrence) in [&first, &second].iter().enumerate() {
@@ -5703,17 +5586,7 @@ mod tests {
 
     #[tokio::test]
     async fn frozen_shaping_accounts_for_every_committed_member() {
-        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
-        let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::new(Mutex::new(String::new())),
-            None,
-            None,
-            None,
-            Some(Arc::clone(&ledger)),
-            None,
-        );
-        emitter.set_literal_delivery(true);
-        emitter.on_capture_opened("take", 7);
+        let (mut emitter, ledger) = mirror_take();
         for index in 0..2 {
             let mutation = admitted_mutation(
                 &mut ledger.lock().unwrap(),
@@ -5750,17 +5623,7 @@ mod tests {
     #[tokio::test]
     async fn stop_wait_accounts_for_all_consultation_members() {
         use codescribe_core::pipeline::acoustic_ledger::ConsultationPresentationMember;
-        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
-        let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::new(Mutex::new(String::new())),
-            None,
-            None,
-            None,
-            Some(Arc::clone(&ledger)),
-            None,
-        );
-        emitter.set_literal_delivery(true);
-        emitter.on_capture_opened("take", 7);
+        let (mut emitter, ledger) = mirror_take();
         let mut members = Vec::new();
         for index in 0..2 {
             let occurrence =
@@ -5871,19 +5734,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let bus_path = temp.path().join("ledger.jsonl");
         let bus = Arc::new(
-            TranscriptBus::open_at(
-                TranscriptSession {
-                    session_id: "session".to_string(),
-                    mode: TranscriptMode::Dictation,
-                    has_latched_target: true,
-                    latched_target_is_self: false,
-                    audience: None,
-                    badge_only: false,
-                },
-                bus_path.clone(),
-                None,
-            )
-            .unwrap(),
+            TranscriptBus::open_at(dictation_session("session", true), bus_path.clone(), None)
+                .unwrap(),
         );
         let projection_count = Arc::new(AtomicUsize::new(0));
         let projection_count_for_callback = Arc::clone(&projection_count);
@@ -5961,19 +5813,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let bus_path = temp.path().join("raw-events.jsonl");
         let bus = Arc::new(
-            TranscriptBus::open_at(
-                TranscriptSession {
-                    session_id: "session".to_string(),
-                    mode: TranscriptMode::Dictation,
-                    has_latched_target: false,
-                    latched_target_is_self: false,
-                    audience: None,
-                    badge_only: false,
-                },
-                bus_path.clone(),
-                None,
-            )
-            .unwrap(),
+            TranscriptBus::open_at(dictation_session("session", false), bus_path.clone(), None)
+                .unwrap(),
         );
         let projection_count = Arc::new(AtomicUsize::new(0));
         let projection_count_for_callback = Arc::clone(&projection_count);
@@ -6033,14 +5874,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let bus = Arc::new(
             TranscriptBus::open_at(
-                TranscriptSession {
-                    session_id: "refused-take".to_string(),
-                    mode: TranscriptMode::Dictation,
-                    has_latched_target: false,
-                    latched_target_is_self: false,
-                    audience: None,
-                    badge_only: false,
-                },
+                dictation_session("refused-take", false),
                 temp.path().join("refused.jsonl"),
                 None,
             )
@@ -6222,14 +6056,7 @@ mod tests {
         let bus_path = temp.path().join("user-revision.jsonl");
         let bus = Arc::new(
             TranscriptBus::open_at(
-                TranscriptSession {
-                    session_id: "revision-session".to_string(),
-                    mode: TranscriptMode::Dictation,
-                    has_latched_target: true,
-                    latched_target_is_self: false,
-                    audience: None,
-                    badge_only: false,
-                },
+                dictation_session("revision-session", true),
                 bus_path.clone(),
                 None,
             )
@@ -6364,19 +6191,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("versions.jsonl");
         let bus = Arc::new(
-            TranscriptBus::open_at(
-                TranscriptSession {
-                    session_id: "version-take".into(),
-                    mode: TranscriptMode::Dictation,
-                    has_latched_target: false,
-                    latched_target_is_self: false,
-                    audience: None,
-                    badge_only: false,
-                },
-                path.clone(),
-                None,
-            )
-            .unwrap(),
+            TranscriptBus::open_at(dictation_session("version-take", false), path.clone(), None)
+                .unwrap(),
         );
         let occurrence = OccurrenceIdentity::new("version-take", 3, 0, 16_000);
         let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
@@ -6466,14 +6282,7 @@ mod tests {
         let bus_path = temp.path().join("formatter-revision.jsonl");
         let bus = Arc::new(
             TranscriptBus::open_at(
-                TranscriptSession {
-                    session_id: "formatter-session".to_string(),
-                    mode: TranscriptMode::Dictation,
-                    has_latched_target: true,
-                    latched_target_is_self: false,
-                    audience: None,
-                    badge_only: false,
-                },
+                dictation_session("formatter-session", true),
                 bus_path.clone(),
                 None,
             )
@@ -6633,14 +6442,7 @@ mod tests {
         let bus_path = temp.path().join("light-plus.jsonl");
         let bus = Arc::new(
             TranscriptBus::open_at(
-                TranscriptSession {
-                    session_id: "light-plus-session".to_string(),
-                    mode: TranscriptMode::Dictation,
-                    has_latched_target: true,
-                    latched_target_is_self: false,
-                    audience: None,
-                    badge_only: false,
-                },
+                dictation_session("light-plus-session", true),
                 bus_path.clone(),
                 None,
             )
@@ -6793,19 +6595,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let bus_path = temp.path().join("literal.jsonl");
         let bus = Arc::new(
-            TranscriptBus::open_at(
-                TranscriptSession {
-                    session_id: "literal-session".to_string(),
-                    mode: TranscriptMode::Dictation,
-                    has_latched_target: true,
-                    latched_target_is_self: false,
-                    audience: None,
-                    badge_only: false,
-                },
-                bus_path,
-                None,
-            )
-            .unwrap(),
+            TranscriptBus::open_at(dictation_session("literal-session", true), bus_path, None)
+                .unwrap(),
         );
         let occurrence = OccurrenceIdentity::new("literal-session", 7, 0, 16_000);
         let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
@@ -7286,19 +7077,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let bus_path = temp.path().join("incremental-light.jsonl");
         let bus = Arc::new(
-            TranscriptBus::open_at(
-                TranscriptSession {
-                    session_id: session_id.to_string(),
-                    mode: TranscriptMode::Dictation,
-                    has_latched_target: true,
-                    latched_target_is_self: false,
-                    audience: None,
-                    badge_only: false,
-                },
-                bus_path.clone(),
-                None,
-            )
-            .unwrap(),
+            TranscriptBus::open_at(dictation_session(session_id, true), bus_path.clone(), None)
+                .unwrap(),
         );
         let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
         let projected = Arc::new(StdMutex::new(Vec::new()));
@@ -8409,14 +8189,7 @@ mod tests {
         let session = "overlap-paint";
         let bus = Arc::new(
             TranscriptBus::open_at(
-                TranscriptSession {
-                    session_id: session.to_string(),
-                    mode: TranscriptMode::Dictation,
-                    has_latched_target: true,
-                    latched_target_is_self: false,
-                    audience: None,
-                    badge_only: false,
-                },
+                dictation_session(session, true),
                 temp.path().join("paint.jsonl"),
                 None,
             )
@@ -8499,19 +8272,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let bus_path = temp.path().join("refused-span.jsonl");
         let bus = Arc::new(
-            TranscriptBus::open_at(
-                TranscriptSession {
-                    session_id: session.to_string(),
-                    mode: TranscriptMode::Dictation,
-                    has_latched_target: true,
-                    latched_target_is_self: false,
-                    audience: None,
-                    badge_only: false,
-                },
-                bus_path.clone(),
-                None,
-            )
-            .unwrap(),
+            TranscriptBus::open_at(dictation_session(session, true), bus_path.clone(), None)
+                .unwrap(),
         );
         bus.publish_started();
         let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
@@ -8638,17 +8400,7 @@ mod tests {
             "omission",
             "preserved_label",
         ] {
-            let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
-            let mut emitter = PresentationEmitter::new_with_authority(
-                Arc::new(Mutex::new(String::new())),
-                None,
-                None,
-                None,
-                Some(Arc::clone(&ledger)),
-                None,
-            );
-            emitter.set_literal_delivery(true);
-            emitter.on_capture_opened("late", 7);
+            let (mut emitter, ledger) = mirror_session("late");
             let owner = OccurrenceIdentity::new("late", 7, 0, 64_000);
             admit_into(&emitter, &ledger, &owner, 1, "document");
             let pins = [
@@ -8770,17 +8522,7 @@ mod tests {
 
     #[tokio::test]
     async fn late_apple_evidence_five_iwo_and_same_pin_alternatives() {
-        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
-        let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::new(Mutex::new(String::new())),
-            None,
-            None,
-            None,
-            Some(Arc::clone(&ledger)),
-            None,
-        );
-        emitter.set_literal_delivery(true);
-        emitter.on_capture_opened("five-late", 7);
+        let (mut emitter, ledger) = mirror_session("five-late");
         let owner = OccurrenceIdentity::new("five-late", 7, 0, 100_000);
         admit_into(&emitter, &ledger, &owner, 1, "document");
         for i in 0..5 {
@@ -8839,17 +8581,7 @@ mod tests {
             super::NoAuthorityReason::ExclusiveTailAwaitingWholeSpan,
             super::NoAuthorityReason::ZeroWidth,
         ] {
-            let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
-            let mut emitter = PresentationEmitter::new_with_authority(
-                Arc::new(Mutex::new(String::new())),
-                None,
-                None,
-                None,
-                Some(Arc::clone(&ledger)),
-                None,
-            );
-            emitter.set_literal_delivery(true);
-            emitter.on_capture_opened("unchanged", 7);
+            let (mut emitter, ledger) = mirror_session("unchanged");
             let owner = OccurrenceIdentity::new("unchanged", 7, 0, 64_000);
             admit_into(&emitter, &ledger, &owner, 1, "Document, exactly.");
             for (start, end, text) in [(4_000, 8_000, "covered"), (80_000, 88_000, "uncovered")] {
@@ -8981,14 +8713,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let bus = Arc::new(
             TranscriptBus::open_at(
-                TranscriptSession {
-                    session_id: session.to_string(),
-                    mode: TranscriptMode::Dictation,
-                    has_latched_target: true,
-                    latched_target_is_self: false,
-                    audience: None,
-                    badge_only: false,
-                },
+                dictation_session(session, true),
                 temp.path().join("evidence-life.jsonl"),
                 None,
             )
@@ -9162,17 +8887,10 @@ mod tests {
         let paints = Arc::new(StdMutex::new(Vec::<super::CompactProjection>::new()));
         let observed = Arc::clone(&paints);
         let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
-        let emitter = super::PresentationEmitter::new_with_authority(
-            Arc::new(Mutex::new(String::new())),
-            None,
-            None,
-            None,
-            Some(Arc::clone(&ledger)),
-            None,
-        )
-        .with_cursor_observer(Arc::new(move |projection| {
-            observed.lock().unwrap().push(projection.clone());
-        }));
+        let emitter =
+            emitter_on_ledger(&ledger).with_cursor_observer(Arc::new(move |projection| {
+                observed.lock().unwrap().push(projection.clone());
+            }));
         emitter.on_capture_opened("take", 7);
         keep_visible_into(
             &emitter,

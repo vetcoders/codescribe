@@ -1571,22 +1571,11 @@ mod tests {
             content: Vec<ContentBlock>,
             is_error: bool,
         ) -> Message {
-            Message::new(
-                Role::User,
-                vec![ContentBlock::ToolResult {
-                    tool_use_id: call_id.to_string(),
-                    content,
-                    is_error,
-                }],
-            )
+            crate::agent::user_tool_result(call_id, content, is_error)
         }
 
-        /// Build an image content block from raw bytes and media type.
         fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
-            ContentBlock::Image {
-                data: data.to_vec(),
-                media_type: media_type.to_string(),
-            }
+            crate::agent::image_block(data, media_type)
         }
 
         /// Stable provider name shown in tests and diagnostics.
@@ -1807,22 +1796,11 @@ mod tests {
             content: Vec<ContentBlock>,
             is_error: bool,
         ) -> Message {
-            Message::new(
-                Role::User,
-                vec![ContentBlock::ToolResult {
-                    tool_use_id: call_id.to_string(),
-                    content,
-                    is_error,
-                }],
-            )
+            crate::agent::user_tool_result(call_id, content, is_error)
         }
 
-        /// Build an image content block from raw bytes and media type.
         fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
-            ContentBlock::Image {
-                data: data.to_vec(),
-                media_type: media_type.to_string(),
-            }
+            crate::agent::image_block(data, media_type)
         }
 
         /// Stable provider name shown in tests and diagnostics.
@@ -2178,22 +2156,11 @@ mod tests {
             content: Vec<ContentBlock>,
             is_error: bool,
         ) -> Message {
-            Message::new(
-                Role::User,
-                vec![ContentBlock::ToolResult {
-                    tool_use_id: call_id.to_string(),
-                    content,
-                    is_error,
-                }],
-            )
+            crate::agent::user_tool_result(call_id, content, is_error)
         }
 
-        /// Build an image content block from raw bytes and media type.
         fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
-            ContentBlock::Image {
-                data: data.to_vec(),
-                media_type: media_type.to_string(),
-            }
+            crate::agent::image_block(data, media_type)
         }
 
         /// Stable provider name shown in tests and diagnostics.

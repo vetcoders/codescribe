@@ -1601,6 +1601,17 @@ mod tests {
         }
     }
 
+    fn unlatched_dictation(id: &str) -> TranscriptSession {
+        TranscriptSession {
+            session_id: id.to_string(),
+            mode: TranscriptMode::Dictation,
+            has_latched_target: false,
+            latched_target_is_self: false,
+            audience: None,
+            badge_only: false,
+        }
+    }
+
     #[test]
     fn channel_rows_carry_audience_and_do_not_offer_paste() {
         let dir = tempfile::tempdir().unwrap();
@@ -2312,19 +2323,8 @@ mod tests {
     fn bus_flushes_session_lifecycle_privately_without_text_authority() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("events.jsonl");
-        let bus = TranscriptBus::open_at(
-            TranscriptSession {
-                session_id: "session-agent".to_string(),
-                mode: TranscriptMode::Agent,
-                has_latched_target: false,
-                latched_target_is_self: false,
-                audience: None,
-                badge_only: false,
-            },
-            path.clone(),
-            Some(48_000),
-        )
-        .unwrap();
+        let bus =
+            TranscriptBus::open_at(session("session-agent"), path.clone(), Some(48_000)).unwrap();
 
         bus.publish_started();
         bus.publish_started();
@@ -2355,14 +2355,7 @@ mod tests {
     fn bus_ends_a_started_session_exactly_once_and_never_an_unstarted_one() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("events.jsonl");
-        let session = TranscriptSession {
-            session_id: "session-ended".to_string(),
-            mode: TranscriptMode::Dictation,
-            has_latched_target: false,
-            latched_target_is_self: false,
-            audience: None,
-            badge_only: false,
-        };
+        let session = unlatched_dictation("session-ended");
 
         let never_started = TranscriptBus::open_at(session.clone(), path.clone(), None).unwrap();
         let never_started_terminal = never_started.publish_ended(
@@ -2422,19 +2415,7 @@ mod tests {
     fn only_the_lifecycle_line_carries_a_delivery_disposition() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("events.jsonl");
-        let bus = TranscriptBus::open_at(
-            TranscriptSession {
-                session_id: "session-delivery".to_string(),
-                mode: TranscriptMode::Agent,
-                has_latched_target: false,
-                latched_target_is_self: false,
-                audience: None,
-                badge_only: false,
-            },
-            path,
-            None,
-        )
-        .unwrap();
+        let bus = TranscriptBus::open_at(session("session-delivery"), path, None).unwrap();
         bus.publish_started();
 
         let terminal = bus
@@ -2458,19 +2439,8 @@ mod tests {
     fn a_take_with_no_delivery_attempt_claims_no_destination() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("events.jsonl");
-        let bus = TranscriptBus::open_at(
-            TranscriptSession {
-                session_id: "session-unattempted".to_string(),
-                mode: TranscriptMode::Dictation,
-                has_latched_target: false,
-                latched_target_is_self: false,
-                audience: None,
-                badge_only: false,
-            },
-            path,
-            None,
-        )
-        .unwrap();
+        let bus =
+            TranscriptBus::open_at(unlatched_dictation("session-unattempted"), path, None).unwrap();
         bus.publish_started();
 
         let terminal = bus
