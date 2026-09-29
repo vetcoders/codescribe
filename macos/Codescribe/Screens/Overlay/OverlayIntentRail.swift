@@ -180,6 +180,9 @@ struct OverlayIntentRail: View {
                   .accessibilityIdentifier("overlay-format-level-\(level.rawValue)")
                 }
               }
+              .buttonStyle(.borderless)
+              .controlSize(.small)
+              .font(.system(size: 11, weight: .medium))
             } else if intent == .retranscribe {
               HStack(spacing: 10) {
                 Button("Local") {
@@ -195,6 +198,9 @@ struct OverlayIntentRail: View {
                   .accessibilityIdentifier("overlay-retranscribe-cloud")
                 }
               }
+              .buttonStyle(.borderless)
+              .controlSize(.small)
+              .font(.system(size: 11, weight: .medium))
             } else {
               Text(intent.accessibilityLabel)
             }

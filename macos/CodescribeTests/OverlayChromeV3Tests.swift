@@ -107,18 +107,10 @@ final class OverlayChromeV3Tests: XCTestCase {
       )
       root.frame = NSRect(x: 0, y: 0, width: 320, height: 200)
       root.layoutSubtreeIfNeeded()
-      if #available(macOS 26.0, *) {
-        let effect = try XCTUnwrap(descendant(OverlayClearGlassView.self, in: root))
-        XCTAssertEqual(effect.style, .clear)
-        XCTAssertNil(effect.tintColor)
-        XCTAssertNil(effect.hitTest(NSPoint(x: 100, y: 100)))
-      } else {
-        let effect = try XCTUnwrap(descendant(OverlayDesktopEffectView.self, in: root))
-        XCTAssertEqual(effect.blendingMode, .behindWindow)
-        XCTAssertEqual(effect.state, .active)
-        XCTAssertFalse(effect.isOpaque)
-        XCTAssertNil(effect.hitTest(NSPoint(x: 100, y: 100)))
-      }
+      let effect = try XCTUnwrap(descendant(OverlayDesktopEffectView.self, in: root))
+      XCTAssertEqual(effect.blendingMode, .behindWindow)
+      XCTAssertEqual(effect.state, .active)
+      XCTAssertNil(effect.hitTest(NSPoint(x: 100, y: 100)))
     }
   }
 
@@ -129,8 +121,18 @@ final class OverlayChromeV3Tests: XCTestCase {
     root.frame = NSRect(x: 0, y: 0, width: 320, height: 200)
     root.layoutSubtreeIfNeeded()
     XCTAssertNil(descendant(OverlayDesktopEffectView.self, in: root))
-    if #available(macOS 26.0, *) {
-      XCTAssertNil(descendant(OverlayClearGlassView.self, in: root))
+
+  }
+  func testEditingRemovesDesktopSamplingEvenWithTransparencyEnabled() {
+    for scheme in [ColorScheme.light, .dark] {
+      let root = NSHostingView(
+        rootView: OverlayCanvasBackdrop(
+          palette: .resolve(scheme), reduceTransparency: false, isEditing: true)
+      )
+      root.frame = NSRect(x: 0, y: 0, width: 320, height: 200)
+      root.layoutSubtreeIfNeeded()
+      XCTAssertNil(descendant(OverlayDesktopEffectView.self, in: root))
     }
   }
+
 }

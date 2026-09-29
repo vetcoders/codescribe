@@ -6,12 +6,14 @@ import SwiftUI
 struct OverlayCanvasSurface<Content: View>: View {
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
   let palette: OverlayAppearancePalette
+  var isEditing = false
   @ViewBuilder let content: Content
 
   var body: some View {
     content
       .background {
-        OverlayCanvasBackdrop(palette: palette, reduceTransparency: reduceTransparency)
+        OverlayCanvasBackdrop(
+          palette: palette, reduceTransparency: reduceTransparency, isEditing: isEditing)
       }
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous))
       .overlay {
@@ -31,15 +33,16 @@ struct OverlayCanvasSurface<Content: View>: View {
 struct OverlayCanvasBackdrop: View {
   let palette: OverlayAppearancePalette
   let reduceTransparency: Bool
+  var isEditing = false
 
   var body: some View {
     ZStack {
-      if reduceTransparency {
+      if reduceTransparency || isEditing {
         Rectangle().fill(palette.desktopBackground.color)
-      } else if #available(macOS 26.0, *) {
-        OverlayClearGlass()
       } else {
         OverlayDesktopMaterial()
+        // The document needs a stable contrast floor, regardless of the glass slider.
+        Rectangle().fill(palette.desktopBackground.color.opacity(0.85))
       }
     }
   }
@@ -60,23 +63,5 @@ private struct OverlayDesktopMaterial: NSViewRepresentable {
 }
 
 final class OverlayDesktopEffectView: NSVisualEffectView {
-  override func hitTest(_ point: NSPoint) -> NSView? { nil }
-}
-
-/// Native clear glass samples the desktop without an extra tint or HUD scrim.
-@available(macOS 26.0, *)
-private struct OverlayClearGlass: NSViewRepresentable {
-  func makeNSView(context: Context) -> OverlayClearGlassView {
-    let view = OverlayClearGlassView()
-    view.style = .clear
-    view.cornerRadius = CSRadius.window
-    return view
-  }
-
-  func updateNSView(_ nsView: OverlayClearGlassView, context: Context) {}
-}
-
-@available(macOS 26.0, *)
-final class OverlayClearGlassView: NSGlassEffectView {
   override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }

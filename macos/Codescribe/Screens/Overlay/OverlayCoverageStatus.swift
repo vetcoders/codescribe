@@ -53,6 +53,7 @@ struct OverlayCoverageStatus: View {
               }
             }
           }
+          .buttonStyle(.borderless)
           .controlSize(.small)
           .font(.system(size: 11, weight: .medium))
         }

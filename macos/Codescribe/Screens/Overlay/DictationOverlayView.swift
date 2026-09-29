@@ -72,7 +72,7 @@ struct DictationOverlayView: View {
   }
 
   var body: some View {
-    OverlayCanvasSurface(palette: palette) {
+    OverlayCanvasSurface(palette: palette, isEditing: state.isEditingTranscript) {
       sharedChromeContainer(
         OverlayIntentRail(
           phase: state.statusText,
