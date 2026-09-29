@@ -396,14 +396,14 @@ struct DictationOverlayView: View {
       HStack(spacing: compact ? 4 : 8) {
         if showsDiagnostics && state.compactProjection?.degraded == true {
           Image(systemName: "exclamationmark.bubble.fill")
-            .foregroundStyle(.orange)
+            .foregroundStyle(palette.processingStatus.color)
             .help("Detected speech is not fully transcribed")
             .accessibilityLabel("Detected speech is not fully transcribed")
             .accessibilityIdentifier("overlay-acoustic-warning")
         }
         if let error = state.expansionPreferenceError {
           Image(systemName: "exclamationmark.triangle.fill")
-            .foregroundStyle(.orange)
+            .foregroundStyle(palette.processingStatus.color)
             .help(error)
             .accessibilityLabel(error)
             .accessibilityIdentifier("overlay-preference-save-error")

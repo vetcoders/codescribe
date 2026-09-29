@@ -55,7 +55,7 @@ struct TrayMenuView: View {
           icon: .power,
           iconColor: CSColor.terracottaDeep,
           title: "Quit codescribe",
-          titleColor: TrayRow.subnoteColor,
+          titleColor: CSColor.textMuted,
           shortcut: "⌘Q"
         ) { viewModel.onQuit() }
       }
@@ -101,7 +101,7 @@ struct TrayMenuView: View {
     .padding(.horizontal, 11)
     .padding(.vertical, 7)
     .background(
-      RoundedRectangle(cornerRadius: 8, style: .continuous)
+      RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous)
         .fill(trayStatus.color.opacity(0.10))
     )
     .padding(.horizontal, 5)
@@ -383,7 +383,7 @@ private struct TrayNoteStatusRow: View {
     .padding(.horizontal, 11)
     .padding(.vertical, 7)
     .background(
-      RoundedRectangle(cornerRadius: 8, style: .continuous)
+      RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous)
         .fill(tint.opacity(0.10))
     )
     .transition(.opacity)

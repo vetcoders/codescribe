@@ -19,7 +19,7 @@ struct OverlayCoverageStatus: View {
       presented: $presented
     ) {
       Label("Recording quality low — review", systemImage: "info.circle")
-        .font(.system(size: 11))
+        .font(CSFont.ui(11, .medium))
         .lineLimit(1)
         .truncationMode(.tail)
         .foregroundStyle(palette.processingStatus.color)
@@ -38,7 +38,7 @@ struct OverlayCoverageStatus: View {
         if let diagnosticNotice, let diagnosticDetail {
           Divider()
           Text(diagnosticNotice)
-          Text(diagnosticDetail).font(.system(size: 10, design: .monospaced))
+          Text(diagnosticDetail).font(CSFont.mono(10, .medium))
         }
         if canRetranscribe {
           Text("Transcribe again")
@@ -56,7 +56,7 @@ struct OverlayCoverageStatus: View {
           }
           .buttonStyle(.borderless)
           .controlSize(.small)
-          .font(.system(size: 11, weight: .medium))
+          .font(CSFont.ui(11, .medium))
         }
       }
       .frame(width: 250)

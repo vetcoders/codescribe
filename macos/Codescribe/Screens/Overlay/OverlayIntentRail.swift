@@ -182,7 +182,7 @@ struct OverlayIntentRail: View {
               }
               .buttonStyle(.borderless)
               .controlSize(.small)
-              .font(.system(size: 11, weight: .medium))
+              .font(CSFont.ui(11, .medium))
             } else if intent == .retranscribe {
               HStack(spacing: 10) {
                 Button("Local") {
@@ -200,7 +200,7 @@ struct OverlayIntentRail: View {
               }
               .buttonStyle(.borderless)
               .controlSize(.small)
-              .font(.system(size: 11, weight: .medium))
+              .font(CSFont.ui(11, .medium))
             } else {
               Text(intent.accessibilityLabel)
             }
