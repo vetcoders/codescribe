@@ -371,7 +371,7 @@ private final class ComposerNativeTextView: NSTextView {
     guard string.isEmpty, !placeholder.isEmpty, let font else { return }
     let attributes: [NSAttributedString.Key: Any] = [
       .font: font,
-      .foregroundColor: .placeholderTextColor,
+      .foregroundColor: NSColor.placeholderTextColor,
     ]
     let origin = NSPoint(
       x: textContainerInset.width + (textContainer?.lineFragmentPadding ?? 0),
