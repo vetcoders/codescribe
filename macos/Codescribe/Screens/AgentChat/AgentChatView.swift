@@ -7,19 +7,9 @@ import SwiftUI
 struct AgentChatView: View {
   @StateObject var store: AgentChatStore
   private let maxPermissions: SettingsViewModel?
-  /// Rail state survives window close/reopen and app relaunch. Collapse is
-  /// the NATIVE split-view collapse (`columnVisibility = .detailOnly`) — the
-  /// same mechanism the Settings window uses, so both windows speak one
-  /// design language. The previous shape faked collapse by clamping the
-  /// column to a 56pt icon strip, but `navigationSplitViewColumnWidth` is
-  /// read only when the column is built and the split view's width autosave
-  /// outlives an `.id()` content rebuild, so "Collapse sidebar" left the
-  /// monogram strip floating in a 200-500pt band (operator screenshots,
-  /// 2026-08-09). Recovery stays guaranteed: the toggle lives in the DETAIL
-  /// header, which never collapses.
+  /// Persist only the user's expanded/collapsed choice; AppKit owns column geometry.
   @AppStorage("AgentChat.sidebarExpanded.v1") private var sidebarExpanded = true
   @AppStorage("AgentChat.alwaysOnTop.v1") private var isPinned = false
-  @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
   init(store: AgentChatStore, maxPermissions: SettingsViewModel? = nil) {
     _store = StateObject(wrappedValue: store)
@@ -27,23 +17,16 @@ struct AgentChatView: View {
   }
 
   var body: some View {
-    NavigationSplitView(columnVisibility: $columnVisibility) {
-      ThreadRail(store: store, mode: .expanded)
-        .navigationSplitViewColumnWidth(
-          min: AgentSidebarMode.expanded.minimumWidth,
-          ideal: AgentSidebarMode.expanded.idealWidth,
-          max: AgentSidebarMode.expanded.maximumWidth
-        )
-        .toolbar(removing: .sidebarToggle)
-    } detail: {
-      ThreadDetail(
+    AgentColumns(
+      sidebarExpanded: sidebarExpanded,
+      sidebar: ThreadRail(store: store, mode: .expanded),
+      detail: ThreadDetail(
         store: store,
         isSidebarExpanded: sidebarExpanded,
         isPinned: $isPinned,
         toggleSidebar: toggleSidebar
       )
-    }
-    .navigationSplitViewStyle(.balanced)
+    )
     .safeAreaInset(edge: .bottom) {
       if let maxPermissions {
         MaxPermissionPresentation(model: maxPermissions)
@@ -64,14 +47,11 @@ struct AgentChatView: View {
       AgentPerf.logger.info("agent window shell rendered")
       store.startDemoStreamIfNeeded()
     }
-    // Restore the persisted rail state through the native mechanism.
-    .onAppear { columnVisibility = sidebarExpanded ? .all : .detailOnly }
   }
 
   private func toggleSidebar() {
     withAnimation {
       sidebarExpanded.toggle()
-      columnVisibility = sidebarExpanded ? .all : .detailOnly
     }
   }
 }
@@ -145,29 +125,37 @@ private struct AgentWindowCapabilities: NSViewRepresentable {
   }
 
   private func configure(_ window: NSWindow?) {
-    guard let window else { return }
-    window.level = AgentWindowLevelPolicy.level(isPinned: isPinned)
-    guard let split = Self.splitController(in: window.contentView),
-      let sidebar = split.splitViewItems.first(where: { $0.behavior == .sidebar })
-    else { return }
-    sidebar.minimumThickness = AgentSidebarMode.expanded.minimumWidth
-    sidebar.maximumThickness = AgentSidebarMode.expanded.maximumWidth
-    if !sidebar.isCollapsed, let column = split.splitView.subviews.first {
-      let bounded = min(sidebar.maximumThickness, max(sidebar.minimumThickness, column.frame.width))
-      if abs(column.frame.width - bounded) > 1 {
-        split.splitView.setPosition(bounded, ofDividerAt: 0)
-      }
-    }
+    window?.level = AgentWindowLevelPolicy.level(isPinned: isPinned)
+  }
+}
+
+/// One native owner for the divider's hard bounds and collapse state.
+private struct AgentColumns<Sidebar: View, Detail: View>: NSViewControllerRepresentable {
+  let sidebarExpanded: Bool
+  let sidebar: Sidebar
+  let detail: Detail
+
+  func makeNSViewController(context: Context) -> NSSplitViewController {
+    let controller = NSSplitViewController()
+    controller.splitView.isVertical = true
+    controller.splitView.dividerStyle = .thin
+    let rail = NSSplitViewItem(sidebarWithViewController: NSHostingController(rootView: sidebar))
+    rail.minimumThickness = AgentSidebarMode.expanded.minimumWidth
+    rail.maximumThickness = AgentSidebarMode.expanded.maximumWidth
+    rail.canCollapse = false
+    controller.addSplitViewItem(rail)
+    let conversation = NSSplitViewItem(viewController: NSHostingController(rootView: detail))
+    conversation.minimumThickness = 320
+    controller.addSplitViewItem(conversation)
+    return controller
   }
 
-  private static func splitController(in view: NSView?) -> NSSplitViewController? {
-    guard let view else { return nil }
-    if let split = view as? NSSplitView, let controller = split.delegate as? NSSplitViewController {
-      return controller
-    }
-    return view.subviews.lazy.compactMap { splitController(in: $0) }.first
+  func updateNSViewController(_ controller: NSSplitViewController, context: Context) {
+    let rail = controller.splitViewItems[0]
+    (rail.viewController as? NSHostingController<Sidebar>)?.rootView = sidebar
+    (controller.splitViewItems[1].viewController as? NSHostingController<Detail>)?.rootView = detail
+    rail.isCollapsed = !sidebarExpanded
   }
-
 }
 
 // MARK: - Detail (chrome · messages · composer)

@@ -117,13 +117,25 @@ final class ChatLayoutPolicyTests: XCTestCase {
     let item = try XCTUnwrap(split.splitViewItems.first(where: { $0.behavior == .sidebar }))
     XCTAssertEqual(item.minimumThickness, 267)
     XCTAssertEqual(item.maximumThickness, 360)
-    for proposed in [850.0, 50.0] {
-      split.splitView.setPosition(proposed, ofDividerAt: 0)
-      split.splitView.layoutSubtreeIfNeeded()
+    for windowWidth in [1120.0, 640.0, 1800.0, 800.0] {
+      window.setContentSize(NSSize(width: windowWidth, height: 720))
+      for proposed in [1600.0, 50.0, 300.0, 900.0, 0.0] {
+        split.splitView.setPosition(proposed, ofDividerAt: 0)
+        split.splitView.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        let width = item.viewController.view.frame.width
+        XCTAssertFalse(item.isCollapsed)
+        XCTAssertGreaterThanOrEqual(width, 266)
+        XCTAssertLessThanOrEqual(width, 361)
+        XCTAssertGreaterThanOrEqual(split.splitViewItems[1].viewController.view.frame.width, 319)
+      }
+      item.isCollapsed = true
       RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-      let width = item.viewController.view.frame.width
-      XCTAssertGreaterThanOrEqual(width, 266)
-      XCTAssertLessThanOrEqual(width, 361)
+      XCTAssertTrue(item.isCollapsed)
+      item.isCollapsed = false
+      RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+      XCTAssertGreaterThanOrEqual(item.viewController.view.frame.width, 266)
+      XCTAssertLessThanOrEqual(item.viewController.view.frame.width, 361)
     }
   }
 
