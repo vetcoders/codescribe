@@ -3886,18 +3886,11 @@ mod tests {
 
     #[tokio::test]
     async fn frozen_stop_canvas_publishes_the_exact_light_plus_paste() {
-        let temp = tempfile::tempdir().unwrap();
-        let bus_path = temp.path().join("paste.jsonl");
-        let bus = Arc::new(
-            TranscriptBus::open_at(
-                dictation_session("paste-take", true),
-                bus_path.clone(),
-                None,
-            )
-            .unwrap(),
-        );
-        let delivery = Arc::new(Mutex::new(String::new()));
-        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let fixture = BusFixture::new("paste-take", true, "paste.jsonl", "");
+        let bus = Arc::clone(&fixture.bus);
+        let ledger = Arc::clone(&fixture.ledger);
+        let delivery = Arc::clone(&fixture.delivery);
+        let bus_path = fixture.path.clone();
         let occurrence = OccurrenceIdentity::new("paste-take", 7, 0, 16_000);
         let mutation = admitted_mutation(
             &mut ledger.lock().unwrap(),
@@ -3906,14 +3899,7 @@ mod tests {
             "to działa bo jest proste",
         );
         bus.publish_started();
-        let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::clone(&delivery),
-            None,
-            None,
-            Some(Arc::clone(&bus)),
-            Some(Arc::clone(&ledger)),
-            None,
-        );
+        let mut emitter = fixture.emitter(None, None);
         emitter.on_capture_opened("paste-take", 7);
         emitter.on_event(&mutation);
         let frozen = emitter.visible_canvas_snapshot().unwrap();
@@ -3936,27 +3922,13 @@ mod tests {
 
     #[tokio::test]
     async fn late_mutation_after_frozen_paste_remains_a_bus_revision() {
-        let temp = tempfile::tempdir().unwrap();
-        let bus_path = temp.path().join("late.jsonl");
-        let bus = Arc::new(
-            TranscriptBus::open_at(
-                dictation_session("late-paste", true),
-                bus_path.clone(),
-                None,
-            )
-            .unwrap(),
-        );
-        let delivery = Arc::new(Mutex::new(String::new()));
-        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let fixture = BusFixture::new("late-paste", true, "late.jsonl", "");
+        let bus = Arc::clone(&fixture.bus);
+        let ledger = Arc::clone(&fixture.ledger);
+        let delivery = Arc::clone(&fixture.delivery);
+        let bus_path = fixture.path.clone();
         bus.publish_started();
-        let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::clone(&delivery),
-            None,
-            None,
-            Some(Arc::clone(&bus)),
-            Some(Arc::clone(&ledger)),
-            None,
-        );
+        let mut emitter = fixture.emitter(None, None);
         emitter.on_capture_opened("late-paste", 7);
         let first = admitted_mutation(
             &mut ledger.lock().unwrap(),
@@ -4305,6 +4277,52 @@ mod tests {
             latched_target_is_self: false,
             audience: None,
             badge_only: false,
+        }
+    }
+
+    /// Resource ownership only: each scenario still performs every lifecycle and ledger step.
+    struct BusFixture {
+        _temp: tempfile::TempDir,
+        path: std::path::PathBuf,
+        bus: Arc<TranscriptBus>,
+        ledger: Arc<StdMutex<AcousticLedger>>,
+        delivery: Arc<Mutex<String>>,
+    }
+
+    impl BusFixture {
+        fn new(session: &str, latched_target: bool, file: &str, initial_delivery: &str) -> Self {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join(file);
+            let bus = Arc::new(
+                TranscriptBus::open_at(
+                    dictation_session(session, latched_target),
+                    path.clone(),
+                    None,
+                )
+                .unwrap(),
+            );
+            Self {
+                _temp: temp,
+                path,
+                bus,
+                ledger: Arc::new(StdMutex::new(AcousticLedger::new())),
+                delivery: Arc::new(Mutex::new(initial_delivery.into())),
+            }
+        }
+
+        fn emitter(
+            &self,
+            deltas: Option<Arc<dyn DeltaSink>>,
+            observer: Option<super::ProjectionObserver>,
+        ) -> PresentationEmitter {
+            PresentationEmitter::new_with_authority(
+                Arc::clone(&self.delivery),
+                deltas,
+                None,
+                Some(Arc::clone(&self.bus)),
+                Some(Arc::clone(&self.ledger)),
+                observer,
+            )
         }
     }
 
@@ -5729,17 +5747,14 @@ mod tests {
 
     #[tokio::test]
     async fn ledger_mutation_paints_overlay_and_writes_exact_revision_to_delivery() {
-        let delivery = Arc::new(Mutex::new(String::new()));
         let deltas = Arc::new(RecordingDeltaSink::default());
-        let temp = tempfile::tempdir().unwrap();
-        let bus_path = temp.path().join("ledger.jsonl");
-        let bus = Arc::new(
-            TranscriptBus::open_at(dictation_session("session", true), bus_path.clone(), None)
-                .unwrap(),
-        );
+        let fixture = BusFixture::new("session", true, "ledger.jsonl", "");
+        let bus = Arc::clone(&fixture.bus);
+        let ledger = Arc::clone(&fixture.ledger);
+        let delivery = Arc::clone(&fixture.delivery);
+        let bus_path = fixture.path.clone();
         let projection_count = Arc::new(AtomicUsize::new(0));
         let projection_count_for_callback = Arc::clone(&projection_count);
-        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
         let mutation = {
             let mut guard = ledger.lock().unwrap_or_else(|error| error.into_inner());
             admitted_mutation(
@@ -5750,12 +5765,8 @@ mod tests {
             )
         };
         bus.publish_started();
-        let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::clone(&delivery),
+        let mut emitter = fixture.emitter(
             Some(deltas.clone()),
-            None,
-            Some(Arc::clone(&bus)),
-            Some(ledger),
             Some(Arc::new(move |_| {
                 projection_count_for_callback.fetch_add(1, Ordering::SeqCst);
             })),
@@ -5809,21 +5820,13 @@ mod tests {
 
     #[tokio::test]
     async fn raw_text_lane_failure_and_session_close_cannot_change_delivery() {
-        let delivery = Arc::new(Mutex::new("last ledger revision".to_string()));
-        let temp = tempfile::tempdir().unwrap();
-        let bus_path = temp.path().join("raw-events.jsonl");
-        let bus = Arc::new(
-            TranscriptBus::open_at(dictation_session("session", false), bus_path.clone(), None)
-                .unwrap(),
-        );
+        let fixture = BusFixture::new("session", false, "raw-events.jsonl", "last ledger revision");
+        let delivery = Arc::clone(&fixture.delivery);
+        let bus_path = fixture.path.clone();
         let projection_count = Arc::new(AtomicUsize::new(0));
         let projection_count_for_callback = Arc::clone(&projection_count);
-        let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::clone(&delivery),
+        let mut emitter = fixture.emitter(
             None,
-            None,
-            Some(bus),
-            Some(Arc::new(StdMutex::new(AcousticLedger::new()))),
             Some(Arc::new(move |_| {
                 projection_count_for_callback.fetch_add(1, Ordering::SeqCst);
             })),
@@ -5871,17 +5874,10 @@ mod tests {
     /// lifecycle end, and replay returns the same terminal bytes.
     #[tokio::test]
     async fn explicit_revisions_commit_after_refused_terminal_seal() {
-        let temp = tempfile::tempdir().unwrap();
-        let bus = Arc::new(
-            TranscriptBus::open_at(
-                dictation_session("refused-take", false),
-                temp.path().join("refused.jsonl"),
-                None,
-            )
-            .unwrap(),
-        );
+        let fixture = BusFixture::new("refused-take", false, "refused.jsonl", "");
+        let bus = Arc::clone(&fixture.bus);
+        let ledger = Arc::clone(&fixture.ledger);
         let occurrence = OccurrenceIdentity::new("refused-take", 7, 0, 16_000);
-        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
         let mutation = admitted_mutation(
             &mut ledger.lock().unwrap_or_else(|error| error.into_inner()),
             occurrence,
@@ -5889,14 +5885,7 @@ mod tests {
             "Pierwsza wersja",
         );
         bus.publish_started();
-        let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::new(Mutex::new(String::new())),
-            None,
-            None,
-            Some(Arc::clone(&bus)),
-            Some(Arc::clone(&ledger)),
-            None,
-        );
+        let mut emitter = fixture.emitter(None, None);
         emitter.on_event(&mutation);
         let coverage = {
             use codescribe_core::audio::capture_receipt::{
@@ -5955,7 +5944,7 @@ mod tests {
             )
             .unwrap();
         let first = crate::presentation::transcript_bus::document_history_at(
-            &temp.path().join("refused.jsonl"),
+            &fixture.path.clone(),
             "refused-take",
         )
         .unwrap()
@@ -6003,7 +5992,7 @@ mod tests {
                 .into_refusal()
                 .is_some()
         );
-        let rows = std::fs::read_to_string(temp.path().join("refused.jsonl")).unwrap();
+        let rows = std::fs::read_to_string(fixture.path.clone()).unwrap();
         assert!(rows.contains("\"phase\":\"coverage_refused\""));
         assert!(rows.contains("\"reducer_action\":\"apply_manual_edit\""));
         assert!(rows.contains("\"seal_coverage\""));
@@ -6037,7 +6026,7 @@ mod tests {
         }
         assert_eq!(
             crate::presentation::transcript_bus::document_history_at(
-                &temp.path().join("refused.jsonl"),
+                &fixture.path.clone(),
                 "refused-take"
             )
             .unwrap()
@@ -6051,19 +6040,12 @@ mod tests {
 
     #[tokio::test]
     async fn terminal_user_revision_is_ledger_stamped_and_replayable() {
-        let delivery = Arc::new(Mutex::new(String::new()));
-        let temp = tempfile::tempdir().unwrap();
-        let bus_path = temp.path().join("user-revision.jsonl");
-        let bus = Arc::new(
-            TranscriptBus::open_at(
-                dictation_session("revision-session", true),
-                bus_path.clone(),
-                None,
-            )
-            .unwrap(),
-        );
+        let fixture = BusFixture::new("revision-session", true, "user-revision.jsonl", "");
+        let bus = Arc::clone(&fixture.bus);
+        let ledger = Arc::clone(&fixture.ledger);
+        let delivery = Arc::clone(&fixture.delivery);
+        let bus_path = fixture.path.clone();
         let occurrence = OccurrenceIdentity::new("revision-session", 4, 0, 16_000);
-        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
         let mutation = {
             let mut ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
             let mutation = admitted_mutation(&mut ledger, occurrence.clone(), 1, "Tekst bazowy");
@@ -6074,12 +6056,8 @@ mod tests {
         let projected = Arc::new(StdMutex::new(Vec::new()));
         let projected_for_callback = Arc::clone(&projected);
         bus.publish_started();
-        let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::clone(&delivery),
+        let mut emitter = fixture.emitter(
             None,
-            None,
-            Some(Arc::clone(&bus)),
-            Some(Arc::clone(&ledger)),
             Some(Arc::new(move |event| {
                 projected_for_callback
                     .lock()
@@ -6188,14 +6166,11 @@ mod tests {
 
     #[tokio::test]
     async fn restoring_first_bus_version_appends_new_document_version() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("versions.jsonl");
-        let bus = Arc::new(
-            TranscriptBus::open_at(dictation_session("version-take", false), path.clone(), None)
-                .unwrap(),
-        );
+        let fixture = BusFixture::new("version-take", false, "versions.jsonl", "");
+        let bus = Arc::clone(&fixture.bus);
+        let ledger = Arc::clone(&fixture.ledger);
+        let path = fixture.path.clone();
         let occurrence = OccurrenceIdentity::new("version-take", 3, 0, 16_000);
-        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
         let mutation = {
             let mut ledger = ledger.lock().unwrap();
             let mutation = admitted_mutation(&mut ledger, occurrence.clone(), 1, "First words");
@@ -6204,14 +6179,7 @@ mod tests {
             mutation
         };
         bus.publish_started();
-        let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::new(Mutex::new(String::new())),
-            None,
-            None,
-            Some(Arc::clone(&bus)),
-            Some(Arc::clone(&ledger)),
-            None,
-        );
+        let mut emitter = fixture.emitter(None, None);
         emitter.on_event(&mutation);
         let seal = ledger
             .lock()
@@ -6277,19 +6245,12 @@ mod tests {
     /// provenance and repaints only through the committed projection callback.
     #[tokio::test]
     async fn terminal_formatter_revision_commits_effect_and_failure_is_pure() {
-        let delivery = Arc::new(Mutex::new(String::new()));
-        let temp = tempfile::tempdir().unwrap();
-        let bus_path = temp.path().join("formatter-revision.jsonl");
-        let bus = Arc::new(
-            TranscriptBus::open_at(
-                dictation_session("formatter-session", true),
-                bus_path.clone(),
-                None,
-            )
-            .unwrap(),
-        );
+        let fixture = BusFixture::new("formatter-session", true, "formatter-revision.jsonl", "");
+        let bus = Arc::clone(&fixture.bus);
+        let ledger = Arc::clone(&fixture.ledger);
+        let delivery = Arc::clone(&fixture.delivery);
+        let bus_path = fixture.path.clone();
         let occurrence = OccurrenceIdentity::new("formatter-session", 5, 0, 16_000);
-        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
         let mutation = {
             let mut ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
             let mutation = admitted_mutation(
@@ -6305,12 +6266,8 @@ mod tests {
         let projected = Arc::new(StdMutex::new(Vec::new()));
         let projected_for_callback = Arc::clone(&projected);
         bus.publish_started();
-        let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::clone(&delivery),
+        let mut emitter = fixture.emitter(
             None,
-            None,
-            Some(Arc::clone(&bus)),
-            Some(Arc::clone(&ledger)),
             Some(Arc::new(move |event| {
                 projected_for_callback
                     .lock()
@@ -6437,22 +6394,15 @@ mod tests {
     /// occurrence labels stay untouched — Rust remains the only author.
     #[tokio::test]
     async fn terminal_seal_mints_light_plus_revision_before_session_end() {
-        let delivery = Arc::new(Mutex::new(String::new()));
-        let temp = tempfile::tempdir().unwrap();
-        let bus_path = temp.path().join("light-plus.jsonl");
-        let bus = Arc::new(
-            TranscriptBus::open_at(
-                dictation_session("light-plus-session", true),
-                bus_path.clone(),
-                None,
-            )
-            .unwrap(),
-        );
+        let fixture = BusFixture::new("light-plus-session", true, "light-plus.jsonl", "");
+        let bus = Arc::clone(&fixture.bus);
+        let ledger = Arc::clone(&fixture.ledger);
+        let delivery = Arc::clone(&fixture.delivery);
+        let bus_path = fixture.path.clone();
         // Preserve the two-occurrence terminal beside the single-occurrence
         // falsifier. Explicit scope, never cardinality, identifies both.
         let occurrence = OccurrenceIdentity::new("light-plus-session", 6, 0, 16_000);
         let tail_occurrence = OccurrenceIdentity::new("light-plus-session", 6, 16_000, 32_000);
-        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
         let raw_words = "to jest tekst bez interpunkcji yyy i koniec";
         let tail_words = "a to jest ogon";
         let (mutation, tail_mutation) = {
@@ -6469,12 +6419,8 @@ mod tests {
         let projected = Arc::new(StdMutex::new(Vec::new()));
         let projected_for_callback = Arc::clone(&projected);
         bus.publish_started();
-        let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::clone(&delivery),
+        let mut emitter = fixture.emitter(
             None,
-            None,
-            Some(Arc::clone(&bus)),
-            Some(Arc::clone(&ledger)),
             Some(Arc::new(move |event| {
                 projected_for_callback
                     .lock()
@@ -6591,15 +6537,11 @@ mod tests {
     /// reach delivery exactly as the ledger holds them.
     #[tokio::test]
     async fn literal_delivery_keeps_terminal_words_untouched() {
-        let delivery = Arc::new(Mutex::new(String::new()));
-        let temp = tempfile::tempdir().unwrap();
-        let bus_path = temp.path().join("literal.jsonl");
-        let bus = Arc::new(
-            TranscriptBus::open_at(dictation_session("literal-session", true), bus_path, None)
-                .unwrap(),
-        );
+        let fixture = BusFixture::new("literal-session", true, "literal.jsonl", "");
+        let bus = Arc::clone(&fixture.bus);
+        let ledger = Arc::clone(&fixture.ledger);
+        let delivery = Arc::clone(&fixture.delivery);
         let occurrence = OccurrenceIdentity::new("literal-session", 7, 0, 16_000);
-        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
         let raw_words = "słowa literalne bez kropki";
         let mutation = {
             let mut ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
@@ -6609,14 +6551,7 @@ mod tests {
             mutation
         };
         bus.publish_started();
-        let mut emitter = PresentationEmitter::new_with_authority(
-            Arc::clone(&delivery),
-            None,
-            None,
-            Some(Arc::clone(&bus)),
-            Some(Arc::clone(&ledger)),
-            None,
-        );
+        let mut emitter = fixture.emitter(None, None);
         emitter.set_literal_delivery(true);
         emitter.on_event(&mutation);
         let terminal_seal = ledger
@@ -8184,30 +8119,18 @@ mod tests {
     async fn later_committed_paint_keeps_uncovered_unanchored_evidence() {
         let paints = Arc::new(StdMutex::new(Vec::new()));
         let observed = Arc::clone(&paints);
-        let delivery = Arc::new(Mutex::new(String::new()));
-        let temp = tempfile::tempdir().unwrap();
         let session = "overlap-paint";
-        let bus = Arc::new(
-            TranscriptBus::open_at(
-                dictation_session(session, true),
-                temp.path().join("paint.jsonl"),
-                None,
-            )
-            .unwrap(),
-        );
+        let fixture = BusFixture::new(session, true, "paint.jsonl", "");
+        let bus = Arc::clone(&fixture.bus);
+        let ledger = Arc::clone(&fixture.ledger);
+        let delivery = Arc::clone(&fixture.delivery);
         bus.publish_started();
-        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
-        let mut emitter = super::PresentationEmitter::new_with_authority(
-            Arc::clone(&delivery),
-            None,
-            None,
-            Some(bus),
-            Some(Arc::clone(&ledger)),
-            None,
-        )
-        .with_cursor_observer(Arc::new(move |projection| {
-            observed.lock().unwrap().push(projection.text.clone());
-        }));
+        let mut emitter =
+            fixture
+                .emitter(None, None)
+                .with_cursor_observer(Arc::new(move |projection| {
+                    observed.lock().unwrap().push(projection.text.clone());
+                }));
         emitter.on_capture_opened(session, 1);
         let beta = OccurrenceIdentity::new(session, 1, 24_000, 48_000);
         let gamma = OccurrenceIdentity::new(session, 1, 48_000, 72_000);
@@ -8268,28 +8191,22 @@ mod tests {
         let deltas = Arc::new(RecordingDeltaSink::default());
         let projected = Arc::new(StdMutex::new(Vec::<TranscriptBusEvidenceEvent>::new()));
         let projected_for_callback = Arc::clone(&projected);
-        let delivery = Arc::new(Mutex::new(String::new()));
-        let temp = tempfile::tempdir().unwrap();
-        let bus_path = temp.path().join("refused-span.jsonl");
-        let bus = Arc::new(
-            TranscriptBus::open_at(dictation_session(session, true), bus_path.clone(), None)
-                .unwrap(),
-        );
+        let fixture = BusFixture::new(session, true, "refused-span.jsonl", "");
+        let bus = Arc::clone(&fixture.bus);
+        let ledger = Arc::clone(&fixture.ledger);
+        let delivery = Arc::clone(&fixture.delivery);
+        let bus_path = fixture.path.clone();
         bus.publish_started();
-        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
-        let mut emitter = super::PresentationEmitter::new_with_authority(
-            Arc::clone(&delivery),
-            Some(Arc::clone(&deltas) as Arc<dyn DeltaSink>),
-            None,
-            Some(bus),
-            Some(Arc::clone(&ledger)),
-            Some(Arc::new(move |event: &TranscriptBusEvidenceEvent| {
-                projected_for_callback.lock().unwrap().push(event.clone());
-            })),
-        )
-        .with_cursor_observer(Arc::new(move |projection| {
-            observed.lock().unwrap().push(projection.clone());
-        }));
+        let mut emitter = fixture
+            .emitter(
+                Some(Arc::clone(&deltas) as Arc<dyn DeltaSink>),
+                Some(Arc::new(move |event: &TranscriptBusEvidenceEvent| {
+                    projected_for_callback.lock().unwrap().push(event.clone());
+                })),
+            )
+            .with_cursor_observer(Arc::new(move |projection| {
+                observed.lock().unwrap().push(projection.clone());
+            }));
         emitter.on_capture_opened(session, 1);
         let apple = OccurrenceIdentity::new(session, 1, 0, 48_000);
         let committed = {
@@ -8709,29 +8626,17 @@ mod tests {
         let session = "take";
         let paints = Arc::new(StdMutex::new(Vec::<super::CompactProjection>::new()));
         let observed = Arc::clone(&paints);
-        let delivery = Arc::new(Mutex::new(String::new()));
-        let temp = tempfile::tempdir().unwrap();
-        let bus = Arc::new(
-            TranscriptBus::open_at(
-                dictation_session(session, true),
-                temp.path().join("evidence-life.jsonl"),
-                None,
-            )
-            .unwrap(),
-        );
+        let fixture = BusFixture::new(session, true, "evidence-life.jsonl", "");
+        let bus = Arc::clone(&fixture.bus);
+        let ledger = Arc::clone(&fixture.ledger);
+        let delivery = Arc::clone(&fixture.delivery);
         bus.publish_started();
-        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
-        let mut emitter = super::PresentationEmitter::new_with_authority(
-            Arc::clone(&delivery),
-            None,
-            None,
-            Some(bus),
-            Some(Arc::clone(&ledger)),
-            None,
-        )
-        .with_cursor_observer(Arc::new(move |projection| {
-            observed.lock().unwrap().push(projection.clone());
-        }));
+        let mut emitter =
+            fixture
+                .emitter(None, None)
+                .with_cursor_observer(Arc::new(move |projection| {
+                    observed.lock().unwrap().push(projection.clone());
+                }));
         // Literal takes mint no live shape, so no committed paint follows a
         // seal: the evidence the seal closes must leave the paint on its own.
         emitter.set_literal_delivery(true);
