@@ -1169,6 +1169,70 @@ assert o["follower_pid"] == int(sys.argv[2]), o
 PY
 kill "$follower_pid" 2>/dev/null || true
 
+# Channel claims preserve owners and concurrent writes. No live bus or audio.
+python3 - "$DEMUX" "$WORKDIR/channel-claims" <<'PYTEST'
+import importlib.util
+import json
+import multiprocessing
+import subprocess
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("channel_claim_test", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+root = Path(sys.argv[2])
+path = module.write_channel_binding(root, "2", "Roman", "codex", "owner")
+original = path.read_bytes()
+module.write_channel_binding(root, "2", "roman", "codex", "owner")
+assert path.read_bytes() == original
+for name, provider, session in [("roman", "codex", "other"), ("roman", "claude-code", "owner"), ("eve", "codex", "owner")]:
+    result = subprocess.run([
+        sys.executable, sys.argv[1], "--bridge-home", str(root),
+        "--bus", str(root / "unused-bus"), "--attach", "--channel", "2",
+        "--name", name, "--provider", provider, "--session", session,
+    ], capture_output=True, text=True)
+    assert result.returncode == 3, result
+    assert "occupied by roman" in result.stderr, result.stderr
+    assert "free channels: 1, 3, 4, 5, 6, 7, 8, 9" in result.stderr
+    assert not result.stdout, result.stdout
+    assert path.read_bytes() == original
+    assert not (root / "runtime").exists(), "refusal must not start a follower"
+
+ctx = multiprocessing.get_context("fork")
+def race(folder, channels):
+    barrier = ctx.Barrier(len(channels))
+    def claim(slot, owner):
+        barrier.wait(timeout=10)
+        try:
+            module.write_channel_binding(folder, slot, owner, "codex", owner)
+        except OSError:
+            sys.exit(3)
+    workers = [ctx.Process(target=claim, args=(slot, f"owner-{i}")) for i, slot in enumerate(channels)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=15)
+        assert not worker.is_alive(), "channel claim deadlocked"
+    return [worker.exitcode for worker in workers]
+
+shared = root / "same-slot"
+assert sorted(race(shared, ["2"] * 8)) == [0] + [3] * 7
+assert len(json.loads((shared / module.AUDIENCE_BINDING_FILENAME).read_text())["bindings"]) == 1
+separate = root / "distinct-slots"
+assert race(separate, [str(n) for n in range(1, 10)]) == [0] * 9
+assert len(json.loads((separate / module.AUDIENCE_BINDING_FILENAME).read_text())["bindings"]) == 9
+for invalid in ["{broken", "{}", '{"schema":"wrong","bindings":{}}']:
+    path.write_text(invalid)
+    try:
+        module.write_channel_binding(root, "3", "new", "codex", "new")
+    except OSError:
+        pass
+    else:
+        raise AssertionError("corrupt bindings must refuse writes")
+    assert path.read_text() == invalid
+PYTEST
+
 # --say resolves voice and speed from the profile store, not from hardcodes.
 python3 - "$DEMUX" "$ATTACH_HOME" <<'PY'
 import importlib.util

@@ -23,6 +23,12 @@ document, while every seal stays its own envelope. Pass
 the hook receives `CODESCRIBE_SEAL_DELIVERY_ID`, `CODESCRIBE_SEAL_SESSION_ID`
 and `CODESCRIBE_SEAL_TEXT`, and fires exactly once per freshly queued seal.
 
+An occupied channel refuses a different provider, session or name before starting
+any follower. The error identifies the owner and free slots. Repeating the same
+binding is idempotent. Claims use an exclusive lock around read/check/write, so
+simultaneous callers cannot replace each other or lose distinct-slot updates.
+Unreadable bindings refuse writes; they are never treated as an empty map.
+
 Read the channel's one truthful state at any time:
 
 ```bash
