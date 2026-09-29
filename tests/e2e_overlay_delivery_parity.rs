@@ -186,8 +186,13 @@ fn layered_arming_matches_request(
     receipt: Option<&TailPatchSessionReceipt>,
 ) -> Result<(), String> {
     if !requested {
-        if receipt.is_some_and(|receipt| receipt.submitted > 0) {
-            return Err("Layered OFF submitted Layer 1 windows".to_string());
+        if let Some(receipt) = receipt {
+            if receipt.armed {
+                return Err("Layered OFF receipt says the lane was armed".to_string());
+            }
+            if receipt.submitted > 0 {
+                return Err("Layered OFF submitted Layer 1 windows".to_string());
+            }
         }
         return Ok(());
     }

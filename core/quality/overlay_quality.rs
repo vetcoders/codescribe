@@ -1253,6 +1253,67 @@ fn edit_provenance_value_is_manual(provenance: &str) -> bool {
     provenance == "manual_human" || provenance.starts_with("user-edit-")
 }
 
+/// One decision site for lexicon learning. An explicit teach gesture
+/// (`teach-span` / `teach-dictionary`) always teaches: the human pointed at
+/// the exact span. Manual edit provenance teaches only under the Correction
+/// formatting level — Off, Smart and Max are evidence-only, because a manual
+/// edit on top of a creative rewrite votes the formatter's wording, not what
+/// the recognizer heard, into the lexicon.
+fn commit_teaches_lexicon(
+    mode: &str,
+    action: Option<&str>,
+    formatting_level: Option<&str>,
+    edit_provenance: Option<&str>,
+) -> bool {
+    overlay_commit_teaches_lexicon(mode, action)
+        || (edit_provenance_is_manual(edit_provenance)
+            && formatting_level == Some(FormattingPolicy::Correction.as_str()))
+}
+
+#[cfg(test)]
+mod commit_teaches_lexicon_tests {
+    use super::*;
+
+    #[test]
+    fn manual_edit_teaches_only_under_correction_level() {
+        let manual = Some("manual_human");
+        assert!(commit_teaches_lexicon(
+            "overlay",
+            Some("send"),
+            Some("correction"),
+            manual
+        ));
+        for evidence_only in ["off", "smart", "max"] {
+            assert!(
+                !commit_teaches_lexicon("overlay", Some("send"), Some(evidence_only), manual),
+                "manual edit under {evidence_only} must stay evidence-only"
+            );
+        }
+        assert!(
+            !commit_teaches_lexicon("overlay", Some("send"), None, manual),
+            "absent level must not teach from manual provenance"
+        );
+    }
+
+    #[test]
+    fn explicit_teach_gesture_ignores_formatting_level() {
+        for level in [Some("max"), Some("smart"), Some("off"), None] {
+            assert!(commit_teaches_lexicon(
+                "overlay",
+                Some("teach-span"),
+                level,
+                None
+            ));
+            assert!(commit_teaches_lexicon(
+                "overlay",
+                Some("teach-dictionary"),
+                level,
+                None
+            ));
+        }
+    }
+}
+
 /// High-level: save the quality record for the overlay edit AND feed lexicon candidates.
 /// Called from bridge (and tests). Returns path + honest pairs-learned count.
 /// `action` (e.g. "copy", "send", "close") is carried into meta for future analytics (P2-03 triage over-correct).
@@ -1367,10 +1428,11 @@ pub fn commit_overlay_correction_with_provenance(
         .map(|level| level.as_str().to_string());
     // Overlay copy/close/send is evidence. Teaching from that diff is how
     // 2026-08-17 learned "pisanie Żyda" → "mi się nie wydaje" and "w 3 4" →
-    // "Dwa Trzy Cztery Pięć". Lexicon grows only on an explicit teach gesture
-    // (highlighted span / Voice Lab), never from a formatting-level flag.
+    // "Dwa Trzy Cztery Pięć". Lexicon grows on an explicit teach gesture
+    // (highlighted span / Voice Lab) at any level, or on a manual edit under
+    // Correction only — Off, Smart and Max stay evidence-only (PR #82 review).
     let teaches =
-        overlay_commit_teaches_lexicon(mode, action) || edit_provenance_is_manual(edit_provenance);
+        commit_teaches_lexicon(mode, action, formatting_level.as_deref(), edit_provenance);
     let mut record = QualityRecord::new_with_confidence(
         raw_text.to_string(),
         delivered_text.to_string(),

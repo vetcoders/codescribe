@@ -344,7 +344,7 @@ if [[ -n "${APP_PATH:-}" ]]; then
   echo "▶ agent bridge resource proof"
   AGENT_BRIDGE_DIR="$APP_PATH/Contents/Resources/agent-bridge"
   AGENT_BRIDGE_VERIFY=""
-  if AGENT_BRIDGE_VERIFY=$(python3 - "$AGENT_BRIDGE_DIR" <<'PY'
+  if AGENT_BRIDGE_VERIFY=$(python3 - "$AGENT_BRIDGE_DIR" 2>&1 <<'PY'
 import hashlib
 import json
 import os
