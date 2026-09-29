@@ -171,48 +171,24 @@ pub struct QualityCapture<'a> {
 
 impl QualityRecord {
     /// New record for one overlay edit, stamped now with a fresh
-    /// `correction_id` at revision 1. Confidence fields are left empty; use
-    /// [`QualityRecord::new_with_confidence`] when STT reported them.
-    pub fn new(
-        raw_text: String,
-        delivered_text: String,
-        edited_text: String,
-        mode: &str,
-        model: Option<String>,
-        formatting_level: Option<String>,
-        action: Option<&str>,
-    ) -> Self {
-        Self::new_with_confidence(
-            raw_text,
-            delivered_text,
-            edited_text,
-            QualityCapture {
-                mode,
-                model,
-                formatting_level,
-                action,
-                confidence: SttConfidence::default(),
-            },
-        )
-    }
-
-    /// Full constructor, including the STT confidence signals (W11-C).
+    /// `correction_id` at revision 1. The payload rides in the same
+    /// [`OverlayCorrectionInput`] every caller already holds;
+    /// `canonical_level` is the parsed formatting level the commit path
+    /// validated — the raw `input.formatting_level` string is never persisted.
     ///
-    /// An unavailable clock yields `timestamp_ms == 0` rather than a panic: the
+    /// The timestamp falls back to zero when the clock misbehaves: the
     /// correction itself is the evidence, and refusing to record it because the
-    /// system clock misbehaved would lose the operator's actual work.
-    pub fn new_with_confidence(
-        raw_text: String,
-        delivered_text: String,
-        edited_text: String,
-        capture: QualityCapture<'_>,
+    /// system clock misbehaved would lose the Founder's actual work.
+    pub fn from_correction(
+        input: &OverlayCorrectionInput,
+        canonical_level: Option<String>,
     ) -> Self {
         let timestamp_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        let meta = match capture.action {
-            Some(action) => serde_json::json!({ "source": "overlay-final", "action": action }),
+        let meta = match input.action.as_deref() {
+            Some(a) => serde_json::json!({ "source": "overlay-final", "action": a }),
             None => serde_json::json!({ "source": "overlay-final" }),
         };
         QualityRecord {
@@ -220,15 +196,15 @@ impl QualityRecord {
             revision: 1,
             timestamp_ms,
             session_id: None,
-            mode: capture.mode.to_string(),
-            model: capture.model,
-            formatting_level: capture.formatting_level,
-            raw_text,
-            delivered_text,
-            edited_text,
-            avg_logprob: capture.confidence.avg_logprob,
-            speech_pct: capture.confidence.speech_pct,
-            confidence_flags: capture.confidence.flags,
+            mode: input.mode.clone(),
+            model: input.model.clone(),
+            formatting_level: canonical_level,
+            raw_text: input.raw_text.clone(),
+            delivered_text: input.delivered_text.clone(),
+            edited_text: input.edited_text.clone(),
+            avg_logprob: input.avg_logprob,
+            speech_pct: input.speech_pct,
+            confidence_flags: input.confidence_flags.clone(),
             meta,
         }
     }
@@ -1349,8 +1325,6 @@ pub fn commit_overlay_correction(input: OverlayCorrectionInput) -> Result<Overla
     let action = input.action.as_deref();
     let formatting_level = input.formatting_level.as_deref();
     let edit_provenance = input.edit_provenance.as_deref();
-    let avg_logprob = input.avg_logprob;
-    let speech_pct = input.speech_pct;
     let formatting_level = formatting_level
         .map(FormattingPolicy::parse)
         .transpose()?
@@ -1362,32 +1336,8 @@ pub fn commit_overlay_correction(input: OverlayCorrectionInput) -> Result<Overla
     // Correction only — Off, Smart and Max stay evidence-only (PR #82 review).
     let teaches =
         commit_teaches_lexicon(mode, action, formatting_level.as_deref(), edit_provenance);
-    let mut record = QualityRecord::new_with_confidence(
-        raw_text.to_string(),
-        delivered_text.to_string(),
-        edited_text.to_string(),
-        mode,
-        input.model.clone(),
-        formatting_level,
-        action,
-        avg_logprob,
-        speech_pct,
-        input.confidence_flags.clone(),
-    );
-    let mut record = QualityRecord::new_with_confidence(
-        input.raw_text.to_string(),
-        input.delivered_text.to_string(),
-        input.edited_text.to_string(),
-        QualityCapture {
-            mode: input.mode,
-            model: input.model,
-            formatting_level,
-            action: input.action,
-            confidence: input.confidence,
-        },
-    );
-    if let Some(provenance) = input
-        .edit_provenance
+    let mut record = QualityRecord::from_correction(&input, formatting_level);
+    if let Some(provenance) = edit_provenance
         .map(str::trim)
         .filter(|value| !value.is_empty())
         && let Some(meta) = record.meta.as_object_mut()
@@ -2208,14 +2158,16 @@ mod tests {
 
     #[test]
     fn repeated_revision_of_one_correction_id_is_one_vote() {
-        let mut first = QualityRecord::new(
-            "ajwo".into(),
-            "ajwo".into(),
-            "Iwo".into(),
-            "overlay",
-            None,
+        let mut first = QualityRecord::from_correction(
+            &OverlayCorrectionInput {
+                raw_text: "ajwo".into(),
+                delivered_text: "ajwo".into(),
+                edited_text: "Iwo".into(),
+                mode: "overlay".into(),
+                action: Some("copy".into()),
+                ..Default::default()
+            },
             Some("correction".into()),
-            Some("copy"),
         );
         first
             .meta
@@ -2494,14 +2446,16 @@ mod tests {
             std::env::remove_var("CODESCRIBE_DATA_DIR");
         }
         let result = std::panic::catch_unwind(|| {
-            let _ = save_quality_record(&QualityRecord::new(
-                "r".into(),
-                "d".into(),
-                "e".into(),
-                "overlay",
+            let _ = save_quality_record(&QualityRecord::from_correction(
+                &OverlayCorrectionInput {
+                    raw_text: "r".into(),
+                    delivered_text: "d".into(),
+                    edited_text: "e".into(),
+                    mode: "overlay".into(),
+                    action: Some("copy".into()),
+                    ..Default::default()
+                },
                 None,
-                None,
-                Some("copy"),
             ));
         });
         assert!(result.is_err(), "must panic when CODESCRIBE_DATA_DIR unset");
@@ -2516,21 +2470,19 @@ mod tests {
         assert_eq!(old.speech_pct, None);
         assert!(old.confidence_flags.is_empty());
 
-        let mut fresh = QualityRecord::new_with_confidence(
-            "r".into(),
-            "d".into(),
-            "e".into(),
-            QualityCapture {
-                mode: "overlay",
-                model: None,
-                formatting_level: Some("correction".into()),
-                action: Some("copy"),
-                confidence: SttConfidence {
-                    avg_logprob: Some(-0.42),
-                    speech_pct: Some(0.91),
-                    flags: vec!["low_logprob".into()],
-                },
+        let mut fresh = QualityRecord::from_correction(
+            &OverlayCorrectionInput {
+                raw_text: "r".into(),
+                delivered_text: "d".into(),
+                edited_text: "e".into(),
+                mode: "overlay".into(),
+                action: Some("copy".into()),
+                avg_logprob: Some(-0.42),
+                speech_pct: Some(0.91),
+                confidence_flags: vec!["low_logprob".into()],
+                ..Default::default()
             },
+            Some("correction".into()),
         );
         fresh.timestamp_ms = 99;
         let encoded = serde_json::to_string(&fresh).expect("encode");
@@ -3117,14 +3069,16 @@ mod tests {
                 .expect("known formatting level")
                 .as_str()
                 .to_string();
-            let record = QualityRecord::new(
-                "raw".into(),
-                "delivered".into(),
-                "edited".into(),
-                "overlay",
-                None,
+            let record = QualityRecord::from_correction(
+                &OverlayCorrectionInput {
+                    raw_text: "raw".into(),
+                    delivered_text: "delivered".into(),
+                    edited_text: "edited".into(),
+                    mode: "overlay".into(),
+                    action: Some("copy".into()),
+                    ..Default::default()
+                },
                 Some(level),
-                Some("copy"),
             );
             let encoded = serde_json::to_string(&record).expect("serialize quality record");
             let decoded: QualityRecord =
