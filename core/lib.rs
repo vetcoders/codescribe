@@ -90,7 +90,7 @@ pub mod test_isolation;
 pub mod transcript_tagging;
 /// Local CSM-1B text-to-speech synthesis surface.
 pub mod tts;
-/// Shared utilities: capability-checked path access and status reporting.
+/// Shared utilities: capability-checked path access and child-pipe signal hygiene.
 pub mod util;
 /// Silero neural voice-activity detection.
 pub mod vad;
@@ -181,4 +181,4 @@ pub use config::{get_assistive_prompt_path, get_formatting_prompt_path, reset_to
 pub use llm::{ai_formatting, client};
 pub use pipeline::contracts;
 pub use quality::{engine_contract, overlay_quality, qube_daemon, qube_report};
-pub use util::{safe_path, status};
+pub use util::safe_path;

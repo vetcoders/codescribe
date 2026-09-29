@@ -102,6 +102,12 @@ struct DictationOverlayView: View {
     // already falls outside the borderless window (never rendered), so this
     // clip costs nothing visually.
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous))
+    .overlay {
+      CSFocusOutline(
+        isFocused: state.isTranscriptEditable && state.isEditingTranscript,
+        cornerRadius: CSRadius.window
+      )
+    }
     .animation(reduceMotion ? nil : CSMotion.floatIn, value: state.toast)
     .onHover { inside in
       pointerInsideOverlay = inside

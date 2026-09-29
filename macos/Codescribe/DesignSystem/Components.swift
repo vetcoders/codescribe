@@ -174,21 +174,6 @@ extension View {
     buttonStyle(.csFocusRing(cornerRadius: cornerRadius))
       .focusEffectDisabled()
   }
-
-  /// Settings / panel card chrome. Five panels used to re-declare the same
-  /// fill + hairline at 12/14/15pt padding. One modifier, one radius, one fill.
-  func csSettingsCard(padding: CGFloat = CSSpace.card) -> some View {
-    self
-      .padding(padding)
-      .background(
-        RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-          .fill(CSColor.surfaceRaised(0.025))
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-          .strokeBorder(CSColor.hairline(), lineWidth: 1)
-      )
-  }
 }
 
 /// Small mode/brand dot.

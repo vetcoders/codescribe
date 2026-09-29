@@ -101,9 +101,6 @@ final class TrayViewModel: ObservableObject {
     if isStartingDictation { return "Starting" }
     return isRecording ? "Recording" : "Idle"
   }
-  var statusColor: Color {
-    (isRecording || isStartingDictation) ? CSColor.terracotta : CSColor.oliveLight
-  }
 
   /// Pull prompt-free runtime flags from the engine (call on appear).
   ///
