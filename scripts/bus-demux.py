@@ -1072,7 +1072,10 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
         or state.get("lease_id") != lease_id
         or state.get("provider") != args.provider.casefold()
         or state.get("provider_session_id") != args.session
-        or state.get("bus") != str(args.bus.expanduser().resolve(strict=False))
+        or (
+            getattr(args, "bus_overridden", True)
+            and state.get("bus") != str(args.bus.expanduser().resolve(strict=False))
+        )
     ):
         raise ValueError(
             "acknowledgment does not belong to this provider session and bus"
@@ -1584,7 +1587,12 @@ def live_follower_pid(root: Path, lease_id: str) -> int | None:
 
 
 def write_channel_binding(
-    root: Path, channel: str, name: str, provider: str, provider_session_id: str
+    root: Path,
+    channel: str,
+    name: str,
+    provider: str,
+    provider_session_id: str,
+    bus: str | None = None,
 ) -> Path:
     """Claim a channel without replacing another session's routing."""
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -1606,8 +1614,13 @@ def write_channel_binding(
             "provider": provider.casefold(),
             "provider_session_id": provider_session_id,
         }
+        entry = dict(requested)
+        if bus:
+            entry["bus"] = bus
         current = bindings.get(str(channel))
         if str(channel) in bindings:
+            # Occupancy is decided by identity alone; the bus is routing and
+            # may be updated for the same owner.
             if not isinstance(current, dict) or any(
                 current.get(key) != value for key, value in requested.items()
             ):
@@ -1623,8 +1636,9 @@ def write_channel_binding(
                     f"channel {channel} is occupied by {owner}; "
                     f"free channels: {free or 'none'}; nothing changed"
                 )
-            return path
-        bindings[str(channel)] = requested
+            if not bus or current.get("bus") == bus:
+                return path
+        bindings[str(channel)] = entry
         atomic_json(path, {"schema": AUDIENCE_BINDING_SCHEMA, "bindings": bindings})
     return path
 
@@ -1639,17 +1653,53 @@ def attach_command(args: argparse.Namespace) -> int:
     lands in the mailbox does, so callers verify with a fresh seal before
     claiming they hear anything.
     """
+    import signal
     import subprocess
 
     root: Path = args.bridge_home
     name = args.name.casefold()
+    if not getattr(args, "bus_overridden", False):
+        # W5: every channel owns a dedicated bus so one follower never chews
+        # another audience's rows. An explicit --bus keeps the caller's word.
+        channel_bus = root / "buses" / f"channel-{args.channel}.jsonl"
+        channel_bus.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if not channel_bus.exists():
+            descriptor = os.open(channel_bus, os.O_WRONLY | os.O_CREAT, 0o600)
+            os.close(descriptor)
+        args.bus = channel_bus
+    resolved_bus = str(Path(args.bus).expanduser().resolve(strict=False))
     binding_path = write_channel_binding(
-        root, args.channel, name, args.provider, args.session
+        root, args.channel, name, args.provider, args.session, bus=resolved_bus
     )
     lease_id = lease_identifier(args.provider, args.session)
     lease_path = root / "leases" / f"{lease_id}.json"
     resumed = lease_path.exists()
     pid = live_follower_pid(root, lease_id)
+    lease_state = read_json(lease_path)
+    if (
+        isinstance(lease_state, dict)
+        and lease_state.get("schema") == LEASE_SCHEMA
+        and lease_state.get("bus") not in (None, resolved_bus)
+    ):
+        # The session migrates onto this channel's dedicated bus: retire the
+        # follower that sits on the old bus and restart the byte cursor on the
+        # new file. Pending deliveries and acknowledgment markers survive.
+        if pid is not None:
+            os.kill(pid, signal.SIGTERM)
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline and process_is_alive(pid):
+                time.sleep(0.1)
+            if process_is_alive(pid):
+                sys.stderr.write(
+                    "bus-demux: attach failed: the follower on the old bus "
+                    f"(pid={pid}) did not exit; nothing changed\n"
+                )
+                return 3
+            pid = None
+        lease_state["bus"] = resolved_bus
+        lease_state["cursor"] = 0
+        lease_state["active"] = False
+        atomic_json(lease_path, lease_state)
     spawned = False
     log_path = root / "runtime" / "followers" / f"{lease_id}.log"
     if pid is None:
@@ -1921,6 +1971,7 @@ def main() -> int:
         f"then {DEFAULT_SPEECH_SPEED}",
     )
     args = parser.parse_args()
+    args.bus_overridden = args.bus is not None
     if args.bus is None:
         args.bus = bus_path()
     if args.print_bus_path:

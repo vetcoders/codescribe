@@ -203,6 +203,11 @@ pub fn scan(bridge_home: &Path, fallback_bus: &Path) -> io::Result<ScanStats> {
 pub(crate) fn append_json_line(bus: &Path, value: &Value) -> io::Result<()> {
     let mut encoded = serde_json::to_vec(value).map_err(io::Error::other)?;
     encoded.push(b'\n');
+    // A dedicated channel bus may precede its directory (W5); a receipt
+    // must not vanish over a missing parent.
+    if let Some(parent) = bus.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let file = shared_bus_file(bus)?;
     let mut guard = file.lock().unwrap_or_else(|error| error.into_inner());
     guard.write_all(&encoded)?;

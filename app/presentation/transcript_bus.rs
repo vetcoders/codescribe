@@ -1061,8 +1061,9 @@ impl TranscriptBus {
         Some(Self::open_with_path(session, transcript_bus_path()))
     }
 
-    /// The production fallback, with an explicit path for local failure fixtures.
-    fn open_with_path(session: TranscriptSession, path: PathBuf) -> Self {
+    /// The production fallback, with an explicit path for local failure
+    /// fixtures and for channel sessions routed to a dedicated bus (W5).
+    pub(crate) fn open_with_path(session: TranscriptSession, path: PathBuf) -> Self {
         match Self::open_at(session.clone(), path.clone(), None) {
             Ok(bus) => bus,
             Err(error) => {

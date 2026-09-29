@@ -88,6 +88,9 @@ pub struct BoundAgentSession {
     pub audience: String,
     pub provider: Option<String>,
     pub provider_session_id: Option<String>,
+    /// Dedicated channel bus from the binding (W5). `None` keeps the shared
+    /// bus, so pre-W5 bindings migrate without a rewrite.
+    pub bus: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -102,6 +105,9 @@ struct BindingEntry {
     audience: String,
     provider: String,
     provider_session_id: String,
+    /// Dedicated channel bus path written by the attach engine (W5).
+    #[serde(default)]
+    bus: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -116,6 +122,8 @@ pub(crate) struct OpenAgentChannel {
     pub session_id: Option<String>,
     /// How this channel was opened; a silence-sealed channel reopens the same way.
     pub mode: ChannelOpenMode,
+    /// Dedicated channel bus; `None` writes receipts to the shared bus.
+    pub bus: Option<PathBuf>,
 }
 
 /// Open-channel fact for the overlay. W2 exposes it; the overlay paint is separate.
@@ -229,6 +237,7 @@ pub fn resolve_digit(digit: u8, path: &Path) -> Result<BoundAgentSession, Channe
             audience: BROADCAST_AUDIENCE.to_string(),
             provider: None,
             provider_session_id: None,
+            bus: None,
         });
     }
     if !(1..=9).contains(&digit) {
@@ -247,10 +256,17 @@ pub fn resolve_digit(digit: u8, path: &Path) -> Result<BoundAgentSession, Channe
             detail: format!("digit {digit} must name audience, provider, and provider_session_id"),
         });
     }
+    let bus = entry
+        .bus
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
     Ok(BoundAgentSession {
         audience: audience.to_string(),
         provider: Some(provider.to_string()),
         provider_session_id: Some(provider_session_id.to_string()),
+        bus,
     })
 }
 
@@ -302,15 +318,22 @@ impl RecordingController {
                     .whisper_language
                     .whisper_hint()
                     .map(str::to_string);
-                let bus = TranscriptBus::open(TranscriptSession {
-                    session_id: session_label.clone(),
-                    mode: TranscriptMode::Agent,
-                    has_latched_target: false,
-                    latched_target_is_self: false,
-                    audience: Some(bound.audience.clone()),
-                    badge_only: true,
-                })
-                .map(Arc::new);
+                // W5: a binding with a dedicated bus routes this channel's
+                // rows there; without one the shared bus stays authoritative.
+                let bus = Some(Arc::new(TranscriptBus::open_with_path(
+                    TranscriptSession {
+                        session_id: session_label.clone(),
+                        mode: TranscriptMode::Agent,
+                        has_latched_target: false,
+                        latched_target_is_self: false,
+                        audience: Some(bound.audience.clone()),
+                        badge_only: true,
+                    },
+                    bound
+                        .bus
+                        .clone()
+                        .unwrap_or_else(crate::presentation::transcript_bus::transcript_bus_path),
+                )));
                 // The Pointer Indicator knob rules every badge path: Settings
                 // promises "Base size; Agent mode stays proportionally larger",
                 // so the channel dot is the persisted base times the Assistive
@@ -380,6 +403,7 @@ impl RecordingController {
         let receipt_session = session_id.clone();
         let receipt_provider = bound.provider.clone();
         let receipt_provider_session = bound.provider_session_id.clone();
+        let receipt_bus = bound.bus.clone();
         channels.insert(
             digit,
             OpenAgentChannel {
@@ -392,6 +416,7 @@ impl RecordingController {
                 last_voice_at,
                 session_id,
                 mode,
+                bus: bound.bus,
             },
         );
         drop(recorder_guard);
@@ -411,10 +436,11 @@ impl RecordingController {
                     provider_session_id: receipt_provider_session.as_deref(),
                 },
             );
-            if let Err(error) = crate::presentation::agent_ack::append_json_line(
-                &crate::presentation::transcript_bus::transcript_bus_path(),
-                &line,
-            ) {
+            let open_receipt_bus = receipt_bus
+                .unwrap_or_else(crate::presentation::transcript_bus::transcript_bus_path);
+            if let Err(error) =
+                crate::presentation::agent_ack::append_json_line(&open_receipt_bus, &line)
+            {
                 tracing::warn!(%error, digit, "channel open receipt was not appended");
             }
         }
@@ -516,6 +542,7 @@ impl RecordingController {
             let provider = open.provider.clone();
             let provider_session_id = open.provider_session_id.clone();
             let mode = open.mode;
+            let channel_bus = open.bus.clone();
             if let Err(error) = self.close_open_channel(open).await {
                 tracing::warn!(%error, digit, "channel auto-seal could not close the capture");
                 continue;
@@ -534,7 +561,10 @@ impl RecordingController {
                     provider_session_id: provider_session_id.as_deref(),
                 },
             );
-            if let Err(error) = crate::presentation::agent_ack::append_json_line(bus, &line) {
+            let seal_receipt_bus = channel_bus.as_deref().unwrap_or(bus);
+            if let Err(error) =
+                crate::presentation::agent_ack::append_json_line(seal_receipt_bus, &line)
+            {
                 tracing::warn!(%error, digit, "channel silence receipt was not appended");
             }
             sealed.push(digit);
@@ -948,6 +978,57 @@ mod tests {
             .and_then(|value| value.as_str())
             .unwrap();
         assert!(emitted_at.ends_with('Z'), "{emitted_at}");
+    }
+
+    #[tokio::test]
+    #[serial(agent_ack_duck)]
+    async fn a_binding_bus_routes_the_channel_receipts_to_the_dedicated_file() {
+        crate::audio::tts_duck::clear();
+        let controller = RecordingController::new_without_keychain();
+        let dir = tempfile::tempdir().expect("temp");
+        let channel_bus = dir.path().join("buses/channel-3.jsonl");
+        let binding = format!(
+            r#"{{"schema":"vc.agent-audience-binding.v1","bindings":{{"3":{{"audience":"Leon","provider":"codex","provider_session_id":"leon-session","bus":"{}"}}}}}}"#,
+            channel_bus.display()
+        );
+        let path = write_binding(dir.path(), &binding);
+
+        let bound = resolve_digit(3, &path).expect("bound session");
+        assert_eq!(bound.bus.as_deref(), Some(channel_bus.as_path()));
+
+        controller
+            .dispatch_agent_channel(3, &path, ChannelOpenMode::AttachedOnly)
+            .await
+            .expect("open");
+        let snapshot = controller.agent_channel_snapshot(3).await.expect("open");
+        assert_eq!(snapshot.bus.as_deref(), Some(channel_bus.as_path()));
+        let opened = snapshot.opened_at;
+        *snapshot
+            .last_voice_at
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = opened + Duration::from_secs(60);
+
+        let shared_bus = dir.path().join("shared-bus.jsonl");
+        let sealed = controller
+            .seal_channels_silent_for(opened + Duration::from_secs(180), &shared_bus, 120, None)
+            .await;
+        assert_eq!(sealed, vec![3]);
+
+        assert!(
+            !shared_bus.exists(),
+            "a dedicated-bus channel writes nothing to the shared bus"
+        );
+        let text = std::fs::read_to_string(&channel_bus).expect("dedicated receipt");
+        let row: serde_json::Value =
+            serde_json::from_str(text.lines().next().expect("one row")).expect("json");
+        assert_eq!(
+            row.get("state").and_then(|value| value.as_str()),
+            Some("sealed")
+        );
+        assert_eq!(
+            row.get("channel").and_then(|value| value.as_str()),
+            Some("3")
+        );
     }
 
     #[tokio::test]
