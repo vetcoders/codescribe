@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import shutil
 import json
 import sys
 import tempfile
@@ -2045,11 +2046,23 @@ class NeutralTargetTests(unittest.TestCase):
         self.assertEqual(schema["properties"]["schema"]["const"], VERIFIER.RECEIPT_SCHEMA)
 
 
+def require_loct() -> None:
+    """The live classes below shell out to the Loctree CLI for fresh context.
+    Where the binary is absent (GitHub-hosted runners), those classes skip
+    loudly and the pure AST/manifest classes keep their teeth; operator hosts
+    run the full suite. See the Makefile GATE LEDGER row for verify."""
+    if shutil.which("loct") is None:
+        raise unittest.SkipTest(
+            "loct not on PATH -- live throne rows are an operator-host instrument"
+        )
+
+
 class NeutralAstTests(unittest.TestCase):
     """Actual neutral executable on fresh Loctree data; never import product code."""
 
     @classmethod
     def setUpClass(cls) -> None:
+        require_loct()
         cls.repo = SCRIPT.parents[1]
         cls.live = VERIFIER.StructuralVerifier(cls.repo)
         cls.live.context()
@@ -2430,6 +2443,7 @@ class CurrentChainMutantTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
+        require_loct()
         cls.repo = SCRIPT.parents[1]
         manifest = json.loads((cls.repo / VERIFIER.DEFAULT_MANIFEST).read_text())
         cls.contracts = []
@@ -2793,6 +2807,7 @@ class CaptureOrderingProofTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
+        require_loct()
         cls.repo = SCRIPT.parents[1]
         manifest = json.loads((cls.repo / VERIFIER.DEFAULT_MANIFEST).read_text())
         cls.contracts = [
