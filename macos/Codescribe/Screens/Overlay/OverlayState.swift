@@ -674,15 +674,7 @@ final class OverlayState {
   private(set) var channelStatusUnavailable = false
   var hasOpenChannel: Bool { channelDelivery.contains(where: \.isOpen) }
   @ObservationIgnored var onChannelPresentationChanged: (() -> Void)?
-  @ObservationIgnored var onChannelChromeHeightChanged: ((CGFloat) -> Void)?
-  private(set) var channelChromeHeight: CGFloat = 0
   @ObservationIgnored private var channelObservationTask: Task<Void, Never>?
-
-  func updateChannelChromeHeight(_ height: CGFloat) {
-    guard abs(height - channelChromeHeight) > 0.5 else { return }
-    channelChromeHeight = height
-    onChannelChromeHeightChanged?(height)
-  }
 
   func observeChannelDelivery(using reader: OverlayChannelDeliveryReader) {
     channelObservationTask?.cancel()
@@ -709,7 +701,6 @@ final class OverlayState {
     let wasOpen = hasOpenChannel
     channelDelivery = snapshot
     channelStatusUnavailable = false
-    if snapshot.isEmpty { updateChannelChromeHeight(0) }
     if hasOpenChannel {
       cancelAutoHide()
     } else if wasOpen && terminal {

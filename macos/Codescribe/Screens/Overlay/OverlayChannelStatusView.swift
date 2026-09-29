@@ -1,18 +1,51 @@
 import SwiftUI
 
-/// Always visible in both expanded and collapsed chrome. Open capture is a
-/// full-width warning, separate from the newest utterance's delivery badge.
+/// A quiet header affordance. Delivery details belong to its popover, not the transcript.
 struct OverlayChannelStatusView: View {
   let channels: [OverlayChannelDelivery]
   let unavailable: Bool
   let palette: OverlayAppearancePalette
 
+  @State private var showsDetails = false
+
+  private var hasOpenChannel: Bool { channels.contains(where: \.isOpen) }
+  private var summary: String {
+    if unavailable { return "Channel status unavailable" }
+    return hasOpenChannel ? "Microphone active · channel open" : "Agent channels connected"
+  }
+
   var body: some View {
+    Button {
+      showsDetails.toggle()
+    } label: {
+      Image(
+        systemName: unavailable
+          ? "questionmark.circle"
+          : hasOpenChannel ? "mic.fill" : "antenna.radiowaves.left.and.right"
+      )
+      .font(.system(size: 11, weight: .medium))
+      .foregroundStyle(hasOpenChannel ? palette.listeningStatus.color : palette.mutedText.color)
+      .frame(width: 22, height: 22)
+      .contentShape(RoundedRectangle(cornerRadius: 6))
+    }
+    .buttonStyle(.plain)
+    .help(summary + " — show details")
+    .accessibilityLabel("Agent channels")
+    .accessibilityValue(summary)
+    .accessibilityIdentifier("overlay-channel-details")
+    .popover(isPresented: $showsDetails, arrowEdge: .bottom) {
+      details
+        .padding(16)
+        .frame(width: 300)
+    }
+  }
+
+  private var details: some View {
     VStack(alignment: .leading, spacing: 4) {
       ForEach(channels) { channel in
         if channel.isOpen {
-          Label("CHANNEL \(channel.channel) OPEN · microphone active", systemImage: "mic.fill")
-            .font(.system(size: 12, weight: .bold))
+          Label("Microphone active · channel \(channel.channel)", systemImage: "mic.fill")
+            .font(.system(size: 11, weight: .medium))
             .foregroundStyle(palette.listeningStatus.color)
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityIdentifier("overlay-channel-open-\(channel.channel)")
@@ -46,7 +79,6 @@ struct OverlayChannelStatusView: View {
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .allowsHitTesting(false)
   }
 
   private func symbol(for stage: OverlayChannelDelivery.Stage) -> String {

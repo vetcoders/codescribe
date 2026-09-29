@@ -171,15 +171,21 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(hidden, 1)
   }
 
-  func testCollapsedPanelReservesMeasuredChannelChromeAndRestoresOrdinaryFloor() {
-    let panel = FloatingOverlayPanel(
-      contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
-      styleMask: [.borderless, .resizable], backing: .buffered, defer: false)
-    panel.setCollapsed(true)
-    panel.channelChromeHeight = 72
-    XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight + 72, accuracy: 0.5)
-    XCTAssertEqual(panel.minSize.height, panel.frame.height, accuracy: 0.5)
-    panel.channelChromeHeight = 0
+  func testChannelDetailsDoNotIncreaseCollapsedPanelHeight() {
+    let state = OverlayState.previewFormatted()
+    let panel = DictationOverlayWindow.make(
+      state: state, textScale: TextScaleController(key: "ChannelCompactChromeTests"))
+    defer { (panel as? FloatingOverlayPanel)?.invalidatePresence() }
+    state.toggleCollapsed()
+    let before = panel.frame.height
+    state.applyChannelDelivery(
+      (1...9).map {
+        OverlayChannelDelivery(
+          channel: String($0), agent: "Agent \($0)", deliveryID: nil,
+          stage: nil, isOpen: true)
+      })
+    panel.contentView?.layoutSubtreeIfNeeded()
+    XCTAssertEqual(panel.frame.height, before, accuracy: 0.5)
     XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight, accuracy: 0.5)
   }
 
@@ -193,7 +199,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let end = try XCTUnwrap(
       view.range(of: "private var fullHeader", range: start.upperBound..<view.endIndex))
     let header = String(view[start.lowerBound..<end.lowerBound])
-    XCTAssertTrue(header.contains("OverlayChannelStatusView("))
+    XCTAssertFalse(header.contains("OverlayChannelStatusView("))
+    let controls = try XCTUnwrap(view.range(of: "private func justifiedHeader(compact: Bool)"))
+    XCTAssertTrue(view[controls.lowerBound...].contains("OverlayChannelStatusView("))
     XCTAssertFalse(header.contains("!state.isCollapsed"))
     let drag = try XCTUnwrap(header.range(of: "OverlayWindowDragRegion"))
     let glass = try XCTUnwrap(header.range(of: ".modifier(OverlayHeaderChrome())"))
@@ -202,7 +210,8 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       contentsOf: root.appendingPathComponent(
         "Codescribe/Screens/Overlay/OverlayChannelStatusView.swift"), encoding: .utf8)
     XCTAssertTrue(status.contains("overlay-channel-open-"))
-    XCTAssertTrue(status.contains("microphone active"))
+    XCTAssertTrue(status.contains("Microphone active"))
+    XCTAssertTrue(status.contains(".popover(isPresented: $showsDetails"))
     XCTAssertTrue(status.contains("overlay-channel-delivery-"))
     XCTAssertFalse(status.contains("Divider("))
     XCTAssertFalse(status.contains("glassEffect("))

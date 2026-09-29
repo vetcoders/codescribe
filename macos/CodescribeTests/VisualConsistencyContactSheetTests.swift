@@ -684,7 +684,12 @@ private final class SheetRun {
     let controls = descendants(of: host, where: { $0 is NSControl && !($0 is NSTextView) })
     let textViews = descendants(of: host, where: { $0 is NSTextView })
     let dragRegions = descendants(of: host, where: { $0 is OverlayWindowDragRegionView })
-    let effects = descendants(of: host, where: { $0 is OverlayDesktopEffectView })
+    let effects = descendants(
+      of: host,
+      where: {
+        if #available(macOS 26, *), $0 is OverlayDesktopGlassView { return true }
+        return $0 is OverlayDesktopEffectView
+      })
 
     for view in controls + dragRegions + effects {
       guard let placed = place(view, in: host) else { continue }

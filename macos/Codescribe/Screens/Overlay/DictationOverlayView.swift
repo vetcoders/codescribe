@@ -321,17 +321,7 @@ struct DictationOverlayView: View {
         fullHeader
         narrowHeader
       }
-      if !state.channelDelivery.isEmpty || state.channelStatusUnavailable {
-        OverlayChannelStatusView(
-          channels: state.channelDelivery, unavailable: state.channelStatusUnavailable,
-          palette: palette
-        )
-        .onGeometryChange(for: CGFloat.self) {
-          $0.size.height + 6
-        } action: {
-          state.updateChannelChromeHeight($0)
-        }
-      }
+
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.horizontal, 16)
@@ -422,6 +412,12 @@ struct DictationOverlayView: View {
             .help(error)
             .accessibilityLabel(error)
             .accessibilityIdentifier("overlay-preference-save-error")
+        }
+        if !state.channelDelivery.isEmpty || state.channelStatusUnavailable {
+          OverlayChannelStatusView(
+            channels: state.channelDelivery, unavailable: state.channelStatusUnavailable,
+            palette: palette
+          )
         }
         autoPasteControl
         sessionTimer

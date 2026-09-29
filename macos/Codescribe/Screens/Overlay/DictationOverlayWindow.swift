@@ -22,30 +22,6 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   private var dragStart: (mouse: NSPoint, frame: NSRect)?
   private var dragMoved = false
   private var expandedSize: NSSize?
-  var channelChromeHeight: CGFloat = 0 {
-    didSet {
-      guard abs(channelChromeHeight - oldValue) > 0.5 else { return }
-      let wasApplyingFrame = OverlayController.isApplyingFrame
-      OverlayController.isApplyingFrame = true
-      defer { OverlayController.isApplyingFrame = wasApplyingFrame }
-      let previousFrame = frame
-      let collapsed = expandedSize != nil
-      let floor =
-        collapsed ? DictationOverlayWindow.collapsedHeight : DictationOverlayWindow.minSize.height
-      minSize = NSSize(
-        width: DictationOverlayWindow.minSize.width, height: floor + channelChromeHeight)
-      contentMinSize = minSize
-      let height =
-        collapsed
-        ? minSize.height
-        : max(minSize.height, previousFrame.height + channelChromeHeight - oldValue)
-      setFrame(
-        NSRect(
-          x: previousFrame.minX, y: previousFrame.maxY - height, width: previousFrame.width,
-          height: height),
-        display: true)
-    }
-  }
   var sizeForPersistence: NSSize { expandedSize ?? frame.size }
 
   /// Preserve the top edge and size where the selected display can contain them.
@@ -62,7 +38,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       releaseKeyAfterEdit()
       expandedSize = frame.size
       size = NSSize(
-        width: frame.width, height: DictationOverlayWindow.collapsedHeight + channelChromeHeight)
+        width: frame.width, height: DictationOverlayWindow.collapsedHeight)
       minSize = NSSize(width: DictationOverlayWindow.minSize.width, height: size.height)
       contentMinSize = minSize
       styleMask.remove(.resizable)
@@ -70,11 +46,11 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       let expanded = expandedSize ?? DictationOverlayWindow.defaultSize
       size = NSSize(
         width: expanded.width,
-        height: max(expanded.height, DictationOverlayWindow.minSize.height + channelChromeHeight))
+        height: max(expanded.height, DictationOverlayWindow.minSize.height))
       expandedSize = nil
       minSize = NSSize(
         width: DictationOverlayWindow.minSize.width,
-        height: DictationOverlayWindow.minSize.height + channelChromeHeight)
+        height: DictationOverlayWindow.minSize.height)
       contentMinSize = minSize
       styleMask.insert(.resizable)
     }
@@ -320,9 +296,6 @@ enum DictationOverlayWindow {
       defer: false
     )
     panel.delegate = panel
-    state.onChannelChromeHeightChanged = { [weak panel] height in
-      panel?.channelChromeHeight = height
-    }
     state.onCollapseChanged = { [weak panel] collapsed in panel?.setCollapsed(collapsed) }
     panel.onUserMove = { [weak state] in
       guard !OverlayController.isApplyingFrame else { return }
@@ -341,7 +314,6 @@ enum DictationOverlayWindow {
     // `.resizable` is set. Floor keeps the glass chrome + action row readable.
     panel.minSize = minSize
     panel.contentMinSize = minSize
-    panel.channelChromeHeight = state.channelChromeHeight
     // Size is persisted manually (see `persist`/`restoredContentSize`), NOT via
     // `setFrameAutosaveName`: autosave on a borderless resizable panel wrote back
     // the runaway sizes produced by the old feedback loop and restored a stale,

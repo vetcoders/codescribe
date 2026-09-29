@@ -296,8 +296,8 @@ final class OverlayController: ObservableObject {
     let size = NSSize(
       width: clamped.width,
       height: state.isCollapsed
-        ? DictationOverlayWindow.collapsedHeight + state.channelChromeHeight
-        : max(clamped.height, DictationOverlayWindow.minSize.height + state.channelChromeHeight))
+        ? DictationOverlayWindow.collapsedHeight
+        : max(clamped.height, DictationOverlayWindow.minSize.height))
     let origin: NSPoint?
     if state.freeMotion {
       origin = OverlayPlacement.restoredOrigin(size: size, on: screen) ?? panel.frame.origin

@@ -141,10 +141,16 @@ final class OverlayChromeV3Tests: XCTestCase {
       )
       root.frame = NSRect(x: 0, y: 0, width: 320, height: 200)
       root.layoutSubtreeIfNeeded()
-      let effect = try XCTUnwrap(descendant(OverlayDesktopEffectView.self, in: root))
-      XCTAssertEqual(effect.blendingMode, .behindWindow)
-      XCTAssertEqual(effect.state, .active)
-      XCTAssertNil(effect.hitTest(NSPoint(x: 100, y: 100)))
+      if #available(macOS 26, *) {
+        let glass = try XCTUnwrap(descendant(OverlayDesktopGlassView.self, in: root))
+        XCTAssertEqual(glass.style, .regular)
+        XCTAssertNil(glass.hitTest(NSPoint(x: 100, y: 100)))
+      } else {
+        let effect = try XCTUnwrap(descendant(OverlayDesktopEffectView.self, in: root))
+        XCTAssertEqual(effect.blendingMode, .behindWindow)
+        XCTAssertEqual(effect.state, .active)
+        XCTAssertNil(effect.hitTest(NSPoint(x: 100, y: 100)))
+      }
     }
   }
 
@@ -155,6 +161,9 @@ final class OverlayChromeV3Tests: XCTestCase {
     root.frame = NSRect(x: 0, y: 0, width: 320, height: 200)
     root.layoutSubtreeIfNeeded()
     XCTAssertNil(descendant(OverlayDesktopEffectView.self, in: root))
+    if #available(macOS 26, *) {
+      XCTAssertNil(descendant(OverlayDesktopGlassView.self, in: root))
+    }
 
   }
 }

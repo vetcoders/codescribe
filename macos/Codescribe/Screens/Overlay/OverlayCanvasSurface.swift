@@ -39,8 +39,6 @@ struct OverlayCanvasBackdrop: View {
         Rectangle().fill(palette.desktopBackground.color)
       } else {
         OverlayDesktopMaterial()
-        // The document needs a stable contrast floor, regardless of the glass slider.
-        Rectangle().fill(palette.desktopBackground.color.opacity(0.85))
       }
     }
   }
@@ -49,7 +47,13 @@ struct OverlayCanvasBackdrop: View {
 /// Sample the desktop behind the non-activating panel, not its empty content.
 /// Keep the material active while the user types into another application.
 private struct OverlayDesktopMaterial: NSViewRepresentable {
-  func makeNSView(context: Context) -> OverlayDesktopEffectView {
+  func makeNSView(context: Context) -> NSView {
+    if #available(macOS 26, *) {
+      let view = OverlayDesktopGlassView()
+      view.style = .regular
+      view.cornerRadius = CSRadius.window
+      return view
+    }
     let view = OverlayDesktopEffectView()
     view.material = .hudWindow
     view.blendingMode = .behindWindow
@@ -57,7 +61,13 @@ private struct OverlayDesktopMaterial: NSViewRepresentable {
     return view
   }
 
-  func updateNSView(_ nsView: OverlayDesktopEffectView, context: Context) {}
+  func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+/// One stable background, independent of recording, editing, and toolbelt state.
+@available(macOS 26, *)
+final class OverlayDesktopGlassView: NSGlassEffectView {
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 final class OverlayDesktopEffectView: NSVisualEffectView {
