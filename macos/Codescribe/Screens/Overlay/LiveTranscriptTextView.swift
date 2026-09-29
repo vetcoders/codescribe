@@ -20,6 +20,62 @@ enum LiveTranscriptSelectionPolicy {
   }
 }
 
+struct LiveTranscriptScrollFollowState: Equatable {
+  enum Mode: Equatable {
+    case followingTail
+    case manualScroll
+    case detached
+  }
+
+  private(set) var mode: Mode = .followingTail
+  private(set) var revealRevision = 0
+
+  var followsTail: Bool { mode == .followingTail }
+  var isManualScrollActive: Bool { mode == .manualScroll }
+
+  mutating func userScrollBegan() {
+    transition(to: .manualScroll)
+  }
+
+  mutating func userScrollMoved(isAtLiveEdge: Bool, hasSelection: Bool) {
+    guard !isManualScrollActive else { return }
+    settle(isAtLiveEdge: isAtLiveEdge, hasSelection: hasSelection)
+  }
+
+  mutating func userScrollEnded(isAtLiveEdge: Bool, hasSelection: Bool) {
+    settle(isAtLiveEdge: isAtLiveEdge, hasSelection: hasSelection)
+  }
+
+  mutating func selectionChanged(
+    _ selection: NSRange,
+    textLength: Int,
+    isAtLiveEdge: Bool
+  ) {
+    guard !isManualScrollActive else { return }
+    guard LiveTranscriptSelectionPolicy.followsTail(selection: selection, textLength: textLength)
+    else {
+      transition(to: .detached)
+      return
+    }
+    guard isAtLiveEdge else { return }
+    transition(to: .followingTail)
+  }
+
+  func allowsTailReveal(revision: Int) -> Bool {
+    revision == revealRevision && followsTail
+  }
+
+  private mutating func settle(isAtLiveEdge: Bool, hasSelection: Bool) {
+    transition(to: isAtLiveEdge && !hasSelection ? .followingTail : .detached)
+  }
+
+  private mutating func transition(to next: Mode) {
+    guard mode != next else { return }
+    mode = next
+    revealRevision &+= 1
+  }
+}
+
 /// The one AppKit transcript surface: read-only while recording, an editor for
 /// the formatted take.
 ///
@@ -72,9 +128,12 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     let textView = Self.makeTextView()
     textView.delegate = context.coordinator
 
-    let scrollView = NSScrollView()
+    let scrollView = LiveTranscriptScrollView()
+    scrollView.followCoordinator = context.coordinator
     scrollView.automaticallyAdjustsContentInsets = false
-    scrollView.contentInsets = contentInsets
+    scrollView.contentInsets = NSEdgeInsetsZero
+    scrollView.contentView.automaticallyAdjustsContentInsets = false
+    scrollView.contentView.contentInsets = contentInsets
     scrollView.borderType = .noBorder
     scrollView.drawsBackground = false
     scrollView.hasHorizontalScroller = false
@@ -82,27 +141,27 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     scrollView.autohidesScrollers = true
     scrollView.horizontalScrollElasticity = .none
     scrollView.documentView = textView
+    context.coordinator.attach(to: scrollView)
 
     update(textView, coordinator: context.coordinator)
     return scrollView
   }
 
+  static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
+    coordinator.detach()
+  }
+
   func updateNSView(_ scrollView: NSScrollView, context: Context) {
-    let oldInsets = scrollView.contentInsets
+    context.coordinator.attach(to: scrollView)
+    let oldInsets = scrollView.contentView.contentInsets
     let insetsChanged =
       oldInsets.top != contentInsets.top || oldInsets.bottom != contentInsets.bottom
       || oldInsets.left != contentInsets.left || oldInsets.right != contentInsets.right
-    scrollView.contentInsets = contentInsets
+    scrollView.contentView.contentInsets = contentInsets
     guard let textView = scrollView.documentView as? LiveTranscriptNativeTextView else { return }
     update(textView, coordinator: context.coordinator)
     if insetsChanged {
-      let coordinator = context.coordinator
-      DispatchQueue.main.async { [weak textView, weak coordinator] in
-        guard let textView, let coordinator, coordinator.followsTail, !coordinator.isEditing,
-          textView.selectedRange().length == 0
-        else { return }
-        textView.revealTranscriptTail()
-      }
+      context.coordinator.scheduleTailReveal(for: textView)
     }
   }
 
@@ -154,6 +213,7 @@ struct LiveTranscriptTextView: NSViewRepresentable {
 
     let previousSelection = textView.selectedRange()
     let wasFollowingTail = coordinator.followsTail
+    let previousOrigin = textView.enclosingScrollView?.contentView.bounds.origin
     coordinator.applyingUpdate = true
     let previous = textView.string as NSString
     let incoming = text as NSString
@@ -194,25 +254,21 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     } else {
       let tail = NSRange(location: updatedLength, length: 0)
       textView.setSelectedRange(tail)
-      DispatchQueue.main.async { [weak textView, weak coordinator] in
-        guard let textView, coordinator?.followsTail == true,
-          (textView.string as NSString).length == tail.location
-        else { return }
-        textView.revealTranscriptTail()
-      }
+      coordinator.scheduleTailReveal(for: textView, expectedLength: tail.location)
+    }
+    if !wasFollowingTail, !coordinator.isEditing, let previousOrigin,
+      let scroll = textView.enclosingScrollView
+    {
+      textView.layoutSubtreeIfNeeded()
+      scroll.contentView.scroll(to: previousOrigin)
+      scroll.reflectScrolledClipView(scroll.contentView)
     }
     coordinator.applyingUpdate = false
   }
 
   private func transcriptAttributes() -> [NSAttributedString.Key: Any] {
     let size = 15 * textScale
-    let descriptor = NSFontDescriptor(fontAttributes: [
-      .family: FontLoader.spaceGrotesk,
-      .traits: [NSFontDescriptor.TraitKey.weight: NSFont.Weight.medium.rawValue],
-    ])
-    let font =
-      NSFont(descriptor: descriptor, size: size)
-      ?? .systemFont(ofSize: size, weight: .medium)
+    let font = NSFont.systemFont(ofSize: size, weight: .regular)
     let paragraph = NSMutableParagraphStyle()
     paragraph.lineSpacing = 5
     return [
@@ -224,21 +280,138 @@ struct LiveTranscriptTextView: NSViewRepresentable {
 
   @MainActor
   final class Coordinator: NSObject, NSTextViewDelegate {
-    var followsTail = true
+    private(set) var scrollFollowState = LiveTranscriptScrollFollowState()
+    var followsTail: Bool { scrollFollowState.followsTail }
     var applyingUpdate = false
     var isEditing = false
     var renderedAttributes: [NSAttributedString.Key: Any]?
     var onEditingChanged: ((Bool) -> Void)?
     var onTextChange: ((String) -> Void)?
     var onCancelEdit: (() -> Void)?
+    private weak var observedScrollView: NSScrollView?
+    private var scrollObservers: [NSObjectProtocol] = []
+
+    func attach(to scrollView: NSScrollView) {
+      guard observedScrollView !== scrollView else { return }
+      detach()
+      observedScrollView = scrollView
+      let center = NotificationCenter.default
+      scrollObservers = [
+        center.addObserver(
+          forName: NSScrollView.willStartLiveScrollNotification,
+          object: scrollView,
+          queue: nil
+        ) { [weak self] _ in
+          MainActor.assumeIsolated {
+            self?.userScrollBegan()
+          }
+        },
+        center.addObserver(
+          forName: NSScrollView.didLiveScrollNotification,
+          object: scrollView,
+          queue: nil
+        ) { [weak self] _ in
+          MainActor.assumeIsolated {
+            self?.reportScrollMovement()
+          }
+        },
+        center.addObserver(
+          forName: NSScrollView.didEndLiveScrollNotification,
+          object: scrollView,
+          queue: nil
+        ) { [weak self] _ in
+          MainActor.assumeIsolated {
+            self?.reportScrollEnd()
+          }
+        },
+      ]
+    }
+
+    func detach() {
+      for observer in scrollObservers { NotificationCenter.default.removeObserver(observer) }
+      scrollObservers.removeAll()
+      observedScrollView = nil
+    }
+
+    func userScrollBegan() {
+      scrollFollowState.userScrollBegan()
+    }
+
+    func userScrollMoved(isAtLiveEdge: Bool, hasSelection: Bool) {
+      scrollFollowState.userScrollMoved(
+        isAtLiveEdge: isAtLiveEdge,
+        hasSelection: hasSelection
+      )
+    }
+
+    func userScrollEnded(isAtLiveEdge: Bool, hasSelection: Bool) {
+      scrollFollowState.userScrollEnded(
+        isAtLiveEdge: isAtLiveEdge,
+        hasSelection: hasSelection
+      )
+    }
+
+    func reportScrollMovement(in scrollView: NSScrollView? = nil) {
+      guard let scrollView = scrollView ?? observedScrollView,
+        let documentView = scrollView.documentView,
+        let textView = documentView as? NSTextView
+      else { return }
+      userScrollMoved(
+        isAtLiveEdge: isAtLiveEdge(documentView: documentView, in: scrollView),
+        hasSelection: textView.selectedRange().length > 0
+      )
+    }
+
+    func reportScrollEnd(in scrollView: NSScrollView? = nil) {
+      guard let scrollView = scrollView ?? observedScrollView,
+        let documentView = scrollView.documentView,
+        let textView = documentView as? NSTextView
+      else { return }
+      userScrollEnded(
+        isAtLiveEdge: isAtLiveEdge(documentView: documentView, in: scrollView),
+        hasSelection: textView.selectedRange().length > 0
+      )
+    }
+
+    private func isAtLiveEdge(documentView: NSView, in scrollView: NSScrollView) -> Bool {
+      let clip = scrollView.contentView
+      let liveBottomOrigin = LiveTranscriptNativeTextView.liveBottomScrollOrigin(
+        documentMaxY: documentView.bounds.maxY,
+        clipHeight: clip.bounds.height,
+        contentInsets: clip.contentInsets
+      )
+      return clip.bounds.origin.y >= liveBottomOrigin - 2
+    }
+
+    func scheduleTailReveal(
+      for textView: LiveTranscriptNativeTextView,
+      expectedLength: Int? = nil
+    ) {
+      guard scrollFollowState.followsTail else { return }
+      let revision = scrollFollowState.revealRevision
+      DispatchQueue.main.async { [weak self, weak textView] in
+        guard let self, let textView,
+          self.scrollFollowState.allowsTailReveal(revision: revision),
+          !self.isEditing,
+          textView.selectedRange().length == 0,
+          expectedLength == nil || (textView.string as NSString).length == expectedLength
+        else { return }
+        textView.revealTranscriptTail()
+      }
+    }
 
     func textViewDidChangeSelection(_ notification: Notification) {
       guard !applyingUpdate,
         let textView = notification.object as? NSTextView
       else { return }
-      followsTail = LiveTranscriptSelectionPolicy.followsTail(
-        selection: textView.selectedRange(),
-        textLength: (textView.string as NSString).length
+      let scrollView = textView.enclosingScrollView
+      let viewportAtLiveEdge = scrollView.flatMap { scrollView in
+        scrollView.documentView.map { isAtLiveEdge(documentView: $0, in: scrollView) }
+      } ?? false
+      scrollFollowState.selectionChanged(
+        textView.selectedRange(),
+        textLength: (textView.string as NSString).length,
+        isAtLiveEdge: viewportAtLiveEdge
       )
     }
 
@@ -253,6 +426,21 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     func textView(
       _ textView: NSTextView, doCommandBy commandSelector: Selector
     ) -> Bool {
+      let isScrollCommand =
+        commandSelector == #selector(NSResponder.scrollPageUp(_:))
+        || commandSelector == #selector(NSResponder.scrollPageDown(_:))
+        || commandSelector == #selector(NSResponder.scrollLineUp(_:))
+        || commandSelector == #selector(NSResponder.scrollLineDown(_:))
+        || commandSelector == #selector(NSResponder.scrollToBeginningOfDocument(_:))
+        || commandSelector == #selector(NSResponder.scrollToEndOfDocument(_:))
+      if isScrollCommand, let scrollView = textView.enclosingScrollView {
+        userScrollBegan()
+        DispatchQueue.main.async { [weak self, weak scrollView] in
+          guard let self, let scrollView else { return }
+          self.reportScrollEnd(in: scrollView)
+        }
+        return false
+      }
       // Escape: NSTextView routes it as `cancelOperation:` first and falls
       // back to `complete:` (word completion) — both mean "drop the draft".
       let isEscape =
@@ -266,6 +454,24 @@ struct LiveTranscriptTextView: NSViewRepresentable {
   }
 }
 
+/// Wheel input owns the viewport before AppKit delivers any bounds changes.
+final class LiveTranscriptScrollView: NSScrollView {
+  weak var followCoordinator: LiveTranscriptTextView.Coordinator?
+
+  override func scrollWheel(with event: NSEvent) {
+    followCoordinator?.userScrollBegan()
+    super.scrollWheel(with: event)
+    let phaseEnded = event.phase.contains(.ended) || event.phase.contains(.cancelled)
+    let momentumEnded =
+      event.momentumPhase.contains(.ended) || event.momentumPhase.contains(.cancelled)
+    if (event.phase.isEmpty && event.momentumPhase.isEmpty)
+      || momentumEnded || (phaseEnded && event.momentumPhase.isEmpty)
+    {
+      followCoordinator?.reportScrollEnd(in: self)
+    }
+  }
+}
+
 /// First-click selection is important because the overlay is deliberately a
 /// non-activating panel: it must not steal focus merely by appearing, but an
 /// explicit click in the transcript must immediately begin a drag selection.
@@ -273,19 +479,29 @@ struct LiveTranscriptTextView: NSViewRepresentable {
 /// When editable, gaining first responder is what makes the hosting
 /// `FloatingOverlayPanel` key; resigning gives the keyboard back.
 final class LiveTranscriptNativeTextView: NSTextView {
+  static func liveBottomScrollOrigin(
+    documentMaxY: CGFloat,
+    clipHeight: CGFloat,
+    contentInsets: NSEdgeInsets
+  ) -> CGFloat {
+    max(-contentInsets.top, documentMaxY + contentInsets.bottom - clipHeight)
+  }
+
   func revealTranscriptTail() {
     let length = (string as NSString).length
     let range = NSRange(location: max(0, length - 1), length: min(1, length))
     scrollRangeToVisible(range)
-    guard length > 0, let scroll = enclosingScrollView, let window else { return }
-    // TextKit may reveal the insertion point while the glyph's descent still
-    // extends into the bottom content inset. Measure the full glyph on screen.
-    let glyph = firstRect(forCharacterRange: range, actualRange: nil)
-    let viewport = window.convertToScreen(scroll.convert(scroll.bounds, to: nil))
-    let overlap = viewport.minY + scroll.contentInsets.bottom - glyph.minY
-    guard overlap > 0, glyph.height > 0 else { return }
+    guard let scroll = enclosingScrollView else { return }
+    // A transcript ending in a newline has an empty insertion line after its
+    // final glyph. Revealing only that glyph can leave the viewport one line
+    // short of the document's live edge, so place the document extent at the
+    // viewport bottom after TextKit has laid out the requested tail range.
     var origin = scroll.contentView.bounds.origin
-    origin.y += isFlipped ? overlap : -overlap
+    origin.y = Self.liveBottomScrollOrigin(
+      documentMaxY: bounds.maxY,
+      clipHeight: scroll.contentView.bounds.height,
+      contentInsets: scroll.contentView.contentInsets
+    )
     scroll.contentView.scroll(to: origin)
     scroll.reflectScrolledClipView(scroll.contentView)
   }

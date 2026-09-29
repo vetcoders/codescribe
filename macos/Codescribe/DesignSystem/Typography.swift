@@ -1,13 +1,13 @@
 import AppKit
 import SwiftUI
 
-// Typography — Space Grotesk (display/UI) + JetBrains Mono (mono/eyebrows/code).
+// Typography — system UI + JetBrains Mono (mono/eyebrows/code).
 // Mono is used ONLY for eyebrows, meta, code, logs — never as the page voice.
 
 enum CSFont {
-  // Display / UI — Space Grotesk
+  // Display / UI — native system face
   static func ui(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
-    Font.custom(FontLoader.spaceGrotesk, size: size).weight(weight)
+    Font.system(size: size, weight: weight)
   }
   // Code / eyebrows / meta — JetBrains Mono
   static func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {

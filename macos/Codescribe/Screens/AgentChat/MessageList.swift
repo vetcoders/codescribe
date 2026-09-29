@@ -297,7 +297,7 @@ struct MessageList: View {
           _ = followState.handle(.userViewportChanged(isAtLiveEdge: isAtLiveEdge))
         }
         .onChange(of: Self.tailSignature(messages)) { _, _ in
-          perform(followState.handle(.contentChanged), with: proxy)
+          perform(followState.handle(.contentChanged), with: proxy, animated: false)
         }
         .onChange(of: messages.last?.isStreaming == true) { wasStreaming, isStreaming in
           if wasStreaming, !isStreaming {
@@ -507,7 +507,7 @@ private struct ChatBottomKey: PreferenceKey {
 /// reports position but cannot distinguish a wheel/trackpad/scrollbar gesture
 /// from `ScrollViewProxy.scrollTo`; AppKit live-scroll notifications can.
 @MainActor
-private struct ChatLiveScrollObserver: NSViewRepresentable {
+struct ChatLiveScrollObserver: NSViewRepresentable {
   let onEvent: (StreamScrollFollowState.Event) -> Void
 
   func makeCoordinator() -> Coordinator {
@@ -553,7 +553,8 @@ private struct ChatLiveScrollObserver: NSViewRepresentable {
   final class Coordinator {
     var onEvent: (StreamScrollFollowState.Event) -> Void
     private weak var scrollView: NSScrollView?
-    private var observationTasks: [Task<Void, Never>] = []
+    private var scrollObservers: [NSObjectProtocol] = []
+    private var liveScrollInProgress = false
 
     init(onEvent: @escaping (StreamScrollFollowState.Event) -> Void) {
       self.onEvent = onEvent
@@ -563,37 +564,48 @@ private struct ChatLiveScrollObserver: NSViewRepresentable {
       guard self.scrollView !== scrollView else { return }
       detach()
       self.scrollView = scrollView
-      observationTasks = [
-        observe(NSScrollView.willStartLiveScrollNotification, in: scrollView) { coordinator in
-          coordinator.onEvent(.userScrollBegan)
+      let center = NotificationCenter.default
+      scrollObservers = [
+        center.addObserver(
+          forName: NSScrollView.willStartLiveScrollNotification,
+          object: scrollView,
+          queue: nil
+        ) { [weak self] _ in
+          MainActor.assumeIsolated {
+            guard let self else { return }
+            self.liveScrollInProgress = true
+            self.onEvent(.userScrollBegan)
+          }
         },
-        observe(NSScrollView.didLiveScrollNotification, in: scrollView) { coordinator in
-          coordinator.reportViewport(asScrollEnd: true)
+        center.addObserver(
+          forName: NSScrollView.didLiveScrollNotification,
+          object: scrollView,
+          queue: nil
+        ) { [weak self] _ in
+          MainActor.assumeIsolated {
+            guard let self else { return }
+            self.reportViewport(asScrollEnd: !self.liveScrollInProgress)
+          }
         },
-        observe(NSScrollView.didEndLiveScrollNotification, in: scrollView) { coordinator in
-          coordinator.reportViewport()
+        center.addObserver(
+          forName: NSScrollView.didEndLiveScrollNotification,
+          object: scrollView,
+          queue: nil
+        ) { [weak self] _ in
+          MainActor.assumeIsolated {
+            guard let self else { return }
+            self.liveScrollInProgress = false
+            self.reportViewport(asScrollEnd: true)
+          }
         },
       ]
     }
 
-    private func observe(
-      _ name: Notification.Name,
-      in scrollView: NSScrollView,
-      action: @escaping @MainActor (Coordinator) -> Void
-    ) -> Task<Void, Never> {
-      Task { @MainActor [weak self, weak scrollView] in
-        guard let scrollView else { return }
-        for await _ in NotificationCenter.default.notifications(named: name, object: scrollView) {
-          guard !Task.isCancelled, let self else { return }
-          action(self)
-        }
-      }
-    }
-
     func detach() {
-      for task in observationTasks { task.cancel() }
-      observationTasks.removeAll()
+      for observer in scrollObservers { NotificationCenter.default.removeObserver(observer) }
+      scrollObservers.removeAll()
       scrollView = nil
+      liveScrollInProgress = false
     }
 
     private func reportViewport(asScrollEnd: Bool = false) {

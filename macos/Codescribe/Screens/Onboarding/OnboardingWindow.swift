@@ -53,3 +53,24 @@ final class OnboardingWindowController {
     window = nil
   }
 }
+
+/// Only the noninteractive chapter header owns window dragging. The scrollable
+/// step and footer retain their normal selection and control hit testing.
+struct OnboardingDragRegion: NSViewRepresentable {
+  func makeNSView(context: Context) -> OnboardingDragView {
+    let view = OnboardingDragView()
+    view.setAccessibilityIdentifier("onboarding-window-drag-region")
+    view.setAccessibilityElement(false)
+    return view
+  }
+
+  func updateNSView(_ nsView: OnboardingDragView, context: Context) {}
+}
+
+final class OnboardingDragView: NSView {
+  override var isOpaque: Bool { false }
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+  override func mouseDown(with event: NSEvent) {
+    window?.performDrag(with: event)
+  }
+}

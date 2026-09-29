@@ -115,7 +115,7 @@ struct SettingsView: View {
 
   private func consumePendingDeepLink() {
     guard let target = SettingsDeepLink.shared.consume() else { return }
-    model.select(target.section)
+    model.select(target)
     pendingScrollAnchor = target.anchor
   }
 

@@ -489,7 +489,9 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(cap.contains("if state.hasRecoverableSupersededWork && actions.phase != .open {"))
     XCTAssertTrue(cap.contains("overlay-retained-work-badge"))
     XCTAssertTrue(containsGuardedIntentRail(tools))
-    XCTAssertTrue(source.contains("intents: OverlayIntentRail.projectedIntents(for: state)"))
+    XCTAssertTrue(source.contains("OverlayIntentRail.projectedIntents(for: state)"))
+    XCTAssertTrue(source.contains("OverlayRecordingControls.railIntents(from: projectedIntents)"))
+    XCTAssertTrue(source.contains("intents: railIntents"))
     let rail = try section(
       of: railSource(), from: "var body: some View", to: "static func projectedIntents")
     XCTAssertTrue(rail.contains(".accessibilityIdentifier(\"overlay-intent-dock\")"))

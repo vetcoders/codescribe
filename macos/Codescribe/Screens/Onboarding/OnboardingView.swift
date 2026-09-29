@@ -15,13 +15,16 @@ struct OnboardingView: View {
     content
     .frame(minWidth: 680, minHeight: 560)
     .background {
-      if reduceTransparency {
-        Color(nsColor: .windowBackgroundColor)
-      } else if #available(macOS 26, *) {
-        Color.clear.glassEffect(.regular, in: .rect(cornerRadius: 0))
-      } else {
-        Rectangle().fill(.regularMaterial)
+      Group {
+        if reduceTransparency {
+          Color(nsColor: .windowBackgroundColor)
+        } else if #available(macOS 26, *) {
+          Color.clear.glassEffect(.regular, in: .rect(cornerRadius: 0))
+        } else {
+          Rectangle().fill(.regularMaterial)
+        }
       }
+      .ignoresSafeArea()
     }
     .csFocusPolicy()
     .controlSize(.regular)
@@ -88,6 +91,7 @@ struct OnboardingView: View {
     .padding(.horizontal, 28)
     .padding(.top, 24)
     .padding(.bottom, 12)
+    .background(OnboardingDragRegion())
   }
 
   // MARK: - Step dispatch

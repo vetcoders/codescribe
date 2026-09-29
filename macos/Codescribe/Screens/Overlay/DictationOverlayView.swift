@@ -4,7 +4,7 @@ import SwiftUI
 // Slim evidence-first dictation overlay.
 //
 // Layout (top → bottom):
-//   header   brand · ONE projection phase · compact waveform · timer
+//   header   brand · compact waveform · timer · Stop and live-preview controls
 //   body     transcript is the product surface (listening / formatted / terminal)
 //   header and footer float above the full-height transcript viewport
 //
@@ -36,6 +36,145 @@ struct OverlayBottomChromeSlots: Equatable {
   }
 
   var showsCoverageWarning: Bool { ordered.contains(.coverageWarning) }
+}
+
+struct OverlayRecordingControls: View {
+  @Environment(\.displayScale) private var displayScale
+
+  let canFinish: Bool
+  let isPreviewCollapsed: Bool
+  let compact: Bool
+  let palette: OverlayAppearancePalette
+  let onIntent: (OverlayIntent) -> Void
+  let onPreviewToggle: () -> Void
+
+  var showsStop: Bool { canFinish }
+  var previewAccessibilityLabel: String {
+    isPreviewCollapsed ? "Show live preview" : "Hide live preview"
+  }
+
+  var body: some View {
+    HStack(spacing: compact ? 4 : 7) {
+      if showsStop {
+        stopButton
+      }
+      previewButton
+    }
+    .fixedSize()
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("overlay-recording-controls")
+  }
+
+  func finishRecording() {
+    guard showsStop else { return }
+    onIntent(.finish)
+  }
+
+  func togglePreview() {
+    onPreviewToggle()
+  }
+
+  static func showsStop(for projectedIntents: [OverlayIntent]) -> Bool {
+    projectedIntents.contains(.finish)
+  }
+
+  static func railIntents(from projectedIntents: [OverlayIntent]) -> [OverlayIntent] {
+    projectedIntents.filter { $0 != .finish }
+  }
+
+  private var stopButton: some View {
+    Button(action: finishRecording) {
+      HStack(spacing: compact ? 0 : 4) {
+        if !compact {
+          Image(systemName: "stop.fill")
+            .font(.system(size: 9, weight: .semibold))
+        }
+        Text("Stop")
+          .font(CSFont.ui(compact ? 10 : 11, .semibold))
+      }
+      .foregroundStyle(palette.errorStatus.color)
+      .padding(.horizontal, compact ? 3 : 9)
+      .frame(height: compact ? 22 : 26)
+      .contentShape(Capsule())
+      .overlay {
+        Capsule()
+          .strokeBorder(
+            palette.errorStatus.color.opacity(0.42),
+            lineWidth: 1 / max(displayScale, 1)
+          )
+          .accessibilityHidden(true)
+      }
+    }
+    .buttonStyle(.plain)
+    .csFocusOutline()
+    .help("Stop recording")
+    .accessibilityLabel("Stop recording")
+    .accessibilityIdentifier("overlay-stop-recording")
+    .background {
+      GeometryReader { geometry in
+        Color.clear.preference(
+          key: OverlayHeaderControlFramesPreferenceKey.self,
+          value: OverlayHeaderControlFrames(
+            stop: geometry.frame(in: .named("overlay-header")), preview: nil
+          )
+        )
+      }
+      .allowsHitTesting(false)
+      .accessibilityHidden(true)
+    }
+  }
+
+  private var previewButton: some View {
+    Button(action: togglePreview) {
+      Image(systemName: isPreviewCollapsed ? "eye" : "eye.slash")
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(palette.mutedText.color)
+        .frame(width: 22, height: 22)
+        .contentShape(Circle())
+        .overlay {
+          Circle()
+            .strokeBorder(palette.border.color, lineWidth: 1 / max(displayScale, 1))
+            .accessibilityHidden(true)
+        }
+    }
+    .buttonStyle(.plain)
+    .csFocusOutline()
+    .help(previewAccessibilityLabel)
+    .accessibilityLabel(previewAccessibilityLabel)
+    .accessibilityIdentifier("overlay-live-preview-toggle")
+    .background {
+      GeometryReader { geometry in
+        Color.clear.preference(
+          key: OverlayHeaderControlFramesPreferenceKey.self,
+          value: OverlayHeaderControlFrames(
+            stop: nil, preview: geometry.frame(in: .named("overlay-header"))
+          )
+        )
+      }
+      .allowsHitTesting(false)
+      .accessibilityHidden(true)
+    }
+  }
+}
+
+struct OverlayHeaderControlFrames: Equatable {
+  var stop: CGRect? = nil
+  var preview: CGRect? = nil
+  var waveform: CGRect? = nil
+}
+
+struct OverlayHeaderControlFramesPreferenceKey: PreferenceKey {
+  static let defaultValue = OverlayHeaderControlFrames()
+
+  static func reduce(
+    value: inout OverlayHeaderControlFrames,
+    nextValue: () -> OverlayHeaderControlFrames
+  ) {
+    let next = nextValue()
+    value.stop = next.stop ?? value.stop
+    value.preview = next.preview ?? value.preview
+    value.waveform = next.waveform ?? value.waveform
+  }
 }
 
 struct DictationOverlayView: View {
@@ -71,13 +210,19 @@ struct DictationOverlayView: View {
       mode: state.mode, hasPresentationStatus: state.presentationStatus != nil,
       isCollapsed: state.isCollapsed, hasLowInputSignal: state.levelMeter.hasLowInputSignal)
   }
+  private var projectedIntents: [OverlayIntent] {
+    OverlayIntentRail.projectedIntents(for: state)
+  }
+  private var railIntents: [OverlayIntent] {
+    OverlayRecordingControls.railIntents(from: projectedIntents)
+  }
 
   var body: some View {
     OverlayCanvasSurface(palette: palette) {
       sharedChromeContainer(
         OverlayIntentRail(
           phase: state.statusText,
-          intents: OverlayIntentRail.projectedIntents(for: state),
+          intents: railIntents,
           palette: palette,
           formatLevel: state.autoFormatLevel,
           cloudRetranscribeConfigured: state.cloudRetranscribeConfigured,
@@ -332,6 +477,7 @@ struct DictationOverlayView: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.horizontal, 16)
     .padding(.vertical, 10)
+    .coordinateSpace(name: "overlay-header")
     // Keep the explicit drag region above the passive glass background.
     // OverlayResizeHitTests verifies header dragging across its width.
     .background { OverlayWindowDragRegion(identifier: "overlay-header-drag-region") }
@@ -403,6 +549,18 @@ struct DictationOverlayView: View {
         .layoutPriority(-1)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("overlay-header-center")
+        .background {
+          GeometryReader { geometry in
+            Color.clear.preference(
+              key: OverlayHeaderControlFramesPreferenceKey.self,
+              value: OverlayHeaderControlFrames(
+                waveform: geometry.frame(in: .named("overlay-header"))
+              )
+            )
+          }
+          .allowsHitTesting(false)
+          .accessibilityHidden(true)
+        }
 
       HStack(spacing: compact ? 4 : 8) {
         if showsDiagnostics && state.compactProjection?.degraded == true {
@@ -429,19 +587,14 @@ struct DictationOverlayView: View {
         sessionTimer
           .allowsHitTesting(false)
         OverlayPlacementMenu(state: state, palette: palette)
-        Button {
-          state.toggleCollapsed()
-        } label: {
-          Image(systemName: state.isCollapsed ? "chevron.down" : "chevron.up")
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(palette.mutedText.color)
-            .frame(width: 22, height: 22)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(state.isCollapsed ? "Expand transcript" : "Collapse to recording bar")
-        .accessibilityLabel(state.isCollapsed ? "Expand transcript" : "Collapse transcript")
-        .accessibilityIdentifier("overlay-collapse-toggle")
+        OverlayRecordingControls(
+          canFinish: OverlayRecordingControls.showsStop(for: projectedIntents),
+          isPreviewCollapsed: state.isCollapsed,
+          compact: compact,
+          palette: palette,
+          onIntent: state.relayIntent,
+          onPreviewToggle: { state.toggleCollapsed() }
+        )
       }
       .fixedSize()
       .accessibilityElement(children: .contain)
@@ -880,6 +1033,7 @@ private struct OverlayScrollEdgeEffects: ViewModifier {
       .background(CSColor.windowWash)
   }
 
+  @MainActor
   @ViewBuilder
   private func dockPreviewRow(
     _ title: String,

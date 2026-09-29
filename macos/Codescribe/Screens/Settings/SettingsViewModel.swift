@@ -479,6 +479,19 @@ enum SettingsAnchor: String, Hashable {
 struct SettingsDeepLinkTarget: Equatable {
   let section: SettingsSection
   let anchor: SettingsAnchor?
+  let tab: SettingsTab?
+
+  init(section: SettingsSection, anchor: SettingsAnchor? = nil) {
+    self.section = section
+    self.anchor = anchor
+    tab = nil
+  }
+
+  init(tab: SettingsTab, anchor: SettingsAnchor? = nil) {
+    section = tab.section
+    self.anchor = anchor
+    self.tab = tab
+  }
 }
 
 /// One-shot deep-link target for the Settings window. A surface outside
@@ -511,6 +524,10 @@ final class SettingsDeepLink {
 
   func present(_ section: SettingsSection, anchor: SettingsAnchor? = nil) {
     pendingTarget = SettingsDeepLinkTarget(section: section, anchor: anchor)
+  }
+
+  func present(tab: SettingsTab, anchor: SettingsAnchor? = nil) {
+    pendingTarget = SettingsDeepLinkTarget(tab: tab, anchor: anchor)
   }
 
   /// Take the pending target (if any), clearing it so a later open is unaffected.
@@ -1400,6 +1417,14 @@ final class SettingsViewModel: ObservableObject {
   func select(_ target: SettingsTab) {
     select(target.section)
     tab = target
+  }
+
+  func select(_ target: SettingsDeepLinkTarget) {
+    if let tab = target.tab {
+      select(tab)
+    } else {
+      select(target.section)
+    }
   }
 
   // MARK: - Reset app data (recoverable destructive action)

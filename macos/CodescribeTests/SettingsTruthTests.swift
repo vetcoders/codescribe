@@ -614,8 +614,9 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(other.consume()?.anchor, .audioReadiness)
   }
 
-  func testSectionAndAgentDeepLinksResolveToDedicatedPanels() {
+  func testSectionAndAgentDeepLinksResolveToDedicatedPanels() throws {
     let links = SettingsDeepLink()
+    let model = SettingsViewModel(engine: MockSettingsEngine())
 
     links.pendingSection = .keys
     XCTAssertEqual(links.consume()?.section.destination, .providers)
@@ -623,14 +624,28 @@ final class SettingsTruthTests: XCTestCase {
 
     XCTAssertEqual(SettingsDeepLink.agentConfigurationSection, .agent)
     links.pendingSection = SettingsDeepLink.agentConfigurationSection
-    XCTAssertEqual(links.consume()?.section.destination, .agent)
+    let sectionTarget = try XCTUnwrap(links.consume())
+    XCTAssertEqual(sectionTarget.section.destination, .agent)
+    XCTAssertNil(sectionTarget.tab)
     XCTAssertNil(links.consume())
+    model.select(sectionTarget)
+    XCTAssertEqual(model.currentTab, .agentLanes)
+
+    links.present(tab: .agentMcp)
+    let mcpTarget = try XCTUnwrap(links.consume())
+    XCTAssertEqual(mcpTarget, SettingsDeepLinkTarget(tab: .agentMcp))
+    model.select(mcpTarget)
+    XCTAssertEqual(model.section, .agent)
+    XCTAssertEqual(model.currentTab, .agentMcp)
 
     links.present(.audio, anchor: .audioReadiness)
     XCTAssertEqual(
       links.consume(),
       SettingsDeepLinkTarget(section: .audio, anchor: .audioReadiness)
     )
+    model.select(SettingsDeepLinkTarget(section: .audio, anchor: .audioReadiness))
+    XCTAssertEqual(model.section, .audio)
+    XCTAssertNil(model.currentTab)
   }
 
   /// The Rust core decides "am I a test?" partly from this process's environment

@@ -710,7 +710,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   private func showTray() {
     guard let button = statusItem.button else { return }
-    NSApp.activate(ignoringOtherApps: true)
     trayPanel.present(from: button) {
       TrayMenuView(viewModel: model.tray, trayStatus: trayStatus)
     }

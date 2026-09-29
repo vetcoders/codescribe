@@ -268,15 +268,21 @@ struct AgenticReadinessStepView: View {
             readinessPill(ready: readiness.ready)
             statusCard(rows: readiness.rows)
           }
-          if let mcp = model.mcpStatus, mcp.configured {
-            Text("MCP servers").font(.headline)
-            statusCard(rows: mcp.rows)
-          } else if !model.mcpSetupDismissed {
-            mcpSetupPrompt
-          }
           Button("Refresh") { model.refreshReadiness() }.csAction()
         }.padding(.top, 8)
       }
+
+      Text(
+        "MCP connects your assistant to additional tools. "
+          + "You can add servers later in Settings."
+      )
+        .font(.callout)
+        .foregroundStyle(.secondary)
+      Button("MCP settings…") {
+        model.prepareMcpSettingsDeepLink()
+        openWindow(id: SettingsView.windowID)
+      }.csAction()
+        .accessibilityIdentifier("onboarding-mcp-settings")
 
       OnboardingStepNote(
         text:
@@ -331,54 +337,7 @@ struct AgenticReadinessStepView: View {
           .fixedSize(horizontal: false, vertical: true)
       }
     }
-    .padding(CSSpace.card)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .fill(CSColor.surfaceRaised(0.02))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.07), lineWidth: 1))
-  }
-
-  /// Shown on the readiness step when no MCP server is configured yet: a short,
-  /// human explainer plus a route into the real setup surface and a no-guilt skip.
-  /// Replaces the old dead end where a missing `mcp.json` showed nothing at all.
-  private var mcpSetupPrompt: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      Text("MCP servers (optional)")
-        .font(CSFont.mono(10, .semibold))
-        .tracking(0.4)
-        .foregroundStyle(CSColor.textFaint)
-      Text(
-        "MCP servers give the agent extra tools — things like code search, "
-          + "PR review, or web search. It's entirely optional: skip it now and "
-          + "wire servers any time from Settings › Engine."
-      )
-      .font(CSFont.ui(13))
-      .lineSpacing(3)
-      .foregroundStyle(.secondary)
-      .fixedSize(horizontal: false, vertical: true)
-      HStack(spacing: 10) {
-        Button("Set up MCP servers") {
-          model.prepareMcpSettingsDeepLink()
-          openWindow(id: SettingsView.windowID)
-        }.csAction(prominent: true)
-        Button("Skip for now") {
-          model.dismissMcpSetupPrompt()
-        }.csAction()
-      }
-    }
-    .padding(CSSpace.card)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .fill(CSColor.surfaceRaised(0.02))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.07), lineWidth: 1))
   }
 
   private func readinessPill(ready: Bool) -> some View {
@@ -422,10 +381,6 @@ struct AgenticReadinessStepView: View {
         .padding(.vertical, 11)
       }
     }
-    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.07), lineWidth: 1))
   }
 }
 
@@ -462,7 +417,7 @@ struct PermissionStepView: View {
       HStack(spacing: 16) {
         statusRow
         Button("Refresh status") { model.refreshPermissions() }
-          .buttonStyle(.link)
+          .csAction()
       }
       .padding(.top, 4)
 
@@ -567,16 +522,10 @@ struct ApiKeyStepView: View {
       .menuStyle(.borderlessButton)
       Spacer(minLength: 0)
     }
-    .padding(.horizontal, 15)
     .padding(.vertical, 12)
-    .background(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .fill(CSColor.surfaceRaised(0.03))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
-    )
+    .overlay(alignment: .bottom) {
+      Rectangle().fill(CSColor.hairline(0.08)).frame(height: 1)
+    }
   }
 
   private var keyField: some View {
@@ -606,16 +555,10 @@ struct ApiKeyStepView: View {
         Button("Save key") { model.saveApiKey() }.csAction(prominent: true)
       }
     }
-    .padding(.horizontal, 15)
     .padding(.vertical, 13)
-    .background(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .fill((isSet ? CSColor.olive : CSColor.terracotta).opacity(0.06))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .strokeBorder((isSet ? CSColor.olive : CSColor.terracotta).opacity(0.18), lineWidth: 1)
-    )
+    .overlay(alignment: .bottom) {
+      Rectangle().fill(CSColor.hairline(0.08)).frame(height: 1)
+    }
   }
 }
 

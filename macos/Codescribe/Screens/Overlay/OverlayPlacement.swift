@@ -4,9 +4,10 @@ import AppKit
 //
 // Two modes, deliberately binary (no hidden third state):
 // - Anchored (default): the origin is ALWAYS derived from one of six screen
-//   anchors on every show(). Dropping a user drag selects Free motion.
-// - Free motion: the user's last dragged origin is persisted and restored
-//   (clamped to the visible frame); the anchor is ignored.
+//   anchors on every show(). A user drag records its origin without changing
+//   the selected anchor.
+// - Free motion: an explicit choice restores the last dragged origin (clamped
+//   to the visible frame); the anchor is ignored.
 //
 // Size is persisted independently of either mode (DictationOverlayWindow).
 
@@ -97,7 +98,7 @@ enum OverlayPlacement {
     return origin(for: anchor, size: size, in: visible)
   }
 
-  /// Free-motion memory: the last dragged origin, restored on show.
+  /// Saved drag origin restored only after the user explicitly selects Free motion.
   static func persistOrigin(_ point: NSPoint, defaults: UserDefaults = .standard) {
     defaults.set(Double(point.x), forKey: originKey + ".x")
     defaults.set(Double(point.y), forKey: originKey + ".y")

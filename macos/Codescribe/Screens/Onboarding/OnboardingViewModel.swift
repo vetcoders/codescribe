@@ -119,11 +119,6 @@ final class OnboardingViewModel: ObservableObject {
   @Published private(set) var selectedAgentClients: Set<AgentBridgeClient>
   @Published private(set) var agentBridgeError: String?
 
-  /// Whether the user dismissed the "set up MCP" prompt shown when no MCP server
-  /// is configured. Session-only: skipping keeps the readiness step moving without
-  /// implying an error, and re-opening the wizard offers the prompt again.
-  @Published private(set) var mcpSetupDismissed = false
-
   // API-key step state.
   @Published private(set) var providers: [CsProviderOption] = []
   @Published var selectedProviderId: String
@@ -262,13 +257,7 @@ final class OnboardingViewModel: ObservableObject {
   /// Select Agent settings before the view opens the shared Settings window.
   /// The wizard stays open so the user can configure MCP and then return.
   func prepareMcpSettingsDeepLink() {
-    SettingsDeepLink.shared.pendingSection = SettingsDeepLink.agentConfigurationSection
-  }
-
-  /// Dismiss the MCP setup prompt for this session so onboarding proceeds without
-  /// implying MCP is required.
-  func dismissMcpSetupPrompt() {
-    mcpSetupDismissed = true
+    SettingsDeepLink.shared.present(tab: .agentMcp)
   }
 
   private func loadProvidersIfNeeded() {

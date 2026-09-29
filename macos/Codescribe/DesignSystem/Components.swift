@@ -180,19 +180,26 @@ extension View {
 private struct CSActionButtonStyle: ButtonStyle {
   let prominent: Bool
   @Environment(\.isEnabled) private var isEnabled
+  @Environment(\.displayScale) private var displayScale
 
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
       .font(.body.weight(prominent ? .semibold : .regular))
-      .foregroundStyle(prominent ? Color.accentColor : Color.primary)
+      .foregroundStyle(Color.primary.opacity(isEnabled ? 1 : 0.4))
       .padding(.horizontal, 14)
       .padding(.vertical, 8)
       .background(
-        Color.accentColor.opacity(prominent ? 0.12 : 0),
+        Color.accentColor.opacity(isEnabled ? (prominent ? 0.12 : 0.035) : 0.015),
         in: .rect(cornerRadius: CSRadius.chip)
       )
+      .overlay {
+        RoundedRectangle(cornerRadius: CSRadius.chip)
+          .strokeBorder(
+            Color.accentColor.opacity(isEnabled ? (prominent ? 0.32 : 0.22) : 0.08),
+            lineWidth: 1 / max(displayScale, 1))
+      }
       .contentShape(.rect(cornerRadius: CSRadius.chip))
-      .opacity(isEnabled ? (configuration.isPressed ? 0.65 : 1) : 0.4)
+      .opacity(configuration.isPressed && isEnabled ? 0.7 : 1)
   }
 }
 

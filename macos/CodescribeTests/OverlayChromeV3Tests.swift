@@ -86,8 +86,8 @@ final class OverlayChromeV3Tests: XCTestCase {
       XCTAssertGreaterThan(rect.height, 100)
       XCTAssertEqual(rect.minY, root.bounds.minY, accuracy: 2)
       XCTAssertEqual(rect.maxY, root.bounds.maxY, accuracy: 2)
-      XCTAssertGreaterThan(scroll.contentInsets.top, 30)
-      XCTAssertGreaterThan(scroll.contentInsets.bottom, 30)
+      XCTAssertGreaterThan(scroll.contentView.contentInsets.top, 30)
+      XCTAssertGreaterThan(scroll.contentView.contentInsets.bottom, 30)
       XCTAssertFalse(scroll.drawsBackground)
       XCTAssertFalse(text.drawsBackground)
       XCTAssertLessThanOrEqual(rect.maxX, root.bounds.maxX)
@@ -112,18 +112,18 @@ final class OverlayChromeV3Tests: XCTestCase {
       root.layoutSubtreeIfNeeded()
       let text = try XCTUnwrap(descendant(LiveTranscriptNativeTextView.self, in: root))
       let scroll = try XCTUnwrap(text.enclosingScrollView)
-      let initialInset = scroll.contentInsets.bottom
+      let initialInset = scroll.contentView.contentInsets.bottom
       let originalText = text.string
       state.showToast("Copied")
       RunLoop.main.run(until: Date().addingTimeInterval(0.05))
       root.layoutSubtreeIfNeeded()
-      let messageInset = scroll.contentInsets.bottom
+      let messageInset = scroll.contentView.contentInsets.bottom
       XCTAssertGreaterThan(messageInset, initialInset, "No notice must leave no reserved row")
       XCTAssertLessThanOrEqual(messageInset - initialInset, 27)
       state.showToast(String(repeating: "A long message that must stay in one row. ", count: 20))
       RunLoop.main.run(until: Date().addingTimeInterval(0.05))
       root.layoutSubtreeIfNeeded()
-      XCTAssertEqual(scroll.contentInsets.bottom, messageInset, accuracy: 1)
+      XCTAssertEqual(scroll.contentView.contentInsets.bottom, messageInset, accuracy: 1)
       XCTAssertEqual(text.string, originalText)
     }
   }

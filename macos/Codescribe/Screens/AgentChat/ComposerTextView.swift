@@ -121,7 +121,7 @@ struct ComposerTextLayout: Equatable {
   }
 
   fileprivate static func composerFont(size: CGFloat) -> NSFont {
-    NSFont(name: FontLoader.spaceGrotesk, size: size) ?? .systemFont(ofSize: size)
+    .systemFont(ofSize: size)
   }
 }
 

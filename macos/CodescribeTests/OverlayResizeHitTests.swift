@@ -100,12 +100,10 @@ final class OverlayResizeHitTests: XCTestCase {
     )
   }
 
-  /// Founder 2026-09-08 (build 849, chrome v3): "header chrome overlaya nadal nie
-  /// oferuje drag area". The header is justified edge to edge now, so the old
-  /// x=28 probe only proves the brand block. Every non-control point across the
-  /// header width must be a window drag handle.
+  /// Keep representative passive header points draggable while routing the
+  /// placement menu's real hit point through its control path.
   @MainActor
-  func testHeaderIsAWindowDragHandleAcrossItsWidth() throws {
+  func testPassiveHeaderRegionsDragAndPlacementMenuRetainsClick() throws {
     let state = OverlayState.previewListening()
     let panel = try XCTUnwrap(
       DictationOverlayWindow.make(
@@ -125,27 +123,62 @@ final class OverlayResizeHitTests: XCTestCase {
     root.layoutSubtreeIfNeeded()
 
     let y = root.bounds.maxY - 22
-    let probes: [(String, CGFloat)] = [
+    let passiveProbes: [(String, CGFloat)] = [
       // The wordmark: inert text over the header drag region, right of the
       // 24 pt close target that now sits where the 7 pt dot used to end.
       ("brand", 60),
       ("after-brand", 150),
       ("center-waveform", root.bounds.midX),
-      ("before-timer", root.bounds.maxX - 150),
-      ("between-waveform-and-controls", root.bounds.maxX - 160),
     ]
-    for (region, x) in probes {
+    for (region, x) in passiveProbes {
       let point = NSPoint(x: x, y: y)
       let hit = try XCTUnwrap(root.hitTest(point))
       let chain = hitChain(from: hit)
-      print(
-        "CHROME_V3_HEADER_DRAG region=\(region) x=\(x) dragHit=\(panel.isWindowDragHit(at: point)) chain=\(chain)"
-      )
       XCTAssertTrue(
         panel.isWindowDragHit(at: point),
         "header \(region) at x=\(x) is not a window drag handle: \(chain)"
       )
     }
+
+    // The placement Menu occupies this measured 30.5 × 19 pt hit frame at the
+    // 470 pt test width. Its focus/key view must receive a click, not window drag.
+    let placementMenuPoint = NSPoint(x: root.bounds.maxX - 157.25, y: y)
+    let placementMenuHit = try XCTUnwrap(root.hitTest(placementMenuPoint))
+    XCTAssertTrue(
+      hitChain(from: placementMenuHit).contains("NSHostingView"),
+      "Position overlay is handled inside the SwiftUI host"
+    )
+    XCTAssertFalse(
+      panel.isWindowDragHit(at: placementMenuPoint),
+      "Position overlay is a clickable control inside the header"
+    )
+    let panelFrameBeforeMenuClick = panel.frame
+    let anchorBeforeMenuClick = state.placementAnchor
+    let freeMotionBeforeMenuClick = state.freeMotion
+    let timestamp = ProcessInfo.processInfo.systemUptime
+    panel.sendEvent(
+      mouseEvent(
+        .leftMouseDown,
+        at: placementMenuPoint,
+        in: panel,
+        timestamp: timestamp,
+        eventNumber: 4_700
+      )
+    )
+    panel.sendEvent(
+      mouseEvent(
+        .leftMouseUp,
+        at: placementMenuPoint,
+        in: panel,
+        timestamp: timestamp + 0.01,
+        eventNumber: 4_701,
+        pressure: 0
+      )
+    )
+    XCTAssertEqual(panel.frame, panelFrameBeforeMenuClick)
+    XCTAssertEqual(state.placementAnchor, anchorBeforeMenuClick)
+    XCTAssertEqual(state.freeMotion, freeMotionBeforeMenuClick)
+
     XCTAssertFalse(
       panel.isWindowDragHit(at: NSPoint(x: root.bounds.maxX - 27, y: y)),
       "The collapse control must answer clicks, not window drags")
@@ -325,9 +358,9 @@ final class OverlayResizeHitTests: XCTestCase {
     XCTAssertGreaterThanOrEqual(lastLine.minY, transcriptFrame.minY - 1)
     XCTAssertEqual(transcriptFrame.minY, panel.frame.minY, accuracy: 1)
     let scroll = try XCTUnwrap(transcript.enclosingScrollView)
-    XCTAssertGreaterThan(scroll.contentInsets.bottom, 24)
+    XCTAssertGreaterThan(scroll.contentView.contentInsets.bottom, 24)
     XCTAssertGreaterThanOrEqual(
-      lastLine.minY, transcriptFrame.minY + scroll.contentInsets.bottom - 1,
+      lastLine.minY, transcriptFrame.minY + scroll.contentView.contentInsets.bottom - 1,
       "The last line must remain reachable above the floating footer")
   }
 

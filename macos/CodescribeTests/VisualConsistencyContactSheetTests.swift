@@ -708,11 +708,11 @@ private final class SheetRun {
         expect(!transcript.isEmpty, "\(id) formatted canvas has no live transcript text view")
       }
       if let text = transcript.first, let scroll = text.enclosingScrollView {
-        let under = scroll.contentInsets.top > 8
+        let under = scroll.contentView.contentInsets.top > 8
         report.transcriptUnderHeader = under
         expect(
           under,
-          "\(id) transcript content inset \(scroll.contentInsets.top) does not clear the header")
+          "\(id) transcript content inset \(scroll.contentView.contentInsets.top) does not clear the header")
       } else if state == "formatted" {
         report.transcriptUnderHeader = false
         failures.append("\(id) transcript has no enclosing scroll view")

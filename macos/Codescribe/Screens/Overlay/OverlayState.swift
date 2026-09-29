@@ -420,11 +420,10 @@ final class OverlayState {
     onPlacementChanged?()
   }
 
-  /// The window already reached this point through a user drag. Persist it
-  /// before changing modes, without asking the orchestrator to place it again.
+  /// The window already reached this point through a user drag. Save its origin
+  /// for an explicit Free motion choice while preserving the selected anchor.
   func recordUserDrag(at origin: NSPoint) {
     OverlayPlacement.persistOrigin(origin)
-    freeMotion = true
     userDraggedOverlay()
   }
 

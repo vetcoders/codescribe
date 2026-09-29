@@ -79,6 +79,24 @@ private final class OverlayIntentBoundaryEngine: DictationEngine {
 }
 
 @MainActor
+private final class OverlayHeaderControlFramesRecorder {
+  var frames = OverlayHeaderControlFrames()
+}
+
+@MainActor
+private struct OverlayHeaderControlFramesCapture: View {
+  let state: OverlayState
+  let recorder: OverlayHeaderControlFramesRecorder
+
+  var body: some View {
+    DictationOverlayView(state: state)
+      .onPreferenceChange(OverlayHeaderControlFramesPreferenceKey.self) {
+        recorder.frames = $0
+      }
+  }
+}
+
+@MainActor
 final class OverlayIntentRailTests: XCTestCase {
   func testLongHistoryPopoverStaysWithinViewport() {
     let history = (1...200).map {
@@ -626,20 +644,47 @@ final class OverlayIntentRailTests: XCTestCase {
     XCTAssertEqual(state.errorMessage, "Insert needs the recording engine")
   }
 
+  @MainActor
   func testDockRendersAtWindowFloorWithRoundedCanvasCorners() throws {
-    let state = OverlayState.previewFormatted()
+    let state = OverlayState.previewListening()
     let size = CGSize(
       width: OverlayDockLayout.minimumCanvasWidth,
       height: DictationOverlayWindow.minSize.height
     )
+
+    let expandedRecorder = OverlayHeaderControlFramesRecorder()
     let hostingView = NSHostingView(
-      rootView: DictationOverlayView(state: state)
+      rootView: OverlayHeaderControlFramesCapture(state: state, recorder: expandedRecorder)
         .frame(width: size.width, height: size.height)
         .preferredColorScheme(.dark)
     )
     hostingView.frame = CGRect(origin: .zero, size: size)
     hostingView.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+    try assertHeaderControlsFit(
+      expandedRecorder.frames,
+      inside: size.width,
+      context: "expanded listening header"
+    )
+
+    let collapsedState = OverlayState.previewListening()
+    collapsedState.toggleCollapsed()
+    let collapsedRecorder = OverlayHeaderControlFramesRecorder()
+    let collapsedHost = NSHostingView(
+      rootView: OverlayHeaderControlFramesCapture(
+        state: collapsedState, recorder: collapsedRecorder
+      )
+      .frame(width: size.width, height: size.height)
+      .preferredColorScheme(.dark)
+    )
+    collapsedHost.frame = CGRect(origin: .zero, size: size)
+    collapsedHost.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+    try assertHeaderControlsFit(
+      collapsedRecorder.frames,
+      inside: size.width,
+      context: "collapsed listening header"
+    )
 
     let bitmap = try XCTUnwrap(hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds))
     hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
@@ -655,6 +700,146 @@ final class OverlayIntentRailTests: XCTestCase {
       bitmap.colorAt(x: bitmap.pixelsWide - 1, y: 0)?.alphaComponent ?? 0,
       0.2
     )
+  }
+
+  private func assertHeaderControlsFit(
+    _ frames: OverlayHeaderControlFrames,
+    inside width: CGFloat,
+    context: String,
+    compactMeter: Bool = true,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) throws {
+    let stop = try XCTUnwrap(
+      frames.stop, "\(context) has no Stop control geometry", file: file, line: line
+    )
+    let preview = try XCTUnwrap(
+      frames.preview, "\(context) has no preview control geometry", file: file, line: line
+    )
+    let waveform = try XCTUnwrap(
+      frames.waveform, "\(context) has no waveform geometry", file: file, line: line
+    )
+
+    XCTAssertGreaterThanOrEqual(
+      stop.width, 22, "\(context) Stop hit target is too narrow", file: file, line: line
+    )
+    XCTAssertGreaterThanOrEqual(
+      stop.height, 22, "\(context) Stop hit target is too short", file: file, line: line
+    )
+    XCTAssertGreaterThanOrEqual(
+      preview.width, 22, "\(context) preview hit target is too narrow", file: file, line: line
+    )
+    XCTAssertGreaterThanOrEqual(
+      preview.height, 22, "\(context) preview hit target is too short", file: file, line: line
+    )
+    XCTAssertFalse(stop.intersects(preview), "\(context) controls overlap", file: file, line: line)
+    XCTAssertFalse(
+      stop.intersects(waveform), "\(context) Stop overlaps the meter", file: file, line: line
+    )
+    XCTAssertFalse(
+      preview.intersects(waveform), "\(context) preview overlaps the meter", file: file, line: line
+    )
+    XCTAssertGreaterThanOrEqual(
+      stop.minX, 0, "\(context) clips the Stop control", file: file, line: line
+    )
+    XCTAssertLessThanOrEqual(
+      stop.maxX, width, "\(context) clips the Stop control", file: file, line: line
+    )
+    XCTAssertGreaterThanOrEqual(
+      preview.minX, 0, "\(context) clips the preview control", file: file, line: line
+    )
+    XCTAssertLessThanOrEqual(
+      preview.maxX, width, "\(context) clips the preview control", file: file, line: line
+    )
+    if compactMeter {
+      XCTAssertLessThan(
+        waveform.width, 100, "\(context) did not select the compact meter", file: file, line: line
+      )
+    } else {
+      XCTAssertGreaterThanOrEqual(
+        waveform.width, 100, "\(context) did not retain the full meter", file: file, line: line
+      )
+    }
+  }
+
+  @MainActor
+  func testHeaderUsesFullMeterWhenWindowHasRoom() throws {
+    let width = DictationOverlayWindow.minSize.width + 160
+    let size = CGSize(width: width, height: DictationOverlayWindow.minSize.height)
+    let recorder = OverlayHeaderControlFramesRecorder()
+    let host = NSHostingView(
+      rootView: OverlayHeaderControlFramesCapture(
+        state: OverlayState.previewListening(), recorder: recorder
+      )
+      .frame(width: size.width, height: size.height)
+      .preferredColorScheme(.dark)
+    )
+    host.frame = CGRect(origin: .zero, size: size)
+    host.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+
+    try assertHeaderControlsFit(
+      recorder.frames,
+      inside: width,
+      context: "expanded wide header",
+      compactMeter: false
+    )
+  }
+
+  /// Component-level control contract only; this does not start or stop capture.
+  @MainActor
+  func testPersistentRecordingControlsUseProjectedFinishAndExistingIntentRelay() {
+    let listeningIntents = OverlayIntentRail.projectedIntents(
+      phase: .listening, canPaste: false, canInsert: false, canCopy: false,
+      canRetranscribe: false, canFormat: false
+    )
+    XCTAssertTrue(OverlayRecordingControls.showsStop(for: listeningIntents))
+    XCTAssertEqual(OverlayRecordingControls.railIntents(from: listeningIntents), [.close])
+
+    let finalizingIntents = OverlayIntentRail.projectedIntents(
+      phase: .finalizing, canPaste: false, canInsert: false, canCopy: false,
+      canRetranscribe: false, canFormat: false
+    )
+    XCTAssertFalse(OverlayRecordingControls.showsStop(for: finalizingIntents))
+    XCTAssertEqual(OverlayRecordingControls.railIntents(from: finalizingIntents), [.close])
+
+    var routedIntents: [OverlayIntent] = []
+    var previewCollapsed = false
+    let expanded = OverlayRecordingControls(
+      canFinish: true,
+      isPreviewCollapsed: false,
+      compact: false,
+      palette: .dark,
+      onIntent: { routedIntents.append($0) },
+      onPreviewToggle: { previewCollapsed.toggle() }
+    )
+    expanded.finishRecording()
+    expanded.togglePreview()
+    XCTAssertEqual(routedIntents, [.finish])
+    XCTAssertTrue(previewCollapsed)
+    XCTAssertEqual(expanded.previewAccessibilityLabel, "Hide live preview")
+
+    let collapsed = OverlayRecordingControls(
+      canFinish: true,
+      isPreviewCollapsed: true,
+      compact: true,
+      palette: .dark,
+      onIntent: { routedIntents.append($0) },
+      onPreviewToggle: { previewCollapsed.toggle() }
+    )
+    XCTAssertTrue(collapsed.showsStop)
+    XCTAssertEqual(collapsed.previewAccessibilityLabel, "Show live preview")
+
+    let unavailable = OverlayRecordingControls(
+      canFinish: false,
+      isPreviewCollapsed: false,
+      compact: true,
+      palette: .dark,
+      onIntent: { routedIntents.append($0) },
+      onPreviewToggle: {}
+    )
+    unavailable.finishRecording()
+    XCTAssertEqual(routedIntents, [.finish])
   }
 
   // MARK: Refusal recovery (rc-w2-refusal-ui) — UNRUN under W2

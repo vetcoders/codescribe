@@ -120,37 +120,66 @@ final class OverlayPlacementTests: XCTestCase {
   }
 
   @MainActor
-  func testAnchoredMouseDragSelectsFreeMotionAtTheDropPoint() throws {
-    try withDragPanel { state, panel in
-      let anchor = state.placementAnchor
-      let start = panel.frame.origin
-      let events = try dragEvents(in: panel, delta: NSSize(width: -45, height: -30))
-      for event in events.dropLast() {
-        panel.sendEvent(event)
-        XCTAssertFalse(state.freeMotion, "Mode changes at drop, not while moving")
+  func testAnchoredMouseDragReturnsToChosenAnchorOnEveryShowAndFreeMotionUsesSavedDropPoint()
+    throws
+  {
+    try withDragPanel(showsPanel: true) { state, panel, controller in
+      let screen = try XCTUnwrap(NSScreen.main)
+      var lastDrop: NSPoint?
+
+      for anchor in OverlayAnchor.allCases {
+        state.selectPlacementAnchor(anchor)
+        XCTAssertFalse(state.freeMotion)
+        XCTAssertFalse(OverlayPlacement.freeMotion)
+        let anchoredOrigin = try XCTUnwrap(
+          OverlayPlacement.origin(for: anchor, size: panel.frame.size, on: screen))
+        assertFrameOrigin(anchoredOrigin, on: panel)
+
+        let start = panel.frame.origin
+        let events = try dragEvents(in: panel, delta: NSSize(width: -45, height: -30))
+        for event in events.dropLast() {
+          panel.sendEvent(event)
+          XCTAssertFalse(state.freeMotion, "Dragging preserves the selected anchor")
+        }
+        XCTAssertNotEqual(panel.frame.origin, start)
+        let drop = panel.frame.origin
+        panel.sendEvent(try XCTUnwrap(events.last))
+
+        XCTAssertEqual(state.placementAnchor, anchor)
+        XCTAssertFalse(state.freeMotion)
+        XCTAssertFalse(OverlayPlacement.freeMotion)
+        XCTAssertEqual(panel.frame.origin, drop)
+        XCTAssertEqual(OverlayPlacement.restoredOrigin(size: .zero, on: nil), drop)
+        lastDrop = drop
+
+        controller.hide()
+        XCTAssertFalse(panel.isVisible)
+        controller.show()
+        XCTAssertTrue(panel.isVisible)
+        XCTAssertEqual(state.placementAnchor, anchor)
+        XCTAssertFalse(state.freeMotion)
+        assertFrameOrigin(anchoredOrigin, on: panel)
       }
-      XCTAssertNotEqual(panel.frame.origin, start)
-      let drop = panel.frame.origin
-      panel.sendEvent(try XCTUnwrap(events.last))
+
+      let drop = try XCTUnwrap(lastDrop)
+      controller.hide()
+      state.selectFreeMotion()
       XCTAssertTrue(state.freeMotion)
       XCTAssertTrue(OverlayPlacement.freeMotion)
-      XCTAssertEqual(state.placementAnchor, anchor)
-      XCTAssertEqual(panel.frame.origin, drop, "Changing mode must not reposition the drop")
-      XCTAssertEqual(OverlayPlacement.restoredOrigin(size: .zero, on: nil), drop)
+      let freeMotionOrigin = OverlayPlacement.clampOrigin(
+        drop, size: panel.frame.size, in: screen.visibleFrame)
+      assertFrameOrigin(freeMotionOrigin, on: panel)
 
-      // Reselecting even the same anchor is an explicit command to leave Free motion.
-      state.selectPlacementAnchor(anchor)
-      XCTAssertFalse(state.freeMotion)
-      XCTAssertFalse(OverlayPlacement.freeMotion)
-      XCTAssertEqual(
-        panel.frame.origin,
-        OverlayPlacement.origin(for: anchor, size: panel.frame.size, on: NSScreen.main))
+      controller.show()
+      XCTAssertTrue(panel.isVisible)
+      XCTAssertTrue(state.freeMotion)
+      assertFrameOrigin(freeMotionOrigin, on: panel)
     }
   }
 
   @MainActor
   func testProgrammaticMovementAndClickWithoutDragDoNotSelectFreeMotion() throws {
-    try withDragPanel { state, panel in
+    try withDragPanel { state, panel, _ in
       let saved = NSPoint(x: -123, y: 456)
       OverlayPlacement.persistOrigin(saved)
       let start = panel.frame.origin
@@ -176,7 +205,8 @@ final class OverlayPlacementTests: XCTestCase {
 
   @MainActor
   private func withDragPanel(
-    _ check: (OverlayState, FloatingOverlayPanel) throws -> Void
+    showsPanel: Bool = false,
+    _ check: (OverlayState, FloatingOverlayPanel, OverlayController) throws -> Void
   ) throws {
     let oldAnchor = OverlayPlacement.anchor
     let oldFreeMotion = OverlayPlacement.freeMotion
@@ -203,13 +233,33 @@ final class OverlayPlacementTests: XCTestCase {
     let controller = OverlayController(
       state: state, engine: nil,
       overlayEnabledProvider: { true }, assistiveStatusProvider: { false },
-      panelFactory: { _, _ in panel }, orderPanelFront: { _ in }, orderPanelOut: { _ in })
+      panelFactory: { _, _ in panel },
+      orderPanelFront: { panel in
+        if showsPanel { panel.orderFrontRegardless() }
+      },
+      orderPanelOut: { panel in
+        if showsPanel { panel.orderOut(nil) }
+      })
     controller.show()
     panel.contentView?.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.05))
     panel.contentView?.layoutSubtreeIfNeeded()
-    try check(state, panel)
+    try check(state, panel, controller)
     withExtendedLifetime(controller) {}
+  }
+
+  @MainActor
+  private func assertFrameOrigin(
+    _ expected: NSPoint,
+    on panel: NSWindow,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) {
+    let deadline = Date().addingTimeInterval(2)
+    while panel.frame.origin != expected && Date() < deadline {
+      RunLoop.main.run(until: min(deadline, Date().addingTimeInterval(0.01)))
+    }
+    XCTAssertEqual(panel.frame.origin, expected, file: file, line: line)
   }
 
   @MainActor
