@@ -567,7 +567,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(
       canvas.range(
         of:
-          #"if !state\.isCollapsed \{\s*VStack\(spacing: CSSpace\.sm\) \{\s*HStack\(spacing: 6\)"#,
+          #"if !state\.isCollapsed \{\s*VStack\(spacing: CSSpace\.sm\) \{\s*transcriptStatus\s*\.padding\(\.horizontal, 20\)\s*HStack\(spacing: 6\)"#,
         options: .regularExpression) != nil)
     XCTAssertTrue(containsGuardedIntentRail(canvas))
     XCTAssertTrue(canvas.contains("actions.toggle()"))
@@ -675,7 +675,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   func testFinishingNoticeSurvivesFoldWithoutChangingBarHeight() throws {
     let canvas = try section(
       of: overlaySource(), from: "private func canvasStack", to: "/// 1px separator")
-    let expanded = try section(of: canvas, from: "if !state.isCollapsed,", to: "bodySection")
+    let expanded = try section(of: canvas, from: "if !state.isCollapsed,", to: ".onGeometryChange(")
     let folded = try section(
       of: canvas, from: "} else if let label = OverlayActionsPresentation.finishingLabel(",
       to: ".overlay(alignment: .bottom)")
