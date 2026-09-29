@@ -42,7 +42,8 @@ struct SettingsView: View {
       // admission verdict even when Audio is not the selected section.
       await model.refreshAdmission()
     }
-    .onReceive(NotificationCenter.default.publisher(for: SettingsDeepLink.pendingSectionDidChange))
+    .onReceive(NotificationCenter.default.publisher(
+      for: SettingsDeepLink.pendingSectionDidChange, object: SettingsDeepLink.shared))
     { _ in
       consumePendingDeepLink()
     }
@@ -106,7 +107,7 @@ struct SettingsView: View {
   }
 
   private func consumePendingDeepLink() {
-    guard let target = SettingsDeepLink.consume() else { return }
+    guard let target = SettingsDeepLink.shared.consume() else { return }
     model.select(target.section)
     pendingScrollAnchor = target.anchor
   }

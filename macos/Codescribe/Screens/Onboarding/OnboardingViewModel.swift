@@ -262,7 +262,7 @@ final class OnboardingViewModel: ObservableObject {
   /// Select Agent settings before the view opens the shared Settings window.
   /// The wizard stays open so the user can configure MCP and then return.
   func prepareMcpSettingsDeepLink() {
-    SettingsDeepLink.pendingSection = SettingsDeepLink.agentConfigurationSection
+    SettingsDeepLink.shared.pendingSection = SettingsDeepLink.agentConfigurationSection
   }
 
   /// Dismiss the MCP setup prompt for this session so onboarding proceeds without

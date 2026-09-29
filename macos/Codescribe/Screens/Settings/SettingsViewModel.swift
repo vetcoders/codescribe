@@ -484,33 +484,33 @@ struct SettingsDeepLinkTarget: Equatable {
 /// One-shot deep-link target for the Settings window. A surface outside Settings
 /// can name both the owning section and an exact repair surface inside it.
 @MainActor
-enum SettingsDeepLink {
+final class SettingsDeepLink {
+  static let shared = SettingsDeepLink()
   static let pendingSectionDidChange = Notification.Name(
     "codescribe.settingsDeepLink.pendingSectionDidChange")
   static let agentConfigurationSection: SettingsSection = .agent
 
-  private static var pendingTarget: SettingsDeepLinkTarget? {
+  private var pendingTarget: SettingsDeepLinkTarget? {
     didSet {
       guard pendingTarget != nil else { return }
-      NotificationCenter.default.post(name: pendingSectionDidChange, object: nil)
+      NotificationCenter.default.post(name: Self.pendingSectionDidChange, object: self)
     }
   }
 
-  /// Compatibility surface for section-only callers. Assigning it deliberately
-  /// clears any older anchor so unrelated deep links cannot inherit one.
-  static var pendingSection: SettingsSection? {
+  /// Section-only requests clear an older anchor before navigation.
+  var pendingSection: SettingsSection? {
     get { pendingTarget?.section }
     set {
       pendingTarget = newValue.map { SettingsDeepLinkTarget(section: $0, anchor: nil) }
     }
   }
 
-  static func present(_ section: SettingsSection, anchor: SettingsAnchor? = nil) {
+  func present(_ section: SettingsSection, anchor: SettingsAnchor? = nil) {
     pendingTarget = SettingsDeepLinkTarget(section: section, anchor: anchor)
   }
 
   /// Take the pending target (if any), clearing it so a later open is unaffected.
-  static func consume() -> SettingsDeepLinkTarget? {
+  func consume() -> SettingsDeepLinkTarget? {
     guard let target = pendingTarget else { return nil }
     pendingTarget = nil
     return target

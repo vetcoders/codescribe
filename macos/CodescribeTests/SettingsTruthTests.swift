@@ -601,22 +601,34 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(model.section, .shortcuts, "openOverlay must not touch rail routing")
   }
 
-  func testLegacyKeysAndAgentDeepLinksResolveToDedicatedPanels() {
-    SettingsDeepLink.pendingSection = nil
-    defer { SettingsDeepLink.pendingSection = nil }
+  func testDeepLinkNotificationsReachOnlyTheirOwner() {
+    let links = SettingsDeepLink()
+    let other = SettingsDeepLink()
+    let delivered = expectation(
+      forNotification: SettingsDeepLink.pendingSectionDidChange, object: links)
+    delivered.assertForOverFulfill = true
+    other.present(.audio, anchor: .audioReadiness)
+    links.present(.agent)
+    wait(for: [delivered], timeout: 0.2)
+    XCTAssertEqual(links.consume()?.section, .agent)
+    XCTAssertEqual(other.consume()?.anchor, .audioReadiness)
+  }
 
-    SettingsDeepLink.pendingSection = .keys
-    XCTAssertEqual(SettingsDeepLink.consume()?.section.destination, .providers)
-    XCTAssertNil(SettingsDeepLink.consume())
+  func testSectionAndAgentDeepLinksResolveToDedicatedPanels() {
+    let links = SettingsDeepLink()
+
+    links.pendingSection = .keys
+    XCTAssertEqual(links.consume()?.section.destination, .providers)
+    XCTAssertNil(links.consume())
 
     XCTAssertEqual(SettingsDeepLink.agentConfigurationSection, .agent)
-    SettingsDeepLink.pendingSection = SettingsDeepLink.agentConfigurationSection
-    XCTAssertEqual(SettingsDeepLink.consume()?.section.destination, .agent)
-    XCTAssertNil(SettingsDeepLink.consume())
+    links.pendingSection = SettingsDeepLink.agentConfigurationSection
+    XCTAssertEqual(links.consume()?.section.destination, .agent)
+    XCTAssertNil(links.consume())
 
-    SettingsDeepLink.present(.audio, anchor: .audioReadiness)
+    links.present(.audio, anchor: .audioReadiness)
     XCTAssertEqual(
-      SettingsDeepLink.consume(),
+      links.consume(),
       SettingsDeepLinkTarget(section: .audio, anchor: .audioReadiness)
     )
   }
