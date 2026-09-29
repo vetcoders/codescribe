@@ -670,8 +670,8 @@
               "file": "core/audio/streaming_recorder.rs",
               "required_code": [
                 "let next_capture_epoch = self.capture_epoch.checked_add(1)",
-                "tx.try_send(data.to_vec())",
-                "self.recorder.start().await?",
+                "self.acquire_capture_subscriber(CaptureSubscriberKind::Take, tx)",
+                "self.recorder.start().await",
                 "self.capture_epoch = next_capture_epoch",
                 "let actual_sample_rate = self.recorder.actual_sample_rate()",
                 "let capture_device_name = self.recorder.last_input_device().map(str::to_owned)",

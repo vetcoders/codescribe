@@ -93,8 +93,14 @@ pub(super) fn stop(g: &mut Grammar, body: &Block) {
                 "observational drop branch",
             ),
             (
-                parse_quote!(let stopped = self.recorder.stop().await;),
-                "await recorder; retain error without question-mark exit",
+                parse_quote!(let stopped = match self.release_take_pcm_feed() {
+                    TakeFeedRelease::LastSubscriber | TakeFeedRelease::NoTakeFeed => {
+                        self.recorder.stop().await
+                    }
+                    TakeFeedRelease::CaptureShared => Ok(None),
+                };),
+                "release take feed; only the last subscriber awaits recorder stop; \
+                 retain error without question-mark exit",
             ),
             (
                 Stmt::Expr(parse_quote!(self.complete_stop(stopped).await), None),
