@@ -88,11 +88,11 @@ category = "audio"
 description = "Disk spill of the full streaming take (default on); the RAM ring stays capped at 300s, spill keeps every sample so long sessions archive whole. 0/false/no/off disables"
 
 [vars.CODESCRIBE_CHANNEL_AUTOSEAL_SECS]
-default = "120"
+default = "5"
 type = "u64"
 reload = "hot"
 category = "audio"
-description = "Seconds of silence before an open agent-channel session seals and closes. Unset or unreadable values use 120, the W2 brief default, while Founder decision A.5.3 is open. 0 disables the cap; utterance silence inside the session is a different knob."
+description = "Hands-free delivery boundary: seconds of silence after heard voice before the open agent-channel utterance seals, delivers, and the channel reopens on the same binding. Default 5 per the Founder's 2026-09-29 voice decision (seal cc6c8248, closes A.5.3); a channel that heard no voice stays open. 0 disables the threshold; utterance silence inside the session is a different knob."
 
 [vars.AUTO_SILENCE]
 default = "1"

@@ -4,7 +4,7 @@
 //! [`PresentationEmitter`]. It never opens audio, accepts arbitrary text,
 //! re-transcribes a file, or reconstructs text from UI deltas.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -716,6 +716,10 @@ struct TranscriptBusWriter {
     /// Last occurrence-authenticated book projection. `session_ended` may copy
     /// its complete rendered value but can never mutate it.
     last_projection: Option<TranscriptBusEvidenceEvent>,
+    /// Documents whose start row already reached a channel bus. Quiet delivery
+    /// contract (Founder seal cc6c8248): between that start row and the
+    /// terminal seal, channel revisions stay in-process.
+    announced_documents: HashSet<u64>,
 }
 
 /// All in-process Bus sessions for a path append through this one descriptor.
@@ -953,6 +957,17 @@ impl TranscriptBus {
         } else {
             self.projection_availability(!revision.rendered_text.trim().is_empty(), true, false)
         };
+        // Quiet delivery contract (Founder seal cc6c8248, 2026-09-29): a channel
+        // bus carries one start row per document, the terminal seal, manual
+        // edits and coverage verdicts. Intermediate revisions stay in-process;
+        // they still project to the HUD and in-process consumers below.
+        let channel_quiet = self.session.audience.is_some();
+        let is_terminal_seal = matches!(
+            &revision.action,
+            ReducerAction::RecordLedgerSeal { terminal: true, .. }
+        );
+        let is_coverage_verdict =
+            matches!(&revision.action, ReducerAction::RecordSealCoverage { .. });
         let mut emitted = Vec::new();
         for (document_index, entry) in revision.entries.iter().enumerate() {
             let Some(serial) = ledger.serial_of(&entry.occurrence) else {
@@ -1010,8 +1025,23 @@ impl TranscriptBus {
                     .map(ProjectedConsultationPresentation::from)
                     .collect(),
             };
-            if let Err(error) = self.write_evidence_event_locked(&mut writer, &event) {
-                self.log_write_error(error);
+            let starts_document = channel_quiet
+                && !writer
+                    .announced_documents
+                    .contains(&(document_index as u64))
+                && !revision.rendered_text.trim().is_empty();
+            let persist = !channel_quiet
+                || is_terminal_seal
+                || is_manual_edit
+                || is_coverage_verdict
+                || starts_document;
+            if persist {
+                if starts_document {
+                    writer.announced_documents.insert(document_index as u64);
+                }
+                if let Err(error) = self.write_evidence_event_locked(&mut writer, &event) {
+                    self.log_write_error(error);
+                }
             }
             writer.last_projection = Some(event.clone());
             emitted.push(event);
@@ -1058,6 +1088,7 @@ impl TranscriptBus {
                 sealed: false,
                 ended: false,
                 last_projection: None,
+                announced_documents: HashSet::new(),
             }),
         }
     }
@@ -1660,6 +1691,131 @@ mod tests {
                 .iter()
                 .all(|event| event.audience.as_deref() == Some("*"))
         );
+    }
+
+    /// Quiet delivery contract (Founder seal cc6c8248): between one start row
+    /// per document and the terminal seal, channel revisions stay off disk.
+    #[test]
+    fn channel_bus_carries_only_document_starts_and_the_terminal_seal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("channel.jsonl");
+        let mut channel = session("channel-quiet");
+        channel.audience = Some("Leon".to_string());
+        channel.badge_only = true;
+        let bus = TranscriptBus::open_at(channel, path.clone(), None).unwrap();
+        bus.publish_started();
+
+        let mut ledger = AcousticLedger::new();
+        let mut reducer = TranscriptReducer::default();
+        let calibration = EnergyCalibration::new("bus-fault-fixture", 1.0, 1);
+        let mut occurrences = Vec::new();
+        for (index, label) in ["Zażółć", "gęślą jaźń."].into_iter().enumerate() {
+            let start = index as u64 * 16_000;
+            let occurrence = OccurrenceIdentity::new("channel-quiet", 7, start, start + 16_000);
+            let evidence = AcousticEvidence {
+                occurrence: occurrence.clone(),
+                duration_ms: 1_000.0,
+                energy_integral: 10.0,
+                mean_rms_dbfs: -12.0,
+                peak_dbfs: -3.0,
+                vad_open_sample: Some(start),
+                vad_close_sample: Some(start + 16_000),
+                evidence_calibration_version: calibration.version.clone(),
+            };
+            assert!(ledger.qualify(&evidence, &calibration).is_qualified());
+            let observation = ObservationIdentity::new(
+                ObservationProducer::Apple,
+                index as u64 + 1,
+                0,
+                occurrence.clone(),
+            );
+            let receipt = ledger.admit(&observation, label);
+            let revision = reducer
+                .apply_ledger_mutation(&ledger, &observation, &receipt)
+                .expect("live revision");
+            // Each revision re-projects every document entry; the second
+            // publish therefore re-offers document 0 and must not re-write it.
+            let events = bus.publish_revision(&revision, &ledger);
+            assert!(
+                !events.is_empty(),
+                "in-process projections survive quiet persistence"
+            );
+            occurrences.push(occurrence);
+        }
+        for occurrence in &occurrences {
+            ledger.schedule_frontier(occurrence.clone(), [ObservationProducer::Apple]);
+            assert!(ledger.note_frontier_return(occurrence, ObservationProducer::Apple));
+        }
+        let seal = ledger.seal_terminal("channel-quiet", 7).unwrap();
+        let sealed = reducer.apply_ledger_seal(&seal).unwrap();
+        assert!(!bus.publish_revision(&sealed, &ledger).is_empty());
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let rows: Vec<serde_json::Value> = raw
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let action_counts = rows.iter().fold(
+            std::collections::HashMap::<String, usize>::new(),
+            |mut counts, row| {
+                if let Some(action) = row.get("reducer_action").and_then(|value| value.as_str()) {
+                    *counts.entry(action.to_string()).or_default() += 1;
+                }
+                counts
+            },
+        );
+        assert_eq!(
+            action_counts.get("apply_ledger_decision"),
+            Some(&2),
+            "exactly one start row per document reaches the channel bus: {raw}"
+        );
+        assert_eq!(
+            action_counts.get("record_ledger_terminal_seal"),
+            Some(&2),
+            "the terminal seal projects once per document entry: {raw}"
+        );
+
+        // A dictation session (no audience) keeps every projected row on disk:
+        // the same two-admission sequence writes 1 + 2 = 3 decision rows.
+        let plain_dir = tempfile::tempdir().unwrap();
+        let plain_path = plain_dir.path().join("plain.jsonl");
+        let plain =
+            TranscriptBus::open_at(unlatched_dictation("plain-loud"), plain_path.clone(), None)
+                .unwrap();
+        let mut ledger = AcousticLedger::new();
+        let mut reducer = TranscriptReducer::default();
+        for (index, label) in ["Zażółć", "gęślą jaźń."].into_iter().enumerate() {
+            let start = index as u64 * 16_000;
+            let occurrence = OccurrenceIdentity::new("plain-loud", 7, start, start + 16_000);
+            let evidence = AcousticEvidence {
+                occurrence: occurrence.clone(),
+                duration_ms: 1_000.0,
+                energy_integral: 10.0,
+                mean_rms_dbfs: -12.0,
+                peak_dbfs: -3.0,
+                vad_open_sample: Some(start),
+                vad_close_sample: Some(start + 16_000),
+                evidence_calibration_version: calibration.version.clone(),
+            };
+            assert!(ledger.qualify(&evidence, &calibration).is_qualified());
+            let observation = ObservationIdentity::new(
+                ObservationProducer::Apple,
+                index as u64 + 1,
+                0,
+                occurrence,
+            );
+            let receipt = ledger.admit(&observation, label);
+            let revision = reducer
+                .apply_ledger_mutation(&ledger, &observation, &receipt)
+                .expect("live revision");
+            assert!(!plain.publish_revision(&revision, &ledger).is_empty());
+        }
+        let raw = std::fs::read_to_string(&plain_path).unwrap();
+        let decisions = raw
+            .lines()
+            .filter(|line| line.contains("\"apply_ledger_decision\""))
+            .count();
+        assert_eq!(decisions, 3, "dictation keeps every revision row: {raw}");
     }
 
     fn inject_fault(bus: &TranscriptBus) -> Arc<Mutex<Fault>> {

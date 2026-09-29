@@ -114,6 +114,8 @@ pub(crate) struct OpenAgentChannel {
     pub opened_at: SystemTime,
     pub last_voice_at: Arc<StdMutex<SystemTime>>,
     pub session_id: Option<String>,
+    /// How this channel was opened; a silence-sealed channel reopens the same way.
+    pub mode: ChannelOpenMode,
 }
 
 /// Open-channel fact for the overlay. W2 exposes it; the overlay paint is separate.
@@ -148,16 +150,20 @@ fn utterance_silence_ms(seconds: f32) -> u32 {
 }
 
 pub const CHANNEL_AUTOSEAL_SECS_ENV: &str = "CODESCRIBE_CHANNEL_AUTOSEAL_SECS";
-pub const CHANNEL_AUTOSEAL_SECS_DEFAULT: u64 = 120;
+/// Hands-free delivery boundary (Founder decision, voice seal cc6c8248,
+/// 2026-09-29): five seconds of silence seal the utterance and deliver it,
+/// and the channel reopens immediately — silence is a delivery boundary,
+/// never a hang-up.
+pub const CHANNEL_AUTOSEAL_SECS_DEFAULT: u64 = 5;
 
 pub fn channel_open_label(digit: u8) -> String {
     format!("CHANNEL {digit} OPEN — mic is live")
 }
 
-/// Silence cap for an open channel session.
+/// Silence threshold that seals and delivers the current channel utterance.
 ///
 /// Unset or unreadable values use [`CHANNEL_AUTOSEAL_SECS_DEFAULT`]. `0`
-/// disables the cap: a zero threshold would seal on the opening tick.
+/// disables the threshold: a zero value would seal on the opening tick.
 pub fn channel_autoseal_secs() -> u64 {
     match std::env::var(CHANNEL_AUTOSEAL_SECS_ENV) {
         Ok(value) => value
@@ -385,6 +391,7 @@ impl RecordingController {
                 opened_at,
                 last_voice_at,
                 session_id,
+                mode,
             },
         );
         drop(recorder_guard);
@@ -466,15 +473,20 @@ impl RecordingController {
     }
 
     pub(crate) async fn poll_channel_autoseal(&self, now: SystemTime, bus: &Path) -> Vec<u8> {
-        self.seal_channels_silent_for(now, bus, channel_autoseal_secs())
+        self.seal_channels_silent_for(now, bus, channel_autoseal_secs(), Some(&binding_path()))
             .await
     }
 
+    /// Quiet delivery contract (Founder seal cc6c8248): silence seals and
+    /// delivers the utterance spoken so far, then the channel reopens on the
+    /// same binding. A channel that has heard no voice yet stays open — the
+    /// session is persistent and only the Fn toggle hangs it up.
     pub(crate) async fn seal_channels_silent_for(
         &self,
         now: SystemTime,
         bus: &Path,
         secs: u64,
+        reopen_binding: Option<&Path>,
     ) -> Vec<u8> {
         let due: Vec<(u8, OpenAgentChannel)> = {
             let mut channels = self.agent_channels.lock().await;
@@ -485,7 +497,7 @@ impl RecordingController {
                         .last_voice_at
                         .lock()
                         .unwrap_or_else(|error| error.into_inner());
-                    silence_is_due(last, now, secs)
+                    last > open.opened_at && silence_is_due(last, now, secs)
                 })
                 .map(|(digit, _)| *digit)
                 .collect();
@@ -503,6 +515,7 @@ impl RecordingController {
             let silence_sec = open.silence_sec;
             let provider = open.provider.clone();
             let provider_session_id = open.provider_session_id.clone();
+            let mode = open.mode;
             if let Err(error) = self.close_open_channel(open).await {
                 tracing::warn!(%error, digit, "channel auto-seal could not close the capture");
                 continue;
@@ -525,6 +538,15 @@ impl RecordingController {
                 tracing::warn!(%error, digit, "channel silence receipt was not appended");
             }
             sealed.push(digit);
+            if let Some(binding) = reopen_binding
+                && let Err(error) = self.dispatch_agent_channel(digit, binding, mode).await
+            {
+                tracing::warn!(
+                    %error,
+                    digit,
+                    "quiet-contract reopen failed; the channel stays closed"
+                );
+            }
         }
         sealed
     }
@@ -822,24 +844,39 @@ mod tests {
         assert_eq!(hud[0].provider_session_id.as_deref(), Some("leon-session"));
 
         let bus = dir.path().join("bus.jsonl");
-        let opened = controller
-            .agent_channel_snapshot(3)
-            .await
-            .expect("open")
-            .opened_at;
+        let snapshot = controller.agent_channel_snapshot(3).await.expect("open");
+        let opened = snapshot.opened_at;
         let still_open = controller
-            .seal_channels_silent_for(opened + Duration::from_secs(10), &bus, 120)
+            .seal_channels_silent_for(opened + Duration::from_secs(10), &bus, 120, None)
             .await;
         assert!(still_open.is_empty());
         assert!(controller.agent_channel_snapshot(3).await.is_some());
-        let disabled = controller
-            .seal_channels_silent_for(opened + Duration::from_secs(10_000), &bus, 0)
+        let voiceless = controller
+            .seal_channels_silent_for(opened + Duration::from_secs(10_000), &bus, 120, None)
             .await;
-        assert!(disabled.is_empty(), "0 disables the cap");
+        assert!(
+            voiceless.is_empty(),
+            "a channel that heard no voice is persistent and never seals on silence"
+        );
+        let disabled = controller
+            .seal_channels_silent_for(opened + Duration::from_secs(10_000), &bus, 0, None)
+            .await;
+        assert!(disabled.is_empty(), "0 disables the threshold");
         assert!(controller.channel_hud_states().await[0].loud);
 
+        *snapshot
+            .last_voice_at
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = opened + Duration::from_secs(60);
+        let too_soon = controller
+            .seal_channels_silent_for(opened + Duration::from_secs(179), &bus, 120, None)
+            .await;
+        assert!(
+            too_soon.is_empty(),
+            "silence is measured from the last voice"
+        );
         let sealed = controller
-            .seal_channels_silent_for(opened + Duration::from_secs(120), &bus, 120)
+            .seal_channels_silent_for(opened + Duration::from_secs(180), &bus, 120, None)
             .await;
         assert_eq!(sealed, vec![3]);
         assert!(controller.agent_channel_snapshot(3).await.is_none());
@@ -848,7 +885,7 @@ mod tests {
         assert_eq!(count, 0);
         assert!(!channel);
         let again = controller
-            .seal_channels_silent_for(opened + Duration::from_secs(500), &bus, 120)
+            .seal_channels_silent_for(opened + Duration::from_secs(500), &bus, 120, None)
             .await;
         assert!(again.is_empty());
 
@@ -911,5 +948,58 @@ mod tests {
             .and_then(|value| value.as_str())
             .unwrap();
         assert!(emitted_at.ends_with('Z'), "{emitted_at}");
+    }
+
+    #[tokio::test]
+    #[serial(agent_ack_duck)]
+    async fn silence_seal_reopens_the_channel_on_the_same_binding() {
+        crate::audio::tts_duck::clear();
+        let controller = RecordingController::new_without_keychain();
+        let dir = tempfile::tempdir().expect("temp");
+        let path = write_binding(
+            dir.path(),
+            r#"{"schema":"vc.agent-audience-binding.v1","bindings":{"3":{"audience":"Leon","provider":"codex","provider_session_id":"leon-session"}}}"#,
+        );
+        controller
+            .dispatch_agent_channel(3, &path, ChannelOpenMode::AttachedOnly)
+            .await
+            .expect("open");
+        let snapshot = controller.agent_channel_snapshot(3).await.expect("open");
+        let opened = snapshot.opened_at;
+        *snapshot
+            .last_voice_at
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = opened + Duration::from_secs(1);
+
+        let bus = dir.path().join("bus.jsonl");
+        let sealed = controller
+            .seal_channels_silent_for(opened + Duration::from_secs(6), &bus, 5, Some(&path))
+            .await;
+        assert_eq!(sealed, vec![3]);
+
+        let reopened = controller
+            .agent_channel_snapshot(3)
+            .await
+            .expect("the quiet contract reopens the channel after delivery");
+        assert_eq!(reopened.mode, ChannelOpenMode::AttachedOnly);
+        assert_eq!(reopened.audience, "Leon");
+        let fresh_voice = *reopened
+            .last_voice_at
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        assert_eq!(
+            fresh_voice, reopened.opened_at,
+            "the reopened channel starts with a clean voice clock"
+        );
+        let hud = controller.channel_hud_states().await;
+        assert_eq!(hud.len(), 1);
+        assert!(hud[0].open, "{hud:?}");
+
+        let text = std::fs::read_to_string(&bus).expect("sealed receipt");
+        assert_eq!(
+            text.lines().count(),
+            1,
+            "one silence seal writes one receipt; the attached-only reopen adds none: {text}"
+        );
     }
 }
