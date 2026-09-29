@@ -15,7 +15,7 @@ struct TrayMenuView: View {
   @ObservedObject var trayStatus: TrayStatusStore
   // macOS 14+ action to open the app's Settings scene — replaces the fragile
   // private `showSettingsWindow:` selector that stopped working on newer macOS.
-  @Environment(\.openSettings) private var openSettings
+  @Environment(\.openWindow) private var openWindow
 
   var body: some View {
     GlassPanel(cornerRadius: CSRadius.tray) {
@@ -36,7 +36,7 @@ struct TrayMenuView: View {
 
         TrayDivider()
         TrayRow(icon: .settings, title: "Settings…", shortcut: "⌘,") {
-          openSettings()
+          openWindow(id: SettingsView.windowID)
         }
         if DeveloperSurface.isEnabled() {
           TrayRow(icon: .diagnostics, title: "Voice Lab…") {
@@ -55,7 +55,7 @@ struct TrayMenuView: View {
           icon: .power,
           iconColor: CSColor.terracottaDeep,
           title: "Quit codescribe",
-          titleColor: TrayRow.subnoteColor,
+          titleColor: CSColor.textMuted,
           shortcut: "⌘Q"
         ) { viewModel.onQuit() }
       }
@@ -101,7 +101,7 @@ struct TrayMenuView: View {
     .padding(.horizontal, 11)
     .padding(.vertical, 7)
     .background(
-      RoundedRectangle(cornerRadius: 8, style: .continuous)
+      RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous)
         .fill(trayStatus.color.opacity(0.10))
     )
     .padding(.horizontal, 5)
@@ -383,7 +383,7 @@ private struct TrayNoteStatusRow: View {
     .padding(.horizontal, 11)
     .padding(.vertical, 7)
     .background(
-      RoundedRectangle(cornerRadius: 8, style: .continuous)
+      RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous)
         .fill(tint.opacity(0.10))
     )
     .transition(.opacity)

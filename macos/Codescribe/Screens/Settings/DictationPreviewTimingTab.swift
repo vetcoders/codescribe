@@ -19,11 +19,11 @@ struct DictationPreviewTimingTab: View {
 
       Text(previewSummary(values))
         .font(CSFont.mono(10.5, .medium))
-        .foregroundStyle(CSColor.textFaint)
+        .foregroundStyle(Color.secondary)
 
       Text("Advanced")
         .font(CSFont.ui(12.5, .semibold))
-        .foregroundStyle(CSColor.textBody)
+        .foregroundStyle(Color.primary)
         .padding(.top, CSSpace.xs)
 
       VStack(spacing: 8) {
@@ -57,7 +57,7 @@ struct DictationPreviewTimingTab: View {
         )
       }
     }
-    .csSettingsCard()
+    .settingsGroupedInset()
   }
 
   private func previewSummary(_ values: PreviewTimingValues) -> String {

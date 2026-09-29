@@ -577,7 +577,7 @@ struct LLMLaneModel {
   }
 
   var availabilityTint: Color {
-    runtime.available ? CSColor.oliveLight : CSColor.terracottaLight
+    runtime.available ? CSColor.oliveLight : CSColor.terracotta
   }
 
   var discoveryDescription: String {
@@ -2246,7 +2246,7 @@ final class SettingsViewModel: ObservableObject {
   /// Lane-picker dot: credential present or key-optional host → green; else red.
   static func availabilityTint(for provider: CsProviderOption) -> Color {
     provider.apiKeySet || provider.accountSignedIn || !provider.keyRequired
-      ? CSColor.oliveLight : CSColor.terracottaLight
+      ? CSColor.oliveLight : CSColor.terracotta
   }
 
   /// Bridge rows take the bare slug; the picker id carries the `custom:` prefix (§D 17:55Z).

@@ -247,7 +247,7 @@ struct AgenticReadinessStepView: View {
   // selector, so the SwiftUI environment action is the only reliable open path
   // (matching TrayMenuView / AgentChatView). The Settings scene activates the
   // app and orders its window front, above the wizard.
-  @Environment(\.openSettings) private var openSettings
+  @Environment(\.openWindow) private var openWindow
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
@@ -387,7 +387,7 @@ struct AgenticReadinessStepView: View {
       HStack(spacing: 10) {
         OnboardingButton(title: "Set up MCP servers", kind: .primary) {
           model.prepareMcpSettingsDeepLink()
-          openSettings()
+          openWindow(id: SettingsView.windowID)
         }
         OnboardingButton(title: "Skip for now", kind: .secondary) {
           model.dismissMcpSetupPrompt()

@@ -75,7 +75,13 @@ struct DesignGallery: View {
 }
 
 #if DEBUG
-  #Preview("Design Gallery") {
+  #Preview("Design Gallery — Dark") {
     DesignGallery()
+      .preferredColorScheme(.dark)
+  }
+
+  #Preview("Design Gallery — Light") {
+    DesignGallery()
+      .preferredColorScheme(.light)
   }
 #endif

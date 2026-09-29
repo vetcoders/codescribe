@@ -72,40 +72,9 @@ final class ComposerTurnOwnershipTests: XCTestCase {
     }
   }
 
-  private final class SpyRoutingEngine: AgentChatEngine {
+  private final class SpyRoutingEngine: ChatEngineFixture {
     private(set) var lastTarget: String?
-    func isAvailable() -> Bool { true }
-    func availabilityDetail() -> String? { nil }
-    func generateThreadTitle(_ text: String) async throws -> String? { nil }
-    func streamReply(
-      _ text: String, threadId: String, attachmentPaths: [String],
-      onDelta: @escaping @MainActor (String) -> Void,
-      onReasoning: @escaping @MainActor (String) -> Void,
-      onToolExecuting: @escaping @MainActor (String, String) -> Void,
-      onToolResult: @escaping @MainActor (String, String, Bool, String) -> Void
-    ) async throws -> String { "" }
-    func cancelReply(threadId: String) -> Bool { false }
     func setAssistiveTargetThread(backendId: String?) { lastTarget = backendId }
-  }
-
-  private final class StubThreadsProvider: ChatThreadsProviding {
-    func listThreads() -> [ChatThread] {
-      [("t_a", "Thread A"), ("t_b", "Thread B")].map { row in
-        var thread = ChatThread(title: row.1, meta: "now")
-        thread.backendId = row.0
-        thread.messagesLoaded = true
-        return thread
-      }
-    }
-
-    func searchThreads(query: String) -> [ChatThread] { listThreads() }
-    func loadMessages(backendId: String) -> [ChatMessage] { [] }
-    func deleteThread(backendId: String) -> Bool { true }
-    func setThreadFavorite(backendId: String, isFavorite: Bool) -> Bool { true }
-    func renameThread(backendId: String, title: String) -> Bool { true }
-    func setGeneratedTitle(backendId: String, title: String) -> Bool { true }
-    func exportThreadMarkdown(backendId: String, assistantOnly: Bool) -> String? { nil }
-    func generateThreadId() -> String { "t_generated" }
   }
 
   /// "A stop was requested", independent of which capture it named. Existing
@@ -132,7 +101,7 @@ final class ComposerTurnOwnershipTests: XCTestCase {
     let defaults = UserDefaults(suiteName: name)!
     addTeardownBlock { UserDefaults(suiteName: name)?.removePersistentDomain(forName: name) }
     let store = AgentChatStore(
-      threadsProvider: StubThreadsProvider(), persistenceDefaults: defaults)
+      threadsProvider: PairThreadsProvider(), persistenceDefaults: defaults)
     let surface = FakeCaptureSurface(recording: recording)
     let dictation = RealComposerDictation(store: store, hotkeys: surface)
     store.dictation = dictation
@@ -386,33 +355,12 @@ final class ComposerTurnOwnershipTests: XCTestCase {
   }
 
   /// Acknowledgment is emitted only after the continuation is registered.
-  @MainActor
-  private final class Gate {
-    let entered: XCTestExpectation
-    private var continuations: [CheckedContinuation<Void, Never>] = []
-    private var released = false
-    init(_ entered: XCTestExpectation) { self.entered = entered }
-    func wait() async {
-      guard !released else { return }
-      await withCheckedContinuation { continuation in
-        continuations.append(continuation)
-        if continuations.count == 1 { entered.fulfill() }
-      }
-    }
-    func release() {
-      released = true
-      let pending = continuations
-      continuations.removeAll()
-      for continuation in pending { continuation.resume() }
-    }
-  }
-
   func testOwnedStopReachesHandleWhileAnAcknowledgedRecordingQueryNeverAnswers() async {
     let f = makeFixture(recording: [false])
     f.dictation.toggle()
     await settle(f)
     XCTAssertTrue(f.store.ownsLiveDictation, "handle admission needs no telemetry round trip")
-    let query = Gate(expectation(description: "recording query held"))
+    let query = ExpectationGate(expectation(description: "recording query held"))
     f.surface.onQuery = { await query.wait() }
     let blockedQuery = Task { await f.surface.isRecording() }
     await fulfillment(of: [query.entered], timeout: 1)
@@ -478,7 +426,7 @@ final class ComposerTurnOwnershipTests: XCTestCase {
     let f = makeFixture(recording: [false])
     f.dictation.toggle()
     await settle(f)
-    let stop = Gate(expectation(description: "Stop registered"))
+    let stop = ExpectationGate(expectation(description: "Stop registered"))
     f.surface.onStop = { await stop.wait() }
     f.surface.stopOutcome = .pending
     f.dictation.toggle()
@@ -530,7 +478,7 @@ final class ComposerTurnOwnershipTests: XCTestCase {
     let f = makeFixture(recording: [false])
     f.dictation.toggle()
     await settle(f)
-    let expiry = Gate(expectation(description: "failure banner clock entered"))
+    let expiry = ExpectationGate(expectation(description: "failure banner clock entered"))
     f.store.waitForDictationFailureExpiry = { await expiry.wait() }
     f.surface.stopFails = true
     f.dictation.toggle()
@@ -562,7 +510,7 @@ final class ComposerTurnOwnershipTests: XCTestCase {
     guard let oldRequest = f.store.currentComposerCaptureRequestID else {
       return XCTFail("the failed transport must retain its request")
     }
-    let gate = Gate(expectation(description: "retry is suspended"))
+    let gate = ExpectationGate(expectation(description: "retry is suspended"))
     f.surface.stopFails = false
     f.surface.stopOutcome = .foreignCapture
     f.surface.onStop = { await gate.wait() }

@@ -207,31 +207,17 @@ impl AgentProvider for AnthropicProvider {
         Ok(rx)
     }
 
-    /// Wrap a tool outcome as a user-role message with one `ToolResult` block.
-    /// Anthropic requires tool results in user turns; this is the session glue.
     fn build_tool_result(
         &self,
         call_id: &str,
         content: Vec<ContentBlock>,
         is_error: bool,
     ) -> Message {
-        Message::new(
-            Role::User,
-            vec![ContentBlock::ToolResult {
-                tool_use_id: call_id.to_string(),
-                content,
-                is_error,
-            }],
-        )
+        super::user_tool_result(call_id, content, is_error)
     }
 
-    /// Build an in-memory image content block from raw bytes and a media type.
-    /// Empty bytes are still accepted here; the request builder skips empty images.
     fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
-        ContentBlock::Image {
-            data: data.to_vec(),
-            media_type: media_type.to_string(),
-        }
+        super::image_block(data, media_type)
     }
 
     /// Expose initial-response and inter-chunk timeouts for the session harness.

@@ -811,35 +811,20 @@ final class OverlayIntentRailTests: XCTestCase {
     XCTAssertTrue(state.hasRecoverableSupersededWork)
 
     state.applyTranscriptProjection(
-      CsTranscriptProjectionEvent(
-        schema: "codescribe.transcript_projection.v1",
+      transcriptProjection(
         sequence: 9,
         emittedAt: "2026-09-10T00:00:00Z",
         sessionId: "intent-rail-successor",
-        mode: "dictation",
-        reducerRevision: 9,
+        renderedText: "refused words",
+        phase: "coverage_refused",
+        terminal: true,
         reducerAction: "session_ended",
-        occurrenceSessionId: "intent-rail-successor",
         captureEpoch: 2,
         sampleStart: 16_000,
         sampleEnd: 32_000,
         documentIndex: 1,
-        label: "terminal",
-        renderedText: "refused words",
-        deliveryText: nil,
-        phase: "coverage_refused",
-        canPaste: false,
-        canInsert: false,
         canCopy: true,
-        canRetranscribe: true,
-        canFormat: false,
-        canSendToAgent: false,
-        terminal: true,
-        lifecycleTerminal: true,
-        delivery: .unattempted,
-        acousticReceipts: [],
-        sealCoverage: nil,
-        consultationPresentations: []
+        canRetranscribe: true
       )
     )
 
@@ -861,35 +846,20 @@ final class OverlayIntentRailTests: XCTestCase {
   ) -> OverlayState {
     let state = OverlayState()
     state.applyTranscriptProjection(
-      CsTranscriptProjectionEvent(
-        schema: "codescribe.transcript_projection.v1",
+      transcriptProjection(
         sequence: 1,
         emittedAt: "2026-09-04T00:00:00Z",
         sessionId: "intent-rail-fixture",
-        mode: "dictation",
-        reducerRevision: 1,
-        reducerAction: "intent_rail_fixture",
-        occurrenceSessionId: "intent-rail-fixture",
-        captureEpoch: 1,
-        sampleStart: 0,
-        sampleEnd: 16_000,
-        documentIndex: 0,
-        label: phase,
         renderedText: text,
-        deliveryText: nil,
         phase: phase,
+        terminal: terminal,
+        reducerAction: "intent_rail_fixture",
+        label: phase,
         canPaste: canPaste,
         canInsert: canInsert,
         canCopy: canCopy,
         canRetranscribe: canRetranscribe,
-        canFormat: canFormat,
-        canSendToAgent: false,
-        terminal: terminal,
-        lifecycleTerminal: terminal,
-        delivery: .unattempted,
-        acousticReceipts: [],
-        sealCoverage: nil,
-        consultationPresentations: []
+        canFormat: canFormat
       )
     )
     return state

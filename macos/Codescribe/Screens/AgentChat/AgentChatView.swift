@@ -1,25 +1,15 @@
 import AppKit
 import SwiftUI
 
-/// Agent Chat MVP shell. `NavigationSplitView`: local in-memory thread rail ↔
+/// Agent Chat shell: native split between the thread rail and
 /// thread view. Turns render You / Tool-activity / Assistant; `send` routes a
 /// streamed `streamReply` turn through the injected `AgentChatEngine`.
 struct AgentChatView: View {
   @StateObject var store: AgentChatStore
   private let maxPermissions: SettingsViewModel?
-  /// Rail state survives window close/reopen and app relaunch. Collapse is
-  /// the NATIVE split-view collapse (`columnVisibility = .detailOnly`) — the
-  /// same mechanism the Settings window uses, so both windows speak one
-  /// design language. The previous shape faked collapse by clamping the
-  /// column to a 56pt icon strip, but `navigationSplitViewColumnWidth` is
-  /// read only when the column is built and the split view's width autosave
-  /// outlives an `.id()` content rebuild, so "Collapse sidebar" left the
-  /// monogram strip floating in a 200-500pt band (operator screenshots,
-  /// 2026-08-09). Recovery stays guaranteed: the toggle lives in the DETAIL
-  /// header, which never collapses.
+  /// Persist only the user's expanded/collapsed choice; AppKit owns column geometry.
   @AppStorage("AgentChat.sidebarExpanded.v1") private var sidebarExpanded = true
   @AppStorage("AgentChat.alwaysOnTop.v1") private var isPinned = false
-  @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
   init(store: AgentChatStore, maxPermissions: SettingsViewModel? = nil) {
     _store = StateObject(wrappedValue: store)
@@ -27,26 +17,16 @@ struct AgentChatView: View {
   }
 
   var body: some View {
-    NavigationSplitView(columnVisibility: $columnVisibility) {
-      ThreadRail(store: store, mode: .expanded)
-        // Drag-resizable within the expanded bounds. The rail view
-        // itself carries no fixed width — a hardcoded 236 inside a
-        // resizable column left a dead band between rail and detail.
-        .navigationSplitViewColumnWidth(
-          min: AgentSidebarMode.expanded.minimumWidth,
-          ideal: AgentSidebarMode.expanded.idealWidth,
-          max: AgentSidebarMode.expanded.maximumWidth
-        )
-        .toolbar(removing: .sidebarToggle)
-    } detail: {
-      ThreadDetail(
+    AgentColumns(
+      sidebarExpanded: sidebarExpanded,
+      sidebar: ThreadRail(store: store, mode: .expanded),
+      detail: ThreadDetail(
         store: store,
         isSidebarExpanded: sidebarExpanded,
         isPinned: $isPinned,
         toggleSidebar: toggleSidebar
       )
-    }
-    .navigationSplitViewStyle(.balanced)
+    )
     .safeAreaInset(edge: .bottom) {
       if let maxPermissions {
         MaxPermissionPresentation(model: maxPermissions)
@@ -54,8 +34,7 @@ struct AgentChatView: View {
     }
     .csFocusPolicy()
     .developerPowerCorner(padding: 8)
-    .background(CSColor.glassBase)
-    .background(AgentWindowCapabilities(isPinned: isPinned))
+    .background(AgentWindowCapabilities(isPinned: isPinned, model: store.currentThread?.model))
     .frame(
       minWidth: AgentWindowMetrics.minWidth,
       idealWidth: AgentWindowMetrics.idealWidth,
@@ -68,14 +47,11 @@ struct AgentChatView: View {
       AgentPerf.logger.info("agent window shell rendered")
       store.startDemoStreamIfNeeded()
     }
-    // Restore the persisted rail state through the native mechanism.
-    .onAppear { columnVisibility = sidebarExpanded ? .all : .detailOnly }
   }
 
   private func toggleSidebar() {
     withAnimation {
       sidebarExpanded.toggle()
-      columnVisibility = sidebarExpanded ? .all : .detailOnly
     }
   }
 }
@@ -96,7 +72,7 @@ private struct MaxPermissionPresentation: View {
 }
 
 /// Desktop-utility window floor for Agent. Named so the split-view rail
-/// (expanded min 200) plus a usable detail column stay a single invariant.
+/// (expanded min 267) plus a usable detail column stay a single invariant.
 enum AgentWindowMetrics {
   static let minWidth: CGFloat = 640
   static let minHeight: CGFloat = 440
@@ -118,8 +94,8 @@ enum AgentSidebarMode: Equatable {
   static let compactWidth: CGFloat = 56
 
   var isExpanded: Bool { self == .expanded }
-  var minimumWidth: CGFloat { isExpanded ? 200 : Self.compactWidth }
-  var idealWidth: CGFloat { isExpanded ? 236 : Self.compactWidth }
+  var minimumWidth: CGFloat { isExpanded ? 267 : Self.compactWidth }
+  var idealWidth: CGFloat { isExpanded ? 300 : Self.compactWidth }
   var maximumWidth: CGFloat { isExpanded ? 360 : Self.compactWidth }
 
   static func toggled(_ mode: AgentSidebarMode) -> AgentSidebarMode {
@@ -137,6 +113,7 @@ enum AgentWindowLevelPolicy {
 
 private struct AgentWindowCapabilities: NSViewRepresentable {
   let isPinned: Bool
+  let model: String?
 
   func makeNSView(context: Context) -> NSView {
     let view = NSView(frame: .zero)
@@ -150,6 +127,39 @@ private struct AgentWindowCapabilities: NSViewRepresentable {
 
   private func configure(_ window: NSWindow?) {
     window?.level = AgentWindowLevelPolicy.level(isPinned: isPinned)
+    let name = model?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    window?.title = name.isEmpty ? "Agent" : "Agent — \(name)"
+  }
+}
+
+/// One native owner for the divider's hard bounds and collapse state.
+private struct AgentColumns<Sidebar: View, Detail: View>: NSViewControllerRepresentable {
+  let sidebarExpanded: Bool
+  let sidebar: Sidebar
+  let detail: Detail
+
+  func makeNSViewController(context: Context) -> NSSplitViewController {
+    let controller = NSSplitViewController()
+    controller.splitView.isVertical = true
+    controller.splitView.dividerStyle = .thin
+    let rail = NSSplitViewItem(sidebarWithViewController: NSHostingController(rootView: AnyView(sidebar.environment(\.self, context.environment))))
+    rail.minimumThickness = AgentSidebarMode.expanded.minimumWidth
+    rail.maximumThickness = AgentSidebarMode.expanded.maximumWidth
+    rail.canCollapse = false
+    controller.addSplitViewItem(rail)
+    let conversation = NSSplitViewItem(viewController: NSHostingController(rootView: AnyView(detail.environment(\.self, context.environment))))
+    conversation.minimumThickness = 320
+    controller.addSplitViewItem(conversation)
+    return controller
+  }
+
+  func updateNSViewController(_ controller: NSSplitViewController, context: Context) {
+    let rail = controller.splitViewItems[0]
+    (rail.viewController as? NSHostingController<AnyView>)?.rootView =
+      AnyView(sidebar.environment(\.self, context.environment))
+    (controller.splitViewItems[1].viewController as? NSHostingController<AnyView>)?.rootView =
+      AnyView(detail.environment(\.self, context.environment))
+    rail.isCollapsed = !sidebarExpanded
   }
 }
 
@@ -162,7 +172,7 @@ private struct ThreadDetail: View {
   let isSidebarExpanded: Bool
   @Binding var isPinned: Bool
   let toggleSidebar: () -> Void
-  @Environment(\.openSettings) private var openSettings
+  @Environment(\.openWindow) private var openWindow
   @State private var isRenaming = false
   @State private var renameText = ""
   /// Shared with `MessageList` via `ChatLayoutPolicy.defaultsKey`.
@@ -214,7 +224,7 @@ private struct ThreadDetail: View {
       Composer(store: store, overlay: AppModel.shared.overlay.state)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(CSColor.glassBase)
+    .background(CSColor.windowCanvas)
     .alert(
       "Speech unavailable",
       isPresented: Binding(
@@ -243,7 +253,7 @@ private struct ThreadDetail: View {
           .font(.system(size: 13, weight: .medium))
       }
       .csFocusRing()
-      .foregroundStyle(isSidebarExpanded ? CSColor.chromeAccent : CSColor.textFaint)
+      .foregroundStyle(isSidebarExpanded ? CSColor.chromeAccent : CSColor.textTertiary)
       .keyboardShortcut("s", modifiers: [.command, .control])
       .help(isSidebarExpanded ? "Collapse sidebar (⌃⌘S)" : "Expand sidebar (⌃⌘S)")
       .accessibilityLabel("Toggle Sidebar")
@@ -259,7 +269,7 @@ private struct ThreadDetail: View {
       if turnCount > 0 {
         Text("· \(turnCount)")
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textFaintAlt)
+          .foregroundStyle(CSColor.textTertiary)
           .fixedSize()
       }
 
@@ -276,7 +286,7 @@ private struct ThreadDetail: View {
         } label: {
           Image(systemName: isPinned ? "pin.fill" : "pin")
             .font(.system(size: 13, weight: .medium))
-            .foregroundStyle(isPinned ? CSColor.chromeAccent : CSColor.textFaint)
+            .foregroundStyle(isPinned ? CSColor.chromeAccent : CSColor.textTertiary)
         }
         .csFocusRing()
         .help(isPinned ? "Disable Always on Top" : "Enable Always on Top")
@@ -285,7 +295,7 @@ private struct ThreadDetail: View {
         )
         .accessibilityValue(isPinned ? "Pinned" : "Unpinned")
 
-        Button(action: { openSettings() }) {
+        Button(action: { openWindow(id: SettingsView.windowID) }) {
           CSIconView(icon: .settings, size: 14)
         }
         .csFocusRing()
@@ -302,7 +312,7 @@ private struct ThreadDetail: View {
     .padding(.trailing, 12)
     .padding(.vertical, 6)
     .overlay(alignment: .bottom) {
-      Rectangle().fill(CSColor.hairline(0.06)).frame(height: 1)
+      Rectangle().fill(Color.primary.opacity(0.06)).frame(height: 1)
     }
   }
 
@@ -375,9 +385,9 @@ private struct ThreadDetail: View {
   @ViewBuilder
   private var liveStatusPill: some View {
     if store.isCancelling {
-      StaticStatusPill(text: "Stopping", color: CSColor.textFaintAlt)
+      StaticStatusPill(text: "Stopping", color: CSColor.textTertiary)
     } else if store.isStreaming {
-      StatusPill(text: "Streaming", color: CSColor.terracottaLight, rippling: true)
+      StatusPill(text: "Streaming", color: CSColor.terracotta, rippling: true)
     } else if store.isThinking {
       StatusPill(text: "Thinking", color: CSColor.amber, rippling: true)
     }
@@ -405,14 +415,14 @@ private struct QueuedTurnRow: View {
         TextField("Queued message", text: $editText, axis: .vertical)
           .textFieldStyle(.plain)
           .font(CSFont.ui(12, .regular))
-          .foregroundStyle(CSColor.textHigh)
+          .foregroundStyle(Color.primary)
           .lineLimit(1...4)
           .onSubmit { commitEdit() }
           .onExitCommand { isEditing = false }
       } else {
         Text(turn.text.isEmpty ? "\(turn.attachments.count) attachment(s)" : turn.text)
           .font(CSFont.ui(12, .regular))
-          .foregroundStyle(CSColor.textBody)
+          .foregroundStyle(Color.primary)
           .lineLimit(2)
           .truncationMode(.tail)
           .textSelection(.enabled)
@@ -427,12 +437,12 @@ private struct QueuedTurnRow: View {
         Button("Cancel") { isEditing = false }
           .csFocusRing()
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textFaintAlt)
+          .foregroundStyle(CSColor.textTertiary)
       } else {
         Button(action: beginEdit) {
           Image(systemName: "pencil.circle.fill")
             .font(.system(size: 13))
-            .foregroundStyle(CSColor.textFaintAlt)
+            .foregroundStyle(CSColor.textTertiary)
         }
         .csFocusRing()
         .help("Edit queued message")
@@ -441,7 +451,7 @@ private struct QueuedTurnRow: View {
       Button(action: cancel) {
         Image(systemName: "xmark.circle.fill")
           .font(.system(size: 13))
-          .foregroundStyle(CSColor.textFaintAlt)
+          .foregroundStyle(CSColor.textTertiary)
       }
       .csFocusRing()
       .help("Cancel queued message")
@@ -449,10 +459,10 @@ private struct QueuedTurnRow: View {
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 7)
-    .background(CSColor.surfaceRaised(0.04))
+    .background(Color.primary.opacity(0.04))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.09), lineWidth: 1)
+        .strokeBorder(Color.primary.opacity(0.09), lineWidth: 1)
     )
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
   }
@@ -482,33 +492,33 @@ struct ToolApprovalCard: View {
         Spacer()
         Text(request.risk.replacingOccurrences(of: "_", with: " "))
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textFaintAlt)
+          .foregroundStyle(CSColor.textTertiary)
       }
       Text("\(request.server) · \(request.tool)")
         .font(CSFont.mono(11.5, .semibold))
-        .foregroundStyle(CSColor.textHigh)
+        .foregroundStyle(Color.primary)
         .textSelection(.enabled)
       if !request.summary.isEmpty {
         Text(request.summary)
           .font(CSFont.ui(12, .regular))
-          .foregroundStyle(CSColor.textBody)
+          .foregroundStyle(Color.primary)
       }
       if let command = request.command {
         Text("$ \(command)")
           .font(CSFont.mono(11, .medium))
-          .foregroundStyle(CSColor.terracottaLight)
+          .foregroundStyle(CSColor.terracotta)
           .textSelection(.enabled)
       }
       if let cwd = request.cwd {
         Text("cwd: \(cwd)")
           .font(CSFont.mono(10.5, .medium))
-          .foregroundStyle(CSColor.textFaintAlt)
+          .foregroundStyle(CSColor.textTertiary)
           .textSelection(.enabled)
       }
       ForEach(request.paths, id: \.self) { path in
         Text(path)
           .font(CSFont.mono(10.5, .medium))
-          .foregroundStyle(CSColor.textFaintAlt)
+          .foregroundStyle(CSColor.textTertiary)
           .textSelection(.enabled)
       }
       HStack {
@@ -520,7 +530,7 @@ struct ToolApprovalCard: View {
       }
     }
     .padding(CSSpace.card)
-    .background(CSColor.surfaceRaised(0.04))
+    .background(Color.primary.opacity(0.04))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .strokeBorder(CSColor.amber.opacity(0.35), lineWidth: 1)
@@ -535,6 +545,5 @@ struct ToolApprovalCard: View {
   #Preview("Agent Chat") {
     AgentChatView(store: AgentChatStore(engine: MockChatEngine()))
       .frame(width: 840, height: 520)
-      .preferredColorScheme(.dark)
   }
 #endif

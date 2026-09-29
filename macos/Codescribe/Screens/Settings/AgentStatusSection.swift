@@ -22,7 +22,7 @@ struct AgentStatusSection: View {
         .padding(.top, CSSpace.section)
       Text("Native substrate vs enrichment providers (IntelliJ optional).")
         .font(CSFont.ui(11.5))
-        .foregroundStyle(CSColor.textFaint)
+        .foregroundStyle(Color.secondary)
         .padding(.top, 4)
       capabilityMatrixCard
         .padding(.top, 8)
@@ -31,7 +31,7 @@ struct AgentStatusSection: View {
         .padding(.top, CSSpace.section)
       Text(model.mcpStatus.configPathDisplay)
         .font(CSFont.mono(10, .medium))
-        .foregroundStyle(CSColor.textFaint)
+        .foregroundStyle(Color.secondary)
         .lineLimit(1)
         .truncationMode(.middle)
         .padding(.top, 4)
@@ -47,7 +47,7 @@ struct AgentStatusSection: View {
           Spacer(minLength: 0)
           Text("\(model.mcpServers.count) configured")
             .font(CSFont.mono(10, .medium))
-            .foregroundStyle(CSColor.textFaint)
+            .foregroundStyle(Color.secondary)
         }
         .padding(.top, CSSpace.section)
         .help("Cached initialize + tools/list result per configured server")
@@ -92,16 +92,16 @@ struct AgentStatusSection: View {
           CSIconView(icon: .refresh, size: 11, weight: .semibold)
           Text("Refresh").font(CSFont.mono(11, .semibold))
         }
-        .foregroundStyle(CSColor.textBodyAlt)
+        .foregroundStyle(Color.primary)
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
         .background(
           RoundedRectangle(cornerRadius: 7, style: .continuous)
-            .fill(CSColor.surfaceRaised(0.04))
+            .fill(Color.primary.opacity(0.08))
         )
         .overlay(
           RoundedRectangle(cornerRadius: 7, style: .continuous)
-            .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
         )
       }
       .csFocusRing()
@@ -111,7 +111,7 @@ struct AgentStatusSection: View {
   private var readinessPill: some View {
     let ready = model.agentReadiness.ready
     let accent = ready ? CSColor.olive : CSColor.terracotta
-    let accentLight = ready ? CSColor.oliveLight : CSColor.terracottaLight
+    let accentLight = ready ? CSColor.oliveLight : CSColor.terracotta
     return Text(ready ? "READY" : "NOT READY")
       .font(CSFont.mono(9, .semibold))
       .tracking(0.4)
@@ -143,7 +143,7 @@ struct AgentStatusSection: View {
       } else {
         ForEach(Array(model.capabilityMatrix.enumerated()), id: \.offset) { index, row in
           if index > 0 {
-            Rectangle().fill(CSColor.hairline(0.05)).frame(height: 1)
+            Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
           }
           CapabilityMatrixRow(row: row)
         }
@@ -152,7 +152,7 @@ struct AgentStatusSection: View {
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
+        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
     )
   }
 
@@ -163,7 +163,7 @@ struct AgentStatusSection: View {
     VStack(spacing: 0) {
       ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
         if index > 0 {
-          Rectangle().fill(CSColor.hairline(0.05)).frame(height: 1)
+          Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
         }
         AgentStatusRow(row: row)
       }
@@ -171,7 +171,7 @@ struct AgentStatusSection: View {
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
+        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
     )
   }
 }
@@ -185,11 +185,11 @@ private struct AgentStatusRow: View {
     HStack(spacing: 12) {
       Text(row.label)
         .font(CSFont.mono(12, .medium))
-        .foregroundStyle(CSColor.textMutedAlt)
+        .foregroundStyle(Color.secondary)
         .frame(width: 160, alignment: .leading)
       Text(row.value)
         .font(CSFont.ui(12.5, .semibold))
-        .foregroundStyle(CSColor.textHigh)
+        .foregroundStyle(Color.primary)
         .lineLimit(2)
         .frame(maxWidth: .infinity, alignment: .leading)
       Circle().fill(row.tone.dotColor).frame(width: 7, height: 7)
@@ -208,7 +208,7 @@ private struct CapabilityMatrixRow: View {
     HStack(alignment: .top, spacing: 12) {
       Text(row.op)
         .font(CSFont.mono(12, .medium))
-        .foregroundStyle(CSColor.textMutedAlt)
+        .foregroundStyle(Color.secondary)
         .frame(width: 120, alignment: .leading)
       Text(row.tier.uppercased())
         .font(CSFont.mono(10, .semibold))
@@ -228,17 +228,17 @@ private struct CapabilityMatrixRow: View {
       VStack(alignment: .leading, spacing: 2) {
         Text(row.reason.isEmpty ? row.provider : row.reason)
           .font(CSFont.ui(12.5, .semibold))
-          .foregroundStyle(CSColor.textHigh)
+          .foregroundStyle(Color.primary)
           .lineLimit(2)
         if !row.nativeTool.isEmpty {
           Text("tool: \(row.nativeTool) · provider: \(row.provider)")
             .font(CSFont.mono(10, .medium))
-            .foregroundStyle(CSColor.textFaint)
+            .foregroundStyle(Color.secondary)
             .lineLimit(1)
         } else if !row.provider.isEmpty {
           Text("provider: \(row.provider)")
             .font(CSFont.mono(10, .medium))
-            .foregroundStyle(CSColor.textFaint)
+            .foregroundStyle(Color.secondary)
             .lineLimit(1)
         }
       }
@@ -256,8 +256,8 @@ private struct CapabilityMatrixRow: View {
     switch row.tier.lowercased() {
     case "native": return CSColor.oliveLight
     case "enhanced": return CSColor.amber
-    case "unavailable": return CSColor.terracottaLight
-    default: return CSColor.textFaint
+    case "unavailable": return CSColor.terracotta
+    default: return Color.secondary
     }
   }
 }
@@ -270,8 +270,8 @@ extension CsMcpRowTone {
     switch self {
     case .good: return CSColor.oliveLight
     case .warn: return CSColor.amber
-    case .bad: return CSColor.terracottaLight
-    case .neutral: return CSColor.textFaint
+    case .bad: return CSColor.terracotta
+    case .neutral: return Color.secondary
     }
   }
 }

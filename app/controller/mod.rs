@@ -2371,13 +2371,7 @@ impl RecordingController {
             format_delivery_route_line(intent, decision, target_app.as_deref())
         );
         if trimmed.is_empty() || decision.route == DeliveryRoute::ArchiveOnly {
-            return Ok(OverlayPasteResult {
-                delivery: OverlayPasteDelivery::Noop,
-                target_app_name: None,
-                frontmost_app_name: None,
-                deferred_insert_shortcut: None,
-                deferred_insert_failure: None,
-            });
+            return Ok(OverlayPasteResult::noop());
         }
         let config = self.get_config().await;
         let payload = self.delivery_tagger.render(trimmed, &config, None);
@@ -3246,13 +3240,7 @@ impl RecordingController {
             format_delivery_route_line(intent, decision, target_app.as_deref())
         );
         if trimmed.is_empty() || decision.route == DeliveryRoute::ArchiveOnly {
-            return Ok(OverlayPasteResult {
-                delivery: OverlayPasteDelivery::Noop,
-                target_app_name: None,
-                frontmost_app_name: None,
-                deferred_insert_shortcut: None,
-                deferred_insert_failure: None,
-            });
+            return Ok(OverlayPasteResult::noop());
         }
         let config = self.get_config().await;
         let payload = self.delivery_tagger.render(trimmed, &config, None);
@@ -3846,22 +3834,16 @@ impl RecordingController {
         // Assistive hands-off is intentionally callback-driven: every finalized utterance
         // appends into the current chat user bubble, and VAD end commits that bubble to the
         // agent without stopping the recorder. Do not route assistive live preview deltas
-        // into the same bubble, or previews and finals will duplicate.
-        Self::configure_level_broadcast(recorder, event_broadcast.clone());
-        let acoustic_ledger = recorder.acoustic_ledger_handle();
-        let pipeline = Self::build_recording_event_sink(
-            recorder.transcript_buffer_handle(),
-            RecordingEventSinkOptions {
-                preview_deltas_enabled,
-                sentence_pause_sec: recorder.light_plus_sentence_pause_sec(),
-            },
+        // into the same bubble, or previews and finals will duplicate. This sink does not
+        // perform that routing: callers pass `preview_deltas_enabled`, and the flush flag
+        // is unused here.
+        Self::configure_hold_event_sink(
+            recorder,
+            preview_deltas_enabled,
             event_broadcast,
             transcript_bus,
-            acoustic_ledger,
             delivery_tagger,
-        );
-        recorder.set_event_sink(Some(Arc::clone(&pipeline.event_sink)));
-        pipeline
+        )
     }
 
     /// Handle hotkey event - main entry point for state machine

@@ -31,6 +31,7 @@ struct SettingsTabBar: View {
       }
     }
     .pickerStyle(.segmented)
+    .controlSize(.regular)
     .labelsHidden()
   }
 }

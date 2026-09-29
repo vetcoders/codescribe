@@ -3,11 +3,11 @@ import SwiftUI
 // Row primitives for the tray dropdown. Geometry is taken straight from the
 // mock: rows are 9×12 padded, 9pt-radius, 11pt icon→label gap, 18pt icon column.
 
-/// Two mock-only tints not present in the locked token palette.
+/// The one tray tint that is not a fixed hex: the primary-row keycap follows
+/// the operator's system accent. Secondary text uses the shared `CSColor`
+/// ramp (`textMuted` for child rows and the Quit label) so the tray cannot
+/// drift off the locked palette.
 private enum TrayLocal {
-  /// Submenu child + Quit label (#c7cabf) — slightly muted body text.
-  static let subnote = Color(hex: 0xC7CABF)
-  /// Primary-row keycap follows the operator's system accent.
   static var primaryShortcut: Color { CSColor.chromeAccent.opacity(0.78) }
 }
 
@@ -102,7 +102,7 @@ struct TrayChildRow: View {
     HStack(spacing: 5) {
       Text(title)
         .font(CSFont.ui(12, .medium))
-        .foregroundStyle(TrayLocal.subnote)
+        .foregroundStyle(CSColor.textMuted)
       if let suffix {
         Text(suffix)
           .font(CSFont.mono(10))
@@ -113,7 +113,7 @@ struct TrayChildRow: View {
     .padding(.horizontal, 11)
     .padding(.vertical, 7)
     .background(
-      RoundedRectangle(cornerRadius: 8, style: .continuous)
+      RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous)
         .fill(hovering ? CSColor.surfaceRaised(0.05) : .clear)
     )
     .contentShape(Rectangle())
@@ -150,8 +150,7 @@ struct TrayDisclosureChildren<Content: View>: View {
   }
 }
 
-/// Expose the mock-only palette so it shares the brand's hex initializer.
+/// The accent-derived keycap tint so it shares the brand's accent source.
 extension TrayRow {
-  static let subnoteColor = TrayLocal.subnote
   static let primaryShortcutColor = TrayLocal.primaryShortcut
 }

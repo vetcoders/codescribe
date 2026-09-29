@@ -10,7 +10,7 @@ struct PermissionMatrixCell: View {
 
   private var granted: Bool { state.isGranted }
   private var accent: Color { granted ? CSColor.olive : CSColor.terracotta }
-  private var accentLight: Color { granted ? CSColor.oliveLight : CSColor.terracottaLight }
+  private var accentLight: Color { granted ? CSColor.oliveLight : CSColor.terracotta }
 
   var body: some View {
     Button(action: grant) {
@@ -19,7 +19,7 @@ struct PermissionMatrixCell: View {
           icon: granted ? .success : .warning, size: 11, weight: .semibold, color: accentLight)
         Text(kind.rawValue)
           .font(CSFont.ui(12.5, .medium))
-          .foregroundStyle(CSColor.textBodyAlt)
+          .foregroundStyle(Color.primary)
           .frame(maxWidth: .infinity, alignment: .leading)
         Text(granted ? "granted" : state.label)
           .font(CSFont.mono(10, .semibold))
@@ -28,7 +28,7 @@ struct PermissionMatrixCell: View {
       .padding(.horizontal, 14)
       .padding(.vertical, 11)
       .background {
-        RoundedRectangle(cornerRadius: 10)
+        RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
           .fill(accent.opacity(0.08))
           .strokeBorder(accent.opacity(0.2), lineWidth: 1)
       }

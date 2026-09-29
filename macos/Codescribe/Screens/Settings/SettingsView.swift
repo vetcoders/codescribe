@@ -2,22 +2,9 @@ import AppKit
 import Combine
 import SwiftUI
 
-// Settings window: a NATIVE `NavigationSplitView` whose sidebar is a real
-// `List(selection:)` in `.sidebar` style — the same chrome the Agent window
-// already uses, and the reason that window survives an OS bump without visual
-// drift while this one used to.
-//
-// The previous shell was a plain `HStack` with a 212pt hand-drawn rail. It was
-// written that way to dodge one concrete problem: a NavigationSplitView reserves
-// a toolbar strip above the sidebar, which pushed the rail ~70px down. Dropping
-// the split view took the whole native surface with it — no collapse, no search,
-// no section headers, no system material, no keyboard navigation, and a rail
-// that had to re-implement selection state by hand.
-//
-// The strip is not dead space, it is the toolbar: the wordmark and version live
-// in it, and it hosts the system sidebar toggle. That turns the reason for the
-// fork into the feature the operator asked for.
+// Shared Settings content, hosted by the app’s single resizable Settings window.
 struct SettingsView: View {
+  static let windowID = "codescribe-settings"
   @StateObject private var model: SettingsViewModel
   @State private var columnVisibility: NavigationSplitViewVisibility = .all
   @State private var search: String = ""
@@ -37,24 +24,15 @@ struct SettingsView: View {
     }
     .navigationTitle("")
     .toolbar {
-      ToolbarItem(placement: .navigation) {
-        HStack(spacing: 9) {
-          Wordmark(size: 14)
-            .fixedSize(horizontal: true, vertical: false)
-          Text("v\(model.appVersion)")
-            .font(CSFont.mono(10, .medium))
-            .foregroundStyle(CSColor.textFaintAlt)
-        }
+      if #available(macOS 26.0, *) {
+        brandToolbar.sharedBackgroundVisibility(.hidden)
+      } else {
+        brandToolbar
       }
     }
     .csFocusPolicy()
+    .controlSize(.regular)
     .frame(minWidth: 880, maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)
-    .background(SettingsWindowCapabilities())
-    // The panels still paint hand-picked dark tokens, so the window stays
-    // pinned to dark until the palette itself is theme-aware. Removing this
-    // line before that work lands would render dark text on a light system
-    // background — the sidebar is native either way.
-    .preferredColorScheme(.dark)
     .onAppear {
       model.refresh()
       consumePendingDeepLink()
@@ -67,6 +45,20 @@ struct SettingsView: View {
     .onReceive(NotificationCenter.default.publisher(for: SettingsDeepLink.pendingSectionDidChange))
     { _ in
       consumePendingDeepLink()
+    }
+  }
+
+  private var brandToolbar: some ToolbarContent {
+    ToolbarItem(placement: .navigation) {
+      HStack(spacing: 16) {
+        Wordmark(size: 16)
+          .fixedSize(horizontal: true, vertical: false)
+        Text("v\(model.appVersion)")
+          .font(CSFont.mono(10, .medium))
+          .foregroundStyle(Color.secondary)
+      }
+      .padding(.horizontal, 12)
+      .padding(.vertical, 6)
     }
   }
 
@@ -144,7 +136,6 @@ struct SettingsView: View {
         }
       }
     }
-    .background(CSColor.windowWash)
   }
 
   @ViewBuilder
@@ -168,43 +159,6 @@ struct SettingsView: View {
       LabPanel()
     case .dictation, .agent:
       EmptyView()
-    }
-  }
-}
-
-/// SwiftUI's Settings scene can silently keep the content-sized AppKit style
-/// mask even when `.windowResizability` is present (notably after restoring an
-/// older saved frame). Enforce normal macOS window capabilities on the actual
-/// host window so Settings can resize, zoom and enter native full screen.
-private struct SettingsWindowCapabilities: NSViewRepresentable {
-  func makeNSView(context: Context) -> NSView {
-    let view = NSView(frame: .zero)
-    DispatchQueue.main.async { configure(view.window) }
-    return view
-  }
-
-  func updateNSView(_ nsView: NSView, context: Context) {
-    DispatchQueue.main.async { configure(nsView.window) }
-  }
-
-  private func configure(_ window: NSWindow?) {
-    guard let window else { return }
-    window.styleMask.formUnion([.resizable, .miniaturizable, .fullSizeContentView])
-    window.collectionBehavior.insert(.fullScreenPrimary)
-    let minimum = NSSize(width: 880, height: 620)
-    window.minSize = minimum
-    window.level = .normal
-    window.standardWindowButton(.zoomButton)?.isEnabled = true
-    window.standardWindowButton(.miniaturizeButton)?.isEnabled = true
-
-    var frame = window.frame
-    frame.size.width = max(frame.width, minimum.width)
-    frame.size.height = max(frame.height, minimum.height)
-    if let screen = window.screen ?? NSScreen.main {
-      frame = window.constrainFrameRect(frame, to: screen)
-    }
-    if frame != window.frame {
-      window.setFrame(frame, display: false)
     }
   }
 }
@@ -248,7 +202,7 @@ private struct SettingsHealthFooter: View {
     .padding(.vertical, 12)
     .contentShape(Rectangle())
     .overlay(alignment: .top) {
-      Rectangle().fill(CSColor.hairline(0.06)).frame(height: 1)
+      Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
     }
   }
 }
@@ -258,57 +212,81 @@ extension SettingsHealthLevel {
     switch self {
     case .healthy: return CSColor.oliveLight
     case .degraded: return CSColor.amber
-    case .offline: return CSColor.terracottaLight
-    case .unknown: return CSColor.textFaint
+    case .offline: return CSColor.terracotta
+    case .unknown: return Color.secondary
     }
   }
 }
 
 // MARK: - Shared Settings chrome (consumed by every panel)
 
+struct SettingsPageHeader: View {
+  let title: String
+  var blurb: String?
+
+  init(_ title: String, blurb: String? = nil) {
+    self.title = title
+    self.blurb = blurb
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: CSSpace.sm) {
+      Text(title)
+        .font(.title2.weight(.semibold))
+        .foregroundStyle(.primary)
+        .accessibilityAddTraits(.isHeader)
+      if let blurb, !blurb.isEmpty {
+        Text(blurb)
+          .font(.callout)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+}
+
 struct SettingsSectionLabel: View {
   let text: String
   init(_ text: String) { self.text = text }
   var body: some View {
-    Text(text.uppercased())
-      .font(CSFont.mono(12, .semibold))
-      .tracking(0.5)
-      .foregroundStyle(CSColor.textMuted)
+    Text(text)
+      .font(.subheadline.weight(.semibold))
+      .foregroundStyle(.secondary)
+      .accessibilityAddTraits(.isHeader)
   }
 }
 
 struct SettingsMenuLabel: View {
   let text: String
   var mono: Bool = false
-  var chrome: Bool = false
 
   var body: some View {
-    if chrome {
-      content
-        .padding(.horizontal, 11)
-        .padding(.vertical, 7)
-        .background(
-          RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-            .fill(CSColor.surfaceRaised(0.03))
-        )
-        .overlay(
-          RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-            .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
-        )
-        .contentShape(Rectangle())
-    } else {
-      content
-    }
-  }
-
-  private var content: some View {
-    HStack(spacing: 6) {
+    HStack(spacing: CSSpace.xs) {
       Text(text)
-        .font(mono ? CSFont.mono(12.5, .semibold) : CSFont.ui(12.5, .semibold))
-        .foregroundStyle(CSColor.textHigh)
+        .font(mono ? CSFont.mono(12.5, .semibold) : .body.weight(.semibold))
+        .foregroundStyle(.primary)
         .lineLimit(1)
-      CSIconView(icon: .chevronUpDown, size: 9, weight: .semibold, color: CSColor.textFaint)
+      CSIconView(icon: .chevronUpDown, size: 9, weight: .semibold, color: Color.secondary)
     }
+    .accessibilityElement(children: .combine)
+  }
+}
+
+extension View {
+  /// Grouped settings inset that follows the system appearance.
+  /// `csSettingsCard` stays on surfaces that still paint a fixed dark canvas.
+  func settingsGroupedInset(padding: CGFloat = CSSpace.card) -> some View {
+    self
+      .padding(padding)
+      .background(
+        RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+          .fill(Color.primary.opacity(0.05))
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+      )
   }
 }
 
@@ -330,11 +308,11 @@ struct RuntimeRow: View {
     HStack(spacing: 12) {
       Text(key)
         .font(CSFont.mono(12, .medium))
-        .foregroundStyle(CSColor.textMutedAlt)
+        .foregroundStyle(Color.secondary)
         .frame(width: 160, alignment: .leading)
       Text(value)
-        .font(mono ? CSFont.mono(12.5, .semibold) : CSFont.ui(12.5, .semibold))
-        .foregroundStyle(mono ? CSColor.textBodyAlt : CSColor.textHigh)
+        .font(mono ? CSFont.mono(12.5, .semibold) : .body.weight(.semibold))
+        .foregroundStyle(.primary)
         .lineLimit(1)
         .truncationMode(.middle)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -342,7 +320,7 @@ struct RuntimeRow: View {
     }
     .padding(.horizontal, 16)
     .padding(.vertical, 13)
-    .background(tint ? CSColor.surfaceRaised(0.02) : Color.clear)
+    .background(tint ? Color.primary.opacity(0.04) : Color.clear)
   }
 
   @ViewBuilder

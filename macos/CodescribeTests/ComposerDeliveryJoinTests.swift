@@ -68,25 +68,6 @@ final class ComposerDeliveryJoinTests: XCTestCase {
     }
   }
 
-  private final class StubThreadsProvider: ChatThreadsProviding {
-    func listThreads() -> [ChatThread] {
-      [("t_a", "Thread A"), ("t_b", "Thread B")].map { row in
-        var thread = ChatThread(title: row.1, meta: "now")
-        thread.backendId = row.0
-        thread.messagesLoaded = true
-        return thread
-      }
-    }
-    func searchThreads(query: String) -> [ChatThread] { listThreads() }
-    func loadMessages(backendId: String) -> [ChatMessage] { [] }
-    func deleteThread(backendId: String) -> Bool { true }
-    func setThreadFavorite(backendId: String, isFavorite: Bool) -> Bool { true }
-    func renameThread(backendId: String, title: String) -> Bool { true }
-    func setGeneratedTitle(backendId: String, title: String) -> Bool { true }
-    func exportThreadMarkdown(backendId: String, assistantOnly: Bool) -> String? { nil }
-    func generateThreadId() -> String { "t_generated" }
-  }
-
   /// Readiness is published only after the continuation is registered. Tests
   /// await that handshake; cancellation resumes every outstanding continuation.
   @MainActor
@@ -126,12 +107,9 @@ final class ComposerDeliveryJoinTests: XCTestCase {
     }
   }
 
-  private final class HeldReplyEngine: AgentChatEngine {
+  private final class HeldReplyEngine: ChatEngineFixture {
     let state = HeldReplyState()
     private(set) var sendOrigins: [(AgentSendOrigin, Int, String, Bool)] = []
-    func isAvailable() -> Bool { true }
-    func availabilityDetail() -> String? { nil }
-    func generateThreadTitle(_ text: String) async throws -> String? { nil }
     func recordSendOrigin(
       _ origin: AgentSendOrigin, chars: Int, threadId: String, recordingActive: Bool
     ) {
@@ -189,7 +167,7 @@ final class ComposerDeliveryJoinTests: XCTestCase {
 
   private func makeFixture(recording: [Bool]) -> Fixture {
     let store = AgentChatStore(
-      threadsProvider: StubThreadsProvider(), persistenceDefaults: isolatedDefaults())
+      threadsProvider: PairThreadsProvider(), persistenceDefaults: isolatedDefaults())
     let surface = FakeCaptureSurface(recording: recording)
     let dictation = RealComposerDictation(store: store, hotkeys: surface)
     store.dictation = dictation
@@ -227,57 +205,38 @@ final class ComposerDeliveryJoinTests: XCTestCase {
     let sequence = nextSequence
     let sampleStart = presentationReceipt?.sampleStart ?? (sequence - 1) * 16_000
     let sampleEnd = presentationReceipt?.sampleEnd ?? sequence * 16_000
-    let receipt = CsProjectedAcousticReceipt(
-      acousticSerialVersion: 1,
-      acousticSerial: "join-acoustic-\(sequence)",
+    let receipt = projectedAcousticReceipt(
+      serial: "join-acoustic-\(sequence)",
       sessionId: sessionId,
-      captureEpoch: 1,
       sampleStart: sampleStart,
       sampleEnd: sampleEnd,
-      durationMs: 1_000,
-      energyIntegral: 1,
-      meanRmsDbfs: -20,
-      peakDbfs: -6,
-      vadOpenSample: sampleStart,
-      vadCloseSample: sampleEnd,
-      evidenceCalibrationVersion: "test-v1",
-      wordEvidenceReceipts: ["join-word-\(sequence)"],
-      layerDecisionReceipts: ["join-layer-\(sequence)"],
+      wordEvidence: ["join-word-\(sequence)"],
+      layerDecisions: ["join-layer-\(sequence)"],
       sealReceipt: presentationReceipt?.sourceSealReceipt
         ?? (terminal ? "join-seal-\(sequence)" : nil),
       manualEditReceipt: manualEditReceipt,
       presentationReceipt: presentationReceipt
     )
     state.applyTranscriptProjection(
-      CsTranscriptProjectionEvent(
-        schema: "codescribe.transcript_projection.v1",
+      transcriptProjection(
         sequence: sequence,
         emittedAt: "2026-09-09T20:00:00Z",
         sessionId: sessionId,
-        mode: mode,
-        reducerRevision: sequence,
+        renderedText: text,
+        phase: phase,
+        terminal: terminal,
         reducerAction: reducerAction,
-        occurrenceSessionId: sessionId,
-        captureEpoch: 1,
+        mode: mode,
         sampleStart: sampleStart,
         sampleEnd: sampleEnd,
-        documentIndex: sequence - 1,
-        label: terminal ? "terminal" : "live",
-        renderedText: text,
         deliveryText: deliveryText,
-        phase: phase,
         canPaste: terminal,
         canInsert: terminal,
-        canCopy: !text.isEmpty,
         canRetranscribe: terminal,
         canFormat: !terminal,
-        canSendToAgent: false,
-        terminal: terminal,
         lifecycleTerminal: lifecycleTerminal,
         delivery: delivery,
-        acousticReceipts: [receipt],
-        sealCoverage: nil,
-        consultationPresentations: []
+        acousticReceipts: [receipt]
       )
     )
   }
@@ -709,7 +668,7 @@ final class ComposerDeliveryJoinTests: XCTestCase {
   /// applies only once stop permission has been spent.
   func testAPendingStartIsNotReplacedByASecondPress() async {
     let f = makeFixture(recording: [false, false, false])
-    let gate = Gate(expectation(description: "start awaiting admission"))
+    let gate = ExpectationGate(expectation(description: "start awaiting admission"))
     f.surface.onStart = { await gate.wait() }
     f.dictation.toggle()
     await fulfillment(of: [gate.entered], timeout: 1)
@@ -725,30 +684,9 @@ final class ComposerDeliveryJoinTests: XCTestCase {
       "a request that never spent stop permission still blocks a replacement")
   }
 
-  @MainActor
-  private final class Gate {
-    let entered: XCTestExpectation
-    private var continuations: [CheckedContinuation<Void, Never>] = []
-    private var released = false
-    init(_ entered: XCTestExpectation) { self.entered = entered }
-    func wait() async {
-      guard !released else { return }
-      await withCheckedContinuation { continuation in
-        continuations.append(continuation)
-        if continuations.count == 1 { entered.fulfill() }
-      }
-    }
-    func release() {
-      released = true
-      let pending = continuations
-      continuations.removeAll()
-      for continuation in pending { continuation.resume() }
-    }
-  }
-
   func testFailureBannerExpiryKeepsPendingPresentationAndOriginalDelivery() async {
     let f = makeFixture(recording: [false])
-    let expiry = Gate(expectation(description: "banner clock registered"))
+    let expiry = ExpectationGate(expectation(description: "banner clock registered"))
     f.store.waitForDictationFailureExpiry = { await expiry.wait() }
     f.dictation.toggle()
     await settle(f)
@@ -799,7 +737,7 @@ final class ComposerDeliveryJoinTests: XCTestCase {
       let f = makeFixture(recording: [false])
       f.dictation.toggle()
       await settle(f)
-      let stop = Gate(expectation(description: "old Stop held"))
+      let stop = ExpectationGate(expectation(description: "old Stop held"))
       f.surface.onStop = { await stop.wait() }
       f.surface.stopThrows = outcome == nil
       f.surface.stopOutcome = outcome ?? .stopped
@@ -823,7 +761,7 @@ final class ComposerDeliveryJoinTests: XCTestCase {
 
   func testStaleFailureBannerCannotPaintIdleOverSuccessor() async {
     let f = makeFixture(recording: [false])
-    let expiry = Gate(expectation(description: "old failure expiry registered"))
+    let expiry = ExpectationGate(expectation(description: "old failure expiry registered"))
     f.store.waitForDictationFailureExpiry = { await expiry.wait() }
     f.dictation.toggle()
     await settle(f)
@@ -848,7 +786,7 @@ final class ComposerDeliveryJoinTests: XCTestCase {
 
   func testEarlyTerminalJoinsInitiatingThreadAfterAcknowledgedStartBarrier() async {
     let f = makeFixture(recording: [false])
-    let start = Gate(expectation(description: "start reply held"))
+    let start = ExpectationGate(expectation(description: "start reply held"))
     f.surface.onStart = { await start.wait() }
     f.dictation.toggle()
     await fulfillment(of: [start.entered], timeout: 1)
@@ -1087,7 +1025,7 @@ final class ComposerDeliveryJoinTests: XCTestCase {
   func testAcceptedSendCarriesOriginSizeThreadAndRecordingStateToRustSeam() {
     let engine = HeldReplyEngine()
     let store = AgentChatStore(
-      engine: engine, threadsProvider: StubThreadsProvider(),
+      engine: engine, threadsProvider: PairThreadsProvider(),
       persistenceDefaults: isolatedDefaults())
     let thread = store.threads.first { $0.backendId == "t_a" }!.id
     store.select(thread)
@@ -1383,7 +1321,7 @@ final class ComposerDeliveryJoinTests: XCTestCase {
       if text == "second ask" { secondStarted.fulfill() }
     }
     let store = AgentChatStore(
-      engine: engine, threadsProvider: StubThreadsProvider(),
+      engine: engine, threadsProvider: PairThreadsProvider(),
       persistenceDefaults: isolatedDefaults())
     let threadA = store.threads.first { $0.backendId == "t_a" }!.id
     let threadB = store.threads.first { $0.backendId == "t_b" }!.id
@@ -1429,7 +1367,7 @@ final class ComposerDeliveryJoinTests: XCTestCase {
     let started = expectation(description: "sentinel continuation registered")
     engine.state.onStart = { _ in started.fulfill() }
     let sentinel = AgentChatStore(
-      engine: engine, threadsProvider: StubThreadsProvider(),
+      engine: engine, threadsProvider: PairThreadsProvider(),
       persistenceDefaults: sentinelDefaults)
     let sentinelThread = try XCTUnwrap(sentinel.selectedThreadID)
     sentinel.draft = "sentinel pending work"
@@ -1443,7 +1381,7 @@ final class ComposerDeliveryJoinTests: XCTestCase {
       sentinelDefaults.data(forKey: AgentChatStore.attachmentMetadataDefaultsKey))
 
     let other = AgentChatStore(
-      threadsProvider: StubThreadsProvider(), persistenceDefaults: otherDefaults)
+      threadsProvider: PairThreadsProvider(), persistenceDefaults: otherDefaults)
     let otherThread = try XCTUnwrap(other.selectedThreadID)
     other.draft = "independent send"
     other.addAttachments([URL(fileURLWithPath: "/tmp/other.png")])
@@ -1461,7 +1399,7 @@ final class ComposerDeliveryJoinTests: XCTestCase {
     let started = expectation(description: "continuation ready for cancellation")
     engine.state.onStart = { _ in started.fulfill() }
     let store = AgentChatStore(
-      engine: engine, threadsProvider: StubThreadsProvider(),
+      engine: engine, threadsProvider: PairThreadsProvider(),
       persistenceDefaults: isolatedDefaults())
     guard let thread = store.selectedThreadID else { return XCTFail("missing thread") }
     defer { engine.state.cancelAll() }

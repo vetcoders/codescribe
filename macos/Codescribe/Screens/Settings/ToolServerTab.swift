@@ -17,26 +17,26 @@ struct ToolServerTab: View {
         if differentiateWithoutColor, isSelected {
           Image(systemName: "chevron.right")
             .font(.system(size: 9, weight: .bold))
-            .foregroundStyle(CSColor.textHigh)
+            .foregroundStyle(Color.primary)
             .accessibilityHidden(true)
         }
         Text(server)
           .font(CSFont.ui(12, .semibold))
-          .foregroundStyle(isSelected ? CSColor.textHigh : CSColor.textBody)
+          .foregroundStyle(isSelected ? Color.primary : Color.secondary)
           .lineLimit(1)
           .truncationMode(.middle)
         Spacer(minLength: 0)
         Text("\(count)")
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textFaint)
+          .foregroundStyle(Color.secondary)
           .padding(.horizontal, CSSpace.xs)
           .padding(.vertical, 2)
-          .background(CSColor.surfaceRaised(0.05), in: .capsule)
+          .background(Color.primary.opacity(0.1), in: .capsule)
       }
       .padding(.horizontal, 10)
       .padding(.vertical, 7)
       .background(
-        isSelected ? CSColor.surfaceRaised(0.07) : .clear, in: .rect(cornerRadius: 7)
+        isSelected ? Color.primary.opacity(0.14) : .clear, in: .rect(cornerRadius: 7)
       )
       .contentShape(.rect)
     }

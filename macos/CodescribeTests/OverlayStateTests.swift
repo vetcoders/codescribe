@@ -346,56 +346,42 @@ final class OverlayStateTests: XCTestCase {
     let sampleStart = (sequence - 1) * 16_000
     let sampleEnd = sequence * 16_000
     let projectedPhase = phase ?? (terminal ? "formatted" : "listening")
-    let receipt = CsProjectedAcousticReceipt(
-      acousticSerialVersion: 1,
-      acousticSerial: "test-acoustic-\(sequence)",
+    let action =
+      reducerAction
+      ?? (terminal
+        ? (projectedPhase == "coverage_refused"
+          ? "session_ended" : "record_ledger_terminal_seal")
+        : "record_ledger_projection")
+    let receipt = projectedAcousticReceipt(
+      serial: "test-acoustic-\(sequence)",
       sessionId: sessionId,
-      captureEpoch: 1,
       sampleStart: sampleStart,
       sampleEnd: sampleEnd,
-      durationMs: 1_000,
-      energyIntegral: 1,
-      meanRmsDbfs: -20,
-      peakDbfs: -6,
-      vadOpenSample: sampleStart,
-      vadCloseSample: sampleEnd,
-      evidenceCalibrationVersion: "test-v1",
-      wordEvidenceReceipts: includesWordEvidence ? ["test-word-evidence-\(sequence)"] : [],
-      layerDecisionReceipts: ["test-layer-decision-\(sequence)"],
+      wordEvidence: includesWordEvidence ? ["test-word-evidence-\(sequence)"] : [],
+      layerDecisions: ["test-layer-decision-\(sequence)"],
       sealReceipt: terminal && projectedPhase != "coverage_refused" ? "test-seal-\(sequence)" : nil,
-      manualEditReceipt: manualEditReceipt,
-      presentationReceipt: nil
+      manualEditReceipt: manualEditReceipt
     )
     state.applyTranscriptProjection(
-      CsTranscriptProjectionEvent(
-        schema: "codescribe.transcript_projection.v1",
+      transcriptProjection(
         sequence: sequence,
         emittedAt: "2026-08-25T00:00:00Z",
         sessionId: sessionId,
+        renderedText: text,
+        phase: projectedPhase,
+        terminal: terminal,
+        reducerAction: action,
         mode: mode,
-        reducerRevision: reducerRevision ?? sequence,
-        reducerAction: reducerAction
-          ?? (terminal
-            ? (projectedPhase == "coverage_refused"
-              ? "session_ended" : "record_ledger_terminal_seal")
-            : "record_ledger_projection"),
-        occurrenceSessionId: sessionId,
-        captureEpoch: 1,
+        reducerRevision: reducerRevision,
         sampleStart: sampleStart,
         sampleEnd: sampleEnd,
-        documentIndex: sequence - 1,
-        label: terminal ? "terminal" : "live",
-        renderedText: text,
-        deliveryText: nil,
-        phase: projectedPhase,
         canPaste: canPaste,
         canInsert: canInsert,
-        canCopy: canCopy ?? !text.isEmpty,
+        canCopy: canCopy,
         canRetranscribe: canRetranscribe,
         canFormat: canFormat,
         canSendToAgent: canSendToAgent ?? (terminal && !text.isEmpty),
-        terminal: terminal,
-        lifecycleTerminal: lifecycleTerminal ?? (terminal && reducerAction != "apply_manual_edit"),
+        lifecycleTerminal: lifecycleTerminal ?? (terminal && action != "apply_manual_edit"),
         delivery: delivery,
         acousticReceipts: [receipt],
         sealCoverage: sealCoverage,
@@ -2844,58 +2830,31 @@ final class OverlayStateTests: XCTestCase {
   ) {
     let sampleStart = (sequence - 1) * 16_000
     let sampleEnd = sequence * 16_000
-    let receipt = CsProjectedAcousticReceipt(
-      acousticSerialVersion: 1,
-      acousticSerial: "\(sessionId)-acoustic-\(sequence)",
+    let receipt = projectedAcousticReceipt(
+      serial: "\(sessionId)-acoustic-\(sequence)",
       sessionId: sessionId,
-      captureEpoch: 1,
       sampleStart: sampleStart,
       sampleEnd: sampleEnd,
-      durationMs: 1_000,
-      energyIntegral: 1,
-      meanRmsDbfs: -20,
-      peakDbfs: -6,
-      vadOpenSample: sampleStart,
-      vadCloseSample: sampleEnd,
-      evidenceCalibrationVersion: "test-v1",
-      wordEvidenceReceipts: ["\(sessionId)-word-\(sequence)"],
-      layerDecisionReceipts: ["\(sessionId)-layer-\(sequence)"],
-      sealReceipt: terminal ? "\(sessionId)-seal-\(sequence)" : nil,
-      manualEditReceipt: nil,
-      presentationReceipt: nil
+      wordEvidence: ["\(sessionId)-word-\(sequence)"],
+      layerDecisions: ["\(sessionId)-layer-\(sequence)"],
+      sealReceipt: terminal ? "\(sessionId)-seal-\(sequence)" : nil
     )
     state.applyTranscriptProjection(
-      CsTranscriptProjectionEvent(
-        schema: "codescribe.transcript_projection.v1",
+      transcriptProjection(
         sequence: sequence,
         emittedAt: "2026-08-28T00:00:00Z",
         sessionId: sessionId,
-        mode: "dictation",
-        reducerRevision: sequence,
-        reducerAction: terminal
-          ? "record_ledger_terminal_seal"
-          : "record_ledger_projection",
-        occurrenceSessionId: sessionId,
-        captureEpoch: 1,
+        renderedText: text,
+        phase: terminal ? "formatted" : "listening",
+        terminal: terminal,
+        reducerAction: terminal ? "record_ledger_terminal_seal" : "record_ledger_projection",
         sampleStart: sampleStart,
         sampleEnd: sampleEnd,
-        documentIndex: sequence - 1,
-        label: terminal ? "terminal" : "live",
-        renderedText: text,
-        deliveryText: nil,
-        phase: terminal ? "formatted" : "listening",
         canPaste: terminal,
         canInsert: terminal,
-        canCopy: !text.isEmpty,
         canRetranscribe: terminal,
         canFormat: !terminal,
-        canSendToAgent: false,
-        terminal: terminal,
-        lifecycleTerminal: terminal,
-        delivery: .unattempted,
-        acousticReceipts: [receipt],
-        sealCoverage: nil,
-        consultationPresentations: []
+        acousticReceipts: [receipt]
       )
     )
   }

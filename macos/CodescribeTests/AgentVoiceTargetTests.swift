@@ -5,36 +5,25 @@ import XCTest
 
 @MainActor
 final class AgentVoiceTargetTests: XCTestCase {
-  private final class RoutingEngine: AgentChatEngine {
+  private final class RoutingEngine: ChatEngineFixture {
     var targets: [String?] = []
     var sentThreadIDs: [String] = []
 
-    func isAvailable() -> Bool { true }
-    func availabilityDetail() -> String? { nil }
-    func generateThreadTitle(_ text: String) async throws -> String? { nil }
-    func cancelReply(threadId: String) -> Bool { false }
     func setAssistiveTargetThread(backendId: String?) { targets.append(backendId) }
-    func streamReply(
-      _ text: String,
-      threadId: String,
-      attachmentPaths: [String],
-      onDelta: @escaping @MainActor (String) -> Void,
-      onReasoning: @escaping @MainActor (String) -> Void,
-      onToolExecuting: @escaping @MainActor (String, String) -> Void,
-      onToolResult: @escaping @MainActor (String, String, Bool, String) -> Void
+    func acceptReply(
+      _: String, threadId: String, attachmentPaths _: [String]
     ) async throws -> String {
       sentThreadIDs.append(threadId)
       return "Composer reply"
     }
   }
 
-  private final class ThreadsProvider: ChatThreadsProviding {
+  private final class ThreadsProvider: ThreadsFixture {
     var rows: [ChatThread]
     var loadedIDs: [String] = []
 
     init(_ rows: [ChatThread]) { self.rows = rows }
     func listThreads() -> [ChatThread] { rows }
-    func searchThreads(query: String) -> [ChatThread] { rows }
     func loadMessages(backendId: String) -> [ChatMessage] {
       loadedIDs.append(backendId)
       return [ChatMessage(role: .assistant, timestamp: "earlier", text: "Stored conversation")]
@@ -43,10 +32,6 @@ final class AgentVoiceTargetTests: XCTestCase {
       rows.removeAll { $0.backendId == backendId }
       return true
     }
-    func setThreadFavorite(backendId: String, isFavorite: Bool) -> Bool { true }
-    func renameThread(backendId: String, title: String) -> Bool { true }
-    func setGeneratedTitle(backendId: String, title: String) -> Bool { true }
-    func exportThreadMarkdown(backendId: String, assistantOnly: Bool) -> String? { nil }
     func generateThreadId() -> String { "t_at1_" + UUID().uuidString }
   }
 

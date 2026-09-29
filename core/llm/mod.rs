@@ -8,8 +8,8 @@ pub mod account_auth;
 pub mod ai_formatting;
 /// HTTP client for cloud STT / LLM multipart upload paths.
 pub mod client;
-/// Automatic post-ASR label author part set (occurrence-bound proposals only).
-/// No SessionStore document, no Light+ authorship, unwired until W2.
+/// Occurrence-bound post-ASR label proposals. The Apple live session produces
+/// them; presentation reads the contract. Text is payload, never identity.
 pub mod inline_format;
 /// Minimal API-key liveness probes for Settings (one cheap call per key).
 pub mod key_liveness;
@@ -17,6 +17,8 @@ pub mod key_liveness;
 pub mod model_discovery;
 /// Provider identity, wire families, and per-model capability policy.
 pub mod provider;
+/// Shared reader for a Responses `output` array (JSON body and terminal SSE).
+mod responses_output;
 /// SSE client for OpenAI-compatible `/v1/responses` streaming.
 pub mod responses_streaming_manager;
 /// Vendor wire specifications (one self-contained module per pinned vendor).

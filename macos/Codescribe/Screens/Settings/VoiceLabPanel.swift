@@ -219,28 +219,18 @@ struct VoiceLabPanel: View {
     VStack(alignment: .leading, spacing: 0) {
       HStack(alignment: .top, spacing: 12) {
         VStack(alignment: .leading, spacing: 0) {
-          EyebrowLabel(text: "Settings · \(SettingsSection.voiceLab.title)")
-          Text(
+          SettingsPageHeader(
             dictionaryHeadline(
               correctionsRecorded: correctionsRecordedCount,
               rulesLearned: rulesLearnedCount
-            )
-          )
-          .font(CSFont.ui(26, .bold))
-          .tracking(-0.5)
-          .foregroundStyle(CSColor.textHigh)
-          .padding(.top, 6)
-          Text(
-            dictionarySubtitle(
+            ),
+            blurb: dictionarySubtitle(
               correctionsRecorded: correctionsRecordedCount,
               rulesLearned: rulesLearnedCount,
               taughtFromCorrections: taughtFromCorrectionsCount,
               totalEntries: model.customLexiconEntries.count
             )
           )
-          .font(CSFont.ui(12.5))
-          .foregroundStyle(CSColor.textMutedAlt)
-          .padding(.top, 8)
           if let teachMsg = model.voiceLabTeachMessage {
             Text(teachMsg)
               .font(CSFont.mono(11, .medium))
@@ -301,15 +291,15 @@ struct VoiceLabPanel: View {
           HStack(spacing: 8) {
             Text("ORIGINAL STT")
               .font(CSFont.mono(10.5, .semibold))
-              .foregroundStyle(row.isLowConfidence ? CSColor.terracottaLight : CSColor.oliveLight)
+              .foregroundStyle(row.isLowConfidence ? CSColor.terracotta : CSColor.oliveLight)
             Text(row.isLowConfidence ? "LOW CONFIDENCE" : "CONFIDENCE DATA")
               .font(CSFont.mono(9.5, .semibold))
-              .foregroundStyle(row.isLowConfidence ? CSColor.terracottaLight : CSColor.textFaintAlt)
+              .foregroundStyle(row.isLowConfidence ? CSColor.terracotta : Color.secondary)
               .padding(.horizontal, 7)
               .padding(.vertical, 3)
               .background(
                 Capsule().fill(
-                  (row.isLowConfidence ? CSColor.terracottaLight : CSColor.oliveLight)
+                  (row.isLowConfidence ? CSColor.terracotta : CSColor.oliveLight)
                     .opacity(0.12)
                 )
               )
@@ -363,25 +353,25 @@ struct VoiceLabPanel: View {
           }
           Text(row.rawText)
             .font(CSFont.ui(13, .medium))
-            .foregroundStyle(CSColor.textHigh)
+            .foregroundStyle(Color.primary)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(11)
             .background(
               RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
                 .fill(
-                  (row.isLowConfidence ? CSColor.terracottaLight : CSColor.surfaceRaised(0.04))
+                  (row.isLowConfidence ? CSColor.terracotta : Color.primary.opacity(0.08))
                     .opacity(row.isLowConfidence ? 0.12 : 1)
                 )
             )
           Text(row.confidenceSummary)
             .font(CSFont.mono(10, .medium))
-            .foregroundStyle(row.isLowConfidence ? CSColor.terracottaLight : CSColor.textFaintAlt)
+            .foregroundStyle(row.isLowConfidence ? CSColor.terracotta : Color.secondary)
             .textSelection(.enabled)
           if let playbackMessage {
             Text(playbackMessage)
               .font(CSFont.ui(10.5))
-              .foregroundStyle(CSColor.textMutedAlt)
+              .foregroundStyle(Color.secondary)
           }
           if let helperCompare {
             Text(helperCompare)
@@ -392,10 +382,10 @@ struct VoiceLabPanel: View {
           VStack(alignment: .leading, spacing: 5) {
             Text("DELIVERED AFTER FORMATTING")
               .font(CSFont.mono(10, .semibold))
-              .foregroundStyle(CSColor.textFaintAlt)
+              .foregroundStyle(Color.secondary)
             Text(row.variant)
               .font(CSFont.ui(12.5, .medium))
-              .foregroundStyle(CSColor.textMutedAlt)
+              .foregroundStyle(Color.secondary)
               .textSelection(.enabled)
               .frame(maxWidth: .infinity, alignment: .leading)
           }
@@ -411,7 +401,7 @@ struct VoiceLabPanel: View {
                 .padding(8)
                 .background(
                   RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                    .fill(CSColor.surfaceRaised(0.04))
+                    .fill(Color.primary.opacity(0.08))
                 )
                 .overlay(
                   RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
@@ -436,7 +426,7 @@ struct VoiceLabPanel: View {
                 .foregroundStyle(CSColor.chromeAccent)
               Text(row.editedText)
                 .font(CSFont.ui(13, .semibold))
-                .foregroundStyle(CSColor.textBody)
+                .foregroundStyle(Color.primary)
                 .textSelection(.enabled)
               Spacer(minLength: 0)
               Button("Edit") { editor.begin(row) }
@@ -452,7 +442,7 @@ struct VoiceLabPanel: View {
           if let error = model.voiceLabEditErrors[row.id] {
             Text("Save failed: \(error)")
               .font(CSFont.ui(10.5))
-              .foregroundStyle(CSColor.terracottaLight)
+              .foregroundStyle(CSColor.terracotta)
           }
           if let note = model.voiceLabEditNotes[row.id] {
             Text(note)
@@ -469,9 +459,9 @@ struct VoiceLabPanel: View {
             Text(timestampLabel(row.timestampMs))
           }
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textFaintAlt)
+          .foregroundStyle(Color.secondary)
         }
-        .csSettingsCard()
+        .settingsGroupedInset()
         .accessibilityElement(children: .contain)
         .accessibilityLabel(
           "Heard \(row.variant). Current correction \(row.editedText). Revision \(row.revision)."
@@ -482,7 +472,7 @@ struct VoiceLabPanel: View {
           Spacer()
           Text("\(safeIndex + 1) of \(corrections.count)")
             .font(CSFont.mono(10.5, .medium))
-            .foregroundStyle(CSColor.textFaintAlt)
+            .foregroundStyle(Color.secondary)
           Spacer()
           Button("Next") { correctionIndex = min(corrections.count - 1, safeIndex + 1) }
             .disabled(safeIndex == corrections.count - 1)
@@ -570,21 +560,21 @@ struct VoiceLabPanel: View {
         HStack(spacing: 10) {
           Text(row.variant)
             .font(CSFont.mono(11.5, .medium))
-            .foregroundStyle(CSColor.textMutedAlt)
+            .foregroundStyle(Color.secondary)
             .textSelection(.enabled)
           Text("→")
             .font(CSFont.mono(11, .semibold))
             .foregroundStyle(CSColor.chromeAccent)
           Text(row.canonical)
             .font(CSFont.mono(11.5, .semibold))
-            .foregroundStyle(CSColor.textBody)
+            .foregroundStyle(Color.primary)
             .textSelection(.enabled)
           Spacer(minLength: 0)
           Text(row.source)
             .font(CSFont.mono(10, .medium))
-            .foregroundStyle(CSColor.textFaintAlt)
+            .foregroundStyle(Color.secondary)
         }
-        .csSettingsCard()
+        .settingsGroupedInset()
         .accessibilityLabel("\(row.variant) to \(row.canonical), source \(row.source)")
         HStack {
           Button("Previous") { lexiconIndex = max(0, safeIndex - 1) }
@@ -592,7 +582,7 @@ struct VoiceLabPanel: View {
           Spacer()
           Text("\(safeIndex + 1) of \(model.customLexiconEntries.count)")
             .font(CSFont.mono(10.5, .medium))
-            .foregroundStyle(CSColor.textFaintAlt)
+            .foregroundStyle(Color.secondary)
           Spacer()
           Button("Next") {
             lexiconIndex = min(model.customLexiconEntries.count - 1, safeIndex + 1)
@@ -607,17 +597,17 @@ struct VoiceLabPanel: View {
     Text(message)
       .font(CSFont.ui(12.5))
       .lineSpacing(2)
-      .foregroundStyle(CSColor.textMutedAlt)
+      .foregroundStyle(Color.secondary)
       .frame(maxWidth: .infinity, alignment: .leading)
-      .csSettingsCard()
+      .settingsGroupedInset()
   }
 
   private func readError(_ error: String) -> some View {
     Text("Live quality data is unavailable: \(error)")
       .font(CSFont.ui(12.5))
-      .foregroundStyle(CSColor.terracottaLight)
+      .foregroundStyle(CSColor.terracotta)
       .frame(maxWidth: .infinity, alignment: .leading)
-      .csSettingsCard()
+      .settingsGroupedInset()
   }
 
   private func timestampLabel(_ timestampMs: UInt64) -> String {
