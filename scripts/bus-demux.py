@@ -41,7 +41,19 @@ CLEAN_SCHEMA = "codescribe.transcript.v1"
 #: knows only CLEAN_SCHEMA sees lifecycle rows and reports nothing for a real
 #: take — deaf, while looking healthy.
 EVIDENCE_SCHEMA = "codescribe.transcript-evidence.v1"
+#: Channel lifecycle receipts from the agent channel (open / silence seal).
+#: The bridge reads them only as flush boundaries for the coverage-refused
+#: safety net below; it never turns them into transcript envelopes.
+CHANNEL_SESSION_SCHEMA = "codescribe.channel-session.v1"
 TERMINAL_SEAL = "record_ledger_terminal_seal"
+#: A ledger that refuses terminal finality (incomplete acoustic coverage or
+#: pending text recovery) emits no terminal seal at all, and before this net
+#: the utterance silently vanished for the agent (observed live 2026-09-29:
+#: two Founder takes at 98% and 53% coverage were never delivered). The
+#: flush delivers the words with ``coverage: "refused"`` and
+#: ``state_change_allowed: false`` — parity with the Stop lane's degraded
+#: handoff: the take is delivered but no longer allowed to certify itself.
+COVERAGE_REFUSED = "refused"
 INSTALL_INTERLOCK_FILENAME = "install-runtime.lock"
 AGENT_TURN_LEASE_FILENAME = "agent-turn.lock"
 SEALED = "transcript_sealed"
@@ -377,8 +389,15 @@ def slim(
         "producer_schema": producer_schema,
         "source_event_id": event.get("source_event_id") or source_event_identity(event),
         "text": event.get("text") if isinstance(event.get("text"), str) else "",
-        "state_change_allowed": status == SEALED,
+        # A coverage-refused flush delivers the words but not the authority:
+        # the ledger declined to certify the take, so the envelope may inform
+        # a reply and may not authorize a state change.
+        "state_change_allowed": status == SEALED
+        and event.get("coverage") != COVERAGE_REFUSED,
     }
+    coverage = event.get("coverage")
+    if isinstance(coverage, str) and coverage:
+        payload["coverage"] = coverage
     wav = assigned_session_wav(event)
     if wav:
         payload["wav"] = wav
@@ -407,7 +426,11 @@ def parse_line(raw: str) -> dict[str, Any] | None:
         return None
     if not isinstance(event, dict):
         return None
-    if event.get("schema") not in (CLEAN_SCHEMA, EVIDENCE_SCHEMA):
+    if event.get("schema") not in (
+        CLEAN_SCHEMA,
+        EVIDENCE_SCHEMA,
+        CHANNEL_SESSION_SCHEMA,
+    ):
         return None
     return event
 
@@ -458,6 +481,12 @@ def terminal_seal_identity(event: dict[str, Any]) -> str:
     )
 
 
+def channel_of_session(session_id: str) -> str | None:
+    """The channel digit a session belongs to, from its stable label prefix."""
+    match = re.match(r"agent-channel-(\d+)-", session_id or "")
+    return match.group(1) if match else None
+
+
 class EvidenceNormalizer:
     """Translate ``transcript-evidence.v1`` rows into the shape the bridge speaks.
 
@@ -466,24 +495,114 @@ class EvidenceNormalizer:
     or finality from characters.  Terminal rows are coalesced only by the
     reducer's stable terminal phase identity, because one terminal receipt can
     project once per document entry.
+
+    Channel safety net: a ledger that refuses terminal finality emits no
+    terminal seal, so an addressed utterance would vanish without a trace.
+    The normalizer keeps the latest snapshot per document of each unsealed
+    channel session and, when a ``channel-session`` receipt shows the channel
+    moved on (a silence seal or a fresh open), flushes those documents as
+    ``coverage: "refused"`` seal envelopes via :meth:`pop_flushes`.  The words
+    are delivered; certification is honestly withheld.
     """
+
+    #: Unsealed channel sessions retained for the flush net. The quiet
+    #: contract reopens a channel within seconds of every real utterance, so
+    #: anything beyond a handful of sessions is an abandoned bus replay.
+    MAX_TRACKED_SESSIONS = 16
 
     def __init__(self) -> None:
         self._terminal_seals: set[str] = set()
+        self._sealed_sessions: set[str] = set()
+        self._session_docs: dict[str, dict[Any, dict[str, Any]]] = {}
+        self._flushes: list[dict[str, Any]] = []
+
+    def pop_flushes(self) -> list[dict[str, Any]]:
+        """Coverage-refused envelopes triggered by the last normalized row."""
+        flushes, self._flushes = self._flushes, []
+        return flushes
 
     def normalize(self, event: dict[str, Any] | None) -> dict[str, Any] | None:
-        if event is None or event.get("schema") != EVIDENCE_SCHEMA:
+        if event is None:
+            return None
+        if event.get("schema") == CHANNEL_SESSION_SCHEMA:
+            self._consume_channel_row(event)
+            return None
+        if event.get("schema") != EVIDENCE_SCHEMA:
             return event
         document = event.get("rendered_text")
         if not isinstance(document, str):
             return None
         if str(event.get("reducer_action") or "") == TERMINAL_SEAL:
+            session = str(event.get("session_id") or "")
+            self._sealed_sessions.add(session)
+            self._session_docs.pop(session, None)
             seal_id = terminal_seal_identity(event)
             if seal_id in self._terminal_seals:
                 return None
             self._terminal_seals.add(seal_id)
             return self._as_clean(event, SEALED, document)
-        return self._as_clean(event, LIVE_STATUSES[1], document)
+        clean = self._as_clean(event, LIVE_STATUSES[1], document)
+        self._remember_channel_document(event, clean)
+        return clean
+
+    def _remember_channel_document(
+        self, event: dict[str, Any], clean: dict[str, Any]
+    ) -> None:
+        session = str(event.get("session_id") or "")
+        if not clean.get("audience") or channel_of_session(session) is None:
+            return
+        if session in self._sealed_sessions:
+            return
+        docs = self._session_docs.setdefault(session, {})
+        docs[clean.get("document_index")] = clean
+        while len(self._session_docs) > self.MAX_TRACKED_SESSIONS:
+            self._session_docs.pop(next(iter(self._session_docs)))
+
+    def _consume_channel_row(self, row: dict[str, Any]) -> None:
+        channel = str(row.get("channel") or "")
+        session = str(row.get("session_id") or "")
+        due: list[str] = []
+        if str(row.get("state") or "") == "sealed" and session in self._session_docs:
+            due.append(session)
+        for cached in list(self._session_docs):
+            if (
+                cached != session
+                and cached not in due
+                and channel_of_session(cached) == channel
+            ):
+                due.append(cached)
+        for stale in due:
+            self._flush_session(stale, row.get("emitted_at"))
+
+    def _flush_session(self, session: str, emitted_at: Any) -> None:
+        docs = self._session_docs.pop(session, None)
+        if not docs or session in self._sealed_sessions:
+            return
+        seen_texts: set[str] = set()
+        for doc_index, clean in sorted(docs.items(), key=lambda item: str(item[0])):
+            text = clean.get("text") or ""
+            if not text.strip():
+                continue
+            # Channel documents often re-project one full-session snapshot
+            # under several document indexes; identical words are one refused
+            # delivery, not N.
+            if text in seen_texts:
+                continue
+            seen_texts.add(text)
+            # A stable per-document identity keys the delivery, so a bus
+            # replay after restart is the same refused phase, not a repeat.
+            identity = _identity(("coverage-refused-seal", session, doc_index))
+            refused = dict(clean)
+            refused.update(
+                {
+                    "status": SEALED,
+                    "coverage": COVERAGE_REFUSED,
+                    "utterance_id": identity,
+                    "source_event_id": identity,
+                    "emitted_at": emitted_at or clean.get("emitted_at"),
+                }
+            )
+            self._flushes.append(refused)
 
     def _as_clean(
         self, event: dict[str, Any], status: str, text: str
@@ -1158,61 +1277,74 @@ def run(args: argparse.Namespace) -> int:
     # a fresh one per line would re-emit the entire document every time.
     normalizer = EvidenceNormalizer()
     event_trigger: BusEventTrigger | None = None
-    deferred: tuple[dict[str, Any], int | None] | None = None
+    deferred: tuple[list[dict[str, Any]], int | None] | None = None
     recipients: set[str] | None = None
 
-    def deliver(payload: dict[str, Any], next_cursor: int | None) -> None:
+    def deliver(payloads: list[dict[str, Any]], next_cursor: int | None) -> None:
         nonlocal deferred
+        remaining = list(payloads)
         try:
-            if not lease or lease.queue_delivery(payload):
-                emit(payload)
-                if args.on_seal and payload.get("kind") == "seal":
-                    fire_seal_hook(args.on_seal, payload)
+            while remaining:
+                payload = remaining[0]
+                if not lease or lease.queue_delivery(payload):
+                    emit(payload)
+                    if args.on_seal and payload.get("kind") == "seal":
+                        fire_seal_hook(args.on_seal, payload)
+                remaining.pop(0)
         except BufferError:
-            # Preserve the already normalized envelope. Re-normalizing its
-            # raw evidence row would suppress a terminal phase on retry.
-            deferred = (payload, next_cursor)
+            # Preserve the already normalized envelopes. Re-normalizing their
+            # raw evidence rows would suppress a terminal phase — or a
+            # coverage-refused flush — on retry.
+            deferred = (remaining, next_cursor)
             raise
         if lease and next_cursor is not None:
             lease.persist(
-                active=True, cursor=next_cursor, sequence=payload.get("sequence")
+                active=True,
+                cursor=next_cursor,
+                sequence=payloads[-1].get("sequence") if payloads else None,
             )
         deferred = None
 
     def handle(raw: str, next_cursor: int | None = None) -> None:
         nonlocal name, hear_all
         event = normalizer.normalize(parse_line(raw))
-        if event is None:
-            if lease and next_cursor is not None:
-                lease.persist(active=True, cursor=next_cursor)
-            return
-        payload = consider(
-            event,
-            name=name,
-            hear_all=hear_all,
-            drafts=args.drafts,
-            debug=args.debug,
-            recipients=recipients,
-        )
-        if payload is None:
+        # Coverage-refused flushes precede the row that triggered them: they
+        # carry utterances older than the channel receipt on this line.
+        events = normalizer.pop_flushes()
+        if event is not None:
+            events.append(event)
+        payloads: list[dict[str, Any]] = []
+        for event in events:
+            payload = consider(
+                event,
+                name=name,
+                hear_all=hear_all,
+                drafts=args.drafts,
+                debug=args.debug,
+                recipients=recipients,
+            )
+            if payload is None:
+                continue
+            if args.become and payload.get("kind") == "name_assignment" and not name:
+                name = str(payload["name"])
+                hear_all = False
+                if lease:
+                    lease.bind_name(name)
+                sys.stderr.write(f"bus-demux: bound name={name}\n")
+            if lease:
+                lease.enrich(payload)
+            payloads.append(payload)
+        if not payloads:
             if lease and next_cursor is not None:
                 lease.persist(
                     active=True,
                     cursor=next_cursor,
-                    sequence=event.get("sequence"),
+                    sequence=events[-1].get("sequence") if events else None,
                 )
             return
-        if args.become and payload.get("kind") == "name_assignment" and not name:
-            name = str(payload["name"])
-            hear_all = False
-            if lease:
-                lease.bind_name(name)
-            sys.stderr.write(f"bus-demux: bound name={name}\n")
-        if lease:
-            lease.enrich(payload)
-        # Read progress is independent of receipt. The original envelope is
-        # made durable before emission and remains pending until acknowledged.
-        deliver(payload, next_cursor)
+        # Read progress is independent of receipt. The original envelopes are
+        # made durable before emission and remain pending until acknowledged.
+        deliver(payloads, next_cursor)
 
     try:
         if lease:
@@ -1224,18 +1356,20 @@ def run(args: argparse.Namespace) -> int:
             recipients = registered_recipients(args.bridge_home, path)
             for raw in replay(path):
                 event = normalizer.normalize(parse_line(raw))
-                if event is None:
-                    continue
-                payload = consider(
-                    event,
-                    name=name,
-                    hear_all=hear_all,
-                    drafts=args.drafts,
-                    debug=False,
-                    recipients=recipients,
-                )
-                if payload is not None:
-                    last = payload
+                events = normalizer.pop_flushes()
+                if event is not None:
+                    events.append(event)
+                for event in events:
+                    payload = consider(
+                        event,
+                        name=name,
+                        hear_all=hear_all,
+                        drafts=args.drafts,
+                        debug=False,
+                        recipients=recipients,
+                    )
+                    if payload is not None:
+                        last = payload
             if last is None:
                 return 1
             if lease:

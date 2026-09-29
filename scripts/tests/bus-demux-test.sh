@@ -582,7 +582,132 @@ finally:
     lumen.close()
 PY
 
-# Per-take wav identity: demux assigns ~/.codescribe/sessions/<session_id>.wav
+# Coverage-refused safety net: a channel session whose ledger never issued a
+# terminal seal (incomplete acoustic coverage / pending recovery) must still
+# deliver its words when the channel moves on — as a seal envelope with
+# coverage="refused" and state_change_allowed=false. A session that DID seal
+# terminally must not be re-delivered by the net.
+: >"$BUS"
+python3 - "$BUS" <<'PY'
+import json, sys
+rows = [
+    # Lost session: drafts only, ledger refused the terminal seal.
+    {
+        "schema": "codescribe.transcript-evidence.v1",
+        "sequence": 1,
+        "session_id": "agent-channel-2-lost",
+        "audience": "james",
+        "mode": "dictation",
+        "reducer_action": "apply_ledger_decision",
+        "reducer_revision": 1,
+        "document_index": 0,
+        "rendered_text": "James, ta wypowiedź nie dostała terminal seala.",
+        "emitted_at": "2026-09-29T15:55:30Z",
+    },
+    {
+        "schema": "codescribe.transcript-evidence.v1",
+        "sequence": 2,
+        "session_id": "agent-channel-2-lost",
+        "audience": "james",
+        "mode": "dictation",
+        "reducer_action": "seal_coverage",
+        "reducer_revision": 2,
+        "document_index": 0,
+        "rendered_text": "James, ta wypowiedź nie dostała terminal seala. Cała.",
+        "emitted_at": "2026-09-29T15:55:52Z",
+    },
+    # The reducer re-projects the same full snapshot under a second document
+    # index; identical words must flush as one delivery, not two.
+    {
+        "schema": "codescribe.transcript-evidence.v1",
+        "sequence": 3,
+        "session_id": "agent-channel-2-lost",
+        "audience": "james",
+        "mode": "dictation",
+        "reducer_action": "seal_coverage",
+        "reducer_revision": 2,
+        "document_index": 1,
+        "rendered_text": "James, ta wypowiedź nie dostała terminal seala. Cała.",
+        "emitted_at": "2026-09-29T15:55:52Z",
+    },
+    # Healthy session: draft then a real terminal seal.
+    {
+        "schema": "codescribe.transcript-evidence.v1",
+        "sequence": 4,
+        "session_id": "agent-channel-2-good",
+        "audience": "james",
+        "mode": "dictation",
+        "reducer_action": "apply_ledger_decision",
+        "reducer_revision": 1,
+        "document_index": 0,
+        "rendered_text": "James, jesteś tam?",
+        "emitted_at": "2026-09-29T15:56:50Z",
+    },
+    {
+        "schema": "codescribe.transcript-evidence.v1",
+        "sequence": 5,
+        "session_id": "agent-channel-2-good",
+        "audience": "james",
+        "mode": "dictation",
+        "reducer_action": "record_ledger_terminal_seal",
+        "reducer_revision": 2,
+        "document_index": 0,
+        "rendered_text": "James, jesteś tam?",
+        "emitted_at": "2026-09-29T15:56:55Z",
+    },
+    # The channel reopens: the flush boundary for both earlier sessions.
+    {
+        "schema": "codescribe.channel-session.v1",
+        "kind": "channel_session",
+        "state": "open",
+        "reason": "opened",
+        "channel": "2",
+        "agent": "james",
+        "session_id": "agent-channel-2-next",
+        "emitted_at": "2026-09-29T15:57:28Z",
+    },
+]
+with open(sys.argv[1], "a", encoding="utf-8") as handle:
+    for row in rows:
+        handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+PY
+refused="$WORKDIR/coverage-refused.jsonl"
+python3 "$DEMUX" \
+  --bus "$BUS" --bridge-home "$BRIDGE_HOME" \
+  --provider codex --session codex-session-refused --name james \
+  --drafts --from-start >"$refused"
+python3 - "$refused" "$DEMUX" <<'PY'
+import importlib.util, json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
+kinds = [row["kind"] for row in rows]
+# attach, four live drafts (incl. the duplicate-doc re-projection), the
+# healthy terminal seal, then exactly ONE refused flush for the lost session.
+assert kinds == ["attach", "revised", "revised", "revised", "revised", "seal", "seal"], kinds
+healthy = rows[5]
+assert healthy["session_id"] == "agent-channel-2-good", healthy
+assert healthy.get("coverage") is None, healthy
+assert healthy["state_change_allowed"] is True, healthy
+flushed = rows[6]
+assert flushed["session_id"] == "agent-channel-2-lost", flushed
+assert flushed["status"] == "transcript_sealed", flushed
+assert flushed["coverage"] == "refused", flushed
+assert flushed["state_change_allowed"] is False, flushed
+assert flushed["text"].endswith("Cała."), flushed
+# The healthy session must not be re-delivered by the net: exactly one
+# envelope carries coverage=refused and it names the lost session only.
+assert [row["session_id"] for row in rows if row.get("coverage") == "refused"] == [
+    "agent-channel-2-lost"
+], rows
+
+# Restart parity: the refused phase keys one delivery identity across a bus
+# replay, exactly like a terminal seal phase.
+spec = importlib.util.spec_from_file_location("bus_demux_refused", sys.argv[2])
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(module)
+identity = module._identity(("coverage-refused-seal", "agent-channel-2-lost", 0))
+assert flushed["source_event_id"] == identity, flushed
+PY
 # (or $CODESCRIBE_DATA_DIR/sessions/...). last_session.wav is never the id.
 WAV_HOME="$WORKDIR/codescribe-home"
 mkdir -p "$WAV_HOME/sessions"
