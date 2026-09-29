@@ -149,7 +149,8 @@ where
         source: AuthSource::ApiKey,
     })
 }
-/// OAuth first, and only an absent account admits API key fallback.
+/// OAuth first; an absent account, or a signed-in account whose login cannot
+/// speak, admits API key fallback.
 pub async fn resolve_vendor_auth(
     vendor: ProviderKind,
     fallback_key: Option<&str>,
@@ -162,13 +163,9 @@ async fn resolve_vendor_auth_using(
     key: impl FnOnce() -> Option<String>,
 ) -> Result<SpeechAuth, SpeechError> {
     let (name, _, _) = pins(vendor)?;
-    let signed_in = vendor_signed_in(vendor);
-    if signed_in {
-        speech_capability(vendor, AuthSource::OAuth)?;
-    }
-    resolve_with(
+    resolve_auth_with(
         vendor,
-        signed_in,
+        vendor_signed_in(vendor),
         || async move {
             account_auth::access_token(vendor)
                 .await
@@ -177,6 +174,30 @@ async fn resolve_vendor_auth_using(
         key,
     )
     .await
+}
+
+async fn resolve_auth_with<F, Fut, K>(
+    vendor: ProviderKind,
+    signed_in: bool,
+    oauth: F,
+    key: K,
+) -> Result<SpeechAuth, SpeechError>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<String, SpeechError>>,
+    K: FnOnce() -> Option<String>,
+{
+    if signed_in && let Err(refusal) = speech_capability(vendor, AuthSource::OAuth) {
+        // The signed-in account cannot speak here; a stored key is the
+        // sanctioned speech fallback (Founder, 2026-09-29). The account stays
+        // authoritative for every non-speech request.
+        let bearer = key().filter(|s| !s.trim().is_empty()).ok_or(refusal)?;
+        return Ok(SpeechAuth {
+            bearer,
+            source: AuthSource::ApiKey,
+        });
+    }
+    resolve_with(vendor, signed_in, oauth, key).await
 }
 
 /// Settings sealed once for a synthesis; cache identity includes all audible options.
@@ -268,12 +289,13 @@ fn lane_vendor(lane: &RuntimeLlmLane) -> Result<ProviderKind, SpeechError> {
     Ok(vendor)
 }
 /// ChatGPT/Codex login is not evidence of public OpenAI audio permissions.
-/// Keep the selected account authoritative instead of silently using a key.
+/// The account stays authoritative for chat; speech alone falls back to a
+/// stored API key when one exists (Founder, 2026-09-29).
 fn speech_capability(vendor: ProviderKind, source: AuthSource) -> Result<(), SpeechError> {
     pins(vendor)?;
     if vendor == ProviderKind::OpenAiResponses && source == AuthSource::OAuth {
         return Err(SpeechError::Capability(
-            "OpenAI account speech is not supported by this integration; Codex chat login does not establish public audio permissions. No API-key fallback was attempted.",
+            "OpenAI account speech is not supported by this integration; Codex chat login does not establish public audio permissions, and no OpenAI API key is stored to fall back on.",
         ));
     }
     Ok(())
@@ -286,9 +308,16 @@ pub fn speech_availability() -> Option<String> {
         let lane = settings.llm_lanes().assistive();
         let vendor = lane_vendor(lane)?;
         SpeechOptions::for_vendor(vendor)?;
+        // Lazy: touch the Keychain only when the account alone cannot speak.
+        let key_present =
+            || api_key(vendor, lane.credential().request_api_key().as_deref()).is_some();
         if vendor_signed_in(vendor) {
-            speech_capability(vendor, AuthSource::OAuth)?;
-        } else if api_key(vendor, lane.credential().request_api_key().as_deref()).is_none() {
+            if let Err(refusal) = speech_capability(vendor, AuthSource::OAuth)
+                && !key_present()
+            {
+                return Err(refusal);
+            }
+        } else if !key_present() {
             return Err(SpeechError::MissingCredentials(pins(vendor)?.0));
         }
         Ok(())
@@ -562,6 +591,42 @@ mod rc_w1_tests {
             .await;
             assert!(matches!(result, Err(SpeechError::Account("xai"))));
         }
+    }
+
+    #[tokio::test]
+    async fn a_speechless_account_falls_back_to_the_stored_key() {
+        // OpenAI OAuth cannot speak: the stored key carries the request.
+        let auth = resolve_auth_with(
+            ProviderKind::OpenAiResponses,
+            true,
+            || async { Err(SpeechError::Account("oauth must not be consulted")) },
+            || Some("test-key".into()),
+        )
+        .await
+        .expect("the key fallback authenticates speech");
+        assert_eq!(auth.source, AuthSource::ApiKey);
+        assert_eq!(auth.bearer, "test-key");
+
+        // Without a key the capability refusal stays terminal.
+        let refused = resolve_auth_with(
+            ProviderKind::OpenAiResponses,
+            true,
+            || async { Err(SpeechError::Account("oauth must not be consulted")) },
+            || Some("   ".into()),
+        )
+        .await;
+        assert!(matches!(refused, Err(SpeechError::Capability(_))));
+
+        // xAI OAuth speaks through the account and never reads a key.
+        let xai = resolve_auth_with(
+            ProviderKind::XaiResponses,
+            true,
+            || async { Ok("account-token".into()) },
+            || panic!("a speaking account forbids the key fallback"),
+        )
+        .await
+        .expect("the signed-in xAI account speaks");
+        assert_eq!(xai.source, AuthSource::OAuth);
     }
 
     #[test]
