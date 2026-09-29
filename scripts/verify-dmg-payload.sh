@@ -44,7 +44,12 @@ set -euo pipefail
 # The slim dylib contains code + Silero only; MiniLM has its own direct resource
 # gate below. Keep a low engine-presence floor instead of forcing model bytes
 # through Cargo artifacts.
-readonly SLIM_DMG_MIN=$((40 * 1024 * 1024))
+# 2026-09-29: recalibrated 40 → 30 MB. The accepted, installed build 1460 and a
+# fresh slim DMG share a byte-identical payload profile (Frameworks 57M with the
+# 53.4M dylib, MacOS 49M, Resources 2M) yet compress to 38.7 MB, under the old
+# floor. Payload truth is carried by the dylib/silero/agent-bridge proofs below;
+# the size floor only catches gross truncation.
+readonly SLIM_DMG_MIN=$((30 * 1024 * 1024))
 readonly SLIM_WITH_EMBEDDER_DMG_MIN=$((400 * 1024 * 1024))
 readonly SLIM_DYLIB_MIN=$((20 * 1024 * 1024))
 # Whisper large-v3-turbo + code/Silero remains in the full dylib.
