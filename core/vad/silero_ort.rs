@@ -50,7 +50,8 @@ fn embedded_session() -> Result<Arc<Mutex<Session>>> {
         embedded::MODEL.len()
     );
     let session = Session::builder()?
-        .with_intra_threads(1)?
+        .with_intra_threads(1)
+        .map_err(ort::Error::<()>::from)?
         .commit_from_memory(embedded::MODEL)
         .context("Failed to load embedded Silero VAD ONNX model")?;
     debug!("Silero VAD model loaded successfully (embedded, shared)");
@@ -153,7 +154,8 @@ impl SileroVad {
     pub fn new(model_path: &Path, config: VadConfig) -> Result<Self> {
         info!("Loading Silero VAD model from: {}", model_path.display());
         let session = Session::builder()?
-            .with_intra_threads(1)?
+            .with_intra_threads(1)
+            .map_err(ort::Error::<()>::from)?
             .commit_from_file(model_path)
             .context("Failed to load Silero VAD ONNX model")?;
 

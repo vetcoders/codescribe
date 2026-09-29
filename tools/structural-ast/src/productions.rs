@@ -19,10 +19,12 @@ pub(super) fn overlay(g: &mut Grammar, body: &Block) {
                 target_app_name: None, frontmost_app_name: None,
                 deferred_insert_shortcut: None, deferred_insert_failure: None, });
         }), "only empty/archive early success is Noop"),
+        (parse_quote!(let config = self.get_config().await;), "read immutable delivery config"),
+        (parse_quote!(let payload = self.delivery_tagger.render(trimmed, &config, None);), "render delivery-only transcript tag"),
         (parse_quote!(if decision.route == DeliveryRoute::DeferredInsert {
-            return self.arm_overlay_text(trimmed, target_app, Some("Codescribe".to_string())).await;
+            return self.arm_overlay_text(&payload, target_app, Some("Codescribe".to_string())).await;
         }), "deferred route return"),
-        (Stmt::Expr(parse_quote!(self.execute_clipboard_paste(trimmed.to_string(), target_app, "Overlay paste").await), None), "await guarded helper tail"),
+        (Stmt::Expr(parse_quote!(self.execute_clipboard_paste(payload, target_app, "Overlay paste").await), None), "await guarded helper tail"),
     ]);
 }
 
@@ -91,8 +93,14 @@ pub(super) fn stop(g: &mut Grammar, body: &Block) {
                 "observational drop branch",
             ),
             (
-                parse_quote!(let stopped = self.recorder.stop().await;),
-                "await recorder; retain error without question-mark exit",
+                parse_quote!(let stopped = match self.release_take_pcm_feed() {
+                    TakeFeedRelease::LastSubscriber | TakeFeedRelease::NoTakeFeed => {
+                        self.recorder.stop().await
+                    }
+                    TakeFeedRelease::CaptureShared => Ok(None),
+                };),
+                "release take feed; only the last subscriber awaits recorder stop; \
+                 retain error without question-mark exit",
             ),
             (
                 Stmt::Expr(parse_quote!(self.complete_stop(stopped).await), None),
@@ -181,19 +189,23 @@ pub(super) fn complete(g: &mut Grammar, body: &Block) {
             "read committed transcript after owned shutdown",
         ),
         (
-            parse_quote!(let empty_capture = self.captured_samples.load(Ordering::Relaxed) == 0
+            parse_quote!(let captured_samples = self.captured_samples.load(Ordering::Relaxed);),
+            "read captured sample count after owned shutdown",
+        ),
+        (
+            parse_quote!(let empty_capture = captured_samples <= u64::from(self.sample_rate) * 3 / 10
                 && transcript.is_empty()
                 && self.acoustic_ledger.as_ref().is_none_or(|ledger| {
                     ledger.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
                         .has_no_capture_facts()
                 });),
-            "empty capture requires zero samples and no conflicting ledger facts",
+            "short no-speech capture requires empty text and no conflicting ledger facts",
         ),
         (
             parse_quote!(if empty_capture {
                 return Ok((transcript, audio_path));
             }),
-            "zero-sample empty capture is not a fabricated speech seal",
+            "short no-speech capture is not a fabricated speech seal",
         ),
         (
             parse_quote!(let finality = self.authority_session_id.as_deref().and_then(|session| {

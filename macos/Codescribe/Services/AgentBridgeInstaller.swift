@@ -282,7 +282,8 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     let managedID = previousReceipt?.managedID ?? UUID().uuidString.lowercased()
     let previouslySelected = Set(previousReceipt?.selectedClients ?? [])
     // Adoption is additive, including clients committed before we got the lease.
-    let effectiveSelection = adopting == nil ? selectedClients : selectedClients.union(previouslySelected)
+    let effectiveSelection =
+      adopting == nil ? selectedClients : selectedClients.union(previouslySelected)
     let selected = effectiveSelection.sorted { $0.rawValue < $1.rawValue }
     let deselected = previouslySelected.subtracting(effectiveSelection)
 
@@ -436,7 +437,8 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       flock(descriptor, LOCK_EX | LOCK_NB) == 0
     else {
       _ = Darwin.close(descriptor)
-      throw AgentBridgeInstallationError.transaction("another installation is active or its lock is unavailable; try again after it finishes")
+      throw AgentBridgeInstallationError.transaction(
+        "another installation is active or its lock is unavailable; try again after it finishes")
     }
     return descriptor
   }
@@ -444,18 +446,21 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
   private func requireManualSkill(client: AgentBridgeClient) throws {
     let destination = client.skillDirectory(home: homeDirectory)
     // Refuse redirected parents as well as a symlink at the selected folder.
-    let expected = client.skillDirectory(home: homeDirectory.resolvingSymlinksInPath()).standardizedFileURL
+    let expected = client.skillDirectory(home: homeDirectory.resolvingSymlinksInPath())
+      .standardizedFileURL
     guard destination.resolvingSymlinksInPath().standardizedFileURL == expected,
       let values = try? destination.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
       values.isDirectory == true, values.isSymbolicLink != true,
-      !fileManager.fileExists(atPath: destination.appendingPathComponent(".codescribe-managed.json").path),
+      !fileManager.fileExists(
+        atPath: destination.appendingPathComponent(".codescribe-managed.json").path),
       let skill = try? destination.appendingPathComponent("SKILL.md")
         .resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
       skill.isRegularFile == true, skill.isSymbolicLink != true
     else {
       throw AgentBridgeInstallationError.conflict(
         path: destination.path,
-        reason: "manual adoption requires an ordinary skill folder with SKILL.md and no managed marker"
+        reason:
+          "manual adoption requires an ordinary skill folder with SKILL.md and no managed marker"
       )
     }
   }
@@ -641,8 +646,9 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     } catch {
       // Preserve this rename in the same rollback record as all prior steps.
       // A failed stage move must not hide a failed restoration of the original.
-      records.append(ReplacementRecord(
-        destination: destination, backup: backup, installedReplacement: false))
+      records.append(
+        ReplacementRecord(
+          destination: destination, backup: backup, installedReplacement: false))
       throw error
     }
   }
@@ -654,7 +660,9 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
         do {
           try fileManager.removeItem(at: record.destination)
         } catch {
-          failures.append("Could not remove incomplete replacement at \(record.destination.path). Original: \(record.backup?.path ?? "no prior folder"). \(error.localizedDescription)")
+          failures.append(
+            "Could not remove incomplete replacement at \(record.destination.path). Original: \(record.backup?.path ?? "no prior folder"). \(error.localizedDescription)"
+          )
           continue
         }
       }
@@ -662,7 +670,9 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
         do {
           try fileManager.moveItem(at: backup, to: record.destination)
         } catch {
-          failures.append("Could not restore \(backup.path) to \(record.destination.path): \(error.localizedDescription)")
+          failures.append(
+            "Could not restore \(backup.path) to \(record.destination.path): \(error.localizedDescription)"
+          )
         }
       }
     }

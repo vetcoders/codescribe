@@ -95,10 +95,21 @@ pub struct CsSettings {
     pub hold_start_delay_ms: u64,
     pub double_tap_interval_ms: u64,
     pub toggle_silence_sec: f32,
+    /// `WHISPER_CONTEXT_WINDOW_SEC`. Seconds of PCM each Layer 1 window covers.
+    pub whisper_context_window_sec: f32,
+    pub light_plus_sentence_pause_sec: f32,
     /// Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
     /// from the canonical merged config snapshot. `"disabled"` is the
     /// product default when no persisted choice exists.
     pub deferred_insert_shortcut: String,
+    /// Agent-channel modifier (`ChannelModifier::as_str()`). `"ctrl"` or `"fn"`.
+    /// Command is not a value.
+    pub channel_modifier: String,
+    /// Quick Fn press below the hold delay toggles dictation. Default off.
+    pub fn_tap_toggles_dictation: bool,
+    /// Middle mouse button follows Fn press/release. Default off.
+    /// The tap stays listen-only, so the click still reaches the frontmost app.
+    pub middle_mouse_acts_as_fn: bool,
     // ── Language ──
     pub whisper_language: CsLanguage,
     // ── AI / formatting ──
@@ -136,20 +147,13 @@ pub struct CsSettings {
     pub local_model: String,
     pub stt_file_endpoint: Option<String>,
     pub stt_live_endpoint: Option<String>,
-    /// STT engine selection (`CODESCRIBE_STT_ENGINE`): `"auto"` | `"apple"` |
-    /// `"whisper"`. `None` means the built-in auto policy. Written back via
-    /// `update_config` with the same key (promoted → settings.json).
-    pub stt_engine: Option<String>,
-    /// Legacy stop-file-pass token (`FINAL_PASS_MODE`). Runtime ignores it
-    /// on stop; Settings no longer exposes Always/Smart/Off. Persist `off`
-    /// if a value must still be written.
-    pub final_pass_mode: Option<String>,
     // ── Clipboard ──
     pub restore_clipboard: bool,
     pub restore_clipboard_delay_ms: u64,
     // ── System / agent ──
     pub start_at_login: bool,
     pub agent_enter_sends: bool,
+    pub agent_auto_send: bool,
     pub dump_audio_logs: bool,
     // ── Persisted lane selection and engine settings ──
     /// Lane = full ProviderRef (vendor ID or `custom:<slug>`) + model; provider first.
@@ -159,9 +163,8 @@ pub struct CsSettings {
     pub llm_assistive_model: Option<String>,
     pub formatting_level: Option<String>,
     pub whisper_model: Option<String>,
-    /// Layered incremental transcription phase (`CODESCRIBE_LAYERED_TRANSCRIPTION`):
-    /// `"phase1"` | `"off"` (anything non-phase means OFF). Written back via
-    /// `update_config` with the same key (promoted → settings.json).
+    /// Read-only diagnostic env override captured by the runtime snapshot.
+    /// ASR mode owns the default; Settings never writes this value.
     pub layered_transcription: Option<String>,
     /// Workspace root directories the agent scans (`list_projects` tool) to
     /// resolve project names to paths (`AGENT_WORKSPACE_ROOTS`, colon-joined on
@@ -209,7 +212,12 @@ impl CsSettings {
             hold_start_delay_ms: config.hold_start_delay_ms,
             double_tap_interval_ms: config.double_tap_interval_ms,
             toggle_silence_sec: config.toggle_silence_sec,
+            whisper_context_window_sec: config.whisper_context_window_sec,
+            light_plus_sentence_pause_sec: config.light_plus_sentence_pause_sec,
             deferred_insert_shortcut: config.deferred_insert_shortcut.wire_id().to_string(),
+            channel_modifier: config.channel_modifier.as_str().to_string(),
+            fn_tap_toggles_dictation: config.fn_tap_toggles_dictation,
+            middle_mouse_acts_as_fn: config.middle_mouse_acts_as_fn,
             whisper_language: CsLanguage::from(config.whisper_language),
             ai_formatting_enabled: config.ai_formatting_enabled,
             transcript_send_mode: config.transcript_send_mode.as_str().to_string(),
@@ -240,12 +248,11 @@ impl CsSettings {
             local_model: config.local_model.clone(),
             stt_file_endpoint: config.stt_file_endpoint.clone(),
             stt_live_endpoint: config.stt_live_endpoint.clone(),
-            stt_engine: setting_string(settings.stt_engine.clone()),
-            final_pass_mode: setting_string(settings.final_pass_mode.clone()),
             restore_clipboard: config.restore_clipboard,
             restore_clipboard_delay_ms: config.restore_clipboard_delay_ms,
             start_at_login: config.start_at_login,
             agent_enter_sends: config.agent_enter_sends,
+            agent_auto_send: config.agent_auto_send,
             dump_audio_logs: config.dump_audio_logs,
             // Editable Settings fields prefer persisted intent from the same
             // seal so a fresh UI write is visible; sealed lanes fill gaps when
@@ -260,7 +267,7 @@ impl CsSettings {
                 .or_else(|| Some(assistive.provider().as_string())),
             formatting_level: Some(runtime.formatting_policy().as_str().to_string()),
             whisper_model: setting_string(settings.whisper_model.clone()),
-            layered_transcription: setting_string(settings.layered_transcription.clone()),
+            layered_transcription: runtime.layered_transcription_override().map(str::to_owned),
             agent_workspace_roots,
             buffer_delay_ms: settings.buffer_delay_ms,
             typing_cps: settings.typing_cps,
@@ -705,19 +712,49 @@ impl CodescribeConfig {
 
     /// Read the presentation preference from the canonical settings snapshot.
     pub fn overlay_expanded_by_default(&self) -> bool {
-        Config::load_runtime_snapshot_without_keychain()
-            .expect("canonical runtime settings must load for overlay preference")
-            .user_settings()
-            .overlay_expanded_by_default
-            .unwrap_or(false)
+        // Show the transcript at take start unless the user explicitly opted
+        // out. The doc line above is part of the UniFFI checksum: keep it.
+        match Config::load_runtime_snapshot_without_keychain() {
+            Ok(snapshot) => snapshot
+                .user_settings()
+                .show_transcript_at_take_start
+                .unwrap_or(true),
+            Err(error) => {
+                tracing::warn!(%error, "overlay take-start preference could not be loaded; showing transcript");
+                true
+            }
+        }
     }
 
     /// Persist only the preferred presentation; never change live capture.
     pub fn set_overlay_expanded_by_default(&self, enabled: bool) -> bool {
         let mut settings = UserSettings::load();
-        settings.overlay_expanded_by_default = Some(enabled);
+        settings.show_transcript_at_take_start = Some(enabled);
         if let Err(error) = settings.save() {
             tracing::warn!(%error, "overlay expansion preference could not be saved");
+            return false;
+        }
+        true
+    }
+
+    /// Read the user-visible pin from the canonical settings snapshot.
+    pub fn overlay_keep_visible_between_takes(&self) -> bool {
+        Config::load_runtime_snapshot_without_keychain()
+            .expect("canonical runtime settings must load for overlay pin")
+            .user_settings()
+            .overlay_keep_visible_between_takes
+            .unwrap_or(false)
+    }
+
+    /// Persist the pin only on a changed user choice.
+    pub fn set_overlay_keep_visible_between_takes(&self, enabled: bool) -> bool {
+        let mut settings = UserSettings::load();
+        if settings.overlay_keep_visible_between_takes == Some(enabled) {
+            return true;
+        }
+        settings.overlay_keep_visible_between_takes = Some(enabled);
+        if let Err(error) = settings.save() {
+            tracing::warn!(%error, "overlay pin preference could not be saved");
             return false;
         }
         true
@@ -1187,6 +1224,11 @@ impl CodescribeConfig {
                 }
             }
         }
+    }
+
+    /// Availability of the same file lane used by explicit cloud retranscription.
+    pub fn cloud_file_retranscription_available(&self) -> bool {
+        crate::recording::cloud_file_lane(&Config::load()).is_ok()
     }
 
     pub fn stt_lanes(&self) -> Vec<CsSttLane> {
@@ -1770,6 +1812,7 @@ fn agent_env_keys() -> &'static [&'static str] {
         "LLM_XAI_OAUTH_CLIENT_ID",
         "AGENT_WORKSPACE_ROOTS",
         "AGENT_ENTER_SENDS",
+        "AGENT_AUTO_SEND",
     ]
 }
 
@@ -1831,6 +1874,7 @@ fn clear_agent_settings() -> anyhow::Result<()> {
 }
 
 fn create_agent_reset_destination(trash: &Path) -> anyhow::Result<PathBuf> {
+    codescribe_core::test_isolation::assert_test_write_allowed(trash);
     fs::create_dir_all(trash)?;
     let destination = unique_destination(
         trash,
@@ -2303,6 +2347,7 @@ struct ResetAuditEvent<'a> {
 /// the reset that follows crashes, which is the only way to tell an interrupted
 /// reset from one that never began.
 fn append_reset_audit(event: &ResetAuditEvent<'_>) -> std::io::Result<()> {
+    codescribe_core::test_isolation::assert_test_write_allowed(event.audit_path);
     if let Some(parent) = event.audit_path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -3338,6 +3383,10 @@ mod settings_snapshot_tests {
                     Err(error) => panic!("discovery request did not arrive: {error}"),
                 }
             };
+            // An accepted socket inherits O_NONBLOCK from the listener on macOS,
+            // and set_read_timeout has no effect on a nonblocking socket: a read
+            // ahead of the client's request returns WouldBlock instead of waiting.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(std::time::Duration::from_secs(5)))
                 .unwrap();
@@ -3592,17 +3641,80 @@ mod settings_snapshot_tests {
 
     #[test]
     #[serial]
-    fn overlay_preference_defaults_compact_and_survives_new_handle() {
-        let root = scratch("overlay_expansion_truth");
+    fn overlay_take_start_defaults_on_and_survives_new_handle() {
+        let root = tempfile::tempdir().unwrap();
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", root.path());
+        let _env_path = EnvGuard::set("CODESCRIBE_ENV_PATH", root.path().join("absent.env"));
+        let config = CodescribeConfig::new();
+        assert!(config.overlay_expanded_by_default());
+        assert!(config.set_overlay_expanded_by_default(false));
+        assert!(!CodescribeConfig::new().overlay_expanded_by_default());
+        assert!(config.set_overlay_expanded_by_default(true));
+        assert!(CodescribeConfig::new().overlay_expanded_by_default());
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&fs::read(UserSettings::settings_path()).unwrap()).unwrap();
+        assert_eq!(persisted["ui"]["show_transcript_at_take_start"], true);
+        assert!(persisted["ui"].get("overlay_expanded_by_default").is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn overlay_take_start_ignores_old_false_and_only_writes_new_key() {
+        let root = tempfile::tempdir().unwrap();
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", root.path());
+        let _env_path = EnvGuard::set("CODESCRIBE_ENV_PATH", root.path().join("absent.env"));
+        UserSettings {
+            overlay_expanded_by_default: Some(false),
+            ..UserSettings::default()
+        }
+        .save()
+        .unwrap();
+        let config = CodescribeConfig::new();
+        assert!(config.overlay_expanded_by_default());
+        for enabled in [false, true] {
+            assert!(config.set_overlay_expanded_by_default(enabled));
+            assert_eq!(
+                CodescribeConfig::new().overlay_expanded_by_default(),
+                enabled
+            );
+            let saved = UserSettings::load();
+            assert_eq!(saved.overlay_expanded_by_default, Some(false));
+            assert_eq!(saved.show_transcript_at_take_start, Some(enabled));
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn overlay_take_start_defaults_on_after_settings_load_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", root.path());
+        let _env_path = EnvGuard::set("CODESCRIBE_ENV_PATH", root.path().join("absent.env"));
+        let path = UserSettings::settings_path();
+        // A directory cannot be read as settings JSON or repaired as a file.
+        fs::create_dir(&path).unwrap();
+        assert!(fs::read_to_string(&path).is_err());
+        let expanded =
+            std::panic::catch_unwind(|| CodescribeConfig::new().overlay_expanded_by_default());
+        assert_eq!(expanded.ok(), Some(true));
+        assert!(
+            path.is_dir(),
+            "The getter must not replace an unreadable source"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn overlay_pin_defaults_off_and_survives_new_handle() {
+        let root = scratch("overlay_pin_truth");
         std::fs::create_dir_all(&root).expect("create bridge scratch");
         let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &root);
         let _env_path = EnvGuard::remove("CODESCRIBE_ENV_PATH");
         let config = CodescribeConfig::new();
-        assert!(!config.overlay_expanded_by_default());
-        assert!(config.set_overlay_expanded_by_default(true));
-        assert!(CodescribeConfig::new().overlay_expanded_by_default());
-        assert!(config.set_overlay_expanded_by_default(false));
-        assert!(!CodescribeConfig::new().overlay_expanded_by_default());
+        assert!(!config.overlay_keep_visible_between_takes());
+        assert!(config.set_overlay_keep_visible_between_takes(true));
+        assert!(CodescribeConfig::new().overlay_keep_visible_between_takes());
+        assert!(config.set_overlay_keep_visible_between_takes(true));
+        assert!(CodescribeConfig::new().overlay_keep_visible_between_takes());
         let _ = remove_path_without_following_symlinks(&root);
     }
 
@@ -3807,6 +3919,39 @@ mod settings_snapshot_tests {
                 }
             }
         }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn engine_controls_project_only_the_captured_layered_override() {
+        use codescribe_core::config::CapturedRuntimeInputs;
+
+        let _ambient = EnvGuard::set("CODESCRIBE_LAYERED_TRANSCRIPTION", "off");
+        let mut input = CapturedRuntimeInputs::defaults_at(
+            std::path::PathBuf::from("/fixture/engine-controls"),
+            1_700_000_000_000,
+        );
+        input.user_settings.asr_mode = Some("local_power".into());
+        let normal = Config::runtime_snapshot_from_captured(input.clone());
+        let projected = CsSettings::from_runtime_snapshot(&normal);
+        assert_eq!(projected.asr_mode.as_deref(), Some("local_power"));
+        assert_eq!(projected.layered_transcription, None);
+
+        input
+            .overrides
+            .insert("CODESCRIBE_LAYERED_TRANSCRIPTION".into(), Ok("off".into()));
+        let degraded = Config::runtime_snapshot_from_captured(input);
+        let _changed = EnvGuard::set("CODESCRIBE_LAYERED_TRANSCRIPTION", "phase1");
+        assert_eq!(
+            CsSettings::from_runtime_snapshot(&degraded)
+                .layered_transcription
+                .as_deref(),
+            Some("off")
+        );
+        assert_eq!(
+            CsSettings::from_runtime_snapshot(&normal).layered_transcription,
+            None
+        );
     }
 
     /// C15D falsifier (source-level; W2 does not execute): Settings UI projection

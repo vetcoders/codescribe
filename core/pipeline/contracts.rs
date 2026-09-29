@@ -5,11 +5,13 @@
 //!
 //! Vibecrafted with AI Agents by Vetcoders (c)2026 Vetcoders
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::llm::inline_format::OccurrenceLabelProposal;
 use crate::pipeline::acoustic_ledger::{
-    LedgerSealReceipt, MutationReceipt, ObservationIdentity, SealCoverageReceipt,
+    AcousticLedger, LedgerSealReceipt, MutationReceipt, ObservationIdentity, SealCoverageReceipt,
     TranscriptComparisonReceipt,
 };
 use crate::stt::tail_provider::TailSampleRange;
@@ -573,6 +575,68 @@ pub trait DeltaSink: Send + Sync {
 // Engine events (intent layer)
 // ═══════════════════════════════════════════════════════════
 
+/// A word still owned by the Apple pipeline, outside committed occurrences.
+/// This is process-local paint state; it grants no ledger authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnadmittedAppleWord {
+    pub text: String,
+    /// PCM range for Pending/Unmatched; receipt-only pin for phrase sources.
+    pub sample_start: u64,
+    pub sample_end: u64,
+    pub source: UnadmittedAppleWordSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnadmittedAppleWordSource {
+    OpenPartial { rev: u64, phrase_id: u64 },
+    Pending { utterance_id: u64 },
+    Unmatched,
+    RefusedUntimed { phrase_id: u64 },
+}
+
+/// The result of one closing seal, counted in words, never inferred from a pin.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClosedApplePhrase {
+    /// Zero-based position among this take's closed phrases. Re-seals keep it.
+    pub arrival_index: usize,
+    pub outcomes: std::collections::BTreeMap<ApplePhraseOutcome, usize>,
+    /// Retained for the delivery order watch even if timing arrives later.
+    pub was_untimed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ApplePhraseOutcome {
+    Admitted,
+    Pending,
+    Unmatched,
+    Untimed,
+    Replay,
+    NoChange,
+}
+
+impl ApplePhraseOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Admitted => "admitted",
+            Self::Pending => "pending",
+            Self::Unmatched => "unmatched",
+            Self::Untimed => "untimed",
+            Self::Replay => "replay",
+            Self::NoChange => "no_change",
+        }
+    }
+}
+
+impl ClosedApplePhrase {
+    pub fn describe_outcomes(&self) -> String {
+        self.outcomes
+            .iter()
+            .map(|(outcome, count)| format!("{}={count}", outcome.as_str()))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
 /// Provider that measured a sideband observation.
 ///
 /// This is deliberately typed rather than a free-form label: consumers may
@@ -638,6 +702,72 @@ pub enum AcousticSpanGrain {
     Utterance,
 }
 
+/// Where one L0 [`EngineEvent::Preview`] paints on the capture sample counter.
+///
+/// Segments the recognizer returned are mapped onto that counter and give word
+/// grain. A partial that arrives with text and no segments paints the open
+/// occurrence's capture range at utterance grain, and its receipt names that;
+/// the range is never split into invented per-word ranges.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreviewPin {
+    pub range: TailSampleRange,
+    pub grain: AcousticSpanGrain,
+    pub receipt: PreviewPinReceipt,
+}
+
+impl PreviewPin {
+    /// Union of the partial's own segments, already on the capture counter.
+    pub fn from_segments(range: TailSampleRange) -> Self {
+        let unanchored = range.sample_start >= range.sample_end;
+        Self {
+            range,
+            grain: if unanchored {
+                AcousticSpanGrain::Utterance
+            } else {
+                AcousticSpanGrain::Word
+            },
+            receipt: if unanchored {
+                PreviewPinReceipt::UnanchoredZeroWidth
+            } else {
+                PreviewPinReceipt::SegmentsOnCaptureClock
+            },
+        }
+    }
+
+    /// Capture range of the occurrence still open when a segment-less partial
+    /// arrived.
+    pub fn open_occurrence(range: TailSampleRange) -> Self {
+        Self {
+            range,
+            grain: AcousticSpanGrain::Utterance,
+            receipt: PreviewPinReceipt::PartialWithoutSegments,
+        }
+    }
+}
+
+/// How a [`PreviewPin`] range was obtained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreviewPinReceipt {
+    /// The partial's segments, mapped onto the capture counter.
+    SegmentsOnCaptureClock,
+    /// Segment timing collapsed and cannot establish an acoustic anchor.
+    UnanchoredZeroWidth,
+    /// The partial carried text and no segments.
+    PartialWithoutSegments,
+}
+
+impl PreviewPinReceipt {
+    /// Stable label for logs and receipts.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SegmentsOnCaptureClock => "segments_on_capture_clock",
+            Self::UnanchoredZeroWidth => "unanchored_zero_width",
+            Self::PartialWithoutSegments => "partial_without_segments",
+        }
+    }
+}
+
 /// Live acoustic integrity projected by the session's one Silero observer.
 /// No phase grants transcript mutation or terminal delivery permission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -660,6 +790,25 @@ pub struct SpeechIntegrity {
     pub acoustic_speech_ms_since_text_advance: u64,
     pub pending_occurrences: u64,
     pub phase: SpeechIntegrityPhase,
+}
+
+/// The phrase lifecycle's account of the final that replaced a preview.
+/// This grants no acoustic or document authority of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreviewFinalDisposition {
+    Admitted,
+    KeptUnanchored,
+    Refused { reason: String },
+}
+
+/// A refused Apple label retained for presentation and stop delivery.
+/// Its PCM identity orders the evidence but grants no ledger authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusedPreviewEvidence {
+    /// Absent for an untimed whole final; use its superseded preview's range.
+    pub range: Option<crate::pipeline::acoustic_ledger::OccurrenceIdentity>,
+    pub text: String,
+    pub reason: String,
 }
 
 /// Events emitted by the transcription engine.
@@ -732,7 +881,32 @@ pub enum EngineEvent {
     ///   `last_preview` and compute diffs themselves (see `TranscriptDelta::from_diff`).
     /// - Sinks that need session-accumulated text must concatenate across utterances.
     /// - On `UtteranceFinal`, sinks must reset their `last_preview` state.
-    Preview { rev: u64, text: String },
+    /// - `pin` is the PCM range the text paints, at the grain the recognizer
+    ///   actually returned. It grants no document or delivery authority.
+    Preview {
+        rev: u64,
+        text: String,
+        pin: PreviewPin,
+    },
+
+    /// Complete replacement of Apple's held words and closed-phrase results.
+    /// Ledger publication precedes removal from this mirror; live-finals receipt
+    /// follows it. Consumers never merge snapshots or replay dispositions.
+    #[serde(skip)]
+    UnadmittedAppleWords {
+        revision: u64,
+        words: Vec<UnadmittedAppleWord>,
+        closed_phrases: std::collections::BTreeMap<u64, ClosedApplePhrase>,
+    },
+
+    /// Receipt of phrase adjudication. Observers may log and count it, but it
+    /// never retracts paint or supplies words to the document.
+    #[serde(skip)]
+    PreviewDisposition {
+        superseded_through_rev: u64,
+        final_disposition: PreviewFinalDisposition,
+        refused_evidence: Vec<RefusedPreviewEvidence>,
+    },
 
     /// Correction — re-transcription of accumulated audio improved previous output.
     ///
@@ -875,6 +1049,185 @@ pub enum AnnotationKind {
     Paralingual { label: String },
 }
 
+/// Schema id for [`SessionConservationReceipt`].
+pub const SESSION_CONSERVATION_SCHEMA: &str = "codescribe-session-conservation/v1";
+
+/// The required session receipt fields that close the conservation loop.
+///
+/// `observations_admitted` is copied from the ledger's offer counter.
+/// `observations_delivered` is copied from the ledger's delivery counter.
+/// Neither side is computed from the other. Named observation refusals,
+/// including unanchored keeps, are the map incremented when each receipt
+/// is issued.
+///
+/// A window refused before inference and an energy lookup that returned no
+/// voiced hop are their own classes. They are not observation admissions, so
+/// they are not folded into provider job buckets and they are not added into
+/// [`Self::residue`].
+///
+/// `delivery_timestamp_ms` stays `None` here. The only RFC3339 instant on the
+/// controller side of this cut is `IpcEvent.timestamp`, written by
+/// `RecordingController::set_state_with_broadcast` in `app/controller/mod.rs`.
+/// `CsLayerSummary` in `bridge/src/recording.rs` does not carry this receipt.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionConservationReceipt {
+    /// False until a ledger actually supplied the counters.
+    pub emitted: bool,
+    pub windows_admitted: u64,
+    pub windows_coalesced: u64,
+    pub windows_unresolved: u64,
+    pub first_covered_sample: Option<u64>,
+    pub last_covered_sample: Option<u64>,
+    pub transcript_seal_timestamp_ms: Option<u64>,
+    pub delivery_timestamp_ms: Option<u64>,
+    pub observations_admitted: u64,
+    pub observations_delivered: u64,
+    pub observations_unanchored: u64,
+    pub observations_refused_by_reason: BTreeMap<String, u64>,
+    pub windows_refused_before_inference: BTreeMap<String, u64>,
+    pub energy_lookups_without_voiced_hop: u64,
+}
+
+impl SessionConservationReceipt {
+    /// Read the ledger's own counters and the session's window census.
+    pub fn from_ledger(
+        ledger: &AcousticLedger,
+        windows_admitted: u64,
+        windows_coalesced: u64,
+        windows_unresolved: u64,
+        windows_refused_before_inference: BTreeMap<String, u64>,
+    ) -> Self {
+        let tally = ledger.conservation();
+        Self {
+            emitted: true,
+            windows_admitted,
+            windows_coalesced,
+            windows_unresolved,
+            first_covered_sample: ledger.first_covered_sample(),
+            last_covered_sample: ledger.last_covered_sample(),
+            transcript_seal_timestamp_ms: ledger.transcript_seal_timestamp_ms(),
+            delivery_timestamp_ms: None,
+            observations_admitted: tally.observations_in as u64,
+            observations_delivered: tally.observations_delivered as u64,
+            observations_unanchored: tally.kept_visible_unanchored as u64,
+            observations_refused_by_reason: tally
+                .refusals_by_reason
+                .iter()
+                .map(|(reason, count)| ((*reason).to_string(), *count as u64))
+                .collect(),
+            windows_refused_before_inference,
+            energy_lookups_without_voiced_hop: ledger.energy_lookups_without_voiced_hop(),
+        }
+    }
+
+    /// `admitted − delivered − Σ(named observation refusals)`.
+    ///
+    /// A receipt-less drop increments admitted and leaves this non-zero.
+    pub fn residue(&self) -> i64 {
+        let named: u64 = self.observations_refused_by_reason.values().copied().sum();
+        self.observations_admitted as i64 - self.observations_delivered as i64 - named as i64
+    }
+
+    /// One observation vanished with no receipt. Test double for the residue.
+    pub fn with_receiptless_drop(mut self) -> Self {
+        self.emitted = true;
+        self.observations_admitted = self.observations_admitted.saturating_add(1);
+        self
+    }
+
+    pub(crate) fn encode_fields(&self) -> String {
+        format!(
+            "windows_admitted={} windows_coalesced={} windows_unresolved={} first_covered_sample={} last_covered_sample={} transcript_seal_timestamp_ms={} delivery_timestamp_ms={} observations_admitted={} observations_delivered={} observations_unanchored={} observations_refused_by_reason={} windows_refused_before_inference={} energy_lookups_without_voiced_hop={}",
+            self.windows_admitted,
+            self.windows_coalesced,
+            self.windows_unresolved,
+            encode_optional_u64(self.first_covered_sample),
+            encode_optional_u64(self.last_covered_sample),
+            encode_optional_u64(self.transcript_seal_timestamp_ms),
+            encode_optional_u64(self.delivery_timestamp_ms),
+            self.observations_admitted,
+            self.observations_delivered,
+            self.observations_unanchored,
+            encode_reason_map(&self.observations_refused_by_reason),
+            encode_reason_map(&self.windows_refused_before_inference),
+            self.energy_lookups_without_voiced_hop,
+        )
+    }
+
+    pub(crate) fn decode_fields(fields: &BTreeMap<&str, &str>) -> Self {
+        if !fields.contains_key("observations_admitted") {
+            return Self::default();
+        }
+        Self {
+            emitted: true,
+            windows_admitted: parse_u64(fields.get("windows_admitted").copied()),
+            windows_coalesced: parse_u64(fields.get("windows_coalesced").copied()),
+            windows_unresolved: parse_u64(fields.get("windows_unresolved").copied()),
+            first_covered_sample: parse_optional_u64(fields.get("first_covered_sample").copied()),
+            last_covered_sample: parse_optional_u64(fields.get("last_covered_sample").copied()),
+            transcript_seal_timestamp_ms: parse_optional_u64(
+                fields.get("transcript_seal_timestamp_ms").copied(),
+            ),
+            delivery_timestamp_ms: parse_optional_u64(fields.get("delivery_timestamp_ms").copied()),
+            observations_admitted: parse_u64(fields.get("observations_admitted").copied()),
+            observations_delivered: parse_u64(fields.get("observations_delivered").copied()),
+            observations_unanchored: parse_u64(fields.get("observations_unanchored").copied()),
+            observations_refused_by_reason: decode_reason_map(
+                fields.get("observations_refused_by_reason").copied(),
+            ),
+            windows_refused_before_inference: decode_reason_map(
+                fields.get("windows_refused_before_inference").copied(),
+            ),
+            energy_lookups_without_voiced_hop: parse_u64(
+                fields.get("energy_lookups_without_voiced_hop").copied(),
+            ),
+        }
+    }
+}
+
+fn encode_optional_u64(value: Option<u64>) -> String {
+    match value {
+        Some(value) => value.to_string(),
+        None => "-".to_string(),
+    }
+}
+
+fn parse_u64(value: Option<&str>) -> u64 {
+    value.and_then(|raw| raw.parse().ok()).unwrap_or(0)
+}
+
+fn parse_optional_u64(value: Option<&str>) -> Option<u64> {
+    match value {
+        Some("-") | None => None,
+        Some(raw) => raw.parse().ok(),
+    }
+}
+
+fn encode_reason_map(map: &BTreeMap<String, u64>) -> String {
+    if map.is_empty() {
+        return "-".to_string();
+    }
+    map.iter()
+        .map(|(reason, count)| format!("{reason}:{count}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn decode_reason_map(raw: Option<&str>) -> BTreeMap<String, u64> {
+    let Some(raw) = raw else {
+        return BTreeMap::new();
+    };
+    if raw == "-" || raw.is_empty() {
+        return BTreeMap::new();
+    }
+    raw.split(',')
+        .filter_map(|pair| {
+            let (reason, count) = pair.split_once(':')?;
+            Some((reason.to_string(), count.parse().ok()?))
+        })
+        .collect()
+}
+
 /// Session-end summary for layered transcript mutation telemetry.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LayerSummary {
@@ -883,6 +1236,8 @@ pub struct LayerSummary {
     pub inline_llm_replacements: u64,
     pub final_bam_replacements: u64,
     pub annotations_inserted: u64,
+    #[serde(default)]
+    pub conservation: SessionConservationReceipt,
 }
 
 /// Why a bounded mutation could not be applied to a committed buffer.
@@ -1198,20 +1553,70 @@ mod tests {
 
     // ── EngineEvent ──
 
-    /// Preview events clone field-for-field (rev + utterance-local text).
+    /// Preview events clone field-for-field (rev + utterance-local text + pin).
     #[test]
     fn engine_event_preview_clone() {
+        let pin = PreviewPin::from_segments(TailSampleRange {
+            session: "take".into(),
+            capture_epoch: 1,
+            sample_start: 0,
+            sample_end: 16_000,
+        });
         let event = EngineEvent::Preview {
             rev: 1,
             text: "Hello world".to_string(),
+            pin: pin.clone(),
         };
         let cloned = event.clone();
-        if let EngineEvent::Preview { rev, text } = cloned {
+        if let EngineEvent::Preview {
+            rev,
+            text,
+            pin: cloned_pin,
+        } = cloned
+        {
             assert_eq!(rev, 1);
             assert_eq!(text, "Hello world");
+            assert_eq!(cloned_pin, pin);
         } else {
             panic!("Expected Preview variant");
         }
+    }
+
+    /// Each pin constructor carries the grain and receipt of its source, so a
+    /// segment-less partial can never be reported at word grain.
+    #[test]
+    fn preview_pin_grain_follows_its_source() {
+        let range = TailSampleRange {
+            session: "take".into(),
+            capture_epoch: 2,
+            sample_start: 4_000,
+            sample_end: 8_000,
+        };
+        let pinned = PreviewPin::from_segments(range.clone());
+        assert_eq!(pinned.grain, AcousticSpanGrain::Word);
+        assert_eq!(pinned.receipt.as_str(), "segments_on_capture_clock");
+        let open = PreviewPin::open_occurrence(range);
+        assert_eq!(open.grain, AcousticSpanGrain::Utterance);
+        assert_eq!(open.receipt.as_str(), "partial_without_segments");
+        let json = serde_json::to_value(&open).unwrap();
+        assert_eq!(json["grain"], "utterance");
+        assert_eq!(json["receipt"], "partial_without_segments");
+        assert_eq!(
+            serde_json::from_value::<PreviewPin>(json).unwrap(),
+            open,
+            "the pin crosses a serde hop unchanged"
+        );
+    }
+
+    #[test]
+    fn zero_width_preview_is_unanchored() {
+        let pin = PreviewPin::from_segments(TailSampleRange {
+            session: "take".into(),
+            capture_epoch: 2,
+            sample_start: 4_000,
+            sample_end: 4_000,
+        });
+        assert_eq!(pin.receipt.as_str(), "unanchored_zero_width");
     }
 
     /// NoSpeech reason string survives clone for sink presentation.
@@ -1399,6 +1804,7 @@ mod tests {
                 inline_llm_replacements: 3,
                 final_bam_replacements: 4,
                 annotations_inserted: 5,
+                ..LayerSummary::default()
             },
         };
 

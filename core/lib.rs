@@ -84,6 +84,8 @@ pub mod runtime;
 pub mod state;
 /// Speech-to-text engine router (Candle and Apple live backends).
 pub mod stt;
+/// Test-process write fence for Codescribe-owned filesystem operations.
+pub mod test_isolation;
 /// Transcript tagging helpers for paste-delivery wrappers.
 pub mod transcript_tagging;
 /// Local CSM-1B text-to-speech synthesis surface.

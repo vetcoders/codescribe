@@ -85,7 +85,7 @@ struct Composer: View {
           textScale: textScale,
           isFocused: $fieldFocused,
           history: store.selectedThreadID.map { store.composerHistory(in: $0) } ?? [],
-          onSend: { store.send() }
+          onSend: { store.send(origin: .enter) }
         )
         .frame(height: fieldHeight)
         .accessibilityIdentifier(ComposerAccessibility.textViewIdentifier)
@@ -138,6 +138,12 @@ struct Composer: View {
       .overlay(dropCatcher)
       .animation(.easeOut(duration: 0.12), value: isDragging)
 
+      if let notice = store.unsentDictationNotice {
+        Text(verbatim: notice)
+          .font(CSFont.ui(11, .medium))
+          .foregroundStyle(CSColor.amber)
+          .accessibilityIdentifier("composer.dictation.not-sent")
+      }
       dictationFeedback
       recoveryDocuments
 
@@ -348,7 +354,7 @@ struct Composer: View {
   private func performPrimaryAction() {
     switch primaryAction {
     case .send:
-      store.send()
+      store.send(origin: .button)
     case .stop:
       store.stopActiveTurn()
     case .stopping:

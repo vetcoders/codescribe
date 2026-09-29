@@ -5,18 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- Collapse Dictation engine controls to one ASR mode, retire inert settings, and let Cloud reach its own admission checks.
+
 ## Release reality
 
-| Version  | Repository milestone | Public distribution status                                                        |
-| -------- | -------------------- | --------------------------------------------------------------------------------- |
-| `0.13.3` | 2026-08-13           | **Latest published GitHub Release** (`v0.13.3`), signed, notarized, and stapled.  |
-| `0.14.0` | 2026-08-17           | Source/daily-build milestone only; no Git tag or GitHub Release was published.    |
-| `0.14.1` | 2026-08-18 onward    | Earlier source/release-candidate milestone.                                       |
-| `0.15.1` | 2026-09-13           | Current source/daily-build milestone; this patch bump does not publish a release. |
+| Version  | Repository milestone | Public distribution status                                                       |
+| -------- | -------------------- | -------------------------------------------------------------------------------- |
+| `0.13.3` | 2026-08-13           | **Latest published GitHub Release** (`v0.13.3`), signed, notarized, and stapled. |
+| `0.14.0` | 2026-08-17           | Source/daily-build milestone only; no Git tag or GitHub Release was published.   |
+| `0.14.1` | 2026-08-18 onward    | Earlier source/release-candidate milestone.                                      |
+| `0.15.1` | 2026-09-13           | Earlier source/daily-build milestone.                                            |
+| `0.15.2` | 2026-09-28           | Release branch prepared for PR; not a published distribution.                    |
 
 The sections below distinguish code milestones from public releases. A version
 number in `Cargo.toml` is not evidence that a DMG, tag, appcast, or GitHub
 Release exists.
+
+## [0.15.2] - 2026-09-28 (release preparation)
+
+### Changed
+
+- Prepare `release/0.15.2` from the installed overlay line (`b58d0d625`), retaining
+  the newer Transcript Bus `--say` change from `bc971ceca`.
+- Bump the CLI, core, and Swift bridge source version to `0.15.2`.
+
+This version bump prepares the PR branch; it does not publish a release or
+certify the outstanding overlay hover/layout correction.
 
 ## [0.15.1] - 2026-09-13 (source milestone)
 
@@ -35,6 +51,26 @@ transcription-quality certification. Transient omissions and credential-free
 configuration loading remain under investigation.
 
 ## [Unreleased]
+
+### Changed
+
+- **MiniLM left the default payload** — the public `.app` shipped a 471 MB
+  `Contents/Resources/models/embedder/model.safetensors` that no runtime path
+  loaded. `embedder::{embed,embed_batch,similarity}` has no caller in `app/`,
+  `bridge/`, `bin/` or `macos/`: its only consumers are `tests/e2e_round_trip.rs`,
+  `examples/roundtrip_live.rs` and `core/examples/lexicon_gate_calibration.rs`.
+  `Turn.embedding` is always `None`, and `QualityIssue::SemanticMeaningChange`
+  only names `semantic_cosine` in a finding spec that nothing computes.
+  `scripts/build-app.sh` now bundles the weights solely under
+  `CODESCRIBE_BUNDLE_EMBEDDER=1` (`build-dmg.sh --bundle-embedder`), and
+  `make install` no longer downloads them. Standard DMG drops from ~515 MB to
+  ~60 MB; `make download-embedder` still serves the test and calibration lanes.
+- **Payload gate proves structure, not size** — `verify-dmg-payload.sh` asserts
+  the MiniLM resource in both directions: required with `--expect-embedder`, and
+  refused when the build did not ask for it. Because the legitimate slim DMG is
+  now smaller than the 0.13.2 regression (~85 MB), the DMG floor can no longer
+  distinguish the two; the fail-closed signal is the dylib floor (Silero must be
+  embedded), the required binaries, and that present/absent assertion.
 
 > The `0.14.1` stabilization fight: retire Q8 completely, compose and validate
 > one loader-compatible FP16/F32 Whisper bundle, make Apple and Whisper observe

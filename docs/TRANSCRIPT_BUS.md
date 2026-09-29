@@ -691,6 +691,25 @@ candidate list, and `state_change_allowed: false` for each candidate receiver.
 The source text and reducer evidence remain unchanged; this is destination
 recognition, not an ASR correction or proof that the words were spoken correctly.
 
+## Optional audience field on sealed rows
+
+Sealed transcript rows may carry an optional top-level `audience` string.
+When `audience` equals a follower's bound name, that follower receives the
+row without requiring its name to appear in the text; the emitted envelope
+marks `routing_match: "audience"`. When `audience` is `"*"` the row is a
+broadcast and every follower receives it with the same marker. An `audience`
+naming someone else does not suppress the existing name gate: rows still reach
+a follower if the transcript text addresses them by assignment, exact match,
+or fuzzy discovery. Rows without `audience` behave exactly as before.
+
+The digit that produced the row is configured in
+`vc.agent-audience-binding.v1.json` under the agent-bridge home
+(`CODESCRIBE_AGENT_BRIDGE_HOME`, otherwise `~/.codescribe/agent-bridge`).
+Each digit `1`–`9` names one agent session (`audience`, `provider`,
+`provider_session_id`). Digit `0` is the broadcast and does not need a row
+in that file. A missing or malformed file refuses the channel instead of
+opening the microphone.
+
 ## Native chat receiver acknowledgment
 
 For a provider/session-scoped `scripts/bus-demux.py` reader, stdout is transport,
@@ -727,6 +746,44 @@ The conversation must retain delivery identity for its own execution discipline.
 These mechanics do not supply provider wakeup, and upgrading the source helper
 does not upgrade an already running follower. A generation without acknowledgment
 support must not be reported as using this protocol.
+
+## Agent receipt on the bus
+
+The app watches `acknowledgments/<lease_id>/`. For a marker whose delivery is a
+seal — still pending on the lease as `kind: seal`, remembered from an earlier
+scan, or present on a bus row as `transcript_sealed` / `kind: seal` — it appends
+one row:
+
+```json
+{
+  "schema": "codescribe.agent-ack.v1",
+  "kind": "agent_ack",
+  "channel": "2",
+  "delivery_id": "<24 lowercase hex>",
+  "agent": "<audience>",
+  "emitted_at": "<utc>"
+}
+```
+
+The channel and `agent` come from `vc.agent-audience-binding.v1.json`: the
+lease's `provider_session_id` selects the digit. A draft or revised marker does
+not emit. The same `delivery_id` is appended once. Restart memory is
+`runtime/agent-ack-cursor.json` under the agent-bridge home; existing bus rows
+are the duplicate fence if that file is removed. Rows already on the bus are
+not rewritten.
+
+An open channel session also appends `codescribe.channel-session.v1` (`kind: channel_session`). `state: open` with `loud: true` means the microphone is
+live. `state: sealed` with `reason: silence` means
+`CODESCRIBE_CHANNEL_AUTOSEAL_SECS` elapsed without new channel text. `0`
+disables that cap. The row names `opened_at`, `provider`,
+`provider_session_id`, and `utterance_silence_sec`. `ChannelHudState` carries
+the same open fact, including provider and session, for the overlay. The
+overlay paint itself is a separate cut.
+
+While in-process agent speech is playing, channel PCM is not offered to the
+channel feed. A bus `agent_reply` with `spoken: true` is written after the
+external speaker returns, so that row arms only a short tail. It does not
+cancel echo that already entered the microphone.
 
 ## C11 evidence boundary
 

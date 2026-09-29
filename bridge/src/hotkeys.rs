@@ -19,6 +19,7 @@ use codescribe::os::permissions::{PermissionStatus, check_accessibility, check_i
 use codescribe::os::shortcut_registry::{detect_hotkey_conflicts, fn_tap_intercept_note};
 use codescribe::os::tray_status::{self, TrayStatus};
 use codescribe::os::{clipboard, notifications};
+use codescribe::presentation::transcript_bus::{self, DocumentHistoryEntry};
 use codescribe_core::config::{Config, ModeBinding, ShortcutBinding, UserSettings, WorkMode};
 use codescribe_core::ipc::{EngineEventWire, IpcEventPayload};
 use crossbeam_channel::unbounded;
@@ -34,6 +35,25 @@ use crate::recording::{
     CsTranscriptionListener,
 };
 use crate::{CsError, application_runtime};
+
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsDocumentHistoryEntry {
+    pub revision: u64,
+    pub rendered_text: String,
+    pub provenance: String,
+    pub emitted_at: String,
+}
+
+impl From<DocumentHistoryEntry> for CsDocumentHistoryEntry {
+    fn from(entry: DocumentHistoryEntry) -> Self {
+        Self {
+            revision: entry.revision,
+            rendered_text: entry.rendered_text,
+            provenance: entry.provenance,
+            emitted_at: entry.emitted_at,
+        }
+    }
+}
 
 /// Shared process-wide slot for the lazily-created `RecordingController`.
 /// Mutex so the first hotkey/FFI path wins construction; `Option` until first use.
@@ -200,6 +220,8 @@ fn ensure_controller(
     let controller = guard.get_or_insert_with(|| {
         let controller = Arc::new(RecordingController::new_without_keychain());
         spawn_max_approval_forwarder(&controller, handle.clone());
+        #[cfg(not(test))]
+        controller.spawn_channel_guards(handle.clone());
         spawn_event_forwarder(Arc::clone(&controller), handle);
         controller
     });
@@ -531,9 +553,12 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
                 tracing::debug!(%reason, "no-speech reason forwarded as sideband; projection owns terminal phase");
                 listener.on_no_speech(reason);
             }
-            EngineEventWire::Preview { rev, text } => tracing::debug!(
+            EngineEventWire::Preview { rev, text, pin } => tracing::debug!(
                 rev,
                 text_len = text.len(),
+                sample_start = pin.range.sample_start,
+                sample_end = pin.range.sample_end,
+                grain = ?pin.grain,
                 "raw preview observation (diagnostic only)"
             ),
             EngineEventWire::Correction {
@@ -997,9 +1022,25 @@ impl CodescribeHotkeys {
         .await?
     }
 
+    /// A button pass is bound to the visible take, including CLI source references.
+    pub async fn transcribe_take(
+        &self,
+        session_id: String,
+        path: String,
+    ) -> Result<CsTranscription, CsError> {
+        application_runtime::run(async move {
+            crate::recording::transcribe_session_file_with_identity(path, Some(session_id)).await
+        })
+        .await?
+    }
+
     /// Stable path of the last retained session WAV, if it exists.
     pub fn last_session_audio_path(&self) -> Option<String> {
         crate::recording::last_session_audio_path()
+    }
+
+    pub fn session_audio_path(&self, session_id: String) -> Option<String> {
+        crate::recording::session_audio_path(&session_id)
     }
 
     /// Stop the active legacy-controller recording flow, if one is live.
@@ -1050,6 +1091,100 @@ impl CodescribeHotkeys {
         .await?
     }
 
+    /// List the persisted reducer/Bus revisions of one take. The Bus journal is
+    /// the source of historical text; Swift receives a read-only projection.
+    pub async fn document_history(
+        &self,
+        session_id: String,
+    ) -> Result<Vec<CsDocumentHistoryEntry>, CsError> {
+        application_runtime::run(async move {
+            tokio::task::spawn_blocking(move || transcript_bus::document_history(&session_id))
+                .await
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })?
+                .map(|entries| entries.into_iter().map(Into::into).collect())
+                .map_err(|error| CsError::Recording {
+                    msg: format!("Transcript history unavailable: {error}"),
+                })
+        })
+        .await?
+    }
+
+    /// Restore a selected journal version as a fresh ledger UserEdit revision.
+    /// The historical bytes are selected in Rust, then submitted through the
+    /// existing session/revision compare-and-swap corridor.
+    pub async fn restore_document_revision(
+        &self,
+        session_id: String,
+        source_revision: u64,
+        restore_revision: u64,
+    ) -> Result<CsUserRevisionResult, CsError> {
+        application_runtime::run(async move {
+            let history_session_id = session_id.clone();
+            let selected = tokio::task::spawn_blocking(move || {
+                transcript_bus::document_history(&history_session_id)
+            })
+            .await
+            .map_err(|error| CsError::Recording {
+                msg: error.to_string(),
+            })?
+            .map_err(|error| CsError::Recording {
+                msg: format!("Transcript history unavailable: {error}"),
+            })?
+            .into_iter()
+            .find(|entry| entry.revision == restore_revision)
+            .ok_or_else(|| CsError::Recording {
+                msg: "Selected transcript revision is not in the Bus history".to_string(),
+            })?;
+            let controller =
+                current_controller(&shared_controller()).ok_or_else(|| CsError::Recording {
+                    msg: "no recording controller for transcript restoration".to_string(),
+                })?;
+            controller
+                .apply_user_revision_from_overlay(
+                    session_id,
+                    source_revision,
+                    selected.rendered_text,
+                )
+                .await
+                .map(CsUserRevisionResult::from)
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })
+        })
+        .await?
+    }
+
+    pub async fn commit_retranscribe_revision(
+        &self,
+        session_id: String,
+        source_revision: u64,
+        rendered_text: String,
+    ) -> Result<CsUserRevisionResult, CsError> {
+        application_runtime::run(async move {
+            let controller =
+                current_controller(&shared_controller()).ok_or_else(|| CsError::Recording {
+                    msg: "no recording controller for retranscription revision".to_string(),
+                })?;
+            controller
+                .apply_retranscribe_revision_from_overlay(
+                    session_id,
+                    source_revision,
+                    rendered_text,
+                )
+                .await
+                .map(CsUserRevisionResult::from)
+                .map_err(|error| {
+                    tracing::warn!(refusal = %error, "retranscription revision refused");
+                    CsError::Recording {
+                        msg: error.to_string(),
+                    }
+                })
+        })
+        .await?
+    }
+
     /// Format one exact terminal reducer revision through the production Rust
     /// formatter and commit the applied result as a provenance-bearing ledger
     /// revision. Failure is returned to Swift without publishing any evidence.
@@ -1058,13 +1193,33 @@ impl CodescribeHotkeys {
         session_id: String,
         source_revision: u64,
     ) -> Result<CsUserRevisionResult, CsError> {
+        self.commit_formatter_revision_at_level(session_id, source_revision, None)
+            .await
+    }
+
+    /// Request a terminal formatter revision with an optional one-shot level.
+    /// A missing level uses Settings. An unavailable level is refused, never
+    /// persisted or silently replaced with the configured level.
+    pub async fn commit_formatter_revision_at_level(
+        &self,
+        session_id: String,
+        source_revision: u64,
+        level: Option<String>,
+    ) -> Result<CsUserRevisionResult, CsError> {
+        let level = level
+            .as_deref()
+            .map(codescribe_core::config::FormattingPolicy::parse)
+            .transpose()
+            .map_err(|error| CsError::Recording {
+                msg: error.to_string(),
+            })?;
         application_runtime::run(async move {
             let controller =
                 current_controller(&shared_controller()).ok_or_else(|| CsError::Recording {
                     msg: "no recording controller for formatter revision".to_string(),
                 })?;
             controller
-                .apply_formatter_revision_from_overlay(session_id, source_revision)
+                .apply_formatter_revision_from_overlay(session_id, source_revision, level)
                 .await
                 .map(CsUserRevisionResult::from)
                 .map_err(|error| CsError::Recording {
@@ -1561,6 +1716,9 @@ async fn dispatch_recording_hotkey_event(
             };
             controller.handle_hotkey_event(input).await?;
         }
+        HotkeyEvent::AgentChannel { digit } => {
+            controller.toggle_agent_channel(digit).await?;
+        }
         HotkeyEvent::DoubleTapBlocked { gesture, reason } => {
             // Detector is the single owner of the stable
             // `blocked_double_tap gesture=… reason=…` INFO line (W11-C).
@@ -1848,6 +2006,10 @@ mod app_action_tests {
     #[test]
     fn mid_hold_attach_does_not_target_agent_or_claim_capture() {
         assert!(!event_can_start_capture(&HotkeyEvent::AttachSelection));
+        assert!(
+            !event_can_start_capture(&HotkeyEvent::AgentChannel { digit: 0 }),
+            "Fn+digit must not take the dictation capture gate"
+        );
         assert!(!event_targets_agent_ui(&HotkeyEvent::AttachSelection));
         assert!(!event_targets_agent_ui(&HotkeyEvent::HoldUpdate {
             mode: HoldMode::Chat,
@@ -2955,7 +3117,8 @@ mod preparing_compensation_tests {
         assert!(current_controller(&shared_controller()).is_none());
     }
 
-    /// AudioLevel IPC payload forwards the RMS sample to the Swift listener.
+    /// The compact paint crosses IPC with its capture identity and its
+    /// read-only evidence intact; an invalid payload is rejected.
     #[test]
     fn compact_projection_transport_preserves_identity_and_rejects_invalid_json() {
         let listener = Arc::new(RecordingLifecycleListener::default());
@@ -2965,6 +3128,12 @@ mod preparing_compensation_tests {
             sequence: 2,
             text: "…".into(),
             degraded: true,
+            evidence: vec![codescribe::presentation::emitter::UnanchoredEvidence {
+                sample_start: 16_000,
+                sample_end: 32_000,
+                text: "inna wersja".into(),
+                reason: "exclusive_tail_awaiting_whole_span".into(),
+            }],
         };
         forward_event_to_listener(
             IpcEventPayload::CompactProjection {
@@ -2976,7 +3145,10 @@ mod preparing_compensation_tests {
             IpcEventPayload::CompactProjection { json: "{}".into() },
             listener.clone(),
         );
-        assert_eq!(*listener.compact_paints.lock().unwrap(), vec![paint.into()]);
+        let received = listener.compact_paints.lock().unwrap().clone();
+        assert_eq!(received, vec![paint.into()]);
+        assert_eq!(received[0].evidence[0].text, "inna wersja");
+        assert_eq!(received[0].evidence[0].sample_end, 32_000);
         assert_eq!(listener.started(), 0);
         assert_eq!(listener.stopped(), 0);
     }

@@ -8,7 +8,7 @@
         start stop restart status logs logs-follow \
         bump bump-patch bump-minor bump-major version \
         lint format test test-quick test-e2e test-e2e-real test-e2e-roundtrip test-sse test-sse-release test-responses-live test-sse-heavy test-formatting test-structural-verifier test-transcript-bus-path test-all \
-        test-engine test-engine-apple test-engine-candle test-teacher \
+        test-engine test-engine-apple test-teacher \
         demo demo-raw demo-assistive check verify semgrep fix clean help corpus-census test-corpus-parity \
         dist-preflight dist-preflight-signed verify-canaries smoke-canaries \
         dmg dmg-signed release-standard release-full release-dmgs release-stable install-app-release notarize verify-dmg download-model download-e5 download-embedder ensure-models \
@@ -114,11 +114,11 @@ build:
 	@echo "Building (debug)..."
 	@cargo build
 
-# Slim public default: Silero in the dylib; MiniLM is a signed app resource;
+# Slim public default: Silero in the dylib; MiniLM is not shipped at all;
 # Whisper is runtime/cache/Settings download. Large model bytes never flow
 # through normal Cargo targets.
 release-codescribe: dist-preflight
-	@echo "Building codescribe-ffi (release dylib: Silero embedded; MiniLM/Whisper runtime)..."
+	@echo "Building codescribe-ffi (release dylib: Silero embedded; Whisper runtime; no MiniLM)..."
 	@echo "  The app front-end is no longer a Rust bin; this builds the UniFFI bridge dylib."
 	@echo "  Produce the runnable SwiftUI app with: make app PROFILE=release"
 	@echo "  Fat Whisper embed: make release-codescribe-embedded"
@@ -128,7 +128,7 @@ release-codescribe: dist-preflight
 # Optional fat SKU / offline curiosity: bake Whisper into the dylib (~1GB+).
 # Not the daily release path. Pair with `make release-full` for a _full DMG.
 release-codescribe-embedded: dist-preflight ensure-models
-	@echo "Building codescribe-ffi (FAT Whisper: Silero + Whisper embedded; MiniLM runtime resource)..."
+	@echo "Building codescribe-ffi (FAT Whisper: Silero + Whisper embedded; no MiniLM)..."
 	@CODESCRIBE_EMBED_WHISPER=1 CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(CODESCRIBE_DIST_LICENSE_KEY)" \
 	 env -u CODESCRIBE_EMBED_EMBEDDER cargo build --release -p codescribe-ffi
 
@@ -151,11 +151,12 @@ release-qube: dist-preflight
 release: release-codescribe release-qube
 
 install:
-	@echo "Installing qube tools + codescribe CLI (Silero embedded; MiniLM/Whisper from cache)..."
+	@echo "Installing qube tools + codescribe CLI (Silero embedded; Whisper from cache)..."
 	@echo "Local install uses the development license verifier — same contract as install-app."
-	@./scripts/download-embedder.sh || true
+	@echo "MiniLM is not fetched: no runtime path loads it. Need it for e2e_round_trip or"
+	@echo "lexicon_gate_calibration? Run 'make download-embedder' once."
 	@env -u CODESCRIBE_EMBED_WHISPER -u CODESCRIBE_EMBED_EMBEDDER -u CODESCRIBE_NO_EMBED -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX \
-	 CODESCRIBE_LOCAL_INSTALL=1 cargo install --path . --force
+	 CODESCRIBE_LOCAL_INSTALL=1 cargo install --locked --path . --force
 	@mkdir -p ~/.codescribe
 	@$(MAKE) hooks
 	@./scripts/install-finder-quick-action.sh
@@ -165,7 +166,7 @@ install:
 install-no-embed:
 	@echo "Installing qube tools (DEV/RECOVERY: no optional embeds; runtime paths only)..."
 	@env -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX \
-	 CODESCRIBE_NO_EMBED=1 CODESCRIBE_LOCAL_INSTALL=1 cargo install --path . --force
+	 CODESCRIBE_NO_EMBED=1 CODESCRIBE_LOCAL_INSTALL=1 cargo install --locked --path . --force
 	@mkdir -p ~/.codescribe
 	@$(MAKE) hooks
 	@./scripts/install-finder-quick-action.sh
@@ -341,7 +342,7 @@ bump-major:
 # gate: check class=static ci=no -- cargo fmt, prettier, clippy, semgrep, validate-envs, validate-gates; executes ZERO tests
 # gate: lint class=static ci=no -- cargo fmt --check + clippy on the workspace + verify-swift-format; no tests
 # gate: semgrep class=static ci=no -- semgrep scan --config auto --config .semgrep.yaml (semgrep.yml runs semgrep directly, not this target)
-# gate: verify class=hermetic ci=yes -- structural-verifier + Bus-path/install-guard instruments, workspace tests, doctests, model-promotion regression, env registry + ledger/counterexample harness; rust.yml runs it
+# gate: verify class=hermetic ci=yes -- structural verifier, Bus-path/install guard, workspace tests and doctests under sandbox HOME with a Codescribe write leak check, separate ship-shaped artifact fence check, model-promotion regression, env registry and ledger harness; rust.yml runs it
 # gate: test-structural-verifier class=hermetic ci=no -- Python unit/mutant suite for the Loctree-only acoustic structural instrument; reads repo files only, no runtime
 # gate: test-transcript-bus-path class=hermetic ci=no -- shell/Python path-precedence and install-guard fail-closed tests in an isolated HOME; never installs the app
 # gate: verify-canaries class=hermetic ci=no -- claim-vs-execution canaries that read repo files only (scripts/canaries.sh); each row is born from a named incident
@@ -363,7 +364,6 @@ bump-major:
 # gate: test-engine class=operator ci=no -- live-assembly and final-boundary unit lanes with output
 # gate: test-engine-apple class=operator ci=no -- Apple live engine over BlackHole; needs the private fixture corpus
 # gate: test-engine-apple-channel class=operator ci=no -- Apple channel path from WAV; needs the private fixture corpus
-# gate: test-engine-candle class=operator ci=no -- candle/Metal engine lane; needs local models
 # gate: test-engine-parity class=operator ci=no -- Layer 0 parity bar vs the Apple reference; private corpus, host-local bench
 # gate: test-engine-parity-layered class=operator ci=no -- Layer 1 parity arm judged on structure; private corpus, host-local bench
 # gate: test-engine-parity-both class=operator ci=no -- runs both parity arms and prints the delta
@@ -607,7 +607,6 @@ test-engine:
 	@cargo test --test e2e_overlay_delivery_parity -- --nocapture
 	@echo "OK — freezed+append + single-final-tail fail bar green."
 	@echo "Apple live multi-utterance (slow):  make test-engine-apple"
-	@echo "Candle live multi-utterance:        make test-engine-candle"
 
 # Ensure Apple STT bridge binary exists (virtual-mic / AudioBuffer path).
 # The Info.plist section is REQUIRED, not cosmetic: TCC crashes a process that
@@ -678,17 +677,17 @@ engine-auth: $(ENGINE_BRIDGE)
 # pinned a lane" from "nobody asked". The operator's own `~/.codescribe/.env` is
 # is no longer an unpromoted injection path; the guard still rejects a caller
 # request that contradicts the recipe's explicit lane pin.
-ifneq ($(origin CODESCRIBE_LAYERED_TRANSCRIPTION),undefined)
-PARITY_LANE_REQUEST := $(CODESCRIBE_LAYERED_TRANSCRIPTION)
+ifneq ($(origin CODESCRIBE_ASR_MODE),undefined)
+PARITY_LANE_REQUEST := $(CODESCRIBE_ASR_MODE)
 endif
 
 # Refuse a run whose pin contradicts the request, instead of measuring the other
 # lane and reporting it as the caller's.
 #
-# This is review finding P1-01 made impossible. A dispatch verifier ran
-# `CODESCRIBE_LAYERED_TRANSCRIPTION=phase1 make test-engine-parity`; the recipe
-# pin silently won, Layer 0 was measured twice, and the layered arm was recorded
-# green while asserting nothing about Layer 1. The Rust-side guard
+# A contradictory request such as
+# `CODESCRIBE_ASR_MODE=local_power make test-engine-parity` must fail before
+# the recipe can replace it with Layer 0 and report the wrong measurement.
+# The Rust-side guard
 # (`measured_lane_matches_request`, tests/e2e_overlay_delivery_parity.rs) cannot
 # catch that shape: by the time the test runs, request and measurement agree —
 # they agree on the WRONG lane, because the intent was dropped one layer up,
@@ -696,7 +695,7 @@ endif
 # requested one.
 define parity_lane_refuse
 	@if [ -n "$(PARITY_LANE_REQUEST)" ] && [ "$(PARITY_LANE_REQUEST)" != "$(1)" ]; then \
-	  printf 'parity lane refused: you asked for CODESCRIBE_LAYERED_TRANSCRIPTION=%s, but `%s` pins the lane to %s.\n' \
+	  printf 'parity lane refused: you asked for CODESCRIBE_ASR_MODE=%s, but `%s` pins the lane to %s.\n' \
 	    '$(PARITY_LANE_REQUEST)' '$@' '$(1)' >&2; \
 	  printf 'The pin wins inside the recipe, so this run would measure %s and report that number as yours.\n' '$(1)' >&2; \
 	  printf 'Measure what you asked for:  make %s\n' '$(2)' >&2; \
@@ -706,8 +705,8 @@ endef
 
 .PHONY: test-engine-parity
 test-engine-parity: $(ENGINE_BRIDGE)
-	$(call parity_lane_refuse,off,test-engine-parity-layered)
-	@CODESCRIBE_LAYERED_TRANSCRIPTION=off \
+	$(call parity_lane_refuse,apple_only,test-engine-parity-layered)
+	@CODESCRIBE_ASR_MODE=apple_only \
 	 CAPTURE_TEST=e2e_apple_live_parity \
 	  ./scripts/e2e-blackhole-dictation.sh 05_apple-live-parity.wav
 
@@ -740,8 +739,8 @@ test-engine-parity: $(ENGINE_BRIDGE)
 # pair of runs is an observation, not a verdict.
 .PHONY: test-engine-parity-layered
 test-engine-parity-layered: $(ENGINE_BRIDGE)
-	$(call parity_lane_refuse,phase1,test-engine-parity)
-	@CODESCRIBE_LAYERED_TRANSCRIPTION=phase1 \
+	$(call parity_lane_refuse,local_power,test-engine-parity)
+	@CODESCRIBE_ASR_MODE=local_power \
 	 CAPTURE_TEST=e2e_apple_live_parity \
 	  ./scripts/e2e-blackhole-dictation.sh 05_apple-live-parity.wav
 
@@ -779,7 +778,7 @@ test-engine-parity-layered: $(ENGINE_BRIDGE)
 .PHONY: test-engine-parity-both
 test-engine-parity-both:
 	@if [ -n "$(PARITY_LANE_REQUEST)" ]; then \
-	  printf 'parity lane refused: this target runs BOTH lanes, so pinning CODESCRIBE_LAYERED_TRANSCRIPTION=%s cannot be honoured.\n' \
+	  printf 'parity lane refused: this target runs BOTH lanes, so pinning CODESCRIBE_ASR_MODE=%s cannot be honoured.\n' \
 	    '$(PARITY_LANE_REQUEST)' >&2; \
 	  printf 'Drop the pin (`make test-engine-parity-both`), or measure one lane with test-engine-parity / test-engine-parity-layered.\n' >&2; \
 	  exit 2; \
@@ -910,17 +909,21 @@ smoke-macos27:
 # budget stays because the next such regression should be a red gate, not
 # folklore about an unexplained hang.
 #
-# 30 s is ~6x the measured fast mode and would have failed both bad runs above,
-# while leaving room for a loaded host (this machine also runs CI). Raise it for
-# a genuinely busy box rather than deleting it:
+# In the 2026-09-25 suite (663 tests), three runs took 30.6-31.4 s. Designed
+# waits dominate: OverlayRefusalLayoutHangTests takes 14.4 s and the slowest
+# individual test takes 5.4 s. A 10 s per-test ceiling catches a stalled test;
+# the 60 s suite budget remains a coarse ~2x backstop. Raise the suite budget
+# for a genuinely busy box:
 #   make test-swift SWIFT_TEST_MAX_SECONDS=90
 SWIFT_TEST_CODESIGN_IDENTITY ?= -
-SWIFT_TEST_MAX_SECONDS ?= 30
+SWIFT_TEST_MAX_SECONDS ?= 60
+SWIFT_TEST_MAX_TEST_SECONDS ?= 10
 .PHONY: test-swift
 test-swift: $(ENGINE_BRIDGE)
 	@$(TEST_DATA_DIR_SETUP); \
 	$(SHELL) scripts/test-swift.sh "$(PROFILE)" "$(ENGINE_BRIDGE)" \
 	  "$(SWIFT_TEST_CODESIGN_IDENTITY)" "$(SWIFT_TEST_MAX_SECONDS)" \
+	  "$(SWIFT_TEST_MAX_TEST_SECONDS)" \
 	  "$(SWIFT_TEST_LOG)" $(SWIFT_TEST_ARGS)
 
 # Apple live engine proof.
@@ -963,30 +966,9 @@ test-engine-apple-channel: $(ENGINE_BRIDGE)
 	echo "  RUST_LOG=$(ENGINE_RUST_LOG)  (override: ENGINE_RUST_LOG=warn make …)" | tee -a "$$LOG"; \
 	echo "  note: ~1–3 min/clip of Apple STT; heartbeats + tracing stream live" | tee -a "$$LOG"; \
 	$(ENV_LOAD); \
-	export CODESCRIBE_STT_ENGINE=apple; \
+	export CODESCRIBE_ASR_MODE=apple_only; \
 	export CODESCRIBE_APPLE_STT_BRIDGE="$(CURDIR)/$(ENGINE_BRIDGE)"; \
 	export CODESCRIBE_BRIDGE_DISCLAIM=1; \
-	export CODESCRIBE_E2E_STT=1; \
-	export RUST_LOG="$(ENGINE_RUST_LOG)"; \
-	export RUST_LOG_STYLE=always; \
-	if [[ "$(ENGINE_ALL_CLIPS)" == "1" ]]; then \
-	  export CODESCRIBE_E2E_ALL_CLIPS=1; \
-	  unset CODESCRIBE_E2E_AUDIO || true; \
-	else \
-	  export CODESCRIBE_E2E_AUDIO="$(ENGINE_CLIP)"; \
-	fi; \
-	$(ENGINE_CARGO_TEST_LIVE); \
-	if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
-	echo "Done. Log: $$LOG" | tee -a "$$LOG"
-
-# Same engine bar on Candle live (no Apple; useful CI / offline).
-test-engine-candle:
-	@$(TEST_SETUP); \
-	set -o pipefail; \
-	echo "=== Core engine Candle live (multi-utterance freezed+append) ===" | tee -a "$$LOG"; \
-	echo "  RUST_LOG=$(ENGINE_RUST_LOG)" | tee -a "$$LOG"; \
-	$(ENV_LOAD); \
-	export CODESCRIBE_STT_ENGINE=candle; \
 	export CODESCRIBE_E2E_STT=1; \
 	export RUST_LOG="$(ENGINE_RUST_LOG)"; \
 	export RUST_LOG_STYLE=always; \
@@ -1084,21 +1066,27 @@ verify:
 	echo "=== Verify (Transcript Bus path + install guard) ==="; \
 	bash scripts/tests/transcript-bus-path-test.sh; \
 	echo "=== Verify (hermetic: workspace tests) ==="; \
-	CODESCRIBE_NO_EMBED=1 CODESCRIBE_DISABLE_KEYCHAIN=1 \
-	  cargo test --workspace --all-targets; \
-	echo "=== Verify (hermetic: doctests) ==="; \
-	CODESCRIBE_NO_EMBED=1 CODESCRIBE_DISABLE_KEYCHAIN=1 \
-	  cargo test --workspace --doc; \
+	CODESCRIBE_TEST_DATA_DIR="$$CODESCRIBE_TEST_DATA_DIR" bash scripts/verify-test-home.sh; \
+	echo "=== Verify (ship-shaped artifacts contain no test fence) ==="; \
+	bash scripts/tests/test-isolation-not-shipped-test.sh; \
 	echo "=== Verify (Whisper model promotion) ==="; \
 	bash scripts/tests/download-model-test.sh; \
+	echo "=== Verify (bus demux: routing, lease, coalesce, attach) ==="; \
+	bash scripts/tests/bus-demux-test.sh; \
+	echo "=== Verify (bench STT stage fixture hard-links) ==="; \
+	bash scripts/tests/bench-stt-stage-test.sh; \
+	echo "=== Verify (model share tokenizer hard-link) ==="; \
+	bash scripts/tests/share-new-model-tokenizer-test.sh; \
 	echo "=== Verify (env registry) ==="; \
 	python3 -m unittest scripts/tests/test_env_registry.py; \
 	python3 -m unittest scripts/tests/test_data_asset_references.py; \
 	python3 -m unittest scripts/tests/test_sessions_dedupe.py; \
+	python3 -m unittest scripts/tests/test_bus_demux_speech.py; \
 	bash scripts/validate-envs.sh; \
 	echo "=== Verify (gate ledger) ==="; \
 	bash scripts/validate-gates.sh; \
 	bash scripts/tests/validate-gates-test.sh; \
+	bash scripts/tests/verify-test-home-test.sh; \
 	echo ""; \
 	echo "verify: hermetic gate passed."; \
 	echo "verify: NOT covered here — every class=operator target in the GATE LEDGER"; \
@@ -1192,8 +1180,8 @@ help:
 	@printf '\n'
 	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'BUILD & INSTALL'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'build' 'Build debug binary'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release' 'Build release dylib slim (Silero embedded; MiniLM/Whisper runtime)'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install' 'Install CLI slim (Whisper via cache/Settings, not embedded)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release' 'Build release dylib slim (Silero embedded; Whisper runtime; no MiniLM)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install' 'Install CLI slim (Whisper via cache/Settings; MiniLM not fetched)'
 	@printf '%s\n' '  make install-no-embed DEV/RECOVERY: no optional embeds (runtime paths only)'
 	@printf '%s\n' '  make release-codescribe-embedded Fat dylib with Whisper baked in (not daily)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'config' 'Edit ~/.codescribe/.env'
@@ -1212,7 +1200,7 @@ help:
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify-dmg' 'Fail-closed payload gate (DMG=… VARIANT=slim|full VERSION=X.Y.Z)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'download-model' 'Download Whisper model from HF'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'download-e5' 'Download E5 embedder model from HF'
-	@printf '%s\n' '  make download-embedder Download MiniLM embedder from HF'
+	@printf '%s\n' '  make download-embedder Download MiniLM from HF (only for e2e/calibration lanes)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'ensure-models' 'Download Whisper+MiniLM if missing from cache'
 	@printf '\n'
 	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'RUN'
@@ -1251,7 +1239,6 @@ help:
 	@printf '%s\n' '  make test-formatting Run AI formatting tests'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-engine' 'Core freezed+append unit bar (fast, no STT)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-engine-apple' 'Apple live multi-utterance e2e (ENGINE_CLIP / ENGINE_ALL_CLIPS=1)'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-engine-candle' 'Candle live multi-utterance e2e (same engine bar)'
 	@printf '%s\n' '  make test-engine-parity-both Both parity arms + delta (needs the private corpus)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'corpus-census' 'Inventory both private corpus roots; hashes/counts only'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-corpus-parity' 'Isolated production replay (profiles/runs/recordings are explicit vars)'
@@ -1301,8 +1288,9 @@ dist-preflight-signed: dist-preflight
 	fi
 	@echo "dist preflight: Sparkle public key OK (32-byte Ed25519 from $(if $(SPARKLE_ED_PUBLIC_KEY),environment,$(CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE)))"
 
-# Daily slim DMG (public default): Silero embedded, MiniLM runtime resource,
-# Whisper NOT embedded.
+# Daily slim DMG (public default): Silero embedded; Whisper NOT embedded;
+# MiniLM NOT bundled (nothing loads it — see scripts/verify-dmg-payload.sh header).
+# Ship MiniLM with: ./scripts/build-dmg.sh --bundle-embedder (verify with --expect-embedder).
 dmg: dist-preflight
 	@CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(CODESCRIBE_DIST_LICENSE_KEY)" ./scripts/build-dmg.sh
 
@@ -1315,7 +1303,8 @@ dmg-signed: dist-preflight-signed
 # Daily signed+notarized public artifact (same as make dmg-signed + notarize).
 # Does NOT download/embed Whisper. Apple STT works out of the box; Whisper is
 # opt-in via Settings → Dictation download (or make download-model).
-# Ends with the fail-closed payload gate (signed ≠ complete; see 0.13.2 MiniLM miss).
+# Ends with the fail-closed payload gate (signed ≠ complete; the gate now proves
+# structure, not DMG size — see its header for why size stopped being evidence).
 release-standard: dist-preflight-signed
 	@set -eu; \
 	receipt_dir=$$(mktemp -d "$${TMPDIR:-/tmp}/codescribe-release.XXXXXXXXXX"); \
@@ -1364,7 +1353,7 @@ release-stable: release-standard install-app-release
 
 # Optional fat SKU: bake Whisper (~1GB+) into the app. Not the daily path.
 # Ends with the fail-closed payload gate (full = Silero + Whisper embedded,
-# MiniLM runtime resource).
+# no MiniLM).
 release-full: dist-preflight-signed ensure-models
 	@set -eu; \
 	receipt_dir=$$(mktemp -d "$${TMPDIR:-/tmp}/codescribe-release.XXXXXXXXXX"); \

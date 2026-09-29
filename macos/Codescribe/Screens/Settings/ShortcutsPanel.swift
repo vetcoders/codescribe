@@ -26,6 +26,7 @@ struct ShortcutsPanel: View {
       }
 
       bindingRows.padding(.top, CSSpace.lg)
+      inputSurfaceSection.padding(.top, 12)
       deferredInsertSection.padding(.top, 12)
       badgeLegend.padding(.top, 12)
 
@@ -254,6 +255,86 @@ struct ShortcutsPanel: View {
       get: { model.holdBadgeOption },
       set: { model.setHoldBadgeOption($0) }
     )
+  }
+
+  // MARK: Channel, Fn tap, middle mouse
+
+  /// Three input surfaces on the same hotkey config as the mode rows.
+  /// Command is absent from the channel picker. Both toggles default off.
+  private var inputSurfaceSection: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      inputSurfaceRow(
+        title: "Agent channel",
+        detail:
+          "Ctrl+digit switches an agent channel. Choose Fn if you want the globe key instead. Command is not offered — it collides with tab switching."
+      ) {
+        Picker("Agent channel modifier", selection: channelModifierBinding) {
+          Text("Ctrl").tag("ctrl")
+          Text("Fn").tag("fn")
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(maxWidth: 160)
+      }
+      divider
+      inputSurfaceRow(
+        title: "Tap Fn to dictate",
+        detail:
+          "A quick Fn press starts dictation and the next tap stops it. Holding past the hold delay stays hold-to-talk. For best results set the macOS Fn key action to Do Nothing — Codescribe reacts to a single tap, and macOS can claim a double-press for its own dictation."
+      ) {
+        Toggle("Tap Fn to dictate", isOn: fnTapBinding)
+          .labelsHidden()
+          .toggleStyle(.switch)
+      }
+      divider
+      inputSurfaceRow(
+        title: "Middle mouse acts as Fn",
+        detail:
+          "The middle mouse button follows the same press, hold, and tap rules as Fn. The click still reaches the frontmost app."
+      ) {
+        Toggle("Middle mouse acts as Fn", isOn: middleMouseBinding)
+          .labelsHidden()
+          .toggleStyle(.switch)
+      }
+    }
+    .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
+        .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
+    )
+  }
+
+  private func inputSurfaceRow<Control: View>(
+    title: String, detail: String, @ViewBuilder control: () -> Control
+  ) -> some View {
+    HStack(alignment: .center, spacing: 12) {
+      VStack(alignment: .leading, spacing: 3) {
+        Text(title)
+          .font(CSFont.ui(13.5, .semibold))
+          .foregroundStyle(CSColor.textHigh)
+        Text(detail)
+          .font(CSFont.ui(11.5, .medium))
+          .foregroundStyle(CSColor.textMuted)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      control()
+    }
+    .padding(.horizontal, 16)
+    .padding(.vertical, 14)
+    .background(CSColor.surfaceRaised(0.02))
+  }
+
+  private var channelModifierBinding: Binding<String> {
+    Binding(get: { model.channelModifier }, set: { model.setChannelModifier($0) })
+  }
+
+  private var fnTapBinding: Binding<Bool> {
+    Binding(get: { model.fnTapTogglesDictation }, set: { model.setFnTapTogglesDictation($0) })
+  }
+
+  private var middleMouseBinding: Binding<Bool> {
+    Binding(get: { model.middleMouseActsAsFn }, set: { model.setMiddleMouseActsAsFn($0) })
   }
 
   // MARK: Deferred insert chord

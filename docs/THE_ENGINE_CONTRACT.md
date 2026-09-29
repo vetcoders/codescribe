@@ -38,7 +38,7 @@ This is a band, not a queue of correctors. Ban is **per layer, per span**. The l
 - **Whisper** enters the buffer on **~4 s observations with ~1 s overlap**, bounded by available speech evidence. Never full audio in the automatic pipeline (`full_file_pass = button_only_proposal`). It may fill omissions or replace weaker Apple wording inside the same proven span. It must not hallucinate into silence or rebuild the session from zero.
 - **Lexicon / Light+** are L2 and tune deterministically after Whisper settles. Light+ is currently wired on progressive seals and as the delivery floor.
 - **Responses formatter** is L3 (`previous_response_id`). It has a trash bucket: it may throw away approved verbal debris, but it may not rearrange the plate.
-- **Human** is last, after seal.
+- **Human** may edit the delivered canvas immediately; after seal, the human remains the last revision authority.
 
 ### Exactly four machine layers
 
@@ -142,7 +142,7 @@ remain correctable. Key = PCM sample counter, not token position.
 | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `utterance_final` / observer-final                    | This observer finished its current raw hypothesis for the fragment. **Not the document, Bus, delivery, or an immutable token floor.** A later authorized observer may relabel the same proven span through the ledger. |
 | `utterance_sealed`                                    | The span identity and `[sample_start, sample_end)` placement are frozen. Its text is stable for presentation but remains correctable by an admitted downstream observation before session seal.                        |
-| terminal ledger seal / `transcript_sealed` projection | A terminal ledger seal receipt closes the committed Bus writer. Arbitrary text cannot seal it. Full HQ / Cloud may only propose a variant.                                                                             |
+| terminal ledger seal / `transcript_sealed` projection | A terminal ledger seal receipt closes the committed Bus writer after refinement; delivery does not wait for it. Arbitrary text cannot seal it. Full HQ / Cloud may only propose a variant.                             |
 
 `committed` does **not** mean "this is already the document". It means: **this layer finished its work here; the next layer takes the same time slice.**
 
@@ -155,7 +155,7 @@ Before `transcript_sealed` the whole document is **not** mutable.
 - The current tail may still evolve.
 - Whisper may fill holes and replace weaker evidence inside the same authorized span before session seal.
 - The formatter works in parallel on closed fragments and keeps their order.
-- Stop closes only the tail and assembles ready fragments.
+- Stop closes capture and the last Apple window, admits that window's L0 occurrence text to the reducer, then delivers its nonempty committed canvas. L1 and gap recovery may revise the document afterward. If the bounded close wait expires, delivery uses the terminal path rather than a truncated canvas.
 
 A first-wins final string is not enough. The real document is the ordered span ledger with provenance. Session seal closes the assembled result — it does not replace the architecture with one frozen variable.
 
@@ -388,9 +388,11 @@ the capture PCM axis**, never a concatenation of non-adjacent fragments.
    identity and the target identity share `session` and `capture_epoch` and
    their ranges intersect. Change ratio and LCS may rank candidates inside that
    one authorized identity. They may not be the gate.
-10. **Drain on stop.** Stop closes the open window, drains admitted work, and
-    assembles the ordered ledger. It starts no new decode and re-decodes
-    nothing already covered.
+10. **Close, deliver, then drain on stop.** Stop closes the last Apple window
+    and admits its L0 text to the reducer before freezing and delivering the
+    nonempty canvas. The remaining L1 and recovery work drains into later
+    revisions. A close timeout uses terminal delivery instead of a partial paste;
+    stop starts no whole-file decode and re-decodes nothing already covered.
 
 ### Safety truth
 
@@ -610,7 +612,13 @@ to the resolved defects; this section is not a work queue.
   `infer_span_identity_from_text_similarity`,
   `deduplicate_intentional_repetition_by_content`, or
   `claim_layered_on_when_no_windows_reach_the_provider`, and carries
-  `small_inline_llm` which the prose list does not. Reconciled in this cut.
+  `small_inline_llm` which the prose list does not. Reconciled 2026-09-24:
+  the mirror dropped `small_inline_llm`, `final_bam_automatic_producer`, and
+  `session_finalised_content_mutation` — each rule was already prose ("Inline
+  … does not name a small model", "Final BAM is superseded and has no
+  automatic content producer", "SessionFinalised is lifecycle-only and may
+  not mutate text") — and the lock is now bidirectional, so prose ⇔ mirror
+  drift fails the gate in both directions.
 - **`LayerSummary` still names superseded producers.**
   `final_bam_replacements` and `inline_llm_replacements` remain live fields on
   the session receipt for a producer the ledger declares superseded and a layer
@@ -648,15 +656,18 @@ to the resolved defects; this section is not a work queue.
 - `.env` may not remain a second independent writer.
 - UI readback uses the same effective value as recording start.
 - UI writes become visible to the next recording without relaunch.
-- `ASR mode`, `STT engine`, and `Layered` are distinct dimensions.
-- Local Power means local Layer 1 capability is intended.
-- Cloud means audio egress is consent-gated.
-- Apple Only means no Layer 1 provider.
-- `Final Pass off` concerns stop-path whole-file inference.
-- `Layered off` concerns during-hold refinement.
-- The two switches are orthogonal.
-- A stale `final_pass_mode=smart` token must not reactivate hated Full Pass.
-- A Layered toggle ON must be backed by an armed lane receipt.
+- `ASR mode` is the sole engine control: Apple only / Local power / Cloud.
+- Local Power arms local Layer 1 by default; Apple only selects no Layer 1 provider.
+- Cloud means audio egress is consent-gated and uses its own live endpoint/key checks.
+- `CODESCRIBE_LAYERED_TRANSCRIPTION` is an env-only diagnostic override for Local Power.
+  Explicit off or invalid input produces “Degraded (env override)” in Settings.
+  It cannot disarm Cloud or become a Settings write.
+- STT engine and whole-session Final Pass controls are retired. Repair removes
+  `stt_engine`, `final_pass_mode`, and `layered_transcription` once, with named receipts.
+  Subsequent loads do not recreate those keys or write an unchanged file.
+- Retranscribe remains an explicit file action; normal stop never runs a whole-file pass.
+- Live Whisper refinement is a read-only Ready / Not ready / Degraded status with Recheck.
+- Healthy local startup reports `reason="local_tail_patch_armed"`.
 - A missing model produces a visible not-ready/degraded state.
 - Installed model status comes from full validation, not file names.
 

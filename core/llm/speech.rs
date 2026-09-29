@@ -257,7 +257,7 @@ impl SpeechOptions {
     }
     fn cache_key(&self, text: &str) -> String {
         let identity = json!({"vendor":format!("{:?}",self.vendor),"model":self.model,"voice":self.voice,"speed":self.speed,"text":text,"sample_rate":SAMPLE_RATE});
-        format!("{:x}", Sha256::digest(identity.to_string().as_bytes()))
+        hex::encode(Sha256::digest(identity.to_string().as_bytes()))
     }
 }
 fn lane_vendor(lane: &RuntimeLlmLane) -> Result<ProviderKind, SpeechError> {
@@ -315,8 +315,10 @@ pub fn decode_pcm(bytes: &[u8]) -> Result<Vec<f32>, SpeechError> {
         return Err(SpeechError::Invalid("Invalid PCM16 speech response"));
     }
     Ok(bytes
-        .chunks_exact(2)
-        .map(|b| f32::from(i16::from_le_bytes([b[0], b[1]])) / 32768.0)
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| f32::from(i16::from_le_bytes(*b)) / 32768.0)
         .collect())
 }
 /// Lossless cap splitting, preferring whitespace boundaries when possible.
@@ -346,9 +348,7 @@ pub fn chunks(text: &str, cap: usize) -> Vec<&str> {
     result
 }
 fn cache_dir() -> Result<PathBuf, SpeechError> {
-    let home =
-        directories::BaseDirs::new().ok_or(SpeechError::Invalid("Home directory unavailable"))?;
-    Ok(home.home_dir().join(".codescribe/cache/tts"))
+    Ok(Config::config_dir().join("cache/tts"))
 }
 /// Synthesize using the current assistive lane, sealed for the entire request.
 pub async fn synthesize(text: &str) -> Result<SpeechAudio, SpeechError> {
@@ -502,9 +502,9 @@ fn authenticated_cache_key(
         "audio": options.cache_key(text),
         "endpoint": endpoint,
         "auth_source": auth.source.as_str(),
-        "credential": format!("{:x}", Sha256::digest(auth.bearer.as_bytes())),
+        "credential": hex::encode(Sha256::digest(auth.bearer.as_bytes())),
     });
-    format!("{:x}", Sha256::digest(identity.to_string().as_bytes()))
+    hex::encode(Sha256::digest(identity.to_string().as_bytes()))
 }
 
 #[cfg(test)]

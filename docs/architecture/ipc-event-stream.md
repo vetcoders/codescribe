@@ -96,10 +96,25 @@ Engine events are tagged with `type`:
     "event": "engine",
     "type": "preview",
     "rev": 7,
-    "text": "hello world"
+    "text": "hello world",
+    "pin": {
+      "range": {
+        "session": "0f3c…",
+        "capture_epoch": 1,
+        "sample_start": 16000,
+        "sample_end": 40000
+      },
+      "grain": "word",
+      "receipt": "segments_on_capture_clock"
+    }
   }
 }
 ```
+
+`pin` is the PCM range the preview paints on the capture sample counter. Word
+segments give `word` grain. A partial with text and no segments paints the open
+occurrence's capture range at `utterance` grain with receipt
+`partial_without_segments`; it is never split into invented per-word ranges.
 
 `utterance_final` includes segment timestamps:
 

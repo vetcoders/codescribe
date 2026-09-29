@@ -223,6 +223,22 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    /// One L0 preview pinned to an open occurrence; the pin is not under test here.
+    fn preview(text: &str) -> EngineEvent {
+        EngineEvent::Preview {
+            rev: 1,
+            text: text.to_string(),
+            pin: crate::pipeline::contracts::PreviewPin::open_occurrence(
+                crate::stt::tail_provider::TailSampleRange {
+                    session: "take".into(),
+                    capture_epoch: 7,
+                    sample_start: 0,
+                    sample_end: 16_000,
+                },
+            ),
+        }
+    }
+
     /// CallbackSink forwards TranscriptDelta text into the wrapped closure.
     #[test]
     fn test_callback_sink_forwards() {
@@ -264,10 +280,7 @@ mod tests {
     #[test]
     fn test_collector_event_sink_collects_all() {
         let sink = CollectorEventSink::new();
-        sink.on_event(&EngineEvent::Preview {
-            rev: 1,
-            text: "hello".to_string(),
-        });
+        sink.on_event(&preview("hello"));
         sink.on_event(&EngineEvent::Drop {
             kind: crate::pipeline::contracts::DropKind::Hallucination,
             text: "thank you".to_string(),
@@ -312,10 +325,7 @@ mod tests {
         let b = Arc::new(CaptureObserver::default());
         let fanout = FanoutEventSink::pair(a.clone(), b.clone());
         fanout.on_capture_opened("take", 7);
-        fanout.on_event(&EngineEvent::Preview {
-            rev: 1,
-            text: "hello".into(),
-        });
+        fanout.on_event(&preview("hello"));
         for observer in [a, b] {
             assert_eq!(*observer.0.lock().unwrap(), ["take:7", "event"]);
         }
@@ -327,10 +337,7 @@ mod tests {
         let b = Arc::new(CollectorEventSink::new());
         let fanout = FanoutEventSink::pair(a.clone() as Arc<dyn EventSink>, b.clone());
 
-        fanout.on_event(&EngineEvent::Preview {
-            rev: 1,
-            text: "hello".to_string(),
-        });
+        fanout.on_event(&preview("hello"));
 
         assert_eq!(a.events().len(), 1);
         assert_eq!(b.events().len(), 1);

@@ -119,12 +119,18 @@ run both arms again.
 
 ### The gate now refuses green-but-slow
 
-`make test-swift` reports its wall-clock and slowest test on every run and fails
-above `SWIFT_TEST_MAX_SECONDS` (default 30 s, ~6× the measured fast mode). Both
-bad runs above would have failed it. Raise the budget on a genuinely loaded host
+`make test-swift` reports its wall-clock and slowest test on every run. In the
+2026-09-25 suite, 663 tests took 30.6–31.4 s; designed waits account for much
+of that time (14.4 s in `OverlayRefusalLayoutHangTests`), and the slowest single
+test took 5.4 s. Every test above `SWIFT_TEST_MAX_TEST_SECONDS` (default 10 s)
+is printed and fails the gate. The suite budget, `SWIFT_TEST_MAX_SECONDS`
+(default 60 s), is a coarse backstop at about twice the measured suite time.
+The per-test ceiling targets the one-test hang shape seen in the old Keychain
+regression. Raise the suite budget on a genuinely loaded host
 (`make test-swift SWIFT_TEST_MAX_SECONDS=90`) rather than removing it.
 
-Note on exit codes: the _recipe_ exits 3 (zero tests) or 4 (over budget), which
+Note on exit codes: the _recipe_ exits 3 (zero tests), 4 (suite over budget),
+or 5 (one or more tests over the per-test ceiling), which
 appears in `make: *** [test-swift] Error N`. GNU make itself exits **2** for any
 recipe failure, so a caller reading `$?` sees 2 in every failing case. Scripts
 should branch on non-zero, not on the specific code.

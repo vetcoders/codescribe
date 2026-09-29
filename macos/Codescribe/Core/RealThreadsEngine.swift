@@ -80,7 +80,7 @@ final class RealThreadsEngine: BackgroundThreadListing {
     try? threads.exportThreadMarkdown(id: backendId, assistantOnly: assistantOnly)
   }
 
-  private static func thread(from summary: CsThreadSummary) -> ChatThread {
+  static func thread(from summary: CsThreadSummary) -> ChatThread {
     let updatedAt = Date(timeIntervalSince1970: Double(summary.updatedAtMs) / 1000.0)
     var thread = ChatThread(
       title: summary.title.isEmpty ? "Untitled" : summary.title,
@@ -95,6 +95,8 @@ final class RealThreadsEngine: BackgroundThreadListing {
     thread.updatedAt = updatedAt
     thread.model = summary.model
     thread.totalTokens = summary.totalTokens
+    thread.mode = summary.mode
+    thread.tags = summary.tags
     return thread
   }
 

@@ -264,6 +264,7 @@ private struct ThreadDetail: View {
       }
 
       liveStatusPill
+        .layoutPriority(2)
 
       Spacer(minLength: 8)
 

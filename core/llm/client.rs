@@ -309,15 +309,33 @@ async fn transcribe_external(
         file.read_to_end(&mut buffer)
             .await
             .context("Failed to read audio file")?;
-        if let Err(validation_error) = validate_audio(&buffer) {
-            error!("Audio validation failed: {}", validation_error);
-            crate::status::notify_status(crate::status::StatusSignal::Error);
-            anyhow::bail!("Audio validation failed: {}", validation_error);
-        }
         let filename = path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("recording.wav");
+        if let Err(validation_error) = validate_audio(&buffer) {
+            // Oversize is a transport constraint, not a verdict on the take:
+            // the same audio transcribes fine once it travels in bounded
+            // segments (two 52 MB takes died here on 2026-09-22 while the
+            // operator's hand-segmented pipeline recovered both). Every other
+            // validation failure still refuses the upload.
+            if matches!(validation_error, AudioValidationError::TooLarge { .. }) {
+                warn!(
+                    "{validation_error}; splitting the take into quiet-point segments for the multipart lane"
+                );
+                return transcribe_multipart_segmented(
+                    endpoint_url,
+                    api_key,
+                    &canonical_path,
+                    lang,
+                    filename,
+                )
+                .await;
+            }
+            error!("Audio validation failed: {}", validation_error);
+            crate::status::notify_status(crate::status::StatusSignal::Error);
+            anyhow::bail!("Audio validation failed: {}", validation_error);
+        }
         transcribe_multipart(endpoint_url, api_key, buffer, lang, filename).await
     }
 }
@@ -415,6 +433,100 @@ async fn transcribe_ndjson(
         Some(duration_ms.min(u128::from(u64::MAX)) as u64),
         None,
     ))
+}
+
+/// Oversize fallback for the multipart lane: the same segmentation the
+/// `:stream` lane uses, with each segment travelling as its own bounded
+/// multipart upload. A 10-minute PCM16@16k segment is ~19.2 MB plus a 44-byte
+/// header, under the 20 MB default cap ([`validate_audio`] re-checks each one).
+async fn transcribe_multipart_segmented(
+    url: &str,
+    api_key: &str,
+    path: &Path,
+    language: &str,
+    filename: &str,
+) -> Result<CloudTranscriptionVerdict> {
+    let start = Instant::now();
+    let decode_path = path.to_path_buf();
+    let (samples, sample_rate) =
+        tokio::task::spawn_blocking(move || crate::audio::load_audio_file(&decode_path))
+            .await
+            .context("audio decode task join error")??;
+    if samples.is_empty() {
+        anyhow::bail!("Audio validation failed: {}", AudioValidationError::Empty);
+    }
+    let samples = crate::audio::resample_to_16k(&samples, sample_rate);
+    let pcm: Vec<i16> = samples
+        .iter()
+        .map(|s| (s.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16)
+        .collect();
+    let segments = split_pcm_at_quiet_points(
+        &pcm,
+        NDJSON_SEGMENT_SECONDS * NDJSON_SAMPLE_RATE as usize,
+        NDJSON_SEGMENT_SEARCH_SECONDS * NDJSON_SAMPLE_RATE as usize,
+    );
+    info!(
+        "[Multipart STT] oversize take split into {} segment(s) ({:.1}s total)",
+        segments.len(),
+        pcm.len() as f64 / f64::from(NDJSON_SAMPLE_RATE)
+    );
+
+    let mut texts: Vec<String> = Vec::with_capacity(segments.len());
+    let mut model_name: Option<String> = None;
+    for (index, segment) in segments.iter().enumerate() {
+        let wav = wav_bytes_from_pcm16(segment, NDJSON_SAMPLE_RATE);
+        validate_audio(&wav).map_err(|error| {
+            anyhow::anyhow!(
+                "segment {}/{} still oversize: {error}",
+                index + 1,
+                segments.len()
+            )
+        })?;
+        let segment_name = format!("{filename}.part{:03}.wav", index + 1);
+        let verdict = transcribe_multipart(url, api_key, wav, language, &segment_name)
+            .await
+            .with_context(|| format!("segment {}/{}", index + 1, segments.len()))?;
+        if model_name.is_none() {
+            model_name = verdict.model_name;
+        }
+        let text = verdict.text.trim();
+        if !text.is_empty() {
+            texts.push(text.to_string());
+        }
+    }
+    let final_text = texts.join(" ");
+    if final_text.is_empty() {
+        anyhow::bail!("No transcription received from segmented multipart STT");
+    }
+    let duration_ms = start.elapsed().as_millis();
+    Ok(CloudTranscriptionVerdict::new(
+        final_text,
+        Some(duration_ms.min(u128::from(u64::MAX)) as u64),
+        model_name,
+    ))
+}
+
+/// Wrap PCM16 mono samples in a minimal 44-byte RIFF/WAVE header.
+fn wav_bytes_from_pcm16(pcm: &[i16], sample_rate: u32) -> Vec<u8> {
+    let data_len = pcm.len() * 2;
+    let byte_rate = sample_rate * 2;
+    let mut out = Vec::with_capacity(44 + data_len);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&((36 + data_len) as u32).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    out.extend_from_slice(&1u16.to_le_bytes()); // mono
+    out.extend_from_slice(&sample_rate.to_le_bytes());
+    out.extend_from_slice(&byte_rate.to_le_bytes());
+    out.extend_from_slice(&2u16.to_le_bytes()); // block align
+    out.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&(data_len as u32).to_le_bytes());
+    for sample in pcm {
+        out.extend_from_slice(&sample.to_le_bytes());
+    }
+    out
 }
 
 /// Cut PCM into slices of at most `segment_len` samples. Each cut is moved
@@ -961,5 +1073,47 @@ mod tests {
             !json.contains("confidence_flags"),
             "empty confidence_flags must be omitted (got {json})"
         );
+    }
+
+    /// The oversize fallback only works if every segment it produces passes
+    /// the same validation that rejected the whole take: a full 10-minute
+    /// PCM16@16k segment plus header must sit under the 20 MB default cap.
+    #[test]
+    fn a_full_multipart_segment_fits_under_the_default_upload_cap() {
+        let segment_bytes = NDJSON_SEGMENT_SECONDS * NDJSON_SAMPLE_RATE as usize * 2 + 44;
+        assert!(
+            segment_bytes <= 20 * 1024 * 1024,
+            "10-minute PCM16@16k segment is {segment_bytes} bytes, over the 20 MB cap"
+        );
+    }
+
+    /// The WAV wrapper writes a header symphonia and the backend can parse:
+    /// correct magic, sizes derived from the payload, PCM16 mono at the given
+    /// rate. An ENOSPC-truncated take taught us what a zero `data` size does.
+    #[test]
+    fn wav_bytes_from_pcm16_writes_a_parseable_header() {
+        let pcm: Vec<i16> = vec![0, i16::MAX, i16::MIN, 42];
+        let wav = wav_bytes_from_pcm16(&pcm, 16_000);
+        assert_eq!(&wav[0..4], b"RIFF");
+        assert_eq!(&wav[8..12], b"WAVE");
+        assert_eq!(&wav[12..16], b"fmt ");
+        assert_eq!(&wav[36..40], b"data");
+        assert_eq!(
+            u32::from_le_bytes(wav[4..8].try_into().unwrap()) as usize,
+            wav.len() - 8
+        );
+        assert_eq!(
+            u32::from_le_bytes(wav[40..44].try_into().unwrap()) as usize,
+            pcm.len() * 2
+        );
+        assert_eq!(
+            u16::from_le_bytes(wav[22..24].try_into().unwrap()),
+            1,
+            "mono"
+        );
+        assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 16_000);
+        assert_eq!(wav.len(), 44 + pcm.len() * 2);
+        assert_eq!(&wav[44..46], &0i16.to_le_bytes());
+        assert_eq!(&wav[46..48], &i16::MAX.to_le_bytes());
     }
 }

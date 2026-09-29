@@ -189,6 +189,15 @@ pub struct UserSettings {
     /// Assistive-arm modifier on hold base: `"shift"` (default) or `"cmd"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hold_arm_modifier: Option<String>,
+    /// Agent-channel modifier: `"ctrl"` (default) or `"fn"`. Command is rejected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel_modifier: Option<String>,
+    /// Quick Fn press below the hold delay toggles dictation. `None` keeps the default off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fn_tap_toggles_dictation: Option<bool>,
+    /// Middle mouse button follows Fn. `None` keeps the default off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub middle_mouse_acts_as_fn: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode_bindings: Option<Vec<ModeBinding>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -197,6 +206,11 @@ pub struct UserSettings {
     pub double_tap_interval_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub toggle_silence_sec: Option<f32>,
+    /// Layer 1 Whisper context, seconds. `None` keeps the code default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub whisper_context_window_sec: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub light_plus_sentence_pause_sec: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_formatting_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -252,9 +266,15 @@ pub struct UserSettings {
     pub show_dock_icon: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transcription_overlay_enabled: Option<bool>,
-    /// Start the overlay with its transcript visible; absence means compact.
+    /// Retained for settings round trips; no longer controls overlay expansion.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overlay_expanded_by_default: Option<bool>,
+    /// Show the transcript when a take starts; absence means enabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_transcript_at_take_start: Option<bool>,
+    /// Keep a completed Dictation take visible until explicitly closed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overlay_keep_visible_between_takes: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tray_start_assistive: Option<bool>,
     // Promoted 2026-08-11: these lived only in `.env`, so the tray/settings
@@ -312,6 +332,8 @@ pub struct UserSettings {
     pub qube_donor: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_enter_sends: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_auto_send: Option<bool>,
     /// First-run operating lane chosen during onboarding ("basic" | "agentic").
     /// `None` means "not yet chosen" — callers treat that as the safe Basic lane.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -331,23 +353,6 @@ pub struct UserSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backend_max_upload_mb: Option<u64>,
 
-    // ── STT engine / layered transcription (F1) ──
-    /// STT engine selection ("auto" | "apple" | "whisper").
-    /// Seeds `CODESCRIBE_STT_ENGINE`; string on purpose (1:1 env mapping, like
-    /// `onboarding_mode`). `None`/absent means the built-in auto policy.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stt_engine: Option<String>,
-    /// Final-pass routing mode (`always` | `smart` | `off`).
-    /// Seeds `FINAL_PASS_MODE` (alias `CODESCRIBE_FINAL_PASS_MODE`). Default
-    /// Smart when absent. Distinct from lexicon `FinalPassMode` in contracts.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub final_pass_mode: Option<String>,
-    /// Layered incremental transcription phase ("off" | "phase1").
-    /// Seeds `CODESCRIBE_LAYERED_TRANSCRIPTION`. In Local Power, absent means
-    /// the required Apple-first patcher default is armed; explicit `off` is a
-    /// named degraded override. `phase1` remains a compatibility token.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub layered_transcription: Option<String>,
     /// Opt-in Whisper `initial_prompt` vocabulary hint.
     /// Seeds `CODESCRIBE_STT_INITIAL_PROMPT_ENABLED`; absent means default OFF.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -376,6 +381,10 @@ pub struct UserSettings {
     /// user-info and query material. `None` means "not configured".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub asr_gateway_url: Option<String>,
+    /// CLOUD multipart refine endpoint. `None` means the shipped REST default.
+    /// This is not `stt_file_endpoint` / `file_transcription_endpoint`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stt_cloud_refine_endpoint: Option<String>,
 
     // ── Agent workspace ──
     /// Workspace root directories the agent scans (`list_projects`) to resolve a
@@ -1002,8 +1011,10 @@ impl RuntimeAiExecution {
 ///
 /// Hot edits create a *new* snapshot for the next recording session. An
 /// in-flight take keeps this value and every AI retry/request fact it selected.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RuntimeSettingsSnapshot {
+    // Retain the original resolver inputs without exposing credentials in Debug.
+    captured_inputs: std::sync::Arc<super::loader::CapturedRuntimeInputs>,
     /// Resolved runtime values after defaults + allowed env overlays.
     values: Config,
     repair_receipt: super::repair::RepairReceipt,
@@ -1031,13 +1042,39 @@ pub struct RuntimeSettingsSnapshot {
     /// power-user env override. Consumers never re-read either source.
     seal_lane_armed: bool,
     local_tail_patch: crate::asr_session::recorder::LocalTailPatchDisposition,
+    layered_transcription_override: Option<String>,
     tail_provider: Option<crate::stt::tail_provider::TailProviderId>,
+}
+
+impl std::fmt::Debug for RuntimeSettingsSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Captured inputs include credentials and unselected prompt content.
+        f.debug_struct("RuntimeSettingsSnapshot")
+            .field("values", &self.values)
+            .field("repair_receipt", &self.repair_receipt)
+            .field("user_settings", &self.user_settings)
+            .field("llm_lanes", &self.llm_lanes)
+            .field("formatting_policy", &self.formatting_policy)
+            .field("ai_execution", &self.ai_execution)
+            .field("provenance", &self.provenance)
+            .field("digest", &self.digest)
+            .field("energy_calibration", &self.energy_calibration)
+            .field("seal_lane_armed", &self.seal_lane_armed)
+            .field("local_tail_patch", &self.local_tail_patch)
+            .field(
+                "layered_transcription_override",
+                &self.layered_transcription_override,
+            )
+            .field("tail_provider", &self.tail_provider)
+            .finish()
+    }
 }
 
 /// Everything one loader pass resolved, handed to [`RuntimeSettingsSnapshot::seal_loaded`]
 /// as a unit so no part can be sealed from a different pass.
 #[derive(Clone)]
 pub(crate) struct RuntimeSnapshotParts {
+    pub(crate) captured_inputs: std::sync::Arc<super::loader::CapturedRuntimeInputs>,
     pub(crate) repair_receipt: super::repair::RepairReceipt,
     pub(crate) values: Config,
     pub(crate) user_settings: UserSettings,
@@ -1049,6 +1086,7 @@ pub(crate) struct RuntimeSnapshotParts {
     pub(crate) energy_calibration: SealedEnergyCalibration,
     pub(crate) seal_lane_armed: bool,
     pub(crate) local_tail_patch: crate::asr_session::recorder::LocalTailPatchDisposition,
+    pub(crate) layered_transcription_override: Option<String>,
     pub(crate) tail_provider: Option<crate::stt::tail_provider::TailProviderId>,
 }
 
@@ -1059,6 +1097,7 @@ impl RuntimeSettingsSnapshot {
         parts: RuntimeSnapshotParts,
     ) -> Result<Self, SettingsSnapshotValidationError> {
         let RuntimeSnapshotParts {
+            captured_inputs,
             repair_receipt,
             values,
             user_settings,
@@ -1070,10 +1109,12 @@ impl RuntimeSettingsSnapshot {
             energy_calibration,
             seal_lane_armed,
             local_tail_patch,
+            layered_transcription_override,
             tail_provider,
         } = parts;
         SettingsSnapshotValidation::admit(&values, &provenance, &digest)?;
         Ok(Self {
+            captured_inputs,
             repair_receipt,
             values,
             user_settings,
@@ -1085,6 +1126,7 @@ impl RuntimeSettingsSnapshot {
             energy_calibration,
             seal_lane_armed,
             local_tail_patch,
+            layered_transcription_override,
             tail_provider,
         })
     }
@@ -1104,6 +1146,7 @@ impl RuntimeSettingsSnapshot {
             });
         parts.seal_lane_armed = false;
         let RuntimeSnapshotParts {
+            captured_inputs,
             repair_receipt,
             values,
             user_settings,
@@ -1115,9 +1158,11 @@ impl RuntimeSettingsSnapshot {
             energy_calibration,
             seal_lane_armed,
             local_tail_patch,
+            layered_transcription_override,
             tail_provider,
         } = parts;
         Self {
+            captured_inputs,
             repair_receipt,
             values,
             user_settings,
@@ -1129,6 +1174,7 @@ impl RuntimeSettingsSnapshot {
             energy_calibration,
             seal_lane_armed,
             local_tail_patch,
+            layered_transcription_override,
             tail_provider,
         }
     }
@@ -1136,6 +1182,11 @@ impl RuntimeSettingsSnapshot {
     /// Repair facts captured for this generation, independent of later process state.
     pub fn repair_receipt(&self) -> &super::repair::RepairReceipt {
         &self.repair_receipt
+    }
+
+    /// Diagnostic environment override captured by the sole loader.
+    pub fn layered_transcription_override(&self) -> Option<&str> {
+        self.layered_transcription_override.as_deref()
     }
 
     /// Recording-start local Whisper decision, frozen by the sole loader.
@@ -1166,6 +1217,19 @@ impl RuntimeSettingsSnapshot {
     /// Effective per-take formatter policy from the immutable settings throne.
     pub const fn formatting_policy(&self) -> FormattingPolicy {
         self.formatting_policy
+    }
+
+    /// Resolve a one-request formatting level entirely from captured inputs.
+    /// The source snapshot and its persisted Settings remain untouched.
+    pub fn with_formatting_level(&self, level: FormattingPolicy) -> Self {
+        let mut input = self.captured_inputs.as_ref().clone();
+        input.user_settings.formatting_level = Some(level.as_str().to_string());
+        // An explicit request outranks the captured launch override only here.
+        input.overrides.remove("FORMATTING_LEVEL");
+        input
+            .env_overlay_keys
+            .retain(|key| key != "FORMATTING_LEVEL");
+        Config::runtime_snapshot_from_captured(input)
     }
 
     /// Borrow the AI execution facts sealed for this exact generation.
@@ -1308,12 +1372,20 @@ struct InteractionV2 {
     send_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     agent_enter_sends: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_auto_send: Option<bool>,
     /// User-owned automatic delivery policy shared by Hold and hands-free
     /// dictation. Assistive and safety vetoes are enforced by the controller.
     #[serde(skip_serializing_if = "Option::is_none")]
     auto_paste_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     deferred_insert_shortcut: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    channel_modifier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fn_tap_toggles_dictation: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    middle_mouse_acts_as_fn: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     restore_clipboard: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1363,9 +1435,7 @@ struct SpeechV2 {
     // by the one-shot migration in `load_unlocked` and never written back.
 }
 
-/// Which recognizer runs and how. `mode` is the legacy local/cloud switch;
-/// `stt_engine` is the newer product selector that supersedes it. Both are
-/// kept because existing files on disk still carry the former.
+/// ASR product mode and the endpoints and models used by its lanes.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct SpeechEngineV2 {
@@ -1377,18 +1447,19 @@ struct SpeechEngineV2 {
     file_transcription_endpoint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     live_transcription_endpoint: Option<String>,
+    /// OpenAI-compatible multipart refine URL. Always written on save.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cloud_refine_endpoint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cloud_max_upload_mb: Option<u64>,
     // De-ghosted (2026-05-30): Whisper model id (distinct from local_model_id path).
     #[serde(skip_serializing_if = "Option::is_none")]
     whisper_model: Option<String>,
-    // F1 layered transcription: engine selector + phase flag (string, 1:1 env).
+    /// Seconds of captured PCM each Layer 1 window must cover.
     #[serde(skip_serializing_if = "Option::is_none")]
-    stt_engine: Option<String>,
+    whisper_context_window_sec: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    final_pass_mode: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    layered_transcription: Option<String>,
+    light_plus_sentence_pause_sec: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     initial_prompt_enabled: Option<bool>,
     // C2: Layer 1 product mode (cloud | local_power | apple_only) and the
@@ -1397,20 +1468,6 @@ struct SpeechEngineV2 {
     asr_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     gateway_session_url: Option<String>,
-}
-
-/// Normalize the only accepted local STT engine settings.
-///
-/// `candle` is the low-level spelling of the user-facing `whisper` route.
-/// Retired or unknown selectors are rejected rather than kept as dormant
-/// compatibility values that a future router could accidentally revive.
-pub(crate) fn normalize_stt_engine(value: &str) -> Option<String> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "auto" => Some("auto".to_string()),
-        "apple" => Some("apple".to_string()),
-        "whisper" | "candle" => Some("whisper".to_string()),
-        _ => None,
-    }
 }
 
 /// LLM post-processing of the transcript: whether it runs, how aggressively,
@@ -1501,6 +1558,10 @@ struct UiV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     overlay_expanded_by_default: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    show_transcript_at_take_start: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    overlay_keep_visible_between_takes: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tray_start_assistive: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     hold_indicator: Option<bool>,
@@ -1572,8 +1633,13 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "HOLD_START_DELAY_MS",
     "DOUBLE_TAP_INTERVAL_MS",
     "TOGGLE_SILENCE_SEC",
+    "WHISPER_CONTEXT_WINDOW_SEC",
+    "LIGHT_PLUS_SENTENCE_PAUSE_SEC",
     "HOLD_EXCLUSIVE",
     "HOLD_ARM_MODIFIER",
+    "AGENT_CHANNEL_MODIFIER",
+    "FN_TAP_TOGGLES_DICTATION",
+    "MIDDLE_MOUSE_ACTS_AS_FN",
     // AI / Formatting
     "AI_FORMATTING_ENABLED",
     "AUTO_PASTE_ENABLED",
@@ -1621,6 +1687,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "START_AT_LOGIN",
     "QUBE_DAEMON_AUTOSTART",
     "AGENT_ENTER_SENDS",
+    "AGENT_AUTO_SEND",
     "ONBOARDING_MODE",
     "AGENT_WORKSPACE_ROOTS",
     // Voice Lab survivors
@@ -1630,15 +1697,6 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "CODESCRIBE_BUFFERED_INTERIM_SEC",
     "WHISPER_MODEL",
     "BACKEND_MAX_UPLOAD_MB",
-    // STT contract (2026-07-24): engine + final-pass are product settings.
-    // UI writes land in settings.json; process env is reconciled on write so
-    // a stale ~/.codescribe/.env line cannot silently lottery the live path.
-    "CODESCRIBE_STT_ENGINE",
-    "FINAL_PASS_MODE",
-    "CODESCRIBE_FINAL_PASS_MODE",
-    // Promoted 2026-08-10: the un-promoted toggle wrote .env only, the stale
-    // process env won the UI read-back, and the Layered switch snapped OFF.
-    "CODESCRIBE_LAYERED_TRANSCRIPTION",
     // C2: Layer 1 product mode, audio-egress consent, gateway mint endpoint.
     // settings.json is the single brain — no .env dual-write for these.
     "CODESCRIBE_ASR_MODE",
@@ -1672,9 +1730,13 @@ impl UserSettings {
                     arm_modifier: self.hold_arm_modifier.clone(),
                     start_delay_ms: self.hold_start_delay_ms,
                 }),
+                channel_modifier: self.channel_modifier.clone(),
+                fn_tap_toggles_dictation: self.fn_tap_toggles_dictation,
+                middle_mouse_acts_as_fn: self.middle_mouse_acts_as_fn,
                 mode_bindings: Some(normalized_mode_bindings),
                 send_mode: self.transcript_send_mode.clone(),
                 agent_enter_sends: self.agent_enter_sends,
+                agent_auto_send: Some(self.agent_auto_send.unwrap_or(false)),
                 auto_paste_enabled: self.auto_paste_enabled,
                 deferred_insert_shortcut: self.deferred_insert_shortcut.clone(),
                 restore_clipboard: self.restore_clipboard,
@@ -1689,11 +1751,17 @@ impl UserSettings {
                     local_model_id: self.local_model.clone(),
                     file_transcription_endpoint: self.stt_file_endpoint.clone(),
                     live_transcription_endpoint: self.stt_live_endpoint.clone(),
+                    cloud_refine_endpoint: Some(self.cloud_refine_endpoint_or_default()),
                     cloud_max_upload_mb: self.backend_max_upload_mb,
                     whisper_model: self.whisper_model.clone(),
-                    stt_engine: self.stt_engine.clone(),
-                    final_pass_mode: self.final_pass_mode.clone(),
-                    layered_transcription: self.layered_transcription.clone(),
+                    whisper_context_window_sec: Some(
+                        self.whisper_context_window_sec
+                            .unwrap_or_else(super::default_whisper_context_window_sec),
+                    ),
+                    light_plus_sentence_pause_sec: Some(
+                        self.light_plus_sentence_pause_sec
+                            .unwrap_or_else(super::default_light_plus_sentence_pause_sec),
+                    ),
                     initial_prompt_enabled: self.stt_initial_prompt_enabled,
                     asr_mode: self.asr_mode.clone(),
                     gateway_session_url: self.asr_gateway_url.clone(),
@@ -1735,6 +1803,8 @@ impl UserSettings {
                 show_dock_icon: self.show_dock_icon,
                 transcription_overlay_enabled: self.transcription_overlay_enabled,
                 overlay_expanded_by_default: self.overlay_expanded_by_default,
+                show_transcript_at_take_start: self.show_transcript_at_take_start,
+                overlay_keep_visible_between_takes: self.overlay_keep_visible_between_takes,
                 tray_start_assistive: self.tray_start_assistive,
                 hold_indicator: self.hold_indicator,
                 hold_badge_size: self.hold_badge_size,
@@ -1780,11 +1850,6 @@ impl UserSettings {
     /// Flatten the on-disk schema back into runtime settings. Missing sections
     /// collapse to `None` rather than failing, which is what lets a partially
     /// written file still load.
-    ///
-    /// Two fields deliberately do not: `stt_engine` and `final_pass_mode` fall
-    /// back to the product defaults (`apple` / `smart`). An empty
-    /// `speech.engine: {}` used to leave them unset, handing the decision to
-    /// whatever the environment happened to say.
     pub(super) fn from_v2(v2: SettingsV2) -> Self {
         Self {
             whisper_language: v2.speech.as_ref().and_then(|s| s.language.clone()),
@@ -1798,6 +1863,18 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|i| i.hold.as_ref())
                 .and_then(|h| h.arm_modifier.clone()),
+            channel_modifier: v2
+                .interaction
+                .as_ref()
+                .and_then(|i| i.channel_modifier.clone()),
+            fn_tap_toggles_dictation: v2
+                .interaction
+                .as_ref()
+                .and_then(|i| i.fn_tap_toggles_dictation),
+            middle_mouse_acts_as_fn: v2
+                .interaction
+                .as_ref()
+                .and_then(|i| i.middle_mouse_acts_as_fn),
             mode_bindings: v2
                 .interaction
                 .as_ref()
@@ -1894,6 +1971,14 @@ impl UserSettings {
                 .ui
                 .as_ref()
                 .and_then(|ui| ui.overlay_expanded_by_default),
+            show_transcript_at_take_start: v2
+                .ui
+                .as_ref()
+                .and_then(|ui| ui.show_transcript_at_take_start),
+            overlay_keep_visible_between_takes: v2
+                .ui
+                .as_ref()
+                .and_then(|ui| ui.overlay_keep_visible_between_takes),
             hold_indicator: v2.ui.as_ref().and_then(|ui| ui.hold_indicator),
             hold_badge_size: v2.ui.as_ref().and_then(|ui| ui.hold_badge_size),
             deferred_insert_shortcut: v2
@@ -1935,6 +2020,11 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.engine.as_ref())
                 .and_then(|e| e.live_transcription_endpoint.clone()),
+            stt_cloud_refine_endpoint: v2
+                .speech
+                .as_ref()
+                .and_then(|s| s.engine.as_ref())
+                .and_then(|e| e.cloud_refine_endpoint.clone()),
             transcript_send_mode: v2.interaction.as_ref().and_then(|i| i.send_mode.clone()),
             audio_input_device: v2.audio.as_ref().and_then(|a| a.input_device_id.clone()),
             seal_lane_armed: v2
@@ -1971,6 +2061,7 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.xai_oauth_client_id.clone()),
             agent_enter_sends: v2.interaction.as_ref().and_then(|i| i.agent_enter_sends),
+            agent_auto_send: v2.interaction.as_ref().and_then(|i| i.agent_auto_send),
             buffer_delay_ms: v2
                 .speech
                 .as_ref()
@@ -1996,32 +2087,21 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.engine.as_ref())
                 .and_then(|e| e.whisper_model.clone()),
+            whisper_context_window_sec: v2
+                .speech
+                .as_ref()
+                .and_then(|s| s.engine.as_ref())
+                .and_then(|e| e.whisper_context_window_sec),
+            light_plus_sentence_pause_sec: v2
+                .speech
+                .as_ref()
+                .and_then(|s| s.engine.as_ref())
+                .and_then(|e| e.light_plus_sentence_pause_sec),
             backend_max_upload_mb: v2
                 .speech
                 .as_ref()
                 .and_then(|s| s.engine.as_ref())
                 .and_then(|e| e.cloud_max_upload_mb),
-            // Product default: Apple live (must-have). Empty `speech.engine: {}`
-            // used to leave stt_engine=None → env/auto lottery; pin apple.
-            stt_engine: v2
-                .speech
-                .as_ref()
-                .and_then(|s| s.engine.as_ref())
-                .and_then(|e| e.stt_engine.as_deref())
-                .and_then(normalize_stt_engine)
-                .or_else(|| Some("apple".to_string())),
-            final_pass_mode: v2
-                .speech
-                .as_ref()
-                .and_then(|s| s.engine.as_ref())
-                .and_then(|e| e.final_pass_mode.clone())
-                .filter(|s| !s.trim().is_empty())
-                .or_else(|| Some("smart".to_string())),
-            layered_transcription: v2
-                .speech
-                .as_ref()
-                .and_then(|s| s.engine.as_ref())
-                .and_then(|e| e.layered_transcription.clone()),
             stt_initial_prompt_enabled: v2
                 .speech
                 .as_ref()
@@ -2087,6 +2167,7 @@ impl UserSettings {
     where
         F: FnOnce(&Path, &Path) -> std::io::Result<()>,
     {
+        crate::test_isolation::assert_test_write_allowed(path);
         let parent = path
             .parent()
             .ok_or_else(|| anyhow::anyhow!("settings path has no parent: {}", path.display()))?;
@@ -2204,6 +2285,7 @@ impl UserSettings {
                         match serde_json::from_str::<Self>(&contents) {
                             Ok(v1) => {
                                 let backup_path = Self::settings_dir().join("settings.v1.bak.json");
+                                crate::test_isolation::assert_test_write_allowed(&backup_path);
                                 if let Err(e) = fs::write(&backup_path, &contents) {
                                     warn!(
                                         "Failed to write V1 backup {}: {e}",
@@ -2512,7 +2594,11 @@ impl UserSettings {
             )?;
             changed |=
                 remove_json_keys_at(&mut value, &["agent"], &["permissions", "capabilities"])?;
-            changed |= remove_json_keys_at(&mut value, &["interaction"], &["agent_enter_sends"])?;
+            changed |= remove_json_keys_at(
+                &mut value,
+                &["interaction"],
+                &["agent_enter_sends", "agent_auto_send"],
+            )?;
 
             let after: SettingsV2 = serde_json::from_value(value.clone())?;
             Self::validate_v2(&after)?;
@@ -2531,6 +2617,7 @@ impl UserSettings {
                     "agent_permissions",
                     "agent_capabilities",
                     "agent_enter_sends",
+                    "agent_auto_send",
                 ],
             )?;
             let _: Self = serde_json::from_value(value.clone())?;
@@ -2546,6 +2633,7 @@ impl UserSettings {
     /// Persist while the settings transaction lock and app-data admission are held.
     pub(super) fn save_unlocked(&self) -> anyhow::Result<()> {
         let dir = Self::settings_dir();
+        crate::test_isolation::assert_test_write_allowed(&dir);
         fs::create_dir_all(&dir)?;
         let path = Self::settings_path();
         if let Some(level) = self.formatting_level.as_deref() {
@@ -2735,32 +2823,6 @@ impl UserSettings {
             "SOUND_NAME" => self.sound_name = Some(value.to_owned()),
             "WHISPER_MODEL" => self.whisper_model = Some(value.to_owned()),
             "ONBOARDING_MODE" => self.onboarding_mode = Some(value.to_owned()),
-            "CODESCRIBE_STT_ENGINE" => match normalize_stt_engine(value) {
-                Some(normalized) => self.stt_engine = Some(normalized),
-                None => {
-                    warn!(
-                        "Rejected STT engine write (expected auto|apple|whisper|candle): {value}"
-                    );
-                    return;
-                }
-            },
-            "FINAL_PASS_MODE" | "CODESCRIBE_FINAL_PASS_MODE" => {
-                let normalized = value.trim().to_ascii_lowercase();
-                match normalized.as_str() {
-                    "always" | "smart" | "off" => {
-                        self.final_pass_mode = Some(normalized);
-                    }
-                    _ => {
-                        warn!(
-                            "Rejected final_pass_mode write (expected always|smart|off): {value}"
-                        );
-                        return;
-                    }
-                }
-            }
-            "CODESCRIBE_LAYERED_TRANSCRIPTION" => {
-                self.layered_transcription = Some(value.to_owned())
-            }
             "CODESCRIBE_ASR_MODE" => {
                 // Empty clears back to derivation (legacy choice or Apple-only).
                 let trimmed = value.trim();
@@ -2831,12 +2893,29 @@ impl UserSettings {
                     return;
                 }
             },
+            "AGENT_CHANNEL_MODIFIER" => match value.parse::<crate::config::ChannelModifier>() {
+                Ok(modifier) => self.channel_modifier = Some(modifier.as_str().to_string()),
+                Err(error) => {
+                    warn!("Rejected agent channel modifier write: {error}");
+                    return;
+                }
+            },
             other => {
                 warn!("Unknown string setting key: {other}");
                 return;
             }
         }
         self.save_if_changed(&before, "set_string", key);
+    }
+
+    /// Refine endpoint stored for this intent, or the shipped REST default.
+    pub fn cloud_refine_endpoint_or_default(&self) -> String {
+        self.stt_cloud_refine_endpoint
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(super::defaults::default_cloud_refine_endpoint)
     }
 
     /// Resolve the effective Layer 1 product mode from this settings snapshot.
@@ -2867,6 +2946,8 @@ impl UserSettings {
             "HOLD_INDICATOR" => self.hold_indicator = Some(value),
             "RESTORE_CLIPBOARD" => self.restore_clipboard = Some(value),
             "HOLD_EXCLUSIVE" => self.hold_exclusive = Some(value),
+            "FN_TAP_TOGGLES_DICTATION" => self.fn_tap_toggles_dictation = Some(value),
+            "MIDDLE_MOUSE_ACTS_AS_FN" => self.middle_mouse_acts_as_fn = Some(value),
             "USE_LOCAL_STT" => self.use_local_stt = Some(value),
             SILERO_FUSION_ENV => self.seal_lane_armed = Some(value),
             "HISTORY_ENABLED" => self.history_enabled = Some(value),
@@ -2875,6 +2956,7 @@ impl UserSettings {
             "START_AT_LOGIN" => self.start_at_login = Some(value),
             "QUBE_DAEMON_AUTOSTART" => self.qube_daemon_autostart = Some(value),
             "AGENT_ENTER_SENDS" => self.agent_enter_sends = Some(value),
+            "AGENT_AUTO_SEND" => self.agent_auto_send = Some(value),
             "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED" => {
                 self.stt_initial_prompt_enabled = Some(value)
             }
@@ -2911,6 +2993,14 @@ impl UserSettings {
         match key {
             "SOUND_VOLUME" => self.sound_volume = Some(value),
             "TOGGLE_SILENCE_SEC" => self.toggle_silence_sec = Some(value),
+            "WHISPER_CONTEXT_WINDOW_SEC" => {
+                self.whisper_context_window_sec =
+                    Some(super::normalize_whisper_context_window_sec(value));
+            }
+            "LIGHT_PLUS_SENTENCE_PAUSE_SEC" => {
+                self.light_plus_sentence_pause_sec =
+                    Some(super::normalize_light_plus_sentence_pause_sec(value));
+            }
             "CODESCRIBE_TYPING_CPS" => self.typing_cps = Some(value),
             "CODESCRIBE_BUFFERED_INTERIM_SEC" => self.buffered_interim_sec = Some(value),
             other => {
@@ -2968,6 +3058,46 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    #[test]
+    #[serial]
+    fn retired_bus_retention_key_is_ignored_on_load() {
+        let _tmp = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        fs::write(
+            &path,
+            r#"{"schema_version":3,"system":{"evidence_retention_days":21}}"#,
+        )
+        .expect("seed old settings");
+        let loaded = UserSettings::load();
+        loaded.save().expect("save canonical settings");
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).expect("read settings"))
+                .expect("parse settings");
+        assert!(saved.pointer("/system/evidence_retention_days").is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn agent_auto_send_defaults_off_and_materializes_on_save() {
+        let _tmp = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        fs::write(&path, r#"{"schema_version":3,"interaction":{}}"#)
+            .expect("seed settings without auto-send");
+        let mut settings = UserSettings::load();
+        assert_eq!(settings.agent_auto_send, None);
+        settings.save().expect("materialize opt-in default");
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).expect("read settings"))
+                .expect("parse settings");
+        assert_eq!(
+            saved.pointer("/interaction/agent_auto_send"),
+            Some(&serde_json::json!(false))
+        );
+
+        settings.set_bool("AGENT_AUTO_SEND", true);
+        assert_eq!(UserSettings::load().agent_auto_send, Some(true));
+    }
+
     /// Redirect the data dir to a fresh temp directory and clear the legacy
     /// hotkey env vars. The returned guard must stay alive for the whole test:
     /// dropping it deletes the directory the settings file lives in.
@@ -2980,6 +3110,80 @@ mod tests {
             std::env::remove_var("TOGGLE_TRIGGER");
         }
         tmp
+    }
+
+    #[test]
+    #[serial]
+    fn missing_window_and_pause_materialize_on_next_save() {
+        let _tmp = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        fs::write(&path, r#"{"schema_version":3,"speech":{"engine":{}}}"#)
+            .expect("seed settings without the two values");
+
+        let loaded = UserSettings::load();
+        loaded.save().expect("save existing settings");
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).expect("read saved settings"))
+                .expect("parse saved settings");
+        assert_eq!(
+            saved.pointer("/speech/engine/whisper_context_window_sec"),
+            Some(&serde_json::json!(8.0))
+        );
+        assert_eq!(
+            saved.pointer("/speech/engine/light_plus_sentence_pause_sec"),
+            Some(&serde_json::json!(0.7))
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn existing_window_value_survives_load_and_save() {
+        let _tmp = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        fs::write(
+            &path,
+            r#"{"schema_version":3,"speech":{"engine":{"whisper_context_window_sec":6.0}}}"#,
+        )
+        .expect("seed settings with explicit context window");
+
+        UserSettings::load().save().expect("save existing settings");
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).expect("read saved settings"))
+                .expect("parse saved settings");
+        assert_eq!(
+            saved.pointer("/speech/engine/whisper_context_window_sec"),
+            Some(&serde_json::json!(6.0))
+        );
+        assert_eq!(
+            saved.pointer("/speech/engine/light_plus_sentence_pause_sec"),
+            Some(&serde_json::json!(0.7))
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn two_loads_of_unchanged_settings_do_not_write() {
+        let _tmp = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        fs::write(&path, r#"{"schema_version":3,"speech":{"engine":{}}}"#)
+            .expect("seed settings without context values");
+        let before = fs::read(&path).expect("read original bytes");
+        let modified = fs::metadata(&path)
+            .expect("original metadata")
+            .modified()
+            .unwrap();
+
+        let _ = UserSettings::load();
+        let _ = UserSettings::load();
+
+        assert_eq!(fs::read(&path).expect("read after loads"), before);
+        assert_eq!(
+            fs::metadata(&path)
+                .expect("metadata after loads")
+                .modified()
+                .unwrap(),
+            modified
+        );
     }
 
     #[test]
@@ -3718,85 +3922,20 @@ mod tests {
         assert!(settings.llm_custom_providers.is_empty());
     }
 
-    /// The STT selector keys survive the `speech.engine` round-trip, and the
-    /// setters route them to the same place — so `settings.json` remains a
-    /// valid seed source instead of being overwritten by env on next load.
     #[test]
-    #[serial]
-    fn test_stt_engine_and_layered_transcription_survive_roundtrip() {
-        // F1 layered transcription: both env-managed keys must round-trip through
-        // the V2 speech.engine section, or save→load silently drops the seed value.
-        let _tmp = setup_isolated_data_dir();
-        let settings = UserSettings {
-            stt_engine: Some("apple".to_string()),
-            final_pass_mode: Some("smart".to_string()),
-            layered_transcription: Some("phase1".to_string()),
-            stt_initial_prompt_enabled: Some(true),
-            ..Default::default()
-        };
-        settings.save().expect("save settings");
-
-        let loaded = UserSettings::load();
-        assert_eq!(loaded.stt_engine.as_deref(), Some("apple"));
-        assert_eq!(loaded.final_pass_mode.as_deref(), Some("smart"));
-        assert_eq!(loaded.layered_transcription.as_deref(), Some("phase1"));
-        assert_eq!(loaded.stt_initial_prompt_enabled, Some(true));
-
-        // Setters route keys (settings.json stays a valid seed source).
-        let mut mutated = loaded;
-        mutated.set_string("CODESCRIBE_STT_ENGINE", "whisper");
-        mutated.set_string("FINAL_PASS_MODE", "off");
-        mutated.set_string("CODESCRIBE_LAYERED_TRANSCRIPTION", "off");
-        mutated.set_bool("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED", false);
-        let reloaded = UserSettings::load();
-        assert_eq!(reloaded.stt_engine.as_deref(), Some("whisper"));
-        assert_eq!(reloaded.final_pass_mode.as_deref(), Some("off"));
-        assert_eq!(reloaded.layered_transcription.as_deref(), Some("off"));
-        assert_eq!(reloaded.stt_initial_prompt_enabled, Some(false));
-    }
-
-    /// Layered transcription is a promoted product setting (full single-brain,
-    /// same contract as `CODESCRIBE_STT_ENGINE`). Without promotion the toggle
-    /// write lands in `.env` only, the stale process env wins the UI read-back,
-    /// and the switch visibly snaps OFF (operator repro 2026-08-10).
-    #[test]
-    fn layered_transcription_is_promoted_single_brain_key() {
-        assert!(
-            is_promoted_key("CODESCRIBE_LAYERED_TRANSCRIPTION"),
-            "CODESCRIBE_LAYERED_TRANSCRIPTION must be a promoted settings.json key"
-        );
-    }
-
-    /// An empty `speech.engine: {}` must resolve to the product default, not to
-    /// "unset". Unset handed the choice to the environment, so which recognizer
-    /// ran depended on a stale `.env` line rather than on the product.
-    #[test]
-    #[serial]
-    fn empty_speech_engine_defaults_to_apple_live_product() {
-        // MacGyver lottery shape: schema v3 with speech.engine: {} left stt_engine
-        // unset and .env=auto won. Product must pin Apple live + smart final.
-        let _tmp = setup_isolated_data_dir();
-        let path = UserSettings::settings_path();
-        fs::write(
-            &path,
-            r#"{
-  "schema_version": 3,
-  "speech": {
-    "language": "pl",
-    "engine": {}
-  }
-}"#,
-        )
-        .expect("write empty engine settings");
-        let loaded = UserSettings::load();
-        assert_eq!(
-            loaded.stt_engine.as_deref(),
-            Some("apple"),
-            "empty speech.engine must pin Apple live, not leave None/auto lottery"
-        );
-        assert_eq!(loaded.final_pass_mode.as_deref(), Some("smart"));
-        assert!(is_promoted_key("CODESCRIBE_STT_ENGINE"));
-        assert!(is_promoted_key("FINAL_PASS_MODE"));
+    fn asr_mode_is_the_only_promoted_engine_axis() {
+        assert!(is_promoted_key("CODESCRIBE_ASR_MODE"));
+        for key in [
+            "CODESCRIBE_STT_ENGINE",
+            "FINAL_PASS_MODE",
+            "CODESCRIBE_FINAL_PASS_MODE",
+            "CODESCRIBE_LAYERED_TRANSCRIPTION",
+        ] {
+            assert!(
+                !is_promoted_key(key),
+                "{key} must not be persisted as product intent"
+            );
+        }
     }
 
     /// Tool permissions survive persistence *and* land under `agent.permissions`
@@ -3944,6 +4083,126 @@ mod tests {
         }
     }
 
+    #[test]
+    #[serial]
+    fn take_start_preference_roundtrips_in_ui_without_changing_other_overlay_keys() {
+        let _tmp = setup_isolated_data_dir();
+        assert_eq!(UserSettings::load().show_transcript_at_take_start, None);
+        for show_transcript in [true, false] {
+            let settings = UserSettings {
+                show_transcript_at_take_start: Some(show_transcript),
+                overlay_expanded_by_default: Some(false),
+                transcription_overlay_enabled: Some(true),
+                ..UserSettings::default()
+            };
+            settings.save().expect("persist take-start preference");
+            let loaded = UserSettings::load();
+            assert_eq!(loaded.show_transcript_at_take_start, Some(show_transcript));
+            assert_eq!(loaded.overlay_expanded_by_default, Some(false));
+            assert_eq!(loaded.transcription_overlay_enabled, Some(true));
+            let persisted: serde_json::Value =
+                serde_json::from_slice(&fs::read(UserSettings::settings_path()).unwrap()).unwrap();
+            assert_eq!(
+                persisted["ui"]["show_transcript_at_take_start"],
+                show_transcript
+            );
+            assert!(persisted.get("show_transcript_at_take_start").is_none());
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn take_start_opt_out_is_not_inferred_from_old_expansion_key_or_reseeded() {
+        use std::os::unix::fs::MetadataExt;
+
+        let _tmp = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        for source in [
+            r#"{"overlay_expanded_by_default":false}"#,
+            r#"{"schema_version":3,"ui":{"overlay_expanded_by_default":false}}"#,
+        ] {
+            fs::write(&path, source).unwrap();
+            let loaded = UserSettings::load();
+            assert_eq!(loaded.overlay_expanded_by_default, Some(false));
+            assert_eq!(loaded.show_transcript_at_take_start, None);
+            loaded.save().unwrap();
+            let saved = fs::read(&path).unwrap();
+            let inode = fs::metadata(&path).unwrap().ino();
+            for _ in 0..2 {
+                let reloaded = UserSettings::load();
+                assert_eq!(reloaded.overlay_expanded_by_default, Some(false));
+                assert_eq!(reloaded.show_transcript_at_take_start, None);
+                assert_eq!(fs::read(&path).unwrap(), saved);
+                assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+            }
+            let persisted: serde_json::Value = serde_json::from_slice(&saved).unwrap();
+            assert_eq!(persisted["ui"]["overlay_expanded_by_default"], false);
+            assert!(
+                persisted["ui"]
+                    .get("show_transcript_at_take_start")
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn take_start_preference_survives_flat_settings_migration() {
+        let _tmp = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        for enabled in [true, false] {
+            let source = serde_json::json!({
+                "overlay_expanded_by_default": !enabled,
+                "show_transcript_at_take_start": enabled,
+            });
+            fs::write(&path, serde_json::to_vec(&source).unwrap()).unwrap();
+            let loaded = UserSettings::load();
+            assert_eq!(loaded.show_transcript_at_take_start, Some(enabled));
+            assert_eq!(loaded.overlay_expanded_by_default, Some(!enabled));
+            let persisted: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(persisted["ui"]["show_transcript_at_take_start"], enabled);
+            assert_eq!(persisted["ui"]["overlay_expanded_by_default"], !enabled);
+            assert!(persisted.get("show_transcript_at_take_start").is_none());
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn overlay_pin_roundtrips_without_rewriting_on_second_load() {
+        use std::os::unix::fs::MetadataExt;
+
+        let _tmp = setup_isolated_data_dir();
+        assert_eq!(
+            UserSettings::load().overlay_keep_visible_between_takes,
+            None
+        );
+        let settings = UserSettings {
+            overlay_keep_visible_between_takes: Some(true),
+            ..UserSettings::default()
+        };
+        settings.save().expect("persist overlay pin");
+        let path = UserSettings::settings_path();
+        let first = fs::read(&path).expect("read saved pin");
+        let saved_inode = fs::metadata(&path).expect("saved pin metadata").ino();
+        let saved: serde_json::Value = serde_json::from_slice(&first).expect("parse saved pin");
+        assert_eq!(saved["ui"]["overlay_keep_visible_between_takes"], true);
+        assert!(saved.get("overlay_keep_visible_between_takes").is_none());
+        assert_eq!(
+            UserSettings::load().overlay_keep_visible_between_takes,
+            Some(true)
+        );
+        assert_eq!(
+            UserSettings::load().overlay_keep_visible_between_takes,
+            Some(true)
+        );
+        assert_eq!(fs::read(&path).expect("read after second load"), first);
+        assert_eq!(
+            fs::metadata(&path).expect("reloaded pin metadata").ino(),
+            saved_inode
+        );
+    }
+
     /// Same section contract for the tray's starting lane.
     #[test]
     #[serial]
@@ -4058,6 +4317,83 @@ mod tests {
         let _tmp = setup_isolated_data_dir();
         let settings = UserSettings::default();
         assert_eq!(settings.onboarding_mode, None);
+    }
+
+    /// A fresh settings file always contains the refine endpoint at its default.
+    /// A file lane already stored in the same engine section is left as written.
+    #[test]
+    #[serial]
+    fn fresh_settings_write_cloud_refine_endpoint_and_keep_existing_lanes() {
+        use super::super::defaults::DEFAULT_CLOUD_REFINE_ENDPOINT;
+
+        let _tmp = setup_isolated_data_dir();
+        let file_lane = "https://files.example/v1/audio/transcribe:stream";
+        let live_lane = "wss://live.example/v1/audio/transcribe";
+        UserSettings {
+            stt_file_endpoint: Some(file_lane.into()),
+            stt_live_endpoint: Some(live_lane.into()),
+            asr_mode: Some("apple_only".into()),
+            ..UserSettings::default()
+        }
+        .save()
+        .expect("save fresh settings");
+        let persisted: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(UserSettings::settings_path()).expect("read fresh settings"),
+        )
+        .expect("parse fresh settings");
+        assert_eq!(persisted["schema_version"].as_u64(), Some(3));
+        assert_eq!(
+            persisted["speech"]["engine"]["file_transcription_endpoint"],
+            file_lane
+        );
+        assert_eq!(
+            persisted["speech"]["engine"]["live_transcription_endpoint"],
+            live_lane
+        );
+        assert_eq!(persisted["speech"]["engine"]["asr_mode"], "apple_only");
+        assert_eq!(
+            persisted["speech"]["engine"]["cloud_refine_endpoint"],
+            DEFAULT_CLOUD_REFINE_ENDPOINT
+        );
+        assert!(
+            persisted["speech"]["engine"]["whisper_context_window_sec"].is_number(),
+            "existing complete keys stay on the fresh file"
+        );
+
+        fs::write(
+            UserSettings::settings_path(),
+            r#"{"schema_version":3,"speech":{"engine":{"file_transcription_endpoint":"https://files.example/kept","asr_mode":"apple_only","live_transcription_endpoint":"wss://live.example/kept"}}}"#,
+        )
+        .expect("write settings without the refine key");
+        let loaded = UserSettings::load();
+        assert_eq!(
+            loaded.stt_file_endpoint.as_deref(),
+            Some("https://files.example/kept")
+        );
+        assert_eq!(
+            loaded.stt_live_endpoint.as_deref(),
+            Some("wss://live.example/kept")
+        );
+        assert_eq!(loaded.asr_mode.as_deref(), Some("apple_only"));
+        assert!(loaded.stt_cloud_refine_endpoint.is_none());
+        loaded.save().expect("save backfilled refine endpoint");
+        let again: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(UserSettings::settings_path()).expect("read backfilled settings"),
+        )
+        .expect("parse backfilled settings");
+        assert_eq!(
+            again["speech"]["engine"]["file_transcription_endpoint"],
+            "https://files.example/kept"
+        );
+        assert_eq!(
+            again["speech"]["engine"]["live_transcription_endpoint"],
+            "wss://live.example/kept"
+        );
+        assert_eq!(again["speech"]["engine"]["asr_mode"], "apple_only");
+        assert_eq!(
+            again["speech"]["engine"]["cloud_refine_endpoint"],
+            DEFAULT_CLOUD_REFINE_ENDPOINT
+        );
     }
 
     /// A rebind is readable back through the same accessor the runtime uses.
@@ -4293,6 +4629,61 @@ mod captured_sealer_tests {
     use crate::config::{CapturedRuntimeInputs, StartupAcquisitionProbe};
 
     #[test]
+    fn one_shot_levels_reseal_captured_prompts_and_digest() {
+        let probe = StartupAcquisitionProbe::forbid();
+        let mut inputs = CapturedRuntimeInputs::defaults_at(PathBuf::from("/fixture/request"), 42);
+        inputs.user_settings.formatting_level = Some("smart".to_string());
+        inputs.settings_bytes = Some(b"{\"formatting_level\":\"smart\"}".to_vec());
+        inputs.prompts.max.content = "Captured Max prompt".to_string();
+        inputs.prompts.max.tuning = Some("Captured tuning".to_string());
+        // A one-shot choice wins even when the launch captured another level.
+        inputs
+            .overrides
+            .insert("FORMATTING_LEVEL".into(), Ok("correction".into()));
+        inputs.env_overlay_keys.push("FORMATTING_LEVEL".into());
+        let settings = Config::runtime_snapshot_from_captured(inputs.clone());
+        let original_digest = settings.digest().clone();
+        let original_execution = settings.ai_execution().clone();
+        // Unselected captured prompt content must not enter diagnostic output.
+        assert!(!format!("{settings:?}").contains("Captured Max prompt"));
+
+        for level in FormattingPolicy::ALL {
+            let request = settings.with_formatting_level(level);
+            let mut expected_inputs = inputs.clone();
+            expected_inputs.user_settings.formatting_level = Some(level.as_str().to_string());
+            expected_inputs.overrides.remove("FORMATTING_LEVEL");
+            expected_inputs.env_overlay_keys.clear();
+            let expected = Config::runtime_snapshot_from_captured(expected_inputs);
+            assert_eq!(request.formatting_policy(), level);
+            assert_eq!(request.ai_execution(), expected.ai_execution());
+            assert_eq!(request.digest(), expected.digest());
+            assert_eq!(
+                request.provenance().settings_json_sha256,
+                settings.provenance().settings_json_sha256
+            );
+            assert_eq!(request.provenance().loaded_at_unix_ms, 42);
+            assert_eq!(settings.digest(), &original_digest);
+            assert_eq!(settings.ai_execution(), &original_execution);
+            assert_eq!(settings.formatting_policy(), FormattingPolicy::Correction);
+            assert_eq!(
+                settings.user_settings().formatting_level.as_deref(),
+                Some("smart")
+            );
+        }
+        let max = settings.with_formatting_level(FormattingPolicy::Max);
+        assert_eq!(
+            max.ai_execution()
+                .formatter()
+                .formatting_prompt()
+                .unwrap()
+                .composed_content(),
+            "Captured Max prompt\n\nCaptured tuning"
+        );
+        assert_ne!(max.digest(), settings.digest());
+        assert!(probe.attempts().is_empty());
+    }
+
+    #[test]
     fn sole_sealer_keeps_nonempty_digest_check_and_explicit_refusal_path() {
         let probe = StartupAcquisitionProbe::forbid();
         let root = PathBuf::from("/fixture/sealer");
@@ -4301,6 +4692,7 @@ mod captured_sealer_tests {
             42,
         ));
         let parts = RuntimeSnapshotParts {
+            captured_inputs: snapshot.captured_inputs,
             repair_receipt: snapshot.repair_receipt,
             values: snapshot.values,
             user_settings: snapshot.user_settings,
@@ -4312,6 +4704,7 @@ mod captured_sealer_tests {
             energy_calibration: snapshot.energy_calibration,
             seal_lane_armed: true,
             local_tail_patch: snapshot.local_tail_patch,
+            layered_transcription_override: snapshot.layered_transcription_override.clone(),
             tail_provider: snapshot.tail_provider,
         };
         let error = RuntimeSettingsSnapshot::seal_loaded(parts.clone()).unwrap_err();

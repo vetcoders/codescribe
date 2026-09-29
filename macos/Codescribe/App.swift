@@ -108,9 +108,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private static let showAgentNotification = Notification.Name("com.vetcoders.codescribe.showAgent")
   private static let notificationObject = Bundle.main.bundleIdentifier ?? "com.vetcoders.codescribe"
 
-  private static let helpURL = URL(string: "https://vetcoders.github.io/codescribe/")!
-  private static let privacyURL = URL(string: "https://vetcoders.github.io/codescribe/privacy")!
-  private static let termsURL = URL(string: "https://vetcoders.github.io/codescribe/terms")!
+  private static let helpURL = URL(string: "https://github.com/vetcoders/codescribe#readme")!
+  private static let privacyURL = URL(string: "https://codescribe.vetcoders.io/privacy")!
+  private static let termsURL = URL(string: "https://codescribe.vetcoders.io/terms")!
 
   // Every core-touching handle below is `lazy` for correctness, not for launch
   // cost. The XCTest bundle uses this app as its host, so `AppDelegate` is
@@ -817,7 +817,6 @@ func codescribeDebugInfo(
     lines += [
       "configuration: resolved now; may include loader repairs; not proof of the active capture snapshot",
       "configured ASR mode: \(settings.asrMode ?? "not specified")",
-      "configured STT engine: \(settings.sttEngine ?? "not specified")",
       "configured input device: \(settings.audioInputDevice ?? "system default")",
       "formatting enabled: \(settings.aiFormattingEnabled)",
       "configured formatting policy: \(settings.formattingLevel ?? "not specified")",
@@ -827,7 +826,9 @@ func codescribeDebugInfo(
       "configured agent model: \(settings.llmAssistiveModel ?? "not specified")",
     ]
   } else {
-    lines.append("configuration: unavailable; loader refused or a configuration refusal was recorded in this process")
+    lines.append(
+      "configuration: unavailable; loader refused or a configuration refusal was recorded in this process"
+    )
   }
   if let lastServing {
     lines.append("last completed serving engine: \(lastServing.engine)")

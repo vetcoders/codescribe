@@ -102,7 +102,32 @@ impl std::error::Error for CsError {}
 /// shut down it cannot be restarted in the same process.
 #[uniffi::export]
 pub fn start_application_runtime() -> Result<CsApplicationRuntimeSnapshot, CsError> {
-    application_runtime::start()
+    start_application_runtime_with_compaction(|| {
+        let path = codescribe::presentation::transcript_bus::transcript_bus_path();
+        if let Err(error) =
+            codescribe::presentation::transcript_bus_maintenance::compact_bus_if_enabled(
+                &path, "startup",
+            )
+        {
+            tracing::warn!(%error, "startup bus compaction unavailable");
+        }
+    })
+}
+
+/// Inject the startup compaction work for the thread-ordering test. The app
+/// uses the production closure above; both paths use the same spawn boundary.
+#[doc(hidden)]
+pub fn start_application_runtime_with_compaction(
+    compaction: impl FnOnce() + Send + 'static,
+) -> Result<CsApplicationRuntimeSnapshot, CsError> {
+    let snapshot = application_runtime::start()?;
+    if let Err(error) = std::thread::Builder::new()
+        .name("codescribe-bus-compaction".to_string())
+        .spawn(compaction)
+    {
+        tracing::warn!(%error, "startup bus compaction thread unavailable");
+    }
+    Ok(snapshot)
 }
 
 /// Content-free lifecycle snapshot used by diagnostics and delivery probes.
@@ -177,5 +202,33 @@ impl From<CsLanguage> for codescribe_core::config::Language {
             CsLanguage::Polish => codescribe_core::config::Language::Polish,
             CsLanguage::English => codescribe_core::config::Language::English,
         }
+    }
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn startup_returns_while_compaction_thread_is_held_at_entry() {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let snapshot = super::start_application_runtime_with_compaction(move || {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            finished_tx.send(()).unwrap();
+        })
+        .unwrap();
+
+        assert_eq!(snapshot.state, "running");
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(
+            matches!(finished_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
+            "compaction must still be held after startup returned"
+        );
+        release_tx.send(()).unwrap();
+        finished_rx.recv_timeout(Duration::from_secs(5)).unwrap();
     }
 }

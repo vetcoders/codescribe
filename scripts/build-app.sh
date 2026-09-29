@@ -23,6 +23,7 @@
 # Env toggles:
 #   SKIP_XCODEBUILD=1   stop after xcodegen (verifies stages 1-4 without Xcode)
 #   CODE_SIGNING_ALLOWED=YES|NO   passed through to xcodebuild (default NO)
+#   CODESCRIBE_BUNDLE_EMBEDDER=1                     bundle MiniLM as an app resource (off by default)
 #   CODESCRIBE_EMBEDDER_BUNDLE_SOURCE=/path/to/model  explicit MiniLM resource source
 set -euo pipefail
 
@@ -212,10 +213,20 @@ resolve_embedder_source() {
   return 1
 }
 
+# MiniLM ships only when a build explicitly asks for it. No runtime path in the
+# app, the FFI or the sidecars calls `embedder::*` — the module's only callers
+# are tests, `examples/roundtrip_live.rs` and `core/examples/lexicon_gate_calibration.rs`,
+# and `core/quality/supervisor.rs` merely names `semantic_cosine` in a finding
+# spec that nothing computes. A 471 MB weight file that nothing loads is not a
+# payload, so the public bundle stops carrying it. Ask for it with
+# CODESCRIBE_BUNDLE_EMBEDDER=1 (build-dmg.sh: --bundle-embedder) when a semantic
+# gate actually lands, and resolve it from the HF cache for CLI/test lanes.
 EMBEDDER_RUNTIME_SOURCE=""
-if [[ "${SKIP_XCODEBUILD:-0}" != "1" && "${CODESCRIBE_EMBED_EMBEDDER:-0}" != "1" ]]; then
+if [[ "${SKIP_XCODEBUILD:-0}" != "1" \
+   && "${CODESCRIBE_EMBED_EMBEDDER:-0}" != "1" \
+   && "${CODESCRIBE_BUNDLE_EMBEDDER:-0}" == "1" ]]; then
   if ! EMBEDDER_RUNTIME_SOURCE="$(resolve_embedder_source)"; then
-    echo "error: MiniLM runtime resource not found; run 'make download-embedder' or set CODESCRIBE_EMBEDDER_BUNDLE_SOURCE" >&2
+    echo "error: CODESCRIBE_BUNDLE_EMBEDDER=1 but no MiniLM found; run 'make download-embedder' or set CODESCRIBE_EMBEDDER_BUNDLE_SOURCE" >&2
     exit 1
   fi
 fi
@@ -394,9 +405,20 @@ if [[ -n "$EMBEDDER_RUNTIME_SOURCE" ]]; then
   cp -L "$EMBEDDER_RUNTIME_SOURCE/tokenizer.json" "$EMBEDDER_BUNDLE_DIR/tokenizer.json"
   cp -L "$EMBEDDER_RUNTIME_SOURCE/model.safetensors" "$EMBEDDER_BUNDLE_DIR/model.safetensors"
   chmod 644 "$EMBEDDER_BUNDLE_DIR/config.json" "$EMBEDDER_BUNDLE_DIR/tokenizer.json" "$EMBEDDER_BUNDLE_DIR/model.safetensors"
-  echo "    MiniLM runtime resource bundled from HF/local model directory."
+  echo "    MiniLM runtime resource bundled (CODESCRIBE_BUNDLE_EMBEDDER=1)."
 else
-  echo "    MiniLM is compiled into the binary by explicit CODESCRIBE_EMBED_EMBEDDER=1."
+  # Xcode reuses its product directory, so a bundle built earlier WITH the
+  # weights keeps them until something deletes them. Copying is not the only
+  # half of the contract — a build that does not ask for MiniLM must strip a
+  # stale copy, or the flag silently ships 471 MB anyway (caught by
+  # verify-dmg-payload.sh on 2026-09-18, before this line existed).
+  rm -rf "$APP/Contents/Resources/models/embedder"
+  rmdir "$APP/Contents/Resources/models" 2>/dev/null || true
+  if [[ "${CODESCRIBE_EMBED_EMBEDDER:-0}" == "1" ]]; then
+    echo "    MiniLM is compiled into the binary by explicit CODESCRIBE_EMBED_EMBEDDER=1."
+  else
+    echo "    MiniLM not bundled (no runtime consumer); stale copies stripped; CLI/tests use the HF cache."
+  fi
 fi
 # Only the two non-secret engine defaults belong in the signed app bundle.
 # The app owns merging them into settings.json at launch, with a backup.

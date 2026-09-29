@@ -27,7 +27,7 @@ use super::settings::{
     RuntimeLlmLaneKind, RuntimeLlmLanes, RuntimeSettingsSnapshot, RuntimeSnapshotParts,
     SILERO_FUSION_ENV, SettingsSnapshotDigest, SettingsSnapshotProvenance,
     SettingsSnapshotValidationError, UserSettings, normalize_agent_workspace_roots,
-    normalize_stt_engine, parse_agent_workspace_roots,
+    parse_agent_workspace_roots,
 };
 use super::types::{
     Config, DeferredInsertShortcut, Language, OverlayPositionMode, TranscriptSendMode,
@@ -374,6 +374,7 @@ impl Config {
     pub fn runtime_snapshot_from_captured(
         mut input: CapturedRuntimeInputs,
     ) -> RuntimeSettingsSnapshot {
+        let captured_inputs = std::sync::Arc::new(input.clone());
         let (seal_lane_armed, seal_lane_env_override) = Self::resolve_seal_lane_armed(&input);
         if seal_lane_env_override {
             input.env_overlay_keys.push(SILERO_FUSION_ENV.to_string());
@@ -394,13 +395,17 @@ impl Config {
         };
         let user_settings = &input.user_settings;
         let phase_override = input.env("CODESCRIBE_LAYERED_TRANSCRIPTION").ok();
-        let mut local_tail_patch = resolve_local_tail_patch(
-            phase_override
-                .as_deref()
-                .or(user_settings.layered_transcription.as_deref()),
-        );
+        let mut local_tail_patch = resolve_local_tail_patch(phase_override.as_deref());
+        // `STT_TAIL_PROVIDER` still wins. Absent env keeps InProcess for every
+        // mode except resolved Cloud, which already means consent was granted.
         let tail_provider = match input.env(crate::stt::tail_provider::STT_TAIL_PROVIDER_ENV) {
             Ok(value) => crate::stt::tail_provider::TailProviderId::parse(&value).ok(),
+            Err(VarError::NotPresent)
+                if user_settings.resolved_asr_mode().mode
+                    == super::cloud_asr::AsrProductMode::Cloud =>
+            {
+                Some(crate::stt::tail_provider::TailProviderId::Remote)
+            }
             Err(VarError::NotPresent) => Some(crate::stt::tail_provider::TailProviderId::InProcess),
             Err(_) => None,
         };
@@ -454,7 +459,7 @@ impl Config {
                 .as_bytes(),
         );
         let digest_material = format!(
-            "repair_sha256={repair_sha256}\n{digest_values:?}\n{user_settings:?}\n{provenance:?}\nformatting_policy={}\nseal_lane_armed={seal_lane_armed}\nlocal_tail_patch={local_tail_patch:?}\ntail_provider={tail_provider:?}\n{}\n{}\n{}",
+            "repair_sha256={repair_sha256}\n{digest_values:?}\n{user_settings:?}\n{provenance:?}\nformatting_policy={}\nseal_lane_armed={seal_lane_armed}\nlocal_tail_patch={local_tail_patch:?}\nlayered_override={phase_override:?}\ntail_provider={tail_provider:?}\n{}\n{}\n{}",
             formatting_policy.as_str(),
             llm_lanes.digest_material(),
             ai_execution.digest_material(),
@@ -462,6 +467,7 @@ impl Config {
         );
         let digest = SettingsSnapshotDigest::from_hex(sha256_hex(digest_material.as_bytes()));
         let parts = RuntimeSnapshotParts {
+            captured_inputs,
             repair_receipt: input.repair_receipt,
             values: input.values,
             user_settings: input.user_settings,
@@ -473,10 +479,12 @@ impl Config {
             energy_calibration: input.energy_calibration,
             seal_lane_armed,
             local_tail_patch,
+            layered_transcription_override: phase_override,
             tail_provider,
         };
         let recovery = parts.clone();
         match RuntimeSettingsSnapshot::seal_loaded(RuntimeSnapshotParts {
+            captured_inputs: parts.captured_inputs,
             repair_receipt: parts.repair_receipt,
             values: parts.values,
             user_settings: parts.user_settings,
@@ -488,6 +496,7 @@ impl Config {
             energy_calibration: parts.energy_calibration,
             seal_lane_armed: parts.seal_lane_armed,
             local_tail_patch: parts.local_tail_patch,
+            layered_transcription_override: parts.layered_transcription_override.clone(),
             tail_provider: parts.tail_provider,
         }) {
             Ok(snapshot) => snapshot,
@@ -835,6 +844,15 @@ impl Config {
         // Apply user settings first (lowest priority after defaults)
         config.apply_user_settings(&user_settings);
 
+        // The explicit Agent auto-send opt-in may come from .env. Process env
+        // still wins in load_from_env below.
+        if let Some(value) = file_env_vars
+            .as_ref()
+            .and_then(|vars| vars.get("AGENT_AUTO_SEND"))
+        {
+            config.agent_auto_send = matches!(value.as_str(), "1" | "true" | "yes" | "on");
+        }
+
         // Hold-indicator controls remain existing power-user `.env` keys (no
         // settings.json schema or migration). Re-read just these two values on
         // every snapshot so Settings/tray writes hot-apply after process-env
@@ -1027,6 +1045,17 @@ impl Config {
         {
             self.hold_arm_modifier = arm;
         }
+        if let Ok(val) = Self::config_runtime_env_var("AGENT_CHANNEL_MODIFIER")
+            && let Ok(modifier) = val.parse()
+        {
+            self.channel_modifier = modifier;
+        }
+        if let Ok(val) = Self::config_runtime_env_var("FN_TAP_TOGGLES_DICTATION") {
+            self.fn_tap_toggles_dictation = matches!(val.as_str(), "1" | "true" | "yes" | "on");
+        }
+        if let Ok(val) = Self::config_runtime_env_var("MIDDLE_MOUSE_ACTS_AS_FN") {
+            self.middle_mouse_acts_as_fn = matches!(val.as_str(), "1" | "true" | "yes" | "on");
+        }
         if let Ok(val) = Self::config_runtime_env_var("HOLD_START_DELAY_MS")
             && let Ok(ms) = val.parse()
         {
@@ -1041,6 +1070,16 @@ impl Config {
             && let Ok(sec) = val.parse()
         {
             self.toggle_silence_sec = sec;
+        }
+        if let Ok(val) = Self::config_runtime_env_var("WHISPER_CONTEXT_WINDOW_SEC")
+            && let Ok(sec) = val.parse::<f32>()
+        {
+            self.whisper_context_window_sec = sec;
+        }
+        if let Ok(val) = Self::config_runtime_env_var("LIGHT_PLUS_SENTENCE_PAUSE_SEC")
+            && let Ok(sec) = val.parse::<f32>()
+        {
+            self.light_plus_sentence_pause_sec = sec;
         }
         if let Ok(val) = Self::config_runtime_env_var("CODESCRIBE_DEFERRED_INSERT_SHORTCUT")
             && let Ok(shortcut) = val.parse::<DeferredInsertShortcut>()
@@ -1142,6 +1181,9 @@ impl Config {
         }
         if let Ok(val) = Self::config_runtime_env_var("AGENT_ENTER_SENDS") {
             self.agent_enter_sends = matches!(val.as_str(), "1" | "true" | "yes" | "on");
+        }
+        if let Ok(val) = Self::config_runtime_env_var("AGENT_AUTO_SEND") {
+            self.agent_auto_send = matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
         if let Ok(val) = Self::config_runtime_env_var("SOUND_NAME") {
             self.sound_name = val;
@@ -1300,6 +1342,16 @@ impl Config {
         {
             self.toggle_silence_sec = v;
         }
+        if Self::config_runtime_env_var("WHISPER_CONTEXT_WINDOW_SEC").is_err()
+            && let Some(v) = settings.whisper_context_window_sec
+        {
+            self.whisper_context_window_sec = v;
+        }
+        if Self::config_runtime_env_var("LIGHT_PLUS_SENTENCE_PAUSE_SEC").is_err()
+            && let Some(v) = settings.light_plus_sentence_pause_sec
+        {
+            self.light_plus_sentence_pause_sec = v;
+        }
         if Self::config_runtime_env_var("HOLD_EXCLUSIVE").is_err()
             && let Some(v) = settings.hold_exclusive
         {
@@ -1310,6 +1362,22 @@ impl Config {
             && let Ok(arm) = v.parse()
         {
             self.hold_arm_modifier = arm;
+        }
+        if Self::config_runtime_env_var("AGENT_CHANNEL_MODIFIER").is_err()
+            && let Some(ref v) = settings.channel_modifier
+            && let Ok(modifier) = v.parse()
+        {
+            self.channel_modifier = modifier;
+        }
+        if Self::config_runtime_env_var("FN_TAP_TOGGLES_DICTATION").is_err()
+            && let Some(v) = settings.fn_tap_toggles_dictation
+        {
+            self.fn_tap_toggles_dictation = v;
+        }
+        if Self::config_runtime_env_var("MIDDLE_MOUSE_ACTS_AS_FN").is_err()
+            && let Some(v) = settings.middle_mouse_acts_as_fn
+        {
+            self.middle_mouse_acts_as_fn = v;
         }
         // AI
         if Self::config_runtime_env_var("AI_FORMATTING_ENABLED").is_err()
@@ -1431,6 +1499,9 @@ impl Config {
                 *target = value.clone();
             }
         }
+        self.stt_cloud_refine_endpoint = settings.cloud_refine_endpoint_or_default();
+        self.cloud_refine_selected =
+            settings.resolved_asr_mode().mode == super::cloud_asr::AsrProductMode::Cloud;
 
         // Transcript send mode
         apply_parsed_if_no_env!(
@@ -1493,6 +1564,11 @@ impl Config {
         {
             self.agent_enter_sends = v;
         }
+        if Self::config_runtime_env_var("AGENT_AUTO_SEND").is_err()
+            && let Some(v) = settings.agent_auto_send
+        {
+            self.agent_auto_send = v;
+        }
 
         // ── Voice Lab survivors (runtime env vars, not Config struct fields) ──
         if Self::config_runtime_env_var("CODESCRIBE_BUFFER_DELAY_MS").is_err()
@@ -1526,23 +1602,6 @@ impl Config {
             Self::config_init_set_env("BACKEND_MAX_UPLOAD_MB", v.to_string());
         }
 
-        // ── STT engine / final-pass (STT_CONTRACT single brain) ──
-        // Product rule: durable settings.json wins for live engine selection so a
-        // leftover CODESCRIBE_STT_ENGINE=auto in .env cannot lottery Apple death.
-        // CI/power users still override by writing settings or using setSttEngine.
-        if let Some(ref v) = settings.stt_engine {
-            Self::safe_set_env("CODESCRIBE_STT_ENGINE", v);
-        }
-        if let Some(ref v) = settings.final_pass_mode {
-            Self::safe_set_env("FINAL_PASS_MODE", v);
-            Self::safe_set_env("CODESCRIBE_FINAL_PASS_MODE", v);
-        }
-        // Promoted single-brain (2026-08-10): settings.json wins at boot, same
-        // as CODESCRIBE_STT_ENGINE — a leftover .env line must not lottery the
-        // Layered toggle back OFF.
-        if let Some(ref v) = settings.layered_transcription {
-            Self::safe_set_env("CODESCRIBE_LAYERED_TRANSCRIPTION", v);
-        }
         if Self::config_runtime_env_var("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED").is_err()
             && let Some(v) = settings.stt_initial_prompt_enabled
         {
@@ -1573,6 +1632,13 @@ impl Config {
     /// This is a persistence write only. Process-env seeding is restricted to
     /// bootstrap loads; live readers must reload the config/settings snapshot.
     pub fn save_to_env(&self, key: &str, value: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !matches!(
+                key,
+                "CODESCRIBE_STT_ENGINE" | "FINAL_PASS_MODE" | "CODESCRIBE_FINAL_PASS_MODE"
+            ),
+            "retired engine setting: {key}; use CODESCRIBE_ASR_MODE"
+        );
         let _data_io = super::storage_reset::begin_app_data_io()?;
         let _persistence = config_persistence_guard();
         let normalized_formatting = (key == "FORMATTING_LEVEL")
@@ -1611,6 +1677,8 @@ impl Config {
                 }
                 "SOUND_VOLUME"
                 | "TOGGLE_SILENCE_SEC"
+                | "WHISPER_CONTEXT_WINDOW_SEC"
+                | "LIGHT_PLUS_SENTENCE_PAUSE_SEC"
                 | "CODESCRIBE_TYPING_CPS"
                 | "CODESCRIBE_BUFFERED_INTERIM_SEC" => {
                     if let Ok(v) = value.parse::<f32>() {
@@ -1625,6 +1693,8 @@ impl Config {
                 | "TRANSCRIPTION_OVERLAY_ENABLED"
                 | "TRAY_START_ASSISTIVE"
                 | "HOLD_EXCLUSIVE"
+                | "FN_TAP_TOGGLES_DICTATION"
+                | "MIDDLE_MOUSE_ACTS_AS_FN"
                 | "USE_LOCAL_STT"
                 | "HISTORY_ENABLED"
                 | "QUICK_NOTES_ENABLED"
@@ -1632,6 +1702,7 @@ impl Config {
                 | "START_AT_LOGIN"
                 | "QUBE_DAEMON_AUTOSTART"
                 | "AGENT_ENTER_SENDS"
+                | "AGENT_AUTO_SEND"
                 | "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED"
                 | "HOLD_INDICATOR"
                 | "RESTORE_CLIPBOARD"
@@ -1639,23 +1710,12 @@ impl Config {
                     let bool_val = matches!(value, "1" | "true" | "yes" | "on");
                     settings.set_bool(key, bool_val);
                 }
-                "HOLD_ARM_MODIFIER" => {
+                "HOLD_ARM_MODIFIER" | "AGENT_CHANNEL_MODIFIER" => {
                     settings.set_string(key, value);
                 }
                 _ => {
                     settings.set_string(key, value);
                 }
-            }
-            // STT contract: settings write is product truth — pin process env +
-            // .env so boot cannot re-lottery via a stale CODESCRIBE_STT_ENGINE.
-            if matches!(
-                key,
-                "CODESCRIBE_STT_ENGINE"
-                    | "FINAL_PASS_MODE"
-                    | "CODESCRIBE_FINAL_PASS_MODE"
-                    | "CODESCRIBE_LAYERED_TRANSCRIPTION"
-            ) {
-                Self::reconcile_stt_runtime_key(key, value);
             }
             return Ok(());
         }
@@ -1697,6 +1757,13 @@ impl Config {
         let mut env_path: Option<PathBuf> = None;
 
         for (key, value) in entries {
+            anyhow::ensure!(
+                !matches!(
+                    *key,
+                    "CODESCRIBE_STT_ENGINE" | "FINAL_PASS_MODE" | "CODESCRIBE_FINAL_PASS_MODE"
+                ),
+                "retired engine setting: {key}; use CODESCRIBE_ASR_MODE"
+            );
             if *key == "FORMATTING_LEVEL" {
                 FormattingPolicy::parse(value)?;
             }
@@ -1772,25 +1839,10 @@ impl Config {
                             settings_ref.hold_arm_modifier = Some(arm.as_str().to_string());
                         }
                     }
-                    "CODESCRIBE_STT_ENGINE" => {
-                        let normalized = normalize_stt_engine(value).ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "invalid STT engine {value:?}; expected auto, apple, whisper, or candle"
-                            )
-                        })?;
-                        settings_ref.stt_engine = Some(normalized.clone());
-                        Self::reconcile_stt_runtime_key(key, &normalized);
-                    }
-                    "FINAL_PASS_MODE" | "CODESCRIBE_FINAL_PASS_MODE" => {
-                        let normalized = value.trim().to_ascii_lowercase();
-                        if matches!(normalized.as_str(), "always" | "smart" | "off") {
-                            settings_ref.final_pass_mode = Some(normalized.clone());
-                            Self::reconcile_stt_runtime_key(key, &normalized);
+                    "AGENT_CHANNEL_MODIFIER" => {
+                        if let Ok(modifier) = value.parse::<crate::config::ChannelModifier>() {
+                            settings_ref.channel_modifier = Some(modifier.as_str().to_string());
                         }
-                    }
-                    "CODESCRIBE_LAYERED_TRANSCRIPTION" => {
-                        settings_ref.layered_transcription = Some((*value).to_string());
-                        Self::reconcile_stt_runtime_key(key, value);
                     }
                     // C2: same validated writes as the single-key set_string
                     // path — a batch write must not bypass mode/consent/URL
@@ -1848,6 +1900,18 @@ impl Config {
                             settings_ref.toggle_silence_sec = Some(v);
                         }
                     }
+                    "WHISPER_CONTEXT_WINDOW_SEC" => {
+                        if let Ok(v) = value.parse::<f32>() {
+                            settings_ref.whisper_context_window_sec =
+                                Some(super::normalize_whisper_context_window_sec(v));
+                        }
+                    }
+                    "LIGHT_PLUS_SENTENCE_PAUSE_SEC" => {
+                        if let Ok(v) = value.parse::<f32>() {
+                            settings_ref.light_plus_sentence_pause_sec =
+                                Some(super::normalize_light_plus_sentence_pause_sec(v));
+                        }
+                    }
                     "CODESCRIBE_TYPING_CPS" => {
                         if let Ok(v) = value.parse::<f32>() {
                             settings_ref.typing_cps = Some(v);
@@ -1872,6 +1936,8 @@ impl Config {
                     | "TRANSCRIPTION_OVERLAY_ENABLED"
                     | "TRAY_START_ASSISTIVE"
                     | "HOLD_EXCLUSIVE"
+                    | "FN_TAP_TOGGLES_DICTATION"
+                    | "MIDDLE_MOUSE_ACTS_AS_FN"
                     | "USE_LOCAL_STT"
                     | "HISTORY_ENABLED"
                     | "QUICK_NOTES_ENABLED"
@@ -1879,6 +1945,7 @@ impl Config {
                     | "START_AT_LOGIN"
                     | "QUBE_DAEMON_AUTOSTART"
                     | "AGENT_ENTER_SENDS"
+                    | "AGENT_AUTO_SEND"
                     | "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED"
                     | "HOLD_INDICATOR"
                     | "RESTORE_CLIPBOARD"
@@ -1896,6 +1963,12 @@ impl Config {
                             }
                             "TRAY_START_ASSISTIVE" => settings_ref.tray_start_assistive = Some(bv),
                             "HOLD_EXCLUSIVE" => settings_ref.hold_exclusive = Some(bv),
+                            "FN_TAP_TOGGLES_DICTATION" => {
+                                settings_ref.fn_tap_toggles_dictation = Some(bv)
+                            }
+                            "MIDDLE_MOUSE_ACTS_AS_FN" => {
+                                settings_ref.middle_mouse_acts_as_fn = Some(bv)
+                            }
                             "USE_LOCAL_STT" => settings_ref.use_local_stt = Some(bv),
                             "HISTORY_ENABLED" => settings_ref.history_enabled = Some(bv),
                             "QUICK_NOTES_ENABLED" => settings_ref.quick_notes_enabled = Some(bv),
@@ -1907,6 +1980,7 @@ impl Config {
                                 settings_ref.qube_daemon_autostart = Some(bv)
                             }
                             "AGENT_ENTER_SENDS" => settings_ref.agent_enter_sends = Some(bv),
+                            "AGENT_AUTO_SEND" => settings_ref.agent_auto_send = Some(bv),
                             "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED" => {
                                 settings_ref.stt_initial_prompt_enabled = Some(bv)
                             }
@@ -1972,61 +2046,6 @@ impl Config {
             _ => return false,
         }
         true
-    }
-
-    /// Pin STT-related process env + ~/.codescribe/.env to the settings value.
-    ///
-    /// Product rule (STT_CONTRACT / W2-A): Settings UI is the single brain for
-    /// live engine selection. A leftover `CODESCRIBE_STT_ENGINE=auto` in `.env`
-    /// must not win over an explicit `speech.engine.stt_engine` write.
-    pub fn reconcile_stt_runtime_key(key: &str, value: &str) {
-        let normalized_engine = (key == "CODESCRIBE_STT_ENGINE")
-            .then(|| normalize_stt_engine(value))
-            .flatten();
-        if key == "CODESCRIBE_STT_ENGINE" && normalized_engine.is_none() {
-            warn!("Refused retired or unknown STT engine selector: {value}");
-            return;
-        }
-        let value = normalized_engine.as_deref().unwrap_or_else(|| value.trim());
-        if value.is_empty() {
-            return;
-        }
-        // Live process truth used by core/stt::selected_engine() on every call.
-        // Must bypass the bootstrap lock: UI writes happen after Config::load
-        // marked env seeding done. Intentional single-writer path (settings UI).
-        // SAFETY: same keys as boot seed; only called from save_to_env* on STT knobs.
-        unsafe {
-            std::env::set_var(key, value);
-            if key == "FINAL_PASS_MODE" {
-                std::env::set_var("CODESCRIBE_FINAL_PASS_MODE", value);
-            } else if key == "CODESCRIBE_FINAL_PASS_MODE" {
-                std::env::set_var("FINAL_PASS_MODE", value);
-            }
-        }
-
-        let env_path = Self::env_path();
-        let mut vars = if env_path.exists() {
-            Self::parse_env_file(&env_path).unwrap_or_default()
-        } else {
-            HashMap::new()
-        };
-        let before = vars.get(key).cloned();
-        vars.insert(key.to_string(), value.to_string());
-        if key == "FINAL_PASS_MODE" {
-            vars.insert("CODESCRIBE_FINAL_PASS_MODE".to_string(), value.to_string());
-        } else if key == "CODESCRIBE_FINAL_PASS_MODE" {
-            vars.insert("FINAL_PASS_MODE".to_string(), value.to_string());
-        }
-        if before.as_deref() != Some(value) {
-            if let Some(parent) = env_path.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            if let Err(e) = Self::write_env_file(&env_path, &vars) {
-                warn!("Failed to reconcile STT key {key} in .env: {e}");
-            } else {
-                info!("STT runtime reconciled {key}={value} (settings + process env + .env)");
-            }
-        }
     }
 
     /// Parse .env file into HashMap.
@@ -3566,6 +3585,111 @@ mod tests {
         restore_env_for_test("HOLD_EXCLUSIVE", prev_hold_exclusive);
     }
 
+    /// `whisper_context_window_sec` round-trips through settings.json.
+    /// A process env value wins over the file, and both land on the 0.5 step.
+    #[test]
+    #[serial]
+    fn whisper_context_window_round_trips_and_env_wins() {
+        let _tmp = setup_isolated_data_dir();
+        let previous = std::env::var("WHISPER_CONTEXT_WINDOW_SEC").ok();
+        remove_env_for_test("WHISPER_CONTEXT_WINDOW_SEC");
+
+        Config::default()
+            .save_to_env("WHISPER_CONTEXT_WINDOW_SEC", "6.2")
+            .expect("persist whisper context window");
+        let stored = super::super::settings::UserSettings::load();
+        assert_eq!(stored.whisper_context_window_sec, Some(6.0));
+        let from_file = Config::load();
+        assert!(
+            (from_file.whisper_context_window_sec - 6.0).abs() < f32::EPSILON,
+            "settings.json value {}, expected 6.0",
+            from_file.whisper_context_window_sec
+        );
+
+        unsafe { std::env::set_var("WHISPER_CONTEXT_WINDOW_SEC", "2.5") };
+        let from_env = Config::load();
+        assert!(
+            (from_env.whisper_context_window_sec - 2.5).abs() < f32::EPSILON,
+            "env override {}, expected 2.5",
+            from_env.whisper_context_window_sec
+        );
+
+        restore_env_for_test("WHISPER_CONTEXT_WINDOW_SEC", previous);
+    }
+
+    #[test]
+    #[serial]
+    fn agent_auto_send_setting_round_trips_and_env_wins() {
+        let _tmp = setup_isolated_data_dir();
+        let previous = std::env::var("AGENT_AUTO_SEND").ok();
+        let previous_env_path = std::env::var("CODESCRIBE_ENV_PATH").ok();
+        remove_env_for_test("AGENT_AUTO_SEND");
+        remove_env_for_test("CODESCRIBE_ENV_PATH");
+        assert!(!Config::load().agent_auto_send);
+
+        Config::default()
+            .save_to_env("AGENT_AUTO_SEND", "1")
+            .expect("persist opt-in");
+        assert_eq!(UserSettings::load().agent_auto_send, Some(true));
+        assert!(Config::load().agent_auto_send);
+
+        let env_path = _tmp.path().join("agent-auto-send.env");
+        fs::write(&env_path, "AGENT_AUTO_SEND=0\n").expect("write file override");
+        unsafe { std::env::set_var("CODESCRIBE_ENV_PATH", &env_path) };
+        assert!(!Config::load().agent_auto_send);
+
+        unsafe { std::env::set_var("AGENT_AUTO_SEND", "1") };
+        assert!(Config::load().agent_auto_send);
+        unsafe { std::env::set_var("AGENT_AUTO_SEND", "0") };
+        assert!(!Config::load().agent_auto_send);
+        restore_env_for_test("AGENT_AUTO_SEND", previous);
+        restore_env_for_test("CODESCRIBE_ENV_PATH", previous_env_path);
+    }
+
+    #[test]
+    #[serial]
+    fn unrelated_promoted_save_materializes_missing_context_values() {
+        let _tmp = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        fs::write(&path, r#"{"schema_version":3,"speech":{"engine":{}}}"#)
+            .expect("seed settings without context values");
+
+        Config::default()
+            .save_to_env_many(&[("TOGGLE_SILENCE_SEC", "3.0")])
+            .expect("save unrelated promoted setting");
+
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).expect("read saved settings"))
+                .expect("parse saved settings");
+        assert_eq!(
+            saved.pointer("/speech/engine/whisper_context_window_sec"),
+            Some(&serde_json::json!(8.0))
+        );
+        assert_eq!(
+            saved.pointer("/speech/engine/light_plus_sentence_pause_sec"),
+            Some(&serde_json::json!(0.7))
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn light_plus_sentence_pause_round_trips_and_env_wins() {
+        let _tmp = setup_isolated_data_dir();
+        let previous = std::env::var("LIGHT_PLUS_SENTENCE_PAUSE_SEC").ok();
+        remove_env_for_test("LIGHT_PLUS_SENTENCE_PAUSE_SEC");
+
+        Config::default()
+            .save_to_env("LIGHT_PLUS_SENTENCE_PAUSE_SEC", "1.2")
+            .expect("persist Light+ sentence pause");
+        let stored = super::super::settings::UserSettings::load();
+        assert_eq!(stored.light_plus_sentence_pause_sec, Some(1.2));
+        assert!((Config::load().light_plus_sentence_pause_sec - 1.2).abs() < f32::EPSILON);
+
+        unsafe { std::env::set_var("LIGHT_PLUS_SENTENCE_PAUSE_SEC", "0.5") };
+        assert!((Config::load().light_plus_sentence_pause_sec - 0.5).abs() < f32::EPSILON);
+        restore_env_for_test("LIGHT_PLUS_SENTENCE_PAUSE_SEC", previous);
+    }
+
     /// settings.json can disable local STT; load must honor that flag.
     #[test]
     #[serial]
@@ -3827,6 +3951,30 @@ mod captured_startup_tests {
             },
         );
         input
+    }
+
+    #[test]
+    fn layered_override_is_env_only_and_frozen_in_the_snapshot() {
+        use crate::asr_session::recorder::{Layer1Decision, LocalTailPatchDisposition as D};
+        let mut input = inputs();
+        input.user_settings.asr_mode = Some("local_power".into());
+        let normal = Config::runtime_snapshot_from_captured(input.clone());
+        assert_eq!(normal.layered_transcription_override(), None);
+        assert!(matches!(
+            normal.local_tail_patch_decision(),
+            Layer1Decision::LocalTailPatch(D::ArmedDefault)
+        ));
+        input
+            .overrides
+            .insert("CODESCRIBE_LAYERED_TRANSCRIPTION".into(), Ok("off".into()));
+        let degraded = Config::runtime_snapshot_from_captured(input.clone());
+        input.overrides.clear();
+        assert_eq!(degraded.layered_transcription_override(), Some("off"));
+        assert!(matches!(
+            degraded.local_tail_patch_decision(),
+            Layer1Decision::LocalTailPatch(D::DegradedExplicitOff)
+        ));
+        assert_eq!(normal.layered_transcription_override(), None);
     }
 
     #[test]

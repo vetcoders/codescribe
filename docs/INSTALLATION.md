@@ -30,7 +30,7 @@ make release-qube
 make install
 ```
 
-**Result**: `qube-report` and `qube-daemon` installed from `bin/qube_report.rs` and `bin/qube_daemon.rs`.
+**Result**: the `codescribe` CLI is installed; `codescribe report` and `codescribe daemon` are the authoritative spellings of the quality tools. The standalone `qube-report` and `qube-daemon` binaries run the same functions and are slated for removal under the one-throne rule.
 
 **How it runs**: Terminal-only quality/reporting utilities, not the user-facing app.
 

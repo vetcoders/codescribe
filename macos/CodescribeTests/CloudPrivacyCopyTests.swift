@@ -81,8 +81,8 @@ final class CloudPrivacyCopyTests: XCTestCase {
     )
     XCTAssertEqual(model.asrModeId, "apple_only")
     model.setAsrMode("cloud")
-    XCTAssertTrue(writes.contains { $0 == ("CODESCRIBE_CLOUD_CONSENT", "granted") })
-    XCTAssertTrue(writes.contains { $0 == ("CODESCRIBE_ASR_MODE", "cloud") })
+    XCTAssertEqual(writes.map(\.0), ["CODESCRIBE_CLOUD_CONSENT", "CODESCRIBE_ASR_MODE"])
+    XCTAssertEqual(writes.map(\.1), ["granted", "cloud"])
     XCTAssertEqual(model.asrModeId, "cloud")
   }
 

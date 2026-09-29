@@ -87,6 +87,13 @@ reload = "restart"
 category = "audio"
 description = "Disk spill of the full streaming take (default on); the RAM ring stays capped at 300s, spill keeps every sample so long sessions archive whole. 0/false/no/off disables"
 
+[vars.CODESCRIBE_CHANNEL_AUTOSEAL_SECS]
+default = "120"
+type = "u64"
+reload = "hot"
+category = "audio"
+description = "Seconds of silence before an open agent-channel session seals and closes. Unset or unreadable values use 120, the W2 brief default, while Founder decision A.5.3 is open. 0 disables the cap; utterance silence inside the session is a different knob."
+
 [vars.AUTO_SILENCE]
 default = "1"
 type = "bool"
@@ -449,6 +456,20 @@ reload = "hot"
 category = "stt"
 description = "Whisper transcription language hint. auto leaves detection to Whisper and applies on the next capture."
 
+[vars.WHISPER_CONTEXT_WINDOW_SEC]
+default = "8.0"
+type = "f32"
+reload = "hot"
+category = "stt"
+description = "Seconds of captured PCM each Layer 1 Whisper window must cover, ending at the occurrence. Shorter tails keep this much audio to their left, crossing a previous occurrence or a long silence, and stop at capture start or the retention edge. An occurrence already at least this long keeps its existing pad. Next recording session. Range 0.5-10, step 0.5."
+
+[vars.LIGHT_PLUS_SENTENCE_PAUSE_SEC]
+default = "0.7"
+type = "f32"
+reload = "hot"
+category = "stt"
+description = "Minimum PCM gap between committed occurrences that opens a new Light+ sentence. Range 0.3-2.0 seconds; next recording session."
+
 [vars.CODESCRIBE_WHISPER_INITIAL_PROMPT]
 default = ""
 type = "string"
@@ -532,7 +553,8 @@ default = "auto"
 type = "string"
 reload = "restart"
 category = "stt"
-description = "STT engine: auto (Apple on supported macOS, Candle fallback), whisper/candle, or apple"
+description = "Retired engine control; ignored by runtime and rejected on config writes. Select CODESCRIBE_ASR_MODE instead."
+deprecated = "CODESCRIBE_ASR_MODE"
 
 [vars.CODESCRIBE_ASR_MODE]
 default = ""
@@ -560,7 +582,7 @@ default = ""
 type = "string"
 reload = "hot"
 category = "stt"
-description = "Promoted compatibility override for live local Whisper refinement. Product mode owns the default: Local Power with Apple/Auto arms the Layer 1 tail-provider observation on the Apple-ledger session when unset or phase1; explicit off/0/false/no and malformed values produce a named degraded disposition. Apple-only does not arm it. This token does not select or restore a VAD/scheduler route. Phases 2..4 remain reserved. Orthogonal to FINAL_PASS_MODE; normal stop performs no whole-file pass. Runtime truth is the per-session tail_patch_session_receipt, not UI state."
+description = "Env-only diagnostic override for Local Power refinement. Unset arms by ASR mode; phase1 or 1 arms explicitly; off/0/false/no or invalid values degrade. Settings never persists this key. Cloud ignores this local override. No VAD or scheduler selection."
 
 [vars.CODESCRIBE_SEAL_ATLAS_DUMP]
 default = ""
@@ -728,14 +750,16 @@ default = "smart"
 type = "string"
 reload = "restart"
 category = "stt"
-description = "Legacy settings-migration token (always|smart|off). Normal stop never performs a saved-WAV file pass; explicit Retranscribe owns whole-file inference. Does not enable or disable CODESCRIBE_LAYERED_TRANSCRIPTION, and Dictionary/lexicon always applies in postprocess. Alias: CODESCRIBE_FINAL_PASS_MODE."
+description = "Retired engine control; ignored by runtime and rejected on config writes. Select CODESCRIBE_ASR_MODE instead."
+deprecated = "CODESCRIBE_ASR_MODE"
 
 [vars.CODESCRIBE_FINAL_PASS_MODE]
 default = "smart"
 type = "string"
 reload = "restart"
 category = "stt"
-description = "Legacy alias of FINAL_PASS_MODE; retained for settings migration only"
+description = "Retired engine control; ignored by runtime and rejected on config writes. Select CODESCRIBE_ASR_MODE instead."
+deprecated = "CODESCRIBE_ASR_MODE"
 
 [vars.CODESCRIBE_LOCAL_STT_FINAL_PASS]
 default = "0"
@@ -1090,6 +1114,27 @@ reload = "restart"
 category = "hotkeys"
 description = "Modifier arming assistive chat on the dictation hold base (shift|cmd)"
 
+[vars.AGENT_CHANNEL_MODIFIER]
+default = "ctrl"
+type = "string"
+reload = "hot"
+category = "hotkeys"
+description = "Modifier held with a digit to open an agent channel (ctrl|fn). Command is rejected."
+
+[vars.FN_TAP_TOGGLES_DICTATION]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "hotkeys"
+description = "Quick Fn press below the hold delay toggles dictation. Off until chosen. Hold past the delay stays hold-to-talk."
+
+[vars.MIDDLE_MOUSE_ACTS_AS_FN]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "hotkeys"
+description = "Mouse button 2 follows Fn press and release. Off until chosen. The tap is listen-only, so the click still reaches the frontmost app."
+
 [vars.CODESCRIBE_DEFERRED_INSERT_SHORTCUT]
 default = "disabled"
 type = "string"
@@ -1314,7 +1359,7 @@ default = "off"
 type = "string"
 reload = "hot"
 category = "quality"
-description = "Opt-in qube donor at stop (off|on, default off). When on, copies each session's WAV + delivered transcript into ~/.codescribe/qube_inbox/<YYYY-MM-DD>/<session_ts>.{wav,txt} for lexicon candidate mining by qube-daemon. Writes files only — never runs Whisper. Orthogonal to FINAL_PASS_MODE (works under off/smart/always). Persist failures log a warning and never fail delivery."
+description = "Opt-in qube donor at stop (off|on, default off). When on, copies each session's WAV + delivered transcript into ~/.codescribe/qube_inbox/<YYYY-MM-DD>/<session_ts>.{wav,txt} for lexicon candidate mining by qube-daemon. Writes files only — never runs Whisper. Independent of ASR mode. Persist failures log a warning and never fail delivery."
 
 [vars.QUBE_DAEMON_USE_CLOUD_STT]
 default = "0"
@@ -1568,6 +1613,20 @@ type = "bool"
 reload = "restart"
 category = "assistive"
 description = "When true, Enter sends the agent message (Shift+Enter for newline). When false, Enter inserts newline (Cmd+Enter sends)."
+
+[vars.AGENT_AUTO_SEND]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "assistive"
+description = "Opt in to sending an untouched Agent transcript after the five-second terminal countdown. Settings owns the persisted choice; .env or process env overrides it."
+
+[vars.BUS_EVIDENCE_RETENTION_DAYS]
+default = "0"
+type = "u32"
+reload = "restart"
+category = "storage"
+description = "Power-user age compaction for acoustic Bus evidence. A positive day count enables startup and idle passes; unset or zero leaves evidence intact. Delivery rows remain permanent."
 
 [vars.AGENT_WORKSPACE_ROOTS]
 default = "~/.codescribe"

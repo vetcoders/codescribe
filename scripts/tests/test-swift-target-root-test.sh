@@ -69,8 +69,20 @@ elif name == 'xcodebuild':
     if s['mode'] == 'xcode-error':
         print('unfiltered tool failure')
         sys.exit(65)
-    count = 0 if s['mode'] == 'zero' else 7
-    seconds = 45 if s['mode'] in ('slow', 'budget') else 1.25
+    count = 0 if s['mode'] == 'zero' else 8 if s['mode'] == 'suite-over' else 7
+    seconds = (75 if s['mode'] in ('slow', 'budget') else
+               68 if s['mode'] == 'suite-over' else
+               30 if s['mode'] == 'two-over' else
+               18 if s['mode'] == 'one-over' else
+               25 if s['mode'] == 'under' else 1.25)
+    durations = {
+        'one-over': [('testSlow', 12)],
+        'two-over': [('testSlow', 12), ('testAlsoSlow', 11.5)],
+        'under': [('testFirst', 9), ('testSecond', 8)],
+        'suite-over': [(f'testWait{i}', 8.5) for i in range(8)],
+    }
+    for test, duration in durations.get(s['mode'], []):
+        print(f"Test Case '-[CodescribeTests.FixtureTests {test}]' passed ({duration} seconds).")
     print(f'Executed {count} tests, with 0 failures (0 unexpected) in {seconds} (1.0) seconds')
     print('** TEST SUCCEEDED **')
 elif name == 'codescribe-stt-bridge' or name == 'custom-helper':
@@ -169,13 +181,21 @@ def run_case(base, profile, layout, mode='success'):
         assert len(helpers) == (0 if mode == 'prerequisite-error' else 1), helpers
         if mode == 'prerequisite-error':
             assert names.count('swiftc') == 1 and 'Error 44' in result.stdout, result.stdout
-        refusal = mode not in ('success', 'override-helper', 'budget') or profile == 'unsupported'
+        refusal = mode not in ('success', 'override-helper', 'budget', 'under') or profile == 'unsupported'
         if refusal:
             assert result.returncode != 0, 'refusal accepted'
-            if mode in ('xcode-error', 'zero', 'slow'):
-                expected = {'xcode-error': 65, 'zero': 3, 'slow': 4}[mode]
+            if mode in ('xcode-error', 'zero', 'slow', 'one-over', 'two-over', 'suite-over'):
+                expected = {'xcode-error': 65, 'zero': 3, 'slow': 4,
+                            'one-over': 5, 'two-over': 5, 'suite-over': 4}[mode]
                 assert f'Error {expected}' in result.stdout, result.stdout
                 assert 'xcodebuild' in names
+                if mode == 'one-over':
+                    assert 'FixtureTests.testSlow took 12 s' in result.stdout, result.stdout
+                if mode == 'two-over':
+                    assert 'FixtureTests.testSlow took 12 s' in result.stdout, result.stdout
+                    assert 'FixtureTests.testAlsoSlow took 11.5 s' in result.stdout, result.stdout
+                if mode == 'suite-over':
+                    assert 'per-test ceiling' not in result.stdout, result.stdout
             else:
                 assert 'xcodebuild' not in names, names
                 if mode == 'helper-error':
@@ -194,6 +214,8 @@ def run_case(base, profile, layout, mode='success'):
                 assert len(settings) == 1 and shlex.split(settings[0]) == expected, (key, settings)
             assert not Path(receipt['data']).exists(), 'host fixture leaked'
             assert (case / 'swift.log').is_file()
+            if mode == 'under':
+                assert 'per-test ceiling' not in result.stdout, result.stdout
         assert not list((case / 'tmp').iterdir()), 'fixture cleanup failed'
         passed += 1
         print(f'PASS {label} (make exit {result.returncode})', flush=True)
@@ -208,7 +230,8 @@ with tempfile.TemporaryDirectory(prefix='test-swift-target-root-') as tmp:
             run_case(base, profile, layout)
     for mode in ('missing', 'malformed', 'relative-metadata', 'empty-metadata', 'null-metadata',
                  'control-metadata', 'metadata-error', 'missing-xcodegen', 'generation-error',
-                 'xcode-error', 'zero', 'slow', 'budget', 'helper-error', 'override-helper', 'prerequisite-error'):
+                 'xcode-error', 'zero', 'slow', 'budget', 'one-over', 'two-over',
+                 'under', 'suite-over', 'helper-error', 'override-helper', 'prerequisite-error'):
         run_case(base, 'debug', 'spaces', mode)
     run_case(base, 'unsupported', 'spaces')
 print(f'test-swift-target-root: scenarios={passed + failed} passed={passed} failed={failed}')

@@ -326,10 +326,12 @@ final class AgentBridgeInstallerTests: XCTestCase {
     model.installCreatorAgentBridge(for: .codex)
     XCTAssertNil(model.creatorAgentBridgeError)
     XCTAssertEqual(Set(model.creatorAgentBridgeStatus.installedClients), [.codex, .claudeCode])
-    XCTAssertTrue(FileManager.default.fileExists(
-      atPath: home.appendingPathComponent(".claude/skills/codescribe/SKILL.md").path))
-    XCTAssertTrue(FileManager.default.fileExists(
-      atPath: home.appendingPathComponent(".codex/skills/codescribe/SKILL.md").path))
+    XCTAssertTrue(
+      FileManager.default.fileExists(
+        atPath: home.appendingPathComponent(".claude/skills/codescribe/SKILL.md").path))
+    XCTAssertTrue(
+      FileManager.default.fileExists(
+        atPath: home.appendingPathComponent(".codex/skills/codescribe/SKILL.md").path))
     XCTAssertTrue(model.creatorAgentBridgeNotice?.contains("does not attach a listener") == true)
     model.installCreatorAgentBridge(for: .codex)
     XCTAssertEqual(Set(model.creatorAgentBridgeStatus.installedClients), [.codex, .claudeCode])
@@ -353,8 +355,9 @@ final class AgentBridgeInstallerTests: XCTestCase {
     XCTAssertNotNil(model.creatorAgentBridgeError)
     XCTAssertNil(model.creatorAgentBridgeNotice)
     XCTAssertEqual(try Data(contentsOf: source), original)
-    XCTAssertFalse(FileManager.default.fileExists(
-      atPath: home.appendingPathComponent(".codescribe/agent-bridge/receipt.json").path))
+    XCTAssertFalse(
+      FileManager.default.fileExists(
+        atPath: home.appendingPathComponent(".codescribe/agent-bridge/receipt.json").path))
   }
 
   func testExplicitManualAdoptionRetainsOriginalAcrossLaterUpdates() throws {
@@ -374,14 +377,18 @@ final class AgentBridgeInstallerTests: XCTestCase {
     XCTAssertEqual(Set(result.status.installedClients), [.codex, .claudeCode])
     let backup = URL(fileURLWithPath: try XCTUnwrap(result.backupPaths.first))
     XCTAssertEqual(try Data(contentsOf: backup.appendingPathComponent("SKILL.md")), original)
-    XCTAssertTrue(FileManager.default.fileExists(atPath: backup.appendingPathComponent("notes.txt").path))
-    XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("SKILL.md")),
+    XCTAssertTrue(
+      FileManager.default.fileExists(atPath: backup.appendingPathComponent("notes.txt").path))
+    XCTAssertEqual(
+      try Data(contentsOf: destination.appendingPathComponent("SKILL.md")),
       try Data(contentsOf: payload.appendingPathComponent("skills/codescribe/SKILL.md")))
     _ = try installer.install(selectedClients: [.codex, .claudeCode])
     XCTAssertEqual(try Data(contentsOf: backup.appendingPathComponent("SKILL.md")), original)
-    let receipt = try jsonObject(home.appendingPathComponent(".codescribe/agent-bridge/receipt.json"))
+    let receipt = try jsonObject(
+      home.appendingPathComponent(".codescribe/agent-bridge/receipt.json"))
     XCTAssertEqual(receipt["preserved_manual_backups"] as? [String], result.backupPaths)
-    XCTAssertThrowsError(try installer.adoptManualSkill(client: .codex), "managed folders are not manual copies")
+    XCTAssertThrowsError(
+      try installer.adoptManualSkill(client: .codex), "managed folders are not manual copies")
   }
 
   func testManualAdoptionReceiptFailureRestoresOriginalFolder() throws {
@@ -399,10 +406,12 @@ final class AgentBridgeInstallerTests: XCTestCase {
       resourceRoot: payload, homeDirectory: home, environment: [:])
     XCTAssertThrowsError(try installer.adoptManualSkill(client: .codex))
     XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("SKILL.md")), original)
-    XCTAssertFalse(FileManager.default.fileExists(
-      atPath: destination.appendingPathComponent(".codescribe-managed.json").path))
-    XCTAssertFalse(FileManager.default.fileExists(
-      atPath: home.appendingPathComponent(".codescribe/agent-bridge/runtime").path))
+    XCTAssertFalse(
+      FileManager.default.fileExists(
+        atPath: destination.appendingPathComponent(".codescribe-managed.json").path))
+    XCTAssertFalse(
+      FileManager.default.fileExists(
+        atPath: home.appendingPathComponent(".codescribe/agent-bridge/runtime").path))
   }
 
   func testManualAdoptionRefusesRedirectedFolder() throws {
@@ -413,14 +422,16 @@ final class AgentBridgeInstallerTests: XCTestCase {
     let original = Data("outside instructions".utf8)
     try original.write(to: outside.appendingPathComponent("SKILL.md"))
     let destination = home.appendingPathComponent(".codex/skills/codescribe")
-    try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(
+      at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
     try FileManager.default.createSymbolicLink(at: destination, withDestinationURL: outside)
     let installer = RealAgentBridgeInstaller(
       resourceRoot: payload, homeDirectory: home, environment: [:])
     XCTAssertThrowsError(try installer.adoptManualSkill(client: .codex))
     XCTAssertEqual(try Data(contentsOf: outside.appendingPathComponent("SKILL.md")), original)
-    XCTAssertFalse(FileManager.default.fileExists(
-      atPath: home.appendingPathComponent(".codescribe/agent-bridge/receipt.json").path))
+    XCTAssertFalse(
+      FileManager.default.fileExists(
+        atPath: home.appendingPathComponent(".codescribe/agent-bridge/receipt.json").path))
   }
 
   func testInstallationLeaseRefusesAnotherWriterAndReleasesAfterFailure() throws {
@@ -437,8 +448,10 @@ final class AgentBridgeInstallerTests: XCTestCase {
     let installer = RealAgentBridgeInstaller(
       resourceRoot: payload, homeDirectory: home, environment: [:])
     XCTAssertThrowsError(try installer.install(selectedClients: [.codex]))
-    XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("runtime").path))
-    XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("receipt.json").path))
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: root.appendingPathComponent("runtime").path))
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: root.appendingPathComponent("receipt.json").path))
     XCTAssertEqual(flock(descriptor, LOCK_UN), 0)
     // Missing manual folder fails after the installer acquires the lock.
     XCTAssertThrowsError(try installer.adoptManualSkill(client: .codex))
@@ -464,8 +477,10 @@ final class AgentBridgeInstallerTests: XCTestCase {
       resourceRoot: payload, homeDirectory: home, environment: [:])
     XCTAssertThrowsError(try installer.install(selectedClients: [.codex]))
     XCTAssertEqual(try Data(contentsOf: outside), original)
-    XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("runtime").path))
-    XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("receipt.json").path))
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: root.appendingPathComponent("runtime").path))
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: root.appendingPathComponent("receipt.json").path))
   }
 
   func testIncompleteRollbackReportsAndPreservesTheOriginalBackup() throws {
@@ -479,7 +494,8 @@ final class AgentBridgeInstallerTests: XCTestCase {
       try FileManager.default.createDirectory(
         at: home.appendingPathComponent(".codescribe/agent-bridge/receipt.json"),
         withIntermediateDirectories: true)
-      let manager = RefusingRollbackFileManager(destination: destination, blockRemoval: blockRemoval)
+      let manager = RefusingRollbackFileManager(
+        destination: destination, blockRemoval: blockRemoval)
       let installer = RealAgentBridgeInstaller(
         resourceRoot: payload, homeDirectory: home, fileManager: manager, environment: [:])
       var failure: String?
@@ -499,7 +515,8 @@ final class AgentBridgeInstallerTests: XCTestCase {
       let reportedBackup = destination.deletingLastPathComponent()
         .appendingPathComponent(backup.lastPathComponent, isDirectory: true)
       XCTAssertEqual(reportedBackup.resolvingSymlinksInPath(), backup.resolvingSymlinksInPath())
-      XCTAssertEqual(try Data(contentsOf: reportedBackup.appendingPathComponent("SKILL.md")), original)
+      XCTAssertEqual(
+        try Data(contentsOf: reportedBackup.appendingPathComponent("SKILL.md")), original)
       XCTAssertTrue(failure?.contains(reportedBackup.path) == true, failure ?? "missing diagnostic")
       XCTAssertTrue(failure?.contains(destination.path) == true)
       XCTAssertEqual(FileManager.default.fileExists(atPath: destination.path), blockRemoval)
@@ -590,7 +607,8 @@ private final class RefusingRollbackFileManager: FileManager, @unchecked Sendabl
 
   override func moveItem(at source: URL, to target: URL) throws {
     if !blockRemoval, target.standardizedFileURL.path == destination.standardizedFileURL.path,
-      source.lastPathComponent.hasPrefix(".codescribe.backup-") {
+      source.lastPathComponent.hasPrefix(".codescribe.backup-")
+    {
       injectedRefusals += 1
       throw CocoaError(.fileWriteNoPermission)
     }

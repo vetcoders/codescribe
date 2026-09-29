@@ -20,6 +20,10 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::config::{Config, FormattingPolicy};
+use crate::quality::lexicon_gate::{ProtectedTerms, adjudicate_lexicon_candidates};
+use crate::quality::lexicon_restore::{
+    any_backup_with_curated_rows, rotate_lexicon_backup_if_stale,
+};
 
 /// Serializes every custom-lexicon rewrite in this process.
 ///
@@ -255,7 +259,7 @@ impl QualityRecord {
             digest.update(value.as_bytes());
             digest.update([0]);
         }
-        format!("legacy-{:x}", digest.finalize())
+        format!("legacy-{}", hex::encode(digest.finalize()))
     }
 }
 
@@ -825,11 +829,28 @@ fn upsert_corrections_unlocked(pairs: &[(&str, &str)]) -> Result<()> {
     if accepted.is_empty() {
         return Ok(());
     }
-    let path = Config::config_dir().join("lexicon.custom.jsonl");
+    let config_dir = Config::config_dir();
+    let path = config_dir.join("lexicon.custom.jsonl");
     cleanup_orphaned_lexicon_temps(path.parent().unwrap_or_else(|| Path::new(".")));
     let existing = match fs::read_to_string(&path) {
         Ok(content) => content,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // Leave a trace when a lexicon is created from scratch while curated
+            // backups sit beside it. NOT an error: the operator may have cleared
+            // a poisoned lexicon on purpose (2026-09-18, Founder: "leksykon
+            // wywaliłem ja - był poisoned i psuł najprostsze transkrypcje").
+            // Failing closed here would make live learning demand a restore of
+            // exactly what a human decided to throw away.
+            if let Some(backup) = any_backup_with_curated_rows(&config_dir) {
+                tracing::warn!(
+                    lexicon = %path.display(),
+                    backup = %backup.display(),
+                    "creating a fresh custom lexicon while curated backups exist; \
+                     `codescribe lexicon restore` would merge them back"
+                );
+            }
+            String::new()
+        }
         Err(error) => {
             return Err(error).with_context(|| format!("read custom lexicon {}", path.display()));
         }
@@ -838,6 +859,10 @@ fn upsert_corrections_unlocked(pairs: &[(&str, &str)]) -> Result<()> {
     for (variant, canonical) in accepted {
         rewritten = rewrite_custom_lexicon(&rewritten, variant, canonical)?;
     }
+    // Every full-file replace is now recoverable, not just the `--apply`
+    // replay. Rate-limited inside the helper so per-pair learning cannot fill
+    // the directory.
+    rotate_lexicon_backup_if_stale(&config_dir);
     atomic_write_with_rename(&path, rewritten.as_bytes(), |from, to| fs::rename(from, to))
 }
 
@@ -1491,11 +1516,16 @@ pub fn replay_corrections_through_extractor(
                 continue;
             }
         };
-        // Real records only: Correction level, or legacy-missing level.
+        // Teach only from edits of unreworded text: Off (raw) and Correction,
+        // or legacy-missing level. Smart/Max deliver LLM-reworded text, so an
+        // edit there corrects the formatter, not the engine's hearing.
         let level = record.formatting_level.as_deref();
         let teaches = match level {
             None => true,
-            Some(value) => value.eq_ignore_ascii_case(FormattingPolicy::Correction.as_str()),
+            Some(value) => {
+                value.eq_ignore_ascii_case(FormattingPolicy::Off.as_str())
+                    || value.eq_ignore_ascii_case(FormattingPolicy::Correction.as_str())
+            }
         };
         if !teaches {
             continue;
@@ -1515,13 +1545,34 @@ pub fn replay_corrections_through_extractor(
                 variant: variant.clone(),
                 canonical: canonical.clone(),
                 applied: false,
+                // Filled in by the gate once the whole batch is known.
+                verdict: String::new(),
+                accepted: false,
             });
         }
     }
 
-    if apply && !results.is_empty() {
+    // The extractor answers "what changed"; the gate answers "may this become a
+    // substitution rule". Adjudicate the whole batch, because contradiction and
+    // ambiguity are properties of the set, then apply the accepted tier only.
+    let config_dir = Config::config_dir();
+    let protected = ProtectedTerms::load_from(&ProtectedTerms::default_path(&config_dir));
+    let batch: Vec<(String, String)> = results
+        .iter()
+        .map(|candidate| (candidate.variant.clone(), candidate.canonical.clone()))
+        .collect();
+    for (candidate, verdict) in results
+        .iter_mut()
+        .zip(adjudicate_lexicon_candidates(&batch, &protected))
+    {
+        candidate.verdict = verdict.label().to_string();
+        candidate.accepted = verdict.is_accepted();
+    }
+
+    let accepted_count = results.iter().filter(|c| c.accepted).count();
+    if apply && accepted_count > 0 {
         assert_test_data_dir_isolated("replay_corrections_through_extractor");
-        let lexicon_path = Config::config_dir().join("lexicon.custom.jsonl");
+        let lexicon_path = config_dir.join("lexicon.custom.jsonl");
         if lexicon_path.exists() {
             let ts = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -1540,10 +1591,11 @@ pub fn replay_corrections_through_extractor(
         }
         let pairs: Vec<(&str, &str)> = results
             .iter()
+            .filter(|candidate| candidate.accepted)
             .map(|candidate| (candidate.variant.as_str(), candidate.canonical.as_str()))
             .collect();
         upsert_corrections_in_custom_lexicon(&pairs)?;
-        for candidate in &mut results {
+        for candidate in results.iter_mut().filter(|c| c.accepted) {
             candidate.applied = true;
         }
     }
@@ -1561,8 +1613,14 @@ pub struct ReplayCandidate {
     pub variant: String,
     /// Term it would be rewritten to.
     pub canonical: String,
-    /// False in a dry run; true once the batch upsert succeeded.
+    /// False in a dry run; true once the batch upsert succeeded. Only accepted
+    /// rows can ever flip: the other tiers are reported, never written.
     pub applied: bool,
+    /// Gate tier label, e.g. `accept`, `review:common-word`,
+    /// `reject:protected-variant`. See [`crate::quality::lexicon_gate`].
+    pub verdict: String,
+    /// True only for the `accept` tier — the one `--apply` may write.
+    pub accepted: bool,
 }
 
 /// Result of promoting store evidence (corrections + proposed) into the live dictionary.
@@ -2487,7 +2545,74 @@ mod tests {
         assert!(stored.source.is_none());
     }
 
-    /// Replay dry-run keeps only local teachable pairs; apply writes the lexicon.
+    /// A deliberately cleared lexicon is neither resurrected nor treated as an
+    /// error by the writer.
+    ///
+    /// This test first asserted a hard refusal, on the theory that the
+    /// 2026-09-18 truncation was accidental. It was not: the operator cleared a
+    /// poisoned lexicon on purpose. Fail-closed would have made live learning
+    /// demand a restore of exactly what they had thrown away.
+    #[test]
+    #[serial]
+    fn a_cleared_lexicon_is_not_resurrected_by_the_writer() {
+        let temp_dir = tempfile::tempdir().expect("temp");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let root = temp_dir.path().canonicalize().unwrap();
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", &root);
+        }
+        let config_dir = Config::config_dir();
+        fs::create_dir_all(&config_dir).unwrap();
+
+        // Curation preserved only in a rotation backup — the shape both
+        // machines were found in on 2026-09-18.
+        fs::write(
+            config_dir.join(".lexicon.custom.jsonl.bak-replay-1786891882"),
+            "{\"term\":\"100k\",\"mispronunciations\":[\"sto tysięcy\"]}\n",
+        )
+        .unwrap();
+        assert!(!config_dir.join("lexicon.custom.jsonl").exists());
+
+        upsert_corrections_in_custom_lexicon(&[("grypa", "grepa")])
+            .expect("a cleared lexicon is a decision, not a failure");
+
+        let entries = custom_lexicon_entries().unwrap();
+        assert!(entries.iter().any(|e| e.variant == "grypa"));
+        assert!(
+            !entries.iter().any(|e| e.canonical == "100k"),
+            "only `lexicon restore` merges a backup back; the writer never does it silently"
+        );
+    }
+
+    /// A genuinely fresh machine still gets its first lexicon.
+    #[test]
+    #[serial]
+    fn a_first_run_with_no_history_may_create_the_lexicon() {
+        let temp_dir = tempfile::tempdir().expect("temp");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let root = temp_dir.path().canonicalize().unwrap();
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", &root);
+        }
+        let config_dir = Config::config_dir();
+        fs::create_dir_all(&config_dir).unwrap();
+
+        upsert_corrections_in_custom_lexicon(&[("grypa", "grepa")])
+            .expect("no history means nothing to protect");
+        let entries = custom_lexicon_entries().unwrap();
+        assert!(entries.iter().any(|e| e.variant == "grypa"));
+    }
+
+    /// Replay dry-run keeps only local teachable pairs; apply writes the tier the
+    /// gate accepted, and nothing else.
+    ///
+    /// Two stages, two questions. Extraction asks "what changed" and is blind to
+    /// meaning: it yields `zaznaczenie -> selection` from a one-word edit just as
+    /// readily as `grypa -> grepa`. The gate then asks "may this be a
+    /// substitution rule", and a Polish word paired with its English translation
+    /// is not a mishearing — that rule would rewrite every future
+    /// "zaznaczenie". Both pairs must therefore appear in the table, and only
+    /// one may reach the lexicon.
     #[test]
     #[serial]
     fn replay_dry_run_on_fixture_corpus_produces_expected_table() {
@@ -2508,6 +2633,9 @@ mod tests {
         }
         let delivered = format!("{body}zaznaczenie");
         let edited = format!("{body}selection");
+        // A second, phonetic one-word fix: same extraction shape, opposite verdict.
+        let heard = format!("{body}grypa");
+        let meant = format!("{body}grepa");
         let lines = [
             serde_json::json!({
                 "timestamp_ms": 1,
@@ -2539,6 +2667,102 @@ mod tests {
                 "meta": {"action": "copy"}
             })
             .to_string(),
+            serde_json::json!({
+                "timestamp_ms": 4,
+                "mode": "overlay",
+                "formatting_level": "correction",
+                "raw_text": heard,
+                "delivered_text": heard,
+                "edited_text": meant,
+                "meta": {"action": "copy"}
+            })
+            .to_string(),
+        ];
+        fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
+
+        let table = replay_corrections_through_extractor(&path, false).expect("replay");
+        assert_eq!(
+            table.len(),
+            2,
+            "only the two local word fixes should extract: {table:?}"
+        );
+        assert_eq!(table[0].variant, "zaznaczenie");
+        assert_eq!(table[0].canonical, "selection");
+        assert_eq!(table[0].verdict, "reject:not-phonetic");
+        assert!(!table[0].accepted, "a translation is not a mishearing");
+        assert_eq!(table[1].variant, "grypa");
+        assert_eq!(table[1].canonical, "grepa");
+        assert_eq!(table[1].verdict, "accept");
+        assert!(!table[1].applied, "a dry run writes nothing");
+
+        let applied = replay_corrections_through_extractor(&path, true).expect("apply");
+        assert!(
+            !applied[0].applied,
+            "the refused pair stays out of the lexicon"
+        );
+        assert!(applied[1].applied);
+        let entries = custom_lexicon_entries().unwrap();
+        assert!(entries.iter().any(|e| e.variant == "grypa"));
+        assert!(
+            !entries.iter().any(|e| e.variant == "zaznaczenie"),
+            "apply must not smuggle in a pair the gate refused"
+        );
+    }
+
+    /// The Founder dictates at formatting Off (raw). Wave 9 taught only from
+    /// Correction-level edits, so every raw-level fix — the least reworded,
+    /// safest teaching signal there is — was silently skipped and no candidate
+    /// ever reached the gate. Shaped on the 2026-09-28 receipt:
+    /// "Cloud już" → "Klaudiusz" (a 2→1 replace run). Smart/Max stay out.
+    #[test]
+    #[serial]
+    fn off_level_edits_teach_while_smart_and_max_stay_out() {
+        let temp_dir = tempfile::tempdir().expect("temp");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let temp_root = temp_dir.path().canonicalize().unwrap();
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
+        }
+        let quality = quality_dir();
+        fs::create_dir_all(&quality).unwrap();
+        let path = quality.join("corrections.jsonl");
+        let mut body = String::new();
+        while body.chars().count() < 200 {
+            body.push_str("tekst ");
+        }
+        let heard = format!("{body}a Cloud już ogarnia bus");
+        let meant = format!("{body}a Klaudiusz ogarnia bus");
+        let lines = [
+            serde_json::json!({
+                "timestamp_ms": 1,
+                "mode": "overlay",
+                "formatting_level": "off",
+                "raw_text": heard,
+                "delivered_text": heard,
+                "edited_text": meant,
+                "meta": {"action": "copy"}
+            })
+            .to_string(),
+            serde_json::json!({
+                "timestamp_ms": 2,
+                "mode": "overlay",
+                "formatting_level": "smart",
+                "raw_text": "x",
+                "delivered_text": "smart var",
+                "edited_text": "Smart Canon",
+                "meta": {"action": "copy"}
+            })
+            .to_string(),
+            serde_json::json!({
+                "timestamp_ms": 3,
+                "mode": "overlay",
+                "formatting_level": "max",
+                "raw_text": "y",
+                "delivered_text": "max var",
+                "edited_text": "Max Canon",
+                "meta": {"action": "copy"}
+            })
+            .to_string(),
         ];
         fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
 
@@ -2546,16 +2770,10 @@ mod tests {
         assert_eq!(
             table.len(),
             1,
-            "only the local word fix should extract: {table:?}"
+            "the raw-level fix extracts; smart/max edits never enter: {table:?}"
         );
-        assert_eq!(table[0].variant, "zaznaczenie");
-        assert_eq!(table[0].canonical, "selection");
-        assert!(!table[0].applied);
-
-        let applied = replay_corrections_through_extractor(&path, true).expect("apply");
-        assert!(applied[0].applied);
-        let entries = custom_lexicon_entries().unwrap();
-        assert!(entries.iter().any(|e| e.variant == "zaznaczenie"));
+        assert_eq!(table[0].variant, "Cloud już");
+        assert_eq!(table[0].canonical, "Klaudiusz");
     }
 
     /// Commit under DATA_DIR isolation writes quality + meta and may teach pairs.

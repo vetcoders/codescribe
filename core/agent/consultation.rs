@@ -2155,6 +2155,16 @@ mod tests {
             .expect("queued");
         assert!(refused.await.expect("reply").is_err());
         assert!(requests.lock().expect("requests").is_empty());
+        // dup(2) stands in for the fork-to-exec reference. LOCK_UN releases it;
+        // close() alone does not.
+        let duplicated = unsafe { libc::dup(installer.as_raw_fd()) };
+        assert!(duplicated >= 0, "dup: {}", std::io::Error::last_os_error());
+        assert_eq!(
+            unsafe { libc::flock(installer.as_raw_fd(), libc::LOCK_UN) },
+            0,
+            "unlock installer: {}",
+            std::io::Error::last_os_error()
+        );
         drop(installer);
         // No effects were admitted, so explicitly resubmitting this instruction
         // after installation is permitted; the owner does not auto-retry it.
@@ -2163,5 +2173,6 @@ mod tests {
             .expect("queued again");
         assert!(accepted.await.expect("reply").is_ok());
         assert_eq!(requests.lock().expect("requests").len(), 1);
+        unsafe { libc::close(duplicated) };
     }
 }

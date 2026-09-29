@@ -156,9 +156,17 @@ impl CodescribeAgentStatus {
     /// Loads `Config` first so Keychain-backed keys are populated into env and the
     /// core gate sees real key presence (mirrors `available_providers`).
     pub fn agentic_readiness(&self) -> CsAgenticReadiness {
-        let runtime_settings = codescribe_core::config::Config::load_runtime_snapshot()
-            .expect("canonical runtime settings must load for Agent readiness");
-        probe_agentic_readiness(&runtime_settings).into()
+        // Settings and onboarding call this synchronously; an unreadable
+        // settings store is a not-ready verdict for the card, never a crash
+        // of the host process.
+        match codescribe_core::config::Config::load_runtime_snapshot() {
+            Ok(runtime_settings) => probe_agentic_readiness(&runtime_settings).into(),
+            Err(error) => CsAgenticReadiness {
+                config_path_display: format!("runtime settings unavailable: {error}"),
+                ready: false,
+                rows: Vec::new(),
+            },
+        }
     }
 
     /// Provider-neutral capability matrix: native / enhanced / unavailable + reason.

@@ -62,7 +62,7 @@ repos:
 
       - id: semgrep
         name: semgrep security scan
-        entry: semgrep scan --config auto --config .semgrep.yaml --error .
+        entry: scripts/git-hooks/embargo-guard.sh semgrep -- semgrep scan --config auto --config .semgrep.yaml --error .
         language: system
         pass_filenames: false
         stages: [pre-push]

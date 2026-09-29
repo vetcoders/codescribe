@@ -21,12 +21,13 @@
 //! ranges depending on which consumer was asked. [`SileroIngress::observe`] is
 //! the single decision point that derives both from one observation.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 use crate::audio::capture_receipt::{
     AcousticAvailability, AcousticSpeechEvidence, CaptureEvidenceIdentity,
 };
 use crate::audio::chunker::{SpeechEvent, SpeechSession, VadBoundaryEvidence, VadBoundaryKind};
+pub(crate) use crate::audio::chunker::{UtteranceCloseCause, UtteranceCloseReceipt};
 use crate::config::RuntimeSettingsSnapshot;
 use crate::pipeline::contracts::{
     NonSpeechEvidence, SidebandEvidence, SidebandEvidenceKind, SidebandProvenance,
@@ -117,6 +118,7 @@ pub struct SileroUtterance {
 pub struct UtteranceLedger {
     next_id: u64,
     utterances: Vec<SileroUtterance>,
+    close_receipts: BTreeMap<u64, UtteranceCloseReceipt>,
 }
 
 impl UtteranceLedger {
@@ -158,6 +160,21 @@ impl UtteranceLedger {
         open.range.sample_end = sample_end.max(open.range.sample_end);
         open.closed = true;
         Some(open.id)
+    }
+
+    /// Close the open utterance at a retroactive split boundary. The chunker
+    /// already reopened the continuing segment there, so the extent observed
+    /// past it belongs to the new utterance and this one may shrink to it.
+    fn close_open_at_split(&mut self, boundary: u64) -> Option<u64> {
+        let open = self.utterances.iter_mut().rev().find(|u| !u.closed)?;
+        open.range.sample_end = boundary.max(open.range.sample_start);
+        open.closed = true;
+        Some(open.id)
+    }
+
+    /// The measured close decision; synthetic range-only observations have none.
+    pub(crate) fn close_receipt(&self, id: u64) -> Option<UtteranceCloseReceipt> {
+        self.close_receipts.get(&id).copied()
     }
 
     pub fn utterances(&self) -> &[SileroUtterance] {
@@ -526,6 +543,13 @@ impl SileroIngress {
         self.vad.vad_available()
     }
 
+    /// Queue one Silero probability for the next live frame.
+    /// See [`crate::audio::chunker::SpeechSession::push_scripted_speech_prob_for_test`].
+    #[cfg(test)]
+    pub fn push_scripted_speech_prob_for_test(&mut self, prob: f32) {
+        self.vad.push_scripted_speech_prob_for_test(prob);
+    }
+
     /// Feed one capture chunk. `samples_seen` is the session cursor *after*
     /// this chunk (same counter `apple_stream_worker` already owns).
     pub fn ingest(&mut self, samples: &[f32], samples_seen: u64) -> SileroIngest {
@@ -544,7 +568,14 @@ impl SileroIngress {
             .iter()
             .any(|event| matches!(event, SpeechEvent::UtteranceFinal));
         let open_range = self.vad.open_segment_raw_range();
-        let mut out = self.observe(open_range, closed_here, samples_seen);
+        let closed_end = self.vad.last_closed_segment_raw_range().map(|(_, end)| end);
+        let mut out =
+            self.observe_with_closed_end(open_range, closed_here, closed_end, samples_seen);
+        if let Some(receipt) = self.vad.last_close_receipt() {
+            for id in &out.closed {
+                self.ledger.close_receipts.insert(*id, receipt);
+            }
+        }
         out.sideband = self.observe_boundaries(&boundaries);
         out
     }
@@ -553,16 +584,42 @@ impl SileroIngress {
     /// synthetic edges (Silero loads from embedded bytes; a unit test that
     /// silently degraded to "no model" would prove nothing). Production calls
     /// this exactly once per chunk, from [`Self::ingest`].
+    #[cfg(test)]
     pub fn observe(
         &mut self,
         open_range: Option<(u64, u64)>,
         closed_here: bool,
         samples_seen: u64,
     ) -> SileroIngest {
+        self.observe_with_closed_end(open_range, closed_here, None, samples_seen)
+    }
+
+    pub(crate) fn observe_with_closed_end(
+        &mut self,
+        open_range: Option<(u64, u64)>,
+        closed_here: bool,
+        closed_end: Option<u64>,
+        samples_seen: u64,
+    ) -> SileroIngest {
         let mut out = SileroIngest {
             speech_live: closed_here || open_range.is_some(),
             ..SileroIngest::default()
         };
+        let end = closed_end.unwrap_or(samples_seen);
+        // A split reopens the continuing segment exactly at the closed end; a
+        // fresh onset after a pause starts later and must not shrink the close.
+        let reopens = closed_here
+            && open_range.is_some_and(|(start, _)| {
+                self.ledger
+                    .utterances()
+                    .iter()
+                    .rev()
+                    .find(|utterance| !utterance.closed)
+                    .is_some_and(|old| start > old.range.sample_start && start == end)
+            });
+        if reopens && let Some(id) = self.ledger.close_open_at_split(end) {
+            out.closed.push(id);
+        }
         if let Some((start, end)) = open_range {
             out.open =
                 Some(
@@ -570,7 +627,10 @@ impl SileroIngress {
                         .open_or_extend(&self.session, self.capture_epoch, start, end),
                 );
         }
-        if closed_here && let Some(id) = self.ledger.close_open(samples_seen) {
+        if closed_here
+            && !reopens
+            && let Some(id) = self.ledger.close_open(samples_seen)
+        {
             out.closed.push(id);
             if out.open == Some(id) {
                 out.open = None;
@@ -665,7 +725,15 @@ impl SileroIngress {
     pub fn flush(&mut self, samples_seen: u64) -> Option<u64> {
         let _ = self.vad.flush();
         self.speech.close(samples_seen);
-        self.ledger.close_open(samples_seen)
+        let id = self.ledger.close_open(samples_seen)?;
+        self.ledger.close_receipts.insert(
+            id,
+            UtteranceCloseReceipt {
+                decision_sample: samples_seen,
+                cause: UtteranceCloseCause::EndOfCapture,
+            },
+        );
+        Some(id)
     }
 }
 
@@ -795,6 +863,40 @@ pub fn bound_context_range(
     range
 }
 
+/// Left edge of a decode window that must cover `min_samples`, ending at the
+/// occurrence.
+///
+/// `existing` is the pad from [`bound_context_range`]. An occurrence already
+/// at least `min_samples` long keeps that pad, fences included. A shorter
+/// occurrence grows left past the previous occurrence and the long-silence
+/// fence, and stops at capture start or the retention edge. The right edge
+/// is the occurrence end. Ownership is not this range.
+pub fn decode_window_with_min_context(
+    utterance: &TailSampleRange,
+    existing: &TailSampleRange,
+    min_samples: u64,
+    capture_start: u64,
+    retention_start: u64,
+) -> TailSampleRange {
+    let owned = utterance.sample_end.saturating_sub(utterance.sample_start);
+    if min_samples == 0 || owned >= min_samples {
+        return existing.clone();
+    }
+    let floor = capture_start.max(retention_start);
+    let want = utterance.sample_end.saturating_sub(min_samples);
+    let start = existing
+        .sample_start
+        .min(want)
+        .max(floor)
+        .min(utterance.sample_end);
+    TailSampleRange {
+        session: utterance.session.clone(),
+        capture_epoch: utterance.capture_epoch,
+        sample_start: start,
+        sample_end: utterance.sample_end,
+    }
+}
+
 /// One word pinned to a PCM range for fusion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FusionWord {
@@ -854,6 +956,84 @@ mod tests {
             sample_start: start,
             sample_end: end,
         }
+    }
+
+    /// A pause close is not a retroactive split: the chunker's padded end sits
+    /// ~64 ms past the last voiced frame, while the close is only observed after
+    /// the closing silence. The utterance keeps that trailing extent, so an
+    /// Apple word whose midpoint lands just past the padded end still has an
+    /// owner instead of becoming a `no_time_overlap` leftover.
+    #[test]
+    fn live_ingest_attaches_measured_silence_decision_beside_unchanged_ranges() {
+        let mut ingress = SileroIngress::new(16_000, "close-receipt", 7);
+        ingress.vad = SpeechSession::new_utterance_with_silence(16_000, 0.20);
+        let mut cursor = 0;
+        for _ in 0..20 {
+            ingress.push_scripted_speech_prob_for_test(0.9);
+            cursor += 512;
+            ingress.ingest(&[0.2; 512], cursor);
+        }
+        let mut closed = None;
+        for _ in 0..30 {
+            ingress.push_scripted_speech_prob_for_test(0.01);
+            cursor += 512;
+            let out = ingress.ingest(&[0.0; 512], cursor);
+            if let Some(id) = out.closed.first() {
+                closed = Some(*id);
+                break;
+            }
+        }
+        let id = closed.expect("live ingress must close after measured silence");
+        let receipt = ingress.ledger().close_receipt(id).unwrap();
+        assert_eq!(receipt.cause, UtteranceCloseCause::SilenceFence);
+        assert_eq!(receipt.decision_sample, cursor);
+        assert!(receipt.decision_sample >= 20 * 512 + 3_200);
+        assert_eq!(ingress.ledger().utterances()[0].range.sample_end, cursor);
+        assert!(ingress.ledger().utterances()[0].closed);
+        assert!(ingress.flush(cursor).is_none());
+        assert_eq!(ingress.ledger().close_receipt(id), Some(receipt));
+    }
+
+    #[test]
+    fn fusion_stop_records_end_of_capture_only_for_the_open_utterance() {
+        let mut ingress = SileroIngress::new(16_000, "stop-receipt", 8);
+        ingress.push_scripted_speech_prob_for_test(0.9);
+        let out = ingress.ingest(&[0.2; 512], 512);
+        let id = out.open.expect("speech opens a live utterance");
+        assert!(ingress.ledger().close_receipt(id).is_none());
+        assert_eq!(ingress.flush(512), Some(id));
+        assert_eq!(
+            ingress.ledger().close_receipt(id),
+            Some(UtteranceCloseReceipt {
+                decision_sample: 512,
+                cause: UtteranceCloseCause::EndOfCapture,
+            })
+        );
+        assert!(ingress.flush(512).is_none());
+        assert_eq!(ingress.ledger().close_receipts.len(), 1);
+    }
+
+    #[test]
+    fn a_pause_close_keeps_the_trailing_extent_for_late_apple_words() {
+        let mut ingress = SileroIngress::new(16_000, "s", 0);
+        ingress.observe_with_closed_end(Some((0, 16_000)), false, None, 16_000);
+        let chunker_end = 17_024;
+        let close = ingress.observe_with_closed_end(None, true, Some(chunker_end), 24_000);
+        assert_eq!(close.closed, vec![1]);
+        let closed = &ingress.ledger().utterances()[0];
+        assert_eq!(
+            closed.range.sample_end, 24_000,
+            "a pause close must not shrink to the chunker's padded end"
+        );
+        let late_word_midpoint = 19_000;
+        assert_eq!(
+            ingress
+                .ledger()
+                .utterance_covering(late_word_midpoint)
+                .map(|utterance| utterance.id),
+            Some(1),
+            "a trailing Apple word past the padded end keeps its owner"
+        );
     }
 
     /// The unification claim, stated as a test: **one** observation of the
@@ -1083,6 +1263,58 @@ mod tests {
         );
         assert_eq!(prompt.sample_start, 48_000);
         assert_eq!(prompt.sample_end, 64_000);
+    }
+
+    /// A 0.31 s tail after a long silence stays fenced for the small pad, then
+    /// the minimum window reaches back four seconds and still ends on the tail.
+    /// One second of capture leaves a shorter window that stops at capture start.
+    #[test]
+    fn short_tail_after_long_silence_hears_at_least_four_seconds() {
+        let rate = 48_000u64;
+        let occurrence_len = (0.31_f32 * rate as f32).round() as u64;
+        let occurrence_end = 609_280u64;
+        let occurrence_start = occurrence_end - occurrence_len;
+        let silence = (LONG_SILENCE_FENCE_SECS * rate as f32).round() as u64;
+        let previous_end = occurrence_start - silence;
+        let pad = (DEFAULT_SYMMETRIC_PAD_SECS * rate as f32).round() as u64;
+        let utterance = range(occurrence_start, occurrence_end);
+        let bounds = ContextBounds {
+            long_silence_fence: occurrence_start,
+            capture_end: occurrence_end,
+            previous_utterance_end: Some(previous_end),
+            next_utterance_start: None,
+        };
+        let fenced = bound_context_range(&utterance, FusionContextMode::SymmetricPad, pad, &bounds);
+        assert_eq!(
+            fenced.sample_end.saturating_sub(fenced.sample_start),
+            occurrence_len,
+            "the small pad still stops at the long-silence fence"
+        );
+
+        let window = decode_window_with_min_context(&utterance, &fenced, 4 * rate, 0, 0);
+        assert_eq!(window.sample_end, occurrence_end);
+        assert!(
+            window.sample_end.saturating_sub(window.sample_start) >= 4 * rate,
+            "window {}..{} is shorter than 4 s",
+            window.sample_start,
+            window.sample_end
+        );
+        assert!(
+            window.sample_start < previous_end && window.sample_start < occurrence_start,
+            "minimum context crosses the previous occurrence and the silence fence"
+        );
+
+        let capture_start = occurrence_end - rate;
+        let clamped = decode_window_with_min_context(
+            &utterance,
+            &fenced,
+            4 * rate,
+            capture_start,
+            capture_start,
+        );
+        assert_eq!(clamped.sample_start, capture_start);
+        assert_eq!(clamped.sample_end, occurrence_end);
+        assert!(clamped.sample_end.saturating_sub(clamped.sample_start) < 4 * rate);
     }
 
     /// The default cut reaches both ways. 400 ms at 16 kHz is 6 400 samples;

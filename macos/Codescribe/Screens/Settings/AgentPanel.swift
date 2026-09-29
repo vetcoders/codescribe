@@ -1,11 +1,12 @@
 import SwiftUI
 
-// Agent panel: the one owner of request lanes and local agent substrate.
-// Lanes pick a PROVIDER (from Settings › Providers) and a MODEL; there is no
-// endpoint field here — the endpoint belongs to the provider.
+// Agent panel: the one owner of request lanes, prompts and local agent
+// substrate. Lanes pick a PROVIDER (from Settings › Providers) and a MODEL;
+// there is no endpoint field here — the endpoint belongs to the provider.
 struct AgentPanel: View {
   static let ownedCapabilities: Set<SettingsPanelCapability> = [
     .llmLanes,
+    .prompts,
     .workspaceRoots,
     .agentStatus,
     .mcpServers,
@@ -14,143 +15,27 @@ struct AgentPanel: View {
 
   @ObservedObject var model: SettingsViewModel
 
-  /// One page at a time, and the page IS the content. Five independent
-  /// subsystems (lanes, roots, capabilities, tool permissions, MCP servers —
-  /// the last two alone are ~800 lines) used to stack into a single scroll.
-  /// Each page owns its headline and body; the resolved-truth table lives only
-  /// where it is the subject (Request lanes), below the editors.
+  /// One tab at a time, and the tab IS the content. Six independent
+  /// subsystems (lanes, prompts, roots, capabilities, tool permissions, MCP
+  /// servers) used to stack into one scroll, then into sidebar child rows.
   var body: some View {
-    VStack(alignment: .leading, spacing: 0) {
-      EyebrowLabel(text: "Settings · \(SettingsSection.agent.title) · \(current.title)")
-      Text(headline)
-        .font(CSFont.ui(26, .bold))
-        .tracking(-0.5)
-        .foregroundStyle(CSColor.textHigh)
-        .padding(.top, 6)
-
-      Text(blurb)
-        .font(CSFont.ui(12.5))
-        .lineSpacing(2)
-        .foregroundStyle(CSColor.textMutedAlt)
-        .padding(.top, 8)
-
-      page
-        .padding(.top, CSSpace.lg)
-    }
-    .padding(.horizontal, CSSpace.xl)
-    .padding(.vertical, CSSpace.section)
-  }
-
-  /// The nil route (a deep link that named no page) lands on lanes,
-  /// mirroring the `page` switch below. Pages of other sections cannot
-  /// reach this panel, so they clamp to lanes too.
-  private var current: SettingsPage {
-    switch model.page {
-    case .agentWorkspace, .agentStatus, .agentTools, .agentMcp:
-      return model.page ?? .agentLanes
-    default:
-      return .agentLanes
-    }
-  }
-
-  private var headline: String {
-    switch current {
-    case .agentWorkspace: return "Workspace roots."
-    case .agentStatus: return "Capabilities."
-    case .agentTools: return "Tool permissions."
-    case .agentMcp: return "MCP servers."
-    default: return "Request lanes."
-    }
-  }
-
-  private var blurb: String {
-    switch current {
-    case .agentWorkspace:
-      return "Directories the agent may read and write. Everything outside them is out of reach."
-    case .agentStatus:
-      return "What the local agent substrate can currently do, and why."
-    case .agentTools:
-      return "Allow, ask, or deny — per tool. Deny wins over everything."
-    case .agentMcp:
-      return "External MCP servers the agent can call, and their transports."
-    default:
-      return
-        "Provider and model per request path. Endpoints and keys live on Providers; the resolved runtime truth is below the editors."
-    }
-  }
-
-  @ViewBuilder
-  private var page: some View {
-    switch model.page {
-    case .agentWorkspace:
-      WorkspaceRootsSection(model: model)
-    case .agentStatus:
-      AgentStatusSection(model: model)
-    case .agentTools:
-      ToolPermissionsSection(model: model)
-    case .agentMcp:
-      MCPServersSection(model: model)
-    default:
-      // `.agentLanes` and the nil route (deep link that named no page).
-      VStack(alignment: .leading, spacing: 0) {
-        LLMLanesSection(model: model)
-
-        // The answer to "which provider am I actually talking to",
-        // placed after the editors as read-only proof of what resolved.
-        SettingsSectionLabel("Resolved runtime truth")
-          .padding(.top, CSSpace.section)
-        runtimeRows
-          .padding(.top, CSSpace.control)
+    SettingsTabbedPane(model: model, section: .agent) {
+      switch model.currentTab {
+      case .agentPrompts:
+        PromptPanel(model: model)
+      case .agentWorkspace:
+        WorkspaceRootsSection(model: model)
+      case .agentStatus:
+        AgentStatusSection(model: model)
+      case .agentTools:
+        ToolPermissionsSection(model: model)
+      case .agentMcp:
+        MCPServersSection(model: model)
+      default:
+        // `.agentLanes`; other sections' tabs cannot reach this panel.
+        AgentLanesTab(model: model)
       }
     }
-  }
-
-  // MARK: - Resolved LLM truth (read-only)
-
-  private var runtimeRows: some View {
-    VStack(spacing: 0) {
-      RuntimeRow(
-        key: "AI formatting",
-        value: model.formattingDescription,
-        tint: true,
-        trailing: .none
-      )
-      ForEach(LLMLane.allCases) { lane in
-        let laneModel = model.llmLane(lane)
-        divider
-        RuntimeRow(
-          key: "\(lane.title) provider",
-          value: laneModel.providerDisplayName,
-          tint: false,
-          trailing: .dot(laneModel.availabilityTint)
-        )
-        divider
-        RuntimeRow(
-          key: "\(lane.title) endpoint",
-          value: laneModel.resolvedEndpoint,
-          tint: false,
-          mono: true,
-          trailing: .none
-        )
-        divider
-        RuntimeRow(
-          key: "\(lane.title) model",
-          value: laneModel.resolvedModel,
-          tint: true,
-          mono: true,
-          trailing: .text(laneModel.availabilityDescription, laneModel.availabilityTint)
-        )
-      }
-    }
-    .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
-    )
-  }
-
-  private var divider: some View {
-    Rectangle().fill(CSColor.hairline(0.05)).frame(height: 1)
   }
 }
 

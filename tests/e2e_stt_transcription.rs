@@ -216,12 +216,14 @@ fn create_complete_model(path: &Path) {
     )
     .expect("write config");
     let mut tokenizer = tokenizers::Tokenizer::new(tokenizers::models::bpe::BPE::default());
-    tokenizer.add_special_tokens(&[
-        tokenizers::AddedToken::from("<|startoftranscript|>", true),
-        tokenizers::AddedToken::from("<|endoftext|>", true),
-        tokenizers::AddedToken::from("<|transcribe|>", true),
-        tokenizers::AddedToken::from("<|pl|>", true),
-    ]);
+    tokenizer
+        .add_special_tokens([
+            tokenizers::AddedToken::from("<|startoftranscript|>", true),
+            tokenizers::AddedToken::from("<|endoftext|>", true),
+            tokenizers::AddedToken::from("<|transcribe|>", true),
+            tokenizers::AddedToken::from("<|pl|>", true),
+        ])
+        .expect("add fixture special tokens");
     tokenizer
         .save(path.join("tokenizer.json"), false)
         .expect("write tokenizer");

@@ -68,8 +68,10 @@ Light+ (`core/pipeline/light_plus.rs`, restored 2026-09-08) is the L2 floor
 under the formatter: deterministic, idempotent sentence shape — capital at
 sentence starts, a closing period, hesitation sounds (`yyy`, `eee`, `hmm`)
 dropped, punctuation seams collapsed — with no network and no model. It never
-deletes a word and never touches an occurrence label. In live it runs once,
-in Rust, on the terminal document: `TranscriptReducer::light_plus_intent`
+deletes a lexical word or touches an occurrence label. During capture it shapes
+committed occurrences without claiming a seal; a PCM gap controlled by
+`LIGHT_PLUS_SENTENCE_PAUSE_SEC` decides inter-span sentence breaks. At Stop,
+the frozen canvas is shaped before paste. `TranscriptReducer::light_plus_intent`
 (`app/presentation/emitter.rs`) computes the shaped bytes, and
 `PresentationEmitter::mint_light_plus_revision` commits them through the same
 ledger + reducer corridor as a user edit, with
@@ -77,7 +79,8 @@ ledger + reducer corridor as a user edit, with
 twice — at the terminal `LedgerSeal` and again at `SessionFinalised` (a
 one-occurrence session's whole-session seal is indistinguishable from its
 sole occurrence seal, so the reducer becomes terminal only at lifecycle end);
-the second gate is a no-op when the first already shaped the document. The
+the lifecycle gate also runs when acoustic terminal coverage is refused.
+The second gate is a no-op when the first already shaped the document. The
 only lane without it is the literal contract
 (`PresentationEmitter::set_literal_delivery(true)`, the Ctrl-hold `force_raw`
 promise); auto-format "off" still gets it. The Responses formatter reads the
@@ -148,9 +151,9 @@ Normal stop:
    the seal alone could not establish terminality), then `session_ended`; and
 7. delivers through the route latched from explicit operator intent.
 
-Normal stop starts no whole-file Whisper pass and no fifth text layer. Legacy
-`FINAL_PASS_MODE` spellings remain migration tokens; explicit Retranscribe owns
-whole-file inference.
+Normal stop starts no whole-file Whisper pass and no fifth text layer.
+`FINAL_PASS_MODE` spellings are retired and removed from persisted settings;
+explicit Retranscribe owns whole-file inference.
 
 ## 5. Responses Formatting lane truth
 
@@ -198,6 +201,22 @@ explicitly distinct routes.
 baseline. The Bus has no draft or arbitrary-text seal API, and there is no raw-
 event delta adapter.
 
+L0 `Preview` carries a `PreviewPin`: the PCM range it paints on the capture
+counter, at `word` grain from the partial's segments, or at `utterance` grain
+with receipt `partial_without_segments` when the partial has none. The emitter
+logs one `L0 preview painted` line per preview (rev, range, grain, receipt; the
+words are counted, never logged).
+
+Unanchored text (`KeepVisibleUnanchored`) is read-only evidence. The canvas
+paint keeps it only on ranges no committed token covers. The capture-bound
+`CompactProjection` / `CsCompactProjection` carries all of it as `evidence`
+(`sample_start`, `sample_end`, `text`, `reason`) in PCM order, and the overlay
+paints it beside the canvas as secondary, non-committed text. Its text is never
+compared with the canvas, so a differing Whisper alternative inside an Apple
+occurrence stays visible. It never enters `transcript_buffer`, Bus
+`publish_revision`, or delivery; the seal of the committed token over its range,
+or the lifecycle end, removes it.
+
 The Bus projects the Light+ revision as `apply_manual_edit` / `formatted` /
 `terminal` with a `light-plus-…` manual-edit receipt, between the
 `record_ledger_terminal_seal` row and `session_ended`; `session_ended` copies
@@ -207,15 +226,15 @@ revision for the session that is still current for exactly this reason.
 
 ## 7. Settings and runtime truth
 
-| Surface                                          | Meaning                                                                               |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------- |
-| `CODESCRIBE_ASR_MODE`                            | product intent: `local_power`, `cloud`, or `apple_only`                               |
-| `CODESCRIBE_LAYERED_TRANSCRIPTION`               | compatibility override for live Layer 1 arming; it does not select another dispatcher |
-| `CODESCRIBE_APPLE_STT_LIVE_MODE`                 | Apple bridge transport A/B only                                                       |
-| `STT_TAIL_PROVIDER`                              | Layer 1 provider implementation                                                       |
-| `FINAL_PASS_MODE` / `CODESCRIBE_FINAL_PASS_MODE` | migration-only stop token; no normal-stop file pass                                   |
-| `RuntimeSettingsSnapshot::llm_lanes()`           | sealed per-take LLM provider/model/endpoint/credential availability                   |
-| `tail_patch_session_receipt`                     | per-take evidence of live Layer 1 exercise and terminal accounting                    |
+| Surface                                          | Meaning                                                             |
+| ------------------------------------------------ | ------------------------------------------------------------------- |
+| `CODESCRIBE_ASR_MODE`                            | product intent: `local_power`, `cloud`, or `apple_only`             |
+| `CODESCRIBE_LAYERED_TRANSCRIPTION`               | env-only diagnostic override for Local Power; Cloud ignores it      |
+| `CODESCRIBE_APPLE_STT_LIVE_MODE`                 | Apple bridge transport A/B only                                     |
+| `STT_TAIL_PROVIDER`                              | Layer 1 provider implementation                                     |
+| `FINAL_PASS_MODE` / `CODESCRIBE_FINAL_PASS_MODE` | retired; ignored at runtime and rejected on config writes           |
+| `RuntimeSettingsSnapshot::llm_lanes()`           | sealed per-take LLM provider/model/endpoint/credential availability |
+| `tail_patch_session_receipt`                     | per-take evidence of live Layer 1 exercise and terminal accounting  |
 
 Configured intent, runtime arming, provider exercise, and accepted ledger
 mutation are four different facts. No UI toggle alone proves all four.

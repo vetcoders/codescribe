@@ -13,7 +13,9 @@ use crate::asr_session::recorder::{Layer1Decision, RecorderLifecycleEvents};
 use crate::audio::streaming_recorder::CaptureTurnIntent;
 use crate::config::{Config, RuntimeSettingsSnapshot};
 use crate::pipeline::acoustic_ledger::AcousticLedger;
-use crate::pipeline::contracts::{EngineEvent, EventSink, LayerSummary};
+use crate::pipeline::contracts::{
+    EngineEvent, EventSink, LayerSummary, SessionConservationReceipt,
+};
 use crate::stt::tail_patcher::{
     TailPatchConfig, TailPatchOutcome, compute_tail_patch_with_context,
 };
@@ -41,6 +43,15 @@ impl LocalExecutionOwner {
     pub(super) fn begin_drain(&self, budget: std::time::Duration) -> std::time::Instant {
         let deadline = std::time::Instant::now() + budget;
         self.control.limit_until(deadline)
+    }
+
+    /// Stop-path text recovery budget. Unlike [`Self::begin_drain`], this
+    /// replaces the deadline: recovery runs after the live tail-patch drain
+    /// and must not inherit a clock that drain already spent. Cancellation
+    /// stays in force.
+    pub(super) fn begin_text_recovery(&self, budget: std::time::Duration) -> std::time::Instant {
+        self.control
+            .replace_deadline(std::time::Instant::now() + budget)
     }
 
     pub(crate) fn spawn<T, F>(&self, work: F) -> Result<tokio::sync::oneshot::Receiver<Result<T>>>
@@ -168,6 +179,8 @@ pub struct SessionConfig {
     pub terminal_audio: Option<
         std::sync::mpsc::Receiver<Result<super::live_audio_buffer::FinalizedPcmArchive, String>>,
     >,
+    /// Acknowledged only after the stop window's L0 events reached the reducer.
+    pub last_window_closed: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 /// Stable event code carrying the typed local tail-patch session receipt.
@@ -210,7 +223,7 @@ impl TailPatchDrainDisposition {
 
 /// Content-free proof of local Whisper arming, work admission, application,
 /// and bounded stop drainage for one recording.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TailPatchSessionReceipt {
     pub armed: bool,
     pub submitted: u64,
@@ -220,12 +233,20 @@ pub struct TailPatchSessionReceipt {
     pub timed_out: u64,
     /// Jobs discarded for a non-timeout reason after admission.
     pub abandoned: u64,
+    /// Terminal counts above `submitted`. Zero when the buckets fit.
+    pub overcount: u64,
     pub drain: TailPatchDrainDisposition,
+    /// Conservation loop for this session. Absent until a ledger supplies it.
+    pub conservation: SessionConservationReceipt,
 }
 
 impl TailPatchSessionReceipt {
-    /// Construct a receipt. The caller owns counter provenance; this type owns
-    /// the invariant checks and stable event encoding.
+    /// Construct a receipt. The caller owns counter provenance; this type names
+    /// a mismatch instead of aborting the take.
+    ///
+    /// A shortfall below `submitted` is added to `abandoned` and the drain
+    /// becomes [`TailPatchDrainDisposition::Abandoned`]. An excess is kept in
+    /// the caller's buckets, named as `overcount`, and warned.
     pub fn new(
         armed: bool,
         submitted: u64,
@@ -235,25 +256,47 @@ impl TailPatchSessionReceipt {
         abandoned: u64,
         drain: TailPatchDrainDisposition,
     ) -> Self {
-        let receipt = Self {
+        let accounted = applied
+            .saturating_add(skipped)
+            .saturating_add(timed_out)
+            .saturating_add(abandoned);
+        let (abandoned, drain, overcount) = if accounted < submitted {
+            (
+                abandoned.saturating_add(submitted - accounted),
+                TailPatchDrainDisposition::Abandoned,
+                0,
+            )
+        } else if accounted > submitted {
+            let overcount = accounted - submitted;
+            warn!(
+                submitted,
+                applied,
+                skipped,
+                timed_out,
+                abandoned,
+                overcount,
+                "tail-patch terminal buckets over-count submitted jobs"
+            );
+            (abandoned, drain, overcount)
+        } else {
+            (abandoned, drain, 0)
+        };
+        Self {
             armed,
             submitted,
             applied,
             skipped,
             timed_out,
             abandoned,
+            overcount,
             drain,
-        };
-        assert!(
-            receipt.is_reconciled(),
-            "tail-patch terminal buckets must reconcile exactly to submitted jobs"
-        );
-        receipt
+            conservation: SessionConservationReceipt::default(),
+        }
     }
 
     /// Build the production stop receipt. Every job still outstanding after
     /// the worker's real bounded closure loop is classified as timed out.
-    /// `abandoned` is reserved for a distinct non-timeout discard path.
+    /// Any further gap below `submitted` is abandoned by [`Self::new`].
     pub fn from_stop(
         armed: bool,
         submitted: u64,
@@ -278,34 +321,47 @@ impl TailPatchSessionReceipt {
         )
     }
 
+    /// Attach the ledger's conservation receipt. Job buckets stay as they are.
+    pub fn with_conservation(mut self, conservation: SessionConservationReceipt) -> Self {
+        self.conservation = conservation;
+        self
+    }
+
     /// An armed lane that submitted no work is a failed runtime witness, not
     /// proof that Layered worked.
-    pub fn armed_without_submissions(self) -> bool {
+    pub fn armed_without_submissions(&self) -> bool {
         self.armed && self.submitted == 0
     }
 
-    /// Whether every submitted job has exactly one terminal bucket.
-    pub fn is_reconciled(self) -> bool {
+    /// Whether every submitted job is named by exactly one terminal bucket,
+    /// with any excess named by `overcount`.
+    pub fn is_reconciled(&self) -> bool {
         self.applied
             .saturating_add(self.skipped)
             .saturating_add(self.timed_out)
             .saturating_add(self.abandoned)
-            == self.submitted
+            == self.submitted.saturating_add(self.overcount)
     }
 
-    pub(crate) fn as_event(self) -> EngineEvent {
+    pub(crate) fn as_event(&self) -> EngineEvent {
+        let mut message = format!(
+            "armed={} submitted={} applied={} skipped={} timed_out={} abandoned={} overcount={} drain={}",
+            self.armed,
+            self.submitted,
+            self.applied,
+            self.skipped,
+            self.timed_out,
+            self.abandoned,
+            self.overcount,
+            self.drain.as_token(),
+        );
+        if self.conservation.emitted {
+            message.push(' ');
+            message.push_str(&self.conservation.encode_fields());
+        }
         EngineEvent::Warning {
             code: TAIL_PATCH_SESSION_RECEIPT_WARNING_CODE.to_string(),
-            message: format!(
-                "armed={} submitted={} applied={} skipped={} timed_out={} abandoned={} drain={}",
-                self.armed,
-                self.submitted,
-                self.applied,
-                self.skipped,
-                self.timed_out,
-                self.abandoned,
-                self.drain.as_token(),
-            ),
+            message,
         }
     }
 
@@ -330,7 +386,12 @@ impl TailPatchSessionReceipt {
             skipped: fields.get("skipped")?.parse().ok()?,
             timed_out: fields.get("timed_out")?.parse().ok()?,
             abandoned: fields.get("abandoned")?.parse().ok()?,
+            overcount: fields
+                .get("overcount")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0),
             drain: TailPatchDrainDisposition::from_token(fields.get("drain")?)?,
+            conservation: SessionConservationReceipt::decode_fields(&fields),
         };
         receipt.is_reconciled().then_some(receipt)
     }
@@ -434,11 +495,13 @@ pub(super) fn emit_session_finalised(
     event_sink: &dyn EventSink,
     session_id: String,
     tail_patch_replacements: u64,
+    conservation: SessionConservationReceipt,
 ) {
     event_sink.on_event(&EngineEvent::SessionFinalised {
         session_id,
         layer_summary: LayerSummary {
             tail_patch_replacements,
+            conservation,
             ..LayerSummary::default()
         },
     });
@@ -465,8 +528,8 @@ pub(super) fn tail_patch_lane_starved(applied: u64, skipped: u64) -> bool {
 /// diagnoses the lane. A starved session — Whisper burned inference on every
 /// sealed utterance and the canvas received none of it — is a WARN, because
 /// that is the lane not doing its one job, silently.
-pub(super) fn log_tail_patch_session_receipt(receipt: TailPatchSessionReceipt) {
-    if receipt.timed_out > 0 || receipt.abandoned > 0 {
+pub(super) fn log_tail_patch_session_receipt(receipt: &TailPatchSessionReceipt) {
+    if receipt.overcount > 0 {
         warn!(
             armed = receipt.armed,
             submitted = receipt.submitted,
@@ -474,6 +537,19 @@ pub(super) fn log_tail_patch_session_receipt(receipt: TailPatchSessionReceipt) {
             skipped = receipt.skipped,
             timed_out = receipt.timed_out,
             abandoned = receipt.abandoned,
+            overcount = receipt.overcount,
+            drain = receipt.drain.as_token(),
+            "tail_patch_session_overcount: terminal buckets exceed submitted jobs"
+        );
+    } else if receipt.timed_out > 0 || receipt.abandoned > 0 {
+        warn!(
+            armed = receipt.armed,
+            submitted = receipt.submitted,
+            applied = receipt.applied,
+            skipped = receipt.skipped,
+            timed_out = receipt.timed_out,
+            abandoned = receipt.abandoned,
+            overcount = receipt.overcount,
             drain = receipt.drain.as_token(),
             "tail_patch_session_degraded: accepted work missed the bounded stop drain"
         );
@@ -498,6 +574,7 @@ pub(super) fn log_tail_patch_session_receipt(receipt: TailPatchSessionReceipt) {
             skipped = receipt.skipped,
             timed_out = receipt.timed_out,
             abandoned = receipt.abandoned,
+            overcount = receipt.overcount,
             drain = receipt.drain.as_token(),
             "tail_patch_session_receipt"
         );
@@ -594,6 +671,7 @@ pub async fn collect_buffered_engine_events(
             layer1: Layer1Decision::Disarmed,
             lifecycle_events: None,
             terminal_audio: None,
+            last_window_closed: None,
         },
     )
     .await
@@ -652,11 +730,11 @@ mod session_tests {
     fn tail_patch_session_receipt_round_trips_through_production_event_shape() {
         let receipt =
             TailPatchSessionReceipt::new(true, 4, 2, 1, 1, 0, TailPatchDrainDisposition::TimedOut);
+        assert!(!receipt.armed_without_submissions());
         assert_eq!(
             TailPatchSessionReceipt::from_events(&[receipt.as_event()]),
             Some(receipt)
         );
-        assert!(!receipt.armed_without_submissions());
 
         let unexercised =
             TailPatchSessionReceipt::new(true, 0, 0, 0, 0, 0, TailPatchDrainDisposition::Completed);
@@ -669,15 +747,65 @@ mod session_tests {
         assert_eq!(completed.drain, TailPatchDrainDisposition::Completed);
         assert_eq!(completed.timed_out, 0);
         assert_eq!(completed.abandoned, 0);
+        assert!(completed.is_reconciled());
 
         let timed_out = TailPatchSessionReceipt::from_stop(true, 3, 1, 0, 2);
         assert_eq!(timed_out.drain, TailPatchDrainDisposition::TimedOut);
         assert_eq!(timed_out.timed_out, 2);
         assert_eq!(timed_out.abandoned, 0);
+        assert!(timed_out.is_reconciled());
         assert_eq!(
             TailPatchSessionReceipt::from_events(&[timed_out.as_event()]),
             Some(timed_out)
         );
+    }
+
+    /// Stop used to abort the process here: release builds set `panic = "abort"`,
+    /// so a shortfall never reached seal or delivery.
+    #[test]
+    fn stop_receipt_names_unexplained_shortfall_instead_of_aborting() {
+        let receipt = TailPatchSessionReceipt::from_stop(true, 3, 1, 1, 0);
+        assert_eq!(receipt.applied, 1);
+        assert_eq!(receipt.skipped, 1);
+        assert_eq!(receipt.timed_out, 0);
+        assert_eq!(receipt.abandoned, 1);
+        assert_eq!(receipt.overcount, 0);
+        assert_eq!(receipt.drain, TailPatchDrainDisposition::Abandoned);
+        assert!(receipt.is_reconciled());
+        let restored = TailPatchSessionReceipt::from_events(&[receipt.as_event()])
+            .expect("a named shortfall stays readable");
+        assert_eq!(restored, receipt);
+    }
+
+    #[test]
+    fn stop_receipt_names_overcount_and_round_trips() {
+        let receipt =
+            TailPatchSessionReceipt::new(true, 2, 2, 1, 0, 0, TailPatchDrainDisposition::Completed);
+        assert_eq!(receipt.overcount, 1);
+        assert_eq!(receipt.abandoned, 0);
+        assert_eq!(receipt.drain, TailPatchDrainDisposition::Completed);
+        assert!(receipt.is_reconciled());
+        let EngineEvent::Warning { message, .. } = receipt.as_event() else {
+            panic!("receipt must stay a warning event");
+        };
+        assert!(
+            message.contains("overcount=1"),
+            "overcount must be a named event field: {message}"
+        );
+        assert_eq!(
+            TailPatchSessionReceipt::from_events(&[receipt.as_event()]),
+            Some(receipt)
+        );
+
+        let legacy = TailPatchSessionReceipt::from_events(&[EngineEvent::Warning {
+            code: TAIL_PATCH_SESSION_RECEIPT_WARNING_CODE.to_string(),
+            message: "armed=true submitted=10 applied=4 skipped=3 timed_out=1 abandoned=2 drain=timed_out"
+                .to_string(),
+        }])
+        .expect("events written before overcount= must stay readable");
+        assert_eq!(legacy.overcount, 0);
+        assert!(legacy.is_reconciled());
+        assert_eq!(legacy.drain, TailPatchDrainDisposition::TimedOut);
     }
 
     #[tokio::test]
@@ -693,6 +821,7 @@ mod session_tests {
             range: range.clone(),
         };
         let evidence = crate::stt::tail_provider::TailProviderEvidence {
+            segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
             source: TailEvidenceSource::Whisper,
             revision: Some("fixture-r1".to_string()),
             stability: TailEvidenceStability::Final,
@@ -703,6 +832,7 @@ mod session_tests {
             identity: identity.clone(),
             text: "ala ma kota".to_string(),
             segments: vec![TimedTailSegment {
+                grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 text: "kota".to_string(),
                 range: TailSampleRange {
                     sample_start: 48_160,
@@ -788,7 +918,12 @@ mod session_tests {
     /// Session end emits `SessionFinalised` carrying the layer replacement summary.
     fn session_finalised_emits_layer_summary() {
         let collector = SessionEventCollector::new();
-        emit_session_finalised(&collector, "session-test".to_string(), 3);
+        emit_session_finalised(
+            &collector,
+            "session-test".to_string(),
+            3,
+            SessionConservationReceipt::default(),
+        );
 
         assert!(matches!(
             collector.events().as_slice(),
@@ -961,6 +1096,7 @@ mod local_execution_tests {
                     identity: request.identity.clone(),
                     text: "Iwo".into(),
                     segments: vec![TimedTailSegment {
+                        grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                         text: "Iwo".into(),
                         range: request.identity.range.clone(),
                     }],
@@ -969,6 +1105,7 @@ mod local_execution_tests {
                     provider_id: TailProviderId::Fake,
                     elapsed_ms: 0,
                     evidence: crate::stt::tail_provider::TailProviderEvidence {
+                        segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                         source: TailEvidenceSource::Whisper,
                         revision: None,
                         stability: TailEvidenceStability::Final,
@@ -1041,5 +1178,211 @@ mod local_execution_tests {
         let first = owner.begin_drain(Duration::ZERO);
         assert_eq!(owner.begin_drain(Duration::from_secs(5)), first);
         assert!(owner.spawn(|_| Ok(())).is_err());
+    }
+
+    #[test]
+    fn text_recovery_budget_replaces_an_expired_live_drain() {
+        let owner = LocalExecutionOwner::default();
+        let expired = owner.begin_drain(Duration::ZERO);
+        assert!(owner.spawn(|_| Ok(())).is_err());
+        let recovery = owner.begin_text_recovery(Duration::from_secs(20));
+        assert!(recovery > expired);
+        let receiver = owner
+            .spawn(|_| Ok(7u8))
+            .expect("a fresh recovery budget admits work the live drain already refused");
+        assert_eq!(receiver.blocking_recv().unwrap().unwrap(), 7);
+        assert_eq!(
+            owner.begin_drain(Duration::from_secs(60)),
+            recovery,
+            "begin_drain still cannot move the recovery deadline later"
+        );
+    }
+
+    #[test]
+    fn five_iwo_fixture_session_closes_the_conservation_loop() {
+        use crate::pipeline::acoustic_ledger::{
+            AcousticEvidence, EnergyCalibration, ObservationIdentity, ObservationProducer,
+            OccurrenceIdentity,
+        };
+        use serde::Deserialize;
+
+        #[derive(Deserialize)]
+        struct Burst {
+            ordinal: usize,
+            label: String,
+            sample_start: u64,
+            sample_end: u64,
+            duration_ms: f64,
+            energy_integral: f64,
+            mean_rms_dbfs: f64,
+            peak_dbfs: f64,
+            vad_open_sample: u64,
+            vad_close_sample: u64,
+            evidence_calibration_version: String,
+        }
+        #[derive(Deserialize)]
+        struct Manifest {
+            sample_rate: u32,
+            minimum_energy_integral: f64,
+            minimum_valley_samples: u64,
+            expected_occurrences: usize,
+            bursts: Vec<Burst>,
+        }
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/fixtures/p0_b_five_iwo_manifest.json");
+        let manifest: Manifest = serde_json::from_slice(&std::fs::read(&path).expect("fixture"))
+            .expect("five-iwo manifest");
+        assert_eq!(manifest.bursts.len(), manifest.expected_occurrences);
+        let calibration = EnergyCalibration::new(
+            manifest.bursts[0].evidence_calibration_version.clone(),
+            manifest.minimum_energy_integral,
+            manifest.minimum_valley_samples,
+        );
+        let mut ledger = AcousticLedger::new();
+        ledger.bind_capture_rate(manifest.sample_rate);
+        for burst in &manifest.bursts {
+            let occurrence =
+                OccurrenceIdentity::new("p0-b-five-iwo", 1, burst.sample_start, burst.sample_end);
+            let evidence = AcousticEvidence {
+                occurrence: occurrence.clone(),
+                duration_ms: burst.duration_ms,
+                energy_integral: burst.energy_integral,
+                mean_rms_dbfs: burst.mean_rms_dbfs,
+                peak_dbfs: burst.peak_dbfs,
+                vad_open_sample: Some(burst.vad_open_sample),
+                vad_close_sample: Some(burst.vad_close_sample),
+                evidence_calibration_version: burst.evidence_calibration_version.clone(),
+            };
+            assert!(ledger.qualify(&evidence, &calibration).is_qualified());
+            ledger.schedule_frontier(
+                occurrence.clone(),
+                vec![ObservationProducer::Apple, ObservationProducer::Whisper],
+            );
+            let apple = ObservationIdentity::new(
+                ObservationProducer::Apple,
+                burst.ordinal as u64,
+                0,
+                occurrence.clone(),
+            );
+            assert!(ledger.admit(&apple, &burst.label).is_insert());
+            assert!(!ledger.note_frontier_return(&occurrence, ObservationProducer::Apple));
+            let whisper = ObservationIdentity::new(
+                ObservationProducer::Whisper,
+                100 + burst.ordinal as u64,
+                0,
+                occurrence.clone(),
+            );
+            assert!(matches!(
+                ledger.admit(&whisper, &burst.label),
+                crate::pipeline::acoustic_ledger::MutationReceipt::Preserve { .. }
+            ));
+            assert!(ledger.note_frontier_return(&occurrence, ObservationProducer::Whisper));
+            ledger.seal(&occurrence).expect("burst seals");
+        }
+        ledger
+            .seal_terminal("p0-b-five-iwo", 1)
+            .expect("fixture epoch seals");
+
+        let conservation = SessionConservationReceipt::from_ledger(
+            &ledger,
+            0,
+            0,
+            0,
+            std::collections::BTreeMap::new(),
+        );
+        let receipt =
+            TailPatchSessionReceipt::from_stop(false, 0, 0, 0, 0).with_conservation(conservation);
+        assert!(receipt.conservation.emitted);
+        assert_eq!(receipt.conservation.windows_admitted, 0);
+        assert_eq!(receipt.conservation.windows_coalesced, 0);
+        assert_eq!(receipt.conservation.windows_unresolved, 0);
+        assert!(
+            receipt
+                .conservation
+                .windows_refused_before_inference
+                .is_empty()
+        );
+        assert_eq!(
+            receipt.conservation.first_covered_sample,
+            Some(manifest.bursts[0].sample_start)
+        );
+        assert_eq!(
+            receipt.conservation.last_covered_sample,
+            manifest.bursts.last().map(|burst| burst.sample_end)
+        );
+        assert!(receipt.conservation.transcript_seal_timestamp_ms.is_some());
+        assert_eq!(receipt.conservation.delivery_timestamp_ms, None);
+        assert_eq!(receipt.conservation.observations_admitted, 10);
+        assert_eq!(receipt.conservation.observations_delivered, 10);
+        assert_eq!(receipt.conservation.observations_unanchored, 0);
+        assert!(
+            receipt
+                .conservation
+                .observations_refused_by_reason
+                .is_empty()
+        );
+        assert_eq!(receipt.conservation.energy_lookups_without_voiced_hop, 0);
+        assert_eq!(receipt.conservation.residue(), 0);
+        assert_eq!(ledger.conservation().residue(), 0);
+        assert_eq!(
+            ledger.conservation().observations_in,
+            ledger.conservation().receipts_out
+        );
+
+        let restored = TailPatchSessionReceipt::from_events(&[receipt.as_event()])
+            .expect("conservation fields survive the session event");
+        assert_eq!(restored.conservation, receipt.conservation);
+
+        let dropped = receipt.conservation.clone().with_receiptless_drop();
+        assert_eq!(dropped.residue(), 1);
+
+        let schema = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../tests/fixtures/session_conservation_receipt.schema.json"),
+        )
+        .expect("conservation schema");
+        assert!(schema.contains(crate::pipeline::contracts::SESSION_CONSERVATION_SCHEMA));
+        let value = serde_json::to_value(&receipt.conservation).expect("serialize conservation");
+        let object = value.as_object().expect("object");
+        for key in [
+            "windows_admitted",
+            "windows_coalesced",
+            "windows_unresolved",
+            "first_covered_sample",
+            "last_covered_sample",
+            "transcript_seal_timestamp_ms",
+            "delivery_timestamp_ms",
+            "observations_admitted",
+            "observations_delivered",
+            "observations_unanchored",
+            "observations_refused_by_reason",
+            "windows_refused_before_inference",
+            "energy_lookups_without_voiced_hop",
+        ] {
+            assert!(object.contains_key(key), "receipt missing {key}");
+            assert!(schema.contains(key), "schema missing {key}");
+        }
+    }
+
+    #[test]
+    fn window_refused_before_inference_is_not_a_provider_skip() {
+        let mut refused = std::collections::BTreeMap::new();
+        refused.insert("live_refinement_invalid_identity".to_string(), 1);
+        let conservation = SessionConservationReceipt {
+            emitted: true,
+            windows_refused_before_inference: refused,
+            ..SessionConservationReceipt::default()
+        };
+        let receipt =
+            TailPatchSessionReceipt::new(true, 2, 2, 0, 0, 0, TailPatchDrainDisposition::Completed)
+                .with_conservation(conservation);
+        assert_eq!(receipt.skipped, 0);
+        assert!(receipt.is_reconciled());
+        assert_eq!(
+            receipt.conservation.windows_refused_before_inference["live_refinement_invalid_identity"],
+            1
+        );
+        assert_eq!(receipt.conservation.residue(), 0);
     }
 }

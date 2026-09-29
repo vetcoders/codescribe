@@ -21,6 +21,13 @@
 pub mod cloud_asr;
 /// Serde default helpers and default model/endpoint constants.
 mod defaults;
+pub use defaults::{
+    DEFAULT_CLOUD_REFINE_ENDPOINT, default_cloud_refine_endpoint,
+    default_whisper_context_window_sec, normalize_whisper_context_window_sec,
+};
+pub use defaults::{
+    default_light_plus_sentence_pause_sec, normalize_light_plus_sentence_pause_sec,
+};
 /// Measured, versioned acoustic calibration artifact (the `EnergyCalibration`
 /// source of the runtime settings throne).
 pub mod energy_calibration;
@@ -60,13 +67,13 @@ pub use prompts::{CapturedPrompt, CapturedRuntimePrompts};
 
 // Re-export types
 pub use types::{
-    Config, DeferredInsertShortcut, HoldArmModifier, ModeBinding, OverlayPositionMode,
-    ShortcutBinding, TranscriptSendMode, WorkMode,
+    ChannelModifier, Config, DeferredInsertShortcut, HoldArmModifier, ModeBinding,
+    OverlayPositionMode, ShortcutBinding, TranscriptSendMode, WorkMode,
 };
 // Language re-exported for external consumers (GUI apps)
 pub use cloud_asr::{
-    AsrProductMode, AudioEgressConsent, ConsentSource, GatewayMintError, GatewaySessionMint,
-    ModeDerivation, ResolvedAsrMode, resolve_asr_product_mode,
+    AsrProductMode, AudioEgressConsent, CloudRefineAdmission, ConsentSource, GatewayMintError,
+    GatewaySessionMint, ModeDerivation, ResolvedAsrMode, resolve_asr_product_mode,
 };
 pub use energy_calibration::{
     ENERGY_CALIBRATION_FILE_NAME, ENERGY_CALIBRATION_SCHEMA, EnergyCalibrationArtifact,
@@ -120,6 +127,7 @@ mod tests {
         assert!(!config.transcript_tagging_enabled);
         assert_eq!(config.double_tap_interval_ms, 200);
         assert_eq!(config.toggle_silence_sec, 5.0);
+        assert_eq!(config.whisper_context_window_sec, 8.0);
         assert!(config.show_dock_icon);
         assert_eq!(config.local_model, models::DEFAULT_MODEL);
     }

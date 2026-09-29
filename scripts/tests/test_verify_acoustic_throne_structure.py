@@ -2140,7 +2140,7 @@ class NeutralAstTests(unittest.TestCase):
     def test_terminal_finality_authority_mutants_rejected(self):
         cases = [
             ("stop_mints_seal", "complete_stop", ".terminal_finality(session, self.capture_epoch)", ".seal_terminal(session, self.capture_epoch)"),
-            ("zero_sample_guard_removed", "complete_stop", "self.captured_samples.load(Ordering::Relaxed) == 0", "true"),
+            ("short_capture_guard_removed", "complete_stop", "captured_samples <= u64::from(self.sample_rate) * 3 / 10", "true"),
             ("missing_authority_succeeds", "complete_stop", "match finality {", "if finality.is_none() { return Ok((transcript, audio_path)); } match finality {"),
             ("foreign_receipt", "terminal_finality", "receipt.coverage.capture_epoch == capture_epoch", "true"),
             ("stale_occurrence_set", "terminal_finality", "receipt.sealed_occurrences.contains(range)", "true"),
@@ -2166,7 +2166,7 @@ class NeutralAstTests(unittest.TestCase):
             ("closure_effect", "execute_clipboard_paste", "clipboard::paste_and_restore(&paste_text)", "(|| clipboard::paste_and_restore(&paste_text))()"),
             ("closure_refusal", "complete_stop", "Err(anyhow::Error::new(TerminalSealRefused {", "|| Err(anyhow::Error::new(TerminalSealRefused {"),
             ("unreachable_shutdown", "complete_stop", "self.lifecycle_handle = None;", "return Err(anyhow::anyhow!(\"early\")); self.lifecycle_handle = None;"),
-            ("question_mark_stop", "stop", "self.recorder.stop().await;", "self.recorder.stop().await?;"),
+            ("question_mark_stop", "stop", "self.recorder.stop().await", "self.recorder.stop().await?"),
             ("unknown_macro", "complete_stop", "self.lifecycle_handle = None;", "unreviewed!(); self.lifecycle_handle = None;"),
             ("macro_argument_return", "stop", 'info!("Stopping streaming recorder...");', 'info!("{}", { return Ok((String::new(), None)); });'),
             ("unknown_callee", "complete_stop", "self.lifecycle_handle = None;", "unreviewed(); self.lifecycle_handle = None;"),
@@ -2597,6 +2597,14 @@ class CurrentChainMutantTests(unittest.TestCase):
         alone, because a positive that cannot go red proves only that it ran.
         """
         apple = "core/pipeline/streaming/apple_live_session.rs"
+        exclusive_mint = (
+            "        let occurrence = OccurrenceIdentity::new(\n"
+            "            state.session_id.clone(),\n"
+            "            state.capture_epoch,\n"
+            "            owned_start,\n"
+            "            owned_end,\n"
+            "        );"
+        )
         cases = [
             # The armed branch stops routing into the physical lane at all.
             ("armed_routing_removed", "seal_utterance_final",
@@ -2630,10 +2638,15 @@ class CurrentChainMutantTests(unittest.TestCase):
              [("        });\n        return false;\n    }\n    let apple_words",
                "        });\n    }\n    let apple_words")]),
             # Ownership is minted from the padded recognition context instead of
-            # the physical Silero range.
+            # the exclusive closed span.
             ("ownership_minted_from_padded_range", "reconcile_silero_ledger",
-             [("let occurrence = OccurrenceIdentity::from(&silero.range);",
-               "let occurrence = OccurrenceIdentity::from(&bound_context_range(&silero.range, context, pad_samples, &bounds));")]),
+             [(exclusive_mint,
+               "        let occurrence = OccurrenceIdentity::from(&bound_context_range(&silero.range, context, pad_samples, &bounds));")]),
+            # The shared Silero window, pad included, is minted as the physical
+            # identity. Exclusive spans are what closed that defect.
+            ("ownership_minted_from_silero_range", "reconcile_silero_ledger",
+             [(exclusive_mint,
+               "        let occurrence = OccurrenceIdentity::from(&silero.range);")]),
             # The qualifier is still called but its refusal cannot fire.
             ("qualification_refusal_ignored", "reconcile_silero_ledger",
              [("if !qualify_owned_occurrence(state, &occurrence) {",
@@ -2699,6 +2712,43 @@ class CurrentChainMutantTests(unittest.TestCase):
                 self.assertTrue(
                     any("capture_to_ledger" in failure and symbol in failure
                         for failure in failures), (name, failures))
+
+    def test_pinned_admission_bypasses_are_rejected(self):
+        """Each pin bypass must fail at its own capture-to-ledger hop."""
+        self.assertEqual(self.positive_failures, [])
+        ledger = "core/pipeline/acoustic_ledger.rs"
+        apple = "core/pipeline/streaming/apple_live_session.rs"
+        cases = [
+            ("pins_admitted_without_composition_check", "admit_pinned_label", ledger,
+             "|| compose_label(&slots) != label", "|| false",
+             "is missing executable code"),
+            # Target the invalid-composition/overlap return, leaving the two
+            # earlier whole-label returns intact. They cannot discharge it.
+            ("invalid_pins_skip_whole_label_fallback", "admit_pinned_label", ledger,
+             "|| compose_label(&slots) != label\n        {\n"
+             "            return self.admit(observation, label);",
+             "|| compose_label(&slots) != label\n        {\n"
+             "            return self.admit_with_slots(observation, label, Some(slots), false);",
+             "has executable code out of required order"),
+            ("overlap_waived_without_pins", "decide_observation", ledger,
+             "if overlaps && !has_word_pins {", "if overlaps && false {",
+             "is missing executable code"),
+            # admit_with_slots is private to the ledger module. The callable
+            # bypass is whole-label admission, which discards the offered pins
+            # and never reaches their validation at the pinned entry point.
+            ("admission_bypasses_pin_validation", "admit_ledger_label", apple,
+             "ledger.admit_pinned_label(&observation, label, words)",
+             "ledger.admit(&observation, label)",
+             "is missing executable code"),
+        ]
+        for name, symbol, file, old, new, reason in cases:
+            with self.subTest(mutation=name):
+                failures = self.run_mutated(symbol, file, old, new)
+                self.assertEqual(len(failures), 1, (name, failures))
+                self.assertTrue(
+                    failures[0].startswith(
+                        f"corridor capture_to_ledger hop {symbol} {reason}"
+                    ), (name, failures))
 
     def test_retired_capture_names_are_absent_from_the_manifest(self):
         """The stale capture corridor named a predicate and an argument shape

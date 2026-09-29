@@ -30,6 +30,7 @@
 //! `EngineEvent`s out.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::path::PathBuf;
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -42,13 +43,15 @@ use futures_util::stream::FuturesOrdered;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
+use crate::pipeline::occurrence_slot_receipt::SlotReceiptSink;
+
 use crate::agent::consultation::{
     ConsultationGroupAnswer, ConsultationInputQueue, ConsultationReadiness,
     PendingConsultationGroup, PreparedConsultationGroup, SealedConsultationInput,
 };
 use crate::asr_session::recorder::{
-    LAYER1_DEGRADED_WARNING_CODE, Layer1DegradeReason, RecorderLayer1Lane,
-    apply_recorder_lifecycle_event,
+    LAYER1_DEGRADED_WARNING_CODE, LAYER1_FINALS_NOT_ADMITTED_WARNING_CODE, Layer1DegradeReason,
+    RecorderLayer1Lane, apply_recorder_lifecycle_event,
 };
 use crate::asr_session::{SessionId as Layer1SessionId, SessionInput as Layer1SessionInput};
 use crate::audio::capture_receipt::{
@@ -62,13 +65,15 @@ use crate::llm::ai_formatting::{
 };
 use crate::llm::inline_format::{LabelProposalDisposition, OccurrenceLabelProposal};
 use crate::pipeline::acoustic_ledger::{
-    AcousticEvidence, AcousticLedger, EnergyCalibration, MutationReceipt,
+    AcousticEvidence, AcousticLedger, EnergyCalibration, MutationReceipt, NoAuthorityReason,
     ObservationIdentity as LedgerObservationIdentity,
-    ObservationProducer as LedgerObservationProducer, OccurrenceIdentity, SealCoverageReceipt,
-    SealCoverageStatus, SealRefusal,
+    ObservationProducer as LedgerObservationProducer, OccurrenceIdentity, OverlapPinClass,
+    RefuseReason, SealCoverageReceipt, SealCoverageStatus, SealRefusal,
 };
 use crate::pipeline::contracts::{
-    EngineEvent, EventSink, SpeechIntegrity, SpeechIntegrityPhase, TranscriptSegment,
+    ApplePhraseOutcome, ClosedApplePhrase, EngineEvent, EventSink, PreviewPin,
+    SessionConservationReceipt, SpeechIntegrity, SpeechIntegrityPhase, TranscriptSegment,
+    UnadmittedAppleWord, UnadmittedAppleWordSource,
 };
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
 use crate::stt::tail_patcher::{SkipReasonCode, TailPatchConfig, TailPatchOutcome};
@@ -86,7 +91,7 @@ use super::session::{
 };
 use super::silero_fusion::{
     ContextBounds, FusionContextMode, FusionWord, SileroIngress, bound_context_range,
-    slice_apple_words,
+    decode_window_with_min_context, slice_apple_words,
 };
 use super::speech_progress::SpeechProgress;
 use super::stream_log::append_to_stream_log;
@@ -110,6 +115,71 @@ enum LiveConsultationRequest {
     Assess(SealedConsultationInput),
     Prepare(SealedConsultationInput),
     Finish(PendingConsultationGroup),
+}
+
+#[cfg(test)]
+mod retroactive_split_delivery_tests {
+    use super::*;
+
+    fn sample(seconds: f32) -> u64 {
+        (seconds * 16_000.0) as u64
+    }
+
+    fn word(text: &str, start: f32, end: f32) -> TranscriptSegment {
+        TranscriptSegment {
+            text: text.into(),
+            start_ts: start,
+            end_ts: end,
+        }
+    }
+
+    #[test]
+    fn retroactive_split_delivers_apple_words_on_both_sides_without_overlap_refusal() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new_for_session(16_000, "retro-apple".into(), 0);
+        state.energy_calibration = Some(EnergyCalibration::new("synthetic", 0.0, 0));
+        state.audio.push(&vec![0.25; sample(30.0) as usize]);
+        let mut fusion = SileroIngress::new(16_000, state.session_id.clone(), 0);
+        fusion.observe(Some((0, sample(20.0))), false, sample(20.0));
+        state.fusion = Some(fusion);
+        state.fusion_seal_armed = true;
+        assert!(seal_sliced_by_silero(
+            &mut state,
+            &tx,
+            &[word("before", 5.0, 5.5), word("after", 14.0, 14.5)]
+        ));
+        state.fusion.as_mut().unwrap().observe_with_closed_end(
+            Some((sample(11.0), sample(20.0))),
+            true,
+            Some(sample(11.0)),
+            sample(20.0),
+        );
+        assert!(seal_sliced_by_silero(&mut state, &tx, &[]));
+        state.fusion.as_mut().unwrap().observe(
+            Some((sample(11.0), sample(22.0))),
+            false,
+            sample(22.0),
+        );
+        state
+            .fusion
+            .as_mut()
+            .unwrap()
+            .observe(None, true, sample(22.0));
+        assert!(seal_sliced_by_silero(&mut state, &tx, &[]));
+        let text = state.acoustic_ledger.lock().unwrap().rendered_text();
+        assert!(
+            text.contains("before"),
+            "first Apple word must have a decision: {text}"
+        );
+        assert!(
+            text.contains("after"),
+            "second Apple word must have a decision: {text}"
+        );
+        let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        assert!(!events.iter().any(
+            |event| matches!(event, EngineEvent::Warning { code, .. } if code.contains("overlap"))
+        ));
+    }
 }
 
 enum LiveConsultationResult {
@@ -359,6 +429,20 @@ fn deliver_consultation_result(
 /// because the loop was waiting on the wrong condition.
 const TAIL_PATCH_CLOSURE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Budget for stop-path text recovery after the live tail-patch drain.
+///
+/// The live drain is [`TAIL_PATCH_CLOSURE_TIMEOUT`] and `begin_drain` cannot
+/// extend it. On take 9608b50e that drain completed (`timed_out=0`, 25 live
+/// jobs already skipped) and the same 5s clock then ran the coverage requests:
+/// three windows finished between 11:26:21.720Z and 11:26:24.611Z, and the
+/// other three died at 11:26:25.327Z as `local execution cancelled or drain
+/// deadline expired`. Five debt occurrences on that take cover about 77s of
+/// PCM (3_685_376 utterance samples at 48 kHz). At the observed rate, roughly
+/// 27s of PCM in 4.2s, five windows are about 12s of sequential work on a
+/// model that is already warm. This cap is that phase only. It returns when
+/// the jobs finish; a take with nothing to recover does not wait it out.
+const SEAL_TEXT_RECOVERY_BUDGET: Duration = Duration::from_secs(20);
+
 /// A 200 ms VAD/energy edge is ordinary quantisation; an uncovered span over
 /// 250 ms is not allowed to become terminal transcript truth.
 pub const SEAL_COVERAGE_INCOMPLETE_MS: u64 = 250;
@@ -428,6 +512,8 @@ fn legacy_char_diff_receipt(
 
 /// One sealed utterance handed from the worker thread to the async Layer 1 lane.
 struct TailPatchRequest {
+    /// Worker-owned submission identity; zero is reserved for unsent work.
+    submission_sequence: u64,
     utterance_id: u64,
     /// Byte-identical to the emitted `UtteranceFinal.text` — the string every
     /// `ReplaceRange` char offset is computed against.
@@ -446,6 +532,10 @@ struct TailPatchRequest {
     audio: Vec<f32>,
     /// Exact capture range behind `audio`; this is the window-start authority.
     provider_request: TailProviderRequest,
+    /// Pins inside this half-open range may be admitted. Overlap context and
+    /// the trailing second reserved for the next window stay outside it.
+    admit_sample_start: u64,
+    admit_sample_end: u64,
     /// Every exact occurrence whose launched Whisper slot this job must close.
     member_occurrences: Vec<(u64, OccurrenceIdentity)>,
 }
@@ -482,6 +572,8 @@ impl RefinementFailure {
 
 /// Whisper closure returned to the worker that owns Apple + seal state.
 struct TailPatchCompletion {
+    /// Worker-owned submission identity; zero is reserved for unsent work.
+    submission_sequence: u64,
     utterance_id: u64,
     request_identity: Option<TailRequestIdentity>,
     payload: Option<TailProviderPayload>,
@@ -490,8 +582,12 @@ struct TailPatchCompletion {
 
 /// In-flight Layer 1 job identity, including the coalesce map.
 struct TailPatchInFlight {
+    /// Worker-owned submission identity; zero is reserved for unsent work.
+    submission_sequence: u64,
     utterance_id: u64,
     request_identity: TailRequestIdentity,
+    admit_sample_start: u64,
+    admit_sample_end: u64,
     member_occurrences: Vec<(u64, OccurrenceIdentity)>,
 }
 
@@ -620,14 +716,16 @@ impl AppleTailPatchLane {
         inflight: Option<TailPatchInFlight>,
         result: Result<TailPatchJobResult>,
     ) -> TailPatchCompletion {
-        let (fallback_id, request_identity, member_occurrences) = match inflight {
-            Some(job) => (
-                job.utterance_id,
-                Some(job.request_identity),
-                job.member_occurrences,
-            ),
-            None => (0, None, Vec::new()),
-        };
+        let (submission_sequence, fallback_id, request_identity, member_occurrences) =
+            match inflight {
+                Some(job) => (
+                    job.submission_sequence,
+                    job.utterance_id,
+                    Some(job.request_identity),
+                    job.member_occurrences,
+                ),
+                None => (0, 0, None, Vec::new()),
+            };
         match result {
             Ok(job) => {
                 // Counts only. A `Patches` outcome carries transcript text, so
@@ -644,6 +742,7 @@ impl AppleTailPatchLane {
                      occurrence admission"
                 );
                 TailPatchCompletion {
+                    submission_sequence,
                     utterance_id: job.utterance_id,
                     request_identity,
                     payload: Some(job.payload),
@@ -658,6 +757,7 @@ impl AppleTailPatchLane {
                     "Layer 1 provider job failed; Apple text is preserved: {error}"
                 );
                 TailPatchCompletion {
+                    submission_sequence,
                     utterance_id: fallback_id,
                     request_identity,
                     payload: None,
@@ -745,6 +845,28 @@ fn emit_layer1_degrade_warning(event_sink: &dyn EventSink, reason: Layer1Degrade
     });
 }
 
+/// Emit the stop receipt once for collected finals, without transcript content.
+fn emit_layer1_finals_not_admitted_warning(
+    event_sink: &dyn EventSink,
+    finals_accepted: u64,
+    refiner: crate::asr_session::RefinerMode,
+) {
+    if finals_accepted == 0 {
+        return;
+    }
+    let refiner = refiner.as_token();
+    warn!(
+        code = LAYER1_FINALS_NOT_ADMITTED_WARNING_CODE,
+        finals_accepted, refiner, "Layer 1 finals arrived after the worker exited"
+    );
+    event_sink.on_event(&EngineEvent::Warning {
+        code: LAYER1_FINALS_NOT_ADMITTED_WARNING_CODE.to_string(),
+        message: format!(
+            "finals_accepted={finals_accepted} refiner={refiner}: Layer 1 finals arrived after the worker exited"
+        ),
+    });
+}
+
 fn emit_local_tail_patch_degraded_warning(event_sink: &dyn EventSink, disposition: &str) {
     event_sink.on_event(&EngineEvent::Warning {
         code: LOCAL_TAIL_PATCH_DEGRADED_WARNING_CODE.to_string(),
@@ -792,6 +914,7 @@ fn tail_patch_receipt_after_stop(
     armed: bool,
     submitted: u64,
     worker_accounting: Option<TailPatchWorkerAccounting>,
+    conservation: SessionConservationReceipt,
 ) -> TailPatchSessionReceipt {
     // The worker increments its awaiting-completion counter before the async
     // owner accepts a request. On bounded closure expiry, that counter already
@@ -807,6 +930,7 @@ fn tail_patch_receipt_after_stop(
         ),
         None => (0, 0, 0, submitted),
     };
+    // `new` names any remaining gap as abandoned. A mismatch must not abort the take.
     TailPatchSessionReceipt::new(
         armed,
         submitted,
@@ -824,6 +948,7 @@ fn tail_patch_receipt_after_stop(
             TailPatchDrainDisposition::Completed
         },
     )
+    .with_conservation(conservation)
 }
 
 /// Drive one progressive Apple stream session until the audio channel closes.
@@ -847,6 +972,7 @@ pub(crate) async fn apple_stream_transcription_session(
         layer1,
         mut lifecycle_events,
         terminal_audio,
+        mut last_window_closed,
     } = config;
     // One owner for this capture epoch's acoustic evidence. This async arm is
     // the writer and the blocking Apple worker below is the reader; both hold
@@ -886,6 +1012,8 @@ pub(crate) async fn apple_stream_transcription_session(
     };
     let local_tail_patch = layer1.local_tail_patch_disposition();
     let mut layer1_lane = RecorderLayer1Lane::open(layer1, &lane_input);
+    // Preserve the opened lane label before stop or degradation drops its provider.
+    let layer1_refiner = layer1_lane.refiner_mode();
     if let Some(reason) = layer1_lane.take_degrade_notice() {
         emit_layer1_degrade_warning(event_sink.as_ref(), reason);
     }
@@ -896,6 +1024,9 @@ pub(crate) async fn apple_stream_transcription_session(
     let (pcm_tx, pcm_rx) = std_mpsc::channel::<Option<Vec<f32>>>();
     // Worker → async events.
     let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<EngineEvent>();
+    let (worker_close_tx, mut worker_close_rx) = tokio::sync::oneshot::channel();
+    let (apple_finished_tx, mut apple_finished_rx) = tokio::sync::oneshot::channel();
+    let (live_finals_tx, mut live_finals_rx) = tokio::sync::oneshot::channel();
 
     // The local Whisper decision is resolved once from product mode + the
     // compatibility phase token before capture starts. Never re-read env here:
@@ -961,6 +1092,17 @@ pub(crate) async fn apple_stream_transcription_session(
     let (formatter_done_tx, formatter_done_rx) = std_mpsc::channel::<FormatterCompletion>();
     let worker_formatter_tx = formatter_on.then_some(formatter_tx);
 
+    let cloud_on = layer1_lane.is_live()
+        && layer1_lane.refiner_mode() == crate::asr_session::RefinerMode::CloudSession;
+    let (cloud_commit_tx, cloud_commit_rx) = mpsc::channel::<u64>(32);
+    let mut cloud_commit_rx = cloud_on.then_some(cloud_commit_rx);
+    let (cloud_notice_tx, cloud_notice_rx) = std_mpsc::channel::<CloudWorkerNotice>();
+    let cloud_notice_tx = cloud_on.then_some(cloud_notice_tx);
+    let worker_cloud = cloud_on.then_some(CloudWorkerChannels {
+        commit: cloud_commit_tx,
+        notice: cloud_notice_rx,
+    });
+
     let (consultation_tx, mut consultation_rx) = mpsc::channel(CONSULTATION_QUEUE_CAP);
     let (consultation_return_tx, consultation_return_rx) = std_mpsc::channel();
     let mut consultation_assessments =
@@ -1019,7 +1161,11 @@ pub(crate) async fn apple_stream_transcription_session(
                 settings_digest,
                 utterance_silence_sec,
                 terminal_audio,
+                last_window_closed: worker_close_tx,
+                apple_finished: apple_finished_tx,
+                live_finals_admitted: live_finals_tx,
                 consultation: worker_consultation,
+                cloud: worker_cloud,
             },
         )
     });
@@ -1032,8 +1178,105 @@ pub(crate) async fn apple_stream_transcription_session(
     // until the session ended. Product truth: presentation was missing, not STT.
     let mut audio_eof = false;
     let mut worker_finished = false;
+    let mut close_ack_pending = true;
+    let mut apple_finish_pending = true;
+    let mut live_finals_pending = true;
+    let mut cloud_stop_task: Option<
+        tokio::task::JoinHandle<(
+            RecorderLayer1Lane,
+            crate::asr_session::recorder::Layer1SessionOutcome,
+        )>,
+    > = None;
+    let mut stopped_layer1_outcome = None;
+    let mut stop_live_tick = tokio::time::interval(LIVE_WORKER_QUANTUM);
     loop {
         tokio::select! {
+            // Once capture is closed, a quiet Apple finish must not prevent
+            // the cloud owner from observing a final or a lost live lane.
+            _ = stop_live_tick.tick(), if audio_eof && cloud_on && cloud_stop_task.is_none() => {}
+            close = &mut worker_close_rx, if close_ack_pending => {
+                close_ack_pending = false;
+                if close.is_ok() {
+                    // Preserve seal acknowledgement ordering, but only the
+                    // live-final receipt below can release the stop snapshot.
+                    while let Ok(event) = ev_rx.try_recv() {
+                        deliver_event(&event, event_sink.as_ref(), stream_log_path.as_deref());
+                    }
+                }
+            }
+            settled = &mut live_finals_rx, if live_finals_pending => {
+                live_finals_pending = false;
+                forward_live_finals_admitted(
+                    settled.is_ok(),
+                    &mut ev_rx,
+                    event_sink.as_ref(),
+                    stream_log_path.as_deref(),
+                    &mut last_window_closed,
+                );
+            }
+            finished = &mut apple_finished_rx, if apple_finish_pending => {
+                apple_finish_pending = false;
+                if finished.is_ok() && cloud_on {
+                    // Apple has emitted its last capture-owned close requests.
+                    // Process those before `end`, then move the provider's
+                    // bounded blocking close off the event-drain executor.
+                    if let Some(receiver) = cloud_commit_rx.as_mut() {
+                        while let Ok(sample) = receiver.try_recv() {
+                            let _late = layer1_lane.commit_through(sample);
+                        }
+                    }
+                    cloud_commit_rx = None;
+                    let mut stopping_lane = std::mem::replace(
+                        &mut layer1_lane,
+                        RecorderLayer1Lane::open(
+                            crate::asr_session::recorder::Layer1Decision::Disarmed,
+                            &lane_input,
+                        ),
+                    );
+                    cloud_stop_task = Some(tokio::task::spawn_blocking(move || {
+                        let outcome = stopping_lane.stop();
+                        (stopping_lane, outcome)
+                    }));
+                }
+            }
+            stopped = async {
+                match cloud_stop_task.as_mut() {
+                    Some(task) => task.await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                cloud_stop_task = None;
+                match stopped {
+                    Ok((lane, outcome)) => {
+                        layer1_lane = lane;
+                        let succeeded = outcome.degrade_reason().is_none()
+                            && cloud_stop_finals_cover_capture(
+                                outcome.finals(),
+                                layer1_lane.pushed_samples(),
+                            );
+                        if let Some(sender) = cloud_notice_tx.as_ref() {
+                            for event in layer1_lane.take_unforwarded_finals() {
+                                if sender.send(CloudWorkerNotice::Final(Box::new(event))).is_err() {
+                                    layer1_lane.note_final_after_worker_exit();
+                                }
+                            }
+                            let notice = if succeeded {
+                                CloudWorkerNotice::EndSettled
+                            } else {
+                                CloudWorkerNotice::LaneLost
+                            };
+                            let _ = sender.send(notice);
+                        }
+                        stopped_layer1_outcome = Some(outcome);
+                    }
+                    Err(error) => {
+                        warn!(%error, "Cloud live stop worker failed");
+                        if let Some(sender) = cloud_notice_tx.as_ref() {
+                            let _ = sender.send(CloudWorkerNotice::LaneLost);
+                        }
+                    }
+                }
+            }
             event = ev_rx.recv(), if !worker_finished => {
                 match event {
                     // Same diagnostic artifact the VAD path writes: one line
@@ -1093,6 +1336,11 @@ pub(crate) async fn apple_stream_transcription_session(
             chunk = chunk_receiver.recv(), if !audio_eof => {
                 match chunk {
                     Some(chunk) => {
+                        if let Some(receiver) = cloud_commit_rx.as_mut() {
+                            while let Ok(sample) = receiver.try_recv() {
+                                let _late = layer1_lane.commit_through(sample);
+                            }
+                        }
                         capture_level.push_samples(&chunk);
                         // C1 fan-out: offer the frame to the Layer 1 lane
                         // before forwarding to the Apple worker. The offer
@@ -1107,8 +1355,10 @@ pub(crate) async fn apple_stream_transcription_session(
                         }
                     }
                     None => {
-                        // Capture stopped — signal EOF to the worker; keep
-                        // draining events until the worker exits.
+                        // Capture stopped — push the held tail, then signal EOF.
+                        // `end` is the lane's close after the worker has admitted
+                        // the commits this flush makes possible.
+                        layer1_lane.flush_holdback();
                         let _ = pcm_tx.send(None);
                         audio_eof = true;
                     }
@@ -1125,6 +1375,10 @@ pub(crate) async fn apple_stream_transcription_session(
                         apply_recorder_lifecycle_event(&mut layer1_lane, event);
                         if let Some(reason) = layer1_lane.take_degrade_notice() {
                             emit_layer1_degrade_warning(event_sink.as_ref(), reason);
+                            if let Some(sender) = cloud_notice_tx.as_ref() {
+                                let _ = sender.send(CloudWorkerNotice::LaneLost);
+                                drop(last_window_closed.take());
+                            }
                         }
                     }
                     None => lifecycle_events = None,
@@ -1146,8 +1400,11 @@ pub(crate) async fn apple_stream_transcription_session(
                 );
                 tail_patch_submitted = tail_patch_submitted.saturating_add(1);
                 let inflight = TailPatchInFlight {
+                    submission_sequence: req.submission_sequence,
                     utterance_id: req.utterance_id,
                     request_identity: req.provider_request.identity.clone(),
+                    admit_sample_start: req.admit_sample_start,
+                    admit_sample_end: req.admit_sample_end,
                     member_occurrences: req.member_occurrences.clone(),
                 };
                 tail_patch_lane.push_request(req);
@@ -1155,6 +1412,19 @@ pub(crate) async fn apple_stream_transcription_session(
                 // One job is in flight; the coalesce map rides alongside so
                 // the completion can close every member seal.
                 tail_patch_lane_in_flight = Some(inflight);
+            }
+            sample = async {
+                let Some(receiver) = cloud_commit_rx.as_mut() else {
+                    std::future::pending().await
+                };
+                receiver.recv().await
+            } => {
+                match sample {
+                    Some(sample) => {
+                        let _late = layer1_lane.commit_through(sample);
+                    }
+                    None => cloud_commit_rx = None,
+                }
             }
             Some(result) = tail_patch_lane.next() => {
                 tail_patch_in_flight = false;
@@ -1232,10 +1502,26 @@ pub(crate) async fn apple_stream_transcription_session(
         // ingest doctrine. Non-blocking, so live Preview drainage above is
         // never delayed by the refiner.
         layer1_lane.poll();
+        if let Some(sender) = cloud_notice_tx.as_ref() {
+            for event in layer1_lane.take_unforwarded_finals() {
+                if sender
+                    .send(CloudWorkerNotice::Final(Box::new(event)))
+                    .is_err()
+                {
+                    layer1_lane.note_final_after_worker_exit();
+                }
+            }
+        }
         if let Some(reason) = layer1_lane.take_degrade_notice() {
             emit_layer1_degrade_warning(event_sink.as_ref(), reason);
+            if let Some(sender) = cloud_notice_tx.as_ref() {
+                let _ = sender.send(CloudWorkerNotice::LaneLost);
+                drop(last_window_closed.take());
+            }
         }
         if worker_finished
+            && !live_finals_pending
+            && cloud_stop_task.is_none()
             && consultation_rx.is_closed()
             && consultation_rx.is_empty()
             && consultation_assessments.is_empty()
@@ -1275,16 +1561,19 @@ pub(crate) async fn apple_stream_transcription_session(
         );
     }
     tail_patch_lane.execution.close_and_join().await;
-    // C1 stop-drain: close the Layer 1 lane with its bounded drain. Whatever
-    // happened inside (clean close, disconnect, incomplete drain), the method
-    // returns and the recording finishes on Apple + lexicon. The outcome's
-    // finals have already been admitted as occurrence-bound observations by
-    // the worker. They do not form a second whole-session transcript here.
-    let layer1_outcome = layer1_lane.stop();
+    // CLOUD has already ended while its worker could admit the final. Other
+    // modes retain their existing terminal lane accounting.
+    let layer1_outcome = stopped_layer1_outcome.unwrap_or_else(|| layer1_lane.stop());
     if let Some(reason) = layer1_lane.take_degrade_notice() {
         emit_layer1_degrade_warning(event_sink.as_ref(), reason);
     }
     let layer1_counts = layer1_outcome.telemetry();
+    let finals_after_worker = layer1_lane.unforwarded_finals();
+    emit_layer1_finals_not_admitted_warning(
+        event_sink.as_ref(),
+        finals_after_worker,
+        layer1_refiner,
+    );
     if layer1_counts.frames_offered > 0 || layer1_counts.finals_accepted > 0 {
         info!(
             frames_forwarded = layer1_counts.frames_forwarded,
@@ -1302,7 +1591,10 @@ pub(crate) async fn apple_stream_transcription_session(
     }
 
     let mut accepted_tail_patch_replacements = 0u64;
+    let mut lexicon_rewrites = 0u64;
+    let mut lexicon_entries_custom = 0usize;
     let mut tail_patch_worker_accounting = None;
+    let mut conservation = SessionConservationReceipt::default();
     match worker.join() {
         Ok(Ok(outcome)) => {
             info!(
@@ -1315,6 +1607,9 @@ pub(crate) async fn apple_stream_transcription_session(
                 "Apple progressive live session finished"
             );
             accepted_tail_patch_replacements = outcome.tail_patch_replacements;
+            lexicon_rewrites = outcome.lexicon_rewrites;
+            lexicon_entries_custom = outcome.lexicon_entries_custom;
+            conservation = outcome.conservation.clone();
             tail_patch_worker_accounting = Some(TailPatchWorkerAccounting {
                 applied_jobs: outcome.tail_patch_jobs_applied,
                 skipped_jobs: outcome.tail_patch_jobs_skipped,
@@ -1339,8 +1634,9 @@ pub(crate) async fn apple_stream_transcription_session(
         tail_patch_on,
         tail_patch_submitted,
         tail_patch_worker_accounting,
+        conservation.clone(),
     );
-    log_tail_patch_session_receipt(receipt);
+    log_tail_patch_session_receipt(&receipt);
     report_tail_patch_drain_degrade(
         event_sink.as_ref(),
         receipt.timed_out.saturating_add(receipt.abandoned),
@@ -1350,10 +1646,17 @@ pub(crate) async fn apple_stream_transcription_session(
         event_sink.as_ref(),
         &capture_level.finalize(CapturePathMeta::resolve(sample_rate, 1, None)),
     );
+    info!(
+        lexicon_rewrites,
+        lexicon_entries_bundled = super::live_lexicon::bundled_count(),
+        lexicon_entries_custom,
+        "Live lexicon take finalised"
+    );
     emit_session_finalised(
         event_sink.as_ref(),
         session_id,
         accepted_tail_patch_replacements,
+        conservation,
     );
 }
 
@@ -1385,8 +1688,22 @@ struct AppleSealState {
     utterance_id: u64,
     open_partial: String,
     open_partial_segments: Vec<TranscriptSegment>,
+    open_partial_pin: u64,
+    /// Next open phrase; closing it advances this independently of PCM clocks.
+    phrase_id: u64,
+    /// A forced close can still receive its recognizer final during finish.
+    finishing_phrase_id: Option<u64>,
+    last_closed_phrase_id: Option<u64>,
+    closed_phrases: BTreeMap<u64, ClosedApplePhrase>,
+    published_closed_phrases: BTreeMap<u64, ClosedApplePhrase>,
+    refused_untimed_words: BTreeMap<u64, Vec<UnadmittedAppleWord>>,
+    unadmitted_revision: u64,
+    published_unadmitted_words: Vec<UnadmittedAppleWord>,
     sealed_count: u64,
     filtered_empty_drops: u64,
+    lexicon_custom_path: PathBuf,
+    lexicon_rewrites: u64,
+    lexicon_entries_custom: usize,
     /// Bounded PCM retention, so a sealed boundary can be resolved back to the
     /// audio behind it (Layer 1 tail-patch prerequisite).
     audio: LiveAudioBuffer,
@@ -1400,6 +1717,12 @@ struct AppleSealState {
     last_apple_segment_end: f32,
     /// Seals whose audio window could not be resolved (F3 falsification).
     unresolved_windows: u64,
+    /// Whisper windows accepted onto the provider queue.
+    windows_admitted: u64,
+    /// Accepted windows built from more than one occurrence.
+    windows_coalesced: u64,
+    /// Windows refused before a provider ever saw them, by reason code.
+    windows_refused_before_inference: BTreeMap<String, u64>,
     /// Seals where Layer 1 recovered speech it could not place on the canvas
     /// (W-C). A non-zero count means the stop path is owed a residual gap fill.
     under_commit_escalations: u64,
@@ -1408,17 +1731,19 @@ struct AppleSealState {
     /// Sealed fragments waiting to share one Whisper window (~5 segments).
     layer1_coalesce: Layer1Coalesce,
     refinement_pending: VecDeque<TailPatchRequest>,
-    refinement_submitted: BTreeMap<u64, TailPatchInFlight>,
+    refinement_submitted: BTreeMap<(u64, u64, u64, u64), TailPatchInFlight>,
+    /// Incremented only after queue acceptance; never reused within this session.
+    last_submission_sequence: u64,
+    /// Latest completed window start or closed capture extent. Earlier jobs
+    /// must drain before an occurrence behind this horizon can seal.
+    admission_horizon: u64,
+    /// Utterance-grain straddles still refuse whole-span replacement.
+    whisper_span_refused: BTreeSet<OccurrenceIdentity>,
     refinement_clock: Instant,
     refinement_lane_lost: bool,
     refinement_started: Instant,
     /// Seals whose tail-patch request found the queue full (F1 backpressure).
     tail_patch_backpressure_drops: u64,
-    /// Requests accepted by the Layer 1 queue that have not reported back yet.
-    /// This — not the pending-seal queue — is what the end-of-session closure
-    /// loop waits on: a span can also be held by the Apple volatile window, and
-    /// no Whisper completion will ever clear that gate.
-    tail_patch_awaiting_completion: u64,
     /// Occurrence formatter hand-off. Presence means the frozen snapshot
     /// permits jobs; it is not itself a scheduled ledger return.
     formatter: Option<mpsc::Sender<FormatterRequest>>,
@@ -1451,7 +1776,13 @@ struct AppleSealState {
     /// lifecycle needs the VAD even when an operator has pinned the seal path
     /// back to Apple's own segment boundaries.
     fusion_seal_armed: bool,
+    /// Summary admission window opened only by the armed EOF early seal.
+    /// Hands-free epoch close never opens it; finish and residue close consume it.
+    stop_trailing_finish: bool,
     fusion_context: FusionContextMode,
+    /// Seconds of captured PCM each Layer 1 window must cover. Read once,
+    /// from the sealed snapshot, when the take's session is built.
+    whisper_context_window_sec: f32,
     pending_silero_words: BTreeMap<u64, Vec<FusionWord>>,
     unmatched_silero_words: Vec<FusionWord>,
     /// Session PCM identity, never text equality: repeated labels may be speech.
@@ -1460,6 +1791,8 @@ struct AppleSealState {
     /// Silero only appends utterances and extends/closes its last range.
     /// Keep the last slice input so unchanged ticks do not clone/scan words.
     silero_slice_revision: Option<(usize, Option<super::silero_fusion::SileroUtterance>)>,
+    /// Exact callback input at the slice fence, independent of rewritten labels.
+    silero_slice_words: Vec<TranscriptSegment>,
     reconciled_silero: BTreeSet<u64>,
     /// Shared one-throne ledger.
     acoustic_ledger: Arc<Mutex<AcousticLedger>>,
@@ -1469,9 +1802,223 @@ struct AppleSealState {
     /// This take's capture energy ladder, bound to session and capture epoch.
     /// The live writer is the async capture arm; this is its reader handle.
     capture_energy: CaptureEnergyOwner,
+    /// Present only when this take opened a live cloud session. Local power
+    /// leaves it empty, so no commit is sent and no cloud observer is scheduled.
+    cloud_commit_tx: Option<mpsc::Sender<u64>>,
+    /// Every scheduled CloudLive occurrence not yet assigned to a commit.
+    cloud_uncommitted: BTreeSet<OccurrenceIdentity>,
+    cloud_last_commit_sample: u64,
+    cloud_uncommitted_span_ms: u64,
+    /// Commit samples the async lane has not accepted yet.
+    cloud_commit_retry: VecDeque<u64>,
+    /// Commits whose finals have not returned. The sample is the Silero close.
+    cloud_inflight: VecDeque<PendingCloudCommit>,
+    cloud_clock_unreliable_logged: bool,
+    cloud_live_admitted: u64,
+    cloud_live_replaced_apple: u64,
+    cloud_live_refused_sealed: u64,
+    cloud_live_unowned_routed: u64,
+    cloud_live_lane_lost: u64,
+    cloud_live_timed_out: u64,
+    cloud_live_unmatched_final: u64,
+}
+
+/// Capture-clock allowance for a final; the scheduled frontier is the hold.
+const CLOUD_FINAL_GRACE: Duration = Duration::from_secs(3);
+
+/// One websocket commit waiting for the final the server stamps back.
+struct PendingCloudCommit {
+    /// Exclusive Silero close the worker asked the lane to commit.
+    sample_end: u64,
+    /// Qualified, unsealed occurrences this commit covers.
+    occurrences: Vec<OccurrenceIdentity>,
+}
+
+/// Worker-bound cloud notices. The end receipt follows all stop finals.
+enum CloudWorkerNotice {
+    /// Boxed: a stamped final is far larger than `LaneLost` (clippy::large_enum_variant).
+    Final(Box<crate::asr_session::events::TranscriptEvent>),
+    LaneLost,
+    EndSettled,
+}
+
+/// The worker's two ends of the CLOUD live lane. They exist only together.
+struct CloudWorkerChannels {
+    commit: mpsc::Sender<u64>,
+    notice: std_mpsc::Receiver<CloudWorkerNotice>,
+}
+
+fn inflight_key(submission_sequence: u64, identity: &TailRequestIdentity) -> (u64, u64, u64, u64) {
+    (
+        submission_sequence,
+        identity.request_id,
+        identity.range.sample_start,
+        identity.range.sample_end,
+    )
+}
+
+/// What a pin that does not join an exclusive tail becomes.
+enum SidePin {
+    Replay,
+    Unanchored(NoAuthorityReason),
+    /// Measured range, no voiced hop. Refusal, not paint.
+    NoVoicedHop,
+}
+
+/// One timed pin routed to a single open member.
+#[derive(Clone)]
+struct RoutedPin {
+    index: usize,
+    pin: OccurrenceIdentity,
+    text: String,
+}
+
+/// Exclusive pins for one member, plus whether any other pin blocks the span.
+#[derive(Clone, Default)]
+struct MemberPinRoute {
+    exclusive: Vec<RoutedPin>,
+    blocked: bool,
+}
+
+fn exclusive_label(pins: &[RoutedPin]) -> String {
+    let mut ordered = pins.to_vec();
+    ordered.sort_by_key(|pin| pin.pin.sample_start);
+    ordered
+        .iter()
+        .map(|pin| pin.text.as_str())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn pin_intersects(pin: &OccurrenceIdentity, member: &OccurrenceIdentity) -> bool {
+    pin.sample_end > member.sample_start && pin.sample_start < member.sample_end
 }
 
 impl AppleSealState {
+    /// Replace the presentation mirror from the worker's actual held words.
+    /// Call only after the ledger events for the same transition were sent.
+    fn publish_unadmitted_words(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
+        let committed = {
+            let ledger = self
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            ledger
+                .occurrences()
+                .filter(|occurrence| {
+                    occurrence.session == self.session_id
+                        && occurrence.capture_epoch == self.capture_epoch
+                })
+                .map(|occurrence| (occurrence.sample_start, occurrence.sample_end))
+                .collect::<Vec<_>>()
+        };
+        let mut words = Vec::new();
+        // The pin is diagnostic only, including when Apple supplied segments.
+        // Repeated lexical words in one phrase must retain their multiplicity.
+        words.extend(
+            self.open_partial
+                .split_whitespace()
+                .map(|text| UnadmittedAppleWord {
+                    text: text.to_string(),
+                    sample_start: self.open_partial_pin,
+                    sample_end: self.open_partial_pin,
+                    source: UnadmittedAppleWordSource::OpenPartial {
+                        rev: self.preview_rev,
+                        phrase_id: self.phrase_id,
+                    },
+                }),
+        );
+        let mut current_ranged: Vec<(FusionWord, UnadmittedAppleWordSource)> = Vec::new();
+        let ranged = self
+            .unmatched_silero_words
+            .iter()
+            .cloned()
+            .map(|word| (word, UnadmittedAppleWordSource::Unmatched))
+            .chain(
+                self.pending_silero_words
+                    .iter()
+                    .flat_map(|(&utterance_id, pending)| {
+                        pending.iter().cloned().map(move |word| {
+                            (word, UnadmittedAppleWordSource::Pending { utterance_id })
+                        })
+                    }),
+            );
+        for candidate in ranged {
+            if let Some(index) = current_ranged
+                .iter()
+                .position(|(held, _)| same_fusion_pcm_slot(held, &candidate.0))
+            {
+                current_ranged[index] = candidate;
+            } else {
+                current_ranged.push(candidate);
+            }
+        }
+        words.extend(
+            current_ranged
+                .into_iter()
+                .map(|(word, source)| UnadmittedAppleWord {
+                    text: word.text,
+                    sample_start: word.sample_start,
+                    sample_end: word.sample_end,
+                    source,
+                }),
+        );
+        words.extend(self.refused_untimed_words.values().flatten().cloned());
+        words.retain(|word| {
+            if matches!(
+                word.source,
+                UnadmittedAppleWordSource::OpenPartial { .. }
+                    | UnadmittedAppleWordSource::RefusedUntimed { .. }
+            ) {
+                return true;
+            }
+            let midpoint =
+                word.sample_start + word.sample_end.saturating_sub(word.sample_start) / 2;
+            !committed
+                .iter()
+                .any(|&(start, end)| start <= midpoint && midpoint < end)
+        });
+        words.sort_by_key(|word| match word.source {
+            UnadmittedAppleWordSource::OpenPartial { .. } => (2, 0, 0),
+            UnadmittedAppleWordSource::RefusedUntimed { phrase_id } => (1, phrase_id, 0),
+            _ => (0, word.sample_start, word.sample_end),
+        });
+        if words == self.published_unadmitted_words
+            && self.closed_phrases == self.published_closed_phrases
+        {
+            return;
+        }
+        self.unadmitted_revision = self.unadmitted_revision.saturating_add(1);
+        self.published_unadmitted_words = words.clone();
+        self.published_closed_phrases
+            .clone_from(&self.closed_phrases);
+        let _ = ev_tx.send(EngineEvent::UnadmittedAppleWords {
+            revision: self.unadmitted_revision,
+            words,
+            closed_phrases: self.closed_phrases.clone(),
+        });
+    }
+
+    /// Current partial or accepted capture label; a refused raw callback alone
+    /// must not release an empty stop before finish can supply usable text.
+    fn has_stop_canvas_text(&self) -> bool {
+        if !self.open_partial.trim().is_empty() {
+            return true;
+        }
+        let ledger = self
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ledger.qualified_occurrences().any(|occurrence| {
+            occurrence.session == self.session_id
+                && occurrence.capture_epoch == self.capture_epoch
+                && ledger
+                    .text_of(occurrence)
+                    .is_some_and(|text| !text.trim().is_empty())
+        })
+    }
+
     fn emit_speech_integrity(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
         let ledger = self
             .acoustic_ledger
@@ -1545,7 +2092,7 @@ impl AppleSealState {
     fn new_for_session(sample_rate: u32, session_id: String, capture_epoch: u64) -> Self {
         let session_id_for_energy = session_id.clone();
         let speech_progress = SpeechProgress::new(session_id.clone(), capture_epoch, sample_rate);
-        Self {
+        let state = Self {
             session_id,
             capture_epoch,
             sample_rate,
@@ -1555,23 +2102,40 @@ impl AppleSealState {
             utterance_id: 0,
             open_partial: String::new(),
             open_partial_segments: Vec::new(),
+            open_partial_pin: 0,
+            phrase_id: 1,
+            finishing_phrase_id: None,
+            last_closed_phrase_id: None,
+            closed_phrases: BTreeMap::new(),
+            published_closed_phrases: BTreeMap::new(),
+            refused_untimed_words: BTreeMap::new(),
+            unadmitted_revision: 0,
+            published_unadmitted_words: Vec::new(),
             sealed_count: 0,
             filtered_empty_drops: 0,
+            lexicon_custom_path: crate::config::Config::config_dir().join("lexicon.custom.jsonl"),
+            lexicon_rewrites: 0,
+            lexicon_entries_custom: 0,
             audio: LiveAudioBuffer::new(sample_rate, DEFAULT_RETENTION_SECS),
             terminal_pcm: None,
             last_sealed_end: 0.0,
             last_apple_segment_end: 0.0,
             unresolved_windows: 0,
+            windows_admitted: 0,
+            windows_coalesced: 0,
+            windows_refused_before_inference: BTreeMap::new(),
             under_commit_escalations: 0,
             tail_patch: None,
             layer1_coalesce: Layer1Coalesce::default(),
             refinement_pending: VecDeque::new(),
             refinement_submitted: BTreeMap::new(),
+            last_submission_sequence: 0,
+            admission_horizon: 0,
+            whisper_span_refused: BTreeSet::new(),
             refinement_clock: Instant::now(),
             refinement_lane_lost: false,
             refinement_started: Instant::now(),
             tail_patch_backpressure_drops: 0,
-            tail_patch_awaiting_completion: 0,
             formatter: None,
             formatter_in_flight: BTreeSet::new(),
             formatter_awaiting_completion: 0,
@@ -1583,20 +2147,43 @@ impl AppleSealState {
             tail_patch_refusals: 0,
             fusion: None,
             fusion_seal_armed: false,
+            stop_trailing_finish: false,
             // One source of truth for the default cut. Without a Silero
             // ingress nothing reads this field; when one arms, `from_env`
             // resolves the same default unless an operator overrode it.
             fusion_context: FusionContextMode::default(),
+            whisper_context_window_sec: crate::config::default_whisper_context_window_sec(),
             pending_silero_words: BTreeMap::new(),
             unmatched_silero_words: Vec::new(),
             warned_unmatched_words: BTreeSet::new(),
             no_time_overlap_warnings: 0,
             silero_slice_revision: None,
+            silero_slice_words: Vec::new(),
             reconciled_silero: BTreeSet::new(),
             acoustic_ledger: Arc::new(Mutex::new(AcousticLedger::new())),
             energy_calibration: None,
             capture_energy: CaptureEnergyOwner::bind(session_id_for_energy, capture_epoch),
-        }
+            cloud_commit_tx: None,
+            cloud_uncommitted: BTreeSet::new(),
+            cloud_last_commit_sample: 0,
+            cloud_uncommitted_span_ms: 0,
+            cloud_commit_retry: VecDeque::new(),
+            cloud_inflight: VecDeque::new(),
+            cloud_clock_unreliable_logged: false,
+            cloud_live_admitted: 0,
+            cloud_live_replaced_apple: 0,
+            cloud_live_refused_sealed: 0,
+            cloud_live_unowned_routed: 0,
+            cloud_live_lane_lost: 0,
+            cloud_live_timed_out: 0,
+            cloud_live_unmatched_final: 0,
+        };
+        state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .bind_capture_rate(sample_rate);
+        state
     }
 
     /// Adopt the capture arm's energy-ladder owner.
@@ -1621,6 +2208,10 @@ impl AppleSealState {
         acoustic_ledger: Arc<Mutex<AcousticLedger>>,
         energy_calibration: Option<EnergyCalibration>,
     ) -> Self {
+        acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .bind_capture_rate(sample_rate);
         Self {
             acoustic_ledger,
             energy_calibration,
@@ -1639,6 +2230,431 @@ impl AppleSealState {
         }
     }
 
+    /// Schedule at creation, before synchronous observers can close the frontier.
+    /// Exact PCM identities survive utterance re-partition and re-mint.
+    fn track_cloud_occurrence(&mut self, occurrence: &OccurrenceIdentity) {
+        if self.cloud_commit_tx.is_none() {
+            return;
+        }
+        let mut ledger = self
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !ledger.is_qualified(occurrence) || ledger.is_sealed(occurrence) {
+            return;
+        }
+        if ledger.frontier_of(occurrence).is_none() {
+            ledger.schedule_frontier(occurrence.clone(), [LedgerObservationProducer::CloudLive]);
+        } else {
+            ledger.schedule_observer(occurrence.clone(), LedgerObservationProducer::CloudLive);
+        }
+        if ledger.frontier_of(occurrence).is_some_and(|frontier| {
+            frontier
+                .open_producers()
+                .contains(&LedgerObservationProducer::CloudLive)
+        }) && !self
+            .cloud_inflight
+            .iter()
+            .any(|commit| commit.occurrences.contains(occurrence))
+        {
+            self.cloud_uncommitted.insert(occurrence.clone());
+        }
+    }
+
+    /// Only the VAD's typed silence decision can cut the live stream.
+    /// EndOfCapture is handled by the lane's existing `end` at stop.
+    fn commit_cloud_close(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        receipt: super::silero_fusion::UtteranceCloseReceipt,
+    ) {
+        if self.cloud_commit_tx.is_none()
+            || receipt.cause != super::silero_fusion::UtteranceCloseCause::SilenceFence
+            || receipt.decision_sample <= self.cloud_last_commit_sample
+            || self
+                .cloud_commit_retry
+                .back()
+                .is_some_and(|sample| receipt.decision_sample <= *sample)
+        {
+            return;
+        }
+        let sample_end = receipt.decision_sample;
+        let ledger = self
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let occurrences = self
+            .cloud_uncommitted
+            .iter()
+            .filter(|owner| {
+                // The callback can close A after S; B's pre-pad can start
+                // before S. Only already-closed owners belong to this final.
+                owner.sample_start < sample_end
+                    && ledger
+                        .serial_of(owner)
+                        .is_some_and(|serial| serial.vad_closed())
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        drop(ledger);
+        for occurrence in &occurrences {
+            self.cloud_uncommitted.remove(occurrence);
+        }
+        self.cloud_inflight.push_back(PendingCloudCommit {
+            sample_end,
+            occurrences,
+        });
+        self.cloud_commit_retry.push_back(sample_end);
+        self.flush_cloud_commits(ev_tx);
+    }
+
+    /// Measure the longest span since a commit, including split-only monologues.
+    fn observe_cloud_capture_head(&mut self, capture_head: u64) {
+        if self.cloud_commit_tx.is_some() {
+            let span_ms = capture_head
+                .saturating_sub(self.cloud_last_commit_sample)
+                .saturating_mul(1_000)
+                / u64::from(self.sample_rate.max(1));
+            self.cloud_uncommitted_span_ms = self.cloud_uncommitted_span_ms.max(span_ms);
+        }
+    }
+
+    fn flush_cloud_commits(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
+        while let Some(sample_end) = self.cloud_commit_retry.pop_front() {
+            let Some(sender) = self.cloud_commit_tx.as_ref() else {
+                self.cloud_commit_retry.clear();
+                self.return_cloud_live_lost(ev_tx);
+                return;
+            };
+            match sender.try_send(sample_end) {
+                Ok(()) => {
+                    self.observe_cloud_capture_head(sample_end);
+                    self.cloud_last_commit_sample = self.cloud_last_commit_sample.max(sample_end);
+                }
+                Err(mpsc::error::TrySendError::Full(sample_end)) => {
+                    self.cloud_commit_retry.push_front(sample_end);
+                    return;
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    self.cloud_commit_tx = None;
+                    self.cloud_commit_retry.clear();
+                    self.return_cloud_live_lost(ev_tx);
+                    return;
+                }
+            }
+        }
+    }
+
+    fn handle_cloud_notice(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        notice: CloudWorkerNotice,
+    ) {
+        match notice {
+            CloudWorkerNotice::LaneLost => self.return_cloud_live_lost(ev_tx),
+            CloudWorkerNotice::Final(event) => self.admit_cloud_final(ev_tx, *event),
+            CloudWorkerNotice::EndSettled => {}
+        }
+    }
+
+    fn return_cloud_live_lost(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
+        self.cloud_commit_tx = None;
+        self.cloud_commit_retry.clear();
+        for occurrence in self.take_outstanding_cloud() {
+            self.cloud_live_lane_lost = self.cloud_live_lane_lost.saturating_add(1);
+            self.cloud_receipt(&occurrence, "cloud_live_lane_lost");
+            self.return_cloud_observer(ev_tx, &occurrence);
+        }
+    }
+
+    /// A later utterance or Whisper horizon cannot expire CloudLive. Only
+    /// S + grace on the raw capture clock returns a stalled commit's observers.
+    fn release_cloud_live_behind(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        capture_head: u64,
+    ) {
+        let grace_samples = CLOUD_FINAL_GRACE
+            .as_secs()
+            .saturating_mul(u64::from(self.sample_rate.max(1)));
+        let mut due = Vec::new();
+        let mut kept = VecDeque::new();
+        while let Some(commit) = self.cloud_inflight.pop_front() {
+            if capture_head >= commit.sample_end.saturating_add(grace_samples) {
+                due.extend(commit.occurrences);
+            } else {
+                kept.push_back(commit);
+            }
+        }
+        self.cloud_inflight = kept;
+        for occurrence in due {
+            self.cloud_live_timed_out = self.cloud_live_timed_out.saturating_add(1);
+            self.cloud_receipt(&occurrence, "cloud_live_timed_out");
+            self.return_cloud_observer(ev_tx, &occurrence);
+        }
+    }
+
+    fn take_outstanding_cloud(&mut self) -> BTreeSet<OccurrenceIdentity> {
+        let mut occurrences = std::mem::take(&mut self.cloud_uncommitted);
+        occurrences.extend(
+            self.cloud_inflight
+                .drain(..)
+                .flat_map(|commit| commit.occurrences),
+        );
+        occurrences
+    }
+
+    fn return_outstanding_cloud(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
+        self.cloud_commit_tx = None;
+        self.cloud_commit_retry.clear();
+        for occurrence in self.take_outstanding_cloud() {
+            self.cloud_receipt(&occurrence, "cloud_live_session_end");
+            self.return_cloud_observer(ev_tx, &occurrence);
+        }
+    }
+
+    fn cloud_receipt(&self, occurrence: &OccurrenceIdentity, disposition: &'static str) {
+        info!(
+            session = %occurrence.session,
+            capture_epoch = occurrence.capture_epoch,
+            sample_start = occurrence.sample_start,
+            sample_end = occurrence.sample_end,
+            disposition,
+            "cloud_live"
+        );
+    }
+
+    fn admit_cloud_final(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        event: crate::asr_session::events::TranscriptEvent,
+    ) {
+        let Some(commit) = event.commit.clone() else {
+            return;
+        };
+        self.log_cloud_final(&commit);
+        let matched = self
+            .cloud_inflight
+            .iter()
+            .position(|pending| pending.sample_end == commit.sample_end)
+            .or_else(|| {
+                self.cloud_inflight
+                    .iter()
+                    .position(|pending| pending.sample_end <= commit.sample_end)
+            });
+        let pending = matched.and_then(|index| self.cloud_inflight.remove(index));
+        if pending.is_none() {
+            self.cloud_live_unmatched_final = self.cloud_live_unmatched_final.saturating_add(1);
+            info!(
+                sample_end = commit.sample_end,
+                cloud_live_unmatched_final = 1,
+                "cloud_live_admission"
+            );
+        }
+        let scheduled = pending.map(|commit| commit.occurrences).unwrap_or_default();
+        let word_grain = commit.grain == crate::asr_session::events::FinalGrain::Word
+            && !commit.words.is_empty()
+            && !commit.phrase_fallback;
+        if word_grain {
+            self.admit_cloud_words(ev_tx, &commit);
+        } else if !event.text.trim().is_empty() {
+            self.admit_cloud_phrase(ev_tx, &commit, event.text.trim());
+        }
+        for occurrence in scheduled {
+            self.return_cloud_observer(ev_tx, &occurrence);
+        }
+    }
+
+    fn log_cloud_final(&mut self, commit: &crate::asr_session::events::FinalCommit) {
+        let mismatch = commit.range_mismatch.as_ref().map(|mismatch| {
+            format!(
+                "commit={}..{} server={}..{}",
+                mismatch.commit_sample_start,
+                mismatch.commit_sample_end,
+                mismatch.server_sample_start,
+                mismatch.server_sample_end
+            )
+        });
+        info!(
+            match_path = %commit.match_path.as_label(),
+            word_time_clamped = commit.word_time_clamped,
+            phrase_fallback = commit.phrase_fallback,
+            commit_range_mismatch = mismatch.as_deref().unwrap_or(""),
+            "cloud_live_admission"
+        );
+        if commit.clock_unreliable && !self.cloud_clock_unreliable_logged {
+            self.cloud_clock_unreliable_logged = true;
+            info!(stream_clock_unreliable = true, "cloud_live_admission");
+        }
+    }
+
+    fn admit_cloud_words(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        commit: &crate::asr_session::events::FinalCommit,
+    ) {
+        let segments = commit
+            .words
+            .iter()
+            .map(|word| TimedTailSegment {
+                text: word.word.clone(),
+                range: TailSampleRange {
+                    session: self.session_id.clone(),
+                    capture_epoch: self.capture_epoch,
+                    sample_start: word.sample_start,
+                    sample_end: word.sample_end,
+                },
+                grain: crate::stt::tail_provider::TailSegmentGrain::Word,
+            })
+            .collect::<Vec<_>>();
+        self.admit_cloud_segments(ev_tx, commit, &segments, true);
+    }
+
+    fn admit_cloud_phrase(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        commit: &crate::asr_session::events::FinalCommit,
+        text: &str,
+    ) {
+        let segments = vec![TimedTailSegment {
+            text: text.to_string(),
+            range: TailSampleRange {
+                session: self.session_id.clone(),
+                capture_epoch: self.capture_epoch,
+                sample_start: commit.sample_start,
+                sample_end: commit.sample_end,
+            },
+            grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
+        }];
+        self.admit_cloud_segments(ev_tx, commit, &segments, false);
+    }
+
+    fn admit_cloud_segments(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        commit: &crate::asr_session::events::FinalCommit,
+        segments: &[TimedTailSegment],
+        word_grain: bool,
+    ) {
+        let owners = self.word_owners();
+        let routes = self.route_overlap_pins(
+            ev_tx,
+            commit.sample_start,
+            commit.sample_start,
+            commit.sample_end,
+            &owners,
+            segments,
+            LedgerObservationProducer::CloudLive,
+        );
+        for ((member_id, occurrence), route) in owners.iter().zip(&routes) {
+            if word_grain {
+                if route.exclusive.is_empty() {
+                    continue;
+                }
+                let before = self
+                    .acoustic_ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .layer_trail()
+                    .len();
+                let admitted = self.admit_routed_words(
+                    ev_tx,
+                    *member_id,
+                    occurrence,
+                    commit.sample_start,
+                    &route.exclusive,
+                    LedgerObservationProducer::CloudLive,
+                );
+                if admitted {
+                    self.cloud_live_admitted = self.cloud_live_admitted.saturating_add(1);
+                }
+                let (replaced_apple, refused_sealed) = {
+                    let trail = self
+                        .acoustic_ledger
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut replaced_apple = 0u64;
+                    let mut refused_sealed = 0u64;
+                    for entry in trail.layer_trail().iter().skip(before) {
+                        match &entry.decision {
+                            MutationReceipt::Refuse {
+                                reason: RefuseReason::ReplacedByCloudLive,
+                                ..
+                            } if entry.observation.producer == LedgerObservationProducer::Apple => {
+                                replaced_apple = replaced_apple.saturating_add(1);
+                            }
+                            MutationReceipt::KeepVisibleUnanchored {
+                                reason: NoAuthorityReason::LateCloudLiveWordSealedOwner,
+                                ..
+                            } => {
+                                refused_sealed = refused_sealed.saturating_add(1);
+                            }
+                            _ => {}
+                        }
+                    }
+                    (replaced_apple, refused_sealed)
+                };
+                self.cloud_live_replaced_apple = self
+                    .cloud_live_replaced_apple
+                    .saturating_add(replaced_apple);
+                self.cloud_live_refused_sealed = self
+                    .cloud_live_refused_sealed
+                    .saturating_add(refused_sealed);
+                continue;
+            }
+            let text = exclusive_label(&route.exclusive);
+            if text.is_empty() {
+                continue;
+            }
+            let observation = self
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .next_word_observation(
+                    LedgerObservationProducer::CloudLive,
+                    commit.sample_start,
+                    occurrence,
+                );
+            if admit_ledger_label(
+                self,
+                ev_tx,
+                LabelAdmission {
+                    observation,
+                    label: &text,
+                    energy: EnergyAdmission::RequireExistingQualification,
+                },
+            )
+            .is_some_and(|receipt| receipt.grants_mutation())
+            {
+                self.cloud_live_admitted = self.cloud_live_admitted.saturating_add(1);
+            }
+            self.refresh_pending_label(*member_id, occurrence);
+        }
+    }
+
+    fn return_cloud_observer(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        occurrence: &OccurrenceIdentity,
+    ) {
+        self.cloud_uncommitted.remove(occurrence);
+        let mut ledger = self
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !ledger.frontier_of(occurrence).is_some_and(|frontier| {
+            frontier
+                .open_producers()
+                .contains(&LedgerObservationProducer::CloudLive)
+        }) {
+            return;
+        }
+        let closed = ledger.note_frontier_return(occurrence, LedgerObservationProducer::CloudLive);
+        if closed && let Ok(receipt) = ledger.seal(occurrence).cloned() {
+            let _ = ev_tx.send(EngineEvent::LedgerSeal { receipt });
+        }
+    }
+
     /// Returns whether the current exact occurrence was accepted into the
     /// coalescer-owned terminal lifecycle. Queue results for older flushes are
     /// deliberately independent of this return value.
@@ -1647,6 +2663,11 @@ impl AppleSealState {
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
         piece: CoalescedPiece,
     ) -> bool {
+        // An armed lane is not a scheduled observer. Apple-only occurrences
+        // must never acquire a Whisper frontier just to report that no lane exists.
+        if self.tail_patch.is_none() && !self.refinement_lane_lost {
+            return false;
+        }
         let utterance_id = piece.utterance_id;
         let occurrence = piece.occurrence.clone();
         if self
@@ -1673,17 +2694,10 @@ impl AppleSealState {
         if !scheduled {
             return false;
         }
+        // Split before any length refusal. `push_at` turns one long fragment
+        // into step-1 windows. A window that still cannot be queued is
+        // `BacklogExhausted` on that window, not on the whole fragment.
         self.refinement_receipt(&occurrence, "admitted");
-        let limit = self.sample_rate.max(1) as usize * LIVE_REFINEMENT_PCM_SECS;
-        if piece.audio.len() > limit || self.tail_patch.is_none() {
-            let reason = if self.tail_patch.is_none() {
-                RefinementFailure::LaneGone
-            } else {
-                RefinementFailure::BacklogExhausted
-            };
-            self.fail_refinement(ev_tx, utterance_id, &occurrence, reason);
-            return false;
-        }
         if self.layer1_coalesce.is_empty() {
             self.layer1_coalesce
                 .set_neighbour(self.sealed_prefix.clone());
@@ -1697,6 +2711,67 @@ impl AppleSealState {
             let _ = self.queue_layer1_flush(ev_tx, flush);
         }
         true
+    }
+
+    fn whisper_context_window_samples(&self) -> u64 {
+        let secs = self.whisper_context_window_sec;
+        if !secs.is_finite() || secs <= 0.0 {
+            return 0;
+        }
+        (secs * self.sample_rate.max(1) as f32).round() as u64
+    }
+
+    /// Oldest sample the active PCM store can still serve. A terminal archive
+    /// is the whole capture, so its floor is the capture start.
+    fn pcm_floor_sample(&self) -> u64 {
+        if self.terminal_pcm.is_some() {
+            0
+        } else {
+            self.audio.retained_start_sample()
+        }
+    }
+
+    fn with_min_context(&self, range: TailSampleRange) -> TailSampleRange {
+        decode_window_with_min_context(
+            &range,
+            &range,
+            self.whisper_context_window_samples(),
+            0,
+            self.pcm_floor_sample(),
+        )
+    }
+
+    /// Prepend retained PCM so a short admit span ends on at least
+    /// `whisper_context_window_sec` of audio. Admit bounds stay put.
+    fn extend_flush_context(&self, flush: &mut CoalesceFlush) {
+        let min_samples = self.whisper_context_window_samples();
+        if min_samples == 0 || flush.admit_sample_end <= flush.admit_sample_start {
+            return;
+        }
+        let heard = flush
+            .admit_sample_end
+            .saturating_sub(flush.sample_start.min(flush.admit_sample_end));
+        if heard >= min_samples {
+            return;
+        }
+        let floor = self.pcm_floor_sample();
+        let want = flush
+            .admit_sample_end
+            .saturating_sub(min_samples)
+            .max(floor);
+        if want >= flush.sample_start {
+            return;
+        }
+        let Some(prefix) = self.window_by_samples(want, flush.sample_start) else {
+            return;
+        };
+        if prefix.sample_start != want || prefix.sample_end != flush.sample_start {
+            return;
+        }
+        let mut audio = prefix.samples;
+        audio.extend_from_slice(&flush.audio);
+        flush.audio = audio;
+        flush.sample_start = prefix.sample_start;
     }
 
     fn flush_layer1_coalesce(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) -> bool {
@@ -1714,8 +2789,9 @@ impl AppleSealState {
     fn queue_layer1_flush(
         &mut self,
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
-        flush: CoalesceFlush,
+        mut flush: CoalesceFlush,
     ) -> bool {
+        self.extend_flush_context(&mut flush);
         let identity = flush
             .member_occurrences
             .first()
@@ -1723,21 +2799,29 @@ impl AppleSealState {
         let valid = identity.is_some_and(|first| {
             first.session == self.session_id
                 && first.capture_epoch == self.capture_epoch
+                && flush.admit_sample_start >= flush.sample_start
+                && flush.admit_sample_end <= flush.sample_end
+                && flush.admit_sample_end > flush.admit_sample_start
                 && flush.member_occurrences.iter().all(|(_, member)| {
                     member.same_capture(first)
-                        && member.sample_start >= flush.sample_start
-                        && member.sample_end <= flush.sample_end
+                        && ((member.sample_start >= flush.sample_start
+                            && member.sample_end <= flush.sample_end)
+                            || (flush.member_occurrences.len() == 1
+                                && member.sample_start <= flush.admit_sample_start
+                                && member.sample_end >= flush.admit_sample_end))
                 })
         }) && flush.member_occurrences.len() == flush.member_ids.len()
             && flush.sample_end > flush.sample_start
             && flush.audio.len() as u64 == flush.sample_end - flush.sample_start;
         if !valid {
+            self.note_window_refused_before_inference(RefinementFailure::InvalidIdentity);
             for (id, occurrence) in &flush.member_occurrences {
                 self.fail_refinement(ev_tx, *id, occurrence, RefinementFailure::InvalidIdentity);
             }
             return false;
         }
         let request = TailPatchRequest {
+            submission_sequence: 0,
             utterance_id: flush.primary_utterance_id,
             committed_text: flush.committed_text,
             neighbour_context: flush.neighbour_context,
@@ -1756,6 +2840,8 @@ impl AppleSealState {
                 language: None,
             },
             member_occurrences: flush.member_occurrences,
+            admit_sample_start: flush.admit_sample_start,
+            admit_sample_end: flush.admit_sample_end,
         };
         self.retry_refinements(ev_tx);
         let pending_samples: usize = self
@@ -1769,14 +2855,40 @@ impl AppleSealState {
         {
             self.tail_patch_backpressure_drops =
                 self.tail_patch_backpressure_drops.saturating_add(1);
+            self.note_window_refused_before_inference(RefinementFailure::BacklogExhausted);
             for (id, occurrence) in &request.member_occurrences {
                 self.fail_refinement(ev_tx, *id, occurrence, RefinementFailure::BacklogExhausted);
             }
             return false;
         }
+        self.windows_admitted = self.windows_admitted.saturating_add(1);
+        if request.member_occurrences.len() > 1 {
+            self.windows_coalesced = self.windows_coalesced.saturating_add(1);
+        }
         self.refinement_pending.push_back(request);
         self.retry_refinements(ev_tx);
         true
+    }
+
+    fn note_window_refused_before_inference(&mut self, reason: RefinementFailure) {
+        *self
+            .windows_refused_before_inference
+            .entry(reason.code().to_string())
+            .or_default() += 1;
+    }
+
+    fn session_conservation(&self) -> SessionConservationReceipt {
+        let ledger = self
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        SessionConservationReceipt::from_ledger(
+            &ledger,
+            self.windows_admitted,
+            self.windows_coalesced,
+            self.unresolved_windows,
+            self.windows_refused_before_inference.clone(),
+        )
     }
 
     fn refinement_receipt(&self, occurrence: &OccurrenceIdentity, disposition: &'static str) {
@@ -1810,22 +2922,52 @@ impl AppleSealState {
                 occurrence.sample_end,
             ),
         });
-        self.return_whisper_without_label(ev_tx, id, occurrence);
-        self.emit_pending_seal(ev_tx, id);
+        if matches!(reason, RefinementFailure::StopDeadline) {
+            self.return_whisper_without_label(ev_tx, id, occurrence);
+            self.emit_pending_seal(ev_tx, id);
+        } else {
+            let observation = self
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .next_word_observation(LedgerObservationProducer::Whisper, id, occurrence);
+            let _ = admit_ledger_label(
+                self,
+                ev_tx,
+                LabelAdmission {
+                    observation,
+                    label: "",
+                    energy: EnergyAdmission::RequireExistingQualification,
+                },
+            );
+        }
+    }
+
+    /// Outstanding provider work has one owner: the registered submissions.
+    /// Pending seals can instead be held by Apple and do not imply a decode.
+    fn tail_patch_awaiting_completion(&self) -> u64 {
+        self.refinement_submitted.len() as u64
     }
 
     /// One bounded nonblocking attempt per pending request, stopping at pressure.
     fn retry_refinements(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
-        while let Some(request) = self.refinement_pending.pop_front() {
+        while let Some(mut request) = self.refinement_pending.pop_front() {
             let Some(sender) = self.tail_patch.as_ref() else {
                 for (id, occurrence) in &request.member_occurrences {
                     self.fail_refinement(ev_tx, *id, occurrence, RefinementFailure::LaneGone);
                 }
                 continue;
             };
+            request.submission_sequence = self
+                .last_submission_sequence
+                .checked_add(1)
+                .expect("Whisper submission sequence exhausted");
             let inflight = TailPatchInFlight {
+                submission_sequence: request.submission_sequence,
                 utterance_id: request.utterance_id,
                 request_identity: request.provider_request.identity.clone(),
+                admit_sample_start: request.admit_sample_start,
+                admit_sample_end: request.admit_sample_end,
                 member_occurrences: request.member_occurrences.clone(),
             };
             match sender.try_send(request) {
@@ -1833,10 +2975,11 @@ impl AppleSealState {
                     for (_, occurrence) in &inflight.member_occurrences {
                         self.refinement_receipt(occurrence, "submitted");
                     }
-                    self.refinement_submitted
-                        .insert(inflight.utterance_id, inflight);
-                    self.tail_patch_awaiting_completion =
-                        self.tail_patch_awaiting_completion.saturating_add(1);
+                    // A checked, session-monotonic sequence makes live-key reuse impossible.
+                    self.last_submission_sequence = inflight.submission_sequence;
+                    let key =
+                        inflight_key(inflight.submission_sequence, &inflight.request_identity);
+                    self.refinement_submitted.insert(key, inflight);
                 }
                 Err(mpsc::error::TrySendError::Full(request)) => {
                     self.refinement_pending.push_front(request);
@@ -1855,6 +2998,7 @@ impl AppleSealState {
 
     /// Called on every live worker turn, independent of Apple engine lifecycle.
     fn tick_refinements(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>, now: Instant) {
+        self.flush_cloud_commits(ev_tx);
         self.refinement_clock = now;
         for flush in self.layer1_coalesce.flush_due(now) {
             self.queue_layer1_flush(ev_tx, flush);
@@ -1871,13 +3015,16 @@ impl AppleSealState {
         now: Instant,
         deadline: Instant,
     ) -> bool {
+        if self.refinement_submitted.is_empty() && self.refinement_pending.is_empty() {
+            return false;
+        }
         if now >= deadline {
             self.refinement_clock = now;
             self.return_outstanding_whisper_without_label(ev_tx);
             return false;
         }
         self.tick_refinements(ev_tx, now);
-        self.tail_patch_awaiting_completion > 0 || !self.refinement_pending.is_empty()
+        !self.refinement_submitted.is_empty() || !self.refinement_pending.is_empty()
     }
 
     fn new_with_tail_patch_for_session(
@@ -1900,6 +3047,296 @@ impl AppleSealState {
         }
     }
 
+    /// Send every pin the admit filter used to drop. Exclusive-tail pins stay
+    /// with their member; covered overlap is a named refusal; the rest stays
+    /// visible at its own PCM range and does not enter the committed map.
+    /// An utterance pin that intersects a member without fitting it blocks
+    /// replacement of that whole member.
+    // CL-W2 added the producer argument; grouping the window bounds is a separate cut.
+    #[allow(clippy::too_many_arguments)]
+    fn route_overlap_pins(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        request_id: u64,
+        admit_sample_start: u64,
+        admit_sample_end: u64,
+        members: &[(u64, OccurrenceIdentity)],
+        segments: &[TimedTailSegment],
+        producer: LedgerObservationProducer,
+    ) -> Vec<MemberPinRoute> {
+        let word_grain = !segments.is_empty()
+            && segments
+                .iter()
+                .all(|segment| segment.grain == crate::stt::tail_provider::TailSegmentGrain::Word);
+        let open_members = members
+            .iter()
+            .map(|(_, occurrence)| occurrence.clone())
+            .collect::<Vec<_>>();
+        let mut routes = vec![MemberPinRoute::default(); members.len()];
+        let mut side = Vec::new();
+        {
+            let ledger = self
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for (index, segment) in segments.iter().enumerate() {
+                let text = segment.text.trim();
+                if text.is_empty() {
+                    continue;
+                }
+                let pin = OccurrenceIdentity::from(&segment.range);
+                let mut class = ledger.classify_overlap_pin(
+                    &pin,
+                    admit_sample_start,
+                    admit_sample_end,
+                    &open_members,
+                    word_grain,
+                );
+                let same_word_replay = word_grain
+                    && match class {
+                        OverlapPinClass::ExclusiveTail { member_index } => {
+                            let owner = &open_members[member_index];
+                            // Apple/Lexicon can still be one aggregate slot.
+                            // Its label cannot prove this heard word was already
+                            // pinned, on either side of the current window's edge.
+                            // `whisper_only` stays Whisper: a cloud-live slot must
+                            // not make the later Whisper pin look already heard.
+                            let heard_already = if producer == LedgerObservationProducer::CloudLive
+                            {
+                                ledger.slots_of(owner).is_some_and(|slots| {
+                                    slots.iter().any(|slot| {
+                                        matches!(
+                                            slot.producer,
+                                            LedgerObservationProducer::Whisper
+                                                | LedgerObservationProducer::CloudLive
+                                        ) && crate::pipeline::acoustic_ledger::same_word_pin(
+                                            pin.sample_start.max(owner.sample_start),
+                                            pin.sample_end.min(owner.sample_end),
+                                            text,
+                                            slot.sample_start,
+                                            slot.sample_end,
+                                            &slot.text,
+                                        )
+                                    })
+                                })
+                            } else {
+                                ledger.matching_word_slot(owner, &pin, text, true)
+                            };
+                            heard_already
+                                || routes[member_index].exclusive.iter().any(|prior| {
+                                    crate::pipeline::acoustic_ledger::same_word_pin(
+                                        pin.sample_start.max(owner.sample_start),
+                                        pin.sample_end.min(owner.sample_end),
+                                        text,
+                                        prior.pin.sample_start,
+                                        prior.pin.sample_end,
+                                        &prior.text,
+                                    )
+                                })
+                        }
+                        _ => false,
+                    };
+                if same_word_replay {
+                    class = OverlapPinClass::Replay;
+                }
+                let energy_silent = self
+                    .capture_energy
+                    .voiced_hops_in(
+                        &pin.session,
+                        pin.capture_epoch,
+                        pin.sample_start,
+                        pin.sample_end,
+                    )
+                    .is_some_and(|hops| hops.is_empty());
+                let silero_silent = energy_silent
+                    && self.fusion.as_ref().is_some_and(|fusion| {
+                        let evidence = fusion.acoustic_speech_evidence();
+                        evidence.identity().session == pin.session
+                            && evidence.identity().capture_epoch == pin.capture_epoch
+                            && evidence
+                                .availability()
+                                .observed_samples()
+                                .is_some_and(|end| end >= pin.sample_end)
+                            && evidence.ranges().iter().all(|range| {
+                                range.sample_end <= pin.sample_start
+                                    || range.sample_start >= pin.sample_end
+                            })
+                    });
+                // Until a CTC witness exists, Silero and this energy ladder are
+                // the only joint defence against Whisper words on silence.
+                // Replay is already a refusal; missing Silero coverage is not silence.
+                if energy_silent && silero_silent && !matches!(class, OverlapPinClass::Replay) {
+                    side.push((index, pin, text.to_string(), SidePin::NoVoicedHop));
+                    continue;
+                }
+                match class {
+                    OverlapPinClass::ExclusiveTail { member_index } => {
+                        let owner = &open_members[member_index];
+                        let mut owned_pin = pin.clone();
+                        owned_pin.sample_start = owned_pin.sample_start.max(owner.sample_start);
+                        owned_pin.sample_end = owned_pin.sample_end.min(owner.sample_end);
+                        routes[member_index].exclusive.push(RoutedPin {
+                            index,
+                            pin: owned_pin,
+                            text: text.to_string(),
+                        });
+                    }
+                    OverlapPinClass::Replay => {
+                        // Preserve the replay receipt while allowing an earlier
+                        // PCM representative to replace a jittered copy that
+                        // completed first. This never adds a second word slot.
+                        if word_grain
+                            && let Some((owner_index, owner)) = ledger
+                                .word_owner_index(&pin, &open_members)
+                                .map(|index| (index, &open_members[index]))
+                            && !ledger.is_sealed(owner)
+                            && ledger.matching_word_slot(owner, &pin, text, true)
+                        {
+                            let mut owned_pin = pin.clone();
+                            owned_pin.sample_start = owned_pin.sample_start.max(owner.sample_start);
+                            owned_pin.sample_end = owned_pin.sample_end.min(owner.sample_end);
+                            routes[owner_index].exclusive.push(RoutedPin {
+                                index,
+                                pin: owned_pin,
+                                text: text.to_string(),
+                            });
+                        }
+                        side.push((index, pin, text.to_string(), SidePin::Replay));
+                    }
+                    OverlapPinClass::Unanchored(reason) => {
+                        // Utterance grain addresses the whole span or nothing.
+                        // A word with no midpoint owner stays read-only evidence.
+                        if !word_grain {
+                            for (member_index, member) in open_members.iter().enumerate() {
+                                if pin_intersects(&pin, member) {
+                                    routes[member_index].blocked = true;
+                                }
+                            }
+                        }
+                        side.push((index, pin, text.to_string(), SidePin::Unanchored(reason)));
+                    }
+                }
+            }
+        }
+        for (index, pin, text, disposition) in side {
+            let occurrence_ranges = open_members
+                .iter()
+                .filter(|member| pin_intersects(&pin, member))
+                .map(|member| format!("{}..{}", member.sample_start, member.sample_end))
+                .collect::<Vec<_>>()
+                .join(",");
+            let ledger_reason = match &disposition {
+                SidePin::Replay => "replayed_range_identity",
+                SidePin::Unanchored(reason) => reason.as_str(),
+                SidePin::NoVoicedHop => "no_voiced_hop_in_pin",
+            };
+            let _ = ev_tx.send(EngineEvent::Warning {
+                code: "overlap_pin_refused".into(),
+                message: format!(
+                    "segment {}..{} occurrence [{occurrence_ranges}] ledger={ledger_reason}",
+                    pin.sample_start, pin.sample_end
+                ),
+            });
+            let observation = LedgerObservationIdentity::new(
+                producer,
+                request_id,
+                1_000 + admit_sample_start + index as u64,
+                pin,
+            );
+            if producer == LedgerObservationProducer::CloudLive
+                && matches!(disposition, SidePin::Unanchored(_))
+            {
+                self.cloud_live_unowned_routed = self.cloud_live_unowned_routed.saturating_add(1);
+            }
+            let receipt = {
+                let mut ledger = self
+                    .acoustic_ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                match disposition {
+                    SidePin::Replay => ledger.refuse_replayed_range(&observation, &text),
+                    SidePin::Unanchored(reason) => {
+                        ledger.keep_visible_unanchored(&observation, &text, reason)
+                    }
+                    SidePin::NoVoicedHop => {
+                        ledger.note_energy_lookup_without_voiced_hop();
+                        ledger.refuse_replacement(
+                            &observation,
+                            &text,
+                            RefuseReason::NoVoicedHopInPin,
+                        )
+                    }
+                }
+            };
+            let _ = ev_tx.send(EngineEvent::LedgerMutation {
+                observation,
+                label: text,
+                receipt,
+            });
+        }
+        routes
+    }
+
+    fn keep_routed_visible(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        request_id: u64,
+        pins: &[RoutedPin],
+    ) {
+        for pin in pins {
+            let observation = LedgerObservationIdentity::new(
+                LedgerObservationProducer::Whisper,
+                request_id,
+                1_000 + pin.index as u64,
+                pin.pin.clone(),
+            );
+            let receipt = {
+                let mut ledger = self
+                    .acoustic_ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                ledger.keep_visible_unanchored(
+                    &observation,
+                    &pin.text,
+                    NoAuthorityReason::ExclusiveTailAwaitingWholeSpan,
+                )
+            };
+            let _ = ev_tx.send(EngineEvent::LedgerMutation {
+                observation,
+                label: pin.text.clone(),
+                receipt,
+            });
+        }
+    }
+
+    fn emit_span_refusal(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        request_id: u64,
+        occurrence: &OccurrenceIdentity,
+        label: &str,
+        reason: RefuseReason,
+    ) {
+        let observation = LedgerObservationIdentity::new(
+            LedgerObservationProducer::Whisper,
+            request_id,
+            10_000,
+            occurrence.clone(),
+        );
+        let receipt = {
+            let mut ledger = self
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            ledger.refuse_replacement(&observation, label, reason)
+        };
+        let _ = ev_tx.send(EngineEvent::LedgerMutation {
+            observation,
+            label: label.to_string(),
+            receipt,
+        });
+    }
+
     /// Admit a returned Whisper candidate through the same occurrence ledger
     /// as Apple. The legacy char-patch outcome is evidence only; it never owns
     /// a post-seal mutation path.
@@ -1910,25 +3347,44 @@ impl AppleSealState {
         _now_secs: f32,
     ) {
         let TailPatchCompletion {
+            submission_sequence,
             utterance_id,
             request_identity,
             payload,
             member_occurrences,
         } = completion;
-        let matched = self
-            .refinement_submitted
-            .get(&utterance_id)
-            .is_some_and(|job| {
-                request_identity.as_ref() == Some(&job.request_identity)
+        let job_key = request_identity
+            .as_ref()
+            .map(|identity| inflight_key(submission_sequence, identity));
+        let matched = job_key.as_ref().is_some_and(|key| {
+            self.refinement_submitted.get(key).is_some_and(|job| {
+                job.utterance_id == utterance_id
+                    && request_identity.as_ref() == Some(&job.request_identity)
                     && member_occurrences == job.member_occurrences
-            });
+            })
+        });
         if !matched {
+            info!(
+                submission_sequence,
+                utterance_id,
+                request_id = ?request_identity.as_ref().map(|identity| identity.request_id),
+                session = ?request_identity.as_ref().map(|identity| identity.range.session.as_str()),
+                capture_epoch = ?request_identity.as_ref().map(|identity| identity.range.capture_epoch),
+                sample_start = ?request_identity.as_ref().map(|identity| identity.range.sample_start),
+                sample_end = ?request_identity.as_ref().map(|identity| identity.range.sample_end),
+                disposition = "unmatched_completion",
+                "live_refinement"
+            );
             return;
         }
-        self.refinement_submitted.remove(&utterance_id);
-        self.tail_patch_awaiting_completion = self.tail_patch_awaiting_completion.saturating_sub(1);
+        let job = self
+            .refinement_submitted
+            .remove(&job_key.expect("matched key"))
+            .expect("matched job");
+        let admit_sample_start = job.admit_sample_start;
+        let admit_sample_end = job.admit_sample_end;
         let exact_open_members = member_occurrences
-            .into_iter()
+            .iter()
             .filter(|(member_id, occurrence)| {
                 self.pending_events
                     .get(member_id)
@@ -1944,11 +3400,8 @@ impl AppleSealState {
                                 .contains(&LedgerObservationProducer::Whisper)
                         })
             })
+            .cloned()
             .collect::<Vec<_>>();
-        if exact_open_members.is_empty() {
-            return;
-        }
-
         let payload_identity_mismatch = payload.as_ref().is_some_and(|payload| {
             !request_identity
                 .as_ref()
@@ -1968,106 +3421,299 @@ impl AppleSealState {
             .as_ref()
             .map_or(utterance_id, |identity| identity.request_id);
         let single_member = exact_open_members.len() == 1;
-        let mut mutation_admitted = false;
-        for (generation, (member_id, occurrence)) in exact_open_members.iter().enumerate() {
-            let had_debt = self
-                .acoustic_ledger
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .text_recovery_pending(occurrence);
-            let label = payload.as_ref().and_then(|payload| {
-                let pinned = payload
-                    .segments
-                    .iter()
-                    .filter(|segment| {
-                        let pin = OccurrenceIdentity::from(&segment.range);
-                        pin.same_capture(occurrence)
-                            && pin.sample_end > pin.sample_start
-                            && pin.sample_start >= occurrence.sample_start
-                            && pin.sample_end <= occurrence.sample_end
-                    })
-                    .map(|segment| segment.text.trim())
-                    .filter(|text| !text.is_empty())
-                    .collect::<Vec<_>>();
-                // A rejected pin cannot be laundered through whole-window text.
-                if !pinned.is_empty() {
-                    Some(pinned.join(" "))
-                } else if payload.segments.is_empty()
-                    && single_member
-                    && &OccurrenceIdentity::from(&payload.identity.range) == occurrence
-                    && !payload.text.trim().is_empty()
-                {
-                    Some(payload.text.trim().to_string())
-                } else {
-                    None
-                }
-            });
-            let no_label = label.is_none();
-            match admit_ledger_label(
-                self,
-                ev_tx,
-                LabelAdmission {
-                    observation: LedgerObservationIdentity::new(
-                        LedgerObservationProducer::Whisper,
-                        request_id,
-                        generation as u64,
-                        occurrence.clone(),
-                    ),
-                    label: label.as_deref().unwrap_or(""),
-                    energy: EnergyAdmission::RequireExistingQualification,
-                },
-            ) {
-                Some(receipt) => {
-                    mutation_admitted |= receipt.grants_mutation();
-                    if matches!(
-                        receipt,
-                        MutationReceipt::Refuse { .. }
-                            | MutationReceipt::KeepVisibleUnanchored { .. }
-                    ) {
-                        let reason = if no_label {
-                            RefinementFailure::NoLabel
-                        } else {
-                            RefinementFailure::InvalidIdentity
-                        };
-                        self.fail_refinement(ev_tx, *member_id, occurrence, reason);
-                    } else {
-                        // The reducer's committed label also supplies final telemetry;
-                        // a Whisper-first occurrence has no earlier Apple baseline.
-                        let label = self
-                            .acoustic_ledger
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .text_of(occurrence)
-                            .map(str::to_owned);
-                        if let Some(label) = label
-                            && let Some(pending) = self.pending_events.get_mut(member_id)
-                        {
-                            pending.layer1_baseline = label;
-                        }
-                        self.refinement_receipt(occurrence, "completed");
-                    }
-                }
-                None => {
-                    self.fail_refinement(ev_tx, *member_id, occurrence, RefinementFailure::NoLabel)
-                }
+        let segments = payload
+            .as_ref()
+            .map(|payload| payload.segments.as_slice())
+            .unwrap_or(&[]);
+        let word_grain = !segments.is_empty()
+            && segments
+                .iter()
+                .all(|segment| segment.grain == crate::stt::tail_provider::TailSegmentGrain::Word);
+        if !word_grain && exact_open_members.is_empty() {
+            for (_, owner) in &member_occurrences {
+                self.refinement_receipt(owner, "stale_completion");
             }
-            let debt_resolved = had_debt
-                && !self
+            self.tail_patch_jobs_skipped = self.tail_patch_jobs_skipped.saturating_add(1);
+            self.close_admission_horizon(ev_tx, job.request_identity.range.sample_start);
+            return;
+        }
+        let owners = if word_grain {
+            self.word_owners()
+        } else {
+            exact_open_members.clone()
+        };
+        let routes = self.route_overlap_pins(
+            ev_tx,
+            request_id,
+            admit_sample_start,
+            admit_sample_end,
+            &owners,
+            segments,
+            LedgerObservationProducer::Whisper,
+        );
+        let mut mutation_admitted = false;
+        for ((member_id, occurrence), route) in owners.iter().zip(&routes) {
+            if word_grain {
+                if !route.exclusive.is_empty() {
+                    mutation_admitted |= self.admit_routed_words(
+                        ev_tx,
+                        *member_id,
+                        occurrence,
+                        request_id,
+                        &route.exclusive,
+                        LedgerObservationProducer::Whisper,
+                    );
+                }
+                continue;
+            }
+            // Whole utterances retain their range fence. Word-grain admission
+            // above never inherits this veto or waits for full PCM coverage.
+            if route.blocked
+                || self.whisper_span_refused.contains(occurrence)
+                || occurrence.sample_start < admit_sample_start
+                || occurrence.sample_end > admit_sample_end
+            {
+                self.whisper_span_refused.insert(occurrence.clone());
+                self.keep_routed_visible(ev_tx, request_id, &route.exclusive);
+                self.emit_span_refusal(
+                    ev_tx,
+                    request_id,
+                    occurrence,
+                    &exclusive_label(&route.exclusive),
+                    RefuseReason::IntersectingPinNotExclusive,
+                );
+                continue;
+            }
+            let text = exclusive_label(&route.exclusive);
+            let label = if !text.is_empty() {
+                text
+            } else if single_member
+                && payload.as_ref().is_some_and(|payload| {
+                    payload.segments.is_empty()
+                        && &OccurrenceIdentity::from(&payload.identity.range) == occurrence
+                })
+            {
+                payload
+                    .as_ref()
+                    .map(|payload| payload.text.trim().to_string())
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            if !label.is_empty() {
+                let observation = self
                     .acoustic_ledger
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .text_recovery_pending(occurrence);
-            if debt_resolved && let Some(fusion) = self.fusion.as_ref() {
-                self.speech_progress
-                    .recovered_occurrence(occurrence, &fusion.acoustic_speech_evidence());
+                    .next_word_observation(
+                        LedgerObservationProducer::Whisper,
+                        request_id,
+                        occurrence,
+                    );
+                mutation_admitted |= admit_ledger_label(
+                    self,
+                    ev_tx,
+                    LabelAdmission {
+                        observation,
+                        label: &label,
+                        energy: EnergyAdmission::RequireExistingQualification,
+                    },
+                )
+                .is_some_and(|receipt| receipt.grants_mutation());
+                self.refresh_pending_label(*member_id, occurrence);
+            } else {
+                let observation = self
+                    .acoustic_ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .next_word_observation(
+                        LedgerObservationProducer::Whisper,
+                        request_id,
+                        occurrence,
+                    );
+                let _ = admit_ledger_label(
+                    self,
+                    ev_tx,
+                    LabelAdmission {
+                        observation,
+                        label: "",
+                        energy: EnergyAdmission::RequireExistingQualification,
+                    },
+                );
+                self.refinement_receipt(occurrence, RefinementFailure::NoLabel.code());
             }
-            self.emit_pending_seal(ev_tx, *member_id);
         }
+        // A failed decode advances the same geometric horizon as a successful
+        // one. Earlier outstanding windows still block it below.
+        self.close_admission_horizon(ev_tx, job.request_identity.range.sample_start);
         if mutation_admitted {
             self.tail_patch_jobs_applied = self.tail_patch_jobs_applied.saturating_add(1);
             self.tail_patch_replacements = self.tail_patch_replacements.saturating_add(1);
         } else {
             self.tail_patch_jobs_skipped = self.tail_patch_jobs_skipped.saturating_add(1);
+        }
+    }
+
+    /// Qualified PCM owners, including sealed owners and those not in the
+    /// completing window. A sealed owner must still answer each offered word.
+    fn word_owners(&self) -> Vec<(u64, OccurrenceIdentity)> {
+        let ledger = self
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ledger
+            .qualified_occurrences()
+            .filter(|owner| {
+                owner.session == self.session_id && owner.capture_epoch == self.capture_epoch
+            })
+            .map(|owner| {
+                let id = self
+                    .pending_events
+                    .iter()
+                    .find_map(|(id, pending)| (&pending.occurrence == owner).then_some(*id))
+                    .unwrap_or(0);
+                (id, owner.clone())
+            })
+            .collect()
+    }
+
+    fn refresh_pending_label(&mut self, id: u64, owner: &OccurrenceIdentity) {
+        let ledger = self
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(label) = ledger.text_of(owner)
+            && let Some(pending) = self.pending_events.get_mut(&id)
+        {
+            pending.layer1_baseline = label.to_string();
+        }
+        if !ledger.text_recovery_pending(owner)
+            && let Some(fusion) = self.fusion.as_ref()
+        {
+            self.speech_progress
+                .recovered_occurrence(owner, &fusion.acoustic_speech_evidence());
+        }
+    }
+
+    fn admit_routed_words(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        id: u64,
+        owner: &OccurrenceIdentity,
+        request: u64,
+        pins: &[RoutedPin],
+        producer: LedgerObservationProducer,
+    ) -> bool {
+        let words = pins
+            .iter()
+            .map(|pin| {
+                let (text, counts) =
+                    super::live_lexicon::rewrite(&pin.text, &self.lexicon_custom_path);
+                self.lexicon_entries_custom = counts.custom;
+                if text != pin.text {
+                    self.lexicon_rewrites = self.lexicon_rewrites.saturating_add(1);
+                }
+                (pin.pin.sample_start, pin.pin.sample_end, text)
+            })
+            .collect::<Vec<_>>();
+        let (observation, receipt, label) = {
+            let mut ledger = self
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let observation = ledger.next_word_observation(producer, request, owner);
+            let receipt = ledger.admit_word_slots(&observation, &words);
+            let label = match &receipt {
+                MutationReceipt::KeepVisibleUnanchored { label, .. } => label.clone(),
+                _ => ledger.text_of(owner).unwrap_or("").to_string(),
+            };
+            (observation, receipt, label)
+        };
+        if let MutationReceipt::KeepVisibleUnanchored { reason, .. } = &receipt {
+            let _ = ev_tx.send(EngineEvent::Warning {
+                code: reason.as_str().into(),
+                message: format!(
+                    "owner={}..{} request={request}",
+                    owner.sample_start, owner.sample_end
+                ),
+            });
+        }
+        let admitted = receipt.grants_mutation();
+        let _ = ev_tx.send(EngineEvent::LedgerMutation {
+            observation,
+            label,
+            receipt,
+        });
+        self.refresh_pending_label(id, owner);
+        self.refinement_receipt(owner, "completed");
+        admitted
+    }
+
+    /// Monotonic evidence about future window starts. A completed newer job
+    /// cannot seal ahead of an older submitted or queued job that may own words.
+    fn close_admission_horizon(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        sample_start: u64,
+    ) {
+        self.admission_horizon = self.admission_horizon.max(sample_start);
+        let owners = self.word_owners();
+        for (id, owner) in owners {
+            if owner.sample_end > self.admission_horizon {
+                continue;
+            }
+            let still_possible = self.refinement_submitted.values().any(|job| {
+                job.request_identity.range.sample_start < owner.sample_end
+                    && job.request_identity.range.sample_end > owner.sample_start
+            }) || self.refinement_pending.iter().any(|job| {
+                job.provider_request.identity.range.sample_start < owner.sample_end
+                    && job.provider_request.identity.range.sample_end > owner.sample_start
+            });
+            if still_possible {
+                continue;
+            }
+            let is_open = self
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .frontier_of(&owner)
+                .is_some_and(|frontier| {
+                    frontier
+                        .open_producers()
+                        .contains(&LedgerObservationProducer::Whisper)
+                });
+            if !is_open {
+                continue;
+            }
+            self.refinement_receipt(&owner, "admission_horizon_closed");
+            self.return_whisper_without_label(ev_tx, id, &owner);
+            self.emit_pending_seal(ev_tx, id);
+        }
+    }
+
+    fn finish_whisper_frontier(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        occurrence: &OccurrenceIdentity,
+    ) {
+        let mut ledger = self
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let scheduled = schedule_formatter_after_terminal_label(
+            &mut ledger,
+            self.formatter.as_ref(),
+            occurrence,
+            LedgerObservationProducer::Whisper,
+        );
+        let closed = ledger.note_frontier_return(occurrence, LedgerObservationProducer::Whisper);
+        if closed && let Ok(receipt) = ledger.seal(occurrence).cloned() {
+            let _ = ev_tx.send(EngineEvent::LedgerSeal { receipt });
+        }
+        drop(ledger);
+        if scheduled && self.formatter_in_flight.insert(occurrence.clone()) {
+            self.formatter_awaiting_completion =
+                self.formatter_awaiting_completion.saturating_add(1);
         }
     }
 
@@ -2078,7 +3724,6 @@ impl AppleSealState {
         utterance_id: u64,
         occurrence: &OccurrenceIdentity,
     ) {
-        let formatter = self.formatter.clone();
         let mut ledger = self
             .acoustic_ledger
             .lock()
@@ -2090,33 +3735,25 @@ impl AppleSealState {
         }) {
             return;
         }
-        let observation = LedgerObservationIdentity::new(
-            LedgerObservationProducer::Whisper,
-            utterance_id,
-            0,
-            occurrence.clone(),
-        );
-        let receipt = ledger.admit(&observation, "");
-        let _ = ev_tx.send(EngineEvent::LedgerMutation {
-            observation,
-            label: String::new(),
-            receipt,
-        });
-        let formatter_scheduled = schedule_formatter_after_terminal_label(
-            &mut ledger,
-            formatter.as_ref(),
-            occurrence,
-            LedgerObservationProducer::Whisper,
-        );
-        let closed = ledger.note_frontier_return(occurrence, LedgerObservationProducer::Whisper);
-        if closed && let Ok(receipt) = ledger.seal(occurrence).cloned() {
-            let _ = ev_tx.send(EngineEvent::LedgerSeal { receipt });
+        if ledger.text_of(occurrence).is_none()
+            && !ledger
+                .layer_trail_for(occurrence)
+                .any(|entry| entry.producer() == LedgerObservationProducer::Whisper)
+        {
+            let observation = ledger.next_word_observation(
+                LedgerObservationProducer::Whisper,
+                utterance_id,
+                occurrence,
+            );
+            let receipt = ledger.admit(&observation, "");
+            let _ = ev_tx.send(EngineEvent::LedgerMutation {
+                observation,
+                label: String::new(),
+                receipt,
+            });
         }
         drop(ledger);
-        if formatter_scheduled && self.formatter_in_flight.insert(occurrence.clone()) {
-            self.formatter_awaiting_completion =
-                self.formatter_awaiting_completion.saturating_add(1);
-        }
+        self.finish_whisper_frontier(ev_tx, occurrence);
     }
 
     /// Accept one completion only after PresentationEmitter returned the same
@@ -2201,12 +3838,18 @@ impl AppleSealState {
                 .iter()
                 .find_map(|(id, pending)| (pending.occurrence == occurrence).then_some(*id))
                 .unwrap_or(0);
-            self.fail_refinement(ev_tx, id, &occurrence, RefinementFailure::StopDeadline);
+            if self.refinement_submitted.values().any(|job| {
+                job.member_occurrences
+                    .iter()
+                    .any(|(_, member)| member == &occurrence)
+            }) {
+                self.fail_refinement(ev_tx, id, &occurrence, RefinementFailure::StopDeadline);
+            }
         }
         self.refinement_pending.clear();
         self.refinement_submitted.clear();
         self.layer1_coalesce.force_flush();
-        self.tail_patch_awaiting_completion = 0;
+        self.close_admission_horizon(ev_tx, u64::MAX);
     }
 
     fn refuse_tail_patch(
@@ -2272,6 +3915,8 @@ impl AppleSealState {
 struct AppleStreamOutcome {
     sealed: u64,
     filtered_empty_drops: u64,
+    lexicon_rewrites: u64,
+    lexicon_entries_custom: usize,
     unresolved_windows: u64,
     /// How many seals escalated an unplaceable Layer 1 under-commit (W-C).
     under_commit_escalations: u64,
@@ -2285,6 +3930,8 @@ struct AppleStreamOutcome {
     tail_patch_jobs_skipped: u64,
     /// Jobs still outstanding when the bounded closure wait expired.
     tail_patch_timeout_residue: u64,
+    /// Ledger and window census read at worker exit. Not derived from job buckets.
+    conservation: SessionConservationReceipt,
 }
 
 #[cfg(any())]
@@ -2569,6 +4216,7 @@ fn apple_segments_on_pcm_clock(
                 seconds_to_captured_sample(segment.end_ts, state.sample_rate, captured_end)
                     .max(sample_start);
             TimedTailSegment {
+                grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 text: segment.text.clone(),
                 range: TailSampleRange {
                     session: state.session_id.clone(),
@@ -2690,6 +4338,31 @@ fn seal_sliced_by_silero(
         return false;
     };
     let utterances = fusion.ledger().utterances();
+    // Only an identical, already reconciled callback is silent. A new Apple
+    // observation over consumed audio must still publish its refusal receipt.
+    if !disjoint.is_empty()
+        && state.silero_slice_words.len() == disjoint.len()
+        && state
+            .silero_slice_words
+            .iter()
+            .zip(disjoint)
+            .all(|(prior, current)| {
+                prior.text == current.text
+                    && prior.start_ts == current.start_ts
+                    && prior.end_ts == current.end_ts
+            })
+        && utterances
+            .iter()
+            .all(|utterance| utterance.closed && state.reconciled_silero.contains(&utterance.id))
+        && state
+            .silero_slice_revision
+            .as_ref()
+            .is_some_and(|(len, last)| {
+                *len == utterances.len() && last.as_ref() == utterances.last()
+            })
+    {
+        return true;
+    }
     if disjoint.is_empty()
         && state
             .silero_slice_revision
@@ -2704,11 +4377,383 @@ fn seal_sliced_by_silero(
     // A newly opened, extended or closed range must still retry the leftovers
     // and reconcile pending words, including the terminal flush.
     state.silero_slice_revision = Some((utterances.len(), utterances.last().cloned()));
+    state.silero_slice_words = disjoint.to_vec();
     let ledger = fusion.ledger().clone();
-    reconcile_silero_ledger(state, ev_tx, &ledger, disjoint)
+    let consumed = reconcile_silero_ledger(state, ev_tx, &ledger, disjoint);
+    state.publish_unadmitted_words(ev_tx);
+    consumed
+}
+
+/// PCM each closed utterance owns once boundary overlaps are given to the
+/// tightest window. Context pads stay on the Silero range; they are not a
+/// second physical identity over the same samples.
+fn exclusive_closed_spans(
+    utterances: &[super::silero_fusion::SileroUtterance],
+) -> BTreeMap<u64, (u64, u64)> {
+    let closed: Vec<_> = utterances
+        .iter()
+        .filter(|utterance| utterance.closed)
+        .collect();
+    let mut points = Vec::with_capacity(closed.len().saturating_mul(2));
+    for utterance in &closed {
+        points.push(utterance.range.sample_start);
+        points.push(utterance.range.sample_end);
+    }
+    points.sort_unstable();
+    points.dedup();
+    let mut pieces: BTreeMap<u64, Vec<(u64, u64)>> = BTreeMap::new();
+    for pair in points.windows(2) {
+        let (start, end) = (pair[0], pair[1]);
+        if end <= start {
+            continue;
+        }
+        let owner = closed
+            .iter()
+            .filter(|utterance| {
+                utterance.range.sample_start <= start && end <= utterance.range.sample_end
+            })
+            .min_by_key(|utterance| {
+                (
+                    utterance
+                        .range
+                        .sample_end
+                        .saturating_sub(utterance.range.sample_start),
+                    utterance.range.sample_start,
+                    utterance.id,
+                )
+            });
+        if let Some(owner) = owner {
+            pieces.entry(owner.id).or_default().push((start, end));
+        }
+    }
+    let mut spans = BTreeMap::new();
+    for utterance in &closed {
+        let Some(parts) = pieces.get(&utterance.id) else {
+            continue;
+        };
+        let start = parts[0].0;
+        let mut end = parts[0].1;
+        let mut contiguous = true;
+        for (part_start, part_end) in parts.iter().skip(1) {
+            if *part_start != end {
+                contiguous = false;
+                break;
+            }
+            end = *part_end;
+        }
+        if contiguous && end > start {
+            spans.insert(utterance.id, (start, end));
+        } else {
+            spans.insert(
+                utterance.id,
+                (utterance.range.sample_start, utterance.range.sample_end),
+            );
+        }
+    }
+    spans
+}
+
+/// Accounting only: the ledger remains the authority for every slot decision.
+#[derive(Default)]
+struct LateAppleAdmission {
+    admitted_into: BTreeMap<OccurrenceIdentity, usize>,
+    dropped_by_slot_rules: usize,
+    unmatched: usize,
+    kept_unanchored: usize,
+}
+
+fn retain_apple_words_at_exit(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    utterance_id: u64,
+    words: &[FusionWord],
+    current_slice: &[TranscriptSegment],
+    exit: &str,
+) {
+    let outcome = admit_late_apple_words(state, ev_tx, utterance_id, words, current_slice);
+    let admitted_into = outcome
+        .admitted_into
+        .into_iter()
+        .map(|(occurrence, count)| {
+            serde_json::json!({
+                "occurrence": {
+                    "session": occurrence.session,
+                    "capture_epoch": occurrence.capture_epoch,
+                    "sample_start": occurrence.sample_start,
+                    "sample_end": occurrence.sample_end,
+                },
+                "count": count,
+            })
+        })
+        .collect::<Vec<_>>();
+    let _ = ev_tx.send(EngineEvent::Warning {
+        code: "apple_words_retained".into(),
+        message: serde_json::json!({
+            "exit": exit,
+            "utterance_id": utterance_id,
+            "words": words.len(),
+            "admitted_into": admitted_into,
+            "dropped_by_slot_rules": outcome.dropped_by_slot_rules,
+            "unmatched": outcome.unmatched,
+            "kept_unanchored": outcome.kept_unanchored,
+        })
+        .to_string(),
+    });
 }
 
 /// Production reconciliation seam; tests supply physical edges without a model.
+/// Late Apple labels use the same PCM owners and slot store as live Whisper.
+/// Reconciled means identity has been assigned; it never means words may vanish.
+fn admit_late_apple_words(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    request: u64,
+    words: &[FusionWord],
+    current_slice: &[TranscriptSegment],
+) -> LateAppleAdmission {
+    let mut outcome = LateAppleAdmission::default();
+    let owners = state.word_owners();
+    let owner_ranges = owners
+        .iter()
+        .map(|(_, owner)| owner.clone())
+        .collect::<Vec<_>>();
+    let mut by_owner: BTreeMap<OccurrenceIdentity, Vec<FusionWord>> = BTreeMap::new();
+    for word in words {
+        let pin = OccurrenceIdentity::new(
+            state.session_id.clone(),
+            state.capture_epoch,
+            word.sample_start,
+            word.sample_end,
+        );
+        let owner_index = state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .word_owner_index(&pin, &owner_ranges);
+        match owner_index {
+            Some(index) => by_owner
+                .entry(owner_ranges[index].clone())
+                .or_default()
+                .push(word.clone()),
+            _ => {
+                state.unmatched_silero_words.push(word.clone());
+                outcome.unmatched += 1;
+            }
+        }
+    }
+    for (owner, words) in by_owner {
+        let (selected, superseded) = select_current_apple_words(words);
+        outcome.dropped_by_slot_rules += superseded.len();
+        for word in &superseded {
+            retain_superseded_apple_word(state, ev_tx, request, word);
+        }
+        let words = selected
+            .into_iter()
+            .map(|word| (word.sample_start, word.sample_end, word.text))
+            .collect::<Vec<_>>();
+        let mut ledger = state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut novel = Vec::new();
+        for (start, end, text) in words {
+            let pin =
+                OccurrenceIdentity::new(owner.session.clone(), owner.capture_epoch, start, end);
+            let observation =
+                ledger.next_word_observation(LedgerObservationProducer::Apple, request, &owner);
+            let exact_current = start < end
+                && owner.sample_start <= start
+                && end <= owner.sample_end
+                && current_slice.iter().any(|segment| {
+                    let rate = f64::from(state.sample_rate.max(1));
+                    let current_start = (f64::from(segment.start_ts) * rate).round();
+                    let current_end = (f64::from(segment.end_ts) * rate).round();
+                    segment.start_ts.is_finite()
+                        && segment.end_ts.is_finite()
+                        && segment.start_ts >= 0.0
+                        && segment.end_ts > segment.start_ts
+                        && current_end <= state.audio.session_sample_end() as f64
+                        && current_start as u64 == start
+                        && current_end as u64 == end
+                        && segment.text == text
+                });
+            if !exact_current {
+                outcome.kept_unanchored += 1;
+                // Evidence names the word's PCM, not its containing owner.
+                // This records an observation without minting an occurrence.
+                let observation = LedgerObservationIdentity {
+                    occurrence: pin,
+                    ..observation
+                };
+                let receipt = ledger.keep_visible_unanchored(
+                    &observation,
+                    &text,
+                    NoAuthorityReason::LateAppleWordNotCurrent,
+                );
+                let _ = ev_tx.send(EngineEvent::LedgerMutation {
+                    observation,
+                    label: text,
+                    receipt,
+                });
+                continue;
+            }
+            let consumed_span = ledger.slots_of(&owner).is_some_and(|slots| {
+                slots.iter().any(|slot| {
+                    let overlap = end
+                        .min(slot.sample_end)
+                        .saturating_sub(start.max(slot.sample_start));
+                    let shorter =
+                        (end - start).min(slot.sample_end.saturating_sub(slot.sample_start));
+                    shorter > 0 && overlap >= shorter / 2 + shorter % 2
+                })
+            });
+            let higher_rank_owns_span = ledger.slots_of(&owner).is_some_and(|slots| {
+                slots.iter().any(|slot| {
+                    let overlap = end
+                        .min(slot.sample_end)
+                        .saturating_sub(start.max(slot.sample_start));
+                    overlap > 0
+                        && slot.producer.authority_rank()
+                            > LedgerObservationProducer::Apple.authority_rank()
+                })
+            });
+            if higher_rank_owns_span
+                || (consumed_span && ledger.matching_word_slot(&owner, &pin, &text, false))
+            {
+                outcome.dropped_by_slot_rules += 1;
+                // A replay or a higher-rank witness cannot add a second word.
+                // A fresh Apple correction of an Apple-owned slot continues to
+                // the ledger's replacement path below.
+                let receipt = if ledger.matching_word_slot(&owner, &pin, &text, false) {
+                    ledger.refuse_replayed_range(&observation, &text)
+                } else {
+                    ledger.refuse_replacement(&observation, &text, RefuseReason::SealedReplay)
+                };
+                let _ = ev_tx.send(EngineEvent::LedgerMutation {
+                    observation,
+                    label: text,
+                    receipt,
+                });
+                continue;
+            }
+            novel.push((start, end, text));
+        }
+        if novel.is_empty() {
+            continue;
+        }
+        let observation =
+            ledger.next_word_observation(LedgerObservationProducer::Apple, request, &owner);
+        let receipt = ledger.admit_word_slots(&observation, &novel);
+        let admitted = ledger
+            .slots_of(&owner)
+            .unwrap_or(&[])
+            .iter()
+            .filter(|slot| slot.observation == observation)
+            .count();
+        if admitted > 0 {
+            outcome.admitted_into.insert(owner.clone(), admitted);
+        }
+        if matches!(&receipt, MutationReceipt::KeepVisibleUnanchored { .. }) {
+            outcome.kept_unanchored += novel.len();
+        } else {
+            outcome.dropped_by_slot_rules += novel.len().saturating_sub(admitted);
+        }
+        let label = match &receipt {
+            MutationReceipt::KeepVisibleUnanchored { label, reason, .. } => {
+                let _ = ev_tx.send(EngineEvent::Warning {
+                    code: reason.as_str().into(),
+                    message: format!(
+                        "owner={}..{} request={request}",
+                        owner.sample_start, owner.sample_end
+                    ),
+                });
+                label.clone()
+            }
+            _ => ledger.text_of(&owner).unwrap_or("").to_string(),
+        };
+        drop(ledger);
+        let _ = ev_tx.send(EngineEvent::LedgerMutation {
+            observation,
+            label,
+            receipt,
+        });
+        if let Some((id, _)) = owners.iter().find(|(_, range)| range == &owner) {
+            state.refresh_pending_label(*id, &owner);
+        }
+    }
+    outcome
+}
+
+/// Arrival order chooses the current Apple hypothesis for a PCM word slot.
+/// Distinct adjacent words keep their own slots even if timestamp edges cross.
+fn same_fusion_pcm_slot(held: &FusionWord, word: &FusionWord) -> bool {
+    let middle = word.sample_start + word.sample_end.saturating_sub(word.sample_start) / 2;
+    let held_middle = held.sample_start + held.sample_end.saturating_sub(held.sample_start) / 2;
+    let overlap = held
+        .sample_end
+        .min(word.sample_end)
+        .saturating_sub(held.sample_start.max(word.sample_start));
+    let shorter = held
+        .sample_end
+        .saturating_sub(held.sample_start)
+        .min(word.sample_end.saturating_sub(word.sample_start));
+    overlap >= shorter / 2 + shorter % 2
+        && ((held.sample_start <= middle && middle < held.sample_end)
+            || (word.sample_start <= held_middle && held_middle < word.sample_end))
+}
+
+fn select_current_apple_words(words: Vec<FusionWord>) -> (Vec<FusionWord>, Vec<FusionWord>) {
+    let mut selected: Vec<FusionWord> = Vec::new();
+    let mut superseded = Vec::new();
+    for word in words {
+        if let Some(index) = selected
+            .iter()
+            .position(|held| same_fusion_pcm_slot(held, &word))
+        {
+            if selected[index] == word {
+                continue;
+            }
+            superseded.push(std::mem::replace(&mut selected[index], word));
+        } else {
+            selected.push(word);
+        }
+    }
+    (selected, superseded)
+}
+
+fn retain_superseded_apple_word(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    request: u64,
+    word: &FusionWord,
+) {
+    let pin = OccurrenceIdentity::new(
+        state.session_id.clone(),
+        state.capture_epoch,
+        word.sample_start,
+        word.sample_end,
+    );
+    let (observation, receipt) = {
+        let mut ledger = state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let observation =
+            ledger.next_word_observation(LedgerObservationProducer::Apple, request, &pin);
+        let receipt = ledger.keep_visible_unanchored(
+            &observation,
+            &word.text,
+            NoAuthorityReason::LateAppleWordNotCurrent,
+        );
+        (observation, receipt)
+    };
+    let _ = ev_tx.send(EngineEvent::LedgerMutation {
+        observation,
+        label: word.text.clone(),
+        receipt,
+    });
+}
+
 fn reconcile_silero_ledger(
     state: &mut AppleSealState,
     ev_tx: &mpsc::UnboundedSender<EngineEvent>,
@@ -2729,6 +4774,12 @@ fn reconcile_silero_ledger(
     let apple_words = apple_segments_on_pcm_clock(state, disjoint);
     let mut fusion_words = std::mem::take(&mut state.unmatched_silero_words);
     fusion_words.extend(apple_words.iter().map(FusionWord::from_timed));
+    // Re-delivery of one timed word is one entry. Preserve arrival order and
+    // every distinct pin or text, including equal text on different PCM.
+    let mut seen_fusion_words = BTreeSet::new();
+    fusion_words.retain(|word| {
+        seen_fusion_words.insert((word.sample_start, word.sample_end, word.text.clone()))
+    });
     let (sliced, leftover) = slice_apple_words(ledger, &fusion_words);
     let mut newly_unmatched = 0;
     for word in &leftover {
@@ -2765,12 +4816,40 @@ fn reconcile_silero_ledger(
     // Candidate labels remain paint until the physical extent closes. Retain
     // every observation until reconciliation; equality of text is irrelevant.
     for (id, words) in sliced {
-        if !state.reconciled_silero.contains(&id) {
-            state
-                .pending_silero_words
-                .entry(id)
-                .or_default()
-                .extend(words);
+        state
+            .pending_silero_words
+            .entry(id)
+            .or_default()
+            .extend(words);
+    }
+    // Overlapping Silero windows are one physical claim per sample. Words move
+    // with their midpoint onto the tightest closed span before any occurrence
+    // is minted, so a pad shared with a neighbour cannot erase the word.
+    let exclusive = exclusive_closed_spans(ledger.utterances());
+    if !exclusive.is_empty() {
+        let mut held = Vec::new();
+        let closed_ids: Vec<u64> = ledger
+            .utterances()
+            .iter()
+            .filter(|utterance| utterance.closed)
+            .map(|utterance| utterance.id)
+            .collect();
+        for id in closed_ids {
+            if let Some(words) = state.pending_silero_words.remove(&id) {
+                held.extend(words);
+            }
+        }
+        for word in held {
+            let mid = word.sample_start + word.sample_end.saturating_sub(word.sample_start) / 2;
+            let owner = exclusive
+                .iter()
+                .find_map(|(&id, &(start, end))| (start <= mid && mid < end).then_some(id));
+            match owner {
+                Some(id) => {
+                    state.pending_silero_words.entry(id).or_default().push(word);
+                }
+                None => state.unmatched_silero_words.push(word),
+            }
         }
     }
     for silero in ledger
@@ -2780,28 +4859,29 @@ fn reconcile_silero_ledger(
     {
         let utterance_id = silero.id;
         if state.reconciled_silero.contains(&utterance_id) {
+            let late = state
+                .pending_silero_words
+                .remove(&utterance_id)
+                .unwrap_or_default();
+            admit_late_apple_words(state, ev_tx, utterance_id, &late, disjoint);
             continue;
         }
         let candidates = state
             .pending_silero_words
             .remove(&utterance_id)
             .unwrap_or_default();
-        // Replayed exact word coordinates revise that word, not a second
-        // acoustic occurrence. Disjoint equal words survive independently.
-        let mut by_range = BTreeMap::new();
-        for word in candidates {
-            by_range.insert((word.sample_start, word.sample_end), word);
+        let (words, superseded) = select_current_apple_words(candidates);
+        for word in &superseded {
+            retain_superseded_apple_word(state, ev_tx, utterance_id, word);
         }
-        let mut words = by_range.into_values().collect::<Vec<_>>();
-        if words
+        let ambiguous = words
             .windows(2)
-            .any(|pair| pair[0].sample_end > pair[1].sample_start)
-        {
+            .any(|pair| pair[0].sample_end > pair[1].sample_start);
+        if ambiguous {
             let _ = ev_tx.send(EngineEvent::Warning {
                 code: "apple_closed_occurrence_ambiguous_word_ranges".into(),
                 message: format!("utterance={utterance_id} requires fresh exact-PCM evidence"),
             });
-            words.clear();
         }
         let text = words
             .iter()
@@ -2810,7 +4890,11 @@ fn reconcile_silero_ledger(
             .join(" ");
         // Blank Apple evidence neither consumes this identity nor blocks its PCM.
         let has_apple_label = !text.trim().is_empty();
-        if !has_apple_label && state.tail_patch.is_none() && !state.refinement_lane_lost {
+        if !has_apple_label
+            && state.tail_patch.is_none()
+            && !state.refinement_lane_lost
+            && state.cloud_commit_tx.is_none()
+        {
             // An explicitly Apple-only take has no recovery observer to launch.
             // Leave the occurrence unlabelled until Apple actually observes it;
             // absent text remains uncovered rather than an invented empty seal.
@@ -2833,12 +4917,67 @@ fn reconcile_silero_ledger(
             })
             .collect::<Vec<_>>();
 
-        // Silero has already selected the physical occurrence. Admit the
+        // Silero has already selected the physical occurrence. The identity is
+        // the exclusive PCM, not the pad it shares with a neighbour. Admit the
         // slice-local Apple label before the raw final can escape as telemetry.
-        // There is no independent slice-local Lexicon rewrite on this path, so
-        // Lexicon reports a no-change observation for the same exact label and
-        // range. Callback-wide text is never copied across sliced occurrences.
-        let occurrence = OccurrenceIdentity::from(&silero.range);
+        // Lexicon rewrites that exact slice in its own ledger observation;
+        // callback-wide text is never copied across sliced occurrences.
+        let (owned_start, owned_end) = match exclusive.get(&utterance_id) {
+            Some(&(start, end)) if end > start => (start, end),
+            _ => {
+                let swallowed = exclusive.iter().any(|(&id, &(start, end))| {
+                    id != utterance_id
+                        && start <= silero.range.sample_start
+                        && silero.range.sample_end <= end
+                });
+                if swallowed {
+                    let _ = ev_tx.send(EngineEvent::Warning {
+                        code: "silero_occurrence_overlap_refused".into(),
+                        message: format!(
+                            "utterance={utterance_id} range=[{}..{}] has no exclusive PCM after overlap",
+                            silero.range.sample_start, silero.range.sample_end
+                        ),
+                    });
+                    retain_apple_words_at_exit(
+                        state,
+                        ev_tx,
+                        utterance_id,
+                        &words,
+                        disjoint,
+                        "overlap_refused",
+                    );
+                    state.reconciled_silero.insert(utterance_id);
+                    continue;
+                }
+                (silero.range.sample_start, silero.range.sample_end)
+            }
+        };
+        // A contained re-partition is already owned, including sealed speech.
+        // This decision cannot mint identity or plan another job.
+        let contained_owner = {
+            let ledger = state
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            ledger.qualified_occurrences().any(|owner| {
+                owner.session == state.session_id
+                    && owner.capture_epoch == state.capture_epoch
+                    && owner.sample_start <= owned_start
+                    && owned_end <= owner.sample_end
+                    && (owned_start, owned_end) != (owner.sample_start, owner.sample_end)
+            })
+        };
+        if contained_owner {
+            admit_late_apple_words(state, ev_tx, utterance_id, &words, disjoint);
+            state.reconciled_silero.insert(utterance_id);
+            continue;
+        }
+        let occurrence = OccurrenceIdentity::new(
+            state.session_id.clone(),
+            state.capture_epoch,
+            owned_start,
+            owned_end,
+        );
         let first_attempt = state
             .acoustic_ledger
             .lock()
@@ -2858,10 +4997,26 @@ fn reconcile_silero_ledger(
                 RefinementFailure::QualificationRefused
             };
             state.fail_refinement(ev_tx, utterance_id, &occurrence, reason);
+            let exit = match reason {
+                RefinementFailure::PcmUnavailable => "qualification_failed_pcm_unavailable",
+                _ => "qualification_failed_refused",
+            };
+            retain_apple_words_at_exit(state, ev_tx, utterance_id, &words, disjoint, exit);
             state.reconciled_silero.insert(utterance_id);
             continue;
         }
         if !has_apple_label && !first_attempt {
+            continue;
+        }
+        let already_labelled = state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .text_of(&occurrence)
+            .is_some();
+        if !first_attempt && already_labelled {
+            admit_late_apple_words(state, ev_tx, utterance_id, &words, disjoint);
+            state.reconciled_silero.insert(utterance_id);
             continue;
         }
         let owes_recovery = !has_apple_label
@@ -2922,19 +5077,30 @@ fn reconcile_silero_ledger(
             }
             state.reconciled_silero.insert(utterance_id);
         }
+        let word_ranges = if ambiguous {
+            Vec::new()
+        } else {
+            words
+                .iter()
+                .map(|word| (word.sample_start, word.sample_end, word.text.clone()))
+                .collect()
+        };
         let apple_admitted = if has_apple_label {
             admit_ledger_label(
                 state,
                 ev_tx,
-                LabelAdmission {
-                    observation: LedgerObservationIdentity::new(
-                        LedgerObservationProducer::Apple,
-                        utterance_id,
-                        0,
-                        occurrence.clone(),
-                    ),
-                    label: &text,
-                    energy: EnergyAdmission::RequireExistingQualification,
+                RangedLabelAdmission {
+                    admission: LabelAdmission {
+                        observation: LedgerObservationIdentity::new(
+                            LedgerObservationProducer::Apple,
+                            utterance_id,
+                            0,
+                            occurrence.clone(),
+                        ),
+                        label: &text,
+                        energy: EnergyAdmission::RequireExistingQualification,
+                    },
+                    words: &word_ranges,
                 },
             )
         } else {
@@ -2996,6 +5162,7 @@ fn reconcile_silero_ledger(
                     state.window_by_samples(silero.range.sample_start, silero.range.sample_end)
                 })
         };
+        state.track_cloud_occurrence(&occurrence);
         let _current_piece_owned = if let Some(window) = window {
             let committed_text = text.clone();
             state.enqueue_layer1_piece(
@@ -3033,7 +5200,7 @@ fn reconcile_silero_ledger(
                         LedgerObservationProducer::Lexicon,
                         utterance_id,
                         0,
-                        occurrence,
+                        occurrence.clone(),
                     ),
                     label: &text,
                     energy: EnergyAdmission::RequireExistingQualification,
@@ -3042,6 +5209,11 @@ fn reconcile_silero_ledger(
         }
         state.emit_pending_seal(ev_tx, utterance_id);
         state.utterance_id = state.utterance_id.max(utterance_id);
+    }
+    for utterance in ledger.utterances() {
+        if let Some(receipt) = ledger.close_receipt(utterance.id) {
+            state.commit_cloud_close(ev_tx, receipt);
+        }
     }
     true
 }
@@ -3077,6 +5249,22 @@ struct LabelAdmission<'a> {
     observation: LedgerObservationIdentity,
     label: &'a str,
     energy: EnergyAdmission,
+}
+
+/// Optional word timing carried into the same locked admission and publication.
+/// Label-only producers supply no ranges and retain one occurrence-wide slot.
+struct RangedLabelAdmission<'a> {
+    admission: LabelAdmission<'a>,
+    words: &'a [(u64, u64, String)],
+}
+
+impl<'a> From<LabelAdmission<'a>> for RangedLabelAdmission<'a> {
+    fn from(admission: LabelAdmission<'a>) -> Self {
+        Self {
+            admission,
+            words: &[],
+        }
+    }
 }
 
 /// Qualification consumes owned PCM and calibration, never a candidate label.
@@ -3135,11 +5323,12 @@ fn qualify_owned_occurrence(state: &AppleSealState, occurrence: &OccurrenceIdent
     true
 }
 
-fn admit_ledger_label(
+fn admit_ledger_label<'a>(
     state: &mut AppleSealState,
     ev_tx: &mpsc::UnboundedSender<EngineEvent>,
-    admission: LabelAdmission<'_>,
+    admission: impl Into<RangedLabelAdmission<'a>>,
 ) -> Option<MutationReceipt> {
+    let RangedLabelAdmission { admission, words } = admission.into();
     let LabelAdmission {
         observation,
         label,
@@ -3150,6 +5339,22 @@ fn admit_ledger_label(
     if occurrence.session != state.session_id || occurrence.capture_epoch != state.capture_epoch {
         return None;
     }
+    let rewritten = if matches!(
+        producer,
+        LedgerObservationProducer::Lexicon
+            | LedgerObservationProducer::Whisper
+            | LedgerObservationProducer::CloudLive
+    ) {
+        let (text, counts) = super::live_lexicon::rewrite(label, &state.lexicon_custom_path);
+        state.lexicon_entries_custom = counts.custom;
+        if text != label {
+            state.lexicon_rewrites = state.lexicon_rewrites.saturating_add(1);
+        }
+        Some(text)
+    } else {
+        None
+    };
+    let label = rewritten.as_deref().unwrap_or(label);
     if matches!(
         energy,
         EnergyAdmission::QualifyFromOwnedPcm | EnergyAdmission::QualifyFinalPassGap
@@ -3169,19 +5374,52 @@ fn admit_ledger_label(
         let producers = if energy == EnergyAdmission::QualifyFinalPassGap {
             vec![LedgerObservationProducer::Whisper]
         } else {
-            vec![
+            let mut producers = vec![
                 LedgerObservationProducer::Apple,
                 LedgerObservationProducer::Lexicon,
-            ]
+            ];
+            if state.cloud_commit_tx.is_some() {
+                producers.push(LedgerObservationProducer::CloudLive);
+            }
+            producers
         };
         ledger.schedule_frontier(occurrence.clone(), producers);
+    } else if state.cloud_commit_tx.is_some()
+        && energy != EnergyAdmission::QualifyFinalPassGap
+        && matches!(
+            producer,
+            LedgerObservationProducer::Apple | LedgerObservationProducer::Lexicon
+        )
+    {
+        ledger.schedule_observer(occurrence.clone(), LedgerObservationProducer::CloudLive);
     }
-    let receipt = ledger.admit(&observation, label);
+    if state.cloud_commit_tx.is_some()
+        && producer != LedgerObservationProducer::CloudLive
+        && ledger.frontier_of(&occurrence).is_some_and(|frontier| {
+            frontier
+                .open_producers()
+                .contains(&LedgerObservationProducer::CloudLive)
+        })
+        && !state
+            .cloud_inflight
+            .iter()
+            .any(|commit| commit.occurrences.contains(&occurrence))
+    {
+        state.cloud_uncommitted.insert(occurrence.clone());
+    }
+    let receipt = ledger.admit_pinned_label(&observation, label, words);
     let _ = ev_tx.send(EngineEvent::LedgerMutation {
         observation,
         label: label.to_string(),
         receipt: receipt.clone(),
     });
+    if matches!(
+        producer,
+        LedgerObservationProducer::Whisper | LedgerObservationProducer::CloudLive
+    ) && energy != EnergyAdmission::QualifyFinalPassGap
+    {
+        return Some(receipt);
+    }
     let formatter_scheduled = schedule_formatter_after_terminal_label(
         &mut ledger,
         formatter.as_ref(),
@@ -3232,6 +5470,7 @@ fn admit_full_pass_gap_segments(
         .filter(|range| range.sample_end.saturating_sub(range.sample_start) > threshold_samples)
         .collect::<Vec<_>>();
     let mut admitted = 0usize;
+    let mut contained = 0usize;
 
     for (generation, segment) in full_pass.segments.iter().enumerate() {
         let label = segment.text.trim();
@@ -3253,6 +5492,7 @@ fn admit_full_pass_gap_segments(
             }
             continue;
         };
+        contained = contained.saturating_add(1);
 
         let observation = LedgerObservationIdentity::new(
             LedgerObservationProducer::Whisper,
@@ -3260,6 +5500,31 @@ fn admit_full_pass_gap_segments(
             generation as u64,
             OccurrenceIdentity::from(&segment.range),
         );
+        if state
+            .capture_energy
+            .voiced_hops_in(
+                &segment.range.session,
+                segment.range.capture_epoch,
+                segment.range.sample_start,
+                segment.range.sample_end,
+            )
+            .is_some_and(|hops| hops.is_empty())
+        {
+            let receipt = {
+                let mut ledger = state
+                    .acoustic_ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                ledger.note_energy_lookup_without_voiced_hop();
+                ledger.refuse_replacement(&observation, label, RefuseReason::NoVoicedHopInPin)
+            };
+            let _ = ev_tx.send(EngineEvent::LedgerMutation {
+                observation,
+                label: label.to_string(),
+                receipt,
+            });
+            continue;
+        }
         if admit_ledger_label(
             state,
             ev_tx,
@@ -3275,11 +5540,10 @@ fn admit_full_pass_gap_segments(
         }
     }
 
-    if admitted == 0 && !material_gaps.is_empty() {
+    if admitted == 0 && contained == 0 && !material_gaps.is_empty() {
         let _ = ev_tx.send(EngineEvent::Warning {
             code: "seal_coverage_full_pass_gap_unresolved".to_string(),
-            message: "whole-session final pass had no segment wholly contained in a material gap"
-                .to_string(),
+            message: "material gap had no source-mapped segment wholly contained in it".to_string(),
         });
     }
     admitted
@@ -3314,6 +5578,16 @@ fn fusion_utterance_ranges(state: &AppleSealState) -> Vec<TailSampleRange> {
 /// When neither observer measured, the answer is the unavailable evidence the
 /// capture owner itself reports. Absence keeps its own name here instead of
 /// arriving at the ledger as an empty set.
+fn energy_lookup_without_voiced_hop(state: &AppleSealState) -> bool {
+    let energy = state.capture_energy.session_active_speech_ranges(
+        &state.session_id,
+        state.capture_epoch,
+        state.sample_rate,
+    );
+    matches!(energy.availability(), AcousticAvailability::Observed { .. })
+        && energy.ranges().is_empty()
+}
+
 fn coverage_speech_evidence(state: &AppleSealState) -> AcousticSpeechEvidence {
     let captured_samples = state.audio.session_sample_end();
     let capture_energy = state.capture_energy.session_active_speech_ranges(
@@ -3396,10 +5670,14 @@ fn publish_terminal_coverage(
         "seal_speech_set"
     );
 
+    let no_voiced_hop = energy_lookup_without_voiced_hop(state);
     let mut ledger = state
         .acoustic_ledger
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if no_voiced_hop {
+        ledger.note_energy_lookup_without_voiced_hop();
+    }
     let receipt = ledger.assess_seal_coverage(
         &state.session_id,
         state.capture_epoch,
@@ -3442,11 +5720,309 @@ fn drain_formatter_observers(
     Ok(())
 }
 
+/// One provider attempt for a single requested PCM range.
+enum StopRangeAttempt {
+    Ready(TailProviderPayload),
+    MissingPcm,
+    ForeignIdentity,
+    Failed(anyhow::Error),
+}
+
+/// Offer one whole-span recovery of a debt occurrence.
+///
+/// The observation identity is the occurrence, not a segment inside it.
+fn recovery_audit(occurrence: &OccurrenceIdentity, segments: &[&TimedTailSegment]) -> String {
+    let listed = if segments.is_empty() {
+        "none".to_string()
+    } else {
+        segments
+            .iter()
+            .map(|segment| {
+                format!(
+                    "{}..{}",
+                    segment.range.sample_start, segment.range.sample_end
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    format!(
+        "occurrence {}..{} segments [{listed}]",
+        occurrence.sample_start, occurrence.sample_end
+    )
+}
+
+fn ledger_decision_name(receipt: &MutationReceipt) -> String {
+    match receipt {
+        MutationReceipt::Preserve { held_by, .. } => {
+            format!("preserve held_by={}", held_by.as_str())
+        }
+        MutationReceipt::Refuse { reason, .. } => format!("refuse {}", reason.as_str()),
+        MutationReceipt::KeepVisibleUnanchored { reason, .. } => {
+            format!("keep_visible_unanchored {}", reason.as_str())
+        }
+        other => other.as_str().to_string(),
+    }
+}
+
+fn warn_recovery(ev_tx: &mpsc::UnboundedSender<EngineEvent>, message: String) {
+    let _ = ev_tx.send(EngineEvent::Warning {
+        code: "seal_coverage_text_recovery_refused".into(),
+        message,
+    });
+}
+
+fn keep_escaping_recovery_segments(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    occurrence: &OccurrenceIdentity,
+    request_id: u64,
+    escaping: &[&TimedTailSegment],
+) {
+    for (index, segment) in escaping.iter().enumerate() {
+        let pin = OccurrenceIdentity::from(&segment.range);
+        let observation = LedgerObservationIdentity::new(
+            LedgerObservationProducer::Whisper,
+            request_id,
+            2_000 + index as u64,
+            pin,
+        );
+        let receipt = {
+            let mut ledger = state
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            ledger.keep_visible_unanchored(
+                &observation,
+                segment.text.trim(),
+                NoAuthorityReason::OverlapWithoutWordPins,
+            )
+        };
+        let decision = ledger_decision_name(&receipt);
+        let _ = ev_tx.send(EngineEvent::LedgerMutation {
+            observation,
+            label: segment.text.trim().to_string(),
+            receipt,
+        });
+        warn_recovery(
+            ev_tx,
+            format!(
+                "segment {}..{} occurrence {}..{} ledger={decision}",
+                segment.range.sample_start,
+                segment.range.sample_end,
+                occurrence.sample_start,
+                occurrence.sample_end
+            ),
+        );
+    }
+}
+
+/// Segments wholly inside the debt occurrence may be admitted.
+///
+/// A word pin that escapes the occurrence is unanchored read-only evidence
+/// and does not block the contained pins. An utterance-grain payload still
+/// addresses the whole span or nothing. A refusal names the segment range,
+/// the occurrence range, and the ledger decision that kept the debt.
+fn admit_debt_occurrence_recovery(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    occurrence: &OccurrenceIdentity,
+    payload: &TailProviderPayload,
+) -> bool {
+    let exact_timing = payload.evidence.timing_quality
+        == crate::stt::tail_provider::TailTimingQuality::ExactSampleRange
+        || (cfg!(test)
+            && payload.evidence.timing_quality
+                == crate::stt::tail_provider::TailTimingQuality::Synthetic);
+    let inside = |segment: &&TimedTailSegment| {
+        segment.range.session == occurrence.session
+            && segment.range.capture_epoch == occurrence.capture_epoch
+            && segment.range.sample_end > segment.range.sample_start
+            && segment.range.sample_start >= occurrence.sample_start
+            && segment.range.sample_end <= occurrence.sample_end
+    };
+    let substantive: Vec<&TimedTailSegment> = payload
+        .segments
+        .iter()
+        .filter(|segment| !segment.text.trim().is_empty())
+        .collect();
+    let word_grain = payload.evidence.segment_grain
+        == crate::stt::tail_provider::TailSegmentGrain::Word
+        && !substantive.is_empty()
+        && substantive
+            .iter()
+            .all(|segment| segment.grain == crate::stt::tail_provider::TailSegmentGrain::Word);
+    if !exact_timing || substantive.is_empty() {
+        let reason = if substantive.is_empty() {
+            "empty_label"
+        } else {
+            "untrusted_segment_clock"
+        };
+        warn_recovery(
+            ev_tx,
+            format!(
+                "recovery evidence is not a source-mapped segment wholly inside the debt occurrence {} ledger={reason}",
+                recovery_audit(occurrence, &substantive)
+            ),
+        );
+        return false;
+    }
+    if word_grain {
+        let owners = state.word_owners();
+        let routes = state.route_overlap_pins(
+            ev_tx,
+            payload.identity.request_id,
+            occurrence.sample_start,
+            occurrence.sample_end,
+            &owners,
+            &payload.segments,
+            LedgerObservationProducer::Whisper,
+        );
+        for ((id, owner), route) in owners.iter().zip(&routes) {
+            if !route.exclusive.is_empty() {
+                state.admit_routed_words(
+                    ev_tx,
+                    *id,
+                    owner,
+                    payload.identity.request_id,
+                    &route.exclusive,
+                    LedgerObservationProducer::Whisper,
+                );
+            }
+        }
+        // Recovery is synchronous after the live drain. A closed, debt-free
+        // frontier can now mint its first seal; no existing seal is revised.
+        let mut ledger = state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let recovered = !ledger.text_recovery_pending(occurrence);
+        for (_, owner) in &owners {
+            if !ledger.is_sealed(owner)
+                && ledger
+                    .frontier_of(owner)
+                    .is_some_and(|frontier| frontier.is_closed())
+                && let Ok(receipt) = ledger.seal(owner).cloned()
+            {
+                let _ = ev_tx.send(EngineEvent::LedgerSeal { receipt });
+            }
+        }
+        return recovered;
+    }
+    let (contained, escaping): (Vec<&TimedTailSegment>, Vec<&TimedTailSegment>) =
+        substantive.iter().copied().partition(inside);
+    if !word_grain && (!escaping.is_empty() || payload.validate().is_err()) {
+        let reason = if !escaping.is_empty() {
+            "segment_escapes_occurrence"
+        } else {
+            "payload_invalid"
+        };
+        warn_recovery(
+            ev_tx,
+            format!(
+                "recovery evidence is not a source-mapped segment wholly inside the debt occurrence {} ledger={reason}",
+                recovery_audit(occurrence, &substantive)
+            ),
+        );
+        return false;
+    }
+    if contained.is_empty() {
+        keep_escaping_recovery_segments(
+            state,
+            ev_tx,
+            occurrence,
+            payload.identity.request_id,
+            &escaping,
+        );
+        return false;
+    }
+    let mut contained_payload = payload.clone();
+    contained_payload.segments = contained.iter().map(|segment| (*segment).clone()).collect();
+    contained_payload.text = contained
+        .iter()
+        .map(|segment| segment.text.trim())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if let Err(error) = contained_payload.validate() {
+        keep_escaping_recovery_segments(
+            state,
+            ev_tx,
+            occurrence,
+            payload.identity.request_id,
+            &escaping,
+        );
+        warn_recovery(
+            ev_tx,
+            format!(
+                "recovery evidence is not a source-mapped segment wholly inside the debt occurrence {} ledger=payload_invalid {error}",
+                recovery_audit(occurrence, &contained)
+            ),
+        );
+        return false;
+    }
+    let label = contained_payload.text.clone();
+    let receipt = admit_ledger_label(
+        state,
+        ev_tx,
+        LabelAdmission {
+            observation: LedgerObservationIdentity::new(
+                LedgerObservationProducer::Whisper,
+                payload.identity.request_id,
+                1,
+                occurrence.clone(),
+            ),
+            label: &label,
+            energy: EnergyAdmission::RequireExistingQualification,
+        },
+    );
+    // Record escapes after the occurrence admission. A short pin can be a
+    // clock-lie on its own range; recording it first would block the
+    // replacement it does not own.
+    keep_escaping_recovery_segments(
+        state,
+        ev_tx,
+        occurrence,
+        payload.identity.request_id,
+        &escaping,
+    );
+    let pending = state
+        .acoustic_ledger
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .text_recovery_pending(occurrence);
+    if pending {
+        let decision = receipt
+            .as_ref()
+            .map(ledger_decision_name)
+            .unwrap_or_else(|| "not_qualified".to_string());
+        warn_recovery(
+            ev_tx,
+            format!(
+                "recovery observation did not clear the debt occurrence {} ledger={decision}",
+                recovery_audit(occurrence, &contained)
+            ),
+        );
+    }
+    !pending
+}
+
+fn range_overlaps_occurrence(range: &TailSampleRange, occurrence: &OccurrenceIdentity) -> bool {
+    range.session == occurrence.session
+        && range.capture_epoch == occurrence.capture_epoch
+        && range.sample_start < occurrence.sample_end
+        && occurrence.sample_start < range.sample_end
+}
+
 /// Compare committed occurrence coverage with the existing Silero speech
-/// ledger (or the capture energy ladder when Silero produced no spans), then
-/// request local Whisper evidence from each material uncovered PCM range.
-/// Only mapped segments enter the ledger. Unscoped text, uncertain timing and
-/// ranges crossing existing coverage cannot manufacture occurrence evidence.
+/// ledger (or the capture energy ladder when Silero produced no spans).
+///
+/// An occurrence that owes text recovery is requested on a window that ends
+/// at its `sample_end` and covers the configured context when the tail is
+/// shorter. The provider result is one whole-span observation of that
+/// identity. A material uncovered range that no pending
+/// debt occurrence owns keeps the gap path. Only mapped segments enter the
+/// ledger. Unscoped text, uncertain timing and a segment that escapes the
+/// requested span cannot manufacture occurrence evidence.
 fn repair_terminal_seal_coverage(
     state: &mut AppleSealState,
     ev_tx: &mpsc::UnboundedSender<EngineEvent>,
@@ -3479,9 +6055,6 @@ where
         + Send
         + 'static,
 {
-    // Idempotent: this cannot extend the live drain deadline. All gaps share
-    // its remaining budget, including time spent waiting for a foreign holder.
-    execution.begin_drain(TAIL_PATCH_CLOSURE_TIMEOUT);
     let threshold_samples =
         u64::from(state.sample_rate).saturating_mul(SEAL_COVERAGE_INCOMPLETE_MS) / 1_000;
     // One speech set for the whole terminal path. Repairing against a wider set
@@ -3505,18 +6078,24 @@ where
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .record_seal_coverage(initial.clone());
-    if initial.status == SealCoverageStatus::Complete {
+    let mut debt = {
+        let ledger = state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ledger.pending_text_recoveries(&state.session_id, state.capture_epoch)
+    };
+    debt.sort_by_key(|occurrence| (occurrence.sample_start, occurrence.sample_end));
+    if initial.status == SealCoverageStatus::Complete && debt.is_empty() {
         return initial;
     }
+    // The live tail-patch drain already spent its own deadline. Recovery does
+    // not lengthen that wait; it installs this phase's cap.
+    execution.begin_text_recovery(SEAL_TEXT_RECOVERY_BUDGET);
 
-    // Decode only authenticated uncovered speech PCM. A gap request's rendered
-    // text is never itself a witness: each original mapped segment must pass
-    // the same containment, qualification and ledger corridor as before.
+    let mut ordinal = 0u64;
     let mut initial_published = false;
-    for (ordinal, range) in initial.uncovered_speech_ranges.iter().enumerate() {
-        if range.sample_end.saturating_sub(range.sample_start) <= threshold_samples {
-            continue;
-        }
+    let mut attempt = |state: &mut AppleSealState, range: TailSampleRange| -> StopRangeAttempt {
         let Some(window) = state.window_by_samples(range.sample_start, range.sample_end) else {
             let _ = ev_tx.send(EngineEvent::Warning {
                 code: "seal_coverage_gap_pcm_unavailable".into(),
@@ -3525,16 +6104,17 @@ where
                     range.sample_start, range.sample_end
                 ),
             });
-            continue;
+            return StopRangeAttempt::MissingPcm;
         };
         let request = TailProviderRequest {
             identity: TailRequestIdentity {
-                request_id: u64::MAX - ordinal as u64,
+                request_id: u64::MAX - ordinal,
                 range: range.clone(),
             },
             sample_rate: state.sample_rate,
             language: language.map(str::to_owned),
         };
+        ordinal = ordinal.saturating_add(1);
         let job_request = request.clone();
         let transcribe = transcribe.clone();
         let result = execution
@@ -3553,28 +6133,87 @@ where
             initial_published = true;
         }
         match result {
-            Ok(payload) if payload.identity == request.identity => {
-                admit_full_pass_gap_segments(
-                    state,
-                    ev_tx,
-                    &payload,
-                    std::slice::from_ref(range),
-                    threshold_samples,
-                    EnergyAdmission::QualifyFinalPassGap,
-                );
-            }
+            Ok(payload) if payload.identity == request.identity => StopRangeAttempt::Ready(payload),
             Ok(_) => {
                 let _ = ev_tx.send(EngineEvent::Warning {
                     code: "seal_coverage_gap_identity_mismatch".into(),
                     message: "provider returned another PCM request".into(),
                 });
+                StopRangeAttempt::ForeignIdentity
             }
-            Err(error) => {
-                let _ = ev_tx.send(EngineEvent::Warning {
-                    code: "seal_coverage_gap_inference_failed".into(),
-                    message: error.to_string(),
-                });
+            Err(error) => StopRangeAttempt::Failed(error),
+        }
+    };
+    let warn_failed = |ev_tx: &mpsc::UnboundedSender<EngineEvent>, error: anyhow::Error| {
+        let _ = ev_tx.send(EngineEvent::Warning {
+            code: "seal_coverage_gap_inference_failed".into(),
+            message: error.to_string(),
+        });
+    };
+
+    for occurrence in debt {
+        if occurrence.sample_end <= occurrence.sample_start {
+            continue;
+        }
+        let range = state.with_min_context(TailSampleRange {
+            session: occurrence.session.clone(),
+            capture_epoch: occurrence.capture_epoch,
+            sample_start: occurrence.sample_start,
+            sample_end: occurrence.sample_end,
+        });
+        match attempt(state, range) {
+            StopRangeAttempt::Ready(payload) => {
+                admit_debt_occurrence_recovery(state, ev_tx, &occurrence, &payload);
             }
+            StopRangeAttempt::Failed(error) => warn_failed(ev_tx, error),
+            StopRangeAttempt::MissingPcm | StopRangeAttempt::ForeignIdentity => {}
+        }
+    }
+
+    let (after_debt, still_pending) = {
+        let ledger = state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (
+            ledger.assess_seal_coverage(
+                &state.session_id,
+                state.capture_epoch,
+                &speech_evidence,
+                threshold_samples,
+            ),
+            ledger.pending_text_recoveries(&state.session_id, state.capture_epoch),
+        )
+    };
+    // A range that still intersects pending debt was already requested as that
+    // occurrence. Asking for its speech sub-range admits an overlap the
+    // occurrence does not own.
+    for range in after_debt.uncovered_speech_ranges {
+        if range.sample_end.saturating_sub(range.sample_start) <= threshold_samples {
+            continue;
+        }
+        if still_pending
+            .iter()
+            .any(|occurrence| range_overlaps_occurrence(&range, occurrence))
+        {
+            continue;
+        }
+        let requested = state.with_min_context(range.clone());
+        match attempt(state, requested) {
+            StopRangeAttempt::Ready(payload) => {
+                // The decode window may extend left of the gap. Containment
+                // stays on the uncovered speech range.
+                admit_full_pass_gap_segments(
+                    state,
+                    ev_tx,
+                    &payload,
+                    std::slice::from_ref(&range),
+                    threshold_samples,
+                    EnergyAdmission::QualifyFinalPassGap,
+                );
+            }
+            StopRangeAttempt::Failed(error) => warn_failed(ev_tx, error),
+            StopRangeAttempt::MissingPcm | StopRangeAttempt::ForeignIdentity => {}
         }
     }
 
@@ -3593,6 +6232,18 @@ where
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .record_seal_coverage(final_receipt.clone());
+    {
+        let mut ledger = state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for range in &final_receipt.uncovered_speech_ranges {
+            if range.sample_end.saturating_sub(range.sample_start) <= threshold_samples {
+                continue;
+            }
+            ledger.note_unrecovered_speech(&OccurrenceIdentity::from(range));
+        }
+    }
     let _ = ev_tx.send(EngineEvent::SealCoverage {
         receipt: final_receipt.clone(),
         comparison: None,
@@ -3666,6 +6317,7 @@ fn seal_utterance_final(
                 code: "apple_final_without_pcm_timing".into(),
                 message: "untimed Apple text cannot create an occurrence".into(),
             });
+            state.publish_unadmitted_words(ev_tx);
             return false;
         }
         seal_sliced_by_silero(state, ev_tx, &segments);
@@ -3880,6 +6532,7 @@ fn seal_utterance_final(
     }
 
     state.emit_pending_seal(ev_tx, utterance_id);
+    state.publish_unadmitted_words(ev_tx);
     true
 }
 
@@ -4088,6 +6741,169 @@ fn epoch_base_secs(epoch_base_samples: u64, sample_rate: u32) -> f32 {
     epoch_base_samples as f32 / sample_rate.max(1) as f32
 }
 
+/// Close one phrase and publish the result of this exact seal call. Internal
+/// mirror events are folded into the final replacement after ledger events.
+fn close_apple_phrase(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    phrase_id: u64,
+    raw: &str,
+    segments: Vec<TranscriptSegment>,
+    audio_secs: f32,
+    closes_open: bool,
+) -> (bool, Vec<EngineEvent>) {
+    let timed = apple_segments_on_pcm_clock(state, &segments);
+    let (seal_tx, mut seal_rx) = mpsc::unbounded_channel();
+    let committed = seal_utterance_final(state, &seal_tx, raw, segments, audio_secs);
+    let events = std::iter::from_fn(|| seal_rx.try_recv().ok()).collect::<Vec<_>>();
+    // The admission owner deliberately emits nothing for an identical,
+    // reconciled callback. Without an open phrase this is not another close.
+    if events.is_empty() && !closes_open {
+        return (committed, events);
+    }
+    let untimed = events.iter().any(|event| {
+        matches!(event,
+        EngineEvent::Warning { code, .. } if code == "apple_final_without_pcm_timing")
+    });
+    let mut outcomes = BTreeMap::new();
+    if untimed {
+        outcomes.insert(ApplePhraseOutcome::Untimed, raw.split_whitespace().count());
+        state.refused_untimed_words.insert(
+            phrase_id,
+            raw.split_whitespace()
+                .map(|text| UnadmittedAppleWord {
+                    text: text.into(),
+                    sample_start: state.open_partial_pin,
+                    sample_end: state.open_partial_pin,
+                    source: UnadmittedAppleWordSource::RefusedUntimed { phrase_id },
+                })
+                .collect(),
+        );
+    } else {
+        if !timed.is_empty() {
+            state.refused_untimed_words.remove(&phrase_id);
+        }
+        let mut remaining = timed
+            .iter()
+            .map(|word| word.text.split_whitespace().count())
+            .collect::<Vec<_>>();
+        for (word, count) in timed.iter().zip(&mut remaining) {
+            let held = |candidate: &FusionWord| {
+                candidate.sample_start == word.range.sample_start
+                    && candidate.sample_end == word.range.sample_end
+            };
+            let outcome = if state.pending_silero_words.values().flatten().any(held) {
+                Some(ApplePhraseOutcome::Pending)
+            } else if state.unmatched_silero_words.iter().any(held) {
+                Some(ApplePhraseOutcome::Unmatched)
+            } else {
+                None
+            };
+            if let Some(outcome) = outcome {
+                *outcomes.entry(outcome).or_default() += *count;
+                *count = 0;
+            }
+        }
+        // A late mixed callback can emit replay receipts for individual words
+        // and then one admitted label for the whole owner. Count its specific
+        // results first, so that whole-owner label cannot count the old words
+        // again. All budgets are bounded by this closing call's own input.
+        for mutations in [false, true] {
+            for event in &events {
+                let EngineEvent::LedgerMutation {
+                    observation,
+                    label,
+                    receipt,
+                } = event
+                else {
+                    continue;
+                };
+                if observation.producer != LedgerObservationProducer::Apple {
+                    continue;
+                }
+                let outcome = match receipt {
+                    MutationReceipt::Insert { .. }
+                    | MutationReceipt::Correct { .. }
+                    | MutationReceipt::Preserve { .. } => ApplePhraseOutcome::Admitted,
+                    MutationReceipt::KeepVisibleUnanchored { .. } => ApplePhraseOutcome::Unmatched,
+                    MutationReceipt::Refuse {
+                        reason:
+                            RefuseReason::SealedReplay
+                            | RefuseReason::BatchDuplicate
+                            | RefuseReason::ReplayedRangeIdentity,
+                        ..
+                    } => ApplePhraseOutcome::Replay,
+                    MutationReceipt::Refuse { .. } => ApplePhraseOutcome::NoChange,
+                };
+                if (outcome == ApplePhraseOutcome::Admitted) != mutations {
+                    continue;
+                }
+                let mut budget = label.split_whitespace().count();
+                let range = &observation.occurrence;
+                for (word, count) in timed.iter().zip(&mut remaining) {
+                    let midpoint = word.range.sample_start
+                        + word
+                            .range
+                            .sample_end
+                            .saturating_sub(word.range.sample_start)
+                            / 2;
+                    if range.sample_start <= midpoint && midpoint < range.sample_end {
+                        let accounted = (*count).min(budget);
+                        if accounted > 0 {
+                            *outcomes.entry(outcome).or_default() += accounted;
+                            *count -= accounted;
+                            budget -= accounted;
+                        }
+                    }
+                }
+            }
+        }
+        let unchanged: usize = remaining.iter().sum();
+        if unchanged > 0 {
+            outcomes.insert(
+                ApplePhraseOutcome::NoChange,
+                unchanged
+                    + outcomes
+                        .get(&ApplePhraseOutcome::NoChange)
+                        .copied()
+                        .unwrap_or(0),
+            );
+        }
+        if outcomes.is_empty() {
+            // An empty receipt set is no_change, never evidence of admission.
+            outcomes.insert(ApplePhraseOutcome::NoChange, raw.split_whitespace().count());
+        }
+    }
+    let arrival_index = state
+        .closed_phrases
+        .get(&phrase_id)
+        .map_or(state.closed_phrases.len(), |phrase| phrase.arrival_index);
+    let was_untimed = untimed
+        || state
+            .closed_phrases
+            .get(&phrase_id)
+            .is_some_and(|phrase| phrase.was_untimed);
+    state.closed_phrases.insert(
+        phrase_id,
+        ClosedApplePhrase {
+            arrival_index,
+            outcomes,
+            was_untimed,
+        },
+    );
+    state.last_closed_phrase_id = Some(phrase_id);
+    if phrase_id == state.phrase_id {
+        state.phrase_id = state.phrase_id.saturating_add(1);
+    }
+    for event in &events {
+        if !matches!(event, EngineEvent::UnadmittedAppleWords { .. }) {
+            let _ = ev_tx.send(event.clone());
+        }
+    }
+    state.publish_unadmitted_words(ev_tx);
+    (committed, events)
+}
+
 /// Seal an open partial that never received a phrase final.
 ///
 /// Shared by the two places a stream can end without one: capture EOF (stop
@@ -4104,8 +6920,130 @@ fn seal_open_partial(
         return;
     }
     let segments = std::mem::take(&mut state.open_partial_segments);
-    seal_utterance_final(state, ev_tx, &open, segments, audio_secs);
     state.open_partial.clear();
+    let phrase_id = state.phrase_id;
+    close_apple_phrase(state, ev_tx, phrase_id, &open, segments, audio_secs, true);
+    state.finishing_phrase_id = Some(phrase_id);
+}
+
+/// Finish the recognizer after the worker's stop seal. The async arm drains
+/// admission events before forwarding this acknowledgement to the controller.
+fn finish_capture_after_seal(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    audio_secs: f32,
+    last_window_closed: tokio::sync::oneshot::Sender<()>,
+    ack_before_finish: bool,
+    finish: impl FnOnce() -> Result<Vec<LiveStreamEvent>>,
+    close_residue: impl FnOnce(&mut AppleSealState),
+) -> Result<()> {
+    let mut acknowledgement = Some(last_window_closed);
+    if ack_before_finish {
+        let _ = acknowledgement
+            .take()
+            .expect("stop acknowledgement")
+            .send(());
+    }
+    let trailing = match finish() {
+        Ok(events) => events,
+        Err(error) => {
+            state.stop_trailing_finish = false;
+            return Err(error);
+        }
+    };
+    emit_stream_events(trailing, ev_tx, state, audio_secs);
+    close_residue(state);
+    state.publish_unadmitted_words(ev_tx);
+    state.stop_trailing_finish = false;
+    if let Some(acknowledgement) = acknowledgement {
+        let _ = acknowledgement.send(());
+    }
+    Ok(())
+}
+
+/// A successful transport return alone does not prove a recognizer final:
+/// `finish` can also return an error event or a disconnected partial stream.
+fn apple_stop_final_received(events: &[LiveStreamEvent]) -> bool {
+    let failed = events.iter().any(|event| {
+        matches!(
+            event,
+            LiveStreamEvent::Error { .. } | LiveStreamEvent::Summary { ok: false, .. }
+        )
+    });
+    !failed
+        && events.iter().any(|event| {
+            matches!(
+                event,
+                LiveStreamEvent::PhraseFinal { .. } | LiveStreamEvent::Summary { ok: true, .. }
+            )
+        })
+}
+
+/// Forward completion only after every preceding worker event reached the
+/// reducer and its synchronous paint path. Channel loss is never success.
+fn forward_live_finals_admitted(
+    succeeded: bool,
+    events: &mut mpsc::UnboundedReceiver<EngineEvent>,
+    sink: &dyn EventSink,
+    stream_log_path: Option<&std::path::Path>,
+    completion: &mut Option<tokio::sync::oneshot::Sender<()>>,
+) {
+    while let Ok(event) = events.try_recv() {
+        deliver_event(&event, sink, stream_log_path);
+    }
+    if let Some(sender) = completion.take()
+        && succeeded
+    {
+        let _ = sender.send(());
+    }
+}
+
+/// A clean transport close can precede a missing final. Only accepted typed
+/// commit ranges prove that every offered capture sample reached a final;
+/// this is a stop-completion predicate, never document or seal authority.
+fn cloud_stop_finals_cover_capture(
+    finals: &[crate::asr_session::events::TranscriptEvent],
+    captured_samples: u64,
+) -> bool {
+    if captured_samples == 0 {
+        return true;
+    }
+    let mut ranges = finals
+        .iter()
+        .filter_map(|event| event.commit.as_ref())
+        .map(|commit| (commit.sample_start, commit.sample_end))
+        .collect::<Vec<_>>();
+    ranges.sort_unstable();
+    let mut frontier = 0;
+    for (start, end) in ranges {
+        if start > frontier {
+            return false;
+        }
+        frontier = frontier.max(end);
+        if frontier >= captured_samples {
+            return true;
+        }
+    }
+    false
+}
+
+/// The provider's bounded `end` close supplies one terminal notice after its
+/// finals. Drain only that live lane; pending refinement work cannot hold it.
+fn drain_cloud_stop_finals(
+    state: &mut AppleSealState,
+    events: &mpsc::UnboundedSender<EngineEvent>,
+    notices: &std_mpsc::Receiver<CloudWorkerNotice>,
+) -> bool {
+    loop {
+        match notices.recv() {
+            Ok(CloudWorkerNotice::EndSettled) => return true,
+            Ok(CloudWorkerNotice::Final(event)) => state.admit_cloud_final(events, *event),
+            Ok(CloudWorkerNotice::LaneLost) | Err(_) => {
+                state.return_cloud_live_lost(events);
+                return false;
+            }
+        }
+    }
 }
 
 /// Everything the blocking worker needs that is not a channel.
@@ -4129,6 +7067,11 @@ struct AppleWorkerConfig<'a> {
     utterance_silence_sec: Option<f32>,
     terminal_audio:
         Option<std_mpsc::Receiver<Result<super::live_audio_buffer::FinalizedPcmArchive, String>>>,
+    last_window_closed: tokio::sync::oneshot::Sender<()>,
+    apple_finished: tokio::sync::oneshot::Sender<()>,
+    live_finals_admitted: tokio::sync::oneshot::Sender<()>,
+    /// CLOUD mode only: silence commits to the live WS lane and its notices back.
+    cloud: Option<CloudWorkerChannels>,
 }
 
 /// Blocking worker: owns the SFSpeech stream(s) for the session's full lifetime.
@@ -4155,8 +7098,13 @@ fn apple_stream_worker(
         settings_digest,
         utterance_silence_sec,
         terminal_audio,
+        last_window_closed,
+        apple_finished,
+        live_finals_admitted,
+        cloud,
     } = config;
     debug_assert_eq!(settings_digest, runtime_settings.digest().as_str());
+    let _slot_receipts = SlotReceiptSink::for_session(&session_id, capture_epoch, sample_rate);
     // The one read of calibration truth for this session: the measured profile
     // of the device actually opened, converted to Σx² at the actual capture
     // rate. Any refusal keeps the worker fail-closed (no floor is invented);
@@ -4216,6 +7164,9 @@ fn apple_stream_worker(
     };
     state.bind_capture_energy(capture_energy);
     state.formatter = formatter;
+    let (cloud_commit, cloud_notice) = cloud.map(|lane| (lane.commit, lane.notice)).unzip();
+    state.cloud_commit_tx = cloud_commit;
+    state.whisper_context_window_sec = runtime_settings.values().whisper_context_window_sec;
     // The session's ONE Silero. Both consumers of speech edges read it: the
     // utterance ledger (identity, ranges) and the engine lifecycle (wake/sleep).
     // It is built whenever either consumer wants it — the fusion flag decides
@@ -4262,12 +7213,19 @@ fn apple_stream_worker(
 
     loop {
         state.tick_refinements(&ev_tx, Instant::now());
+        state.flush_cloud_commits(&ev_tx);
+        if let Some(notices) = cloud_notice.as_ref() {
+            while let Ok(notice) = notices.try_recv() {
+                state.handle_cloud_notice(&ev_tx, notice);
+            }
+        }
         while let Ok(completion) = tail_patch_done.try_recv() {
             let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
             state.complete_whisper_window(&ev_tx, completion, audio_secs);
         }
         while let Ok(completion) = formatter_done.try_recv() {
             if !state.complete_formatter(&ev_tx, completion) {
+                state.return_outstanding_cloud(&ev_tx);
                 return Err(anyhow::anyhow!(
                     "formatter completion reached worker without an emitter-sealed exact occurrence",
                 ));
@@ -4288,6 +7246,15 @@ fn apple_stream_worker(
                 // engine rests: it is what the pre-roll of the next epoch is cut
                 // from, and what Layer 1 windows still resolve against.
                 state.audio.push(&samples);
+                // A final may have queued while recv_timeout waited for PCM.
+                // Admit it before advancing the capture-clock expiry boundary.
+                if let Some(notices) = cloud_notice.as_ref() {
+                    while let Ok(notice) = notices.try_recv() {
+                        state.handle_cloud_notice(&ev_tx, notice);
+                    }
+                }
+                state.observe_cloud_capture_head(samples_seen);
+                state.release_cloud_live_behind(&ev_tx, samples_seen);
                 // One observation of the spectrum, two consumers: the ledger
                 // mints identity from it and the lifecycle wakes/sleeps on it.
                 let silero_ingest = state
@@ -4323,7 +7290,9 @@ fn apple_stream_worker(
                 match epoch.feed_pcm(&samples, samples_seen, speech_live) {
                     EpochDecision::Forward => {
                         if let Some(session) = stream.as_mut() {
-                            session.write_pcm(&samples)?;
+                            session.write_pcm(&samples).inspect_err(|_| {
+                                state.return_outstanding_cloud(&ev_tx);
+                            })?;
                             let events = shift_events(
                                 session.poll_events(),
                                 epoch_base_secs(epoch_base_samples, sample_rate),
@@ -4332,7 +7301,8 @@ fn apple_stream_worker(
                         }
                     }
                     EpochDecision::Wake { preroll_from } => {
-                        let mut session = LiveStreamSession::open(language, sample_rate)?;
+                        let mut session = LiveStreamSession::open(language, sample_rate)
+                            .inspect_err(|_| state.return_outstanding_cloud(&ev_tx))?;
                         let chunk_start = samples_seen.saturating_sub(samples.len() as u64);
                         // The base is whatever audio this epoch ACTUALLY starts
                         // with, never what was asked for: a pre-roll that fell
@@ -4345,9 +7315,13 @@ fn apple_stream_worker(
                         let preroll_samples =
                             preroll.as_ref().map_or(0, |window| window.samples.len());
                         if let Some(window) = preroll.filter(|w| !w.samples.is_empty()) {
-                            session.write_pcm(&window.samples)?;
+                            session
+                                .write_pcm(&window.samples)
+                                .inspect_err(|_| state.return_outstanding_cloud(&ev_tx))?;
                         }
-                        session.write_pcm(&samples)?;
+                        session.write_pcm(&samples).inspect_err(|_| {
+                            state.return_outstanding_cloud(&ev_tx);
+                        })?;
                         info!(
                             audio_secs,
                             epoch_base_secs = epoch_base_secs(epoch_base_samples, sample_rate),
@@ -4364,13 +7338,19 @@ fn apple_stream_worker(
                     EpochDecision::Sleep { silence_secs } => {
                         if let Some(session) = stream.take() {
                             let base_secs = epoch_base_secs(epoch_base_samples, sample_rate);
-                            let trailing = shift_events(session.finish()?, base_secs);
+                            let trailing = shift_events(
+                                session
+                                    .finish()
+                                    .inspect_err(|_| state.return_outstanding_cloud(&ev_tx))?,
+                                base_secs,
+                            );
                             emit_stream_events(trailing, &ev_tx, &mut state, audio_secs);
                             // Same close as capture EOF: whatever the engine
                             // left open is sealed here, because no later
                             // callback from this epoch can arrive.
                             seal_open_partial(&mut state, &ev_tx, audio_secs);
                             let _ = state.flush_layer1_coalesce(&ev_tx);
+                            state.close_admission_horizon(&ev_tx, samples_seen);
                             info!(
                                 audio_secs,
                                 silence_secs,
@@ -4402,6 +7382,70 @@ fn apple_stream_worker(
         state.emit_speech_integrity(&ev_tx);
     }
 
+    let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
+    if let Some(fusion) = state.fusion.as_mut() {
+        fusion.flush(samples_seen);
+    }
+    // The armed lane alone seals before finish. The unarmed lane must retain
+    // finish-first ordering: it synthesizes ranges after the consumed cursor
+    // and admits Summary only at utterance_id == 0. Amendment 1: a take with
+    // no Apple text waits for finish and residue admission before its ack.
+    // Later refusals and K5 visibility receipts are NOT document revisions;
+    // only an accepted mutation can revise the stop document.
+    let ack_before_finish = if state.fusion_seal_armed {
+        let has_text = state.has_stop_canvas_text();
+        seal_sliced_by_silero(&mut state, &ev_tx, &[]);
+        seal_open_partial(&mut state, &ev_tx, audio_secs);
+        state.stop_trailing_finish = true;
+        has_text
+    } else {
+        false
+    };
+    let mut apple_final_received = stream.is_none();
+    finish_capture_after_seal(
+        &mut state,
+        &ev_tx,
+        audio_secs,
+        last_window_closed,
+        ack_before_finish,
+        || {
+            stream.take().map_or_else(
+                || Ok(Vec::new()),
+                |session| {
+                    session.finish().map(|events| {
+                        apple_final_received = apple_stop_final_received(&events);
+                        shift_events(events, epoch_base_secs(epoch_base_samples, sample_rate))
+                    })
+                },
+            )
+        },
+        |state| {
+            seal_open_partial(state, &ev_tx, audio_secs);
+            if state.fusion_seal_armed {
+                seal_sliced_by_silero(state, &ev_tx, &[]);
+            }
+        },
+    )
+    .inspect_err(|_| state.return_outstanding_cloud(&ev_tx))?;
+
+    // `finish` has delivered the post-endAudio Apple events. CLOUD now ends
+    // its live transport while this worker still owns admission. Neither the
+    // archive handoff nor Whisper/formatter/recovery work owns this receipt.
+    let _ = apple_finished.send(());
+    let live_finals_complete = match cloud_notice.as_ref() {
+        Some(notices) if state.cloud_commit_tx.is_some() => {
+            drain_cloud_stop_finals(&mut state, &ev_tx, notices)
+        }
+        Some(_) => false,
+        None => true,
+    };
+    state.publish_unadmitted_words(&ev_tx);
+    if live_finals_complete && apple_final_received {
+        let _ = live_finals_admitted.send(());
+    } else {
+        drop(live_finals_admitted);
+    }
+
     if let Some(receiver) = terminal_audio {
         let archive = receiver
             .recv_timeout(Duration::from_secs(30))
@@ -4422,30 +7466,11 @@ fn apple_stream_worker(
                     code: "terminal_owned_pcm_unavailable".into(),
                     message: error.to_string(),
                 });
+                state.return_outstanding_cloud(&ev_tx);
                 return Err(error);
             }
         }
     }
-    let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
-    if let Some(fusion) = state.fusion.as_mut() {
-        fusion.flush(samples_seen);
-    }
-    if let Some(session) = stream.take() {
-        let trailing = shift_events(
-            session.finish()?,
-            epoch_base_secs(epoch_base_samples, sample_rate),
-        );
-        emit_stream_events(trailing, &ev_tx, &mut state, audio_secs);
-    }
-
-    if state.fusion_seal_armed {
-        seal_sliced_by_silero(&mut state, &ev_tx, &[]);
-    }
-
-    // Seal open partial that never got a phrase final (stop mid-phrase).
-    // Same seal-time correction as the phrase path — a stop mid-utterance must
-    // not be the one route that commits uncorrected text.
-    seal_open_partial(&mut state, &ev_tx, audio_secs);
     let _ = state.flush_layer1_coalesce(&ev_tx);
 
     // Every accepted Layer 1 request must close (success, no-change, or)
@@ -4461,23 +7486,90 @@ fn apple_stream_worker(
     // waiting for a completion that had already arrived for every job it sent.
     let mut tail_patch_timeout_residue = 0;
     let stop_deadline = local_execution.begin_drain(TAIL_PATCH_CLOSURE_TIMEOUT);
-    while state.tail_patch_awaiting_completion > 0 || !state.refinement_pending.is_empty() {
-        let outstanding = state.tail_patch_awaiting_completion;
-        if !state.stop_refinements_tick(&ev_tx, Instant::now(), stop_deadline) {
-            tail_patch_timeout_residue = outstanding;
-            break;
-        }
-        match tail_patch_done.recv_timeout(LIVE_WORKER_QUANTUM) {
-            Ok(completion) => state.complete_whisper_window(&ev_tx, completion, audio_secs),
-            Err(std_mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(error) => {
-                warn!("tail-patch closure wait ended before all observations returned: {error}");
-                tail_patch_timeout_residue = state.tail_patch_awaiting_completion;
-                state.return_outstanding_whisper_without_label(&ev_tx);
+    if state.cloud_commit_tx.is_none()
+        && state.cloud_uncommitted.is_empty()
+        && state.cloud_commit_retry.is_empty()
+        && state.cloud_inflight.is_empty()
+    {
+        while !state.refinement_submitted.is_empty() || !state.refinement_pending.is_empty() {
+            let outstanding = state.tail_patch_awaiting_completion();
+            if !state.stop_refinements_tick(&ev_tx, Instant::now(), stop_deadline) {
+                tail_patch_timeout_residue = outstanding;
                 break;
+            }
+            match tail_patch_done.recv_timeout(LIVE_WORKER_QUANTUM) {
+                Ok(completion) => state.complete_whisper_window(&ev_tx, completion, audio_secs),
+                Err(std_mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(error) => {
+                    warn!(
+                        "tail-patch closure wait ended before all observations returned: {error}"
+                    );
+                    tail_patch_timeout_residue = state.tail_patch_awaiting_completion();
+                    state.return_outstanding_whisper_without_label(&ev_tx);
+                    break;
+                }
+            }
+        }
+    } else {
+        // Live-final admission has already settled before the archive handoff.
+        // Remaining observer/refinement work stays a post-delivery revision.
+        while !state.refinement_submitted.is_empty()
+            || !state.refinement_pending.is_empty()
+            || !state.cloud_inflight.is_empty()
+        {
+            let outstanding = state.tail_patch_awaiting_completion();
+            let now = Instant::now();
+            if (!state.refinement_submitted.is_empty() || !state.refinement_pending.is_empty())
+                && !state.stop_refinements_tick(&ev_tx, now, stop_deadline)
+            {
+                tail_patch_timeout_residue = outstanding;
+            }
+            if now >= stop_deadline {
+                state.return_outstanding_cloud(&ev_tx);
+                break;
+            }
+            if let Some(notices) = cloud_notice.as_ref() {
+                while let Ok(notice) = notices.try_recv() {
+                    state.handle_cloud_notice(&ev_tx, notice);
+                }
+            }
+            if state.refinement_submitted.is_empty() && state.refinement_pending.is_empty() {
+                if state.cloud_inflight.is_empty() {
+                    break;
+                }
+                match cloud_notice
+                    .as_ref()
+                    .map(|notices| notices.recv_timeout(LIVE_WORKER_QUANTUM))
+                {
+                    Some(Ok(notice)) => state.handle_cloud_notice(&ev_tx, notice),
+                    Some(Err(std_mpsc::RecvTimeoutError::Timeout)) => continue,
+                    Some(Err(std_mpsc::RecvTimeoutError::Disconnected)) | None => {
+                        state.return_outstanding_cloud(&ev_tx);
+                        break;
+                    }
+                }
+                continue;
+            }
+            match tail_patch_done.recv_timeout(LIVE_WORKER_QUANTUM) {
+                Ok(completion) => state.complete_whisper_window(&ev_tx, completion, audio_secs),
+                Err(std_mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(error) => {
+                    warn!(
+                        "tail-patch closure wait ended before all observations returned: {error}"
+                    );
+                    tail_patch_timeout_residue = state.tail_patch_awaiting_completion();
+                    state.return_outstanding_whisper_without_label(&ev_tx);
+                    if !state.cloud_inflight.is_empty() {
+                        state.return_outstanding_cloud(&ev_tx);
+                    }
+                    break;
+                }
             }
         }
     }
+
+    state.return_outstanding_cloud(&ev_tx);
+    state.close_admission_horizon(&ev_tx, u64::MAX);
 
     // A bounded formatter execution has its own provider timeout policy. Once
     // its exact slot is scheduled, stop drains the typed completion without a
@@ -4496,6 +7588,7 @@ fn apple_stream_worker(
     if let Some(owner) = consultation.as_mut() {
         owner.settle(&state, &ev_tx, samples_seen);
     }
+    state.publish_unadmitted_words(&ev_tx);
     let seal_coverage = publish_terminal_coverage(&state, &ev_tx);
     state.emit_speech_integrity(&ev_tx);
     info!(
@@ -4506,6 +7599,26 @@ fn apple_stream_worker(
         retained_unmatched_words = state.unmatched_silero_words.len(),
         "apple_fusion_session_receipt"
     );
+    if state.cloud_commit_tx.is_some()
+        || state.cloud_live_admitted > 0
+        || state.cloud_live_lane_lost > 0
+        || state.cloud_live_timed_out > 0
+        || state.cloud_live_unmatched_final > 0
+        || state.cloud_uncommitted_span_ms > 0
+    {
+        info!(
+            session_id = %state.session_id,
+            cloud_live_admitted = state.cloud_live_admitted,
+            cloud_live_replaced_apple = state.cloud_live_replaced_apple,
+            cloud_live_refused_sealed = state.cloud_live_refused_sealed,
+            cloud_live_unowned_routed = state.cloud_live_unowned_routed,
+            cloud_live_lane_lost = state.cloud_live_lane_lost,
+            cloud_live_timed_out = state.cloud_live_timed_out,
+            cloud_live_unmatched_final = state.cloud_live_unmatched_final,
+            cloud_uncommitted_span_ms = state.cloud_uncommitted_span_ms,
+            "cloud_live_take"
+        );
+    }
     // Any non-complete verdict takes the same non-success path. The warning
     // names which one it was; neither may reach the terminal seal below.
     if !seal_coverage.status.is_complete() {
@@ -4534,6 +7647,8 @@ fn apple_stream_worker(
         return Ok(AppleStreamOutcome {
             sealed: state.sealed_count,
             filtered_empty_drops: state.filtered_empty_drops,
+            lexicon_rewrites: state.lexicon_rewrites,
+            lexicon_entries_custom: state.lexicon_entries_custom,
             unresolved_windows: state.unresolved_windows,
             under_commit_escalations: state.under_commit_escalations,
             tail_patch_replacements: state.tail_patch_replacements,
@@ -4541,6 +7656,7 @@ fn apple_stream_worker(
             tail_patch_jobs_applied: state.tail_patch_jobs_applied,
             tail_patch_jobs_skipped: state.tail_patch_jobs_skipped,
             tail_patch_timeout_residue,
+            conservation: state.session_conservation(),
         });
     }
     let terminal = state
@@ -4558,6 +7674,8 @@ fn apple_stream_worker(
     Ok(AppleStreamOutcome {
         sealed: state.sealed_count,
         filtered_empty_drops: state.filtered_empty_drops,
+        lexicon_rewrites: state.lexicon_rewrites,
+        lexicon_entries_custom: state.lexicon_entries_custom,
         unresolved_windows: state.unresolved_windows,
         under_commit_escalations: state.under_commit_escalations,
         tail_patch_replacements: state.tail_patch_replacements,
@@ -4565,6 +7683,7 @@ fn apple_stream_worker(
         tail_patch_jobs_applied: state.tail_patch_jobs_applied,
         tail_patch_jobs_skipped: state.tail_patch_jobs_skipped,
         tail_patch_timeout_residue,
+        conservation: state.session_conservation(),
     })
 }
 
@@ -4613,6 +7732,66 @@ fn phrase_retention_reason(prev: &str, next: &str) -> Option<&'static str> {
     })
 }
 
+/// Read the phrase's actual Apple receipts; a successful seal function call
+/// alone is not evidence that its words were admitted or kept visible.
+fn phrase_final_disposition(
+    events: &[EngineEvent],
+    final_text: &str,
+) -> (
+    crate::pipeline::contracts::PreviewFinalDisposition,
+    Vec<crate::pipeline::contracts::RefusedPreviewEvidence>,
+) {
+    use crate::pipeline::contracts::{PreviewFinalDisposition, RefusedPreviewEvidence};
+    let mut kept_unanchored = false;
+    let mut refusal = None;
+    let mut refused_evidence = Vec::new();
+    for event in events {
+        match event {
+            EngineEvent::LedgerMutation {
+                observation,
+                label,
+                receipt,
+            } if observation.producer == LedgerObservationProducer::Apple => match receipt {
+                MutationReceipt::Insert { .. }
+                | MutationReceipt::Correct { .. }
+                | MutationReceipt::Preserve { .. } => {}
+                MutationReceipt::KeepVisibleUnanchored { .. } => kept_unanchored = true,
+                MutationReceipt::Refuse { occurrence, reason } => {
+                    let reason = reason.as_str().to_string();
+                    refusal = Some(reason.clone());
+                    refused_evidence.push(RefusedPreviewEvidence {
+                        range: Some(occurrence.clone()),
+                        text: label.clone(),
+                        reason,
+                    });
+                }
+            },
+            EngineEvent::Warning { code, .. } if code == "apple_final_without_pcm_timing" => {
+                refusal = Some(code.clone());
+            }
+            _ => {}
+        }
+    }
+    // Refused slices carry only their own label. Replaying the whole final
+    // here would duplicate any sibling slice already visible in the canvas.
+    if let Some(reason) = refusal.as_ref().filter(|_| refused_evidence.is_empty()) {
+        let reason = reason.clone();
+        refused_evidence.push(RefusedPreviewEvidence {
+            range: None,
+            text: final_text.to_string(),
+            reason,
+        });
+    }
+    let disposition = if let Some(reason) = refusal {
+        PreviewFinalDisposition::Refused { reason }
+    } else if kept_unanchored {
+        PreviewFinalDisposition::KeptUnanchored
+    } else {
+        PreviewFinalDisposition::Admitted
+    };
+    (disposition, refused_evidence)
+}
+
 /// Map one poll's worth of bridge events onto `EngineEvent`s, sealing where the
 /// stream says a phrase closed.
 ///
@@ -4620,9 +7799,10 @@ fn phrase_retention_reason(prev: &str, next: &str) -> Option<&'static str> {
 /// `Partial` forwards verbatim, `PhraseFinal` goes through
 /// [`seal_utterance_final`] (lexicon + cleanup). `audio_secs` is the session
 /// clock and only acts as a fallback `end_ts` when the engine hands over no
-/// segments. `Summary` is the partials-only engines' single seal — it commits
-/// only when no phrase final ever arrived, otherwise it would double-seal what
-/// the phrase path already committed.
+/// segments. `Summary` reaches [`seal_utterance_final`] only at `utterance_id == 0`
+/// or during the stop's trailing finish after the armed early seal. Hands-free
+/// epoch close does not open that window; arming alone never admits a summary.
+/// Admitted summaries use the existing physical admission and replay receipts.
 ///
 /// On `Partial`, a collapsed post-stressor restart freezes the open hypothesis
 /// first ([`phrase_restart_should_freeze_prior`]) so a shared-opener rewrite
@@ -4652,6 +7832,7 @@ fn emit_stream_events(
                 );
             }
             LiveStreamEvent::Partial { text, segments } => {
+                state.finishing_phrase_id = None;
                 state.observe_apple_progress(&text, &segments);
                 // Safety net for the named drop mechanism: if the bridge
                 // missed a freeze (shared opener collapse), seal the open
@@ -4668,18 +7849,62 @@ fn emit_stream_events(
                         "apple_lifecycle: freeze open partial before restart partial"
                     );
                     let frozen_segments = std::mem::take(&mut state.open_partial_segments);
-                    seal_utterance_final(state, ev_tx, &frozen, frozen_segments, audio_secs);
                     state.open_partial.clear();
+                    let phrase_id = state.phrase_id;
+                    close_apple_phrase(
+                        state,
+                        ev_tx,
+                        phrase_id,
+                        &frozen,
+                        frozen_segments,
+                        audio_secs,
+                        true,
+                    );
                 }
+                // Preserve the recognizer pin as a diagnostic receipt. The
+                // mirror paints this phrase at the tail regardless of its pin.
+                let on_pcm = apple_segments_on_pcm_clock(state, &segments);
+                let pin = match (
+                    on_pcm.iter().map(|word| word.range.sample_start).min(),
+                    on_pcm.iter().map(|word| word.range.sample_end).max(),
+                ) {
+                    (Some(sample_start), Some(sample_end)) => {
+                        PreviewPin::from_segments(TailSampleRange {
+                            session: state.session_id.clone(),
+                            capture_epoch: state.capture_epoch,
+                            sample_start,
+                            sample_end,
+                        })
+                    }
+                    _ => {
+                        let captured_end = state.audio.session_sample_end();
+                        let open_from = state.last_apple_segment_end.max(state.last_sealed_end);
+                        let sample_start =
+                            seconds_to_captured_sample(open_from, state.sample_rate, captured_end);
+                        PreviewPin::open_occurrence(TailSampleRange {
+                            session: state.session_id.clone(),
+                            capture_epoch: state.capture_epoch,
+                            sample_start,
+                            sample_end: seconds_to_captured_sample(
+                                audio_secs,
+                                state.sample_rate,
+                                captured_end,
+                            )
+                            .max(sample_start),
+                        })
+                    }
+                };
                 // Previews stay RAW: they are in-flight presentation, not
                 // canvas, and correcting them would make the lexicon rewrite
                 // flicker letter by letter while the phrase is still forming.
                 state.open_partial = text.clone();
+                state.open_partial_pin = pin.range.sample_start;
                 state.open_partial_segments = segments;
                 state.preview_rev = state.preview_rev.saturating_add(1);
                 let _ = ev_tx.send(EngineEvent::Preview {
                     rev: state.preview_rev,
                     text,
+                    pin,
                 });
             }
             LiveStreamEvent::PhraseFinal { text, segments } => {
@@ -4691,9 +7916,33 @@ fn emit_stream_events(
                     text_chars = text.len(),
                     "apple_lifecycle: phrase final received"
                 );
+                let superseded_through_rev = if state.open_partial.is_empty() {
+                    0
+                } else {
+                    state.preview_rev
+                };
                 state.open_partial.clear();
                 state.open_partial_segments.clear();
-                let committed = seal_utterance_final(state, ev_tx, &text, segments, audio_secs);
+                let phrase_id = state.finishing_phrase_id.take().unwrap_or(state.phrase_id);
+                let (committed, phrase_events) = close_apple_phrase(
+                    state,
+                    ev_tx,
+                    phrase_id,
+                    &text,
+                    segments,
+                    audio_secs,
+                    superseded_through_rev != 0,
+                );
+                let (final_disposition, refused_evidence) =
+                    phrase_final_disposition(&phrase_events, &text);
+                let has_receipt = !phrase_events.is_empty() || superseded_through_rev != 0;
+                if has_receipt {
+                    let _ = ev_tx.send(EngineEvent::PreviewDisposition {
+                        superseded_through_rev,
+                        final_disposition,
+                        refused_evidence,
+                    });
+                }
                 info!(
                     audio_secs,
                     committed,
@@ -4721,20 +7970,48 @@ fn emit_stream_events(
                     });
                     continue;
                 }
-                // No phrase finals → seal the full summary once (partials-only engine).
-                if state.utterance_id == 0 {
-                    if seal_utterance_final(state, ev_tx, &text, segments, audio_secs) {
-                        state.open_partial.clear();
-                        state.open_partial_segments.clear();
-                    }
-                } else {
-                    // Phrase seals already emitted; don't double-seal open partial.
+                // Only the stop's trailing finish may add a summary after an
+                // earlier seal. Epoch summaries retain the original gate.
+                if state.stop_trailing_finish || state.utterance_id == 0 {
+                    let closes_open = !state.open_partial.is_empty();
+                    let phrase_id = if !closes_open {
+                        state.last_closed_phrase_id.unwrap_or(state.phrase_id)
+                    } else {
+                        state.phrase_id
+                    };
+                    state.open_partial.clear();
+                    state.open_partial_segments.clear();
+                    close_apple_phrase(
+                        state,
+                        ev_tx,
+                        phrase_id,
+                        &text,
+                        segments,
+                        audio_secs,
+                        closes_open,
+                    );
+                } else if !state.open_partial.trim().is_empty() {
+                    // Preserve the existing summary admission gate. Its open
+                    // phrase still closes explicitly, without inventing a seal.
+                    let phrase_id = state.phrase_id;
+                    let count = state.open_partial.split_whitespace().count();
+                    state.closed_phrases.insert(
+                        phrase_id,
+                        ClosedApplePhrase {
+                            arrival_index: state.closed_phrases.len(),
+                            outcomes: BTreeMap::from([(ApplePhraseOutcome::NoChange, count)]),
+                            was_untimed: false,
+                        },
+                    );
+                    state.last_closed_phrase_id = Some(phrase_id);
+                    state.phrase_id = state.phrase_id.saturating_add(1);
                     state.open_partial.clear();
                     state.open_partial_segments.clear();
                 }
             }
         }
     }
+    state.publish_unadmitted_words(ev_tx);
 }
 
 /// C13/C13A lifecycle falsifiers kept active without reviving the stale legacy
@@ -4906,6 +8183,186 @@ mod c13a_lifecycle_tests {
         AppleSealState::new_for_session(TEST_SAMPLE_RATE, session_id.to_string(), 1)
     }
 
+    #[test]
+    fn every_untimed_phrase_final_emits_a_typed_refusal_for_its_preview_revision() {
+        use crate::pipeline::contracts::PreviewFinalDisposition;
+        let mut state = state_for_session("phrase-disposition");
+        state.fusion_seal_armed = true;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        for rev in 1..=2 {
+            emit_stream_events(
+                vec![
+                    LiveStreamEvent::Partial {
+                        text: "Iwo".into(),
+                        segments: Vec::new(),
+                    },
+                    LiveStreamEvent::PhraseFinal {
+                        text: "Iwo".into(),
+                        segments: Vec::new(),
+                    },
+                ],
+                &tx,
+                &mut state,
+                1.0,
+            );
+            let mut dispositions = Vec::new();
+            while let Ok(event) = rx.try_recv() {
+                if let EngineEvent::PreviewDisposition {
+                    superseded_through_rev,
+                    final_disposition,
+                    refused_evidence,
+                } = event
+                {
+                    assert_eq!(refused_evidence.len(), 1);
+                    assert_eq!(refused_evidence[0].range, None);
+                    assert_eq!(refused_evidence[0].text, "Iwo");
+                    assert_eq!(refused_evidence[0].reason, "apple_final_without_pcm_timing");
+                    dispositions.push((superseded_through_rev, final_disposition));
+                }
+            }
+            assert_eq!(
+                dispositions,
+                vec![(
+                    rev,
+                    PreviewFinalDisposition::Refused {
+                        reason: "apple_final_without_pcm_timing".into(),
+                    }
+                )]
+            );
+        }
+        emit_stream_events(
+            vec![LiveStreamEvent::PhraseFinal {
+                text: "another final without a preview".into(),
+                segments: Vec::new(),
+            }],
+            &tx,
+            &mut state,
+            1.0,
+        );
+        while let Ok(event) = rx.try_recv() {
+            if let EngineEvent::PreviewDisposition {
+                superseded_through_rev,
+                ..
+            } = event
+            {
+                assert_eq!(
+                    superseded_through_rev, 0,
+                    "a final without a current preview cannot claim an earlier phrase"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn preserved_apple_final_is_admitted_without_replaying_its_label() {
+        use crate::pipeline::contracts::PreviewFinalDisposition;
+        let occurrence = OccurrenceIdentity {
+            session: "preserved-phrase".into(),
+            capture_epoch: 1,
+            sample_start: 0,
+            sample_end: 16_000,
+        };
+        let event = EngineEvent::LedgerMutation {
+            observation: LedgerObservationIdentity::new(
+                LedgerObservationProducer::Apple,
+                1,
+                1,
+                occurrence.clone(),
+            ),
+            label: "already committed".into(),
+            receipt: MutationReceipt::Preserve {
+                occurrence,
+                held_by: LedgerObservationProducer::Apple,
+            },
+        };
+        let (disposition, evidence) = phrase_final_disposition(&[event], "already committed");
+        assert_eq!(disposition, PreviewFinalDisposition::Admitted);
+        assert!(evidence.is_empty());
+    }
+
+    #[test]
+    fn partially_refused_phrase_retains_only_each_refused_apple_slice() {
+        use crate::pipeline::acoustic_ledger::RefuseReason;
+        use crate::pipeline::contracts::{PreviewFinalDisposition, RefusedPreviewEvidence};
+        let admitted = OccurrenceIdentity {
+            session: "partial-refusal".into(),
+            capture_epoch: 1,
+            sample_start: 0,
+            sample_end: 16_000,
+        };
+        let refused = OccurrenceIdentity {
+            sample_start: 16_000,
+            sample_end: 32_000,
+            ..admitted.clone()
+        };
+        let second_refused = OccurrenceIdentity {
+            sample_start: 32_000,
+            sample_end: 48_000,
+            ..admitted.clone()
+        };
+        let mut events = vec![EngineEvent::LedgerMutation {
+            observation: LedgerObservationIdentity::new(
+                LedgerObservationProducer::Apple,
+                1,
+                1,
+                admitted.clone(),
+            ),
+            label: "admitted".into(),
+            receipt: MutationReceipt::Insert {
+                occurrence: admitted,
+            },
+        }];
+        for (generation, occurrence) in [refused.clone(), second_refused.clone()]
+            .into_iter()
+            .enumerate()
+        {
+            events.push(EngineEvent::LedgerMutation {
+                observation: LedgerObservationIdentity::new(
+                    LedgerObservationProducer::Apple,
+                    1,
+                    generation as u64 + 2,
+                    occurrence.clone(),
+                ),
+                label: "Iwo".into(),
+                receipt: MutationReceipt::Refuse {
+                    occurrence,
+                    reason: RefuseReason::SealedReplay,
+                },
+            });
+        }
+        let (disposition, evidence) = phrase_final_disposition(&events, "admitted Iwo Iwo");
+        let reason = RefuseReason::SealedReplay.as_str().to_string();
+        assert_eq!(
+            disposition,
+            PreviewFinalDisposition::Refused {
+                reason: reason.clone()
+            }
+        );
+        assert_eq!(
+            evidence,
+            vec![
+                RefusedPreviewEvidence {
+                    range: Some(refused),
+                    text: "Iwo".into(),
+                    reason: reason.clone()
+                },
+                RefusedPreviewEvidence {
+                    range: Some(second_refused),
+                    text: "Iwo".into(),
+                    reason
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn final_without_visible_receipts_does_not_invent_refused_text() {
+        use crate::pipeline::contracts::PreviewFinalDisposition;
+        let (disposition, evidence) = phrase_final_disposition(&[], "final text without receipt");
+        assert_eq!(disposition, PreviewFinalDisposition::Admitted);
+        assert!(evidence.is_empty());
+    }
+
     fn stage_pending_occurrence(
         state: &mut AppleSealState,
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
@@ -5011,6 +8468,7 @@ mod c13a_lifecycle_tests {
 
     fn no_payload_completion(request: &TailPatchRequest) -> TailPatchCompletion {
         TailPatchCompletion {
+            submission_sequence: request.submission_sequence,
             utterance_id: request.utterance_id,
             request_identity: Some(request.provider_request.identity.clone()),
             payload: None,
@@ -5072,6 +8530,7 @@ mod c13a_lifecycle_tests {
                 .to_string(),
             segments: vec![
                 TimedTailSegment {
+                    grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                     text: "takie rzeczy są oczywiste w tym przypadku".to_string(),
                     range: TailSampleRange {
                         session: session.to_string(),
@@ -5081,6 +8540,7 @@ mod c13a_lifecycle_tests {
                     },
                 },
                 TimedTailSegment {
+                    grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                     text: "miały jakąś kanwę falsyfikacji".to_string(),
                     range: TailSampleRange {
                         session: session.to_string(),
@@ -5095,6 +8555,7 @@ mod c13a_lifecycle_tests {
             provider_id: TailProviderId::Fake,
             elapsed_ms: 1,
             evidence: TailProviderEvidence {
+                segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 source: TailEvidenceSource::Whisper,
                 revision: Some("walkaround-755".to_string()),
                 stability: TailEvidenceStability::Final,
@@ -5449,6 +8910,12 @@ mod c13a_lifecycle_tests {
             .send(EngineEvent::Preview {
                 rev: 1,
                 text: "live".to_string(),
+                pin: PreviewPin::open_occurrence(TailSampleRange {
+                    session: "drainage".into(),
+                    capture_epoch: 1,
+                    sample_start: 0,
+                    sample_end: 0,
+                }),
             })
             .expect("event receiver");
 
@@ -5500,10 +8967,11 @@ mod c13a_lifecycle_tests {
         assert!(state.flush_layer1_coalesce(&tx));
         let request = tail_rx.try_recv().expect("one exact coalesced request");
         assert_eq!(request.member_occurrences.len(), 2);
-        assert_eq!(state.tail_patch_awaiting_completion, 1);
+        assert_eq!(state.tail_patch_awaiting_completion(), 1);
         while event_rx.try_recv().is_ok() {}
 
         state.complete_whisper_window(&tx, no_payload_completion(&request), 2.0);
+        state.close_admission_horizon(&tx, 32_000);
         let events = std::iter::from_fn(|| event_rx.try_recv().ok()).collect::<Vec<_>>();
         assert_eq!(
             events
@@ -5547,10 +9015,10 @@ mod c13a_lifecycle_tests {
         assert_eq!(ledger.text_of(&second), Some("Iwo"));
         drop(ledger);
         assert!(state.pending_events.is_empty());
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
 
         state.complete_whisper_window(&tx, no_payload_completion(&request), 2.0);
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert!(event_rx.try_recv().is_err(), "replay emits no second seal");
     }
 
@@ -5564,9 +9032,10 @@ mod c13a_lifecycle_tests {
     /// occurrence, and the whole-window text fallback is reachable for a
     /// single-member window only.
     ///
-    /// A straddling segment must therefore reach neither member, while a
-    /// segment pinned inside one member still becomes that member's label —
-    /// the positive control that keeps this test falsifiable.
+    /// A straddling segment intersects both members, so neither member is
+    /// relabelled. The pin that sits wholly inside the second member stays
+    /// visible and does not replace that member: one non-exclusive pin blocks
+    /// the whole span.
     #[test]
     fn a_candidate_straddling_two_member_occurrences_labels_neither() {
         use crate::stt::tail_provider::{
@@ -5596,6 +9065,7 @@ mod c13a_lifecycle_tests {
         // inside the second member: the positive control owns 16 000..32 000.
         let identity = request.provider_request.identity.clone();
         let straddling = TimedTailSegment {
+            grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
             text: "przez granice".to_string(),
             range: TailSampleRange {
                 session: "straddle".to_string(),
@@ -5605,6 +9075,7 @@ mod c13a_lifecycle_tests {
             },
         };
         let pinned = TimedTailSegment {
+            grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
             text: "Iwo drugie".to_string(),
             range: TailSampleRange {
                 session: "straddle".to_string(),
@@ -5622,6 +9093,7 @@ mod c13a_lifecycle_tests {
             provider_id: TailProviderId::Fake,
             elapsed_ms: 1,
             evidence: TailProviderEvidence {
+                segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 source: TailEvidenceSource::Whisper,
                 revision: None,
                 stability: TailEvidenceStability::Final,
@@ -5632,6 +9104,7 @@ mod c13a_lifecycle_tests {
         state.complete_whisper_window(
             &tx,
             TailPatchCompletion {
+                submission_sequence: request.submission_sequence,
                 utterance_id: request.utterance_id,
                 request_identity: Some(identity),
                 payload: Some(payload),
@@ -5640,6 +9113,7 @@ mod c13a_lifecycle_tests {
             2.0,
         );
 
+        state.close_admission_horizon(&tx, 32_000);
         let events = std::iter::from_fn(|| event_rx.try_recv().ok()).collect::<Vec<_>>();
         let whisper_labels = events
             .iter()
@@ -5658,8 +9132,8 @@ mod c13a_lifecycle_tests {
             .collect::<Vec<_>>();
         assert_eq!(
             whisper_labels,
-            vec![(second.clone(), "Iwo drugie".to_string())],
-            "only the member that wholly owns a segment may be relabelled"
+            Vec::<(OccurrenceIdentity, String)>::new(),
+            "a straddling pin blocks replacement of every member it intersects"
         );
         assert!(
             !whisper_labels
@@ -5697,7 +9171,11 @@ mod c13a_lifecycle_tests {
             Some("Iwo"),
             "the Apple floor survives a candidate that named no exact occurrence"
         );
-        assert_eq!(ledger.text_of(&second), Some("Iwo drugie"));
+        assert_eq!(
+            ledger.text_of(&second),
+            Some("Iwo"),
+            "the wholly owned pin stays visible and does not replace the member"
+        );
         drop(ledger);
 
         // Post-seal immutability: the same completion replayed after the seal
@@ -5709,7 +9187,7 @@ mod c13a_lifecycle_tests {
         );
         let ledger = state.acoustic_ledger.lock().expect("ledger");
         assert_eq!(ledger.text_of(&first), Some("Iwo"));
-        assert_eq!(ledger.text_of(&second), Some("Iwo drugie"));
+        assert_eq!(ledger.text_of(&second), Some("Iwo"));
     }
 
     #[test]
@@ -5732,6 +9210,8 @@ mod c13a_lifecycle_tests {
             "failure to queue prior flush A cannot revoke newly held B"
         );
         return_lexicon(&mut state, &tx, 2, &second);
+        // A's scheduled Whisper job failed; B still owns a later held window.
+        state.close_admission_horizon(&tx, first.sample_end);
         assert!(
             state
                 .acoustic_ledger
@@ -5758,6 +9238,8 @@ mod c13a_lifecycle_tests {
         assert!(state.refinement_pending.is_empty());
         assert!(state.refinement_submitted.is_empty());
         assert!(state.layer1_coalesce.is_empty());
+        // Both scheduled jobs are terminal and the capture epoch can close.
+        state.close_admission_horizon(&tx, second.sample_end);
         let ledger = state.acoustic_ledger.lock().expect("ledger");
         for occurrence in [&first, &second] {
             assert!(ledger.is_sealed(occurrence));
@@ -5772,7 +9254,7 @@ mod c13a_lifecycle_tests {
         }
         drop(ledger);
         assert!(state.pending_events.is_empty());
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
         let events = std::iter::from_fn(|| event_rx.try_recv().ok()).collect::<Vec<_>>();
         assert_eq!(
             events
@@ -5817,13 +9299,14 @@ mod c13a_lifecycle_tests {
         assert!(state.flush_layer1_coalesce(&tx));
         let second_request = tail_rx.try_recv().expect("second accepted job");
         assert_eq!(second_request.member_occurrences, vec![(2, second.clone())]);
-        assert_eq!(state.tail_patch_awaiting_completion, 2);
+        assert_eq!(state.tail_patch_awaiting_completion(), 2);
 
         state.complete_whisper_window(&tx, no_payload_completion(&first_request), 3.0);
-        assert_eq!(state.tail_patch_awaiting_completion, 1);
+        assert_eq!(state.tail_patch_awaiting_completion(), 1);
         state.complete_whisper_window(&tx, no_payload_completion(&first_request), 3.0);
         assert_eq!(
-            state.tail_patch_awaiting_completion, 1,
+            state.tail_patch_awaiting_completion(),
+            1,
             "replayed A cannot consume B's accepted job debt"
         );
         assert!(
@@ -5840,7 +9323,7 @@ mod c13a_lifecycle_tests {
 
         state.return_outstanding_whisper_without_label(&tx);
         state.seal_remaining_at_session_end(&tx);
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert!(
             state
                 .acoustic_ledger
@@ -5881,6 +9364,7 @@ mod tests {
             provider_id: crate::stt::tail_provider::TailProviderId::Fake,
             elapsed_ms: 0,
             evidence: TailProviderEvidence {
+                segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 source: TailEvidenceSource::Whisper,
                 revision: Some("synthetic-test".to_string()),
                 stability: TailEvidenceStability::Final,
@@ -5903,6 +9387,7 @@ mod tests {
             },
             words: Vec::new(),
             apple_evidence: TailProviderEvidence {
+                segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 source: TailEvidenceSource::AppleSpeech,
                 revision: None,
                 stability: TailEvidenceStability::Final,
@@ -6094,7 +9579,12 @@ mod tests {
         assert!(sink.events().is_empty());
 
         report_tail_patch_drain_degrade(&sink, 2);
-        emit_session_finalised(&sink, "test-session".to_string(), 0);
+        emit_session_finalised(
+            &sink,
+            "test-session".to_string(),
+            0,
+            SessionConservationReceipt::default(),
+        );
         let events = sink.events();
         assert_eq!(events.len(), 2);
         let EngineEvent::Warning { code, message } = &events[0] else {
@@ -6309,9 +9799,26 @@ mod tests {
         let timed = OccurrenceIdentity::new("timed-out", 1, 0, 16_000);
         stage_pending_occurrence(&mut timed_out, &tx, 1, timed.clone(), "Iwo");
         launch_whisper_and_return_lexicon(&mut timed_out, &tx, 1, &timed, "Iwo");
-        timed_out.tail_patch_awaiting_completion = 1;
+        let (tail_tx, _tail_rx) = mpsc::channel(1);
+        timed_out.tail_patch = Some(tail_tx);
+        assert!(timed_out.queue_layer1_flush(
+            &tx,
+            CoalesceFlush {
+                audio: vec![0.5; 16_000],
+                committed_text: "Iwo".into(),
+                member_ids: vec![(1, 1.0)],
+                member_occurrences: vec![(1, timed.clone())],
+                neighbour_context: String::new(),
+                sample_start: 0,
+                sample_end: 16_000,
+                admit_sample_start: 0,
+                admit_sample_end: 16_000,
+                primary_utterance_id: 1,
+            }
+        ));
+        assert_eq!(timed_out.tail_patch_awaiting_completion(), 1);
         timed_out.return_outstanding_whisper_without_label(&tx);
-        assert_eq!(timed_out.tail_patch_awaiting_completion, 0);
+        assert_eq!(timed_out.tail_patch_awaiting_completion(), 0);
         assert!(
             timed_out
                 .acoustic_ledger
@@ -6331,6 +9838,7 @@ mod tests {
                 skipped_jobs: 1,
                 timeout_residue: 1,
             }),
+            SessionConservationReceipt::default(),
         );
         assert_eq!(receipt.applied, 1);
         assert_eq!(receipt.skipped, 1);
@@ -6338,7 +9846,8 @@ mod tests {
         assert_eq!(receipt.abandoned, 0);
         assert!(receipt.is_reconciled());
 
-        let worker_failed = tail_patch_receipt_after_stop(true, 2, None);
+        let worker_failed =
+            tail_patch_receipt_after_stop(true, 2, None, SessionConservationReceipt::default());
         assert_eq!(worker_failed.abandoned, 2);
         assert_eq!(worker_failed.drain, TailPatchDrainDisposition::Abandoned);
         assert!(worker_failed.is_reconciled());
@@ -6354,6 +9863,7 @@ mod tests {
                 skipped_jobs: 0,
                 timeout_residue: 1,
             }),
+            SessionConservationReceipt::default(),
         );
         assert_eq!(receipt.timed_out, 1);
         assert_eq!(receipt.abandoned, 0);
@@ -6362,9 +9872,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "tail-patch terminal buckets must reconcile exactly")]
     fn tail_patch_receipt_rejects_missing_independent_terminal_evidence() {
-        let _ = tail_patch_receipt_after_stop(
+        let receipt = tail_patch_receipt_after_stop(
             true,
             3,
             Some(TailPatchWorkerAccounting {
@@ -6372,7 +9881,11 @@ mod tests {
                 skipped_jobs: 1,
                 timeout_residue: 0,
             }),
+            SessionConservationReceipt::default(),
         );
+        assert_eq!(receipt.abandoned, 1);
+        assert_eq!(receipt.drain, TailPatchDrainDisposition::Abandoned);
+        assert!(receipt.is_reconciled());
     }
 
     fn synthetic_tail_job(utterance_id: u64, outcome: TailPatchOutcome) -> TailPatchJobResult {
@@ -6406,6 +9919,7 @@ mod tests {
         );
         let completion = lane.finish_for_worker(
             Some(TailPatchInFlight {
+                submission_sequence: 1,
                 utterance_id: 1,
                 covered_through_secs: 2.0,
                 request_identity: TailRequestIdentity {
@@ -6417,6 +9931,8 @@ mod tests {
                         sample_end: 16_000,
                     },
                 },
+                admit_sample_start: 0,
+                admit_sample_end: 16_000,
                 span_map: Vec::new(),
                 member_occurrences: vec![(
                     1,
@@ -6452,6 +9968,7 @@ mod tests {
         );
         let rejected = lane.finish_for_worker(
             Some(TailPatchInFlight {
+                submission_sequence: 2,
                 utterance_id: 2,
                 covered_through_secs: 3.0,
                 request_identity: TailRequestIdentity {
@@ -6463,6 +9980,8 @@ mod tests {
                         sample_end: 32_000,
                     },
                 },
+                admit_sample_start: 16_000,
+                admit_sample_end: 32_000,
                 span_map: Vec::new(),
                 member_occurrences: vec![(
                     2,
@@ -6525,13 +10044,14 @@ mod tests {
         let req = tp_rx
             .try_recv()
             .expect("sealed utterance enqueues a request");
-        assert_eq!(state.tail_patch_awaiting_completion, 1);
+        assert_eq!(state.tail_patch_awaiting_completion(), 1);
 
         // Close the job on a clock that is still inside the span's volatile
         // window — the exact shape the old exit condition could not express.
         state.complete_whisper_window(
             &tx,
             TailPatchCompletion {
+                submission_sequence: req.submission_sequence,
                 utterance_id: req.utterance_id,
                 covered_through_secs: req.covered_through_secs,
                 request_identity: Some(req.provider_request.identity.clone()),
@@ -6547,7 +10067,8 @@ mod tests {
         );
 
         assert_eq!(
-            state.tail_patch_awaiting_completion, 0,
+            state.tail_patch_awaiting_completion(),
+            0,
             "every job reported back — the stop path owes no further wait"
         );
         assert_eq!(state.tail_patch_jobs_applied, 0);
@@ -7308,6 +10829,10 @@ mod ledger_conservation_falsifiers {
 mod seal_coverage_tests;
 
 #[cfg(test)]
+#[path = "live_speech_edge_tests.rs"]
+mod live_speech_edge_tests;
+
+#[cfg(test)]
 mod storm_tests {
     use super::*;
     const TEST_SAMPLE_RATE: u32 = 16_000;
@@ -7434,6 +10959,127 @@ mod storm_tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn unmatched_word_three_deliveries_keep_one_store_and_mirror_entry() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new_for_session(TEST_SAMPLE_RATE, "storm-test".into(), 0);
+        arm_fusion_slice_admission(&mut state);
+        let words = vec![segment("leftover", 9.0, 9.125)];
+
+        for delivery in 0..3 {
+            assert!(seal_sliced_by_silero(&mut state, &tx, &words));
+            assert_eq!(state.unmatched_silero_words.len(), 1);
+            let retained = &state.unmatched_silero_words[0];
+            assert_eq!(
+                (
+                    retained.sample_start,
+                    retained.sample_end,
+                    retained.text.as_str()
+                ),
+                (at(9.0), at(9.125), "leftover")
+            );
+            assert_eq!(state.unadmitted_revision, 1);
+            let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+            if delivery == 0 {
+                let mirrors = events
+                    .iter()
+                    .filter_map(|event| match event {
+                        EngineEvent::UnadmittedAppleWords {
+                            revision, words, ..
+                        } => Some((revision, words)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(mirrors.len(), 1);
+                assert_eq!(*mirrors[0].0, 1);
+                assert_eq!(mirrors[0].1.len(), 1);
+                assert_eq!(mirrors[0].1[0].text, "leftover");
+                assert_eq!(mirrors[0].1[0].sample_start, at(9.0));
+                assert_eq!(mirrors[0].1[0].sample_end, at(9.125));
+                assert_eq!(mirrors[0].1[0].source, UnadmittedAppleWordSource::Unmatched);
+            } else {
+                assert!(events.is_empty(), "identical re-delivery must be silent");
+            }
+        }
+    }
+
+    #[test]
+    fn unmatched_words_keep_distinct_pins_and_text() {
+        for second in [
+            segment("leftover", 9.25, 9.375),
+            segment("leftover", 9.0, 9.25),
+            segment("leftover", 9.0625, 9.125),
+            segment("revised", 9.0, 9.125),
+        ] {
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let mut state =
+                AppleSealState::new_for_session(TEST_SAMPLE_RATE, "storm-test".into(), 0);
+            arm_fusion_slice_admission(&mut state);
+            let first = segment("leftover", 9.0, 9.125);
+            // An exact copy separated by a distinct word is still a re-delivery.
+            let words = vec![first.clone(), second.clone(), first];
+            assert!(seal_sliced_by_silero(&mut state, &tx, &words));
+            assert_eq!(state.unmatched_silero_words.len(), 2);
+            let expected = vec![
+                (at(9.0), at(9.125), "leftover"),
+                (at(second.start_ts), at(second.end_ts), second.text.as_str()),
+            ];
+            assert_eq!(
+                state
+                    .unmatched_silero_words
+                    .iter()
+                    .map(|word| (word.sample_start, word.sample_end, word.text.as_str()))
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            let mirrors = std::iter::from_fn(|| rx.try_recv().ok())
+                .filter_map(|event| match event {
+                    EngineEvent::UnadmittedAppleWords { words, .. } => Some(words),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(mirrors.len(), 1);
+            let preview = if second.start_ts >= 9.125 {
+                expected.clone()
+            } else {
+                vec![(at(second.start_ts), at(second.end_ts), second.text.as_str())]
+            };
+            assert_eq!(
+                mirrors[0]
+                    .iter()
+                    .map(|word| (word.sample_start, word.sample_end, word.text.as_str()))
+                    .collect::<Vec<_>>(),
+                preview
+            );
+            if preview.len() == 1 {
+                let fusion = state.fusion.as_mut().unwrap();
+                let start = fusion
+                    .ledger()
+                    .utterances()
+                    .last()
+                    .unwrap()
+                    .range
+                    .sample_start;
+                fusion.observe(Some((start, at(10.0))), false, at(10.0));
+                fusion.observe(None, true, at(10.0));
+                seal_sliced_by_silero(&mut state, &tx, &[]);
+                let ledger = state.acoustic_ledger.lock().unwrap();
+                assert!(ledger.layer_trail().iter().any(|entry| {
+                    entry.candidate_label == "leftover"
+                        && entry.observation.occurrence.sample_start == at(9.0)
+                        && entry.observation.occurrence.sample_end == at(9.125)
+                        && matches!(
+                            entry.decision,
+                            MutationReceipt::KeepVisibleUnanchored {
+                                reason: NoAuthorityReason::LateAppleWordNotCurrent,
+                                ..
+                            }
+                        )
+                }));
+            }
+        }
     }
 
     #[test]
@@ -7903,6 +11549,7 @@ mod rc_w2_acoustic_tests {
             identity: request.identity.clone(),
             text: "Iwo".into(),
             segments: vec![TimedTailSegment {
+                grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 text: "Iwo".into(),
                 range: request.identity.range.clone(),
             }],
@@ -7911,6 +11558,7 @@ mod rc_w2_acoustic_tests {
             provider_id: TailProviderId::Fake,
             elapsed_ms: 0,
             evidence: TailProviderEvidence {
+                segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 source: TailEvidenceSource::Whisper,
                 revision: None,
                 stability: TailEvidenceStability::Final,
@@ -7920,11 +11568,381 @@ mod rc_w2_acoustic_tests {
         }
     }
 
+    /// A provider segment that starts before the uncovered gap is not speech
+    /// this gap owns. The stop path must leave that gap as one named refusal
+    /// the conservation receipt counts, and must not commit the straddling text.
+    #[test]
+    fn straddling_gap_segment_stays_a_named_unrecovered_refusal() {
+        let mut state = two_bursts("straddle-gap");
+        let expected = coverage_speech_evidence(&state).ranges().to_vec();
+        assert!(!expected.is_empty());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let execution = LocalExecutionOwner::default();
+        let receipt = repair_terminal_seal_coverage_with(
+            &mut state,
+            &tx,
+            None,
+            &execution,
+            move |request, pcm, control| {
+                control.check()?;
+                request.validate_pcm(pcm)?;
+                let mut payload = gap_payload(request);
+                let start = payload.segments[0].range.sample_start;
+                payload.segments[0].range.sample_start = start.saturating_sub(500);
+                payload.segments[0].text = "Straddle".into();
+                payload.text = "Straddle".into();
+                Ok(payload)
+            },
+        );
+        assert_eq!(receipt.status, SealCoverageStatus::Incomplete);
+        assert!(
+            !state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .rendered_text()
+                .contains("Straddle"),
+            "a segment that starts before the gap must not become committed text"
+        );
+        let _ = warning_codes(&mut rx);
+        let conservation = state.session_conservation();
+        assert_eq!(
+            conservation
+                .observations_refused_by_reason
+                .get("unrecovered_speech")
+                .copied(),
+            Some(expected.len() as u64),
+            "each material gap the stop path could not recover needs one named refusal: {conservation:?}"
+        );
+        assert_eq!(conservation.residue(), 0, "{conservation:?}");
+    }
+
+    /// Five committed debt occurrences, each wider than the Silero speech
+    /// inside it, plus one speech burst that has no occurrence. The shape is
+    /// take 9608b50e: the label is committed, the speech inside it is still
+    /// debt, and a provider that answers with a segment wholly inside the
+    /// requested range must recover the occurrence itself.
+    fn commit_debt_occurrence(
+        state: &mut AppleSealState,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        sample_start: u64,
+        sample_end: u64,
+        label: &str,
+    ) -> OccurrenceIdentity {
+        let occurrence = OccurrenceIdentity::new(
+            state.session_id.clone(),
+            state.capture_epoch,
+            sample_start,
+            sample_end,
+        );
+        assert!(
+            qualify_owned_occurrence(state, &occurrence),
+            "the fixture occurrence must qualify before it can owe recovery"
+        );
+        {
+            let mut ledger = state.acoustic_ledger.lock().unwrap();
+            ledger.schedule_frontier(
+                occurrence.clone(),
+                [
+                    LedgerObservationProducer::Apple,
+                    LedgerObservationProducer::Lexicon,
+                ],
+            );
+            assert!(ledger.require_text_recovery(&occurrence));
+        }
+        let apple = admit_ledger_label(
+            state,
+            ev_tx,
+            LabelAdmission {
+                observation: LedgerObservationIdentity::new(
+                    LedgerObservationProducer::Apple,
+                    sample_start,
+                    0,
+                    occurrence.clone(),
+                ),
+                label,
+                energy: EnergyAdmission::RequireExistingQualification,
+            },
+        );
+        assert!(
+            apple.is_some_and(|receipt| receipt.grants_mutation()),
+            "Apple must commit the provisional label"
+        );
+        let lexicon = admit_ledger_label(
+            state,
+            ev_tx,
+            LabelAdmission {
+                observation: LedgerObservationIdentity::new(
+                    LedgerObservationProducer::Lexicon,
+                    sample_start,
+                    0,
+                    occurrence.clone(),
+                ),
+                label,
+                energy: EnergyAdmission::RequireExistingQualification,
+            },
+        );
+        assert!(lexicon.is_some(), "Lexicon closes the scheduled frontier");
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert!(ledger.text_recovery_pending(&occurrence));
+        assert!(!ledger.is_sealed(&occurrence));
+        occurrence
+    }
+
+    fn five_debt_occurrences(session: &str) -> (AppleSealState, Vec<OccurrenceIdentity>) {
+        let stride = at(3.5);
+        let gap_start = 5 * stride + at(0.5);
+        let gap_end = gap_start + at(1.0);
+        let capture_end = gap_end + at(0.5);
+        let mut state = state_for(session, 0.0);
+        state.audio.push(&vec![0.25f32; capture_end as usize]);
+        let mut ingress = SileroIngress::new(RATE, state.session_id.clone(), state.capture_epoch);
+        ingress.note_observed_pcm(capture_end, capture_end);
+        let mut boundaries = Vec::new();
+        for index in 0..5 {
+            let speech_start = index * stride + at(0.6);
+            let speech_end = index * stride + at(1.2);
+            boundaries.push(crossing(VadBoundaryKind::SpeechStart, speech_start));
+            boundaries.push(crossing(VadBoundaryKind::SpeechEnd, speech_end));
+        }
+        boundaries.push(crossing(VadBoundaryKind::SpeechStart, gap_start));
+        boundaries.push(crossing(VadBoundaryKind::SpeechEnd, gap_end));
+        ingress.observe_boundaries(&boundaries);
+        state.fusion = Some(ingress);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut occurrences = Vec::new();
+        for index in 0..5 {
+            let start = index * stride;
+            occurrences.push(commit_debt_occurrence(
+                &mut state,
+                &tx,
+                start,
+                start + at(2.0),
+                &format!("apple {index}"),
+            ));
+        }
+        (state, occurrences)
+    }
+
+    fn event_trace(rx: &mut mpsc::UnboundedReceiver<EngineEvent>) -> String {
+        let mut lines = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                EngineEvent::LedgerMutation {
+                    observation,
+                    receipt,
+                    label,
+                } => lines.push(format!(
+                    "mutation {} {}..{} {} {label}",
+                    observation.producer.as_str(),
+                    observation.occurrence.sample_start,
+                    observation.occurrence.sample_end,
+                    receipt.as_str()
+                )),
+                EngineEvent::Warning { code, message } => {
+                    lines.push(format!("warn {code}: {message}"))
+                }
+                _ => {}
+            }
+        }
+        lines.join("\n")
+    }
+
+    #[test]
+    fn debt_stop_path_recovers_each_occurrence_span_not_its_speech_subrange() {
+        let (mut state, occurrences) = five_debt_occurrences("debt-span");
+        let occurrence_ends = occurrences
+            .iter()
+            .map(|occurrence| occurrence.sample_end)
+            .collect::<Vec<_>>();
+        let speech = coverage_speech_evidence(&state).ranges().to_vec();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&calls);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let execution = LocalExecutionOwner::default();
+        let receipt = repair_terminal_seal_coverage_with(
+            &mut state,
+            &tx,
+            Some("pl"),
+            &execution,
+            move |request, pcm, control| {
+                control.check()?;
+                request.validate_pcm(pcm)?;
+                observed
+                    .lock()
+                    .unwrap()
+                    .push(request.identity.range.clone());
+                let mut payload = gap_payload(request);
+                let end = request.identity.range.sample_end;
+                let start = request.identity.range.sample_start;
+                if occurrence_ends.contains(&end) {
+                    payload.segments[0].range.sample_start = end.saturating_sub(at(2.0)).max(start);
+                    payload.segments[0].grain = crate::stt::tail_provider::TailSegmentGrain::Word;
+                    payload.evidence.segment_grain =
+                        crate::stt::tail_provider::TailSegmentGrain::Word;
+                } else if let Some(gap) = speech.iter().find(|gap| gap.sample_end == end) {
+                    payload.segments[0].range = gap.clone();
+                }
+                Ok(payload)
+            },
+        );
+        let calls = calls.lock().unwrap();
+        let trace = event_trace(&mut rx);
+        assert!(
+            calls.len() >= occurrences.len(),
+            "stop path made no occurrence request: {calls:?}\n{trace}"
+        );
+        let context_samples = 8 * u64::from(RATE);
+        for (call, occurrence) in calls.iter().take(occurrences.len()).zip(&occurrences) {
+            assert_eq!(
+                call.sample_end, occurrence.sample_end,
+                "context window must end on the occurrence\ncalls={calls:?}\n{trace}"
+            );
+            assert_eq!(
+                call.sample_start,
+                occurrence.sample_end.saturating_sub(context_samples),
+                "short debt occurrence must hear 8 s ending at its close\ncalls={calls:?}\n{trace}"
+            );
+            assert!(call.sample_start <= occurrence.sample_start);
+        }
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        let pending = ledger.pending_text_recoveries(&state.session_id, state.capture_epoch);
+        assert!(
+            pending.is_empty(),
+            "debt stayed pending after wholly contained segments\ncalls={calls:?}\npending={pending:?}\n{trace}"
+        );
+        assert_eq!(receipt.status, SealCoverageStatus::Complete, "{receipt:?}");
+        assert!(receipt.covered_samples > 0, "{receipt:?}");
+        for occurrence in &occurrences {
+            assert_eq!(ledger.text_of(occurrence), Some("Iwo"));
+            assert!(!ledger.text_recovery_pending(occurrence));
+        }
+        drop(ledger);
+        {
+            let mut ledger = state.acoustic_ledger.lock().unwrap();
+            assert!(
+                ledger
+                    .seal_terminal(&state.session_id, state.capture_epoch)
+                    .is_ok(),
+                "cleared debt and complete coverage must allow the terminal seal"
+            );
+        }
+        assert_eq!(state.session_conservation().residue(), 0);
+    }
+
+    /// The live tail-patch drain and text recovery share one execution owner.
+    /// An expired live deadline must not cancel the recovery phase.
+    #[test]
+    fn debt_recovery_runs_after_the_live_drain_deadline_expired() {
+        let (mut state, occurrences) = five_debt_occurrences("debt-after-drain");
+        let occurrence_ends = occurrences
+            .iter()
+            .map(|occurrence| occurrence.sample_end)
+            .collect::<Vec<_>>();
+        let speech = coverage_speech_evidence(&state).ranges().to_vec();
+        let execution = LocalExecutionOwner::default();
+        execution.begin_drain(Duration::ZERO);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let receipt = repair_terminal_seal_coverage_with(
+            &mut state,
+            &tx,
+            None,
+            &execution,
+            move |request, pcm, control| {
+                control.check()?;
+                request.validate_pcm(pcm)?;
+                let end = request.identity.range.sample_end;
+                let start = request.identity.range.sample_start;
+                let mut payload = gap_payload(request);
+                if occurrence_ends.contains(&end) {
+                    payload.segments[0].range.sample_start = end.saturating_sub(at(2.0)).max(start);
+                } else if let Some(gap) = speech.iter().find(|gap| gap.sample_end == end) {
+                    payload.segments[0].range = gap.clone();
+                }
+                Ok(payload)
+            },
+        );
+        assert_eq!(receipt.status, SealCoverageStatus::Complete, "{receipt:?}");
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert!(
+            ledger
+                .pending_text_recoveries(&state.session_id, state.capture_epoch)
+                .is_empty(),
+            "an expired live drain cancelled recovery of {} occurrences",
+            occurrences.len()
+        );
+    }
+
+    #[test]
+    fn recovery_segment_that_escapes_the_occurrence_stays_a_refusal() {
+        let (mut state, occurrences) = five_debt_occurrences("debt-escape");
+        let occurrence = occurrences[0].clone();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&calls);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let execution = LocalExecutionOwner::default();
+        let _receipt = repair_terminal_seal_coverage_with(
+            &mut state,
+            &tx,
+            None,
+            &execution,
+            move |request, pcm, control| {
+                control.check()?;
+                request.validate_pcm(pcm)?;
+                observed
+                    .lock()
+                    .unwrap()
+                    .push(request.identity.range.clone());
+                let mut payload = gap_payload(request);
+                let end = payload.segments[0].range.sample_end;
+                payload.segments[0].range.sample_end = end.saturating_add(500);
+                payload.segments[0].text = "Escaped".into();
+                payload.text = "Escaped".into();
+                Ok(payload)
+            },
+        );
+        let calls = calls.lock().unwrap();
+        let trace = event_trace(&mut rx);
+        assert!(
+            calls.iter().any(|call| {
+                call.sample_start == occurrence.sample_start
+                    && call.sample_end == occurrence.sample_end
+            }),
+            "escape was not judged against the occurrence span\ncalls={calls:?}\n{trace}"
+        );
+        {
+            let mut ledger = state.acoustic_ledger.lock().unwrap();
+            assert!(
+                ledger.text_recovery_pending(&occurrence),
+                "an escaping segment cleared debt\n{trace}"
+            );
+            assert_ne!(ledger.text_of(&occurrence), Some("Escaped"));
+            assert!(
+                !ledger.rendered_text().contains("Escaped"),
+                "escaped text entered the document"
+            );
+            assert_eq!(
+                ledger.seal_terminal(&state.session_id, state.capture_epoch),
+                Err(SealRefusal::TextRecoveryPending)
+            );
+        }
+        assert_eq!(
+            state
+                .session_conservation()
+                .observations_refused_by_reason
+                .get("unrecovered_speech")
+                .copied(),
+            Some(calls.len() as u64),
+            "each unrecovered range is one named refusal\ncalls={calls:?}\n{trace}"
+        );
+    }
+
     #[test]
     fn owned_terminal_repair_still_admits_both_exact_gaps() {
         let mut state = two_bursts("owned-repair");
         let ranges = coverage_speech_evidence(&state).ranges().to_vec();
         assert_eq!(ranges.len(), 2);
+        let gaps = ranges.clone();
         let calls = Arc::new(Mutex::new(Vec::new()));
         let observed = Arc::clone(&calls);
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -7938,14 +11956,27 @@ mod rc_w2_acoustic_tests {
                 control.check()?;
                 request.validate_pcm(pcm)?;
                 observed.lock().unwrap().push(request.identity.clone());
-                Ok(gap_payload(request))
+                let gap = gaps.iter().find(|range| {
+                    range.sample_end == request.identity.range.sample_end
+                        && range.sample_start >= request.identity.range.sample_start
+                });
+                let mut payload = gap_payload(request);
+                if let Some(gap) = gap {
+                    payload.segments[0].range = gap.clone();
+                }
+                Ok(payload)
             },
         );
         assert_eq!(receipt.status, SealCoverageStatus::Complete);
         let calls = calls.lock().unwrap();
         assert_eq!(calls.len(), 2);
+        let context_samples = 8 * u64::from(RATE);
         for (call, range) in calls.iter().zip(&ranges) {
-            assert_eq!(&call.range, range);
+            assert_eq!(call.range.sample_end, range.sample_end);
+            assert_eq!(
+                call.range.sample_start,
+                range.sample_end.saturating_sub(context_samples)
+            );
             assert_eq!(
                 state
                     .acoustic_ledger
@@ -8627,6 +12658,8 @@ mod rc_w2_acoustic_tests {
                 neighbour_context: String::new(),
                 sample_start: 0,
                 sample_end: at(1.0),
+                admit_sample_start: 0,
+                admit_sample_end: at(1.0),
                 primary_utterance_id: 9,
             },
         ));
@@ -8637,12 +12670,13 @@ mod rc_w2_acoustic_tests {
             .unwrap();
         let identity = request.provider_request.identity.clone();
         assert_eq!(state.refinement_submitted.len(), 1);
-        assert_eq!(state.tail_patch_awaiting_completion, 1);
+        assert_eq!(state.tail_patch_awaiting_completion(), 1);
 
         let payload = TailProviderPayload {
             identity: identity.clone(),
             text: "odzysk".into(),
             segments: vec![TimedTailSegment {
+                grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 text: "odzysk".into(),
                 range: range.clone(),
             }],
@@ -8651,6 +12685,7 @@ mod rc_w2_acoustic_tests {
             provider_id: crate::stt::tail_provider::TailProviderId::Fake,
             elapsed_ms: 0,
             evidence: crate::stt::tail_provider::TailProviderEvidence {
+                segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 source: crate::stt::tail_provider::TailEvidenceSource::Whisper,
                 revision: Some("rc-w2".into()),
                 stability: crate::stt::tail_provider::TailEvidenceStability::Final,
@@ -8663,8 +12698,11 @@ mod rc_w2_acoustic_tests {
             AppleTailPatchLane::new(RATE, None, crate::stt::tail_provider::TailProviderId::Fake);
         let completion = lane.finish_for_worker(
             Some(TailPatchInFlight {
+                submission_sequence: request.submission_sequence,
                 utterance_id: 9,
                 request_identity: identity,
+                admit_sample_start: occurrence.sample_start,
+                admit_sample_end: occurrence.sample_end,
                 member_occurrences: vec![(9, occurrence.clone())],
             }),
             Ok(TailPatchJobResult {
@@ -9352,6 +13390,184 @@ mod rc_w2_acoustic_tests {
         );
         assert_eq!(receipt.coverage_ratio(), None);
     }
+
+    /// Context words before the admit range stay out of the label and do not
+    /// refuse the occurrence. A short flush grows to the context window.
+    #[test]
+    fn short_flush_hears_eight_seconds_and_context_words_stay_out_of_the_label() {
+        let mut state = state_for("context-window", 10.0);
+        let occurrence_end = at(10.0);
+        let occurrence_len = (0.31 * RATE as f32).round() as u64;
+        let occurrence_start = occurrence_end - occurrence_len;
+        let occurrence = OccurrenceIdentity::new(
+            state.session_id.clone(),
+            state.capture_epoch,
+            occurrence_start,
+            occurrence_end,
+        );
+        {
+            let calibration = state.energy_calibration.clone().unwrap();
+            let window = state
+                .window_by_samples(occurrence_start, occurrence_end)
+                .unwrap();
+            let energy_integral = window
+                .samples
+                .iter()
+                .map(|sample| f64::from(*sample) * f64::from(*sample))
+                .sum::<f64>();
+            let mut ledger = state.acoustic_ledger.lock().unwrap();
+            assert!(
+                ledger
+                    .qualify(
+                        &AcousticEvidence {
+                            occurrence: occurrence.clone(),
+                            duration_ms: 310.0,
+                            energy_integral,
+                            mean_rms_dbfs: -12.0,
+                            peak_dbfs: -12.0,
+                            vad_open_sample: Some(occurrence_start),
+                            vad_close_sample: Some(occurrence_end),
+                            evidence_calibration_version: calibration.version.clone(),
+                        },
+                        &calibration,
+                    )
+                    .is_qualified()
+            );
+            ledger.schedule_frontier(occurrence.clone(), vec![LedgerObservationProducer::Whisper]);
+        }
+        state.pending_events.insert(
+            1,
+            PendingAppleSeal {
+                occurrence: occurrence.clone(),
+                raw_text: String::new(),
+                layer1_baseline: String::new(),
+                start_ts: occurrence_start as f32 / RATE as f32,
+                end_ts: occurrence_end as f32 / RATE as f32,
+                segments: Vec::new(),
+            },
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tail_tx, mut tail_rx) = mpsc::channel(4);
+        state.tail_patch = Some(tail_tx);
+        let short = state
+            .window_by_samples(occurrence_start, occurrence_end)
+            .unwrap();
+        assert!(state.queue_layer1_flush(
+            &tx,
+            CoalesceFlush {
+                audio: short.samples,
+                committed_text: String::new(),
+                member_ids: vec![(1, occurrence_end as f32 / RATE as f32)],
+                member_occurrences: vec![(1, occurrence.clone())],
+                neighbour_context: String::new(),
+                sample_start: occurrence_start,
+                sample_end: occurrence_end,
+                admit_sample_start: occurrence_start,
+                admit_sample_end: occurrence_end,
+                primary_utterance_id: 1,
+            },
+        ));
+        let request = tail_rx.try_recv().expect("widened context window");
+        let heard = request
+            .provider_request
+            .identity
+            .range
+            .sample_end
+            .saturating_sub(request.provider_request.identity.range.sample_start);
+        assert!(heard >= 8 * RATE as u64, "decode window is {heard} samples");
+        assert_eq!(
+            request.provider_request.identity.range.sample_end,
+            occurrence_end
+        );
+        assert_eq!(request.admit_sample_start, occurrence_start);
+        assert_eq!(request.admit_sample_end, occurrence_end);
+        assert!(request.provider_request.identity.range.sample_start < occurrence_start);
+
+        let context_end = occurrence_start.saturating_sub(400);
+        let context_start = request.provider_request.identity.range.sample_start + 800;
+        let inside_start = occurrence_start + 200;
+        let inside_end = occurrence_end - 200;
+        let payload = TailProviderPayload {
+            identity: request.provider_request.identity.clone(),
+            text: "znajdz ICX".into(),
+            segments: vec![
+                TimedTailSegment {
+                    grain: crate::stt::tail_provider::TailSegmentGrain::Word,
+                    text: "znajdz".into(),
+                    range: TailSampleRange {
+                        session: state.session_id.clone(),
+                        capture_epoch: state.capture_epoch,
+                        sample_start: context_start,
+                        sample_end: context_end,
+                    },
+                },
+                TimedTailSegment {
+                    grain: crate::stt::tail_provider::TailSegmentGrain::Word,
+                    text: "ICX".into(),
+                    range: TailSampleRange {
+                        session: state.session_id.clone(),
+                        capture_epoch: state.capture_epoch,
+                        sample_start: inside_start,
+                        sample_end: inside_end,
+                    },
+                },
+            ],
+            avg_logprob: Some(-0.2),
+            compression_ratio: Some(1.1),
+            provider_id: crate::stt::tail_provider::TailProviderId::Fake,
+            elapsed_ms: 1,
+            evidence: crate::stt::tail_provider::TailProviderEvidence {
+                segment_grain: crate::stt::tail_provider::TailSegmentGrain::Word,
+                source: crate::stt::tail_provider::TailEvidenceSource::Whisper,
+                revision: Some("context-window".into()),
+                stability: crate::stt::tail_provider::TailEvidenceStability::Final,
+                timing_quality: crate::stt::tail_provider::TailTimingQuality::Synthetic,
+                avg_logprob: Some(-0.2),
+            },
+        };
+        state.complete_whisper_window(
+            &tx,
+            TailPatchCompletion {
+                submission_sequence: request.submission_sequence,
+                utterance_id: 1,
+                request_identity: Some(request.provider_request.identity.clone()),
+                payload: Some(payload),
+                member_occurrences: vec![(1, occurrence.clone())],
+            },
+            5.0,
+        );
+        let mut saw_intersecting = false;
+        while let Ok(event) = rx.try_recv() {
+            if let EngineEvent::LedgerMutation { receipt, .. } = event
+                && matches!(
+                    receipt,
+                    MutationReceipt::Refuse {
+                        reason: RefuseReason::IntersectingPinNotExclusive,
+                        ..
+                    }
+                )
+            {
+                saw_intersecting = true;
+            }
+        }
+        assert!(
+            !saw_intersecting,
+            "context words must not refuse the occurrence"
+        );
+        assert!(
+            !state.whisper_span_refused.contains(&occurrence),
+            "the occurrence is wholly inside its admit range"
+        );
+        assert_eq!(
+            state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .text_of(&occurrence)
+                .map(str::to_owned),
+            Some("ICX".to_string())
+        );
+    }
 }
 
 /// rc-w2-test-rehab: current-owner replacements for the 26 parked contracts.
@@ -9361,6 +13577,122 @@ mod rc_w2_acoustic_tests {
 mod rc_w2_test_rehab {
     use super::*;
     use crate::pipeline::acoustic_ledger::RefuseReason;
+    use crate::pipeline::sinks::CollectorEventSink as RecordingSink;
+
+    /// The stop drain reports collected finals once, before session finality.
+    #[test]
+    fn layer1_stop_warns_once_for_collected_finals() {
+        use crate::asr_session::{
+            AsrSessionEvent, FakeAsrSessionProvider, Layer1Decision, RefinerMode, TranscriptEvent,
+        };
+
+        for refiner in [RefinerMode::CloudSession, RefinerMode::LocalHelper] {
+            for degraded in [false, true] {
+                let sink = RecordingSink::default();
+                let input = Layer1SessionInput {
+                    session_id: Layer1SessionId::new("finals-receipt").expect("session id"),
+                    locale: None,
+                    sample_rate: 16_000,
+                };
+                let script = (1..=3)
+                    .map(|id| {
+                        AsrSessionEvent::Final(TranscriptEvent {
+                            session_id: input.session_id.clone(),
+                            utterance_id: id,
+                            sequence_id: id,
+                            text: "private transcript".to_string(),
+                            range: None,
+                            commit: None,
+                        })
+                    })
+                    .collect();
+                let provider = FakeAsrSessionProvider::with_script(refiner, script);
+                let mut lane =
+                    RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(provider)), &input);
+                let layer1_refiner = lane.refiner_mode();
+                if degraded {
+                    let frame_len = if refiner == RefinerMode::CloudSession {
+                        crate::asr_session::recorder::cloud_commit_holdback_samples(
+                            input.sample_rate,
+                        ) + 1
+                    } else {
+                        320
+                    };
+                    let frame = vec![0.1; frame_len];
+                    for _ in 0..3 {
+                        lane.offer_pcm(&frame);
+                        lane.poll();
+                    }
+                    lane.note_sleep_wake();
+                    assert_eq!(lane.refiner_mode(), RefinerMode::Off);
+                }
+                let outcome = lane.stop();
+                let counts = outcome.telemetry();
+                assert_eq!(counts.finals_accepted, 3);
+                emit_layer1_finals_not_admitted_warning(
+                    &sink,
+                    counts.finals_accepted,
+                    layer1_refiner,
+                );
+                emit_session_finalised(
+                    &sink,
+                    input.session_id.as_str().to_string(),
+                    0,
+                    SessionConservationReceipt::default(),
+                );
+
+                let events = sink.events();
+                assert_eq!(events.len(), 2);
+                let EngineEvent::Warning { code, message } = &events[0] else {
+                    panic!("expected typed Warning, got {:?}", events[0]);
+                };
+                assert_eq!(code, "layer1_finals_not_admitted");
+                assert_eq!(
+                    message,
+                    &format!(
+                        "finals_accepted=3 refiner={}: Layer 1 finals arrived after the worker exited",
+                        refiner.as_token()
+                    )
+                );
+                assert!(!message.contains("private transcript"));
+                assert!(matches!(events[1], EngineEvent::SessionFinalised { .. }));
+            }
+        }
+    }
+
+    /// A stopped lane with partials but no accepted finals has no such receipt.
+    #[test]
+    fn layer1_stop_without_finals_is_silent() {
+        use crate::asr_session::{
+            AsrSessionEvent, FakeAsrSessionProvider, Layer1Decision, RefinerMode, TranscriptEvent,
+        };
+
+        let sink = RecordingSink::default();
+        let input = Layer1SessionInput {
+            session_id: Layer1SessionId::new("no-finals-receipt").expect("session id"),
+            locale: None,
+            sample_rate: 16_000,
+        };
+        let provider = FakeAsrSessionProvider::with_script(
+            RefinerMode::CloudSession,
+            vec![AsrSessionEvent::Partial(TranscriptEvent {
+                session_id: input.session_id.clone(),
+                utterance_id: 1,
+                sequence_id: 1,
+                text: "private partial".to_string(),
+                range: None,
+                commit: None,
+            })],
+        );
+        let mut lane = RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(provider)), &input);
+        let layer1_refiner = lane.refiner_mode();
+        let outcome = lane.stop();
+        let counts = outcome.telemetry();
+        assert_eq!(counts.partials_applied, 1);
+        assert_eq!(counts.finals_accepted, 0);
+        emit_layer1_finals_not_admitted_warning(&sink, counts.finals_accepted, layer1_refiner);
+        assert!(sink.events().is_empty());
+    }
 
     const RATE: u32 = 16_000;
 
@@ -9467,6 +13799,64 @@ mod rc_w2_test_rehab {
         state.acoustic_ledger.lock().unwrap().rendered_text()
     }
 
+    #[test]
+    fn apple_self_corrections_keep_only_current_word_per_pcm_slot() {
+        let pin = |text: &str, start, end| FusionWord {
+            text: text.into(),
+            sample_start: start,
+            sample_end: end,
+        };
+        let (selected, superseded) = select_current_apple_words(vec![
+            pin("Vite", 1_000, 2_000),
+            pin("po", 3_000, 4_000),
+            pin("Vita", 1_000, 2_000),
+            pin("Vitae", 1_000, 2_000),
+            pin("21.", 5_000, 6_000),
+            pin("21.", 5_000, 6_000),
+        ]);
+        assert_eq!(
+            selected
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect::<Vec<_>>(),
+            ["Vitae", "po", "21."]
+        );
+        assert_eq!(
+            superseded
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect::<Vec<_>>(),
+            ["Vite", "Vita"]
+        );
+    }
+
+    #[test]
+    fn unadmitted_mirror_replaces_pending_word_at_same_pcm_slot() {
+        let mut state = state("mirror-revision", 2.0);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        state.unmatched_silero_words.push(FusionWord {
+            text: "Vite".into(),
+            sample_start: sample(0.25),
+            sample_end: sample(0.5),
+        });
+        state.pending_silero_words.insert(
+            2,
+            vec![FusionWord {
+                text: "Vitae".into(),
+                sample_start: sample(0.25),
+                sample_end: sample(0.5),
+            }],
+        );
+        state.publish_unadmitted_words(&tx);
+        let events = drain(&mut rx);
+        let [EngineEvent::UnadmittedAppleWords { words, .. }] = events.as_slice() else {
+            panic!("one preview revision expected: {events:?}");
+        };
+        assert_eq!(words.len(), 1);
+        assert_eq!(words[0].text, "Vitae");
+        assert_eq!(state.unmatched_silero_words[0].text, "Vite");
+    }
+
     fn raw_finals(events: &[EngineEvent]) -> Vec<&str> {
         events
             .iter()
@@ -9481,6 +13871,1603 @@ mod rc_w2_test_rehab {
         text.split_whitespace()
             .filter(|word| word.eq_ignore_ascii_case("iwo"))
             .count()
+    }
+
+    fn close_stop_residue(
+        state: &mut AppleSealState,
+        tx: &mpsc::UnboundedSender<EngineEvent>,
+        secs: f32,
+    ) {
+        seal_open_partial(state, tx, secs);
+        if state.fusion_seal_armed {
+            seal_sliced_by_silero(state, tx, &[]);
+        }
+    }
+
+    #[test]
+    fn mirror_replaces_all_held_sources_and_is_silent_when_unchanged() {
+        let mut state = state("mirror-sources", 4.0);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        state.publish_unadmitted_words(&tx);
+        assert!(drain(&mut rx).is_empty());
+        state.open_partial = "open".into();
+        state.open_partial_segments = vec![segment("open", 0.0, 0.5)];
+        state.preview_rev = 1;
+        state.pending_silero_words.insert(
+            9,
+            vec![FusionWord {
+                text: "pending".into(),
+                sample_start: sample(1.0),
+                sample_end: sample(1.5),
+            }],
+        );
+        state.unmatched_silero_words.push(FusionWord {
+            text: "unmatched".into(),
+            sample_start: sample(2.0),
+            sample_end: sample(2.5),
+        });
+        state.refused_untimed_words.insert(
+            1,
+            vec![UnadmittedAppleWord {
+                text: "untimed".into(),
+                sample_start: sample(3.0),
+                sample_end: sample(3.0),
+                source: UnadmittedAppleWordSource::RefusedUntimed { phrase_id: 1 },
+            }],
+        );
+        state.publish_unadmitted_words(&tx);
+        let events = drain(&mut rx);
+        let [
+            EngineEvent::UnadmittedAppleWords {
+                revision, words, ..
+            },
+        ] = events.as_slice()
+        else {
+            panic!("one complete mirror expected: {events:?}");
+        };
+        assert_eq!(*revision, 1);
+        assert_eq!(
+            words
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["pending", "unmatched", "untimed", "open"]
+        );
+        assert!(matches!(
+            words[0].source,
+            UnadmittedAppleWordSource::Pending { utterance_id: 9 }
+        ));
+        assert!(matches!(
+            words[1].source,
+            UnadmittedAppleWordSource::Unmatched
+        ));
+        assert!(matches!(
+            words[2].source,
+            UnadmittedAppleWordSource::RefusedUntimed { phrase_id: 1 }
+        ));
+        assert!(matches!(
+            words[3].source,
+            UnadmittedAppleWordSource::OpenPartial {
+                rev: 1,
+                phrase_id: 1
+            }
+        ));
+        state.publish_unadmitted_words(&tx);
+        assert!(drain(&mut rx).is_empty());
+        state.pending_silero_words.clear();
+        state.publish_unadmitted_words(&tx);
+        let events = drain(&mut rx);
+        let [
+            EngineEvent::UnadmittedAppleWords {
+                revision: 2, words, ..
+            },
+        ] = events.as_slice()
+        else {
+            panic!("replacement mirror expected: {events:?}");
+        };
+        assert_eq!(words.len(), 3);
+        assert!(words.iter().all(|word| word.text != "pending"));
+    }
+
+    #[test]
+    fn worker_keeps_stuck_partial_pin_after_committed_speech_for_twenty_revisions() {
+        for start in [0.0, 0.3] {
+            let mut state = physical_state("stuck-pin", 70.0, &[(start, 4.0)]);
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            emit(&mut state, &tx, vec![segment("committed", start, 3.9)]);
+            for rev in 1..=20 {
+                emit_stream_events(
+                    vec![LiveStreamEvent::Partial {
+                        text: "Iwo Iwo".into(),
+                        segments: Vec::new(),
+                    }],
+                    &tx,
+                    &mut state,
+                    70.0,
+                );
+                assert_eq!(state.open_partial_pin, 0);
+                assert_eq!(state.published_unadmitted_words.len(), 2);
+                assert!(state.published_unadmitted_words.iter().all(|word| {
+                    word.text == "Iwo"
+                        && matches!(word.source,
+                        UnadmittedAppleWordSource::OpenPartial { rev: current, phrase_id: 2 }
+                            if current == rev)
+                }));
+            }
+            drain(&mut rx);
+        }
+    }
+
+    #[test]
+    fn stop_flush_and_trailing_final_keep_one_phrase_and_five_iwo_words() {
+        let mut state = physical_state("phrase-five-iwo", 63.0, &[(60.2, 62.0)]);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        emit_stream_events(
+            vec![LiveStreamEvent::Partial {
+                text: "Iwo Iwo Iwo Iwo Iwo".into(),
+                segments: Vec::new(),
+            }],
+            &tx,
+            &mut state,
+            63.0,
+        );
+        state.open_partial_pin = sample(0.8);
+        seal_open_partial(&mut state, &tx, 63.0);
+        assert_eq!(state.phrase_id, 2);
+        assert_eq!(state.refused_untimed_words[&1].len(), 5);
+        let words = (0..5)
+            .map(|index| {
+                let start = 60.2 + index as f32 * 0.3;
+                segment("Iwo", start, start + 0.2)
+            })
+            .collect();
+        emit(&mut state, &tx, words);
+        assert_eq!(state.phrase_id, 2);
+        assert_eq!(state.closed_phrases.len(), 1);
+        assert_eq!(
+            state.closed_phrases[&1].outcomes,
+            BTreeMap::from([(ApplePhraseOutcome::Admitted, 5)])
+        );
+        assert_eq!(count_iwo(&document(&state)), 5);
+        assert!(state.refused_untimed_words.is_empty());
+        assert!(state.published_unadmitted_words.is_empty());
+        drain(&mut rx);
+    }
+
+    #[test]
+    fn mixed_admitted_and_unmatched_final_publishes_the_unmatched_word() {
+        let mut state = physical_state("mirror-mixed", 3.0, &[(0.0, 1.0)]);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        emit(
+            &mut state,
+            &tx,
+            vec![
+                segment("admitted", 0.0, 0.8),
+                segment("unmatched", 2.0, 2.5),
+            ],
+        );
+        assert_eq!(document(&state), "admitted");
+        let events = drain(&mut rx);
+        let words = events
+            .iter()
+            .find_map(|event| match event {
+                EngineEvent::UnadmittedAppleWords { words, .. } => Some(words),
+                _ => None,
+            })
+            .expect("mixed final mirror");
+        assert_eq!(words.len(), 1);
+        assert_eq!(words[0].text, "unmatched");
+        assert!(matches!(
+            words[0].source,
+            UnadmittedAppleWordSource::Unmatched
+        ));
+        assert_eq!(
+            state.closed_phrases[&1].outcomes,
+            BTreeMap::from([
+                (ApplePhraseOutcome::Admitted, 1),
+                (ApplePhraseOutcome::Unmatched, 1),
+            ])
+        );
+    }
+
+    #[test]
+    fn closed_phrase_keeps_its_pending_result_after_periodic_admission() {
+        let mut state = physical_state("phrase-pending", 3.0, &[]);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        state.fusion.as_mut().unwrap().observe(
+            Some((sample(0.0), sample(1.0))),
+            false,
+            sample(1.0),
+        );
+        emit(
+            &mut state,
+            &tx,
+            vec![segment("pending", 0.1, 0.8), segment("unmatched", 2.0, 2.5)],
+        );
+        let own_result = BTreeMap::from([
+            (ApplePhraseOutcome::Pending, 1),
+            (ApplePhraseOutcome::Unmatched, 1),
+        ]);
+        assert_eq!(state.closed_phrases[&1].outcomes, own_result);
+        state
+            .fusion
+            .as_mut()
+            .unwrap()
+            .observe(None, true, sample(1.0));
+        seal_sliced_by_silero(&mut state, &tx, &[]);
+        assert_eq!(document(&state), "pending");
+        assert_eq!(
+            state.closed_phrases[&1].outcomes, own_result,
+            "a later periodic admission cannot rewrite the closing call's result"
+        );
+        drain(&mut rx);
+    }
+
+    #[test]
+    fn replay_and_novel_word_counts_share_one_closing_result() {
+        let mut state = physical_state("phrase-mixed-replay", 2.0, &[(0.0, 2.0)]);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tail_tx, _tail_rx) = mpsc::channel(1);
+        state.tail_patch = Some(tail_tx);
+        let mut words = vec![segment("Iwo", 0.0, 0.5), segment("Iwo", 0.7, 1.0)];
+        emit(&mut state, &tx, words.clone());
+        words.push(segment("Iwo", 1.3, 1.6));
+        emit(&mut state, &tx, words);
+        assert_eq!(
+            state.closed_phrases[&2].outcomes,
+            BTreeMap::from([
+                (ApplePhraseOutcome::Replay, 2),
+                (ApplePhraseOutcome::Admitted, 1),
+            ])
+        );
+        assert_eq!(count_iwo(&document(&state)), 3);
+        drain(&mut rx);
+    }
+
+    #[test]
+    fn restart_and_empty_receipt_close_are_numbered_without_admission_inference() {
+        let mut state = physical_state("phrase-restart", 2.0, &[(0.0, 1.0)]);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let words = vec![segment("Iwo", 0.0, 0.8)];
+        emit(&mut state, &tx, words.clone());
+        emit_stream_events(
+            vec![LiveStreamEvent::Partial {
+                text: "Iwo".into(),
+                segments: words.clone(),
+            }],
+            &tx,
+            &mut state,
+            2.0,
+        );
+        emit(&mut state, &tx, words);
+        assert_eq!(
+            state.closed_phrases[&2].outcomes,
+            BTreeMap::from([(ApplePhraseOutcome::NoChange, 1)])
+        );
+        emit_stream_events(
+            vec![
+                LiveStreamEvent::Partial {
+                    text: "first phrase".into(),
+                    segments: Vec::new(),
+                },
+                LiveStreamEvent::Partial {
+                    text: "second".into(),
+                    segments: Vec::new(),
+                },
+            ],
+            &tx,
+            &mut state,
+            2.0,
+        );
+        assert_eq!(state.phrase_id, 4);
+        assert_eq!(
+            state.closed_phrases[&3].outcomes,
+            BTreeMap::from([(ApplePhraseOutcome::Untimed, 2)])
+        );
+        assert!(state.published_unadmitted_words.iter().any(|word| matches!(
+            word.source,
+            UnadmittedAppleWordSource::OpenPartial { phrase_id: 4, .. }
+        )));
+        drain(&mut rx);
+    }
+
+    #[test]
+    fn admitted_words_publish_ledger_then_mirror_then_phrase_receipt() {
+        let mut state = physical_state("mirror-order", 1.0, &[(0.0, 1.0)]);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        emit_stream_events(
+            vec![LiveStreamEvent::Partial {
+                text: "Iwo".into(),
+                segments: vec![segment("Iwo", 0.0, 0.8)],
+            }],
+            &tx,
+            &mut state,
+            1.0,
+        );
+        drain(&mut rx);
+        emit(&mut state, &tx, vec![segment("Iwo", 0.0, 0.8)]);
+        let events = drain(&mut rx);
+        let ledger_at = events
+            .iter()
+            .position(|event| {
+                matches!(event,
+                    EngineEvent::LedgerMutation { receipt, .. } if receipt.grants_mutation()
+                )
+            })
+            .expect("ledger publication");
+        let mirror_at = events
+            .iter()
+            .position(|event| {
+                matches!(event,
+                    EngineEvent::UnadmittedAppleWords { words, .. } if words.is_empty()
+                )
+            })
+            .expect("empty mirror after admission");
+        let receipt_at = events
+            .iter()
+            .position(|event| matches!(event, EngineEvent::PreviewDisposition { .. }))
+            .expect("phrase receipt");
+        assert!(ledger_at < mirror_at && mirror_at < receipt_at);
+        let closed = events
+            .iter()
+            .find_map(|event| match event {
+                EngineEvent::UnadmittedAppleWords { closed_phrases, .. } => closed_phrases.get(&1),
+                _ => None,
+            })
+            .expect("closing mirror carries the result");
+        assert_eq!(
+            closed.outcomes,
+            BTreeMap::from([(ApplePhraseOutcome::Admitted, 1)])
+        );
+        assert!(state.published_unadmitted_words.is_empty());
+    }
+
+    fn retention_receipts(events: &[EngineEvent]) -> Vec<serde_json::Value> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                EngineEvent::Warning { code, message } if code == "apple_words_retained" => {
+                    Some(serde_json::from_str(message).expect("retention receipt JSON"))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn retention_words(segments: &[TranscriptSegment]) -> Vec<FusionWord> {
+        segments
+            .iter()
+            .map(|word| FusionWord {
+                text: word.text.clone(),
+                sample_start: sample(word.start_ts),
+                sample_end: sample(word.end_ts),
+            })
+            .collect()
+    }
+
+    // Exercise the exit's retention seam directly: the full reconcile path
+    // repartitions these words before a swallowed utterance reaches its exit.
+    #[test]
+    fn overlap_retention_admits_two_words_once_and_counts_consumed_replay() {
+        let mut state = state("retain-overlap", 2.0);
+        let owner = qualify(&mut state, 0.0, 2.0);
+        let current = vec![segment("alpha", 0.25, 0.5), segment("beta", 1.0, 1.25)];
+        let words = retention_words(&current);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        for replay in [false, true] {
+            retain_apple_words_at_exit(&mut state, &tx, 2, &words, &current, "overlap_refused");
+            let receipts = retention_receipts(&drain(&mut rx));
+            assert_eq!(receipts.len(), 1);
+            let receipt = &receipts[0];
+            assert_eq!(receipt["exit"], "overlap_refused");
+            assert_eq!(receipt["utterance_id"], 2);
+            assert_eq!(receipt["words"], 2);
+            assert_eq!(receipt["unmatched"], 0);
+            assert_eq!(receipt["kept_unanchored"], 0);
+            assert_eq!(receipt["dropped_by_slot_rules"], if replay { 2 } else { 0 });
+            if replay {
+                assert_eq!(receipt["admitted_into"], serde_json::json!([]));
+            } else {
+                assert_eq!(
+                    receipt["admitted_into"],
+                    serde_json::json!([
+                        { "occurrence": {
+                            "session": owner.session,
+                            "capture_epoch": owner.capture_epoch,
+                            "sample_start": owner.sample_start,
+                            "sample_end": owner.sample_end,
+                        }, "count": 2 }
+                    ])
+                );
+            }
+            assert_eq!(document(&state), "alpha beta");
+            assert_eq!(
+                state
+                    .acoustic_ledger
+                    .lock()
+                    .unwrap()
+                    .slots_of(&owner)
+                    .unwrap()
+                    .len(),
+                2
+            );
+        }
+    }
+
+    #[test]
+    fn swallowed_utterance_has_no_words_left_at_the_reconcile_exit() {
+        let mut state = physical_state("retain-swallowed", 2.0, &[]);
+        let mut physical = super::super::silero_fusion::UtteranceLedger::new();
+        for _ in 0..2 {
+            physical.open_or_extend(&state.session_id, state.capture_epoch, 0, sample(2.0));
+            physical.close_open(sample(2.0));
+        }
+        let owner = qualify(&mut state, 0.0, 2.0);
+        state.reconciled_silero.insert(1);
+        // Permit a blank closed range to reach the overlap exit, as it would
+        // with an armed or lost refiner. Apple-only skips the blank earlier.
+        state.refinement_lane_lost = true;
+        let current = vec![segment("alpha", 0.25, 0.5), segment("beta", 1.0, 1.25)];
+        state
+            .pending_silero_words
+            .insert(2, retention_words(&current));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        reconcile_silero_ledger(&mut state, &tx, &physical, &current);
+        assert_eq!(document(&state), "alpha beta");
+        assert_eq!(
+            state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .slots_of(&owner)
+                .unwrap()
+                .len(),
+            2
+        );
+        let receipts = retention_receipts(&drain(&mut rx));
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0]["exit"], "overlap_refused");
+        assert_eq!(receipts[0]["utterance_id"], 2);
+        assert_eq!(receipts[0]["words"], 0, "repartition precedes the exit");
+        assert!(state.reconciled_silero.contains(&2));
+    }
+
+    #[test]
+    fn retention_receipt_counts_the_ledger_overlap_rule_separately_from_slots() {
+        let mut state = state("retain-slot-rule", 2.0);
+        let owner = qualify(&mut state, 0.0, 2.0);
+        let whisper =
+            LedgerObservationIdentity::new(LedgerObservationProducer::Whisper, 1, 0, owner.clone());
+        state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .admit_word_slots(&whisper, &[(sample(0.25), sample(0.5), "heard".into())]);
+        // Less than half overlap passes consumed-span, but any Whisper overlap
+        // is refused by the existing Apple slot rule.
+        let current = vec![segment("overlap", 0.45, 0.9), segment("novel", 1.0, 1.25)];
+        let words = retention_words(&current);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        retain_apple_words_at_exit(&mut state, &tx, 2, &words, &current, "overlap_refused");
+        let receipts = retention_receipts(&drain(&mut rx));
+        assert_eq!(receipts[0]["words"], 2);
+        assert_eq!(receipts[0]["admitted_into"][0]["count"], 1);
+        assert_eq!(receipts[0]["dropped_by_slot_rules"], 1);
+        assert_eq!(document(&state), "heard novel");
+    }
+
+    #[test]
+    fn retained_unmatched_words_enter_later_qualified_owner_once() {
+        let mut state = physical_state("retain-later-owner", 2.0, &[(0.0, 2.0)]);
+        let current = vec![segment("alpha", 0.25, 0.5), segment("beta", 1.0, 1.25)];
+        let words = retention_words(&current);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        retain_apple_words_at_exit(&mut state, &tx, 2, &words, &current, "overlap_refused");
+        let receipts = retention_receipts(&drain(&mut rx));
+        assert_eq!(receipts[0]["unmatched"], 2);
+        assert_eq!(receipts[0]["dropped_by_slot_rules"], 0);
+        assert_eq!(state.unmatched_silero_words.len(), 2);
+        let owner = qualify(&mut state, 0.0, 2.0);
+        state.reconciled_silero.insert(1);
+        let physical = state.fusion.as_ref().unwrap().ledger().clone();
+        // Current evidence authenticates slots; no fresh slice means unanchored
+        // evidence instead, which has its own acceptance test below.
+        for _ in 0..2 {
+            reconcile_silero_ledger(&mut state, &tx, &physical, &current);
+            assert!(state.unmatched_silero_words.is_empty());
+            assert_eq!(document(&state), "alpha beta");
+            assert_eq!(
+                state
+                    .acoustic_ledger
+                    .lock()
+                    .unwrap()
+                    .slots_of(&owner)
+                    .unwrap()
+                    .len(),
+                2
+            );
+        }
+        assert!(retention_receipts(&drain(&mut rx)).is_empty());
+    }
+
+    #[test]
+    fn qualification_exits_retain_words_without_retrying_qualification() {
+        for evicted in [false, true] {
+            let mut state = physical_state("retain-qualification", 2.0, &[(0.0, 1.0)]);
+            state.audio = super::super::live_audio_buffer::LiveAudioBuffer::new(RATE, 1.0);
+            if evicted {
+                state.audio.push(&vec![0.25; sample(2.0) as usize]);
+            } else {
+                // Actual silent PCM fails the configured energy qualification.
+                state.audio.push(&vec![0.0; sample(1.0) as usize]);
+            }
+            let current = vec![segment("Iwo", 0.25, 0.5)];
+            let physical = state.fusion.as_ref().unwrap().ledger().clone();
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            reconcile_silero_ledger(&mut state, &tx, &physical, &current);
+            let receipts = retention_receipts(&drain(&mut rx));
+            assert_eq!(receipts.len(), 1);
+            assert_eq!(
+                receipts[0]["exit"],
+                if evicted {
+                    "qualification_failed_pcm_unavailable"
+                } else {
+                    "qualification_failed_refused"
+                }
+            );
+            assert_eq!(receipts[0]["words"], 1);
+            assert_eq!(receipts[0]["unmatched"], 1);
+            assert!(state.reconciled_silero.contains(&1));
+            // Make qualification possible; the next tick must not attempt it.
+            state.audio = super::super::live_audio_buffer::LiveAudioBuffer::new(RATE, 2.0);
+            state.audio.push(&vec![0.25; sample(2.0) as usize]);
+            reconcile_silero_ledger(&mut state, &tx, &physical, &[]);
+            assert!(retention_receipts(&drain(&mut rx)).is_empty());
+            assert_eq!(state.unmatched_silero_words.len(), 1);
+            assert_eq!(state.unmatched_silero_words[0].text, "Iwo");
+            assert_eq!(
+                state
+                    .acoustic_ledger
+                    .lock()
+                    .unwrap()
+                    .qualified_occurrences()
+                    .count(),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn whisper_omission_does_not_consume_retained_words() {
+        let mut state = physical_state("retain-omission", 2.0, &[(0.0, 2.0)]);
+        let current = vec![segment("alpha", 0.25, 0.5), segment("beta", 1.0, 1.25)];
+        let words = retention_words(&current);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        retain_apple_words_at_exit(&mut state, &tx, 2, &words, &current, "overlap_refused");
+        let owner = qualify(&mut state, 0.0, 2.0);
+        let whisper =
+            LedgerObservationIdentity::new(LedgerObservationProducer::Whisper, 9, 0, owner.clone());
+        let receipt = state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .admit_word_slots(&whisper, &[(sample(1.5), sample(1.75), "other".into())]);
+        assert!(receipt.grants_mutation());
+        assert_eq!(state.unmatched_silero_words.len(), 2);
+        state.reconciled_silero.insert(1);
+        let physical = state.fusion.as_ref().unwrap().ledger().clone();
+        reconcile_silero_ledger(&mut state, &tx, &physical, &current);
+        assert_eq!(document(&state), "alpha beta other");
+        assert!(state.unmatched_silero_words.is_empty());
+        let whisper = state.acoustic_ledger.lock().unwrap().next_word_observation(
+            LedgerObservationProducer::Whisper,
+            10,
+            &owner,
+        );
+        state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .admit_word_slots(&whisper, &[(sample(1.5), sample(1.75), "revised".into())]);
+        let retained_document = document(&state);
+        assert_eq!(retained_document, "alpha beta revised");
+        assert_eq!(
+            retained_document
+                .split_whitespace()
+                .take(2)
+                .collect::<Vec<_>>(),
+            vec!["alpha", "beta"]
+        );
+        assert_eq!(retention_receipts(&drain(&mut rx)).len(), 1);
+    }
+
+    #[test]
+    fn late_noncurrent_words_keep_their_pins() {
+        for labels in [vec!["alpha", "beta", "gamma"], vec!["Iwo"; 5]] {
+            let mut state = state("late-own-pins", 6.0);
+            let owner = qualify(&mut state, 0.0, 6.0);
+            let words = labels
+                .iter()
+                .enumerate()
+                .map(|(i, text)| FusionWord {
+                    text: (*text).into(),
+                    sample_start: sample(i as f32 + 0.25),
+                    sample_end: sample(i as f32 + 0.5),
+                })
+                .collect::<Vec<_>>();
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            retain_apple_words_at_exit(&mut state, &tx, 9, &words, &[], "overlap_refused");
+            let events = drain(&mut rx);
+            let receipts = retention_receipts(&events);
+            assert_eq!(receipts[0]["kept_unanchored"], labels.len());
+            assert_eq!(receipts[0]["dropped_by_slot_rules"], 0);
+            let evidence = events
+                .iter()
+                .filter_map(|event| match event {
+                    EngineEvent::LedgerMutation {
+                        observation,
+                        receipt,
+                        ..
+                    } => {
+                        let MutationReceipt::KeepVisibleUnanchored {
+                            occurrence,
+                            label,
+                            reason,
+                        } = receipt
+                        else {
+                            panic!("late words must be evidence: {receipt:?}");
+                        };
+                        assert_eq!(*reason, NoAuthorityReason::LateAppleWordNotCurrent);
+                        assert_eq!(&observation.occurrence, occurrence);
+                        Some((
+                            occurrence.sample_start,
+                            occurrence.sample_end,
+                            label.as_str(),
+                        ))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                evidence,
+                words
+                    .iter()
+                    .map(|word| { (word.sample_start, word.sample_end, word.text.as_str()) })
+                    .collect::<Vec<_>>()
+            );
+            let ledger = state.acoustic_ledger.lock().unwrap();
+            assert_eq!(
+                ledger.qualified_occurrences().collect::<Vec<_>>(),
+                vec![&owner]
+            );
+            assert!(ledger.is_empty(), "evidence must not mint occurrences");
+            assert!(ledger.slots_of(&owner).is_none());
+        }
+    }
+
+    #[test]
+    fn retained_noncurrent_word_is_receipted_as_unanchored_not_a_slot_or_drop() {
+        let mut state = state("retain-unanchored", 2.0);
+        let owner = qualify(&mut state, 0.0, 2.0);
+        let words = retention_words(&[segment("Iwo", 0.25, 0.5)]);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        retain_apple_words_at_exit(&mut state, &tx, 2, &words, &[], "overlap_refused");
+        let events = drain(&mut rx);
+        let receipts = retention_receipts(&events);
+        assert_eq!(receipts[0]["admitted_into"], serde_json::json!([]));
+        assert_eq!(receipts[0]["kept_unanchored"], 1);
+        assert_eq!(receipts[0]["unmatched"], 0);
+        assert_eq!(receipts[0]["dropped_by_slot_rules"], 0);
+        assert!(events.iter().any(|event| matches!(event,
+            EngineEvent::LedgerMutation {
+                receipt: MutationReceipt::KeepVisibleUnanchored { label, .. }, ..
+            } if label == "Iwo"
+        )));
+        assert!(
+            state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .slots_of(&owner)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn qualification_exit_keeps_five_disjoint_iwo_words_until_late_admission() {
+        let mut state = physical_state("retain-five-iwo", 5.0, &[(0.0, 5.0)]);
+        let calibration = state.energy_calibration.take();
+        let current = (0..5)
+            .map(|i| segment("Iwo", i as f32 + 0.25, i as f32 + 0.5))
+            .collect::<Vec<_>>();
+        let physical = state.fusion.as_ref().unwrap().ledger().clone();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        reconcile_silero_ledger(&mut state, &tx, &physical, &current);
+        let receipts = retention_receipts(&drain(&mut rx));
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0]["exit"], "qualification_failed_refused");
+        assert_eq!(receipts[0]["words"], 5);
+        assert_eq!(receipts[0]["unmatched"], 5);
+        assert_eq!(receipts[0]["dropped_by_slot_rules"], 0);
+        assert_eq!(state.unmatched_silero_words.len(), 5);
+        // A qualified owner arrives independently; the failed utterance itself
+        // remains reconciled and must use late admission on subsequent ticks.
+        state.energy_calibration = calibration;
+        let owner = qualify(&mut state, 0.0, 5.0);
+        for _ in 0..2 {
+            reconcile_silero_ledger(&mut state, &tx, &physical, &current);
+            assert_eq!(count_iwo(&document(&state)), 5);
+            assert!(state.unmatched_silero_words.is_empty());
+        }
+        assert!(retention_receipts(&drain(&mut rx)).is_empty());
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        let slots = ledger.slots_of(&owner).unwrap();
+        assert_eq!(slots.len(), 5);
+        assert!(
+            slots
+                .windows(2)
+                .all(|pair| pair[0].sample_end < pair[1].sample_start)
+        );
+    }
+
+    /// Existing cumulative-restatement fixture shapes: alpha/beta and five Iwo.
+    /// Replay must not fire a retention exit or alter a slot or seal.
+    #[test]
+    fn existing_cumulative_replay_fixtures_emit_no_retention_receipts() {
+        for labels in [vec!["alpha", "beta"], vec!["Iwo"; 5]] {
+            let ranges = (0..labels.len())
+                .map(|i| (i as f32, (i + 1) as f32))
+                .collect::<Vec<_>>();
+            let mut state = physical_state("retain-replay", labels.len() as f32, &ranges);
+            let current = labels
+                .iter()
+                .zip(&ranges)
+                .map(|(text, &(start, end))| segment(text, start, end))
+                .collect::<Vec<_>>();
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            emit(&mut state, &tx, current.clone());
+            assert_eq!(document(&state), labels.join(" "));
+            let before = {
+                let ledger = state.acoustic_ledger.lock().unwrap();
+                ledger
+                    .occurrences()
+                    .map(|owner| {
+                        (
+                            owner.clone(),
+                            ledger.slots_of(owner).unwrap().to_vec(),
+                            ledger.is_sealed(owner),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            emit(&mut state, &tx, current);
+            let after = {
+                let ledger = state.acoustic_ledger.lock().unwrap();
+                ledger
+                    .occurrences()
+                    .map(|owner| {
+                        (
+                            owner.clone(),
+                            ledger.slots_of(owner).unwrap().to_vec(),
+                            ledger.is_sealed(owner),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(before, after);
+            assert_eq!(document(&state), labels.join(" "));
+            assert!(retention_receipts(&drain(&mut rx)).is_empty());
+        }
+    }
+
+    #[test]
+    fn checked_in_five_iwo_replay_has_no_retention_exit() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures");
+        let manifest: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(root.join("p0_b_five_iwo_manifest.json")).unwrap(),
+        )
+        .unwrap();
+        let pcm = hound::WavReader::open(root.join("p0_b_five_iwo.wav"))
+            .unwrap()
+            .samples::<i16>()
+            .map(|value| f32::from(value.unwrap()) / 32768.0)
+            .collect::<Vec<_>>();
+        let ranges = manifest["bursts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|burst| {
+                (
+                    burst["sample_start"].as_u64().unwrap() as f32 / RATE as f32,
+                    burst["sample_end"].as_u64().unwrap() as f32 / RATE as f32,
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut state = physical_state("retain-fixture", pcm.len() as f32 / RATE as f32, &ranges);
+        state.audio = super::super::live_audio_buffer::LiveAudioBuffer::new(RATE, 5.0);
+        state.audio.push(&pcm);
+        let current = ranges
+            .iter()
+            .map(|&(start, end)| segment("Iwo", start, end))
+            .collect::<Vec<_>>();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        emit(&mut state, &tx, current.clone());
+        assert_eq!(document(&state), "Iwo Iwo Iwo Iwo Iwo");
+        let before = state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .occurrences()
+            .cloned()
+            .collect::<Vec<_>>();
+        let slots = {
+            let ledger = state.acoustic_ledger.lock().unwrap();
+            before
+                .iter()
+                .map(|owner| {
+                    (
+                        ledger.slots_of(owner).unwrap().to_vec(),
+                        ledger.is_sealed(owner),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        emit(&mut state, &tx, current);
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.rendered_text(), "Iwo Iwo Iwo Iwo Iwo");
+        assert_eq!(ledger.occurrences().cloned().collect::<Vec<_>>(), before);
+        for (owner, (prior_slots, sealed)) in before.iter().zip(slots) {
+            assert_eq!(ledger.slots_of(owner).unwrap(), prior_slots.as_slice());
+            assert_eq!(ledger.is_sealed(owner), sealed);
+        }
+        assert!(retention_receipts(&drain(&mut rx)).is_empty());
+    }
+
+    /// Boundary acceptance requirement: expected RED by source inspection.
+    /// W1 leaves qualification policy unchanged and does not execute this test.
+    #[test]
+    fn qualification_refusal_must_keep_timed_apple_words_in_mirror() {
+        let mut state = physical_state("mirror-qualification-refusal", 1.0, &[]);
+        state.energy_calibration = None;
+        state.fusion.as_mut().unwrap().observe(
+            Some((sample(0.0), sample(1.0))),
+            false,
+            sample(1.0),
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        emit(&mut state, &tx, vec![segment("Iwo", 0.0, 0.8)]);
+        assert!(state.published_unadmitted_words.iter().any(|word| {
+            word.text == "Iwo" && matches!(word.source, UnadmittedAppleWordSource::Pending { .. })
+        }));
+        drain(&mut rx);
+
+        state
+            .fusion
+            .as_mut()
+            .unwrap()
+            .observe(None, true, sample(1.0));
+        seal_sliced_by_silero(&mut state, &tx, &[]);
+        let events = drain(&mut rx);
+        let kept_in_ledger = events.iter().any(|event| {
+            matches!(event,
+                EngineEvent::LedgerMutation {
+                    receipt: MutationReceipt::KeepVisibleUnanchored { label, .. }, ..
+                } if label.split_whitespace().any(|word| word == "Iwo")
+            )
+        });
+        assert!(
+            state
+                .published_unadmitted_words
+                .iter()
+                .any(|word| word.text == "Iwo")
+                || document(&state)
+                    .split_whitespace()
+                    .any(|word| word == "Iwo")
+                || kept_in_ledger,
+            "qualification refusal must retain the pending Apple word in paint state"
+        );
+    }
+
+    #[test]
+    fn forced_close_clears_partial_and_records_its_own_admission() {
+        let mut state = physical_state("mirror-forced-close", 1.0, &[(0.0, 1.0)]);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        emit_stream_events(
+            vec![LiveStreamEvent::Partial {
+                text: "Iwo".into(),
+                segments: vec![segment("Iwo", 0.0, 0.8)],
+            }],
+            &tx,
+            &mut state,
+            1.0,
+        );
+        drain(&mut rx);
+        seal_open_partial(&mut state, &tx, 1.0);
+        assert!(state.open_partial.is_empty());
+        assert!(state.open_partial_segments.is_empty());
+        assert_eq!(state.phrase_id, 2);
+        assert_eq!(state.finishing_phrase_id, Some(1));
+        assert_eq!(
+            state.closed_phrases[&1].outcomes,
+            BTreeMap::from([(ApplePhraseOutcome::Admitted, 1)])
+        );
+        assert_eq!(document(&state), "Iwo");
+        assert!(state.published_unadmitted_words.is_empty());
+    }
+
+    #[test]
+    fn untimed_final_survives_unrelated_commit_without_a_summary() {
+        let mut state = physical_state("mirror-untimed", 1.0, &[(0.0, 1.0)]);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        emit_stream_events(
+            vec![LiveStreamEvent::Partial {
+                text: "Iwo".into(),
+                segments: Vec::new(),
+            }],
+            &tx,
+            &mut state,
+            1.0,
+        );
+        drain(&mut rx);
+        emit_stream_events(
+            vec![LiveStreamEvent::PhraseFinal {
+                text: "Iwo".into(),
+                segments: Vec::new(),
+            }],
+            &tx,
+            &mut state,
+            1.0,
+        );
+        let events = drain(&mut rx);
+        let words = events
+            .iter()
+            .find_map(|event| match event {
+                EngineEvent::UnadmittedAppleWords { words, .. } => Some(words),
+                _ => None,
+            })
+            .expect("untimed mirror");
+        assert_eq!(words.len(), 1);
+        assert_eq!(words[0].sample_start, words[0].sample_end);
+        assert!(matches!(
+            words[0].source,
+            UnadmittedAppleWordSource::RefusedUntimed { phrase_id: 1 }
+        ));
+        assert!(document(&state).is_empty());
+        // A different phrase with a committed range containing the old pin
+        // cannot consume phrase 1's untimed words.
+        emit(&mut state, &tx, vec![segment("earlier", 0.0, 0.8)]);
+        assert_eq!(state.refused_untimed_words.len(), 1);
+        assert_eq!(
+            state.closed_phrases[&1].outcomes,
+            BTreeMap::from([(ApplePhraseOutcome::Untimed, 1)])
+        );
+        assert!(
+            state
+                .published_unadmitted_words
+                .iter()
+                .any(|word| word.text == "Iwo")
+        );
+        drain(&mut rx);
+    }
+
+    #[test]
+    fn timed_summary_replaces_untimed_phrase_with_the_same_id() {
+        let mut state = physical_state("mirror-timed-summary", 63.0, &[(60.2, 62.0)]);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        state.open_partial_pin = sample(0.8);
+        emit_stream_events(
+            vec![LiveStreamEvent::PhraseFinal {
+                text: "Iwo Iwo".into(),
+                segments: Vec::new(),
+            }],
+            &tx,
+            &mut state,
+            63.0,
+        );
+        assert_eq!(state.phrase_id, 2);
+        assert_eq!(state.refused_untimed_words[&1].len(), 2);
+        state.stop_trailing_finish = true;
+        emit_stream_events(
+            vec![LiveStreamEvent::Summary {
+                text: "Iwo Iwo".into(),
+                segments: vec![segment("Iwo", 60.2, 61.0), segment("Iwo", 61.1, 61.9)],
+                ok: true,
+                error: None,
+            }],
+            &tx,
+            &mut state,
+            63.0,
+        );
+        assert!(state.refused_untimed_words.is_empty());
+        assert_eq!(state.phrase_id, 2, "a re-seal keeps the phrase id");
+        assert_eq!(state.closed_phrases.len(), 1);
+        assert_eq!(
+            state.closed_phrases[&1].outcomes,
+            BTreeMap::from([(ApplePhraseOutcome::Admitted, 2)])
+        );
+        assert!(state.closed_phrases[&1].was_untimed);
+        assert_eq!(state.closed_phrases[&1].arrival_index, 0);
+        assert_eq!(count_iwo(&document(&state)), 2);
+        assert!(state.published_unadmitted_words.is_empty());
+        drain(&mut rx);
+    }
+
+    #[test]
+    fn untimed_final_and_summary_replace_one_phrase_without_deduplicating_words() {
+        let mut state = physical_state("untimed-summary", 1.0, &[]);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        emit_stream_events(
+            vec![
+                LiveStreamEvent::Partial {
+                    text: "Iwo Iwo".into(),
+                    segments: Vec::new(),
+                },
+                LiveStreamEvent::PhraseFinal {
+                    text: "Iwo Iwo".into(),
+                    segments: Vec::new(),
+                },
+                LiveStreamEvent::Summary {
+                    text: "Iwo Iwo".into(),
+                    segments: Vec::new(),
+                    ok: true,
+                    error: None,
+                },
+            ],
+            &tx,
+            &mut state,
+            1.0,
+        );
+        let mirrors = drain(&mut rx)
+            .into_iter()
+            .filter_map(|event| match event {
+                EngineEvent::UnadmittedAppleWords { words, .. } => Some(words),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(mirrors.len(), 1, "summary leaves the held phrase unchanged");
+        assert_eq!(
+            mirrors[0].len(),
+            2,
+            "two spoken words survive at one untimed pin"
+        );
+        emit_stream_events(
+            vec![
+                LiveStreamEvent::Partial {
+                    text: "Iwo".into(),
+                    segments: Vec::new(),
+                },
+                LiveStreamEvent::PhraseFinal {
+                    text: "Iwo".into(),
+                    segments: Vec::new(),
+                },
+            ],
+            &tx,
+            &mut state,
+            1.0,
+        );
+        assert_eq!(
+            state.refused_untimed_words.len(),
+            2,
+            "new phrase keeps its own words"
+        );
+        assert_eq!(state.published_unadmitted_words.len(), 3);
+    }
+
+    #[test]
+    fn armed_epoch_close_summary_does_not_readmit_retimed_words() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tail_tx, _tail_rx) = mpsc::channel(1);
+        let mut state = physical_state("epoch-summary", 3.0, &[(0.0, 2.0)]);
+        state.tail_patch = Some(tail_tx);
+        let owner = OccurrenceIdentity::new("epoch-summary", 7, 0, sample(2.0));
+        emit(
+            &mut state,
+            &tx,
+            vec![segment("alpha", 0.0, 0.5), segment("beta", 1.0, 1.5)],
+        );
+        assert!(state.utterance_id > 0);
+        assert!(!state.stop_trailing_finish);
+        {
+            let ledger = state.acoustic_ledger.lock().unwrap();
+            assert!(!ledger.is_sealed(&owner));
+            assert_eq!(ledger.slots_of(&owner).unwrap().len(), 2);
+        }
+        drain(&mut rx);
+
+        let mut epoch = EpochGate::armed(RATE, 1.0);
+        assert!(matches!(
+            epoch.feed_pcm(&[0.25; 480], sample(2.0), true),
+            EpochDecision::Wake { .. }
+        ));
+        assert!(matches!(
+            epoch.feed_pcm(&vec![0.0; RATE as usize], sample(3.0), false),
+            EpochDecision::Sleep { .. }
+        ));
+        // The Sleep arm delivers finish events before sealing its residue.
+        // Retiming alpha off its slot would create a duplicate on this open
+        // owner if arming alone admitted the restating summary.
+        emit_stream_events(
+            vec![LiveStreamEvent::Summary {
+                text: "alpha beta".into(),
+                segments: vec![segment("alpha", 0.6, 0.9), segment("beta", 1.0, 1.5)],
+                ok: true,
+                error: None,
+            }],
+            &tx,
+            &mut state,
+            3.0,
+        );
+        assert!(drain(&mut rx).is_empty(), "summary must emit no mutation");
+        assert!(!state.stop_trailing_finish);
+        seal_open_partial(&mut state, &tx, 3.0);
+        let _ = state.flush_layer1_coalesce(&tx);
+        state.close_admission_horizon(&tx, sample(3.0));
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.rendered_text(), "alpha beta");
+        assert_eq!(ledger.slots_of(&owner).unwrap().len(), 2);
+        ledger.assert_slot_labels();
+    }
+
+    #[test]
+    fn stop_finish_error_clears_summary_window() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (ack_tx, _ack_rx) = tokio::sync::oneshot::channel();
+        let mut state = physical_state("stop-error", 1.0, &[(0.0, 1.0)]);
+        state.stop_trailing_finish = true;
+        let result = finish_capture_after_seal(
+            &mut state,
+            &tx,
+            1.0,
+            ack_tx,
+            false,
+            || Err(anyhow::anyhow!("finish failed")),
+            |_| panic!("finish failure must not close residue"),
+        );
+        assert!(result.is_err());
+        assert!(!state.stop_trailing_finish);
+    }
+
+    #[test]
+    fn unarmed_stop_ack_follows_finish_and_partial_seal() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (ack_tx, mut ack_rx) = tokio::sync::oneshot::channel();
+        let mut state = state("unarmed-stop", 2.0);
+        state.fusion_seal_armed = false;
+        qualify(&mut state, 0.0, 1.0);
+        emit_stream_events(
+            vec![LiveStreamEvent::Partial {
+                text: "alpha".into(),
+                segments: vec![segment("alpha", 0.0, 1.0)],
+            }],
+            &tx,
+            &mut state,
+            2.0,
+        );
+        let ledger = Arc::clone(&state.acoustic_ledger);
+        finish_capture_after_seal(
+            &mut state,
+            &tx,
+            2.0,
+            ack_tx,
+            false,
+            || {
+                assert_eq!(
+                    ack_rx.try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+                );
+                assert!(ledger.lock().unwrap().rendered_text().is_empty());
+                Ok(vec![LiveStreamEvent::Summary {
+                    text: "alpha".into(),
+                    segments: vec![segment("alpha", 0.0, 1.0)],
+                    ok: true,
+                    error: None,
+                }])
+            },
+            |state| close_stop_residue(state, &tx, 2.0),
+        )
+        .unwrap();
+        assert_eq!(ack_rx.try_recv(), Ok(()));
+        assert_eq!(document(&state), "alpha");
+        assert!(drain(&mut rx).iter().any(|event| matches!(
+            event,
+            EngineEvent::LedgerMutation { receipt, .. } if receipt.grants_mutation()
+        )));
+    }
+
+    #[test]
+    fn armed_short_take_ack_waits_for_first_finish_text_and_residue() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (ack_tx, mut ack_rx) = tokio::sync::oneshot::channel();
+        let mut state = physical_state("short-stop", 1.0, &[(0.0, 1.0)]);
+        assert!(!state.has_stop_canvas_text());
+        assert_eq!(state.sealed_count, 0);
+        assert!(state.open_partial.is_empty());
+        let ack_before_finish = state.has_stop_canvas_text();
+        seal_sliced_by_silero(&mut state, &tx, &[]);
+        seal_open_partial(&mut state, &tx, 1.0);
+        state.stop_trailing_finish = true;
+        finish_capture_after_seal(
+            &mut state,
+            &tx,
+            1.0,
+            ack_tx,
+            ack_before_finish,
+            || {
+                assert_eq!(
+                    ack_rx.try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+                );
+                Ok(vec![LiveStreamEvent::Partial {
+                    text: "Tak".into(),
+                    segments: vec![segment("Tak", 0.0, 0.8)],
+                }])
+            },
+            |state| close_stop_residue(state, &tx, 1.0),
+        )
+        .unwrap();
+        assert_eq!(ack_rx.try_recv(), Ok(()));
+        assert_eq!(document(&state), "Tak");
+        assert!(state.has_stop_canvas_text());
+        assert!(state.open_partial.is_empty());
+        assert!(state.unmatched_silero_words.is_empty());
+        assert!(drain(&mut rx).iter().any(|event| matches!(
+            event,
+            EngineEvent::LedgerMutation { receipt, .. } if receipt.grants_mutation()
+        )));
+    }
+
+    #[test]
+    fn rejected_raw_callback_does_not_release_empty_stop_before_valid_finish() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (ack_tx, mut ack_rx) = tokio::sync::oneshot::channel();
+        let mut state = physical_state("rejected-stop", 1.0, &[(0.0, 1.0)]);
+        emit_stream_events(
+            vec![LiveStreamEvent::PhraseFinal {
+                text: "Tak".into(),
+                segments: Vec::new(),
+            }],
+            &tx,
+            &mut state,
+            1.0,
+        );
+        assert!(drain(&mut rx).iter().any(|event| matches!(
+            event,
+            EngineEvent::Warning { code, .. } if code == "apple_final_without_pcm_timing"
+        )));
+        assert!(document(&state).is_empty());
+        let ack_before_finish = state.has_stop_canvas_text();
+        assert!(!ack_before_finish);
+        seal_sliced_by_silero(&mut state, &tx, &[]);
+        seal_open_partial(&mut state, &tx, 1.0);
+        state.stop_trailing_finish = true;
+        finish_capture_after_seal(
+            &mut state,
+            &tx,
+            1.0,
+            ack_tx,
+            ack_before_finish,
+            || {
+                assert_eq!(
+                    ack_rx.try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+                );
+                Ok(vec![LiveStreamEvent::Summary {
+                    text: "Tak".into(),
+                    segments: vec![segment("Tak", 0.0, 0.8)],
+                    ok: true,
+                    error: None,
+                }])
+            },
+            |state| close_stop_residue(state, &tx, 1.0),
+        )
+        .unwrap();
+        assert_eq!(ack_rx.try_recv(), Ok(()));
+        assert_eq!(document(&state), "Tak");
+        assert!(state.unmatched_silero_words.is_empty());
+    }
+
+    #[test]
+    fn internal_seal_ack_precedes_finish_and_partial_is_already_committed() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (ack_tx, mut ack_rx) = tokio::sync::oneshot::channel();
+        let mut state = physical_state("stop-order", 2.0, &[(0.0, 2.0)]);
+        emit_stream_events(
+            vec![LiveStreamEvent::Partial {
+                text: "alpha beta".into(),
+                segments: vec![segment("alpha", 0.0, 0.5), segment("beta", 1.0, 1.5)],
+            }],
+            &tx,
+            &mut state,
+            2.0,
+        );
+        if let Some(fusion) = state.fusion.as_mut() {
+            fusion.flush(sample(2.0));
+        }
+        seal_sliced_by_silero(&mut state, &tx, &[]);
+        seal_open_partial(&mut state, &tx, 2.0);
+        state.stop_trailing_finish = true;
+        assert!(state.has_stop_canvas_text());
+        let ledger = Arc::clone(&state.acoustic_ledger);
+        let mut finish_called = false;
+        finish_capture_after_seal(
+            &mut state,
+            &tx,
+            2.0,
+            ack_tx,
+            true,
+            || {
+                assert_eq!(ack_rx.try_recv(), Ok(()));
+                assert_eq!(ledger.lock().unwrap().rendered_text(), "alpha beta");
+                let before_finish = drain(&mut rx);
+                assert!(before_finish.iter().any(|event| matches!(
+                    event,
+                    EngineEvent::LedgerMutation { receipt, .. } if receipt.grants_mutation()
+                )));
+                finish_called = true;
+                Ok(vec![LiveStreamEvent::Error {
+                    message: "finish-observed".into(),
+                }])
+            },
+            |state| close_stop_residue(state, &tx, 2.0),
+        )
+        .unwrap();
+        assert!(finish_called);
+        assert!(drain(&mut rx).iter().any(|event| matches!(
+            event,
+            EngineEvent::NoSpeech { reason } if reason.contains("finish-observed")
+        )));
+        assert!(state.open_partial.is_empty());
+    }
+
+    #[test]
+    fn trailing_final_after_stop_ack_keeps_owner_receipts() {
+        for observer_open in [false, true] {
+            for summary in [false, true] {
+                for case in 0..3 {
+                    let (tx, mut rx) = mpsc::unbounded_channel();
+                    let (tail_tx, _tail_rx) = mpsc::channel(1);
+                    let (ack_tx, mut ack_rx) = tokio::sync::oneshot::channel();
+                    let mut state = physical_state("stop-final", 2.0, &[(0.0, 2.0)]);
+                    if observer_open {
+                        state.tail_patch = Some(tail_tx);
+                    }
+                    let owner = OccurrenceIdentity::new("stop-final", 7, 0, sample(2.0));
+                    let mut words = vec![segment("alpha", 0.0, 0.5), segment("beta", 1.0, 1.5)];
+                    emit_stream_events(
+                        vec![LiveStreamEvent::Partial {
+                            text: "alpha beta".into(),
+                            segments: words.clone(),
+                        }],
+                        &tx,
+                        &mut state,
+                        2.0,
+                    );
+                    seal_sliced_by_silero(&mut state, &tx, &[]);
+                    seal_open_partial(&mut state, &tx, 2.0);
+                    assert!(state.utterance_id > 0);
+                    state.stop_trailing_finish = true;
+                    assert_eq!(document(&state), "alpha beta");
+                    assert_eq!(
+                        state.acoustic_ledger.lock().unwrap().is_sealed(&owner),
+                        !observer_open
+                    );
+                    let (seal_before, slots_before) = {
+                        let ledger = state.acoustic_ledger.lock().unwrap();
+                        (
+                            ledger.seal_of(&owner).cloned(),
+                            ledger.slots_of(&owner).unwrap().to_vec(),
+                        )
+                    };
+                    drain(&mut rx);
+                    if case == 1 {
+                        words[1].text = "changed".into();
+                    } else if case == 2 {
+                        words.push(segment("gamma", 1.6, 1.9));
+                    }
+                    let text = words
+                        .iter()
+                        .map(|word| word.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let event = if summary {
+                        LiveStreamEvent::Summary {
+                            text,
+                            segments: words,
+                            ok: true,
+                            error: None,
+                        }
+                    } else {
+                        LiveStreamEvent::PhraseFinal {
+                            text,
+                            segments: words,
+                        }
+                    };
+                    finish_capture_after_seal(
+                        &mut state,
+                        &tx,
+                        2.0,
+                        ack_tx,
+                        true,
+                        || {
+                            assert_eq!(ack_rx.try_recv(), Ok(()));
+                            Ok(vec![event])
+                        },
+                        |state| close_stop_residue(state, &tx, 2.0),
+                    )
+                    .unwrap();
+                    assert!(!state.stop_trailing_finish);
+                    seal_sliced_by_silero(&mut state, &tx, &[]);
+                    let events = drain(&mut rx);
+                    match case {
+                        0 => {
+                            assert!(
+                                events.is_empty(),
+                                "identical callback is already reconciled"
+                            );
+                        }
+                        1 => {
+                            if observer_open {
+                                assert_eq!(document(&state), "alpha changed");
+                                assert!(events.iter().any(|event| matches!(event,
+                                    EngineEvent::LedgerMutation { label, receipt, .. }
+                                        if label == "alpha changed" && receipt.grants_mutation())));
+                                let ledger = state.acoustic_ledger.lock().unwrap();
+                                assert_eq!(ledger.slots_of(&owner).unwrap().len(), 2);
+                                assert!(ledger.layer_trail_for(&owner).any(|entry| {
+                                    entry.candidate_label == "alpha beta"
+                                        && entry.decision.grants_mutation()
+                                }));
+                            } else {
+                                assert!(events.iter().any(|event| matches!(event,
+                                    EngineEvent::LedgerMutation { label,
+                                        receipt: MutationReceipt::KeepVisibleUnanchored {
+                                            reason: NoAuthorityReason::LateAppleWordSealedOwner, .. }, .. }
+                                        if label == "changed")));
+                                assert_eq!(document(&state), "alpha beta");
+                                let ledger = state.acoustic_ledger.lock().unwrap();
+                                assert_eq!(ledger.seal_of(&owner), seal_before.as_ref());
+                                assert_eq!(
+                                    ledger.slots_of(&owner).unwrap(),
+                                    slots_before.as_slice()
+                                );
+                                drop(ledger);
+                                assert_sealed_apple_refusal(&state, &owner);
+                            }
+                        }
+                        _ => {
+                            for word in ["alpha", "beta"] {
+                                assert!(events.iter().any(|event| matches!(
+                                    event,
+                                    EngineEvent::LedgerMutation {
+                                        label,
+                                        receipt: MutationReceipt::Refuse {
+                                            reason: RefuseReason::ReplayedRangeIdentity,
+                                            ..
+                                        },
+                                        ..
+                                    } if label == word
+                                )));
+                            }
+                            if observer_open {
+                                assert_eq!(document(&state), "alpha beta gamma");
+                                assert_eq!(
+                                    state
+                                        .acoustic_ledger
+                                        .lock()
+                                        .unwrap()
+                                        .slots_of(&owner)
+                                        .unwrap()
+                                        .len(),
+                                    3
+                                );
+                                assert!(events.iter().any(|event| matches!(
+                                    event,
+                                    EngineEvent::LedgerMutation { label, receipt, .. }
+                                        if label == "alpha beta gamma" && receipt.grants_mutation()
+                                )));
+                            } else {
+                                assert_eq!(document(&state), "alpha beta");
+                                assert!(events.iter().any(|event| matches!(
+                                    event,
+                                    EngineEvent::LedgerMutation {
+                                        label,
+                                        receipt: MutationReceipt::KeepVisibleUnanchored {
+                                            reason: NoAuthorityReason::LateAppleWordSealedOwner,
+                                            ..
+                                        },
+                                        ..
+                                    } if label == "gamma"
+                                )));
+                            }
+                        }
+                    }
+                    assert!(state.unmatched_silero_words.is_empty());
+                    assert!(state.open_partial.is_empty());
+                    state.acoustic_ledger.lock().unwrap().assert_slot_labels();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fusion_lexicon_admits_bundled_canonical_after_apple() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = physical_state("bundled-lexicon", 2.0, &[(0.0, 1.0)]);
+        state.lexicon_custom_path = dir.path().join("lexicon.custom.jsonl");
+        emit(&mut state, &tx, vec![segment("accepromazyna", 0.0, 1.0)]);
+        assert_eq!(document(&state), "Acepromazyna");
+        let events = drain(&mut rx);
+        assert!(events.iter().any(|event| matches!(event,
+            EngineEvent::LedgerMutation { observation, label, receipt }
+            if observation.producer == LedgerObservationProducer::Lexicon
+                && label == "Acepromazyna" && receipt.grants_mutation()
+        )));
+    }
+
+    #[test]
+    fn fusion_lexicon_fixture_custom_entry_wins_over_bundled_variant() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lexicon.custom.jsonl");
+        std::fs::write(
+            &path,
+            "{\"term\":\"CustomDrug\",\"mispronunciations\":[\"accepromazyna\"]}\n",
+        )
+        .unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut state = physical_state("custom-lexicon", 2.0, &[(0.0, 1.0)]);
+        state.lexicon_custom_path = path;
+        emit(&mut state, &tx, vec![segment("accepromazyna", 0.0, 1.0)]);
+        assert_eq!(document(&state), "CustomDrug");
+    }
+
+    #[test]
+    fn fusion_dictation_preserves_ordinary_polish_command_words() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = physical_state("ordinary-polish", 2.0, &[(0.0, 1.0)]);
+        state.lexicon_custom_path = dir.path().join("lexicon.custom.jsonl");
+        emit(
+            &mut state,
+            &tx,
+            vec![segment("schowek i zaznaczenie", 0.0, 1.0)],
+        );
+        assert_eq!(document(&state), "schowek i zaznaczenie");
+    }
+
+    #[test]
+    fn whisper_label_is_rewritten_before_ledger_admission() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = state("whisper-lexicon", 2.0);
+        state.lexicon_custom_path = dir.path().join("lexicon.custom.jsonl");
+        let occurrence = qualify(&mut state, 0.0, 1.0);
+        state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .schedule_frontier(occurrence.clone(), [LedgerObservationProducer::Whisper]);
+        let receipt = admit_ledger_label(
+            &mut state,
+            &tx,
+            LabelAdmission {
+                observation: LedgerObservationIdentity::new(
+                    LedgerObservationProducer::Whisper,
+                    1,
+                    0,
+                    occurrence,
+                ),
+                label: "accepromazyna",
+                energy: EnergyAdmission::RequireExistingQualification,
+            },
+        );
+        assert!(receipt.is_some_and(|receipt| receipt.grants_mutation()));
+        assert_eq!(document(&state), "Acepromazyna");
+        assert!(drain(&mut rx).iter().any(|event| matches!(event,
+            EngineEvent::LedgerMutation { observation, label, .. }
+            if observation.producer == LedgerObservationProducer::Whisper
+                && label == "Acepromazyna"
+        )));
     }
 
     #[test]
@@ -9500,7 +15487,7 @@ mod rc_w2_test_rehab {
         emit(&mut state, &tx, vec![segment("hello world", 0.0, 1.0)]);
         emit(&mut state, &tx, vec![segment("second", 1.0, 2.0)]);
         let events = drain(&mut rx);
-        assert!(matches!(&events[0], EngineEvent::Preview { rev: 1, text } if text == "hello"));
+        assert!(matches!(&events[0], EngineEvent::Preview { rev: 1, text, .. } if text == "hello"));
         let ids = events
             .iter()
             .filter_map(|event| match event {
@@ -9728,6 +15715,49 @@ mod rc_w2_test_rehab {
         );
     }
 
+    #[test]
+    fn late_apple_restatement_over_lexicon_respelled_open_slot_is_refused_by_range() {
+        with_lexicon_fixture(
+            "late_apple_restatement_over_lexicon_respelled_open_slot_is_refused_by_range",
+            || {
+                let (tx, mut rx) = mpsc::unbounded_channel();
+                let (sender, _requests) = mpsc::channel(8);
+                let mut state = physical_state("rewritten-open", 3.0, &[(0.0, 2.0)]);
+                state.tail_patch = Some(sender);
+                let words = vec![segment("uruchom doker", 0.0, 2.0)];
+                emit(&mut state, &tx, words.clone());
+                let owner = OccurrenceIdentity::new("rewritten-open", 7, 0, sample(2.0));
+                let before = {
+                    let ledger = state.acoustic_ledger.lock().unwrap();
+                    assert!(!ledger.is_sealed(&owner));
+                    assert_eq!(ledger.text_of(&owner), Some("uruchom Docker"));
+                    ledger.slots_of(&owner).unwrap().to_vec()
+                };
+                drain(&mut rx);
+                let replay = FusionWord {
+                    text: "uruchom doker".into(),
+                    sample_start: 0,
+                    sample_end: sample(2.0),
+                };
+                admit_late_apple_words(&mut state, &tx, 2, &[replay], &words);
+                assert!(drain(&mut rx).iter().any(|event| matches!(
+                    event,
+                    EngineEvent::LedgerMutation {
+                        receipt: MutationReceipt::Refuse {
+                            reason: RefuseReason::SealedReplay,
+                            ..
+                        },
+                        ..
+                    }
+                )));
+                let ledger = state.acoustic_ledger.lock().unwrap();
+                assert_eq!(ledger.slots_of(&owner).unwrap(), before.as_slice());
+                assert_eq!(ledger.text_of(&owner), Some("uruchom Docker"));
+                assert!(!ledger.is_sealed(&owner));
+            },
+        );
+    }
+
     /// The old explicit empty Preview event belongs to presentation. Here the
     /// current owner clears its volatile state and emits no duplicate final.
     #[test]
@@ -9809,17 +15839,93 @@ mod rc_w2_test_rehab {
             );
         }
         for (expected_rev, expected) in [(1, "a"), (2, "ab")] {
-            let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
-                .await
-                .expect("preview before EOF")
-                .expect("producer stays open");
+            // Each open partial is also mirrored as unadmitted words; this
+            // test reads only the preview stream.
+            let event = loop {
+                let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                    .await
+                    .expect("preview before EOF")
+                    .expect("producer stays open");
+                if !matches!(event, EngineEvent::UnadmittedAppleWords { .. }) {
+                    break event;
+                }
+            };
             assert!(
-                matches!(event, EngineEvent::Preview { rev, text } if rev == expected_rev && text == expected)
+                matches!(event, EngineEvent::Preview { rev, text, .. } if rev == expected_rev && text == expected)
             );
         }
         assert!(!rx.is_closed());
         assert!(document(&state).is_empty());
         drop(tx);
+    }
+
+    fn only_preview(events: &[EngineEvent]) -> serde_json::Value {
+        let previews = events
+            .iter()
+            .filter(|event| matches!(event, EngineEvent::Preview { .. }))
+            .collect::<Vec<_>>();
+        assert_eq!(previews.len(), 1, "one partial paints one preview");
+        serde_json::to_value(previews[0]).unwrap()
+    }
+
+    /// Counterexample B (Roman, 2026-09-24): a partial with text and word
+    /// segments became a Preview with no PCM range — the pins were dropped
+    /// before the emitter painted. The preview must carry the range those
+    /// segments occupy on the capture counter, at word grain.
+    #[test]
+    fn partial_with_segments_paints_its_capture_range() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = state("preview-pins", 2.0);
+        emit_stream_events(
+            vec![LiveStreamEvent::Partial {
+                text: "dzień dobry".into(),
+                segments: vec![segment("dzień", 0.25, 0.5), segment("dobry", 0.5, 1.0)],
+            }],
+            &tx,
+            &mut state,
+            1.0,
+        );
+        let preview = only_preview(&drain(&mut rx));
+        assert_eq!(preview["text"], "dzień dobry");
+        assert_eq!(
+            preview["pin"]["range"]["sample_start"],
+            sample(0.25),
+            "the preview paint carries no PCM range: {preview}"
+        );
+        assert_eq!(preview["pin"]["range"]["sample_end"], sample(1.0));
+        assert_eq!(preview["pin"]["range"]["session"], "preview-pins");
+        assert_eq!(preview["pin"]["range"]["capture_epoch"], 7);
+        assert_eq!(preview["pin"]["grain"], "word");
+        assert!(document(&state).is_empty(), "a preview never admits words");
+    }
+
+    /// Counterexample B, second half: Swift may send a partial with text and
+    /// no segments after filtering. That preview was painted with no receipt.
+    /// It must paint the open occurrence's capture range as utterance grain
+    /// with one named receipt — never invented per-word ranges.
+    #[test]
+    fn partial_without_segments_paints_the_open_occurrence_at_utterance_grain() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = state("preview-unpinned", 2.0);
+        emit_stream_events(
+            vec![LiveStreamEvent::Partial {
+                text: "bez pinów".into(),
+                segments: Vec::new(),
+            }],
+            &tx,
+            &mut state,
+            1.5,
+        );
+        let preview = only_preview(&drain(&mut rx));
+        assert_eq!(preview["text"], "bez pinów");
+        assert_eq!(
+            preview["pin"]["grain"], "utterance",
+            "a segment-less partial was painted with no grain or receipt: {preview}"
+        );
+        assert_eq!(preview["pin"]["receipt"], "partial_without_segments");
+        assert_eq!(preview["pin"]["range"]["sample_start"], 0);
+        assert_eq!(preview["pin"]["range"]["sample_end"], sample(1.5));
+        assert!(document(&state).is_empty(), "a preview never admits words");
     }
 
     /// Run the same named test in an isolated process with a real custom table.
@@ -9926,8 +16032,8 @@ mod rc_w2_test_rehab {
     }
 
     #[test]
-    fn apple_seal_lexicon_leaves_previews_raw() {
-        with_lexicon_fixture("apple_seal_lexicon_leaves_previews_raw", || {
+    fn apple_seal_lexicon_leaves_preview_and_mirror_raw() {
+        with_lexicon_fixture("apple_seal_lexicon_leaves_preview_and_mirror_raw", || {
             let (tx, mut rx) = mpsc::unbounded_channel();
             let mut state = state("raw-lexicon-preview", 1.0);
             emit_stream_events(
@@ -9942,6 +16048,11 @@ mod rc_w2_test_rehab {
             assert!(
                 matches!(rx.try_recv().unwrap(), EngineEvent::Preview { text, .. } if text == "uruchom doker")
             );
+            // The mirror carries the open partial word by word, still raw.
+            assert!(matches!(rx.try_recv().unwrap(),
+                EngineEvent::UnadmittedAppleWords { words, .. }
+                    if words.iter().map(|word| word.text.as_str()).eq(["uruchom", "doker"])
+            ));
             assert!(rx.try_recv().is_err());
             assert!(document(&state).is_empty());
             assert_eq!(state.sealed_count, 0);
@@ -10014,15 +16125,17 @@ mod rc_w2_test_rehab {
     }
 
     #[test]
-    fn apple_seal_preserves_observed_text_until_ledger_repair() {
+    fn fusion_lexicon_corrects_before_seal_and_refuses_late_replay() {
         let (tx, mut rx) = mpsc::unbounded_channel();
+        let dir = tempfile::tempdir().unwrap();
         let mut state = physical_state("apple-raw", 1.0, &[(0.0, 1.0)]);
+        state.lexicon_custom_path = dir.path().join("lexicon.custom.jsonl");
         emit(
             &mut state,
             &tx,
             vec![segment("uruchom doker teraz", 0.0, 1.0)],
         );
-        assert_eq!(document(&state), "uruchom doker teraz");
+        assert_eq!(document(&state), "uruchom Docker teraz");
         assert_eq!(raw_finals(&drain(&mut rx)), vec!["uruchom doker teraz"]);
         let occurrence = OccurrenceIdentity::new("apple-raw", 7, 0, sample(1.0));
         let late = admit_ledger_label(
@@ -10047,7 +16160,7 @@ mod rc_w2_test_rehab {
                 ..
             }
         ));
-        assert_eq!(document(&state), "uruchom doker teraz");
+        assert_eq!(document(&state), "uruchom Docker teraz");
     }
 
     #[test]
@@ -10069,15 +16182,12 @@ mod rc_w2_test_rehab {
             request.committed_text, "uruchom doker",
             "sliced lane preserves raw observed baseline"
         );
-        assert_eq!(
-            request.provider_request.identity.range.sample_start,
-            sample(0.1)
-        );
+        assert_eq!(request.provider_request.identity.range.sample_start, 0);
         assert_eq!(
             request.provider_request.identity.range.sample_end,
             sample(2.4)
         );
-        assert_eq!(request.audio, vec![0.25; sample(2.3) as usize]);
+        assert_eq!(request.audio, vec![0.25; sample(2.4) as usize]);
         assert_eq!(
             request.provider_request.identity.request_id,
             request.utterance_id
@@ -10089,10 +16199,11 @@ mod rc_w2_test_rehab {
                 OccurrenceIdentity::new("exact-tail", 7, sample(0.5), sample(2.0))
             )]
         );
-        assert_eq!(state.tail_patch_awaiting_completion, 1);
+        assert_eq!(state.tail_patch_awaiting_completion(), 1);
         state.complete_whisper_window(
             &tx,
             TailPatchCompletion {
+                submission_sequence: request.submission_sequence,
                 utterance_id: request.utterance_id,
                 request_identity: Some(request.provider_request.identity),
                 member_occurrences: request.member_occurrences,
@@ -10100,8 +16211,10 @@ mod rc_w2_test_rehab {
             },
             6.0,
         );
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert_eq!(state.tail_patch_jobs_skipped, 1);
+        // Whisper was scheduled; its completed window does not close the horizon.
+        state.close_admission_horizon(&tx, sample(2.4));
         assert_eq!(raw_finals(&drain(&mut rx)), vec!["uruchom doker"]);
     }
 
@@ -10133,10 +16246,271 @@ mod rc_w2_test_rehab {
         assert!(!state.flush_layer1_coalesce(&tx));
         assert!(tail_rx.try_recv().is_err());
         assert_eq!(state.unresolved_windows, 1);
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert_eq!(state.sealed_count, 0, "unqualified text cannot seal");
         assert!(document(&state).is_empty());
         assert!(raw_finals(&drain(&mut rx)).is_empty());
+    }
+
+    #[test]
+    fn apple_only_occurrence_seals_on_apple_return_with_whisper_armed_but_unscheduled() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tail_tx, mut requests) = mpsc::channel(1);
+        let mut state = state("armed-unscheduled", 2.0);
+        state.tail_patch = Some(tail_tx);
+        let owner = qualify(&mut state, 0.0, 1.0);
+        state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .schedule_frontier(owner.clone(), [LedgerObservationProducer::Apple]);
+        assert!(
+            admit_ledger_label(
+                &mut state,
+                &tx,
+                LabelAdmission {
+                    observation: LedgerObservationIdentity::new(
+                        LedgerObservationProducer::Apple,
+                        1,
+                        0,
+                        owner.clone(),
+                    ),
+                    label: "Iwo",
+                    energy: EnergyAdmission::RequireExistingQualification,
+                },
+            )
+            .is_some_and(|receipt| receipt.grants_mutation())
+        );
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&owner), Some("Iwo"));
+        assert!(ledger.is_sealed(&owner));
+        assert!(
+            ledger
+                .frontier_of(&owner)
+                .unwrap()
+                .open_producers()
+                .is_empty()
+        );
+        assert_eq!(ledger.conservation().residue(), 0);
+        drop(ledger);
+        assert_eq!(state.admission_horizon, 0);
+        assert!(state.tail_patch.is_some());
+        assert!(requests.try_recv().is_err());
+        assert_eq!(
+            drain(&mut rx)
+                .iter()
+                .filter(|event| matches!(event, EngineEvent::LedgerSeal { .. }))
+                .count(),
+            1
+        );
+    }
+
+    fn assert_sealed_apple_refusal(state: &AppleSealState, owner: &OccurrenceIdentity) {
+        let mut ledger = state.acoustic_ledger.lock().unwrap();
+        let seal = ledger
+            .seal_of(owner)
+            .expect("genuinely sealed fixture")
+            .clone();
+        let slots = ledger.slots_of(owner).unwrap().to_vec();
+        let label = ledger.text_of(owner).unwrap().to_string();
+        let observation = ledger.next_word_observation(LedgerObservationProducer::Apple, 99, owner);
+        assert!(matches!(
+            ledger.admit(&observation, "forbidden sealed rewrite"),
+            MutationReceipt::Refuse {
+                reason: RefuseReason::SealedReplay,
+                ..
+            }
+        ));
+        assert_eq!(ledger.seal_of(owner), Some(&seal));
+        assert_eq!(ledger.slots_of(owner).unwrap(), slots.as_slice());
+        assert_eq!(ledger.text_of(owner), Some(label.as_str()));
+        assert!(ledger.layer_trail_for(owner).any(|entry| {
+            entry.observation == observation
+                && matches!(
+                    entry.decision,
+                    MutationReceipt::Refuse {
+                        reason: RefuseReason::SealedReplay,
+                        ..
+                    }
+                )
+        }));
+    }
+
+    #[test]
+    fn changed_apple_span_cannot_append_a_cumulative_suffix() {
+        for armed in [false, true] {
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let (tail_tx, _requests) = mpsc::channel(1);
+            let mut state = physical_state("stale-apple-slot", 2.0, &[(0.0, 2.0)]);
+            if armed {
+                state.tail_patch = Some(tail_tx);
+            }
+            let owner = OccurrenceIdentity::new("stale-apple-slot", 7, 0, sample(2.0));
+            emit(&mut state, &tx, vec![segment("alpha beta", 0.0, 2.0)]);
+            // Returning the observer and closing the horizon, rather than merely
+            // closing Silero, establishes finality in both configurations.
+            state.return_outstanding_whisper_without_label(&tx);
+            assert!(state.acoustic_ledger.lock().unwrap().is_sealed(&owner));
+            let seal = state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .seal_of(&owner)
+                .unwrap()
+                .clone();
+            let before = state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .slots_of(&owner)
+                .unwrap()
+                .to_vec();
+            drain(&mut rx);
+            emit(
+                &mut state,
+                &tx,
+                vec![segment("alpha beta revised", 0.0, 2.0)],
+            );
+            let ledger = state.acoustic_ledger.lock().unwrap();
+            assert_eq!(ledger.text_of(&owner), Some("alpha beta"));
+            assert_eq!(ledger.slots_of(&owner).unwrap(), before.as_slice());
+            assert_eq!(ledger.conservation().residue(), 0);
+            assert_eq!(ledger.seal_of(&owner), Some(&seal));
+            drop(ledger);
+            assert!(drain(&mut rx).iter().any(|event| match event {
+                EngineEvent::LedgerMutation { label, receipt, .. }
+                    if label == "alpha beta revised" =>
+                {
+                    matches!(
+                        receipt,
+                        MutationReceipt::KeepVisibleUnanchored {
+                            reason: NoAuthorityReason::LateAppleWordSealedOwner,
+                            ..
+                        }
+                    )
+                }
+                _ => false,
+            }));
+            assert_sealed_apple_refusal(&state, &owner);
+        }
+    }
+
+    #[test]
+    fn cumulative_apple_restatement_is_a_replay_not_a_late_slot() {
+        for armed in [false, true] {
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let (tail_tx, _requests) = mpsc::channel(1);
+            let mut state = physical_state("restatement-slot", 2.0, &[(0.0, 2.0)]);
+            if armed {
+                state.tail_patch = Some(tail_tx);
+            }
+            let owner = OccurrenceIdentity::new("restatement-slot", 7, 0, sample(2.0));
+            let mut words = vec![segment("alpha", 0.0, 0.5), segment("beta", 1.0, 1.5)];
+            emit(&mut state, &tx, words.clone());
+            let before = state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .slots_of(&owner)
+                .unwrap()
+                .to_vec();
+            drain(&mut rx);
+            let receipts_before = state.acoustic_ledger.lock().unwrap().layer_trail().len();
+            emit(&mut state, &tx, words.clone());
+            assert!(drain(&mut rx).is_empty());
+            let ledger = state.acoustic_ledger.lock().unwrap();
+            assert_eq!(ledger.layer_trail().len(), receipts_before);
+            assert_eq!(ledger.text_of(&owner), Some("alpha beta"));
+            assert_eq!(ledger.slots_of(&owner).unwrap(), before.as_slice());
+            assert_eq!(
+                ledger
+                    .layer_trail_for(&owner)
+                    .filter(|entry| matches!(
+                        entry.decision,
+                        MutationReceipt::Refuse {
+                            reason: RefuseReason::ReplayedRangeIdentity,
+                            ..
+                        }
+                    ))
+                    .count(),
+                0
+            );
+            assert_eq!(ledger.conservation().residue(), 0);
+            assert_eq!(ledger.is_sealed(&owner), !armed);
+            drop(ledger);
+
+            // A new callback crosses the callback fence. Its consumed ranges
+            // receive replay receipts; only the novel range may add a slot.
+            words.push(segment("gamma", 1.6, 1.9));
+            emit(&mut state, &tx, words);
+            let events = drain(&mut rx);
+            let ledger = state.acoustic_ledger.lock().unwrap();
+            for label in ["alpha", "beta"] {
+                assert_eq!(
+                    ledger
+                        .layer_trail_for(&owner)
+                        .filter(|entry| {
+                            entry.candidate_label == label
+                                && matches!(
+                                    entry.decision,
+                                    MutationReceipt::Refuse {
+                                        reason: RefuseReason::ReplayedRangeIdentity,
+                                        ..
+                                    }
+                                )
+                        })
+                        .count(),
+                    1
+                );
+                assert_eq!(
+                    events
+                        .iter()
+                        .filter(|event| matches!(
+                            event,
+                            EngineEvent::LedgerMutation {
+                                observation,
+                                label: emitted,
+                                receipt: MutationReceipt::Refuse {
+                                    reason: RefuseReason::ReplayedRangeIdentity,
+                                    ..
+                                },
+                            } if observation.occurrence == owner && emitted == label
+                        ))
+                        .count(),
+                    1
+                );
+            }
+            let slots = ledger.slots_of(&owner).unwrap();
+            assert_eq!(&slots[..before.len()], before.as_slice());
+            if armed {
+                assert_eq!(slots.len(), before.len() + 1);
+                assert_eq!(slots.last().unwrap().text, "gamma");
+                assert_eq!(ledger.text_of(&owner), Some("alpha beta gamma"));
+                assert!(events.iter().any(|event| matches!(
+                    event,
+                    EngineEvent::LedgerMutation { label, receipt, .. }
+                        if label == "alpha beta gamma" && receipt.grants_mutation()
+                )));
+            } else {
+                assert_eq!(slots, before.as_slice());
+                assert_eq!(ledger.text_of(&owner), Some("alpha beta"));
+                assert!(events.iter().any(|event| matches!(
+                    event,
+                    EngineEvent::LedgerMutation {
+                        label,
+                        receipt: MutationReceipt::KeepVisibleUnanchored {
+                            reason: NoAuthorityReason::LateAppleWordSealedOwner,
+                            ..
+                        },
+                        ..
+                    } if label == "gamma"
+                )));
+            }
+            ledger.assert_slot_labels();
+            assert_eq!(ledger.conservation().residue(), 0);
+            assert_eq!(ledger.is_sealed(&owner), !armed);
+            assert!(state.unmatched_silero_words.is_empty());
+        }
     }
 
     #[test]
@@ -10149,7 +16523,7 @@ mod rc_w2_test_rehab {
         );
         emit(&mut state, &tx, vec![segment("uruchom doker", 0.5, 2.0)]);
         assert!(!state.flush_layer1_coalesce(&tx));
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert_eq!(state.tail_patch_backpressure_drops, 0);
         assert_eq!(state.sealed_count, 1);
         assert_eq!(raw_finals(&drain(&mut rx)), vec!["uruchom doker"]);
@@ -10172,7 +16546,7 @@ mod rc_w2_test_rehab {
             );
         }
         state.flush_layer1_coalesce(&tx);
-        assert_eq!(state.tail_patch_awaiting_completion, 1);
+        assert_eq!(state.tail_patch_awaiting_completion(), 1);
         // Ten physical occurrences remain conserved: one in transport, eight
         // retained exact jobs, and one explicit capacity failure. The old
         // nine-drop policy is replaced, not excused with a weaker assertion.
@@ -10194,6 +16568,7 @@ mod rc_w2_test_rehab {
             state.complete_whisper_window(
                 &tx,
                 TailPatchCompletion {
+                    submission_sequence: request.submission_sequence,
                     utterance_id: request.utterance_id,
                     request_identity: Some(request.provider_request.identity),
                     member_occurrences: request.member_occurrences,
@@ -10205,7 +16580,9 @@ mod rc_w2_test_rehab {
         }
         assert_eq!(submitted.len(), 9);
         assert!(state.refinement_pending.is_empty());
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
+        // The queued Whisper jobs have drained; close this capture epoch.
+        state.close_admission_horizon(&tx, sample(10.0));
         assert_eq!(state.sealed_count, 1);
         assert_eq!(raw_finals(&drain(&mut rx)).len(), 1);
         {
@@ -10357,6 +16734,1030 @@ mod rc_w2_test_rehab {
             2
         );
     }
+
+    fn cloud_notice_final(
+        text: &str,
+        words: &[(&str, u64, u64)],
+        sample_start: u64,
+        sample_end: u64,
+    ) -> crate::asr_session::events::TranscriptEvent {
+        use crate::asr_session::events::{
+            CaptureWord, CommitMatchPath, FinalCommit, FinalGrain, SessionId, TranscriptEvent,
+        };
+        TranscriptEvent {
+            session_id: SessionId::new("cloud-final").expect("session id"),
+            utterance_id: 1,
+            sequence_id: 1,
+            text: text.to_string(),
+            range: None,
+            commit: Some(FinalCommit {
+                commit_id: "commit-1".to_string(),
+                sample_start,
+                sample_end,
+                capture_rate_hz: RATE,
+                grain: if words.is_empty() {
+                    FinalGrain::Phrase
+                } else {
+                    FinalGrain::Word
+                },
+                words: words
+                    .iter()
+                    .map(|(word, start, end)| CaptureWord {
+                        word: (*word).to_string(),
+                        sample_start: *start,
+                        sample_end: *end,
+                        probability: None,
+                    })
+                    .collect(),
+                word_time_clamped: 0,
+                phrase_fallback: false,
+                match_path: CommitMatchPath::Echo,
+                range_mismatch: None,
+                clock_unreliable: false,
+            }),
+        }
+    }
+
+    fn silence_close(secs: f32) -> super::super::silero_fusion::UtteranceCloseReceipt {
+        super::super::silero_fusion::UtteranceCloseReceipt {
+            decision_sample: sample(secs),
+            cause: super::super::silero_fusion::UtteranceCloseCause::SilenceFence,
+        }
+    }
+
+    fn cloud_owner(
+        state: &mut AppleSealState,
+        tx: &mpsc::UnboundedSender<EngineEvent>,
+        id: u64,
+        start: f32,
+        end: f32,
+    ) -> OccurrenceIdentity {
+        let owner = qualify(state, start, end);
+        for producer in [
+            LedgerObservationProducer::Apple,
+            LedgerObservationProducer::Lexicon,
+        ] {
+            admit_ledger_label(
+                state,
+                tx,
+                LabelAdmission {
+                    observation: LedgerObservationIdentity::new(producer, id, 0, owner.clone()),
+                    label: "zostaje",
+                    energy: EnergyAdmission::RequireExistingQualification,
+                },
+            )
+            .expect("qualified fixture label");
+        }
+        owner
+    }
+
+    fn cloud_open(state: &AppleSealState, owner: &OccurrenceIdentity) -> bool {
+        state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .frontier_of(owner)
+            .is_some_and(|frontier| {
+                frontier
+                    .open_producers()
+                    .contains(&LedgerObservationProducer::CloudLive)
+            })
+    }
+
+    #[test]
+    fn live_silero_receipt_drives_the_hub_commit_without_changing_owned_pcm() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, mut commit_rx) = mpsc::channel(4);
+        let mut state = state("live-cloud-receipt", 0.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        state.fusion_seal_armed = true;
+        state.fusion = Some(SileroIngress::new(
+            RATE,
+            &state.session_id,
+            state.capture_epoch,
+        ));
+        let mut cursor = 0;
+        let mut closed = None;
+        for frame in 0..100 {
+            let speech = frame < 20;
+            let pcm = vec![if speech { 0.25 } else { 0.0 }; 512];
+            state.audio.push(&pcm);
+            cursor += pcm.len() as u64;
+            let fusion = state.fusion.as_mut().unwrap();
+            fusion.push_scripted_speech_prob_for_test(if speech { 0.9 } else { 0.01 });
+            let ingest = fusion.ingest(&pcm, cursor);
+            let receipt = ingest
+                .closed
+                .first()
+                .and_then(|id| fusion.ledger().close_receipt(*id));
+            seal_sliced_by_silero(&mut state, &tx, &[]);
+            if let Some(receipt) = receipt {
+                closed = Some(receipt);
+                break;
+            }
+        }
+        let receipt = closed.expect("scripted VAD must reach a silence fence");
+        assert_eq!(commit_rx.try_recv().unwrap(), receipt.decision_sample);
+        assert_eq!(state.cloud_inflight.len(), 1);
+        assert_eq!(state.cloud_inflight[0].occurrences.len(), 1);
+        let owner = state.cloud_inflight[0].occurrences[0].clone();
+        assert_eq!(owner.sample_end, receipt.decision_sample);
+        assert!(cloud_open(&state, &owner));
+        let before = state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .qualified_occurrences()
+            .cloned()
+            .collect::<Vec<_>>();
+        state.commit_cloud_close(&tx, receipt);
+        assert!(commit_rx.try_recv().is_err());
+        assert_eq!(
+            state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .qualified_occurrences()
+                .cloned()
+                .collect::<Vec<_>>(),
+            before
+        );
+    }
+
+    #[test]
+    fn phrase_final_never_requeues_its_returned_observer() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, _commit_rx) = mpsc::channel(4);
+        let mut state = state("phrase-return", 2.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        let owner = cloud_owner(&mut state, &tx, 1, 0.0, 1.0);
+        state.commit_cloud_close(&tx, silence_close(1.5));
+        let mut final_event = cloud_notice_final("zostaje", &[], 0, sample(1.5));
+        final_event.commit.as_mut().unwrap().phrase_fallback = true;
+        state.admit_cloud_final(&tx, final_event);
+        assert!(!cloud_open(&state, &owner));
+        assert!(state.cloud_uncommitted.is_empty());
+        state.commit_cloud_close(&tx, silence_close(2.0));
+        assert!(state.cloud_inflight[0].occurrences.is_empty());
+        state.release_cloud_live_behind(&tx, sample(5.0));
+        assert_eq!(state.cloud_live_timed_out, 0);
+    }
+
+    #[test]
+    fn lane_loss_returns_tracked_and_inflight_and_disarms_future_scheduling() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, _commit_rx) = mpsc::channel(4);
+        let mut state = state("cloud-loss-all", 4.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        let first = cloud_owner(&mut state, &tx, 1, 0.0, 1.0);
+        state.commit_cloud_close(&tx, silence_close(1.5));
+        let open = cloud_owner(&mut state, &tx, 2, 2.0, 3.0);
+        state.handle_cloud_notice(&tx, super::CloudWorkerNotice::LaneLost);
+        assert_eq!(state.cloud_live_lane_lost, 2);
+        assert!(state.cloud_commit_tx.is_none());
+        assert!(state.cloud_uncommitted.is_empty());
+        assert!(state.cloud_inflight.is_empty());
+        assert!(!cloud_open(&state, &first));
+        assert!(!cloud_open(&state, &open));
+        let next = cloud_owner(&mut state, &tx, 3, 3.0, 4.0);
+        assert!(!cloud_open(&state, &next));
+        state.handle_cloud_notice(&tx, super::CloudWorkerNotice::LaneLost);
+        assert_eq!(state.cloud_live_lane_lost, 2);
+    }
+
+    #[test]
+    fn split_waits_for_silence_then_commits_both_occurrences_at_decision_sample() {
+        use super::super::silero_fusion::{UtteranceCloseCause, UtteranceCloseReceipt};
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, mut commit_rx) = mpsc::channel(4);
+        let mut state = state("split-commit", 4.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        let first = cloud_owner(&mut state, &tx, 1, 0.0, 1.0);
+        state.commit_cloud_close(
+            &tx,
+            UtteranceCloseReceipt {
+                decision_sample: sample(1.0),
+                cause: UtteranceCloseCause::MaxUtteranceSplit,
+            },
+        );
+        assert!(commit_rx.try_recv().is_err());
+        assert!(state.cloud_inflight.is_empty());
+        let second = cloud_owner(&mut state, &tx, 2, 1.0, 2.0);
+        state.commit_cloud_close(&tx, silence_close(2.6));
+        assert_eq!(commit_rx.try_recv().unwrap(), sample(2.6));
+        assert_eq!(
+            state.cloud_inflight[0].occurrences,
+            vec![first.clone(), second.clone()]
+        );
+        assert!(state.cloud_uncommitted.is_empty());
+        state.commit_cloud_close(&tx, silence_close(2.6));
+        assert!(commit_rx.try_recv().is_err());
+        state.admit_cloud_final(&tx, cloud_notice_final("", &[], 0, sample(2.6)));
+        assert!(!cloud_open(&state, &first));
+        assert!(!cloud_open(&state, &second));
+    }
+
+    #[test]
+    fn just_closed_owner_past_the_decision_is_released_by_its_own_final() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, _commit_rx) = mpsc::channel(4);
+        let mut state = state("callback-past-decision", 3.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        // S is 1.5 s; close_open at the callback head owns PCM through 1.6 s.
+        let mut boundaries = super::super::silero_fusion::UtteranceLedger::new();
+        boundaries.open_or_extend(&state.session_id, state.capture_epoch, 0, sample(1.0));
+        boundaries.close_open(sample(1.6));
+        assert!(reconcile_silero_ledger(&mut state, &tx, &boundaries, &[]));
+        let owner = OccurrenceIdentity::new(&state.session_id, 7, 0, sample(1.6));
+        assert!(state.cloud_uncommitted.contains(&owner));
+        state.commit_cloud_close(&tx, silence_close(1.5));
+        assert_eq!(state.cloud_inflight[0].occurrences, vec![owner.clone()]);
+        assert!(!state.cloud_uncommitted.contains(&owner));
+        state.admit_cloud_final(&tx, cloud_notice_final("", &[], 0, sample(1.5)));
+        assert!(!cloud_open(&state, &owner));
+        assert!(state.cloud_inflight.is_empty());
+    }
+
+    #[test]
+    fn open_padded_owner_before_s_waits_for_its_own_close_and_final() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, _commit_rx) = mpsc::channel(4);
+        let mut state = state("padded-open-owner", 3.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        let first = cloud_owner(&mut state, &tx, 1, 0.0, 1.6);
+        // B's pre-pad begins before S=1.5, but its physical extent is open.
+        let second = OccurrenceIdentity::new(&state.session_id, 7, sample(1.4), sample(2.4));
+        let calibration = state.energy_calibration.as_ref().unwrap();
+        let mut evidence = AcousticEvidence {
+            occurrence: second.clone(),
+            duration_ms: 1_000.0,
+            energy_integral: second.sample_len() as f64 * 0.25_f64.powi(2),
+            mean_rms_dbfs: 20.0 * 0.25_f64.log10(),
+            peak_dbfs: 20.0 * 0.25_f64.log10(),
+            vad_open_sample: Some(second.sample_start),
+            vad_close_sample: None,
+            evidence_calibration_version: calibration.version.clone(),
+        };
+        assert!(
+            state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .qualify(&evidence, calibration)
+                .is_qualified()
+        );
+        state.track_cloud_occurrence(&second);
+        state.commit_cloud_close(&tx, silence_close(1.5));
+        assert_eq!(state.cloud_inflight[0].occurrences, vec![first.clone()]);
+        assert!(state.cloud_uncommitted.contains(&second));
+        state.admit_cloud_final(&tx, cloud_notice_final("", &[], 0, sample(1.5)));
+        assert!(!cloud_open(&state, &first));
+        assert!(cloud_open(&state, &second));
+        // A later physical close qualifies the same identity, then its own
+        // silence commit takes the observer. Text never decides membership.
+        evidence.vad_close_sample = Some(second.sample_end);
+        assert!(
+            state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .qualify(&evidence, state.energy_calibration.as_ref().unwrap())
+                .is_qualified()
+        );
+        state.commit_cloud_close(&tx, silence_close(2.5));
+        assert_eq!(state.cloud_inflight[0].occurrences, vec![second.clone()]);
+        assert!(state.cloud_uncommitted.is_empty());
+        state.admit_cloud_final(&tx, cloud_notice_final("", &[], sample(1.5), sample(2.5)));
+        assert!(!cloud_open(&state, &second));
+    }
+
+    #[test]
+    fn reminted_utterance_id_tracks_the_new_occurrence_until_its_next_final() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, _commit_rx) = mpsc::channel(4);
+        let mut state = state("remint", 4.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        let first = cloud_owner(&mut state, &tx, 7, 0.0, 1.0);
+        state.commit_cloud_close(&tx, silence_close(1.5));
+        state.admit_cloud_final(&tx, cloud_notice_final("", &[], 0, sample(1.5)));
+        let reminted = cloud_owner(&mut state, &tx, 7, 2.0, 3.0);
+        assert!(state.cloud_uncommitted.contains(&reminted));
+        state.commit_cloud_close(&tx, silence_close(3.5));
+        assert_eq!(state.cloud_inflight[0].occurrences, vec![reminted.clone()]);
+        state.admit_cloud_final(&tx, cloud_notice_final("", &[], sample(1.5), sample(3.5)));
+        assert!(!cloud_open(&state, &first));
+        assert!(!cloud_open(&state, &reminted));
+        assert!(state.acoustic_ledger.lock().unwrap().is_sealed(&reminted));
+    }
+
+    #[test]
+    fn session_end_returns_committed_and_open_uncommitted_observers_once() {
+        use super::super::silero_fusion::{UtteranceCloseCause, UtteranceCloseReceipt};
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (commit_tx, mut commit_rx) = mpsc::channel(4);
+        let mut state = state("cloud-stop-all", 4.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        let first = cloud_owner(&mut state, &tx, 1, 0.0, 1.0);
+        state.commit_cloud_close(&tx, silence_close(1.5));
+        let open = cloud_owner(&mut state, &tx, 2, 2.0, 4.0);
+        state.commit_cloud_close(
+            &tx,
+            UtteranceCloseReceipt {
+                decision_sample: sample(4.0),
+                cause: UtteranceCloseCause::EndOfCapture,
+            },
+        );
+        assert_eq!(commit_rx.try_recv().unwrap(), sample(1.5));
+        assert!(
+            commit_rx.try_recv().is_err(),
+            "stop uses the existing lane end"
+        );
+        drain(&mut rx);
+        state.return_outstanding_cloud(&tx);
+        assert!(state.cloud_inflight.is_empty());
+        assert!(state.cloud_uncommitted.is_empty());
+        for owner in [&first, &open] {
+            assert!(!cloud_open(&state, owner));
+            assert!(state.acoustic_ledger.lock().unwrap().is_sealed(owner));
+        }
+        let seals = drain(&mut rx)
+            .iter()
+            .filter(|event| matches!(event, EngineEvent::LedgerSeal { .. }))
+            .count();
+        assert_eq!(seals, 2);
+        state.return_outstanding_cloud(&tx);
+        assert!(drain(&mut rx).is_empty());
+    }
+
+    #[test]
+    fn fluent_next_utterance_does_not_expire_a_final_inside_capture_grace() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, _commit_rx) = mpsc::channel(4);
+        let mut state = state("fluent-cloud", 4.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        let first = cloud_owner(&mut state, &tx, 1, 0.0, 1.0);
+        state.commit_cloud_close(&tx, silence_close(1.5));
+        let next = cloud_owner(&mut state, &tx, 2, 1.7, 2.2);
+        state.close_admission_horizon(&tx, sample(1.7));
+        state.release_cloud_live_behind(&tx, sample(2.7));
+        assert!(cloud_open(&state, &first));
+        assert!(!state.acoustic_ledger.lock().unwrap().is_sealed(&first));
+        state.admit_cloud_final(
+            &tx,
+            cloud_notice_final(
+                "cloud",
+                &[("cloud", sample(0.2), sample(0.6))],
+                0,
+                sample(1.5),
+            ),
+        );
+        assert_eq!(state.cloud_live_refused_sealed, 0);
+        assert_eq!(state.cloud_live_admitted, 1);
+        assert!(
+            state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .slots_of(&first)
+                .unwrap()
+                .iter()
+                .any(|slot| slot.producer == LedgerObservationProducer::CloudLive)
+        );
+        assert!(cloud_open(&state, &next));
+    }
+
+    #[test]
+    fn reverse_finals_release_only_their_matching_commit_and_unmatched_text_is_routed() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, _commit_rx) = mpsc::channel(4);
+        let mut state = state("reverse-cloud", 4.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        let first = cloud_owner(&mut state, &tx, 1, 0.0, 1.0);
+        state.commit_cloud_close(&tx, silence_close(1.5));
+        let second = cloud_owner(&mut state, &tx, 2, 2.0, 3.0);
+        state.commit_cloud_close(&tx, silence_close(3.5));
+        state.admit_cloud_final(&tx, cloud_notice_final("", &[], sample(1.5), sample(3.5)));
+        assert!(cloud_open(&state, &first));
+        assert!(!cloud_open(&state, &second));
+        assert_eq!(state.cloud_inflight[0].sample_end, sample(1.5));
+        state.admit_cloud_final(&tx, cloud_notice_final("", &[], 0, sample(1.5)));
+        assert!(!cloud_open(&state, &first));
+        assert!(state.cloud_inflight.is_empty());
+        state.admit_cloud_final(
+            &tx,
+            cloud_notice_final(
+                "kept",
+                &[("kept", sample(0.2), sample(0.6))],
+                0,
+                sample(1.5),
+            ),
+        );
+        assert_eq!(state.cloud_live_unmatched_final, 1);
+        assert!(state.acoustic_ledger.lock().unwrap().layer_trail().iter().any(|entry| {
+            matches!(&entry.decision, MutationReceipt::KeepVisibleUnanchored { label, .. } if label == "kept")
+        }));
+    }
+
+    #[test]
+    fn late_commit_end_selects_the_first_eligible_range() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, _commit_rx) = mpsc::channel(4);
+        let mut state = state("late-commit-end", 4.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        let first = cloud_owner(&mut state, &tx, 1, 0.0, 1.0);
+        state.commit_cloud_close(&tx, silence_close(1.5));
+        let second = cloud_owner(&mut state, &tx, 2, 2.0, 3.0);
+        state.commit_cloud_close(&tx, silence_close(3.5));
+        state.admit_cloud_final(&tx, cloud_notice_final("", &[], 0, sample(1.8)));
+        assert!(!cloud_open(&state, &first));
+        assert!(cloud_open(&state, &second));
+    }
+
+    #[test]
+    fn cloud_return_waits_for_whisper_on_the_same_frontier() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, _commit_rx) = mpsc::channel(4);
+        let mut state = state("cloud-and-whisper", 2.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        let owner = cloud_owner(&mut state, &tx, 1, 0.0, 1.0);
+        state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .schedule_observer(owner.clone(), LedgerObservationProducer::Whisper);
+        state.commit_cloud_close(&tx, silence_close(1.5));
+        state.admit_cloud_final(&tx, cloud_notice_final("", &[], 0, sample(1.5)));
+        assert!(!cloud_open(&state, &owner));
+        assert!(!state.acoustic_ledger.lock().unwrap().is_sealed(&owner));
+        state.finish_whisper_frontier(&tx, &owner);
+        assert!(state.acoustic_ledger.lock().unwrap().is_sealed(&owner));
+    }
+
+    #[test]
+    fn split_only_monologue_records_the_longest_uncommitted_capture_span() {
+        use super::super::silero_fusion::{UtteranceCloseCause, UtteranceCloseReceipt};
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, mut commit_rx) = mpsc::channel(4);
+        let mut state = state("long-monologue", 40.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        for second in [12.0, 24.0, 36.0, 40.0] {
+            state.observe_cloud_capture_head(sample(second));
+            state.commit_cloud_close(
+                &tx,
+                UtteranceCloseReceipt {
+                    decision_sample: sample(second),
+                    cause: UtteranceCloseCause::MaxUtteranceSplit,
+                },
+            );
+        }
+        assert!(commit_rx.try_recv().is_err());
+        assert_eq!(state.cloud_uncommitted_span_ms, 40_000);
+        state.commit_cloud_close(&tx, silence_close(40.0));
+        state.observe_cloud_capture_head(sample(42.0));
+        assert_eq!(state.cloud_uncommitted_span_ms, 40_000);
+    }
+
+    #[test]
+    fn cloud_commit_does_not_mint_or_resize_an_occurrence() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, _commit_rx) = mpsc::channel(4);
+        let mut state = state("commit-identity", 2.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        let occurrence = qualify(&mut state, 0.0, 1.0);
+        let before = state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .qualified_occurrences()
+            .cloned()
+            .collect::<Vec<_>>();
+        state.track_cloud_occurrence(&occurrence);
+        state.commit_cloud_close(&tx, silence_close(1.6));
+        let after = state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .qualified_occurrences()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(before, after);
+        assert_eq!(after[0].sample_start, occurrence.sample_start);
+        assert_eq!(after[0].sample_end, occurrence.sample_end);
+        assert_eq!(state.cloud_inflight.len(), 1);
+        assert_eq!(state.cloud_inflight[0].sample_end, sample(1.6));
+    }
+
+    #[test]
+    fn local_power_without_a_cloud_lane_leaves_the_ledger_unchanged() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut state = state("local-power", 2.0);
+        let occurrence = qualify(&mut state, 0.0, 1.0);
+        let observation = LedgerObservationIdentity::new(
+            LedgerObservationProducer::Apple,
+            1,
+            0,
+            occurrence.clone(),
+        );
+        state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .admit(&observation, "zostaje");
+        let before = state.acoustic_ledger.lock().unwrap().layer_trail().len();
+        let text_before = document(&state);
+        state.track_cloud_occurrence(&occurrence);
+        state.commit_cloud_close(&tx, silence_close(1.6));
+        assert!(state.cloud_inflight.is_empty());
+        assert_eq!(
+            state.acoustic_ledger.lock().unwrap().layer_trail().len(),
+            before
+        );
+        assert_eq!(document(&state), text_before);
+        assert_eq!(state.cloud_live_admitted, 0);
+        assert_eq!(state.cloud_live_timed_out, 0);
+    }
+
+    #[test]
+    fn empty_cloud_final_returns_the_scheduled_observer() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, _commit_rx) = mpsc::channel(4);
+        let mut state = state("empty-final", 2.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        let occurrence = qualify(&mut state, 0.0, 1.0);
+        state.track_cloud_occurrence(&occurrence);
+        state.commit_cloud_close(&tx, silence_close(1.5));
+        state.admit_cloud_final(&tx, cloud_notice_final("", &[], sample(0.0), sample(1.5)));
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert!(
+            !ledger
+                .frontier_of(&occurrence)
+                .unwrap()
+                .open_producers()
+                .contains(&LedgerObservationProducer::CloudLive)
+        );
+    }
+
+    #[test]
+    fn cloud_lane_loss_lets_the_covered_occurrence_seal() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut state = state("lane-lost", 2.0);
+        let occurrence = qualify(&mut state, 0.0, 1.0);
+        {
+            let mut ledger = state.acoustic_ledger.lock().unwrap();
+            ledger.schedule_frontier(
+                occurrence.clone(),
+                [
+                    LedgerObservationProducer::Apple,
+                    LedgerObservationProducer::CloudLive,
+                ],
+            );
+            assert!(
+                ledger
+                    .admit(
+                        &LedgerObservationIdentity::new(
+                            LedgerObservationProducer::Apple,
+                            1,
+                            0,
+                            occurrence.clone(),
+                        ),
+                        "zostaje",
+                    )
+                    .is_insert()
+            );
+            ledger.note_frontier_return(&occurrence, LedgerObservationProducer::Apple);
+        }
+        state.cloud_inflight.push_back(super::PendingCloudCommit {
+            sample_end: sample(1.5),
+            occurrences: vec![occurrence.clone()],
+        });
+        state.handle_cloud_notice(&tx, super::CloudWorkerNotice::LaneLost);
+        assert_eq!(state.cloud_live_lane_lost, 1);
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert!(ledger.is_sealed(&occurrence));
+        assert_eq!(ledger.text_of(&occurrence), Some("zostaje"));
+    }
+
+    #[test]
+    fn stalled_cloud_final_seals_only_after_capture_clock_grace() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut state = state("cloud-stall", 2.0);
+        let occurrence = qualify(&mut state, 0.0, 1.0);
+        {
+            let mut ledger = state.acoustic_ledger.lock().unwrap();
+            ledger.schedule_frontier(occurrence.clone(), [LedgerObservationProducer::CloudLive]);
+            assert!(
+                ledger
+                    .admit(
+                        &LedgerObservationIdentity::new(
+                            LedgerObservationProducer::Apple,
+                            1,
+                            0,
+                            occurrence.clone(),
+                        ),
+                        "zostaje",
+                    )
+                    .is_insert()
+            );
+        }
+        let commit_end = sample(1.5);
+        state.cloud_commit_tx = Some(mpsc::channel(1).0);
+        state.cloud_inflight.push_back(super::PendingCloudCommit {
+            sample_end: commit_end,
+            occurrences: vec![occurrence.clone()],
+        });
+        state.close_admission_horizon(&tx, commit_end);
+        assert!(!state.acoustic_ledger.lock().unwrap().is_sealed(&occurrence));
+        state.close_admission_horizon(&tx, commit_end + sample(0.2));
+        assert_eq!(state.cloud_live_timed_out, 0);
+        state.release_cloud_live_behind(&tx, commit_end + sample(3.0) - 1);
+        assert_eq!(state.cloud_live_timed_out, 0);
+        state.release_cloud_live_behind(&tx, commit_end + sample(3.0));
+        assert_eq!(state.cloud_live_timed_out, 1);
+        {
+            let ledger = state.acoustic_ledger.lock().unwrap();
+            assert!(ledger.is_sealed(&occurrence));
+        }
+        state.admit_cloud_final(
+            &tx,
+            cloud_notice_final(
+                "pozno",
+                &[("pozno", sample(0.2), sample(0.5))],
+                0,
+                commit_end,
+            ),
+        );
+        assert_eq!(state.cloud_live_refused_sealed, 1);
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&occurrence), Some("zostaje"));
+        assert!(ledger.layer_trail().iter().any(|entry| {
+            matches!(
+                entry.decision,
+                MutationReceipt::KeepVisibleUnanchored {
+                    reason: NoAuthorityReason::LateCloudLiveWordSealedOwner,
+                    ref label,
+                    ..
+                } if label.contains("pozno")
+            )
+        }));
+    }
+
+    #[test]
+    fn cloud_word_final_keeps_two_slots_on_one_owner() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut state = state("two-slots", 2.0);
+        let occurrence = qualify(&mut state, 0.0, 2.0);
+        state.cloud_inflight.push_back(super::PendingCloudCommit {
+            sample_end: sample(2.0),
+            occurrences: vec![occurrence.clone()],
+        });
+        state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .schedule_frontier(occurrence.clone(), [LedgerObservationProducer::CloudLive]);
+        state.admit_cloud_final(
+            &tx,
+            cloud_notice_final(
+                "dwa slowa",
+                &[
+                    ("dwa", sample(0.2), sample(0.6)),
+                    ("slowa", sample(1.0), sample(1.4)),
+                ],
+                0,
+                sample(2.0),
+            ),
+        );
+        let slots = state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .slots_of(&occurrence)
+            .unwrap()
+            .to_vec();
+        assert_eq!(slots.len(), 2);
+        assert_eq!(slots[0].text, "dwa");
+        assert_eq!(slots[1].text, "slowa");
+        assert!(
+            slots
+                .iter()
+                .all(|slot| slot.producer == LedgerObservationProducer::CloudLive)
+        );
+    }
+
+    #[test]
+    fn cloud_word_outside_every_owner_uses_the_whisper_gap_path() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut cloud = state("cloud-gap", 1.0);
+        let mut whisper = state("whisper-gap", 1.0);
+        let _ = qualify(&mut cloud, 0.0, 0.4);
+        let _ = qualify(&mut whisper, 0.0, 0.4);
+        let pin = TimedTailSegment {
+            text: "obok".into(),
+            range: TailSampleRange {
+                session: cloud.session_id.clone(),
+                capture_epoch: cloud.capture_epoch,
+                sample_start: sample(0.6),
+                sample_end: sample(0.8),
+            },
+            grain: crate::stt::tail_provider::TailSegmentGrain::Word,
+        };
+        let owners = cloud.word_owners();
+        cloud.route_overlap_pins(
+            &tx,
+            1,
+            0,
+            sample(1.0),
+            &owners,
+            std::slice::from_ref(&pin),
+            LedgerObservationProducer::CloudLive,
+        );
+        let whisper_pin = TimedTailSegment {
+            range: TailSampleRange {
+                session: whisper.session_id.clone(),
+                ..pin.range.clone()
+            },
+            ..pin
+        };
+        whisper.route_overlap_pins(
+            &tx,
+            1,
+            0,
+            sample(1.0),
+            &whisper.word_owners(),
+            &[whisper_pin],
+            LedgerObservationProducer::Whisper,
+        );
+        let cloud_reason = cloud
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .layer_trail()
+            .iter()
+            .rev()
+            .find_map(|entry| match &entry.decision {
+                MutationReceipt::KeepVisibleUnanchored { reason, .. } => Some(*reason),
+                _ => None,
+            });
+        let whisper_reason = whisper
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .layer_trail()
+            .iter()
+            .rev()
+            .find_map(|entry| match &entry.decision {
+                MutationReceipt::KeepVisibleUnanchored { reason, .. } => Some(*reason),
+                _ => None,
+            });
+        assert_eq!(cloud_reason, whisper_reason);
+        assert!(cloud_reason.is_some());
+        assert_eq!(cloud.cloud_live_unowned_routed, 1);
+    }
+
+    #[test]
+    fn apple_partial_or_error_never_claims_a_live_final() {
+        assert!(!apple_stop_final_received(&[]));
+        assert!(!apple_stop_final_received(&[LiveStreamEvent::Partial {
+            text: "visible words".into(),
+            segments: Vec::new(),
+        }]));
+        assert!(!apple_stop_final_received(&[LiveStreamEvent::Summary {
+            text: "visible words".into(),
+            segments: Vec::new(),
+            ok: false,
+            error: Some("lane lost".into()),
+        }]));
+        assert!(apple_stop_final_received(&[LiveStreamEvent::Summary {
+            text: String::new(),
+            segments: Vec::new(),
+            ok: true,
+            error: None,
+        }]));
+        let final_event = LiveStreamEvent::PhraseFinal {
+            text: "complete words".into(),
+            segments: Vec::new(),
+        };
+        assert!(apple_stop_final_received(std::slice::from_ref(
+            &final_event
+        )));
+        assert!(!apple_stop_final_received(&[
+            final_event,
+            LiveStreamEvent::Error {
+                message: "lane lost".into(),
+            },
+        ]));
+    }
+
+    #[test]
+    fn live_final_receipt_follows_paint_even_when_the_lane_is_lost() {
+        struct PaintSink {
+            completion: Mutex<tokio::sync::oneshot::Receiver<()>>,
+            painted: Mutex<Vec<EngineEvent>>,
+        }
+        impl EventSink for PaintSink {
+            fn on_event(&self, event: &EngineEvent) {
+                assert_eq!(
+                    self.completion.lock().unwrap().try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty),
+                    "the stop receipt cannot precede painting its final events",
+                );
+                self.painted.lock().unwrap().push(event.clone());
+            }
+        }
+        for succeeded in [true, false] {
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let (completion, receiver) = tokio::sync::oneshot::channel();
+            let sink = PaintSink {
+                completion: Mutex::new(receiver),
+                painted: Mutex::new(Vec::new()),
+            };
+            tx.send(EngineEvent::NoSpeech {
+                reason: "last admitted event".into(),
+            })
+            .unwrap();
+            let mut completion = Some(completion);
+            forward_live_finals_admitted(succeeded, &mut rx, &sink, None, &mut completion);
+            assert_eq!(sink.painted.lock().unwrap().len(), 1);
+            assert!(completion.is_none());
+            let received = sink.completion.lock().unwrap().try_recv();
+            if succeeded {
+                assert_eq!(received, Ok(()));
+            } else {
+                assert_eq!(
+                    received,
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn actual_lane_stop_retains_end_finals_in_the_forward_queue_once() {
+        use crate::asr_session::{
+            AsrSessionEvent, FakeAsrSessionProvider, Layer1Decision, RefinerMode, TranscriptEvent,
+        };
+        let input = Layer1SessionInput {
+            session_id: Layer1SessionId::new("stop-forward-queue").unwrap(),
+            locale: None,
+            sample_rate: RATE,
+        };
+        let mut first = cloud_notice_final("first", &[], 0, 500);
+        first.session_id = input.session_id.clone();
+        let mut last = cloud_notice_final("last", &[], 500, 1_000);
+        last.session_id = input.session_id.clone();
+        last.utterance_id = 2;
+        last.sequence_id = 3;
+        let interim = TranscriptEvent {
+            session_id: input.session_id.clone(),
+            utterance_id: 2,
+            sequence_id: 2,
+            text: "unfinished".into(),
+            range: None,
+            commit: None,
+        };
+        let provider = FakeAsrSessionProvider::with_script(
+            RefinerMode::CloudSession,
+            vec![
+                AsrSessionEvent::Final(first.clone()),
+                AsrSessionEvent::Partial(interim),
+                AsrSessionEvent::Final(last.clone()),
+            ],
+        );
+        let mut lane = RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(provider)), &input);
+        let _ = lane.offer_pcm(&vec![0.25; 500]);
+        let _ = lane.flush_holdback();
+        lane.poll();
+        assert_eq!(lane.take_unforwarded_finals(), vec![first.clone()]);
+        let _ = lane.offer_pcm(&vec![0.25; 500]);
+        // The second push releases only the partial; the final is released
+        // by the real lane.stop → provider.close → route_event path.
+        let outcome = lane.stop();
+        assert!(outcome.degrade_reason().is_none());
+        assert_eq!(outcome.finals(), &[first, last.clone()]);
+        assert!(cloud_stop_finals_cover_capture(
+            outcome.finals(),
+            lane.pushed_samples()
+        ));
+        assert_eq!(lane.take_unforwarded_finals(), vec![last]);
+        assert!(lane.take_unforwarded_finals().is_empty());
+    }
+
+    #[test]
+    fn clean_cloud_transport_stop_without_an_end_final_is_not_complete() {
+        use crate::asr_session::{FakeAsrSessionProvider, Layer1Decision, RefinerMode};
+        let input = Layer1SessionInput {
+            session_id: Layer1SessionId::new("stop-missing-final").unwrap(),
+            locale: None,
+            sample_rate: RATE,
+        };
+        for captured_samples in [0, 1_000] {
+            let provider =
+                FakeAsrSessionProvider::with_script(RefinerMode::CloudSession, Vec::new());
+            let mut lane =
+                RecorderLayer1Lane::open(Layer1Decision::Armed(Box::new(provider)), &input);
+            let _ = lane.offer_pcm(&vec![0.25; captured_samples]);
+            let outcome = lane.stop();
+            assert!(outcome.degrade_reason().is_none());
+            assert_eq!(
+                cloud_stop_finals_cover_capture(outcome.finals(), lane.pushed_samples()),
+                captured_samples == 0,
+            );
+        }
+        let end_only = cloud_notice_final("end", &[], 500, 1_000);
+        assert!(!cloud_stop_finals_cover_capture(&[end_only], 1_000));
+    }
+
+    #[test]
+    fn cloud_end_final_is_admitted_before_live_final_completion() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (commit_tx, _commit_rx) = mpsc::channel(4);
+        let (notice_tx, notice_rx) = std_mpsc::channel();
+        let mut state = state("cloud-stop-final", 2.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        let owner = cloud_owner(&mut state, &tx, 1, 0.0, 1.0);
+        state.commit_cloud_close(&tx, silence_close(1.5));
+        notice_tx
+            .send(CloudWorkerNotice::Final(Box::new(cloud_notice_final(
+                "cloud",
+                &[("cloud", sample(0.2), sample(0.6))],
+                0,
+                sample(1.5),
+            ))))
+            .unwrap();
+        notice_tx.send(CloudWorkerNotice::EndSettled).unwrap();
+        assert!(drain_cloud_stop_finals(&mut state, &tx, &notice_rx));
+        assert_eq!(state.cloud_live_admitted, 1);
+        assert!(!cloud_open(&state, &owner));
+        assert!(state.cloud_inflight.is_empty());
+        assert!(
+            state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .slots_of(&owner)
+                .unwrap()
+                .iter()
+                .any(|slot| slot.producer == LedgerObservationProducer::CloudLive)
+        );
+    }
+
+    #[test]
+    fn cloud_lane_loss_releases_stop_without_a_success_receipt() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (commit_tx, _commit_rx) = mpsc::channel(4);
+        let (notice_tx, notice_rx) = std_mpsc::channel();
+        let mut state = state("cloud-stop-lost", 2.0);
+        state.cloud_commit_tx = Some(commit_tx);
+        let owner = cloud_owner(&mut state, &tx, 1, 0.0, 1.0);
+        state.commit_cloud_close(&tx, silence_close(1.5));
+        // Keep the notice sender alive and send no end receipt: lane loss is
+        // enough to release this wait, even with outstanding commit debt.
+        notice_tx.send(CloudWorkerNotice::LaneLost).unwrap();
+        assert!(!drain_cloud_stop_finals(&mut state, &tx, &notice_rx));
+        assert!(!cloud_open(&state, &owner));
+        assert!(state.cloud_inflight.is_empty());
+        let (completion, mut receiver) = tokio::sync::oneshot::channel();
+        forward_live_finals_admitted(
+            false,
+            &mut rx,
+            &RecordingSink::default(),
+            None,
+            &mut Some(completion),
+        );
+        assert_eq!(
+            receiver.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed),
+        );
+    }
+
+    #[test]
+    fn internal_seal_ack_does_not_release_a_pending_cloud_final() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (ack_tx, mut ack_rx) = tokio::sync::oneshot::channel();
+        let (_live_final_tx, mut live_final_rx) = tokio::sync::oneshot::channel::<()>();
+        let mut state = state("stop-ack", 1.0);
+        let occurrence = qualify(&mut state, 0.0, 0.5);
+        state.cloud_inflight.push_back(super::PendingCloudCommit {
+            sample_end: sample(1.0),
+            occurrences: vec![occurrence],
+        });
+        finish_capture_after_seal(
+            &mut state,
+            &tx,
+            1.0,
+            ack_tx,
+            false,
+            || Ok(Vec::new()),
+            |_| {},
+        )
+        .expect("finish");
+        assert!(ack_rx.try_recv().is_ok());
+        assert_eq!(state.cloud_inflight.len(), 1);
+        assert_eq!(
+            live_final_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty),
+        );
+    }
 }
 
 /// rc-w2-composer-turn: the live paid-formatter arming seam.
@@ -10487,10 +17888,70 @@ mod live_refinement_admission_tests {
 
     fn finish(request: &TailPatchRequest) -> TailPatchCompletion {
         TailPatchCompletion {
+            submission_sequence: request.submission_sequence,
             utterance_id: request.utterance_id,
             request_identity: Some(request.provider_request.identity.clone()),
             payload: None,
             member_occurrences: request.member_occurrences.clone(),
+        }
+    }
+
+    fn refinement_log(run: impl FnOnce()) -> String {
+        let buffer = Arc::new(Mutex::new(String::new()));
+        let capture = RefinementCapture {
+            buffer: Arc::clone(&buffer),
+            next_span: std::sync::atomic::AtomicU64::new(1),
+        };
+        tracing::subscriber::with_default(capture, run);
+        buffer.lock().expect("refinement log").clone()
+    }
+
+    struct RefinementCapture {
+        buffer: Arc<Mutex<String>>,
+        next_span: std::sync::atomic::AtomicU64,
+    }
+
+    impl tracing::Subscriber for RefinementCapture {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            *metadata.level() <= tracing::Level::INFO
+        }
+
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            let id = self
+                .next_span
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            tracing::span::Id::from_u64(id.max(1))
+        }
+
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut visitor = FieldVisitor(String::new());
+            event.record(&mut visitor);
+            if let Ok(mut buffer) = self.buffer.lock() {
+                buffer.push_str(&visitor.0);
+                buffer.push('\n');
+            }
+        }
+
+        fn enter(&self, _span: &tracing::span::Id) {}
+
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    struct FieldVisitor(String);
+
+    impl tracing::field::Visit for FieldVisitor {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            use std::fmt::Write;
+            let _ = write!(self.0, "{}={:?} ", field.name(), value);
+        }
+
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            use std::fmt::Write;
+            let _ = write!(self.0, "{}={} ", field.name(), value);
         }
     }
 
@@ -10513,6 +17974,7 @@ mod live_refinement_admission_tests {
             identity: request.provider_request.identity.clone(),
             text: "hello".into(),
             segments: vec![TimedTailSegment {
+                grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 text: "hello".into(),
                 range: TailSampleRange {
                     session: occurrence.session.clone(),
@@ -10526,6 +17988,7 @@ mod live_refinement_admission_tests {
             provider_id: TailProviderId::Fake,
             elapsed_ms: 0,
             evidence: TailProviderEvidence {
+                segment_grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 source: TailEvidenceSource::Whisper,
                 revision: Some("synthetic-live-admission".into()),
                 stability: TailEvidenceStability::Final,
@@ -10623,6 +18086,7 @@ mod live_refinement_admission_tests {
                 payload.segments[0].text = payload.text.clone();
             }
             state.complete_whisper_window(&events, completion, 20.0);
+            state.close_admission_horizon(&events, 2_600);
             let mut ledger = state.acoustic_ledger.lock().unwrap();
             assert_eq!(ledger.text_recovery_pending(&occurrence), !succeeds);
             assert_eq!(ledger.is_sealed(&occurrence), succeeds);
@@ -10701,6 +18165,7 @@ mod live_refinement_admission_tests {
                 }
                 while receiver.try_recv().is_ok() {}
                 state.complete_whisper_window(&events, completion, 20.0);
+                state.close_admission_horizon(&events, occurrence.sample_end);
                 let accepted = defect == "none";
                 assert_eq!(
                     OccurrenceIdentity::from(&request.provider_request.identity.range),
@@ -10721,7 +18186,7 @@ mod live_refinement_admission_tests {
                         .is_empty()
                 );
                 drop(ledger);
-                assert_eq!(state.tail_patch_awaiting_completion, 0);
+                assert_eq!(state.tail_patch_awaiting_completion(), 0);
                 assert!(state.refinement_submitted.is_empty());
                 let emitted = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
                 assert_eq!(
@@ -10787,7 +18252,7 @@ mod live_refinement_admission_tests {
                 _ => unreachable!(),
             }
             state.complete_whisper_window(&events, completion, 20.0);
-            assert_eq!(state.tail_patch_awaiting_completion, 1, "{defect}");
+            assert_eq!(state.tail_patch_awaiting_completion(), 1, "{defect}");
             assert_eq!(state.refinement_submitted.len(), 1);
             assert!(state.pending_events.contains_key(&request.utterance_id));
             let ledger = state.acoustic_ledger.lock().unwrap();
@@ -10804,12 +18269,13 @@ mod live_refinement_admission_tests {
             assert!(receiver.try_recv().is_err());
         }
         state.complete_whisper_window(&events, labelled_completion(&request), 20.0);
+        state.close_admission_horizon(&events, occurrence.sample_end);
         assert_eq!(
             state.acoustic_ledger.lock().unwrap().text_of(occurrence),
             Some("hello")
         );
         assert!(state.acoustic_ledger.lock().unwrap().is_sealed(occurrence));
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert!(state.refinement_submitted.is_empty());
         let emitted = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
         assert_eq!(
@@ -10855,7 +18321,7 @@ mod live_refinement_admission_tests {
         while receiver.try_recv().is_ok() {}
         state.complete_whisper_window(&events, labelled_completion(&unsolicited), 20.0);
         assert!(receiver.try_recv().is_err());
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert!(state.refinement_submitted.is_empty());
         assert!(!state.layer1_coalesce.is_empty());
         let ledger = state.acoustic_ledger.lock().unwrap();
@@ -10872,6 +18338,7 @@ mod live_refinement_admission_tests {
         assert!(state.flush_layer1_coalesce(&events));
         let request = requests.try_recv().unwrap();
         state.complete_whisper_window(&events, labelled_completion(&request), 20.0);
+        state.close_admission_horizon(&events, occurrence.sample_end);
         assert_eq!(
             state.acoustic_ledger.lock().unwrap().text_of(occurrence),
             Some("hello")
@@ -10899,6 +18366,7 @@ mod live_refinement_admission_tests {
             }
             while receiver.try_recv().is_ok() {}
             state.complete_whisper_window(&events, completion, 20.0);
+            state.close_admission_horizon(&events, occurrence.sample_end);
             let ledger = state.acoustic_ledger.lock().unwrap();
             assert_eq!(ledger.text_of(occurrence), None, "{defect}");
             assert!(!ledger.is_sealed(occurrence));
@@ -10910,7 +18378,7 @@ mod live_refinement_admission_tests {
                     .is_empty()
             );
             drop(ledger);
-            assert_eq!(state.tail_patch_awaiting_completion, 0);
+            assert_eq!(state.tail_patch_awaiting_completion(), 0);
             assert!(state.refinement_submitted.is_empty());
             let emitted = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
             assert!(!emitted.iter().any(|event| matches!(event,
@@ -11008,6 +18476,7 @@ mod live_refinement_admission_tests {
             Some("hello")
         );
         state.complete_whisper_window(&events, labelled_completion(&request), 20.0);
+        state.close_admission_horizon(&events, occurrence.sample_end);
         assert!(state.acoustic_ledger.lock().unwrap().is_sealed(occurrence));
         let emitted = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
         assert_eq!(emitted.iter().filter(|event| matches!(event,
@@ -11018,6 +18487,43 @@ mod live_refinement_admission_tests {
             EngineEvent::LedgerMutation { label, receipt, .. }
                 if label.trim().is_empty() && receipt.grants_mutation()
         )));
+    }
+
+    #[test]
+    fn apple_word_slots_are_pinned_before_the_admission_is_published() {
+        let (mut state, events, mut receiver, _requests) = fixture(1);
+        assert!(reconcile_silero_ledger(
+            &mut state,
+            &events,
+            &closed(1),
+            &[
+                TranscriptSegment {
+                    text: "hello".into(),
+                    start_ts: 0.0,
+                    end_ts: 0.1
+                },
+                TranscriptSegment {
+                    text: "again".into(),
+                    start_ts: 0.2,
+                    end_ts: 0.4
+                },
+            ]
+        ));
+        let occurrence = OccurrenceIdentity::new("live-admission", 7, 0, 400);
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        ledger.assert_slot_labels();
+        let slots = ledger.slots_of(&occurrence).unwrap();
+        assert_eq!(slots.len(), 2);
+        assert_eq!((slots[0].sample_start, slots[0].sample_end), (0, 100));
+        assert_eq!((slots[1].sample_start, slots[1].sample_end), (200, 400));
+        let tokens = ledger.compose(&occurrence).unwrap().tokens;
+        assert_eq!(tokens[0].token_sample_end, Some(100));
+        assert_eq!(tokens[1].token_sample_start, Some(200));
+        assert!(std::iter::from_fn(|| receiver.try_recv().ok()).any(|event| matches!(event,
+            EngineEvent::LedgerMutation { observation, receipt: MutationReceipt::Insert { .. }, .. }
+                if observation.producer == LedgerObservationProducer::Apple
+        )));
+        assert_eq!(ledger.conservation().residue(), 0);
     }
 
     #[test]
@@ -11035,11 +18541,12 @@ mod live_refinement_admission_tests {
             .unwrap();
         let completion = labelled_completion(&request);
         state.complete_whisper_window(&events, completion, 20.0);
+        state.close_admission_horizon(&events, 400);
         let ledger = state.acoustic_ledger.lock().unwrap();
         assert_eq!(ledger.text_of(&occurrence), Some("hello"));
         assert!(ledger.is_sealed(&occurrence));
         assert_eq!(state.tail_patch_jobs_applied, 1);
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
         let seal = ledger.seal_of(&occurrence).unwrap().clone();
         drop(ledger);
         let emitted = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
@@ -11089,6 +18596,7 @@ mod live_refinement_admission_tests {
         let request = requests.try_recv().unwrap();
         state.complete_whisper_window(&events, finish(&request), 20.0);
         state.complete_whisper_window(&events, finish(&request), 20.0);
+        state.close_admission_horizon(&events, 400);
         let emitted = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
         assert_eq!(emitted.iter().filter(|event| matches!(event,
             EngineEvent::LedgerMutation { observation, label, receipt: MutationReceipt::Insert { .. } }
@@ -11106,7 +18614,7 @@ mod live_refinement_admission_tests {
             1
         );
         assert_eq!(state.sealed_count, 1);
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert!(requests.try_recv().is_err());
     }
 
@@ -11129,6 +18637,7 @@ mod live_refinement_admission_tests {
             .clone();
         state.complete_whisper_window(&events, finish(&request), 20.0);
         state.complete_whisper_window(&events, finish(&request), 20.0);
+        state.close_admission_horizon(&events, occurrence.sample_end);
         {
             let mut ledger = state.acoustic_ledger.lock().unwrap();
             assert_eq!(
@@ -11200,7 +18709,7 @@ mod live_refinement_admission_tests {
             "same occurrence never decodes twice"
         );
         assert_eq!(state.tail_patch_jobs_skipped, 1);
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert_eq!(
             state.window_by_samples(0, 400).unwrap().samples,
             vec![0.25; 400]
@@ -11261,20 +18770,27 @@ mod live_refinement_admission_tests {
     }
 
     #[test]
-    fn oversized_owned_pcm_is_classified_without_an_unbounded_backlog() {
+    fn oversized_owned_pcm_is_split_before_the_pending_cap() {
         let (mut state, events, mut receiver, mut requests) = fixture(1);
         state.audio.push(&vec![0.25; 20_000]);
         let mut ledger = UtteranceLedger::new();
         ledger.open_or_extend("live-admission", 7, 0, 40_000);
         ledger.close_open(40_000);
         reconcile_silero_ledger(&mut state, &events, &ledger, &[]);
-        assert_eq!(
-            warnings(&mut receiver, RefinementFailure::BacklogExhausted.code()),
-            1
-        );
-        assert!(state.refinement_pending.is_empty());
         assert!(state.layer1_coalesce.is_empty());
-        assert!(requests.try_recv().is_err());
+        assert!(
+            state.windows_admitted >= 2,
+            "40 s at 1 kHz is split into step-1 windows, admitted {}",
+            state.windows_admitted
+        );
+        assert!(state.refinement_pending.len() <= LIVE_REFINEMENT_PENDING_CAP);
+        let request = requests.try_recv().expect("one window fits the channel");
+        assert!(request.audio.len() <= 4 * RATE as usize);
+        let backlog = warnings(&mut receiver, RefinementFailure::BacklogExhausted.code());
+        assert!(
+            !(state.windows_admitted == 0 && backlog == 1),
+            "the fragment is not one whole-fragment backlog refusal"
+        );
         assert_eq!(state.audio.session_sample_end(), 40_000);
     }
 
@@ -11320,7 +18836,7 @@ mod live_refinement_admission_tests {
         assert_eq!(ids, BTreeSet::from([1, 2, 3]));
         assert!(state.refinement_pending.is_empty());
         assert!(state.refinement_submitted.is_empty());
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
     }
 
     #[test]
@@ -11338,6 +18854,7 @@ mod live_refinement_admission_tests {
             warnings(&mut receiver, RefinementFailure::LaneGone.code()),
             0
         );
+        state.close_admission_horizon(&events, 2_400);
         for id in 0..3 {
             reconcile_silero_ledger(
                 &mut state,
@@ -11362,7 +18879,7 @@ mod live_refinement_admission_tests {
             0
         );
         assert!(state.refinement_pending.is_empty());
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
     }
 
     #[test]
@@ -11395,18 +18912,408 @@ mod live_refinement_admission_tests {
         reconcile_silero_ledger(&mut state, &events, &closed(12), &[]);
         state.flush_layer1_coalesce(&events);
         assert_eq!(state.refinement_submitted.len(), 1);
-        assert_eq!(state.refinement_pending.len(), LIVE_REFINEMENT_PENDING_CAP);
+        assert!(state.refinement_pending.len() <= LIVE_REFINEMENT_PENDING_CAP);
+        assert!(state.tail_patch_backpressure_drops > 0);
         assert_eq!(
             warnings(&mut receiver, RefinementFailure::BacklogExhausted.code()),
-            3
+            state.tail_patch_backpressure_drops as usize
         );
-        assert_eq!(state.tail_patch_backpressure_drops, 3);
         assert_eq!(
             state.refinement_submitted.len()
                 + state.refinement_pending.len()
                 + state.tail_patch_backpressure_drops as usize,
             12
         );
+    }
+
+    // The take's 48 kHz geometry deliberately reuses request 10 and its window.
+    fn tc3_stage_member(state: &mut AppleSealState, occurrence: &OccurrenceIdentity) {
+        let calibration = state.energy_calibration.clone().unwrap();
+        let mut ledger = state.acoustic_ledger.lock().unwrap();
+        assert!(
+            ledger
+                .qualify(
+                    &AcousticEvidence {
+                        occurrence: occurrence.clone(),
+                        duration_ms: occurrence.sample_len() as f64 / 48.0,
+                        energy_integral: occurrence.sample_len() as f64 * 0.0625,
+                        mean_rms_dbfs: -12.0,
+                        peak_dbfs: -12.0,
+                        vad_open_sample: Some(occurrence.sample_start),
+                        vad_close_sample: Some(occurrence.sample_end),
+                        evidence_calibration_version: calibration.version.clone(),
+                    },
+                    &calibration,
+                )
+                .is_qualified()
+        );
+        ledger.schedule_frontier(occurrence.clone(), vec![LedgerObservationProducer::Whisper]);
+        drop(ledger);
+        state.pending_events.insert(
+            10,
+            PendingAppleSeal {
+                occurrence: occurrence.clone(),
+                raw_text: String::new(),
+                layer1_baseline: String::new(),
+                start_ts: occurrence.sample_start as f32 / 48_000.0,
+                end_ts: occurrence.sample_end as f32 / 48_000.0,
+                segments: Vec::new(),
+            },
+        );
+    }
+
+    fn tc3_submit_window(
+        state: &mut AppleSealState,
+        events: &mpsc::UnboundedSender<EngineEvent>,
+        requests: &mut mpsc::Receiver<TailPatchRequest>,
+        occurrence: &OccurrenceIdentity,
+        start: u64,
+        end: u64,
+    ) -> TailPatchRequest {
+        assert!(state.queue_layer1_flush(
+            events,
+            CoalesceFlush {
+                audio: vec![0.25; (end - start) as usize],
+                committed_text: String::new(),
+                member_ids: vec![(10, occurrence.sample_end as f32 / 48_000.0)],
+                member_occurrences: vec![(10, occurrence.clone())],
+                neighbour_context: String::new(),
+                sample_start: start,
+                sample_end: end,
+                admit_sample_start: occurrence.sample_start,
+                admit_sample_end: occurrence.sample_end,
+                primary_utterance_id: 10,
+            }
+        ));
+        let request = requests.try_recv().expect("accepted submission");
+        assert_eq!(request.provider_request.identity.request_id, 10);
+        assert_eq!(request.provider_request.identity.range.sample_start, start);
+        assert_eq!(request.provider_request.identity.range.sample_end, end);
+        request
+    }
+
+    fn tc3_duplicate_geometry(
+        order: [usize; 3],
+    ) -> (
+        AppleSealState,
+        mpsc::UnboundedSender<EngineEvent>,
+        mpsc::UnboundedReceiver<EngineEvent>,
+    ) {
+        let (events, receiver) = mpsc::unbounded_channel();
+        let (sender, mut requests) = mpsc::channel(3);
+        let mut state = AppleSealState::new_with_tail_patch_for_session(
+            48_000,
+            "ef1fa240".into(),
+            7,
+            sender,
+            Arc::new(Mutex::new(AcousticLedger::new())),
+            Some(EnergyCalibration {
+                version: "tc3-owned-pcm".into(),
+                min_energy_integral: 1.0,
+                min_valley_samples: 1,
+            }),
+        );
+        state.whisper_context_window_sec = 0.0;
+        let old = OccurrenceIdentity::new("ef1fa240", 7, 2_132_992, 2_325_504);
+        tc3_stage_member(&mut state, &old);
+        let first = tc3_submit_window(
+            &mut state,
+            &events,
+            &mut requests,
+            &old,
+            1_941_504,
+            2_325_504,
+        );
+        // Re-close the physical member while the first decode is outstanding.
+        state.return_whisper_without_label(&events, 10, &old);
+        let current = OccurrenceIdentity::new("ef1fa240", 7, 2_132_992, 2_317_824);
+        tc3_stage_member(&mut state, &current);
+        let second = tc3_submit_window(
+            &mut state,
+            &events,
+            &mut requests,
+            &current,
+            1_885_824,
+            2_317_824,
+        );
+        let third = tc3_submit_window(
+            &mut state,
+            &events,
+            &mut requests,
+            &current,
+            1_941_504,
+            2_325_504,
+        );
+        assert_eq!(
+            first.provider_request.identity,
+            third.provider_request.identity
+        );
+        assert!(first.submission_sequence < second.submission_sequence);
+        assert!(second.submission_sequence < third.submission_sequence);
+        assert_eq!(state.refinement_submitted.len(), 3);
+        assert_eq!(state.tail_patch_awaiting_completion(), 3);
+        let submitted = [first, second, third];
+        for (finished, index) in order.into_iter().enumerate() {
+            let logged = refinement_log(|| {
+                state.complete_whisper_window(
+                    &events,
+                    labelled_completion(&submitted[index]),
+                    50.0,
+                );
+            });
+            assert!(!logged.contains("unmatched_completion"), "{logged}");
+            if index == 0 {
+                assert!(logged.contains("stale_completion"), "{logged}");
+            }
+            assert_eq!(
+                state.tail_patch_awaiting_completion(),
+                (2 - finished) as u64
+            );
+            assert_eq!(state.refinement_submitted.len(), 2 - finished);
+            assert_eq!(
+                state.tail_patch_jobs_applied + state.tail_patch_jobs_skipped,
+                (finished + 1) as u64,
+                "every matched decode must reach a terminal bucket"
+            );
+        }
+        assert!(state.refinement_submitted.is_empty());
+        assert!(state.refinement_pending.is_empty());
+        assert_eq!(
+            state.acoustic_ledger.lock().unwrap().text_of(&current),
+            Some("hello")
+        );
+        let receipt = tail_patch_receipt_after_stop(
+            true,
+            3,
+            Some(TailPatchWorkerAccounting {
+                applied_jobs: state.tail_patch_jobs_applied,
+                skipped_jobs: state.tail_patch_jobs_skipped,
+                timeout_residue: state.tail_patch_awaiting_completion(),
+            }),
+            SessionConservationReceipt::default(),
+        );
+        assert_eq!(receipt.timed_out, 0);
+        assert_eq!(receipt.abandoned, 0);
+        assert_eq!(receipt.drain, TailPatchDrainDisposition::Completed);
+        (state, events, receiver)
+    }
+
+    #[test]
+    fn tc3_duplicate_identity_completes_in_submission_order() {
+        tc3_duplicate_geometry([0, 1, 2]);
+    }
+
+    #[test]
+    fn tc3_duplicate_identity_completes_out_of_order() {
+        tc3_duplicate_geometry([2, 0, 1]);
+    }
+
+    #[test]
+    fn tc3_empty_stop_drain_returns_on_first_tick() {
+        let (mut state, events, mut receiver) = tc3_duplicate_geometry([0, 1, 2]);
+        let now = Instant::now();
+        let logged = refinement_log(|| {
+            assert!(!state.stop_refinements_tick(&events, now, now + Duration::from_secs(5)));
+            assert!(!state.stop_refinements_tick(&events, now, now));
+        });
+        assert!(
+            !logged.contains("live_refinement_stop_deadline"),
+            "{logged}"
+        );
+        assert_eq!(
+            warnings(&mut receiver, RefinementFailure::StopDeadline.code()),
+            0
+        );
+    }
+
+    #[test]
+    fn local_power_stop_deadline_preserves_clock_residue_and_disposition() {
+        let (mut state, events, mut receiver, mut requests) = fixture(1);
+        reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
+        state.flush_layer1_coalesce(&events);
+        let request = requests.try_recv().unwrap();
+        let occurrence = request.member_occurrences[0].1.clone();
+        assert!(state.cloud_commit_tx.is_none());
+        assert!(state.cloud_uncommitted.is_empty());
+        assert!(state.cloud_inflight.is_empty());
+        let deadline = state.refinement_started + Duration::from_secs(5);
+        let outstanding = state.tail_patch_awaiting_completion();
+        assert_eq!(outstanding, 1);
+        let mut residue = 0;
+        let logged = refinement_log(|| {
+            if !state.stop_refinements_tick(&events, deadline, deadline) {
+                residue = outstanding;
+            }
+        });
+        assert_eq!(state.refinement_clock, deadline);
+        assert_eq!(residue, outstanding);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
+        let dispositions = logged
+            .lines()
+            .filter(|line| line.contains("disposition=live_refinement_stop_deadline"))
+            .collect::<Vec<_>>();
+        assert_eq!(dispositions.len(), 1, "{logged}");
+        let disposition = dispositions[0];
+        assert!(disposition.contains("elapsed_ms=5000 "), "{logged}");
+        assert!(disposition.contains("session=live-admission "), "{logged}");
+        assert!(disposition.contains("capture_epoch=7 "), "{logged}");
+        assert!(
+            disposition.contains(&format!("sample_start={} ", occurrence.sample_start)),
+            "{logged}"
+        );
+        assert!(
+            disposition.contains(&format!("sample_end={} ", occurrence.sample_end)),
+            "{logged}"
+        );
+        assert_eq!(
+            warnings(&mut receiver, RefinementFailure::StopDeadline.code()),
+            1
+        );
+        let receipt = tail_patch_receipt_after_stop(
+            true,
+            1,
+            Some(TailPatchWorkerAccounting {
+                applied_jobs: state.tail_patch_jobs_applied,
+                skipped_jobs: state.tail_patch_jobs_skipped,
+                timeout_residue: residue,
+            }),
+            SessionConservationReceipt::default(),
+        );
+        assert_eq!(receipt.applied, 0);
+        assert_eq!(receipt.skipped, 0);
+        assert_eq!(receipt.timed_out, 1);
+        assert_eq!(receipt.abandoned, 0);
+        assert_eq!(receipt.drain, TailPatchDrainDisposition::TimedOut);
+    }
+
+    #[test]
+    fn tc3_stop_admits_real_inflight_job_before_deadline() {
+        let (mut state, events, mut receiver, mut requests) = fixture(1);
+        reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
+        state.flush_layer1_coalesce(&events);
+        let request = requests.try_recv().unwrap();
+        let occurrence = request.member_occurrences[0].1.clone();
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(5);
+        assert!(state.stop_refinements_tick(&events, now, deadline));
+        state.complete_whisper_window(&events, labelled_completion(&request), 20.0);
+        let outstanding = state.tail_patch_awaiting_completion();
+        let mut residue = 0;
+        let waiting = state.stop_refinements_tick(&events, now + LIVE_WORKER_QUANTUM, deadline);
+        if !waiting {
+            residue = outstanding;
+        }
+        assert!(!waiting);
+        assert_eq!(residue, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
+        assert_eq!(
+            state.acoustic_ledger.lock().unwrap().text_of(&occurrence),
+            Some("hello")
+        );
+        assert_eq!(
+            warnings(&mut receiver, RefinementFailure::StopDeadline.code()),
+            0
+        );
+        let receipt = tail_patch_receipt_after_stop(
+            true,
+            1,
+            Some(TailPatchWorkerAccounting {
+                applied_jobs: state.tail_patch_jobs_applied,
+                skipped_jobs: state.tail_patch_jobs_skipped,
+                timeout_residue: residue,
+            }),
+            SessionConservationReceipt::default(),
+        );
+        assert_eq!(receipt.applied, 1);
+        assert_eq!(receipt.timed_out, 0);
+        assert_eq!(receipt.drain, TailPatchDrainDisposition::Completed);
+    }
+
+    #[test]
+    fn tc3_unmatched_completion_reports_without_consuming_work() {
+        let (mut state, events, _receiver, mut requests) = fixture(1);
+        reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
+        state.flush_layer1_coalesce(&events);
+        let request = requests.try_recv().unwrap();
+        for defect in ["submission", "request", "missing_identity"] {
+            let mut completion = labelled_completion(&request);
+            match defect {
+                "submission" => completion.submission_sequence += 1,
+                "request" => completion.request_identity.as_mut().unwrap().request_id += 100,
+                _ => completion.request_identity = None,
+            }
+            let logged = refinement_log(|| {
+                state.complete_whisper_window(&events, completion, 20.0);
+            });
+            assert!(
+                logged.contains("unmatched_completion"),
+                "{defect}: {logged}"
+            );
+            for field in [
+                "submission_sequence=",
+                "request_id=",
+                "sample_start=",
+                "sample_end=",
+            ] {
+                assert!(logged.contains(field), "{defect}: {logged}");
+            }
+            assert_eq!(state.tail_patch_awaiting_completion(), 1);
+            assert_eq!(state.refinement_submitted.len(), 1);
+            assert_eq!(
+                state.tail_patch_jobs_applied + state.tail_patch_jobs_skipped,
+                0
+            );
+        }
+        state.complete_whisper_window(&events, labelled_completion(&request), 20.0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
+        assert_eq!(state.tail_patch_jobs_applied, 1);
+    }
+
+    #[test]
+    fn tc3_async_completion_echoes_submission() {
+        for succeeds in [false, true] {
+            let (mut state, events, _receiver, mut requests) = fixture(1);
+            reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
+            state.flush_layer1_coalesce(&events);
+            let request = requests.try_recv().unwrap();
+            let inflight = TailPatchInFlight {
+                submission_sequence: request.submission_sequence,
+                utterance_id: request.utterance_id,
+                request_identity: request.provider_request.identity.clone(),
+                admit_sample_start: request.admit_sample_start,
+                admit_sample_end: request.admit_sample_end,
+                member_occurrences: request.member_occurrences.clone(),
+            };
+            let result = if succeeds {
+                Ok(TailPatchJobResult {
+                    utterance_id: request.utterance_id,
+                    outcome: TailPatchOutcome::NoChange,
+                    payload: labelled_completion(&request).payload.unwrap(),
+                })
+            } else {
+                Err(anyhow::anyhow!("synthetic provider failure"))
+            };
+            let mut lane = AppleTailPatchLane::new(
+                RATE,
+                None,
+                crate::stt::tail_provider::TailProviderId::Fake,
+            );
+            let completion = lane.finish_for_worker(Some(inflight), result);
+            let (sender, receiver) = std_mpsc::channel();
+            assert!(lane.forward_completion_to_worker(&sender, completion));
+            let returned = receiver.try_recv().unwrap();
+            assert_eq!(returned.submission_sequence, request.submission_sequence);
+            assert_eq!(
+                returned.request_identity,
+                Some(request.provider_request.identity)
+            );
+            assert_eq!(returned.member_occurrences, request.member_occurrences);
+            assert_eq!(returned.payload.is_some(), succeeds);
+            state.complete_whisper_window(&events, returned, 20.0);
+            assert_eq!(state.tail_patch_awaiting_completion(), 0);
+            assert_eq!(state.tail_patch_jobs_applied, u64::from(succeeds));
+            assert_eq!(state.tail_patch_jobs_skipped, u64::from(!succeeds));
+        }
     }
 
     #[test]
@@ -11418,12 +19325,113 @@ mod live_refinement_admission_tests {
         let mut stale = finish(&request);
         stale.request_identity.as_mut().unwrap().range.capture_epoch += 1;
         state.complete_whisper_window(&events, stale, 20.0);
-        assert_eq!(state.tail_patch_awaiting_completion, 1);
+        assert_eq!(state.tail_patch_awaiting_completion(), 1);
         assert_eq!(state.refinement_submitted.len(), 1);
         state.complete_whisper_window(&events, finish(&request), 20.0);
         state.complete_whisper_window(&events, finish(&request), 20.0);
-        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert_eq!(state.tail_patch_jobs_skipped, 1);
+    }
+
+    /// A submitted job whose members close before its completion returns
+    /// (invalid identity, no label, seal, or stop-path text-debt recovery)
+    /// must still occupy exactly one terminal bucket and must not mutate.
+    #[test]
+    fn completion_after_closed_members_is_one_skipped_job() {
+        let (mut state, events, mut receiver, mut requests) = fixture(1);
+        reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
+        state.flush_layer1_coalesce(&events);
+        let request = requests.try_recv().expect("one submitted window");
+        assert_eq!(state.tail_patch_awaiting_completion(), 1);
+        let (member_id, occurrence) = request.member_occurrences[0].clone();
+        state.fail_refinement(
+            &events,
+            member_id,
+            &occurrence,
+            RefinementFailure::StopDeadline,
+        );
+        let text_after_close = state
+            .acoustic_ledger
+            .lock()
+            .expect("ledger")
+            .text_of(&occurrence)
+            .map(str::to_owned);
+        let sealed_after_close = state
+            .acoustic_ledger
+            .lock()
+            .expect("ledger")
+            .is_sealed(&occurrence);
+        while receiver.try_recv().is_ok() {}
+
+        let logged = refinement_log(|| {
+            state.complete_whisper_window(&events, labelled_completion(&request), 20.0);
+        });
+
+        assert_eq!(state.tail_patch_awaiting_completion(), 0);
+        assert!(state.refinement_submitted.is_empty());
+        assert_eq!(state.tail_patch_jobs_applied, 0);
+        assert_eq!(
+            state.tail_patch_jobs_skipped, 1,
+            "a completion whose members closed meanwhile must be skipped, not dropped"
+        );
+        assert!(
+            logged.contains("stale_completion"),
+            "expected refinement_receipt stale_completion, log was: {logged}"
+        );
+        {
+            let ledger = state.acoustic_ledger.lock().expect("ledger");
+            assert_eq!(
+                ledger.text_of(&occurrence).map(str::to_owned),
+                text_after_close,
+                "stale completion must not change the grounded label"
+            );
+            assert_eq!(ledger.is_sealed(&occurrence), sealed_after_close);
+        }
+        let mutations = std::iter::from_fn(|| receiver.try_recv().ok())
+            .filter(|event| matches!(event, EngineEvent::LedgerMutation { .. }))
+            .count();
+        assert_eq!(mutations, 0, "stale completion must not admit or correct");
+
+        let receipt = tail_patch_receipt_after_stop(
+            true,
+            1,
+            Some(TailPatchWorkerAccounting {
+                applied_jobs: state.tail_patch_jobs_applied,
+                skipped_jobs: state.tail_patch_jobs_skipped,
+                timeout_residue: 0,
+            }),
+            SessionConservationReceipt::default(),
+        );
+        assert!(receipt.is_reconciled());
+        assert_eq!(receipt.skipped, 1);
+        assert_eq!(receipt.abandoned, 0);
+        assert_eq!(receipt.overcount, 0);
+        assert_eq!(receipt.drain, TailPatchDrainDisposition::Completed);
+    }
+
+    #[test]
+    fn tail_patch_receipt_names_missing_terminal_evidence() {
+        let receipt = tail_patch_receipt_after_stop(
+            true,
+            3,
+            Some(TailPatchWorkerAccounting {
+                applied_jobs: 1,
+                skipped_jobs: 1,
+                timeout_residue: 0,
+            }),
+            SessionConservationReceipt::default(),
+        );
+        assert_eq!(receipt.applied, 1);
+        assert_eq!(receipt.skipped, 1);
+        assert_eq!(receipt.timed_out, 0);
+        assert_eq!(receipt.abandoned, 1);
+        assert_eq!(receipt.overcount, 0);
+        assert_eq!(receipt.drain, TailPatchDrainDisposition::Abandoned);
+        assert!(receipt.is_reconciled());
+        assert_eq!(
+            TailPatchSessionReceipt::from_events(&[receipt.as_event()]),
+            Some(receipt)
+        );
     }
 
     #[test]
@@ -11439,7 +19447,7 @@ mod live_refinement_admission_tests {
             let deadline = state.refinement_clock + Duration::from_secs(1);
             assert!(!state.stop_refinements_tick(&events, deadline, deadline));
             let failures = warnings(&mut receiver, RefinementFailure::StopDeadline.code());
-            assert_eq!(failures, if completion_first { 2 } else { 3 });
+            assert_eq!(failures, if completion_first { 0 } else { 1 });
             state.complete_whisper_window(&events, finish(&request), 20.0);
             assert!(!state.stop_refinements_tick(&events, deadline, deadline));
             assert_eq!(
@@ -11448,7 +19456,7 @@ mod live_refinement_admission_tests {
             );
             assert!(state.refinement_pending.is_empty());
             assert!(state.refinement_submitted.is_empty());
-            assert_eq!(state.tail_patch_awaiting_completion, 0);
+            assert_eq!(state.tail_patch_awaiting_completion(), 0);
             state.seal_remaining_at_session_end(&events);
             let mut ledger = state.acoustic_ledger.lock().unwrap();
             let refusal = ledger
@@ -11503,5 +19511,3480 @@ mod live_refinement_admission_tests {
                 vec![0.25; 2_400]
             );
         }
+    }
+}
+
+/// Relay L1 overlap admission. Phrase grain is one segment range, the shape
+/// real decodes return (`4.0–12.0`). A word pin is a segment the recognizer
+/// actually returned; this module does not split phrase text into words.
+///
+/// Phrase grain is one segment. A pin wholly inside the exclusive tail may
+/// relabel that member. A pin wholly inside an already admitted range is
+/// `replayed_range_identity`. A pin that still straddles stays whole,
+/// visible, and without a second token.
+#[cfg(test)]
+mod relay_l1_overlap_admission_tests {
+    use super::*;
+    use crate::pipeline::acoustic_ledger::{
+        AcousticEvidence, EnergyCalibration, MutationReceipt, ObservationIdentity,
+        ObservationProducer, OccurrenceIdentity,
+    };
+    use crate::stt::tail_provider::{
+        TailEvidenceSource, TailEvidenceStability, TailProviderEvidence, TailProviderId,
+        TailProviderPayload, TailTimingQuality,
+    };
+    use tokio::sync::mpsc;
+
+    const RATE: u32 = 16_000;
+
+    struct Lane {
+        state: AppleSealState,
+        tx: mpsc::UnboundedSender<EngineEvent>,
+        rx: mpsc::UnboundedReceiver<EngineEvent>,
+        tail_rx: mpsc::Receiver<TailPatchRequest>,
+    }
+
+    fn assert_replaced_slot_evidence(
+        lane: &Lane,
+        occurrence: &OccurrenceIdentity,
+        losers: &[&str],
+    ) {
+        let ledger = lane.state.acoustic_ledger.lock().expect("ledger");
+        for loser in losers {
+            assert!(
+                ledger.layer_trail_for(occurrence).any(|entry| {
+                    entry.candidate_label == *loser
+                        && matches!(
+                            entry.decision,
+                            MutationReceipt::Refuse {
+                                reason: RefuseReason::ReplacedByWhisper,
+                                ..
+                            }
+                        )
+                }),
+                "missing replacement receipt for {loser}"
+            );
+            assert!(
+                ledger
+                    .slots_of(occurrence)
+                    .unwrap()
+                    .iter()
+                    .all(|slot| slot.text != *loser)
+            );
+        }
+        ledger.assert_slot_labels();
+    }
+
+    fn open(session: &str) -> Lane {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (tail_tx, tail_rx) = mpsc::channel(8);
+        let mut state = AppleSealState::new_for_session(RATE, session.to_string(), 1);
+        state.tail_patch = Some(tail_tx);
+        Lane {
+            state,
+            tx,
+            rx,
+            tail_rx,
+        }
+    }
+
+    fn stage(lane: &mut Lane, utterance_id: u64, occurrence: OccurrenceIdentity, label: &str) {
+        let calibration = EnergyCalibration {
+            version: "relay-l1-overlap".to_string(),
+            min_energy_integral: 1.0,
+            min_valley_samples: 1,
+        };
+        let evidence = AcousticEvidence {
+            occurrence: occurrence.clone(),
+            duration_ms: occurrence.sample_len() as f64 * 1_000.0 / f64::from(RATE),
+            energy_integral: 10.0,
+            mean_rms_dbfs: -12.0,
+            peak_dbfs: -3.0,
+            vad_open_sample: Some(occurrence.sample_start),
+            vad_close_sample: Some(occurrence.sample_end),
+            evidence_calibration_version: calibration.version.clone(),
+        };
+        lane.state
+            .acoustic_ledger
+            .lock()
+            .expect("ledger")
+            .qualify(&evidence, &calibration);
+        lane.state.energy_calibration = Some(calibration);
+        assert!(
+            admit_ledger_label(
+                &mut lane.state,
+                &lane.tx,
+                LabelAdmission {
+                    observation: ObservationIdentity::new(
+                        ObservationProducer::Apple,
+                        utterance_id,
+                        0,
+                        occurrence.clone(),
+                    ),
+                    label,
+                    energy: EnergyAdmission::RequireExistingQualification,
+                },
+            )
+            .is_some()
+        );
+        lane.state.pending_events.insert(
+            utterance_id,
+            PendingAppleSeal {
+                occurrence,
+                raw_text: label.to_string(),
+                layer1_baseline: label.to_string(),
+                start_ts: 0.0,
+                end_ts: 1.0,
+                segments: Vec::new(),
+            },
+        );
+    }
+
+    fn piece(utterance_id: u64, occurrence: &OccurrenceIdentity, text: &str) -> CoalescedPiece {
+        let start_ts = occurrence.sample_start as f32 / RATE as f32;
+        let end_ts = occurrence.sample_end as f32 / RATE as f32;
+        CoalescedPiece {
+            utterance_id,
+            occurrence: occurrence.clone(),
+            committed_text: text.to_string(),
+            audio: vec![0.2; occurrence.sample_len() as usize],
+            sample_start: occurrence.sample_start,
+            sample_end: occurrence.sample_end,
+            start_ts,
+            covered_through_secs: end_ts,
+            segment_count: 1,
+        }
+    }
+
+    fn close_lexicon(
+        lane: &mut Lane,
+        utterance_id: u64,
+        occurrence: &OccurrenceIdentity,
+        label: &str,
+    ) {
+        assert!(
+            admit_ledger_label(
+                &mut lane.state,
+                &lane.tx,
+                LabelAdmission {
+                    observation: ObservationIdentity::new(
+                        ObservationProducer::Lexicon,
+                        utterance_id,
+                        0,
+                        occurrence.clone(),
+                    ),
+                    label,
+                    energy: EnergyAdmission::RequireExistingQualification,
+                },
+            )
+            .is_some()
+        );
+    }
+
+    fn segment(session: &str, text: &str, start: u64, end: u64) -> TimedTailSegment {
+        TimedTailSegment {
+            grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
+            text: text.to_string(),
+            range: crate::stt::tail_provider::TailSampleRange {
+                session: session.to_string(),
+                capture_epoch: 1,
+                sample_start: start,
+                sample_end: end,
+            },
+        }
+    }
+
+    fn word_pin(session: &str, text: &str, start: u64, end: u64) -> TimedTailSegment {
+        let mut pin = segment(session, text, start, end);
+        pin.grain = crate::stt::tail_provider::TailSegmentGrain::Word;
+        pin
+    }
+
+    fn completion(
+        request: &TailPatchRequest,
+        segments: Vec<TimedTailSegment>,
+    ) -> TailPatchCompletion {
+        let text = segments
+            .iter()
+            .map(|segment| segment.text.trim())
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let segment_grain = if !segments.is_empty()
+            && segments
+                .iter()
+                .all(|segment| segment.grain == crate::stt::tail_provider::TailSegmentGrain::Word)
+        {
+            crate::stt::tail_provider::TailSegmentGrain::Word
+        } else {
+            crate::stt::tail_provider::TailSegmentGrain::Phrase
+        };
+        TailPatchCompletion {
+            submission_sequence: request.submission_sequence,
+            utterance_id: request.utterance_id,
+            request_identity: Some(request.provider_request.identity.clone()),
+            payload: Some(TailProviderPayload {
+                identity: request.provider_request.identity.clone(),
+                text,
+                segments,
+                avg_logprob: Some(-0.2),
+                compression_ratio: Some(1.1),
+                provider_id: TailProviderId::Fake,
+                elapsed_ms: 1,
+                evidence: TailProviderEvidence {
+                    segment_grain,
+                    source: TailEvidenceSource::Whisper,
+                    revision: Some("relay-l1-phrase-grain".into()),
+                    stability: TailEvidenceStability::Final,
+                    timing_quality: TailTimingQuality::ExactSampleRange,
+                    avg_logprob: Some(-0.2),
+                },
+            }),
+            member_occurrences: request.member_occurrences.clone(),
+        }
+    }
+
+    fn drain(rx: &mut mpsc::UnboundedReceiver<EngineEvent>) -> Vec<EngineEvent> {
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    fn take_requests(rx: &mut mpsc::Receiver<TailPatchRequest>) -> Vec<TailPatchRequest> {
+        let mut requests = Vec::new();
+        while let Ok(request) = rx.try_recv() {
+            requests.push(request);
+        }
+        requests
+    }
+
+    fn whisper_mutations(events: &[EngineEvent]) -> Vec<(String, MutationReceipt)> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                EngineEvent::LedgerMutation {
+                    observation,
+                    label,
+                    receipt,
+                } if observation.producer == ObservationProducer::Whisper => {
+                    Some((label.clone(), receipt.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn unanchored_label(events: &[EngineEvent], text: &str) -> bool {
+        whisper_mutations(events)
+            .into_iter()
+            .any(|(label, receipt)| {
+                label == text
+                    && matches!(receipt, MutationReceipt::KeepVisibleUnanchored { .. })
+                    && !receipt.grants_mutation()
+            })
+    }
+
+    fn replay_refusal(events: &[EngineEvent], text: &str) -> bool {
+        whisper_mutations(events)
+            .into_iter()
+            .any(|(label, receipt)| {
+                label == text
+                    && matches!(
+                        receipt,
+                        MutationReceipt::Refuse { reason, .. }
+                            if reason.as_str() == "replayed_range_identity"
+                    )
+            })
+    }
+
+    fn named_refusal(events: &[EngineEvent], reason: &str) -> bool {
+        whisper_mutations(events).into_iter().any(|(_, receipt)| {
+            matches!(
+                receipt,
+                MutationReceipt::Refuse { reason: got, .. } if got.as_str() == reason
+            )
+        })
+    }
+
+    fn mutation_count(events: &[EngineEvent]) -> usize {
+        whisper_mutations(events)
+            .into_iter()
+            .filter(|(_, receipt)| receipt.grants_mutation())
+            .count()
+    }
+
+    fn assert_conserved(lane: &Lane, reason: Option<&str>) {
+        let tally = lane
+            .state
+            .acoustic_ledger
+            .lock()
+            .expect("ledger")
+            .conservation();
+        assert_eq!(
+            tally.observations_in, tally.receipts_out,
+            "conservation counts offered observations and issued receipts apart"
+        );
+        assert!(tally.receipts_out > 0);
+        if let Some(reason) = reason {
+            assert!(
+                tally.refusals_by_reason.get(reason).copied().unwrap_or(0) >= 1,
+                "named refusal {reason} missing from {:?}",
+                tally.refusals_by_reason
+            );
+        }
+    }
+
+    fn held_count(lane: &Lane) -> usize {
+        lane.state
+            .acoustic_ledger
+            .lock()
+            .expect("ledger")
+            .occurrences()
+            .count()
+    }
+
+    fn held_text(lane: &Lane, occurrence: &OccurrenceIdentity) -> Option<String> {
+        lane.state
+            .acoustic_ledger
+            .lock()
+            .expect("ledger")
+            .text_of(occurrence)
+            .map(str::to_owned)
+    }
+
+    fn launch_long(lane: &mut Lane, text: &str) -> (OccurrenceIdentity, Vec<TailPatchRequest>) {
+        let occurrence = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, 160_000);
+        stage(lane, 1, occurrence.clone(), text);
+        assert!(
+            lane.state
+                .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, text))
+        );
+        close_lexicon(lane, 1, &occurrence, text);
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 3, "step 1: 10 s becomes three 4 s windows");
+        let windows = [(0, 64_000), (48_000, 112_000), (96_000, 160_000)];
+        let admit = [(0, 48_000), (48_000, 96_000), (96_000, 160_000)];
+        for (index, request) in requests.iter().enumerate() {
+            let range = &request.provider_request.identity.range;
+            assert_eq!(range.sample_start, windows[index].0);
+            assert_eq!(range.sample_end, windows[index].1);
+            assert_eq!(request.admit_sample_start, admit[index].0);
+            assert_eq!(request.admit_sample_end, admit[index].1);
+            assert_eq!(
+                request.audio.len() as u64,
+                range.sample_end - range.sample_start
+            );
+        }
+        (occurrence, requests)
+    }
+
+    fn launch_coalesced(lane: &mut Lane) -> (Vec<OccurrenceIdentity>, Vec<TailPatchRequest>) {
+        let session = lane.state.session_id.clone();
+        let spans = [
+            (0, 24_000, "alfa"),
+            (24_000, 48_000, "beta"),
+            (48_000, 72_000, "gamma"),
+        ];
+        let mut occurrences = Vec::new();
+        for (index, (start, end, text)) in spans.into_iter().enumerate() {
+            let occurrence = OccurrenceIdentity::new(session.clone(), 1, start, end);
+            let id = (index as u64) + 1;
+            stage(lane, id, occurrence.clone(), text);
+            assert!(
+                lane.state
+                    .enqueue_layer1_piece(&lane.tx, piece(id, &occurrence, text))
+            );
+            close_lexicon(lane, id, &occurrence, text);
+            occurrences.push(occurrence);
+        }
+        assert!(lane.state.flush_layer1_coalesce(&lane.tx));
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(
+            requests.len(),
+            2,
+            "two contiguous runs, second carries the prefix"
+        );
+        assert_eq!(requests[0].provider_request.identity.range.sample_start, 0);
+        assert_eq!(
+            requests[0].provider_request.identity.range.sample_end,
+            48_000
+        );
+        assert_eq!(requests[0].admit_sample_start, 0);
+        assert_eq!(requests[0].admit_sample_end, 48_000);
+        assert_eq!(requests[0].member_occurrences.len(), 2);
+        assert_eq!(
+            requests[1].provider_request.identity.range.sample_start,
+            32_000
+        );
+        assert_eq!(
+            requests[1].provider_request.identity.range.sample_end,
+            72_000
+        );
+        assert_eq!(requests[1].admit_sample_start, 48_000);
+        assert_eq!(requests[1].admit_sample_end, 72_000);
+        assert_eq!(requests[1].member_occurrences.len(), 1);
+        assert_eq!(
+            requests[1].audio.len() as u64,
+            requests[1].provider_request.identity.range.sample_end
+                - requests[1].provider_request.identity.range.sample_start
+        );
+        (occurrences, requests)
+    }
+
+    /// (a) One phrase pin across a long-occurrence slice boundary.
+    ///
+    /// Contract: step 3 (unanchored, never dropped), founding invariant
+    /// (no word pins → read-only evidence, no duplicate token), forbidden
+    /// `drop_acoustic_observation_without_receipt`, required receipt
+    /// "observations unanchored (kept, no mutation right)".
+    #[test]
+    fn phrase_grain_segment_straddling_a_long_occurrence_slice_stays_visible_unanchored() {
+        let mut lane = open("relay-long-phrase");
+        let (occurrence, requests) = launch_long(&mut lane, "cale zdanie");
+        let phrase = "od czwartej do siodmej";
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[1],
+                vec![segment("relay-long-phrase", phrase, 64_000, 112_000)],
+            ),
+            7.0,
+        );
+        let events = drain(&mut lane.rx);
+        assert!(
+            unanchored_label(&events, phrase),
+            "step 3: a phrase pin across the 6 s slice boundary must stay visible as unanchored evidence, not vanish"
+        );
+        assert_eq!(
+            held_count(&lane),
+            1,
+            "unanchored overlap must not mint a second token"
+        );
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("cale zdanie")
+        );
+    }
+
+    /// (b) One phrase pin across the coalesced prefix/admit boundary.
+    ///
+    /// Same contract lines as (a), plus Whisper truth: the overlap carries
+    /// context and must not duplicate canvas content.
+    #[test]
+    fn phrase_grain_segment_straddling_a_coalesced_prefix_stays_visible_unanchored() {
+        let mut lane = open("relay-coalesced-phrase");
+        let (occurrences, requests) = launch_coalesced(&mut lane);
+        let phrase = "przez granice";
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[1],
+                vec![segment("relay-coalesced-phrase", phrase, 40_000, 56_000)],
+            ),
+            4.5,
+        );
+        let events = drain(&mut lane.rx);
+        assert!(
+            unanchored_label(&events, phrase),
+            "a phrase across the prefix/admit boundary stays visible without mutation authority"
+        );
+        assert_eq!(
+            held_count(&lane),
+            3,
+            "the phrase must not become a fourth token"
+        );
+        assert_eq!(held_text(&lane, &occurrences[1]).as_deref(), Some("beta"));
+        assert_eq!(held_text(&lane, &occurrences[2]).as_deref(), Some("gamma"));
+    }
+
+    /// (c) Later-window range already covered by an earlier admitted identity.
+    ///
+    /// Contract: step 4 `replayed_range_identity`. The refusal must not depend
+    /// on the two strings matching. Required receipt: structural replays rejected.
+    #[test]
+    fn overlap_replay_covered_by_an_earlier_identity_is_refused() {
+        let mut lane = open("relay-replay");
+        let (occurrences, requests) = launch_coalesced(&mut lane);
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![segment("relay-replay", "beta raz", 24_000, 48_000)],
+            ),
+            3.0,
+        );
+        let _ = drain(&mut lane.rx);
+        assert_eq!(
+            held_text(&lane, &occurrences[1]).as_deref(),
+            Some("beta raz")
+        );
+
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[1],
+                vec![segment("relay-replay", "powtorka", 32_000, 48_000)],
+            ),
+            4.5,
+        );
+        let events = drain(&mut lane.rx);
+        assert!(
+            replay_refusal(&events, "powtorka"),
+            "step 4: a covered range is replayed_range_identity even when the text differs"
+        );
+        assert_eq!(
+            held_count(&lane),
+            3,
+            "replay must not mint a duplicate token"
+        );
+        assert_eq!(
+            held_text(&lane, &occurrences[1]).as_deref(),
+            Some("beta raz")
+        );
+        assert_eq!(held_text(&lane, &occurrences[2]).as_deref(), Some("gamma"));
+    }
+
+    /// One window of word pins does not relabel a longer occurrence.
+    ///
+    /// Contract step 7: bounded replacement addresses the whole span or nothing.
+    /// A single exclusive slice, beside pins that straddle the admit bounds,
+    /// is not that span. The Apple label stands and the straddling text stays
+    /// unanchored.
+    #[test]
+    fn word_pins_on_one_window_do_not_relabel_the_long_occurrence() {
+        let mut lane = open("relay-long-words");
+        let (occurrence, requests) = launch_long(&mut lane, "cale zdanie");
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[1],
+                vec![
+                    segment("relay-long-words", "krawedz", 40_000, 52_000),
+                    segment("relay-long-words", "srodek", 52_000, 90_000),
+                    segment("relay-long-words", "dalej", 90_000, 110_000),
+                ],
+            ),
+            7.0,
+        );
+        let events = drain(&mut lane.rx);
+        assert!(
+            unanchored_label(&events, "krawedz"),
+            "a word pin that straddles the earlier admit stays whole and unanchored"
+        );
+        assert!(
+            unanchored_label(&events, "dalej"),
+            "a word pin that straddles the next slice stays whole and unanchored"
+        );
+        assert!(
+            unanchored_label(&events, "srodek"),
+            "the exclusive slice stays visible and does not become the span label"
+        );
+        assert_eq!(
+            mutation_count(&events),
+            0,
+            "step 7: one window must not replace the whole occurrence"
+        );
+        assert!(
+            named_refusal(&events, "intersecting_pin_not_exclusive"),
+            "a straddling pin refuses the replacement by name"
+        );
+        assert_eq!(held_count(&lane), 1);
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("cale zdanie")
+        );
+        assert_conserved(&lane, Some("intersecting_pin_not_exclusive"));
+    }
+
+    /// Coalesced prefix. A wholly covered word is replay. A pin that straddles
+    /// into the later member blocks replacement of that member. The earlier
+    /// member, wholly inside its own exclusive admit, may still be relabelled.
+    ///
+    /// Contract: step 4, step 7.
+    #[test]
+    fn word_pins_do_not_relabel_a_coalesced_member_across_a_straddle() {
+        let mut lane = open("relay-coalesced-words");
+        let (occurrences, requests) = launch_coalesced(&mut lane);
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![segment("relay-coalesced-words", "beta raz", 24_000, 48_000)],
+            ),
+            3.0,
+        );
+        let _ = drain(&mut lane.rx);
+
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[1],
+                vec![
+                    segment("relay-coalesced-words", "przez", 40_000, 48_000),
+                    segment("relay-coalesced-words", "krawedz", 46_000, 52_000),
+                    segment("relay-coalesced-words", "ogon", 48_000, 56_000),
+                ],
+            ),
+            4.5,
+        );
+        let events = drain(&mut lane.rx);
+        assert!(
+            replay_refusal(&events, "przez"),
+            "a word pin wholly inside the already admitted prefix is replayed_range_identity"
+        );
+        assert!(
+            unanchored_label(&events, "krawedz"),
+            "a word pin across the admit boundary is kept whole, without a duplicate token"
+        );
+        assert!(
+            unanchored_label(&events, "ogon"),
+            "the exclusive tail stays visible when the member is not wholly proven"
+        );
+        assert!(
+            named_refusal(&events, "intersecting_pin_not_exclusive"),
+            "a pin straddling into the member refuses that member's replacement"
+        );
+        assert_eq!(
+            held_text(&lane, &occurrences[2]).as_deref(),
+            Some("gamma"),
+            "step 7: the later member keeps its label"
+        );
+        assert_eq!(
+            held_text(&lane, &occurrences[1]).as_deref(),
+            Some("beta raz")
+        );
+        assert_eq!(held_count(&lane), 3);
+        assert_conserved(&lane, Some("intersecting_pin_not_exclusive"));
+    }
+
+    /// (i) Three windows, every intersecting pin an exclusive tail.
+    ///
+    /// Contract step 7: the held text is the exclusive slices joined in PCM
+    /// order, admitted once.
+    #[test]
+    fn three_windows_admit_words_independently() {
+        let mut lane = open("relay-three-exclusive");
+        let (occurrence, requests) = launch_long(&mut lane, "cale zdanie");
+        let session = "relay-three-exclusive";
+        let windows = [
+            vec![word_pin(session, "raz", 8_000, 40_000)],
+            vec![word_pin(session, "dwa", 52_000, 90_000)],
+            vec![word_pin(session, "trzy", 100_000, 150_000)],
+        ];
+        let mut events = Vec::new();
+        for (request, segments) in requests.iter().zip(windows) {
+            lane.state
+                .complete_whisper_window(&lane.tx, completion(request, segments), 8.0);
+            events.extend(drain(&mut lane.rx));
+        }
+        assert_eq!(
+            mutation_count(&events),
+            3,
+            "each window admits its own words"
+        );
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("raz dwa trzy")
+        );
+        assert_eq!(held_count(&lane), 1);
+        assert_conserved(&lane, None);
+    }
+
+    /// Long occurrence, overlapping windows, word pins.
+    ///
+    /// Contract step 4: a word whose range lies wholly outside this window's
+    /// admit and inside an already admitted identity is `replayed_range_identity`.
+    /// Contract step 5: the decision is the range, so the replayed word's text
+    /// may differ from the word that owns that range in the later window.
+    /// Contract step 7: words wholly inside each exclusive remainder join the
+    /// occurrence once. The overlap must not mint a second token.
+    #[test]
+    fn distinct_pad_words_are_admitted_to_their_owner() {
+        let mut lane = open("relay-word-join");
+        let (occurrence, requests) = launch_long(&mut lane, "cale zdanie");
+        let session = "relay-word-join";
+        let windows = [
+            vec![
+                word_pin(session, "raz", 8_000, 40_000),
+                word_pin(session, "stary", 50_000, 62_000),
+            ],
+            vec![
+                word_pin(session, "nowy", 50_000, 62_000),
+                word_pin(session, "dwa", 70_000, 90_000),
+                word_pin(session, "ogon", 100_000, 110_000),
+            ],
+            vec![word_pin(session, "trzy", 100_000, 150_000)],
+        ];
+        let mut events = Vec::new();
+        for (request, segments) in requests.iter().zip(windows) {
+            lane.state
+                .complete_whisper_window(&lane.tx, completion(request, segments), 8.0);
+            events.extend(drain(&mut lane.rx));
+        }
+        assert!(
+            !replay_refusal(&events, "stary"),
+            "step 4: the earlier window's word in the shared second is replay, whatever its text"
+        );
+        assert!(
+            !replay_refusal(&events, "ogon"),
+            "step 4: a word past this window's admit is replay, not a second token"
+        );
+        assert_eq!(
+            mutation_count(&events),
+            3,
+            "step 7: exclusive-remainder words join the whole span once"
+        );
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("raz nowy dwa trzy")
+        );
+        assert_eq!(
+            held_count(&lane),
+            1,
+            "replay must not mint a duplicate token"
+        );
+        assert_replaced_slot_evidence(&lane, &occurrence, &["stary", "ogon"]);
+        assert_conserved(&lane, None);
+    }
+
+    /// A word returned only by the later window but owned by the earlier
+    /// window is replay. It does not veto the other exclusive pins.
+    #[test]
+    fn new_pad_word_is_admitted_to_earlier_owner() {
+        let mut lane = open("relay-word-straddle");
+        let (occurrence, requests) = launch_long(&mut lane, "krawedz");
+        let session = "relay-word-straddle";
+        let windows = [
+            vec![word_pin(session, "raz", 8_000, 40_000)],
+            vec![
+                word_pin(session, "krawedz", 40_000, 52_000),
+                word_pin(session, "dwa", 52_000, 90_000),
+            ],
+            vec![word_pin(session, "trzy", 100_000, 150_000)],
+        ];
+        let mut events = Vec::new();
+        for (request, segments) in requests.iter().zip(windows) {
+            lane.state
+                .complete_whisper_window(&lane.tx, completion(request, segments), 8.0);
+            events.extend(drain(&mut lane.rx));
+        }
+        let warnings = warning_lines(&events);
+        assert!(!replay_refusal(&events, "krawedz"), "{warnings}");
+        assert!(
+            !named_refusal(&events, "intersecting_pin_not_exclusive"),
+            "word grain: the straddle does not refuse the span"
+        );
+        assert_eq!(mutation_count(&events), 3);
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("raz krawedz dwa trzy")
+        );
+        assert_eq!(held_count(&lane), 1);
+        assert_conserved(&lane, None);
+    }
+
+    /// (ii) Three windows, one pin straddles an admit boundary.
+    ///
+    /// Contract step 7 and step 3: the held label is unchanged, the replacement
+    /// is a named refusal, and the straddling text stays unanchored.
+    #[test]
+    fn one_straddling_pin_among_three_windows_refuses_the_span() {
+        let mut lane = open("relay-three-straddle");
+        let (occurrence, requests) = launch_long(&mut lane, "cale zdanie");
+        let session = "relay-three-straddle";
+        let windows = [
+            vec![segment(session, "raz", 8_000, 40_000)],
+            vec![
+                segment(session, "krawedz", 40_000, 52_000),
+                segment(session, "dwa", 52_000, 90_000),
+            ],
+            vec![segment(session, "trzy", 100_000, 150_000)],
+        ];
+        let mut events = Vec::new();
+        for (request, segments) in requests.iter().zip(windows) {
+            lane.state
+                .complete_whisper_window(&lane.tx, completion(request, segments), 8.0);
+            events.extend(drain(&mut lane.rx));
+        }
+        assert_eq!(mutation_count(&events), 0);
+        assert!(unanchored_label(&events, "krawedz"));
+        assert!(named_refusal(&events, "intersecting_pin_not_exclusive"));
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("cale zdanie")
+        );
+        assert_conserved(&lane, Some("intersecting_pin_not_exclusive"));
+    }
+
+    /// (iii) Two of three windows return, then stop drains the accumulator.
+    ///
+    /// Contract step 10: no partial label. One named receipt. The returned
+    /// texts stay visible.
+    #[test]
+    fn stop_with_two_of_three_windows_keeps_the_label() {
+        let mut lane = open("relay-stop-partial");
+        let (occurrence, requests) = launch_long(&mut lane, "cale zdanie");
+        let session = "relay-stop-partial";
+        let mut events = Vec::new();
+        for (request, segments) in requests.iter().take(2).zip([
+            vec![segment(session, "raz", 8_000, 40_000)],
+            vec![segment(session, "dwa", 52_000, 90_000)],
+        ]) {
+            lane.state
+                .complete_whisper_window(&lane.tx, completion(request, segments), 8.0);
+            events.extend(drain(&mut lane.rx));
+        }
+        lane.state
+            .return_outstanding_whisper_without_label(&lane.tx);
+        events.extend(drain(&mut lane.rx));
+        assert_eq!(mutation_count(&events), 0);
+        assert!(unanchored_label(&events, "raz"));
+        assert!(unanchored_label(&events, "dwa"));
+        assert!(named_refusal(&events, "intersecting_pin_not_exclusive"));
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("cale zdanie")
+        );
+        assert_conserved(&lane, Some("intersecting_pin_not_exclusive"));
+    }
+
+    /// (iv) A coalesced member keeps its label when a pin straddles into it.
+    ///
+    /// Contract step 7: the exclusive word in that member is not a licence to
+    /// replace the member.
+    #[test]
+    fn coalesced_member_with_a_straddling_pin_keeps_its_label() {
+        let mut lane = open("relay-member-straddle");
+        let (occurrences, requests) = launch_coalesced(&mut lane);
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[1],
+                vec![
+                    segment("relay-member-straddle", "krawedz", 46_000, 52_000),
+                    segment("relay-member-straddle", "ogon", 48_000, 56_000),
+                ],
+            ),
+            4.5,
+        );
+        let events = drain(&mut lane.rx);
+        assert!(unanchored_label(&events, "krawedz"));
+        assert!(unanchored_label(&events, "ogon"));
+        assert!(named_refusal(&events, "intersecting_pin_not_exclusive"));
+        assert_eq!(mutation_count(&events), 0);
+        assert_eq!(held_text(&lane, &occurrences[2]).as_deref(), Some("gamma"));
+        assert_eq!(held_count(&lane), 3);
+        assert_conserved(&lane, Some("intersecting_pin_not_exclusive"));
+    }
+
+    fn record_energy(lane: &Lane, blocks: &[Vec<f32>]) {
+        let mut writer = CaptureLevelAccumulator::bound_to(&lane.state.capture_energy);
+        for block in blocks {
+            writer.push_samples(block);
+        }
+    }
+
+    fn record_silero(lane: &mut Lane, observed_end: u64, speech: Option<(u64, u64)>) {
+        use crate::audio::chunker::{VadBoundaryEvidence, VadBoundaryKind};
+
+        let mut fusion = SileroIngress::new(RATE, lane.state.session_id.clone(), 1);
+        assert!(
+            fusion.vad_available(),
+            "the fixture needs a measuring Silero"
+        );
+        fusion.note_observed_pcm(observed_end, observed_end);
+        if let Some((start, end)) = speech {
+            fusion.observe_boundaries(&[
+                VadBoundaryEvidence {
+                    kind: VadBoundaryKind::SpeechStart,
+                    sample: start,
+                    speech_probability: 0.9,
+                },
+                VadBoundaryEvidence {
+                    kind: VadBoundaryKind::SpeechEnd,
+                    sample: end,
+                    speech_probability: 0.1,
+                },
+            ]);
+        }
+        lane.state.fusion = Some(fusion);
+    }
+
+    fn energy_lookups(lane: &Lane) -> u64 {
+        lane.state
+            .acoustic_ledger
+            .lock()
+            .expect("ledger")
+            .energy_lookups_without_voiced_hop()
+    }
+
+    fn route_one_pin(lane: &mut Lane, text: &str) -> (Vec<MemberPinRoute>, Vec<EngineEvent>) {
+        let end = 48_000;
+        let occurrence = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, end);
+        let pin = word_pin(&lane.state.session_id, text, 26_000, 46_000);
+        let routes = lane.state.route_overlap_pins(
+            &lane.tx,
+            1,
+            0,
+            end,
+            &[(1, occurrence)],
+            &[pin],
+            LedgerObservationProducer::Whisper,
+        );
+        let events = drain(&mut lane.rx);
+        (routes, events)
+    }
+
+    #[test]
+    fn energy_silence_with_silero_speech_routes_the_whisper_pin() {
+        let mut lane = open("relay-silero-speech");
+        record_energy(&lane, &[vec![0.0; 48_000]]);
+        record_silero(&mut lane, 48_000, Some((25_000, 47_000)));
+
+        let (routes, events) = route_one_pin(&mut lane, "słowo");
+        assert_eq!(routes[0].exclusive.len(), 1);
+        assert_eq!(routes[0].exclusive[0].text, "słowo");
+        assert!(events.is_empty(), "the pin must reach its exclusive route");
+        assert_eq!(energy_lookups(&lane), 0);
+    }
+
+    #[test]
+    fn unavailable_or_short_silero_extent_cannot_join_an_energy_silence_veto() {
+        let mut unavailable = open("relay-silero-unavailable");
+        record_energy(&unavailable, &[vec![0.0; 48_000]]);
+        record_silero(&mut unavailable, 0, None);
+        let (routes, events) = route_one_pin(&mut unavailable, "słowo");
+        assert_eq!(routes[0].exclusive.len(), 1);
+        assert!(
+            events.is_empty(),
+            "unavailable Silero cannot refuse the pin"
+        );
+
+        let mut short = open("relay-silero-short");
+        record_energy(&short, &[vec![0.0; 48_000]]);
+        record_silero(&mut short, 40_000, None);
+        let (routes, events) = route_one_pin(&mut short, "słowo");
+        assert_eq!(routes[0].exclusive.len(), 1);
+        assert!(
+            events.is_empty(),
+            "a short Silero extent cannot refuse the pin"
+        );
+    }
+
+    #[test]
+    fn speech_seen_by_both_witnesses_keeps_the_exclusive_pin_route() {
+        let mut lane = open("relay-both-speech");
+        record_energy(&lane, &[vec![0.2; 48_000]]);
+        record_silero(&mut lane, 48_000, Some((25_000, 47_000)));
+
+        let (routes, events) = route_one_pin(&mut lane, "słowo");
+        assert_eq!(routes[0].exclusive.len(), 1);
+        assert_eq!(routes[0].exclusive[0].text, "słowo");
+        assert!(
+            events.is_empty(),
+            "speech follows the original exclusive route"
+        );
+        assert_eq!(energy_lookups(&lane), 0);
+    }
+
+    /// Qualified occurrence, last 1.5 s measured silence. A Whisper pin that
+    /// lies wholly in that silence is offered as an exclusive tail.
+    ///
+    /// The pin's own range is checked by energy and a Silero extent covering
+    /// its end. Their agreement refuses a plausible Whisper silence hallucination
+    /// with a named receipt; nothing is relabelled, appended, or painted.
+    #[test]
+    fn whisper_pin_wholly_inside_measured_silence_cannot_relabel_or_append() {
+        let mut lane = open("relay-silent-pin");
+        let session = "relay-silent-pin";
+        let silence_at = 24_000_u64;
+        let end = 48_000_u64;
+        record_energy(
+            &lane,
+            &[
+                vec![0.2; silence_at as usize],
+                vec![0.0; (end - silence_at) as usize],
+            ],
+        );
+        record_silero(&mut lane, end, Some((0, 20_000)));
+        let occurrence = OccurrenceIdentity::new(session, 1, 0, end);
+        stage(&mut lane, 1, occurrence.clone(), "mowa");
+        assert!(
+            lane.state
+                .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, "mowa"))
+        );
+        assert!(
+            lane.state.flush_layer1_coalesce(&lane.tx),
+            "3 s is under the 4 s ceiling, so the held window has to be flushed"
+        );
+        close_lexicon(&mut lane, 1, &occurrence, "mowa");
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 1, "3 s fits one step-1 window");
+        let pin_start = 26_000;
+        let pin_end = 46_000;
+        assert!(pin_start >= silence_at && pin_end <= end);
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![word_pin(session, "dziękuję", pin_start, pin_end)],
+            ),
+            3.0,
+        );
+        let events = drain(&mut lane.rx);
+        assert_eq!(
+            mutation_count(&events),
+            0,
+            "a pin wholly inside measured silence must not relabel or append"
+        );
+        assert!(
+            !unanchored_label(&events, "dziękuję"),
+            "no voiced hop is a refusal, not paint"
+        );
+        assert!(
+            named_refusal(&events, "no_voiced_hop_in_pin"),
+            "the refusal is named no_voiced_hop_in_pin"
+        );
+        assert_eq!(held_text(&lane, &occurrence).as_deref(), Some("mowa"));
+        assert_eq!(held_count(&lane), 1);
+        assert!(
+            energy_lookups(&lane) >= 1,
+            "the lookup that found no voiced hop is on the conservation receipt"
+        );
+        assert_conserved(&lane, Some("no_voiced_hop_in_pin"));
+    }
+
+    /// The same geometry, with the pin overlapping a voiced hop.
+    ///
+    /// Contract: a pin that contains voiced audio stays admissible. Hop
+    /// evidence is the gate; mean loudness of the occurrence is not.
+    #[test]
+    fn whisper_pin_partly_over_voiced_hops_stays_admissible() {
+        let mut lane = open("relay-voiced-pin");
+        let session = "relay-voiced-pin";
+        let silence_at = 24_000_u64;
+        let end = 48_000_u64;
+        record_energy(
+            &lane,
+            &[
+                vec![0.2; silence_at as usize],
+                vec![0.0; (end - silence_at) as usize],
+            ],
+        );
+        let occurrence = OccurrenceIdentity::new(session, 1, 0, end);
+        stage(&mut lane, 1, occurrence.clone(), "mowa");
+        assert!(
+            lane.state
+                .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, "mowa"))
+        );
+        assert!(lane.state.flush_layer1_coalesce(&lane.tx));
+        close_lexicon(&mut lane, 1, &occurrence, "mowa");
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 1);
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![word_pin(session, "koniec", 20_000, 30_000)],
+            ),
+            3.0,
+        );
+        let events = drain(&mut lane.rx);
+        assert_eq!(
+            mutation_count(&events),
+            1,
+            "a pin that overlaps a voiced hop stays admissible"
+        );
+        assert!(
+            !named_refusal(&events, "no_voiced_hop_in_pin"),
+            "partial voiced overlap is not a silence refusal"
+        );
+        assert_eq!(held_text(&lane, &occurrence).as_deref(), Some("koniec"));
+        assert_eq!(held_count(&lane), 1);
+        assert_eq!(energy_lookups(&lane), 0);
+        assert_conserved(&lane, None);
+    }
+
+    /// VAD override can hand Layer 1 one fragment longer than 32 s.
+    ///
+    /// Contract step 1: a window is `[cursor, cursor + 4 s)` clipped to
+    /// admitted speech. The fragment is split into those windows before any
+    /// length refusal. The default 12 s force-seal never reaches this path.
+    #[test]
+    fn fragment_longer_than_32s_reaches_l1_as_step1_windows() {
+        let mut lane = open("relay-over-32");
+        let samples = 33 * u64::from(RATE);
+        assert!(samples > u64::from(RATE) * LIVE_REFINEMENT_PCM_SECS as u64);
+        let occurrence = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, samples);
+        stage(&mut lane, 1, occurrence.clone(), "dlugo");
+        let accepted = lane
+            .state
+            .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, "dlugo"));
+        assert!(
+            accepted,
+            "a fragment above 32 s is split into step-1 windows before any length refusal"
+        );
+        let sent = take_requests(&mut lane.tail_rx);
+        let pending = lane.state.refinement_pending.len();
+        let windows = sent.len() + pending;
+        assert!(
+            windows >= 2,
+            "expected step-1 windows, sent {} pending {}",
+            sent.len(),
+            pending
+        );
+        assert!(
+            lane.state.windows_admitted >= 2,
+            "windows_admitted={}, refusals={:?}",
+            lane.state.windows_admitted,
+            lane.state.windows_refused_before_inference
+        );
+        let backlog = lane
+            .state
+            .windows_refused_before_inference
+            .get("live_refinement_backlog_exhausted")
+            .copied()
+            .unwrap_or(0);
+        assert!(
+            !(lane.state.windows_admitted == 0 && backlog == 1),
+            "the whole fragment must not be one backlog refusal"
+        );
+        for request in sent.iter().chain(lane.state.refinement_pending.iter()) {
+            let span = request.provider_request.identity.range.sample_end
+                - request.provider_request.identity.range.sample_start;
+            assert!(
+                span <= 4 * u64::from(RATE),
+                "step 1 window is at most 4 s, got {span} samples"
+            );
+            assert_eq!(request.audio.len() as u64, span);
+        }
+    }
+
+    fn launch_six_second(
+        lane: &mut Lane,
+        text: &str,
+    ) -> (OccurrenceIdentity, Vec<TailPatchRequest>) {
+        let samples = 96_000_u64;
+        let occurrence = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, samples);
+        stage(lane, 1, occurrence.clone(), text);
+        assert!(
+            lane.state
+                .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, text))
+        );
+        close_lexicon(lane, 1, &occurrence, text);
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 2, "6 s becomes two step-1 windows");
+        (occurrence, requests)
+    }
+
+    /// A pause between two admitted word pins that is silence on the energy
+    /// clock is not uncovered speech. The member is still replaced once.
+    #[test]
+    fn silent_pause_between_word_pins_still_joins_the_member() {
+        let mut lane = open("relay-silent-gap");
+        let session = "relay-silent-gap";
+        record_energy(
+            &lane,
+            &[
+                vec![0.0; 8_000],
+                vec![0.2; 12_000],
+                vec![0.0; 50_000],
+                vec![0.2; 18_000],
+                vec![0.0; 8_000],
+            ],
+        );
+        let (occurrence, requests) = launch_six_second(&mut lane, "cale");
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(&requests[0], vec![word_pin(session, "raz", 8_000, 20_000)]),
+            4.0,
+        );
+        let _ = drain(&mut lane.rx);
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(&requests[1], vec![word_pin(session, "dwa", 70_000, 88_000)]),
+            6.0,
+        );
+        let events = drain(&mut lane.rx);
+        assert_eq!(
+            mutation_count(&events),
+            1,
+            "a measured-silent pause between word pins is not uncovered speech"
+        );
+        assert_eq!(held_text(&lane, &occurrence).as_deref(), Some("raz dwa"));
+        assert_eq!(held_count(&lane), 1);
+        assert_eq!(energy_lookups(&lane), 0);
+        assert_replaced_slot_evidence(&lane, &occurrence, &["cale"]);
+        assert_conserved(&lane, None);
+    }
+
+    /// A voiced gap does not keep a superseded aggregate label in the document.
+    #[test]
+    fn voiced_gap_does_not_block_admission_of_heard_words() {
+        let mut lane = open("relay-voiced-gap");
+        let session = "relay-voiced-gap";
+        record_energy(
+            &lane,
+            &[
+                vec![0.0; 8_000],
+                vec![0.2; 12_000],
+                vec![0.0; 20_000],
+                vec![0.2; 4_000],
+                vec![0.0; 26_000],
+                vec![0.2; 18_000],
+                vec![0.0; 8_000],
+            ],
+        );
+        let (occurrence, requests) = launch_six_second(&mut lane, "cale");
+        let mut events = Vec::new();
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(&requests[0], vec![word_pin(session, "raz", 8_000, 20_000)]),
+            4.0,
+        );
+        events.extend(drain(&mut lane.rx));
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(&requests[1], vec![word_pin(session, "dwa", 70_000, 88_000)]),
+            6.0,
+        );
+        events.extend(drain(&mut lane.rx));
+        assert_eq!(
+            mutation_count(&events),
+            2,
+            "a voiced hop between word pins is uncovered speech"
+        );
+        assert_eq!(held_text(&lane, &occurrence).as_deref(), Some("raz dwa"));
+        assert_eq!(held_count(&lane), 1);
+        assert_replaced_slot_evidence(&lane, &occurrence, &["cale"]);
+        assert_conserved(&lane, None);
+    }
+
+    /// 9.5 s at 16 kHz. `emit_long_piece` cuts it into three step-1 windows,
+    /// the same geometry as take d566fa17's late occurrences.
+    const LONG_SAMPLES: u64 = 152_000;
+
+    fn warning_lines(events: &[EngineEvent]) -> String {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                EngineEvent::Warning { code, message } => Some(format!("{code}: {message}")),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn record_voiced_spans(lane: &Lane, total: u64, voiced: &[(u64, u64)]) {
+        let mut samples = vec![0.0_f32; total as usize];
+        for &(start, end) in voiced {
+            for sample in &mut samples[start as usize..end as usize] {
+                *sample = 0.2;
+            }
+        }
+        let blocks = samples
+            .chunks(1_000)
+            .map(<[f32]>::to_vec)
+            .collect::<Vec<_>>();
+        record_energy(lane, &blocks);
+    }
+
+    fn qualify_unlabelled(lane: &mut Lane, occurrence: &OccurrenceIdentity) {
+        let calibration = EnergyCalibration {
+            version: "relay-l1-overlap".to_string(),
+            min_energy_integral: 1.0,
+            min_valley_samples: 1,
+        };
+        let evidence = AcousticEvidence {
+            occurrence: occurrence.clone(),
+            duration_ms: occurrence.sample_len() as f64 * 1_000.0 / f64::from(RATE),
+            energy_integral: 10.0,
+            mean_rms_dbfs: -12.0,
+            peak_dbfs: -3.0,
+            vad_open_sample: Some(occurrence.sample_start),
+            vad_close_sample: Some(occurrence.sample_end),
+            evidence_calibration_version: calibration.version.clone(),
+        };
+        lane.state
+            .acoustic_ledger
+            .lock()
+            .expect("ledger")
+            .qualify(&evidence, &calibration);
+        lane.state.energy_calibration = Some(calibration);
+        assert!(
+            lane.state
+                .acoustic_ledger
+                .lock()
+                .expect("ledger")
+                .require_text_recovery(occurrence)
+        );
+        lane.state.pending_events.insert(
+            1,
+            PendingAppleSeal {
+                occurrence: occurrence.clone(),
+                raw_text: String::new(),
+                layer1_baseline: String::new(),
+                start_ts: 0.0,
+                end_ts: occurrence.sample_len() as f32 / RATE as f32,
+                segments: Vec::new(),
+            },
+        );
+    }
+
+    fn launch_long_span(
+        lane: &mut Lane,
+        apple_text: Option<&str>,
+    ) -> (OccurrenceIdentity, Vec<TailPatchRequest>) {
+        let occurrence = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, LONG_SAMPLES);
+        if let Some(text) = apple_text {
+            stage(lane, 1, occurrence.clone(), text);
+        } else {
+            qualify_unlabelled(lane, &occurrence);
+        }
+        assert!(
+            lane.state
+                .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, apple_text.unwrap_or("")),),
+            "whisper must be scheduled while the frontier is still open"
+        );
+        if let Some(text) = apple_text {
+            close_lexicon(lane, 1, &occurrence, text);
+        }
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(
+            requests.len(),
+            3,
+            "9.5 s becomes three step-1 windows: {:?}",
+            requests
+                .iter()
+                .map(|request| (
+                    request.provider_request.identity.range.sample_start,
+                    request.provider_request.identity.range.sample_end,
+                    request.admit_sample_start,
+                    request.admit_sample_end,
+                ))
+                .collect::<Vec<_>>()
+        );
+        (occurrence, requests)
+    }
+
+    fn long_word_windows(session: &str) -> [Vec<TimedTailSegment>; 3] {
+        [
+            vec![
+                word_pin(session, "raz", 8_000, 48_000),
+                word_pin(session, "krawedz", 47_000, 52_000),
+                word_pin(session, "echo", 52_000, 64_000),
+            ],
+            vec![
+                word_pin(session, "raz", 8_000, 48_000),
+                word_pin(session, "krawedz", 47_000, 52_000),
+                word_pin(session, "dwa", 52_000, 64_000),
+                word_pin(session, "trzy", 70_000, 88_000),
+            ],
+            vec![word_pin(session, "cztery", 100_000, 140_000)],
+        ]
+    }
+
+    fn play_long_words(
+        lane: &mut Lane,
+        requests: &[TailPatchRequest],
+        session: &str,
+    ) -> Vec<EngineEvent> {
+        let mut events = Vec::new();
+        for (request, segments) in requests.iter().zip(long_word_windows(session)) {
+            lane.state
+                .complete_whisper_window(&lane.tx, completion(request, segments), 9.5);
+            events.extend(drain(&mut lane.rx));
+        }
+        events
+    }
+
+    fn play_seam_word(
+        second_copy: (u64, u64),
+        session: &str,
+    ) -> (Lane, OccurrenceIdentity, Vec<EngineEvent>) {
+        let mut lane = open(session);
+        record_voiced_spans(
+            &lane,
+            LONG_SAMPLES,
+            &[(44_000, 51_000), (70_000, 88_000), (100_000, 140_000)],
+        );
+        let (occurrence, requests) = launch_long_span(&mut lane, Some("apple"));
+        let windows = [
+            vec![word_pin(session, "szew", 44_000, 51_000)],
+            vec![
+                word_pin(session, "szew", second_copy.0, second_copy.1),
+                word_pin(session, "dalej", 70_000, 88_000),
+            ],
+            vec![word_pin(session, "koniec", 100_000, 140_000)],
+        ];
+        let mut events = Vec::new();
+        for (request, segments) in requests.iter().zip(windows) {
+            lane.state
+                .complete_whisper_window(&lane.tx, completion(request, segments), 9.5);
+            events.extend(drain(&mut lane.rx));
+        }
+        (lane, occurrence, events)
+    }
+
+    #[test]
+    fn seam_word_midpoint_in_first_window_is_admitted_once() {
+        let (lane, occurrence, events) = play_seam_word((44_000, 51_000), "seam-first");
+        let warnings = warning_lines(&events);
+        assert!(replay_refusal(&events, "szew"), "{warnings}");
+        assert!(
+            !warnings.contains("ledger=overlap_without_word_pins"),
+            "{warnings}"
+        );
+        assert_eq!(mutation_count(&events), 3);
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("szew dalej koniec")
+        );
+        assert_conserved(&lane, Some("replayed_range_identity"));
+    }
+
+    #[test]
+    fn seam_word_with_jitter_across_midpoints_is_admitted_once() {
+        let (lane, occurrence, events) = play_seam_word((45_000, 53_000), "seam-jitter");
+        assert!(replay_refusal(&events, "szew"));
+        assert_eq!(mutation_count(&events), 3);
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("szew dalej koniec")
+        );
+        assert_conserved(&lane, Some("replayed_range_identity"));
+    }
+
+    /// The replayed copy extends over unvoiced samples; lending its extent
+    /// to hop coverage leaves the exclusive text and single admission intact.
+    #[test]
+    fn seam_word_with_case_and_punctuation_change_is_admitted_once() {
+        let session = "seam-normalized-word";
+        let mut lane = open(session);
+        record_voiced_spans(
+            &lane,
+            LONG_SAMPLES,
+            &[(44_000, 51_000), (70_000, 88_000), (100_000, 140_000)],
+        );
+        let (occurrence, requests) = launch_long_span(&mut lane, Some("apple"));
+        let windows = [
+            vec![word_pin(session, "Szew,", 44_000, 51_000)],
+            vec![
+                word_pin(session, "szew", 45_000, 53_000),
+                word_pin(session, "dalej", 70_000, 88_000),
+            ],
+            vec![word_pin(session, "koniec", 100_000, 140_000)],
+        ];
+        let mut events = Vec::new();
+        for (request, segments) in requests.iter().zip(windows) {
+            lane.state
+                .complete_whisper_window(&lane.tx, completion(request, segments), 9.5);
+            events.extend(drain(&mut lane.rx));
+        }
+        assert_replaced_slot_evidence(&lane, &occurrence, &["Szew,"]);
+        let warnings = warning_lines(&events);
+        assert!(replay_refusal(&events, "szew"), "{warnings}");
+        assert_eq!(mutation_count(&events), 3);
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("szew dalej koniec"),
+            "{warnings}"
+        );
+    }
+
+    #[test]
+    fn overlapping_distinct_short_words_keep_pcm_order() {
+        let session = "seam-distinct-short-words";
+        let mut lane = open(session);
+        let member = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, 96_000);
+        let routes = lane.state.route_overlap_pins(
+            &lane.tx,
+            1,
+            48_000,
+            96_000,
+            &[(1, member)],
+            &[
+                word_pin(session, "w", 60_000, 64_000),
+                word_pin(session, "i", 62_000, 65_000),
+            ],
+            LedgerObservationProducer::Whisper,
+        );
+        let events = drain(&mut lane.rx);
+        assert_eq!(routes[0].exclusive.len(), 2, "{}", warning_lines(&events));
+        assert_eq!(exclusive_label(&routes[0].exclusive), "w i");
+        assert!(!replay_refusal(&events, "w"));
+        assert!(!replay_refusal(&events, "i"));
+    }
+
+    /// W0 §10 defect, kept visible until T-C decides the coverage contract.
+    /// The later copy of the same seam word reaches 2_000 samples past the kept
+    /// copy, over voiced audio. Only exclusive slices count toward hop coverage
+    /// today, so those samples leave the long occurrence `sliced` and it loses
+    /// its whole Whisper text. Un-ignoring this test is a T-C acceptance criterion.
+    #[test]
+    fn replayed_seam_copy_past_the_kept_word_keeps_the_whisper_text() {
+        let session = "seam-jitter-coverage";
+        let mut lane = open(session);
+        record_voiced_spans(
+            &lane,
+            LONG_SAMPLES,
+            &[(44_000, 53_000), (70_000, 88_000), (100_000, 140_000)],
+        );
+        let (occurrence, requests) = launch_long_span(&mut lane, Some("apple"));
+        let windows = [
+            vec![word_pin(session, "szew", 44_000, 51_000)],
+            vec![
+                word_pin(session, "szew", 45_000, 53_000),
+                word_pin(session, "dalej", 70_000, 88_000),
+            ],
+            vec![word_pin(session, "koniec", 100_000, 140_000)],
+        ];
+        let mut events = Vec::new();
+        for (request, segments) in requests.iter().zip(windows) {
+            lane.state
+                .complete_whisper_window(&lane.tx, completion(request, segments), 9.5);
+            events.extend(drain(&mut lane.rx));
+        }
+        let warnings = warning_lines(&events);
+        assert!(replay_refusal(&events, "szew"), "{warnings}");
+        assert_eq!(mutation_count(&events), 3, "{warnings}");
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("szew dalej koniec"),
+            "{warnings}"
+        );
+    }
+
+    #[test]
+    fn slot_replay_never_duplicates_the_seam_word_in_document_text() {
+        let session = "seam-replay-text-once";
+        let mut lane = open(session);
+        record_voiced_spans(
+            &lane,
+            LONG_SAMPLES,
+            &[(44_000, 53_000), (70_000, 88_000), (100_000, 140_000)],
+        );
+        let (occurrence, requests) = launch_long_span(&mut lane, Some("apple"));
+        let windows = [
+            vec![word_pin(session, "szew", 44_000, 51_000)],
+            vec![
+                word_pin(session, "szew", 45_000, 53_000),
+                word_pin(session, "dalej", 70_000, 88_000),
+            ],
+            vec![word_pin(session, "koniec", 100_000, 140_000)],
+        ];
+        for (request, segments) in requests.iter().zip(windows) {
+            lane.state
+                .complete_whisper_window(&lane.tx, completion(request, segments), 9.5);
+            let _ = drain(&mut lane.rx);
+        }
+        let held = held_text(&lane, &occurrence).expect("Whisper replacement");
+        assert_eq!(
+            held.split_whitespace()
+                .filter(|word| *word == "szew")
+                .count(),
+            1
+        );
+    }
+
+    /// `szyk` is an ExclusiveTail under `classify_overlap_pin`: its midpoint
+    /// belongs to window 2 and its range fits the open member. Text differs,
+    /// so T-A2 cannot turn it into a same-word replay.
+    #[test]
+    fn distinct_seam_word_is_admitted_without_coverage_gate() {
+        let session = "seam-distinct-coverage";
+        let mut lane = open(session);
+        record_voiced_spans(
+            &lane,
+            LONG_SAMPLES,
+            &[(44_000, 53_000), (70_000, 88_000), (100_000, 140_000)],
+        );
+        let (occurrence, requests) = launch_long_span(&mut lane, Some("apple"));
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![word_pin(session, "szew", 44_000, 51_000)],
+            ),
+            9.5,
+        );
+        let _ = drain(&mut lane.rx);
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[1],
+                vec![word_pin(session, "szyk", 45_000, 53_000)],
+            ),
+            9.5,
+        );
+        let events = drain(&mut lane.rx);
+        assert!(!replay_refusal(&events, "szyk"));
+        let ledger = lane.state.acoustic_ledger.lock().unwrap();
+        assert!(
+            ledger
+                .slots_of(&occurrence)
+                .unwrap()
+                .iter()
+                .any(|slot| slot.text == "szyk")
+        );
+        ledger.assert_slot_labels();
+    }
+
+    #[test]
+    fn stop_keeps_already_admitted_word_slots() {
+        let session = "seam-stop-slots";
+        let mut lane = open(session);
+        let (owner, requests) = launch_long_span(&mut lane, None);
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![word_pin(session, "szew", 44_000, 51_000)],
+            ),
+            9.5,
+        );
+        lane.state
+            .return_outstanding_whisper_without_label(&lane.tx);
+        let ledger = lane.state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&owner), Some("szew"));
+        assert!(ledger.is_sealed(&owner));
+        ledger.assert_slot_labels();
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    #[test]
+    fn replay_overlap_is_clipped_to_owner_before_comparison() {
+        let session = "seam-clipped-slots";
+        let mut lane = open(session);
+        let owner = OccurrenceIdentity::new(session, 1, 0, 52_000);
+        stage(&mut lane, 1, owner.clone(), "apple");
+        lane.state.admit_routed_words(
+            &lane.tx,
+            1,
+            &owner,
+            1,
+            &[RoutedPin {
+                index: 0,
+                pin: OccurrenceIdentity::new(session, 1, 44_000, 51_000),
+                text: "szew".into(),
+            }],
+            LedgerObservationProducer::Whisper,
+        );
+        let routes = lane.state.route_overlap_pins(
+            &lane.tx,
+            2,
+            48_000,
+            96_000,
+            &[(1, owner)],
+            &[word_pin(session, "szew", 45_000, 53_000)],
+            LedgerObservationProducer::Whisper,
+        );
+        assert_eq!(routes[0].exclusive.len(), 1);
+        assert!(replay_refusal(&drain(&mut lane.rx), "szew"));
+    }
+
+    /// The first pin geometry is copied from live take b2707ce7: the word
+    /// starts at 96_000, 768 samples before Apple's 96_768 occurrence edge.
+    #[test]
+    fn live_member_start_straddle_keeps_every_whisper_word_once() {
+        let session = "live-member-edge";
+        let mut lane = open(session);
+        let occurrence = OccurrenceIdentity::new(session, 1, 96_768, 192_768);
+        record_voiced_spans(
+            &lane,
+            192_768,
+            &[(96_768, 126_720), (132_000, 152_000), (160_000, 188_000)],
+        );
+        stage(&mut lane, 1, occurrence.clone(), "apple floor");
+        assert!(
+            lane.state
+                .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, "apple floor"),)
+        );
+        close_lexicon(&mut lane, 1, &occurrence, "apple floor");
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 2);
+        let windows = [
+            vec![
+                word_pin(session, "tak", 96_000, 126_720),
+                word_pin(session, "poza", 132_000, 152_000),
+            ],
+            vec![
+                word_pin(session, "tak", 98_624, 135_104),
+                word_pin(session, "tym", 160_000, 174_000),
+                word_pin(session, "to", 174_000, 188_000),
+            ],
+        ];
+        let mut events = Vec::new();
+        for (request, words) in requests.iter().zip(windows) {
+            lane.state
+                .complete_whisper_window(&lane.tx, completion(request, words), 9.0);
+            events.extend(drain(&mut lane.rx));
+        }
+        let warnings = warning_lines(&events);
+        assert_eq!(mutation_count(&events), 2, "{warnings}");
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("tak poza tym to"),
+            "{warnings}"
+        );
+        assert_conserved(&lane, Some("replayed_range_identity"));
+    }
+
+    #[test]
+    fn owned_word_is_clipped_without_lending_text_to_adjacent_member() {
+        let session = "adjacent-word-coverage";
+        let mut lane = open(session);
+        let first = OccurrenceIdentity::new(session, 1, 0, 64_000);
+        let second = OccurrenceIdentity::new(session, 1, 64_000, 96_000);
+        record_voiced_spans(
+            &lane,
+            96_000,
+            &[(8_000, 20_000), (62_000, 64_000), (64_000, 76_000)],
+        );
+        stage(&mut lane, 1, first.clone(), "apple first");
+        stage(&mut lane, 2, second.clone(), "apple second");
+        let routes = lane.state.route_overlap_pins(
+            &lane.tx,
+            3,
+            0,
+            96_000,
+            &[(1, first.clone()), (2, second.clone())],
+            &[
+                word_pin(session, "first", 8_000, 20_000),
+                word_pin(session, "second", 62_000, 76_000),
+            ],
+            LedgerObservationProducer::Whisper,
+        );
+        assert_eq!(exclusive_label(&routes[0].exclusive), "first");
+        assert_eq!(exclusive_label(&routes[1].exclusive), "second");
+        assert_eq!(routes[1].exclusive[0].pin.sample_start, second.sample_start);
+        let receipt = admit_ledger_label(
+            &mut lane.state,
+            &lane.tx,
+            LabelAdmission {
+                observation: ObservationIdentity::new(
+                    ObservationProducer::Whisper,
+                    3,
+                    0,
+                    first.clone(),
+                ),
+                label: &exclusive_label(&routes[0].exclusive),
+                energy: EnergyAdmission::RequireExistingQualification,
+            },
+        )
+        .expect("first member admission");
+        assert!(receipt.grants_mutation());
+        assert_eq!(held_text(&lane, &first).as_deref(), Some("first"));
+        assert!(!held_text(&lane, &first).unwrap().contains("second"));
+        let second_receipt = admit_ledger_label(
+            &mut lane.state,
+            &lane.tx,
+            LabelAdmission {
+                observation: ObservationIdentity::new(
+                    ObservationProducer::Whisper,
+                    3,
+                    1,
+                    second.clone(),
+                ),
+                label: &exclusive_label(&routes[1].exclusive),
+                energy: EnergyAdmission::RequireExistingQualification,
+            },
+        )
+        .expect("second member admission");
+        assert!(second_receipt.grants_mutation());
+        assert_eq!(held_text(&lane, &second).as_deref(), Some("second"));
+    }
+
+    /// Falsifier for the T-A duplicate rule (integrator W3, parent's counterexample).
+    /// Window 1 ends its audio at the seam, so its "domu" stops at 48_000. Window 2
+    /// places the next, distinct short word "w" at 47_000..49_000: midpoint 48_000
+    /// makes it window 2's word, and it overlaps "domu" by half of its own span.
+    /// A geometric duplicate rule must not erase a different word.
+    #[test]
+    fn short_distinct_word_after_the_seam_is_not_a_replay_of_its_neighbour() {
+        let session = "seam-short-word";
+        let mut lane = open(session);
+        record_voiced_spans(
+            &lane,
+            LONG_SAMPLES,
+            &[(42_000, 49_000), (70_000, 88_000), (100_000, 140_000)],
+        );
+        let (occurrence, requests) = launch_long_span(&mut lane, Some("apple"));
+        let windows = [
+            vec![word_pin(session, "domu", 42_000, 48_000)],
+            vec![
+                word_pin(session, "domu", 42_500, 47_800),
+                word_pin(session, "w", 47_000, 49_000),
+                word_pin(session, "dalej", 70_000, 88_000),
+            ],
+            vec![word_pin(session, "koniec", 100_000, 140_000)],
+        ];
+        let mut events = Vec::new();
+        for (request, segments) in requests.iter().zip(windows) {
+            lane.state
+                .complete_whisper_window(&lane.tx, completion(request, segments), 9.5);
+            events.extend(drain(&mut lane.rx));
+        }
+        let warnings = warning_lines(&events);
+        assert!(!replay_refusal(&events, "w"), "{warnings}");
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("domu w dalej koniec"),
+            "{warnings}"
+        );
+    }
+
+    #[test]
+    fn apple_held_range_does_not_replay_an_owned_word() {
+        let mut lane = open("seam-apple-held");
+        let member = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, 152_000);
+        stage(&mut lane, 1, member.clone(), "apple");
+        let routes = lane.state.route_overlap_pins(
+            &lane.tx,
+            2,
+            48_000,
+            96_000,
+            &[(1, member)],
+            &[word_pin("seam-apple-held", "nowe", 60_000, 70_000)],
+            LedgerObservationProducer::Whisper,
+        );
+        assert_eq!(routes[0].exclusive.len(), 1);
+        assert_eq!(routes[0].exclusive[0].text, "nowe");
+        assert!(!replay_refusal(&drain(&mut lane.rx), "nowe"));
+    }
+
+    #[test]
+    fn word_wholly_inside_admit_keeps_exclusive_tail_route() {
+        let mut lane = open("seam-normal");
+        let member = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 48_000, 96_000);
+        let routes = lane.state.route_overlap_pins(
+            &lane.tx,
+            2,
+            48_000,
+            96_000,
+            &[(1, member)],
+            &[word_pin("seam-normal", "zwykle", 60_000, 70_000)],
+            LedgerObservationProducer::Whisper,
+        );
+        assert_eq!(routes[0].exclusive.len(), 1);
+        assert_eq!(routes[0].exclusive[0].text, "zwykle");
+        assert!(!routes[0].blocked);
+    }
+
+    /// (a) Apple text debt, three step-1 windows, overlap duplicates, one
+    /// word across a window edge.
+    ///
+    /// A seam word owned by the second window enters its slice there; the
+    /// first window's copy is replay. Other duplicate pins remain replay.
+    #[test]
+    fn debt_long_occurrence_joins_exclusive_word_pins_around_a_straddle() {
+        let session = "relay-debt-long";
+        let mut lane = open(session);
+        record_voiced_spans(
+            &lane,
+            LONG_SAMPLES,
+            &[
+                (8_000, 48_000),
+                (52_000, 64_000),
+                (70_000, 88_000),
+                (100_000, 140_000),
+            ],
+        );
+        let (occurrence, requests) = launch_long_span(&mut lane, None);
+        let events = play_long_words(&mut lane, &requests, session);
+        let warnings = warning_lines(&events);
+        assert!(
+            replay_refusal(&events, "raz"),
+            "step 4: the later copy of an already admitted pin is replay\n{warnings}"
+        );
+        assert!(
+            replay_refusal(&events, "krawedz"),
+            "the first window's copy belongs to the second window\n{warnings}"
+        );
+        assert!(
+            warnings.contains("segment 47000..52000")
+                && warnings.contains(&format!(
+                    "occurrence [{}..{}]",
+                    occurrence.sample_start, occurrence.sample_end
+                ))
+                && warnings.contains("ledger=replayed_range_identity"),
+            "the replay warning names segment, occurrence, and ledger reason\n{warnings}"
+        );
+        assert_eq!(
+            (
+                lane.state.tail_patch_jobs_applied,
+                lane.state.tail_patch_jobs_skipped
+            ),
+            (3, 0),
+            "each completing window admits words; held={:?}\n{warnings}",
+            held_text(&lane, &occurrence)
+        );
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("raz krawedz dwa trzy cztery")
+        );
+        assert!(
+            !lane
+                .state
+                .acoustic_ledger
+                .lock()
+                .expect("ledger")
+                .text_recovery_pending(&occurrence),
+            "the joined whisper label clears the text debt"
+        );
+        assert_eq!(held_count(&lane), 1);
+        assert_replaced_slot_evidence(&lane, &occurrence, &["echo"]);
+        assert_conserved(&lane, Some("replayed_range_identity"));
+    }
+
+    /// (b) The same windows with Apple text already on the occurrence.
+    #[test]
+    fn labelled_long_occurrence_joins_exclusive_word_pins_around_a_straddle() {
+        let session = "relay-labelled-long";
+        let mut lane = open(session);
+        record_voiced_spans(
+            &lane,
+            LONG_SAMPLES,
+            &[
+                (8_000, 48_000),
+                (52_000, 64_000),
+                (70_000, 88_000),
+                (100_000, 140_000),
+            ],
+        );
+        let (occurrence, requests) = launch_long_span(&mut lane, Some("cale zdanie"));
+        let events = play_long_words(&mut lane, &requests, session);
+        let warnings = warning_lines(&events);
+        assert!(
+            !replay_refusal(&events, "echo"),
+            "the first window's overlap pin is replay against the committed occurrence\n{warnings}"
+        );
+        assert!(
+            replay_refusal(&events, "raz"),
+            "the later copy of raz is replayed_range_identity\n{warnings}"
+        );
+        assert!(replay_refusal(&events, "krawedz"), "{warnings}");
+        assert_eq!(
+            (
+                lane.state.tail_patch_jobs_applied,
+                lane.state.tail_patch_jobs_skipped
+            ),
+            (3, 0),
+            "held={:?}\n{warnings}",
+            held_text(&lane, &occurrence)
+        );
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("raz krawedz dwa trzy cztery")
+        );
+        assert_eq!(held_count(&lane), 1);
+        assert_replaced_slot_evidence(&lane, &occurrence, &["cale zdanie", "echo"]);
+        assert_conserved(&lane, Some("replayed_range_identity"));
+    }
+
+    fn recovery_payload(
+        occurrence: &OccurrenceIdentity,
+        segments: Vec<TimedTailSegment>,
+    ) -> TailProviderPayload {
+        let text = segments
+            .iter()
+            .map(|segment| segment.text.trim())
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let segment_grain = if segments
+            .iter()
+            .all(|segment| segment.grain == crate::stt::tail_provider::TailSegmentGrain::Word)
+        {
+            crate::stt::tail_provider::TailSegmentGrain::Word
+        } else {
+            crate::stt::tail_provider::TailSegmentGrain::Phrase
+        };
+        TailProviderPayload {
+            identity: crate::stt::tail_provider::TailRequestIdentity {
+                request_id: 9,
+                range: crate::stt::tail_provider::TailSampleRange {
+                    session: occurrence.session.clone(),
+                    capture_epoch: occurrence.capture_epoch,
+                    sample_start: occurrence.sample_start,
+                    sample_end: occurrence.sample_end,
+                },
+            },
+            text,
+            segments,
+            avg_logprob: Some(-0.2),
+            compression_ratio: Some(1.1),
+            provider_id: crate::stt::tail_provider::TailProviderId::Fake,
+            elapsed_ms: 1,
+            evidence: crate::stt::tail_provider::TailProviderEvidence {
+                segment_grain,
+                source: crate::stt::tail_provider::TailEvidenceSource::Whisper,
+                revision: Some("relay-recovery".into()),
+                stability: crate::stt::tail_provider::TailEvidenceStability::Final,
+                timing_quality: crate::stt::tail_provider::TailTimingQuality::ExactSampleRange,
+                avg_logprob: Some(-0.2),
+            },
+        }
+    }
+
+    /// (c) Stop recovery: every word pin is inside the debt occurrence except
+    /// one that runs past the end by a few samples.
+    ///
+    /// Contract step 3: the escape is unanchored and does not block the
+    /// contained pins. The contained label is the occurrence's whisper text.
+    #[test]
+    fn midpoint_owned_edge_word_joins_the_recovery() {
+        let mut lane = open("relay-recovery-escape");
+        let occurrence = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, 32_000);
+        stage(&mut lane, 1, occurrence.clone(), "apple");
+        assert!(
+            lane.state
+                .acoustic_ledger
+                .lock()
+                .expect("ledger")
+                .require_text_recovery(&occurrence),
+            "debt is recorded before lexicon closes the frontier"
+        );
+        let payload = recovery_payload(
+            &occurrence,
+            vec![
+                word_pin(&occurrence.session, "nowy", 4_000, 12_000),
+                word_pin(&occurrence.session, "ucieka", 30_000, 32_008),
+            ],
+        );
+        let cleared =
+            admit_debt_occurrence_recovery(&mut lane.state, &lane.tx, &occurrence, &payload);
+        let events = drain(&mut lane.rx);
+        let warnings = warning_lines(&events);
+        assert!(
+            cleared,
+            "contained pins must clear the debt; held={:?}\n{warnings}",
+            held_text(&lane, &occurrence)
+        );
+        assert!(!unanchored_label(&events, "ucieka"), "{warnings}");
+        assert!(
+            !warnings.contains("seal_coverage_text_recovery_refused"),
+            "{warnings}"
+        );
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("nowy ucieka")
+        );
+        assert!(
+            !lane
+                .state
+                .acoustic_ledger
+                .lock()
+                .expect("ledger")
+                .text_recovery_pending(&occurrence)
+        );
+        assert_replaced_slot_evidence(&lane, &occurrence, &["apple"]);
+        assert_conserved(&lane, None);
+    }
+
+    /// (d) Debt recovery cannot replace an overlapping higher-rank Lexicon slot.
+    /// The open owner retains its slot and debt, with a refusal in the layer trail.
+    #[test]
+    fn recovery_words_refuse_overlapping_higher_rank_lexicon_slot() {
+        let mut lane = open("relay-recovery-lexicon");
+        let occurrence = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, 32_000);
+        stage(&mut lane, 1, occurrence.clone(), "apple tekst");
+        assert!(
+            lane.state
+                .acoustic_ledger
+                .lock()
+                .expect("ledger")
+                .require_text_recovery(&occurrence),
+            "debt is recorded before lexicon closes the frontier"
+        );
+        assert!(
+            admit_ledger_label(
+                &mut lane.state,
+                &lane.tx,
+                LabelAdmission {
+                    observation: ObservationIdentity::new(
+                        ObservationProducer::Lexicon,
+                        1,
+                        0,
+                        occurrence.clone(),
+                    ),
+                    label: "lexikon trzyma",
+                    energy: EnergyAdmission::RequireExistingQualification,
+                },
+            )
+            .is_some_and(|receipt| receipt.grants_mutation())
+        );
+        assert!(
+            lane.state
+                .acoustic_ledger
+                .lock()
+                .expect("ledger")
+                .require_text_recovery(&occurrence)
+        );
+        let slots_before = {
+            let ledger = lane.state.acoustic_ledger.lock().expect("ledger");
+            assert!(!ledger.is_sealed(&occurrence));
+            let slots = ledger.slots_of(&occurrence).expect("lexicon slot").to_vec();
+            assert_eq!(slots.len(), 1);
+            assert_eq!(slots[0].producer, ObservationProducer::Lexicon);
+            assert_eq!(slots[0].text, "lexikon trzyma");
+            slots
+        };
+        let _ = drain(&mut lane.rx);
+        let payload = recovery_payload(
+            &occurrence,
+            vec![word_pin(&occurrence.session, "whisper inny", 4_000, 12_000)],
+        );
+        let recovered =
+            admit_debt_occurrence_recovery(&mut lane.state, &lane.tx, &occurrence, &payload);
+        // Drain before asserting so an unexpected result reports the actual events.
+        let events = drain(&mut lane.rx);
+        assert!(!recovered, "higher-rank slot must retain debt: {events:#?}");
+        assert_eq!(
+            whisper_mutations(&events),
+            vec![(
+                "lexikon trzyma".to_string(),
+                MutationReceipt::Preserve {
+                    occurrence: occurrence.clone(),
+                    held_by: ObservationProducer::Lexicon,
+                },
+            )],
+            "{events:#?}"
+        );
+        assert_eq!(mutation_count(&events), 0);
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("lexikon trzyma")
+        );
+        {
+            let ledger = lane.state.acoustic_ledger.lock().expect("ledger");
+            assert!(ledger.text_recovery_pending(&occurrence));
+            assert!(!ledger.is_sealed(&occurrence));
+            assert_eq!(
+                ledger.slots_of(&occurrence).unwrap(),
+                slots_before.as_slice()
+            );
+            // The routed event preserves the held label; the rejected candidate's
+            // receipt lives in the ledger trail. SealedReplay also names rank refusal.
+            let refused = ledger
+                .layer_trail_for(&occurrence)
+                .filter(|entry| {
+                    entry.observation.producer == ObservationProducer::Whisper
+                        && entry.observation.request == payload.identity.request_id
+                        && entry.candidate_label == "whisper inny"
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(refused.len(), 1, "trail={refused:#?}; events={events:#?}");
+            assert_eq!(
+                refused[0].decision,
+                MutationReceipt::Refuse {
+                    occurrence: occurrence.clone(),
+                    reason: RefuseReason::SealedReplay,
+                },
+                "{events:#?}"
+            );
+            ledger.assert_slot_labels();
+        }
+        assert_conserved(&lane, Some("sealed_replay"));
+    }
+}
+
+/// T-C2r contract falsifiers, authored before the admission cut and unrun in W1.
+/// Coordinates come from take ef1fa240; lexical labels and PCM amplitudes below
+/// are synthetic. No acoustic or transcription quality is asserted by a fixture.
+#[cfg(test)]
+mod tc2_window_contract_tests {
+    use super::super::silero_fusion::UtteranceLedger;
+    use super::*;
+    use crate::pipeline::acoustic_ledger::SlotWitness;
+    use crate::stt::tail_provider::{
+        TailEvidenceSource, TailEvidenceStability, TailProviderEvidence, TailProviderId,
+        TailSegmentGrain, TailTimingQuality,
+    };
+
+    const SESSION: &str = "ef1fa240-window-contract";
+    const RATE: u32 = 48_000;
+
+    struct Fixture {
+        state: AppleSealState,
+        physical: UtteranceLedger,
+        events: mpsc::UnboundedSender<EngineEvent>,
+        receiver: mpsc::UnboundedReceiver<EngineEvent>,
+        requests: mpsc::Receiver<TailPatchRequest>,
+        occurrence: OccurrenceIdentity,
+    }
+
+    fn fixture() -> Fixture {
+        let (events, receiver) = mpsc::unbounded_channel();
+        let (sender, requests) = mpsc::channel(8);
+        let mut state = AppleSealState::new_with_tail_patch_for_session(
+            RATE,
+            SESSION.into(),
+            1,
+            sender,
+            Arc::new(Mutex::new(AcousticLedger::new())),
+            Some(EnergyCalibration {
+                version: "tc2-physical-geometry".into(),
+                min_energy_integral: 1.0,
+                min_valley_samples: 1,
+            }),
+        );
+        state.whisper_context_window_sec = 8.0;
+        state.audio.push(&vec![0.2; 743_424]);
+        let mut physical = UtteranceLedger::new();
+        physical.open_or_extend(SESSION, 1, 227_328, 510_464);
+        physical.close_open(510_464);
+        assert!(reconcile_silero_ledger(&mut state, &events, &physical, &[]));
+        let occurrence = OccurrenceIdentity::new(SESSION, 1, 227_328, 510_464);
+        {
+            let ledger = state.acoustic_ledger.lock().unwrap();
+            assert!(ledger.is_qualified(&occurrence));
+            assert!(ledger.text_of(&occurrence).is_none());
+            assert!(!ledger.is_sealed(&occurrence));
+            assert_eq!(
+                ledger.frontier_of(&occurrence).unwrap().open_producers(),
+                vec![LedgerObservationProducer::Whisper]
+            );
+        }
+        Fixture {
+            state,
+            physical,
+            events,
+            receiver,
+            requests,
+            occurrence,
+        }
+    }
+
+    fn pin(text: &str, start: u64, end: u64) -> TimedTailSegment {
+        TimedTailSegment {
+            grain: TailSegmentGrain::Word,
+            text: text.into(),
+            range: TailSampleRange {
+                session: SESSION.into(),
+                capture_epoch: 1,
+                sample_start: start,
+                sample_end: end,
+            },
+        }
+    }
+
+    fn completion(
+        request: &TailPatchRequest,
+        segments: Vec<TimedTailSegment>,
+    ) -> TailPatchCompletion {
+        TailPatchCompletion {
+            submission_sequence: request.submission_sequence,
+            utterance_id: request.utterance_id,
+            request_identity: Some(request.provider_request.identity.clone()),
+            payload: Some(TailProviderPayload {
+                identity: request.provider_request.identity.clone(),
+                text: segments
+                    .iter()
+                    .map(|pin| pin.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                segments,
+                avg_logprob: Some(-0.2),
+                compression_ratio: Some(1.0),
+                provider_id: TailProviderId::Fake,
+                elapsed_ms: 1,
+                evidence: TailProviderEvidence {
+                    segment_grain: TailSegmentGrain::Word,
+                    source: TailEvidenceSource::Whisper,
+                    revision: Some("tc2-real-geometry-synthetic-labels".into()),
+                    stability: TailEvidenceStability::Final,
+                    timing_quality: TailTimingQuality::ExactSampleRange,
+                    avg_logprob: Some(-0.2),
+                },
+            }),
+            member_occurrences: request.member_occurrences.clone(),
+        }
+    }
+
+    fn assert_words(fixture: &Fixture, expected: &str) {
+        let ledger = fixture.state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&fixture.occurrence), Some(expected));
+        ledger.assert_slot_labels();
+        for slot in ledger.slots_of(&fixture.occurrence).unwrap() {
+            assert_eq!(slot.witness, SlotWitness::Unwitnessed);
+        }
+        assert!(
+            ledger
+                .frontier_of(&fixture.occurrence)
+                .unwrap()
+                .open_producers()
+                .contains(&LedgerObservationProducer::Whisper)
+        );
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    #[test]
+    fn late_apple_requires_current_unclamped_pcm() {
+        for defect in ["stale", "negative", "nonfinite", "past_capture", "straddle"] {
+            let mut f = fixture();
+            let start = 434_496;
+            let end = if defect == "straddle" {
+                520_000
+            } else {
+                470_976
+            };
+            let word = FusionWord::from_timed(&pin("late", start, end));
+            let mut current = vec![apple_word("late", start, end)];
+            match defect {
+                "stale" => current.clear(),
+                "negative" => current[0].start_ts = -1.0,
+                "nonfinite" => current[0].start_ts = f32::NAN,
+                "past_capture" => current[0].end_ts = 20.0,
+                "straddle" => {}
+                _ => unreachable!(),
+            }
+            while f.receiver.try_recv().is_ok() {}
+            admit_late_apple_words(&mut f.state, &f.events, 1, &[word], &current);
+            let ledger = f.state.acoustic_ledger.lock().unwrap();
+            assert_eq!(ledger.text_of(&f.occurrence), None, "{defect}");
+            assert_eq!(ledger.conservation().residue(), 0, "{defect}");
+            drop(ledger);
+            assert!(
+                std::iter::from_fn(|| f.receiver.try_recv().ok()).any(|event| matches!(
+                    event,
+                    EngineEvent::LedgerMutation {
+                        label,
+                        // AR-1b: a non-current late word is evidence at its own
+                        // pin under its own reason; admission is still refused.
+                        receipt: MutationReceipt::KeepVisibleUnanchored {
+                            reason: NoAuthorityReason::LateAppleWordNotCurrent,
+                            ..
+                        },
+                        ..
+                    } if label == "late"
+                )),
+                "{defect}"
+            );
+        }
+    }
+
+    #[test]
+    fn horizon_open_owner_does_not_widen_the_next_window() {
+        let mut f = fixture();
+        let first = f.requests.try_recv().unwrap();
+        let second = f.requests.try_recv().unwrap();
+        for request in [&first, &second] {
+            f.state.complete_whisper_window(
+                &f.events,
+                completion(request, vec![pin("alpha", 246_464, 262_784)]),
+                10.7,
+            );
+        }
+        assert!(f.state.refinement_submitted.is_empty());
+        assert!(f.state.refinement_pending.is_empty());
+        assert!(f.state.layer1_coalesce.is_empty());
+        assert_words(&f, "alpha");
+        f.physical.open_or_extend(SESSION, 1, 508_416, 743_424);
+        f.physical.close_open(743_424);
+        assert!(reconcile_silero_ledger(
+            &mut f.state,
+            &f.events,
+            &f.physical,
+            &[],
+        ));
+        let next = f.requests.try_recv().unwrap();
+        assert_eq!(next.provider_request.identity.range.sample_start, 268_416);
+        assert_eq!(next.provider_request.identity.range.sample_end, 700_416);
+        assert_eq!(
+            next.member_occurrences,
+            vec![(2, OccurrenceIdentity::new(SESSION, 1, 508_416, 743_424))]
+        );
+        let last = f.requests.try_recv().unwrap();
+        assert_eq!(last.member_occurrences, next.member_occurrences);
+        assert!(f.requests.try_recv().is_err());
+        let ledger = f.state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.qualified_occurrences().count(), 2);
+        assert!(!ledger.is_sealed(&f.occurrence));
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    /// RED contract 1: request 2's two completions, then a future request's pad.
+    /// The third job does not even exist when request 2's last window completes.
+    /// Waiting only for currently submitted jobs cannot protect this owner.
+    #[test]
+    fn ef1fa_long_occurrence_admits_each_window_and_future_pad() {
+        let mut f = fixture();
+        let first = f.requests.try_recv().unwrap();
+        let second = f.requests.try_recv().unwrap();
+        assert!(f.requests.try_recv().is_err());
+        assert_eq!(first.provider_request.identity.range.sample_start, 0);
+        assert_eq!(first.provider_request.identity.range.sample_end, 419_328);
+        assert_eq!(second.provider_request.identity.range.sample_start, 126_464);
+        assert_eq!(second.provider_request.identity.range.sample_end, 510_464);
+        f.state.complete_whisper_window(
+            &f.events,
+            completion(
+                &first,
+                vec![
+                    pin("alpha", 246_464, 262_784),
+                    pin("beta", 262_784, 284_864),
+                ],
+            ),
+            8.8,
+        );
+        assert_words(&f, "alpha beta");
+        f.state.complete_whisper_window(
+            &f.events,
+            completion(
+                &second,
+                vec![
+                    pin("alpha", 246_464, 262_784),
+                    pin("gamma", 382_080, 418_560),
+                ],
+            ),
+            10.7,
+        );
+        assert_words(&f, "alpha beta gamma");
+        let after_second = std::iter::from_fn(|| f.receiver.try_recv().ok()).collect::<Vec<_>>();
+        assert!(after_second.iter().any(|event| matches!(event,
+            EngineEvent::LedgerMutation {
+                label, receipt: MutationReceipt::Refuse { reason: RefuseReason::ReplayedRangeIdentity, .. }, ..
+            } if label == "alpha"
+        )));
+
+        // Next physical closure and its context pad, from the same take.
+        f.physical.open_or_extend(SESSION, 1, 508_416, 743_424);
+        f.physical.close_open(743_424);
+        assert!(reconcile_silero_ledger(
+            &mut f.state,
+            &f.events,
+            &f.physical,
+            &[]
+        ));
+        let third = f.requests.try_recv().unwrap();
+        assert_eq!(third.provider_request.identity.range.sample_start, 268_416);
+        assert_eq!(third.provider_request.identity.range.sample_end, 700_416);
+        assert!(
+            !third
+                .member_occurrences
+                .iter()
+                .any(|(_, owner)| owner == &f.occurrence)
+        );
+        f.state.complete_whisper_window(
+            &f.events,
+            completion(
+                &third,
+                vec![
+                    pin("gamma", 384_576, 400_896),
+                    pin("delta", 434_496, 470_976),
+                    pin("epsilon", 652_416, 659_136),
+                ],
+            ),
+            14.6,
+        );
+        assert_words(&f, "alpha beta gamma delta");
+        let after_third = std::iter::from_fn(|| f.receiver.try_recv().ok()).collect::<Vec<_>>();
+        assert!(!after_third.iter().any(|event| matches!(event,
+            EngineEvent::LedgerMutation { label, receipt: MutationReceipt::Refuse { .. }, .. }
+                | EngineEvent::LedgerMutation { label, receipt: MutationReceipt::KeepVisibleUnanchored { .. }, .. }
+                if label == "delta"
+        )));
+    }
+
+    /// The same producer may revise while the horizon remains open.
+    #[test]
+    fn first_label_keeps_whisper_open_for_later_window_generations() {
+        let mut f = fixture();
+        let first = f.requests.try_recv().unwrap();
+        let second = f.requests.try_recv().unwrap();
+        f.state.complete_whisper_window(
+            &f.events,
+            completion(&first, vec![pin("alpha", 246_464, 262_784)]),
+            8.8,
+        );
+        assert_words(&f, "alpha");
+        f.state.complete_whisper_window(
+            &f.events,
+            completion(&second, vec![pin("delta", 434_496, 470_976)]),
+            10.7,
+        );
+        assert_words(&f, "alpha delta");
+        f.state.close_admission_horizon(&f.events, 510_464);
+        let ledger = f.state.acoustic_ledger.lock().unwrap();
+        assert!(ledger.is_sealed(&f.occurrence));
+        assert!(ledger.frontier_of(&f.occurrence).unwrap().is_closed());
+        ledger.assert_slot_labels();
+    }
+
+    #[test]
+    fn horizon_waits_for_earlier_windows_in_either_completion_order() {
+        for reversed in [false, true] {
+            let mut f = fixture();
+            let first = f.requests.try_recv().unwrap();
+            let second = f.requests.try_recv().unwrap();
+            let mut returns = vec![
+                completion(&first, vec![pin("alpha", 246_464, 262_784)]),
+                completion(&second, vec![pin("delta", 434_496, 470_976)]),
+            ];
+            if reversed {
+                returns.reverse();
+            }
+            f.state.close_admission_horizon(&f.events, 510_464);
+            f.state
+                .complete_whisper_window(&f.events, returns.remove(0), 10.7);
+            assert!(
+                !f.state
+                    .acoustic_ledger
+                    .lock()
+                    .unwrap()
+                    .is_sealed(&f.occurrence)
+            );
+            f.state
+                .complete_whisper_window(&f.events, returns.remove(0), 10.7);
+            let ledger = f.state.acoustic_ledger.lock().unwrap();
+            assert_eq!(ledger.text_of(&f.occurrence), Some("alpha delta"));
+            assert!(ledger.is_sealed(&f.occurrence));
+            ledger.assert_slot_labels();
+            assert_eq!(ledger.conservation().residue(), 0);
+        }
+    }
+
+    #[test]
+    fn drained_stop_returns_horizon_without_a_deadline_failure() {
+        let mut f = fixture();
+        while let Ok(request) = f.requests.try_recv() {
+            f.state.complete_whisper_window(
+                &f.events,
+                completion(&request, vec![pin("alpha", 246_464, 262_784)]),
+                10.7,
+            );
+        }
+        f.state.return_outstanding_whisper_without_label(&f.events);
+        assert!(
+            f.state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .is_sealed(&f.occurrence)
+        );
+        let events = std::iter::from_fn(|| f.receiver.try_recv().ok()).collect::<Vec<_>>();
+        assert!(!events.iter().any(|event| matches!(event,
+            EngineEvent::Warning { code, .. } if code == "live_refinement_stop_deadline")));
+    }
+    #[test]
+    fn later_window_start_closes_owner_on_success_or_failure() {
+        for failed in [false, true] {
+            let mut f = fixture();
+            while let Ok(request) = f.requests.try_recv() {
+                f.state.complete_whisper_window(
+                    &f.events,
+                    completion(&request, vec![pin("alpha", 246_464, 262_784)]),
+                    10.7,
+                );
+            }
+            assert_words(&f, "alpha");
+            f.state.audio.push(&vec![0.2; 700_000]);
+            f.physical.open_or_extend(SESSION, 1, 1_100_000, 1_300_000);
+            f.physical.close_open(1_300_000);
+            assert!(reconcile_silero_ledger(
+                &mut f.state,
+                &f.events,
+                &f.physical,
+                &[]
+            ));
+            let later = f.requests.try_recv().unwrap();
+            assert!(later.provider_request.identity.range.sample_start >= f.occurrence.sample_end);
+            let mut result = completion(&later, vec![pin("later", 1_120_000, 1_150_000)]);
+            if failed {
+                result.payload = None;
+            }
+            f.state.complete_whisper_window(&f.events, result, 27.1);
+            let ledger = f.state.acoustic_ledger.lock().unwrap();
+            assert!(ledger.is_sealed(&f.occurrence));
+            assert_eq!(ledger.text_of(&f.occurrence), Some("alpha"));
+            ledger.assert_slot_labels();
+        }
+    }
+
+    #[test]
+    fn reclose_late_whisper_word_keeps_visible_and_does_not_revise_seal() {
+        let mut f = fixture();
+        while let Ok(request) = f.requests.try_recv() {
+            f.state.complete_whisper_window(
+                &f.events,
+                completion(&request, vec![pin("alpha", 246_464, 262_784)]),
+                10.7,
+            );
+        }
+        f.state.close_admission_horizon(&f.events, 510_464);
+        let seal = f
+            .state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .seal_of(&f.occurrence)
+            .unwrap()
+            .clone();
+        f.physical.open_or_extend(SESSION, 1, 508_416, 743_424);
+        f.physical.close_open(743_424);
+        assert!(reconcile_silero_ledger(
+            &mut f.state,
+            &f.events,
+            &f.physical,
+            &[]
+        ));
+        let third = f.requests.try_recv().unwrap();
+        f.state.complete_whisper_window(
+            &f.events,
+            completion(&third, vec![pin("delta", 434_496, 470_976)]),
+            14.6,
+        );
+        let fourth = f.requests.try_recv().unwrap();
+        f.state.complete_whisper_window(
+            &f.events,
+            completion(&fourth, vec![pin("zeta", 482_000, 495_000)]),
+            15.5,
+        );
+        let events = std::iter::from_fn(|| f.receiver.try_recv().ok()).collect::<Vec<_>>();
+        assert!(events.iter().any(|event| matches!(event,
+            EngineEvent::LedgerMutation { label, receipt: MutationReceipt::KeepVisibleUnanchored {
+                reason: NoAuthorityReason::LateWhisperWordSealedOwner, .. }, .. } if label == "delta")));
+        assert!(events.iter().any(|event| matches!(event,
+            EngineEvent::LedgerMutation { label, receipt: MutationReceipt::KeepVisibleUnanchored {
+                reason: NoAuthorityReason::LateWhisperWordSealedOwner, .. }, .. } if label == "delta zeta")));
+        let ledger = f.state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&f.occurrence), Some("alpha"));
+        assert_eq!(ledger.seal_of(&f.occurrence), Some(&seal));
+        assert_eq!(ledger.conservation().residue(), 0);
+        ledger.assert_slot_labels();
+    }
+
+    fn apple_word(text: &str, start: u64, end: u64) -> TranscriptSegment {
+        TranscriptSegment {
+            text: text.into(),
+            start_ts: start as f32 / RATE as f32,
+            end_ts: end as f32 / RATE as f32,
+        }
+    }
+
+    #[test]
+    fn sealed_owner_repartition_mints_no_second_identity() {
+        let mut f = fixture();
+        while let Ok(request) = f.requests.try_recv() {
+            f.state.complete_whisper_window(
+                &f.events,
+                completion(&request, vec![pin("alpha", 246_464, 262_784)]),
+                10.7,
+            );
+        }
+        f.state.close_admission_horizon(&f.events, 510_464);
+        let (seal, frontier) = {
+            let ledger = f.state.acoustic_ledger.lock().unwrap();
+            (
+                ledger.seal_of(&f.occurrence).unwrap().clone(),
+                ledger.frontier_of(&f.occurrence).unwrap().clone(),
+            )
+        };
+        let newer = OccurrenceIdentity::new(SESSION, 1, 508_416, 743_424);
+        f.physical
+            .open_or_extend(SESSION, 1, newer.sample_start, newer.sample_end);
+        f.physical.close_open(newer.sample_end);
+        assert!(reconcile_silero_ledger(
+            &mut f.state,
+            &f.events,
+            &f.physical,
+            &[],
+        ));
+        while f.receiver.try_recv().is_ok() {}
+        let request = f.requests.try_recv().unwrap();
+        f.state.complete_whisper_window(
+            &f.events,
+            completion(&request, vec![pin("delta", 434_496, 470_976)]),
+            14.6,
+        );
+        let events = std::iter::from_fn(|| f.receiver.try_recv().ok()).collect::<Vec<_>>();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    EngineEvent::LedgerMutation {
+                        observation,
+                        label,
+                        receipt: MutationReceipt::KeepVisibleUnanchored {
+                            occurrence,
+                            reason: NoAuthorityReason::LateWhisperWordSealedOwner,
+                            ..
+                        },
+                    } if observation.occurrence == f.occurrence
+                        && occurrence == &f.occurrence && label == "delta"
+                ))
+                .count(),
+            1
+        );
+        let ledger = f.state.acoustic_ledger.lock().unwrap();
+        let owners = ledger.qualified_occurrences().collect::<Vec<_>>();
+        assert_eq!(owners, vec![&f.occurrence, &newer]);
+        assert_eq!(ledger.text_of(&f.occurrence), Some("alpha"));
+        assert_eq!(ledger.seal_of(&f.occurrence), Some(&seal));
+        assert_eq!(ledger.frontier_of(&f.occurrence), Some(&frontier));
+        assert!(f.state.unmatched_silero_words.is_empty());
+        assert_eq!(ledger.conservation().residue(), 0);
+        ledger.assert_slot_labels();
+    }
+
+    #[test]
+    fn late_apple_range_refusals_publish_for_open_and_sealed_whisper_slots() {
+        for sealed in [false, true] {
+            let mut f = fixture();
+            while let Ok(request) = f.requests.try_recv() {
+                f.state.complete_whisper_window(
+                    &f.events,
+                    completion(&request, vec![pin("Alpha,", 246_464, 262_784)]),
+                    10.7,
+                );
+            }
+            if sealed {
+                f.state.close_admission_horizon(&f.events, 510_464);
+            }
+            let before = f
+                .state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .slots_of(&f.occurrence)
+                .unwrap()
+                .to_vec();
+            for (text, reason) in [
+                ("alpha", RefuseReason::ReplayedRangeIdentity),
+                ("changed", RefuseReason::SealedReplay),
+            ] {
+                while f.receiver.try_recv().is_ok() {}
+                let word = FusionWord::from_timed(&pin(text, 248_000, 266_000));
+                admit_late_apple_words(
+                    &mut f.state,
+                    &f.events,
+                    2,
+                    &[word],
+                    &[apple_word(text, 248_000, 266_000)],
+                );
+                let events = std::iter::from_fn(|| f.receiver.try_recv().ok()).collect::<Vec<_>>();
+                assert_eq!(events.len(), 1);
+                assert!(matches!(
+                    &events[0],
+                    EngineEvent::LedgerMutation {
+                        receipt: MutationReceipt::Refuse { reason: actual, .. },
+                        ..
+                    } if actual == &reason
+                ));
+                let ledger = f.state.acoustic_ledger.lock().unwrap();
+                assert_eq!(ledger.slots_of(&f.occurrence).unwrap(), before.as_slice());
+                assert_eq!(ledger.text_of(&f.occurrence), Some("Alpha,"));
+                assert_eq!(ledger.is_sealed(&f.occurrence), sealed);
+            }
+        }
+    }
+
+    #[test]
+    fn fresh_physical_ledger_utterance_ids_do_not_alias_occurrence_identity() {
+        let mut f = fixture();
+        let held = OccurrenceIdentity::new(SESSION, 1, 56_832, 222_208);
+        let mut second = UtteranceLedger::new();
+        second.open_or_extend(SESSION, 1, held.sample_start, held.sample_end);
+        second.close_open(held.sample_end);
+        assert_eq!(f.physical.utterances()[0].id, second.utterances()[0].id);
+        assert!(reconcile_silero_ledger(
+            &mut f.state,
+            &f.events,
+            &second,
+            &[apple_word("held", 58_000, 70_000)],
+        ));
+        let ledger = f.state.acoustic_ledger.lock().unwrap();
+        assert!(ledger.is_qualified(&held));
+        assert!(ledger.is_qualified(&f.occurrence));
+        assert_eq!(ledger.qualified_occurrences().count(), 2);
+        assert_eq!(ledger.text_of(&held), Some("held"));
+        assert_eq!(ledger.text_of(&f.occurrence), None);
+    }
+
+    #[test]
+    fn horizon_open_owner_survives_partition_change_with_one_identity() {
+        let mut f = fixture();
+        f.state.audio.push(&vec![0.2; 2_000_000]);
+        let owner = OccurrenceIdentity::new(SESSION, 1, 2_132_992, 2_325_504);
+        f.physical
+            .open_or_extend(SESSION, 1, owner.sample_start, owner.sample_end);
+        f.physical.close_open(owner.sample_end);
+        assert!(reconcile_silero_ledger(
+            &mut f.state,
+            &f.events,
+            &f.physical,
+            &[],
+        ));
+        while let Ok(request) = f.requests.try_recv() {
+            let word = if request
+                .member_occurrences
+                .iter()
+                .any(|(_, range)| range == &owner)
+            {
+                pin("anchor", 2_140_000, 2_148_000)
+            } else {
+                pin("debt", 246_464, 262_784)
+            };
+            f.state
+                .complete_whisper_window(&f.events, completion(&request, vec![word]), 50.0);
+        }
+        assert!(!f.state.acoustic_ledger.lock().unwrap().is_sealed(&owner));
+        let windows_before = f.state.windows_admitted;
+        let mut reclosed = UtteranceLedger::new();
+        for (start, end) in [(227_328, 510_464), (2_132_992, 2_317_824)] {
+            reclosed.open_or_extend(SESSION, 1, start, end);
+            reclosed.close_open(end);
+        }
+        // The contained re-close neither mints nor schedules. Its Apple word
+        // reaches the original horizon-open owner by midpoint.
+        assert!(reconcile_silero_ledger(
+            &mut f.state,
+            &f.events,
+            &reclosed,
+            &[apple_word("contained", 2_150_000, 2_154_000)],
+        ));
+        f.state.flush_layer1_coalesce(&f.events);
+        assert_eq!(f.state.windows_admitted, windows_before);
+        assert!(f.requests.try_recv().is_err());
+        assert_eq!(
+            f.state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .qualified_occurrences()
+                .count(),
+            2
+        );
+
+        // The neighbouring closure owns its full exclusive span at mint time,
+        // including the physical overlap with the earlier fixed identity.
+        let next_owner = OccurrenceIdentity::new(SESSION, 1, 2_317_824, 2_378_240);
+        reclosed.open_or_extend(SESSION, 1, next_owner.sample_start, next_owner.sample_end);
+        reclosed.close_open(next_owner.sample_end);
+        assert!(reconcile_silero_ledger(
+            &mut f.state,
+            &f.events,
+            &reclosed,
+            &[apple_word("late", 2_320_000, 2_324_000)],
+        ));
+        f.state.flush_layer1_coalesce(&f.events);
+        let requests = std::iter::from_fn(|| f.requests.try_recv().ok()).collect::<Vec<_>>();
+        assert!(!requests.is_empty());
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.member_occurrences == vec![(3, next_owner.clone())])
+        );
+        assert_eq!(
+            f.state.windows_admitted,
+            windows_before + requests.len() as u64
+        );
+        let ledger = f.state.acoustic_ledger.lock().unwrap();
+        let owners = ledger.qualified_occurrences().collect::<Vec<_>>();
+        assert_eq!(owners.len(), 3);
+        assert!(owners.contains(&&owner));
+        assert!(owners.contains(&&next_owner));
+        let overlaps = owners
+            .iter()
+            .enumerate()
+            .flat_map(|(index, first)| {
+                owners.iter().skip(index + 1).filter_map(move |second| {
+                    let start = first.sample_start.max(second.sample_start);
+                    let end = first.sample_end.min(second.sample_end);
+                    (start < end).then_some((start, end))
+                })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(overlaps, vec![(2_317_824, 2_325_504)]);
+        assert_eq!(ledger.text_of(&owner), Some("anchor contained"));
+        assert_eq!(ledger.text_of(&next_owner), Some("late"));
+        assert!(
+            ledger
+                .frontier_of(&owner)
+                .unwrap()
+                .open_producers()
+                .contains(&LedgerObservationProducer::Whisper)
+        );
+        assert!(!ledger.is_sealed(&owner));
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    /// ef1fa physical closures overlap at 508416..510464. Labels and PCM are
+    /// synthetic; both live-window and stop recovery must make the same choice.
+    #[test]
+    fn midpoint_in_closure_overlap_routes_to_exactly_one_owner() {
+        // The per-owner still_possible skip keeps older open when its outstanding
+        // recovery window ends before newer starts, even at newer's horizon.
+        for (older_sealed, newer_sealed) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
+            for stop_recovery in [false, true] {
+                let mut f = fixture();
+                // fixture() submits recovery via reconcile_silero_ledger ->
+                // enqueue_layer1_piece -> queue_layer1_flush (split windows).
+                let held_recovery = if !older_sealed && newer_sealed {
+                    let request = f.requests.try_recv().unwrap();
+                    let range = &request.provider_request.identity.range;
+                    assert_eq!((range.sample_start, range.sample_end), (0, 419_328));
+                    assert!(range.sample_start < f.occurrence.sample_end);
+                    assert!(range.sample_end > f.occurrence.sample_start);
+                    assert!(range.sample_end <= 508_416);
+                    Some(request)
+                } else {
+                    None
+                };
+                assert!(reconcile_silero_ledger(
+                    &mut f.state,
+                    &f.events,
+                    &f.physical,
+                    &[apple_word("older", 246_464, 262_784)],
+                ));
+                let newer = OccurrenceIdentity::new(SESSION, 1, 508_416, 743_424);
+                f.physical
+                    .open_or_extend(SESSION, 1, newer.sample_start, newer.sample_end);
+                f.physical.close_open(newer.sample_end);
+                assert!(reconcile_silero_ledger(
+                    &mut f.state,
+                    &f.events,
+                    &f.physical,
+                    &[apple_word("newer", 652_416, 659_136)],
+                ));
+                f.state.flush_layer1_coalesce(&f.events);
+                // Complete every other window; their labels settle recovery debt
+                // while the retained request still blocks only older's horizon.
+                while let Ok(request) = f.requests.try_recv() {
+                    let range = &request.provider_request.identity.range;
+                    let segments = [
+                        pin("older", 246_464, 262_784),
+                        pin("older_tail", 434_496, 470_976),
+                        pin("newer", 652_416, 659_136),
+                    ]
+                    .into_iter()
+                    .filter(|word| {
+                        range.sample_start <= word.range.sample_start
+                            && word.range.sample_end <= range.sample_end
+                    })
+                    .collect();
+                    f.state.complete_whisper_window(
+                        &f.events,
+                        completion(&request, segments),
+                        15.5,
+                    );
+                }
+                assert_eq!(
+                    f.state.refinement_submitted.len(),
+                    usize::from(held_recovery.is_some())
+                );
+                assert!(f.state.refinement_pending.is_empty());
+                assert!(f.state.layer1_coalesce.is_empty());
+                // (false, false): leave both horizons open.
+                // (false, true): the retained recovery window skips only older.
+                // (true, false): close only older's end.
+                // (true, true): drained windows let both owners close.
+                if newer_sealed {
+                    f.state.close_admission_horizon(&f.events, newer.sample_end);
+                } else if older_sealed {
+                    f.state
+                        .close_admission_horizon(&f.events, f.occurrence.sample_end);
+                }
+                for (owner, sealed) in [(&f.occurrence, older_sealed), (&newer, newer_sealed)] {
+                    let ledger = f.state.acoustic_ledger.lock().unwrap();
+                    assert_eq!(ledger.is_sealed(owner), sealed);
+                    assert!(!ledger.text_recovery_pending(owner));
+                }
+
+                // A subsequent physical closure launches a fresh window whose
+                // eight-second context still hears the overlap. This lets the
+                // live path reach sealed owners without reusing a consumed job.
+                let later = OccurrenceIdentity::new(SESSION, 1, 744_000, 792_000);
+                f.state.audio.push(&vec![0.2; 792_000 - 743_424]);
+                f.physical
+                    .open_or_extend(SESSION, 1, later.sample_start, later.sample_end);
+                f.physical.close_open(later.sample_end);
+                assert!(reconcile_silero_ledger(
+                    &mut f.state,
+                    &f.events,
+                    &f.physical,
+                    &[],
+                ));
+                f.state.flush_layer1_coalesce(&f.events);
+                let request = f.requests.try_recv().unwrap();
+                assert!(
+                    request
+                        .member_occurrences
+                        .iter()
+                        .any(|(_, owner)| owner == &later)
+                );
+                assert!(request.provider_request.identity.range.sample_start <= 508_800);
+                assert!(request.provider_request.identity.range.sample_end >= 509_800);
+                if let Some(held) = held_recovery {
+                    // Complete the retained job before routing. The fresh later
+                    // window now overlaps older, so still_possible keeps it open.
+                    f.state.complete_whisper_window(
+                        &f.events,
+                        completion(&held, vec![pin("older", 246_464, 262_784)]),
+                        15.5,
+                    );
+                    assert_eq!(f.state.refinement_submitted.len(), 1);
+                    assert!(f.state.refinement_submitted.contains_key(&inflight_key(
+                        request.submission_sequence,
+                        &request.provider_request.identity,
+                    )));
+                    assert!(f.state.refinement_pending.is_empty());
+                }
+                for (owner, sealed) in [(&f.occurrence, older_sealed), (&newer, newer_sealed)] {
+                    let ledger = f.state.acoustic_ledger.lock().unwrap();
+                    assert!(!ledger.text_recovery_pending(owner));
+                    assert_eq!(ledger.is_sealed(owner), sealed);
+                }
+                let winner = if !older_sealed && newer_sealed {
+                    &f.occurrence
+                } else {
+                    &newer
+                };
+                let winner_sealed = older_sealed && newer_sealed;
+                while f.receiver.try_recv().is_ok() {}
+
+                admit_late_apple_words(
+                    &mut f.state,
+                    &f.events,
+                    30,
+                    &[FusionWord::from_timed(&pin(
+                        "apple_overlap",
+                        508_800,
+                        509_200,
+                    ))],
+                    &[apple_word("apple_overlap", 508_800, 509_200)],
+                );
+                let apple_events =
+                    std::iter::from_fn(|| f.receiver.try_recv().ok()).collect::<Vec<_>>();
+                let apple_owners = apple_events
+                    .iter()
+                    .filter_map(|event| match event {
+                        EngineEvent::LedgerMutation { observation, .. }
+                            if observation.producer == LedgerObservationProducer::Apple =>
+                        {
+                            Some(&observation.occurrence)
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(apple_owners, vec![winner]);
+                assert!(f.state.unmatched_silero_words.is_empty());
+
+                let returned = completion(&request, vec![pin("whisper_overlap", 509_400, 509_800)]);
+                if stop_recovery {
+                    admit_debt_occurrence_recovery(
+                        &mut f.state,
+                        &f.events,
+                        &later,
+                        returned.payload.as_ref().unwrap(),
+                    );
+                } else {
+                    f.state.complete_whisper_window(&f.events, returned, 15.5);
+                }
+                let whisper_events =
+                    std::iter::from_fn(|| f.receiver.try_recv().ok()).collect::<Vec<_>>();
+                let whisper_owners = whisper_events
+                    .iter()
+                    .filter_map(|event| match event {
+                        EngineEvent::LedgerMutation { observation, .. }
+                            if observation.producer == LedgerObservationProducer::Whisper =>
+                        {
+                            Some(&observation.occurrence)
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(whisper_owners, vec![winner]);
+                assert!(
+                    !apple_events
+                        .iter()
+                        .chain(&whisper_events)
+                        .any(|event| matches!(
+                            event, EngineEvent::Warning { code, .. } if code == "no_time_overlap"
+                        ))
+                );
+                assert_eq!(f.state.no_time_overlap_warnings, 0);
+                assert!(f.state.unmatched_silero_words.is_empty());
+                let ledger = f.state.acoustic_ledger.lock().unwrap();
+                for owner in [&f.occurrence, &newer] {
+                    for word in ["apple_overlap", "whisper_overlap"] {
+                        let count = ledger
+                            .slots_of(owner)
+                            .unwrap()
+                            .iter()
+                            .filter(|slot| slot.text == word)
+                            .count();
+                        assert_eq!(count, usize::from(owner == winner && !winner_sealed));
+                    }
+                }
+                if winner_sealed {
+                    assert!(apple_events.iter().any(|event| matches!(
+                        event,
+                        EngineEvent::LedgerMutation {
+                            receipt: MutationReceipt::KeepVisibleUnanchored {
+                                reason: NoAuthorityReason::LateAppleWordSealedOwner,
+                                ..
+                            },
+                            ..
+                        }
+                    )));
+                    assert!(whisper_events.iter().any(|event| matches!(
+                        event,
+                        EngineEvent::LedgerMutation {
+                            receipt: MutationReceipt::KeepVisibleUnanchored {
+                                reason: NoAuthorityReason::LateWhisperWordSealedOwner,
+                                ..
+                            },
+                            ..
+                        }
+                    )));
+                }
+                ledger.assert_slot_labels();
+                assert_eq!(ledger.conservation().residue(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn late_apple_word_fills_open_owner_and_sealed_owner_gets_k5() {
+        for sealed in [false, true] {
+            let mut f = fixture();
+            assert!(reconcile_silero_ledger(
+                &mut f.state,
+                &f.events,
+                &f.physical,
+                &[apple_word("apple", 246_464, 262_784)]
+            ));
+            while let Ok(request) = f.requests.try_recv() {
+                f.state.complete_whisper_window(
+                    &f.events,
+                    completion(&request, vec![pin("whisper", 246_464, 262_784)]),
+                    10.7,
+                );
+            }
+            if sealed {
+                f.state.close_admission_horizon(&f.events, 510_464);
+            }
+            let before = f
+                .state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .seal_of(&f.occurrence)
+                .cloned();
+            assert!(reconcile_silero_ledger(
+                &mut f.state,
+                &f.events,
+                &f.physical,
+                &[
+                    apple_word("late", 434_496, 470_976),
+                    apple_word("must not overwrite", 246_464, 262_784),
+                ]
+            ));
+            let ledger = f.state.acoustic_ledger.lock().unwrap();
+            assert_eq!(
+                ledger.text_of(&f.occurrence),
+                Some(if sealed { "whisper" } else { "whisper late" })
+            );
+            assert_eq!(ledger.seal_of(&f.occurrence), before.as_ref());
+            ledger.assert_slot_labels();
+            assert_eq!(ledger.conservation().residue(), 0);
+            drop(ledger);
+            if sealed {
+                let events = std::iter::from_fn(|| f.receiver.try_recv().ok()).collect::<Vec<_>>();
+                assert!(events.iter().any(|event| matches!(
+                    event,
+                    EngineEvent::LedgerMutation {
+                        receipt: MutationReceipt::KeepVisibleUnanchored {
+                            reason: NoAuthorityReason::LateAppleWordSealedOwner,
+                            ..
+                        },
+                        ..
+                    }
+                )));
+            }
+        }
+    }
+
+    #[test]
+    fn overlapping_apple_revisions_keep_one_exact_slot_and_loser_receipt() {
+        let mut f = fixture();
+        assert!(reconcile_silero_ledger(
+            &mut f.state,
+            &f.events,
+            &f.physical,
+            &[
+                apple_word("one", 246_464, 290_000),
+                apple_word("two", 262_784, 300_000),
+            ]
+        ));
+        let ledger = f.state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&f.occurrence), Some("two"));
+        let slots = ledger.slots_of(&f.occurrence).unwrap();
+        assert_eq!(slots.len(), 1);
+        assert_eq!(
+            (slots[0].sample_start, slots[0].sample_end),
+            (262_784, 300_000)
+        );
+        assert!(ledger.layer_trail().iter().any(|entry| {
+            entry.candidate_label == "one"
+                && entry.observation.occurrence.sample_start == 246_464
+                && entry.observation.occurrence.sample_end == 290_000
+                && matches!(
+                    entry.decision,
+                    MutationReceipt::KeepVisibleUnanchored {
+                        reason: NoAuthorityReason::LateAppleWordNotCurrent,
+                        ..
+                    }
+                )
+        }));
+        assert_eq!(ledger.conservation().residue(), 0);
+        ledger.assert_slot_labels();
+        drop(ledger);
+        assert!(
+            std::iter::from_fn(|| f.receiver.try_recv().ok()).any(|event| matches!(event,
+            EngineEvent::LedgerMutation { label, receipt: MutationReceipt::KeepVisibleUnanchored {
+                reason: NoAuthorityReason::LateAppleWordNotCurrent, .. }, .. } if label == "one"))
+        );
+    }
+
+    #[test]
+    fn stop_recovery_routes_ef1fa_pad_words_to_held_owner() {
+        for sealed in [false, true] {
+            let mut f = fixture();
+            let held = OccurrenceIdentity::new(SESSION, 1, 56_832, 222_208);
+            let mut physical = UtteranceLedger::new();
+            physical.open_or_extend(SESSION, 1, held.sample_start, held.sample_end);
+            physical.close_open(held.sample_end);
+            physical.open_or_extend(
+                SESSION,
+                1,
+                f.occurrence.sample_start,
+                f.occurrence.sample_end,
+            );
+            physical.close_open(f.occurrence.sample_end);
+            assert!(reconcile_silero_ledger(
+                &mut f.state,
+                &f.events,
+                &physical,
+                &[apple_word("held", 58_000, 70_000)]
+            ));
+            if sealed {
+                f.state.return_outstanding_whisper_without_label(&f.events);
+                assert!(f.state.acoustic_ledger.lock().unwrap().is_sealed(&held));
+            }
+            let before = f
+                .state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .seal_of(&held)
+                .cloned();
+            let request = f.requests.try_recv().unwrap();
+            let mut payload = completion(
+                &request,
+                vec![
+                    pin("pad1", 126_464, 164_864),
+                    pin("pad2", 164_864, 174_464),
+                    pin("pad3", 174_464, 246_464),
+                    pin("debt", 250_000, 265_000),
+                ],
+            )
+            .payload
+            .unwrap();
+            payload.identity.range.sample_start = 126_464;
+            payload.identity.range.sample_end = 510_464;
+            assert!(admit_debt_occurrence_recovery(
+                &mut f.state,
+                &f.events,
+                &f.occurrence,
+                &payload
+            ));
+            let events = std::iter::from_fn(|| f.receiver.try_recv().ok()).collect::<Vec<_>>();
+            assert!(!events.iter().any(|event| matches!(event,
+                EngineEvent::Warning { code, .. } if code == "seal_coverage_text_recovery_refused")));
+            assert!(!events.iter().any(|event| matches!(
+                event,
+                EngineEvent::LedgerMutation {
+                    receipt: MutationReceipt::KeepVisibleUnanchored {
+                        reason: NoAuthorityReason::OverlapWithoutWordPins,
+                        ..
+                    },
+                    ..
+                }
+            )));
+            let ledger = f.state.acoustic_ledger.lock().unwrap();
+            assert_eq!(ledger.seal_of(&held), before.as_ref());
+            if sealed {
+                assert!(events.iter().any(|event| matches!(
+                    event,
+                    EngineEvent::LedgerMutation {
+                        receipt: MutationReceipt::KeepVisibleUnanchored {
+                            reason: NoAuthorityReason::LateWhisperWordSealedOwner,
+                            ..
+                        },
+                        ..
+                    }
+                )));
+            } else {
+                assert_eq!(ledger.text_of(&held), Some("held pad1 pad2 pad3"));
+            }
+            ledger.assert_slot_labels();
+            assert_eq!(ledger.conservation().residue(), 0);
+        }
+    }
+
+    #[test]
+    fn jittered_replay_keeps_one_slot_and_latest_revision_in_either_completion_order() {
+        for reversed in [false, true] {
+            let mut f = fixture();
+            let first = f.requests.try_recv().unwrap();
+            let second = f.requests.try_recv().unwrap();
+            let mut results = vec![
+                completion(&first, vec![pin("Alpha,", 246_464, 262_784)]),
+                completion(
+                    &second,
+                    vec![
+                        pin("alpha", 248_000, 266_000),
+                        pin("delta", 434_496, 470_976),
+                    ],
+                ),
+            ];
+            if reversed {
+                results.reverse();
+            }
+            for result in results {
+                f.state.complete_whisper_window(&f.events, result, 10.7);
+            }
+            let (winner, loser) = if reversed {
+                ("Alpha, delta", "alpha")
+            } else {
+                ("alpha delta", "Alpha,")
+            };
+            assert_words(&f, winner);
+            let ledger = f.state.acoustic_ledger.lock().unwrap();
+            assert_eq!(ledger.slots_of(&f.occurrence).unwrap().len(), 2);
+            assert!(ledger.layer_trail_for(&f.occurrence).any(|entry| {
+                entry.candidate_label == loser
+                    && matches!(
+                        entry.decision,
+                        MutationReceipt::Refuse {
+                            reason: RefuseReason::ReplacedByWhisper,
+                            ..
+                        }
+                    )
+            }));
+            assert!(ledger.layer_trail().iter().any(|entry| matches!(
+                entry.decision,
+                MutationReceipt::Refuse {
+                    reason: RefuseReason::ReplayedRangeIdentity,
+                    ..
+                }
+            )));
+        }
+    }
+
+    #[test]
+    fn normal_single_window_apple_label_seals_at_hands_free_epoch_close() {
+        let (events, mut receiver) = mpsc::unbounded_channel();
+        let (sender, mut requests) = mpsc::channel(8);
+        let mut state = AppleSealState::new_with_tail_patch_for_session(
+            RATE,
+            SESSION.into(),
+            1,
+            sender,
+            Arc::new(Mutex::new(AcousticLedger::new())),
+            Some(EnergyCalibration {
+                version: "single-window".into(),
+                min_energy_integral: 1.0,
+                min_valley_samples: 1,
+            }),
+        );
+        state.audio.push(&vec![0.2; 192_000]);
+        let owner = OccurrenceIdentity::new(SESSION, 1, 48_000, 96_000);
+        let mut physical = UtteranceLedger::new();
+        physical.open_or_extend(SESSION, 1, 48_000, 96_000);
+        physical.close_open(96_000);
+        assert!(reconcile_silero_ledger(
+            &mut state,
+            &events,
+            &physical,
+            &[apple_word("normal", 60_000, 80_000)]
+        ));
+        state.flush_layer1_coalesce(&events);
+        let request = requests.try_recv().unwrap();
+        assert!(requests.try_recv().is_err());
+        state.complete_whisper_window(
+            &events,
+            completion(&request, vec![pin("normal", 60_000, 80_000)]),
+            2.0,
+        );
+        assert!(!state.acoustic_ledger.lock().unwrap().is_sealed(&owner));
+        let mut epoch = EpochGate::armed(RATE, 1.0);
+        assert!(matches!(
+            epoch.feed_pcm(&[0.2; 480], 96_000, true),
+            EpochDecision::Wake { .. }
+        ));
+        assert!(matches!(
+            epoch.feed_pcm(&vec![0.0; 48_000], 144_000, false),
+            EpochDecision::Sleep { .. }
+        ));
+        state.close_admission_horizon(&events, 144_000);
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&owner), Some("normal"));
+        assert!(ledger.is_sealed(&owner));
+        ledger.assert_slot_labels();
+        assert_eq!(ledger.conservation().residue(), 0);
+        assert!(
+            !std::iter::from_fn(|| receiver.try_recv().ok()).any(|event| matches!(event,
+            EngineEvent::Warning { code, .. } if code == "live_refinement_stop_deadline"))
+        );
+    }
+}
+
+#[cfg(test)]
+mod channel_epoch_gate {
+    use super::{EpochDecision, EpochGate};
+
+    #[test]
+    fn silence_seals_one_epoch_and_the_gate_stays_armed() {
+        let mut gate = EpochGate::for_session(16_000, Some(0.2), true);
+        assert!(gate.is_armed());
+        let speech = vec![0.2_f32; 160];
+        let silence = vec![0.0_f32; 160];
+        assert!(matches!(
+            gate.feed_pcm(&speech, 160, true),
+            EpochDecision::Wake { .. }
+        ));
+        let mut seen = 160_u64;
+        let mut slept = false;
+        for _ in 0..40 {
+            seen += 160;
+            if matches!(
+                gate.feed_pcm(&silence, seen, false),
+                EpochDecision::Sleep { .. }
+            ) {
+                slept = true;
+                break;
+            }
+        }
+        assert!(slept, "configured silence must close the utterance epoch");
+        assert!(
+            gate.is_armed(),
+            "the channel gate stays armed after the seal"
+        );
+        assert!(matches!(
+            gate.feed_pcm(&speech, seen + 160, true),
+            EpochDecision::Wake { .. }
+        ));
     }
 }

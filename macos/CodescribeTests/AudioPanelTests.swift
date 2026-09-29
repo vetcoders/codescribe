@@ -4,6 +4,12 @@ import XCTest
 
 @MainActor
 final class AudioPanelTests: XCTestCase {
+  func testActiveModelHasNoRemoveActionWhileRefusedModelCanBeRemoved() {
+    XCTAssertFalse(DictationWhisperModelTab.canRemoveModel(status: "active"))
+    XCTAssertTrue(DictationWhisperModelTab.canRemoveModel(status: "refused"))
+    XCTAssertTrue(DictationWhisperModelTab.canRemoveModel(status: "broken"))
+  }
+
   func testSelectedInputWritesPromotedKeyAndSurvivesSettingsRoundTrip() {
     var writes: [(String, String)] = []
     let liveSnapshot = CsAudioInputSnapshot(

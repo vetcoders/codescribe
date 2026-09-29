@@ -328,7 +328,7 @@ struct AccountLoginRow: View {
   let onSaveClientId: (String) -> Void
 
   @State private var clientIdDraft: String = ""
-  @State private var showAdvancedClientId = false
+  @State private var editingClientId = false
 
   private var signedIn: Bool { provider.accountSignedIn }
   private var accent: Color { signedIn ? CSColor.olive : CSColor.textFaint }
@@ -395,37 +395,35 @@ struct AccountLoginRow: View {
       }
 
       // Client id is a non-secret public app identity. OpenAI + xAI ship
-      // defaults (NOTICE); operators almost never need to paste one, so the
-      // override stays under Advanced.
-      DisclosureGroup(isExpanded: $showAdvancedClientId) {
-        HStack(spacing: 8) {
-          Text("client id")
-            .font(CSFont.mono(10, .medium))
-            .foregroundStyle(CSColor.textFaint)
-          TextField(
-            provider.oauthClientId ?? "Override OAuth client id…",
-            text: $clientIdDraft
+      // defaults (NOTICE); users almost never need to paste one, so the
+      // override opens in a popover instead of taking a row.
+      Button("Advanced · OAuth client id…", action: openClientIdEditor)
+        .buttonStyle(.plain)
+        .font(CSFont.mono(10, .medium))
+        .foregroundStyle(CSColor.textFaint)
+        .csFocusRing()
+        .popover(isPresented: $editingClientId, arrowEdge: .bottom) {
+          OAuthClientIdEditor(
+            accountBrand: accountBrand,
+            placeholder: provider.oauthClientId ?? "Override OAuth client id…",
+            savedClientId: provider.oauthClientId ?? "",
+            draft: $clientIdDraft,
+            onSave: saveClientId
           )
-          .settingsInputChrome()
-          .onSubmit { onSaveClientId(clientIdDraft) }
-          .accessibilityLabel("\(accountBrand) OAuth client id")
-          SettingsChipButton(
-            "Save", tint: CSColor.oliveLight,
-            enabled: clientIdDraft != (provider.oauthClientId ?? ""),
-            action: { onSaveClientId(clientIdDraft) }
-          )
-          .help("Optional override (settings.json) — empty restores the shipped default")
         }
-        .padding(.top, 4)
-      } label: {
-        Text("Advanced · OAuth client id")
-          .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textFaint)
-      }
     }
     .onAppear { clientIdDraft = provider.oauthClientId ?? "" }
     .onChange(of: provider.oauthClientId) { _, updated in
       clientIdDraft = updated ?? ""
     }
+  }
+
+  private func openClientIdEditor() {
+    editingClientId = true
+  }
+
+  private func saveClientId() {
+    onSaveClientId(clientIdDraft)
+    editingClientId = false
   }
 }

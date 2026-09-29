@@ -153,4 +153,14 @@ pub trait AsrSessionProvider {
     /// Close the session. Trailing events remain available via
     /// [`drain`](Self::drain).
     fn close(&mut self) -> Result<(), AsrErrorKind>;
+
+    /// Commit captured audio through `commit_sample` on the capture clock.
+    ///
+    /// `commit_sample` is the exclusive end, in samples at the native rate
+    /// passed to [`open`](Self::open). The default records nothing, so a
+    /// provider that does not segment on client commits stays usable.
+    fn commit(&mut self, commit_sample: u64) -> Result<(), AsrErrorKind> {
+        let _ = commit_sample;
+        Ok(())
+    }
 }

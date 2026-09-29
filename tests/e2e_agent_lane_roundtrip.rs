@@ -193,6 +193,8 @@ async fn selected_agent_lane_roundtrip(lane: codescribe_core::config::RuntimeLlm
                     mode: TranscriptMode::Dictation,
                     has_latched_target: true,
                     latched_target_is_self: false,
+                    audience: None,
+                    badge_only: false,
                 },
                 bus_path.clone(),
                 None,

@@ -76,6 +76,10 @@ protocol AgentChatEngine: AnyObject {
   /// `AgentChatEngine` existential otherwise statically dispatch to the
   /// extension's preview no-op instead of `RealChatEngine`.
   func setAssistiveTargetThread(backendId: String?)
+  /// Record accepted composer sends at the Rust log entry without message text.
+  func recordSendOrigin(
+    _ origin: AgentSendOrigin, chars: Int, threadId: String, recordingActive: Bool
+  )
   func installToolApprovalHandler(
     _ handler: @escaping @MainActor (PendingToolApproval) -> Void
   )
@@ -107,6 +111,16 @@ extension AgentChatEngine {
   /// user is looking at; a new thread only via an explicit "+ New thread").
   /// Default no-op keeps preview/mock stores standalone.
   func setAssistiveTargetThread(backendId: String?) {}
+  func recordSendOrigin(
+    _ origin: AgentSendOrigin, chars: Int, threadId: String, recordingActive: Bool
+  ) {}
+}
+
+enum AgentSendOrigin: String {
+  case enter
+  case button
+  case programmatic
+  case unknown
 }
 
 /// Source-specific adapter for hotkey/voice turns owned by the shared controller
@@ -386,6 +400,18 @@ struct ChatThread: Identifiable {
   var updatedAt: Date? = nil  // nil (local-only draft) groups under Today
   var model: String? = nil
   var totalTokens: UInt64? = nil
+  var mode: String = "agent"
+  var tags: [String] = []
+
+  var isMaxConsultation: Bool {
+    mode == "max" || tags.contains("max-consultation")
+  }
+
+  static func preferredAgentThread(in threads: [ChatThread]) -> ChatThread? {
+    threads.filter { !$0.isMaxConsultation }
+      .sorted { ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast) }
+      .first
+  }
 }
 
 /// Shared Swift-side title guard for coordinator results, manual renames, and
@@ -561,6 +587,7 @@ enum ComposerDeliveryReceipt: Equatable {
 struct ThreadComposition: Equatable {
   var text: String = ""
   var attachments: [PendingAttachment] = []
+  var hasUnsentDictation: Bool = false
   /// True while this composition holds a delivered document its owner has not
   /// seen yet, because the take finished while another thread was selected. It
   /// is what makes "surface it once" observable — not a second copy of the text.
@@ -584,9 +611,9 @@ protocol ComposerDictating: AnyObject {
 final class AgentChatStore: ObservableObject {
   @Published var threads: [ChatThread]
   @Published var selectedThreadID: UUID? {
-    // Every selection change re-routes the voice-assistive lane to the thread
-    // the user is looking at (operator contract 2026-08-13). Observers do not
-    // fire during init — the seeding path publishes once explicitly.
+    // Agent selections re-route the voice-assistive lane; browsing a Max
+    // consultation leaves the bound Agent conversation alone. Init seeds the
+    // backing storage directly and publishes once explicitly.
     //
     // This is also the single seam where the composer changes hands. Every way
     // the selection can move — `select`, `newThread`, `delete`, a search or
@@ -601,7 +628,14 @@ final class AgentChatStore: ObservableObject {
   }
   /// The composer text of the *selected* thread. Live truth while that thread is
   /// on screen; parked into `threadCompositions` the moment the selection moves.
-  @Published var draft: String = ""
+  @Published var draft: String = "" {
+    didSet { if draft.isEmpty { hasUnsentDictationDraft = false } }
+  }
+  @Published private(set) var hasUnsentDictationDraft = false
+  var unsentDictationNotice: String? {
+    hasUnsentDictationDraft && !draft.isEmpty
+      ? String(localized: "Not sent — dictated text is in the draft") : nil
+  }
   /// Monotonic UI command consumed by the composer. It carries no text and
   /// deliberately does not mutate the selected thread or staged attachments.
   @Published private(set) var composerFocusRequest: UInt64 = 0
@@ -672,7 +706,8 @@ final class AgentChatStore: ObservableObject {
   // Read-only aggregate presentation; documents, never this joined string,
   // are the recovery/action authority.
   var retainedComposerDelivery: String? {
-    composerRecoveryDocuments.isEmpty ? nil
+    composerRecoveryDocuments.isEmpty
+      ? nil
       : composerRecoveryDocuments.map(\.text).joined(separator: "\n")
   }
   private var captureOwners: [String: UUID] = [:]
@@ -706,9 +741,12 @@ final class AgentChatStore: ObservableObject {
     composerCaptureAwaitingTerminal = false
     composerStopRetryAvailable = false
     dictationThreadID = threadID
-    let destination = threads.first { $0.id == threadID }
+    let destination =
+      threads.first { $0.id == threadID }
       ?? threadsBeforeSearch?.first { $0.id == threadID }
-    engine?.setAssistiveTargetThread(backendId: destination?.backendId)
+    if destination?.isMaxConsultation != true {
+      engine?.setAssistiveTargetThread(backendId: destination?.backendId)
+    }
     return requestID
   }
 
@@ -721,7 +759,9 @@ final class AgentChatStore: ObservableObject {
   func completeComposerCaptureStart(
     _ requestID: UUID, live: Bool, handle: CsCaptureHandle?
   ) {
-    guard isCurrentComposerCaptureRequest(requestID), !composerCaptureAwaitingTerminal else { return }
+    guard isCurrentComposerCaptureRequest(requestID), !composerCaptureAwaitingTerminal else {
+      return
+    }
     // Admission is one-shot for this request. Same-handle duplicates are inert;
     // a foreign or missing handle cannot replace the identity or gain a receipt.
     guard composerCaptureHandle == nil else { return }
@@ -731,7 +771,9 @@ final class AgentChatStore: ObservableObject {
       // arrives those bytes are recovery, not permission to use the selection.
       // Join only a still-retained document; an explicit recovery action that
       // already consumed it must never be replayed.
-      if let document = composerRecoveryDocuments.first(where: { $0.id == "capture:" + handle.captureId }) {
+      if let document = composerRecoveryDocuments.first(where: {
+        $0.id == "capture:" + handle.captureId
+      }) {
         composerRecoveryDocuments.removeAll { $0.id == document.id }
         captureDeliveryReceipts.removeValue(forKey: handle.captureId)
         receiveDictationTranscript(document.text, captureID: handle.captureId)
@@ -759,9 +801,12 @@ final class AgentChatStore: ObservableObject {
 
   /// Delayed replies address both the local request and the admitted take.
   /// A terminal consumer may already have delivered A and admitted B meanwhile.
-  func applyComposerStopOutcome(_ outcome: CsConditionalStop, requestID: UUID, handle: CsCaptureHandle) {
+  func applyComposerStopOutcome(
+    _ outcome: CsConditionalStop, requestID: UUID, handle: CsCaptureHandle
+  ) {
     guard isCurrentComposerCaptureRequest(requestID),
-      composerCaptureHandle?.captureId == handle.captureId else { return }
+      composerCaptureHandle?.captureId == handle.captureId
+    else { return }
     switch outcome {
     case .stopped, .alreadyStopping, .pending:
       awaitComposerCaptureTerminal()
@@ -777,7 +822,8 @@ final class AgentChatStore: ObservableObject {
 
   func reportComposerStopFailure(_ message: String, requestID: UUID, handle: CsCaptureHandle) {
     guard isCurrentComposerCaptureRequest(requestID),
-      composerCaptureHandle?.captureId == handle.captureId else { return }
+      composerCaptureHandle?.captureId == handle.captureId
+    else { return }
     reportDictationFailure(message, preservingDelivery: true)
     // Only an addressed failure grants retry. Global lifecycle paint cannot.
     composerStopRetryAvailable = true
@@ -894,6 +940,7 @@ final class AgentChatStore: ObservableObject {
     }
     if selectedThreadID == owner {
       draft = appendComposerDelivery(text, to: draft)
+      hasUnsentDictationDraft = true
       requestComposerFocus()
       let receipt = ComposerDeliveryReceipt.admitted(threadID: owner)
       captureDeliveryReceipts[captureID] = receipt
@@ -902,6 +949,7 @@ final class AgentChatStore: ObservableObject {
     var parked = threadCompositions[owner] ?? .empty
     parked.text = appendComposerDelivery(text, to: parked.text)
     parked.hasUnseenDelivery = true
+    parked.hasUnsentDictation = true
     threadCompositions[owner] = parked
     let receipt = ComposerDeliveryReceipt.parked(threadID: owner)
     captureDeliveryReceipts[captureID] = receipt
@@ -918,7 +966,9 @@ final class AgentChatStore: ObservableObject {
   private func handOffComposition(from previous: UUID?, to next: UUID?) {
     guard previous != next else { return }
     if let previous {
-      let outgoing = ThreadComposition(text: draft, attachments: pendingAttachments)
+      let outgoing = ThreadComposition(
+        text: draft, attachments: pendingAttachments,
+        hasUnsentDictation: hasUnsentDictationDraft)
       if outgoing.isEmpty {
         threadCompositions.removeValue(forKey: previous)
       } else {
@@ -928,6 +978,7 @@ final class AgentChatStore: ObservableObject {
     let incoming = next.flatMap { threadCompositions.removeValue(forKey: $0) } ?? .empty
     draft = incoming.text
     pendingAttachments = incoming.attachments
+    hasUnsentDictationDraft = incoming.hasUnsentDictation
     // A document that arrived while the user was elsewhere is surfaced once,
     // when its thread first comes back on screen. Coming back a second time is
     // not a second delivery: the text is already in the box and the flag is
@@ -941,7 +992,9 @@ final class AgentChatStore: ObservableObject {
   /// entry alone would silently leave it on screen for whoever is selected next.
   private func takeComposition(of id: UUID) -> ThreadComposition {
     if selectedThreadID == id {
-      let live = ThreadComposition(text: draft, attachments: pendingAttachments)
+      let live = ThreadComposition(
+        text: draft, attachments: pendingAttachments,
+        hasUnsentDictation: hasUnsentDictationDraft)
       draft = ""
       pendingAttachments = []
       threadCompositions.removeValue(forKey: id)
@@ -969,6 +1022,7 @@ final class AgentChatStore: ObservableObject {
       let document = composerRecoveryDocuments.first(where: { $0.id == id })
     else { return false }
     draft = appendComposerDelivery(document.text, to: draft)
+    hasUnsentDictationDraft = true
     composerRecoveryDocuments.removeAll { $0.id == id }
     requestComposerFocus()
     return true
@@ -1042,8 +1096,9 @@ final class AgentChatStore: ObservableObject {
     dictationFailureTask = Task { @MainActor [weak self] in
       do { try await waitForExpiry() } catch { return }
       guard let self, !Task.isCancelled, dictationFailureToken == token,
-        (composerCaptureRequestID == requestID || composerCaptureRequestID == nil),
-        case .failed = dictationPhase else { return }
+        composerCaptureRequestID == requestID || composerCaptureRequestID == nil,
+        case .failed = dictationPhase
+      else { return }
       // Preparing disables the real mic button. An addressed transport failure
       // stays actionable on the owning thread until retry or terminal receipt.
       guard !composerStopRetryAvailable else { return }
@@ -1224,7 +1279,7 @@ final class AgentChatStore: ObservableObject {
     self.voiceTurnCanceller = voiceTurnCanceller
     self.licenseService = licenseService
 
-    let seeded: [ChatThread]
+    var seeded: [ChatThread]
     var deferredIndexLoad = false
     var initialThreadError: String?
     if let threads {
@@ -1243,11 +1298,15 @@ final class AgentChatStore: ObservableObject {
     } else {
       seeded = Self.seedThreads()  // no provider → mock seed
     }
+    if !seeded.isEmpty, ChatThread.preferredAgentThread(in: seeded) == nil {
+      seeded.insert(ChatThread(title: "New thread", meta: "now"), at: 0)
+    }
     self.threads = seeded
     self.threadSearchError = initialThreadError
-    self.selectedThreadID = seeded.first?.id
-    // didSet does not fire inside init — publish the seed selection once so
-    // the assistive lane routes to what the rail shows from the first frame.
+    self._selectedThreadID = Published(
+      initialValue: ChatThread.preferredAgentThread(in: seeded)?.id)
+    // Seed the backing storage without invoking the wrapped property's didSet,
+    // then publish once so the assistive lane matches the rail's first frame.
     // The composition handoff is deliberately not replayed here: a new store
     // has an empty composer and no stored composition, so there is no previous
     // owner to park and nothing to restore.
@@ -1257,7 +1316,7 @@ final class AgentChatStore: ObservableObject {
       self.pendingToolApprovals.removeAll { $0.id == request.id }
       self.pendingToolApprovals.append(request)
     }
-    if !deferredIndexLoad, let first = seeded.first { loadMessagesIfNeeded(first.id) }
+    if !deferredIndexLoad, let selectedThreadID { loadMessagesIfNeeded(selectedThreadID) }
     beginObservingExternalThreadChanges()
     if deferredIndexLoad {
       scheduleInitialThreadIndexLoad()
@@ -1345,6 +1404,7 @@ final class AgentChatStore: ObservableObject {
   /// binding a draft to a freshly minted backend id, and the resync when the
   /// session ends.
   private func publishAssistiveTarget(force: Bool = false) {
+    guard currentThread?.isMaxConsultation != true else { return }
     guard force || dictationThreadID == nil else { return }
     engine?.setAssistiveTargetThread(backendId: currentThread?.backendId)
   }
@@ -1404,6 +1464,14 @@ final class AgentChatStore: ObservableObject {
     threadListRevision &+= 1
   }
 
+  private func selectPreferredAgentThread() {
+    if let thread = ChatThread.preferredAgentThread(in: threads) {
+      selectedThreadID = thread.id
+    } else {
+      newThread()
+    }
+  }
+
   func refreshThreads() {
     refreshThreads(selectingBackendId: currentThread?.backendId)
   }
@@ -1412,7 +1480,8 @@ final class AgentChatStore: ObservableObject {
     guard let threadsProvider else { return }
     threadListRevision &+= 1
     do {
-      let rows = try threadSearchQuery.isEmpty
+      let rows =
+        try threadSearchQuery.isEmpty
         ? threadsProvider.listThreads()
         : threadsProvider.searchThreads(query: threadSearchQuery)
       if threadsBeforeSearch != nil { threadsBeforeSearch = restoredSearchRows() }
@@ -1497,7 +1566,8 @@ final class AgentChatStore: ObservableObject {
     let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
     if trimmed == threadSearchQuery, threadSearchError == nil { return }
     threadListRevision &+= 1
-    let hasActiveTurn = activeComposerTurn != nil || voiceTurnPhase != nil || dictationThreadID != nil
+    let hasActiveTurn =
+      activeComposerTurn != nil || voiceTurnPhase != nil || dictationThreadID != nil
     guard trimmed.isEmpty || !hasActiveTurn else {
       threadSearchError = "Finish the current turn before changing the thread search."
       return
@@ -1659,7 +1729,7 @@ final class AgentChatStore: ObservableObject {
     threadsBeforeSearch?.removeAll { $0.id == thread.id }
     threadListRevision &+= 1
     if selectedThreadID == thread.id {
-      selectedThreadID = threads.first?.id
+      selectPreferredAgentThread()
       if let selectedThreadID { loadMessagesIfNeeded(selectedThreadID) }
     }
     if threads.isEmpty {
@@ -1791,7 +1861,7 @@ final class AgentChatStore: ObservableObject {
 
   // MARK: Send (accept → queue → serialized dispatch)
 
-  func send() {
+  func send(origin: AgentSendOrigin = .unknown) {
     guard !isAgenticLocked else { return }
     let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
     let staged = pendingAttachments
@@ -1805,17 +1875,22 @@ final class AgentChatStore: ObservableObject {
     // queued or streamed in one conversation cannot empty the box in another.
     draft = ""
     pendingAttachments = []
-    accept(text: text, staged: staged, threadID: threadID)
+    accept(text: text, staged: staged, threadID: threadID, origin: origin)
   }
 
   /// Accept a message: persist it durably, enqueue it FIFO on its thread, and
   /// let the single dispatch owner start it if the composer slot is idle.
-  private func accept(text: String, staged: [PendingAttachment], threadID: UUID) {
+  private func accept(
+    text: String, staged: [PendingAttachment], threadID: UUID, origin: AgentSendOrigin
+  ) {
     threadListRevision &+= 1
     // Search only hides rows. Restore them before the existing turn owner
     // mutates messages, including a selected row hidden by a no-match query.
     if threadsBeforeSearch != nil { searchThreads("") }
     let backendId = ensureBackendId(threadID)
+    engine?.recordSendOrigin(
+      origin, chars: text.count, threadId: backendId,
+      recordingActive: dictationPhase == .recording)
     let turn = QueuedTurn(
       id: UUID(),
       threadID: threadID,
@@ -2959,6 +3034,7 @@ final class AgentChatStore: ObservableObject {
       l.id == r.id && l.backendId == r.backendId && l.title == r.title
         && l.meta == r.meta && l.isFavorite == r.isFavorite
         && l.isRestored == r.isRestored
+        && l.mode == r.mode && l.tags == r.tags
     }
   }
 
@@ -2986,6 +3062,9 @@ final class AgentChatStore: ObservableObject {
       existing.meta = remote.meta
       existing.isRestored = remote.isRestored
       existing.isFavorite = remote.isFavorite
+      existing.mode = remote.mode
+      existing.tags = remote.tags
+      existing.updatedAt = remote.updatedAt
       return existing
     }
 
@@ -3028,10 +3107,12 @@ final class AgentChatStore: ObservableObject {
     // completed backend is only a fallback after an explicit removal path.
     if let previousSelectedID, threads.contains(where: { $0.id == previousSelectedID }) {
       selectedThreadID = previousSelectedID
-    } else if let backendId, let match = threads.first(where: { $0.backendId == backendId }) {
+    } else if let backendId,
+      let match = threads.first(where: { $0.backendId == backendId && !$0.isMaxConsultation })
+    {
       selectedThreadID = match.id
     } else {
-      selectedThreadID = threads.first?.id
+      selectPreferredAgentThread()
     }
     if let selectedThreadID { loadMessagesIfNeeded(selectedThreadID) }
   }

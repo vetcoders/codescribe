@@ -4,14 +4,12 @@
 //! utterance consumers and a complete `rendered_text` for passive canvases.
 //! `source=cli_file_verdict` identifies file output without claiming ledger receipts.
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
-use std::os::unix::fs::MetadataExt;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use chrono::{SecondsFormat, Utc};
 use codescribe_core::pipeline::contracts::TranscriptSegment;
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::transcript_bus::{
@@ -71,6 +69,43 @@ impl CliTranscriptLane {
 
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    /// Keep the original file as this verdict's re-decode source. The source
+    /// remains outside sessions; no WAV expansion or audio copy is made.
+    pub fn retain_source_reference(&self, source: &Path) -> io::Result<PathBuf> {
+        let sessions = codescribe_core::config::Config::config_dir().join("sessions");
+        self.retain_source_reference_at(source, &sessions)
+    }
+
+    pub fn retain_source_reference_at(
+        &self,
+        source: &Path,
+        sessions: &Path,
+    ) -> io::Result<PathBuf> {
+        if !is_safe_session_stem(&self.session_id) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unsafe session id",
+            ));
+        }
+        let source = source.canonicalize()?;
+        if !source.metadata()?.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "CLI source is not a regular file",
+            ));
+        }
+        fs::create_dir_all(sessions)?;
+        let dest = sessions.join(format!("{}.source.json", self.session_id));
+        let temp = sessions.join(format!(".source-{}.tmp", Uuid::new_v4()));
+        let receipt = serde_json::json!({"session_id": self.session_id, "source_path": source});
+        fs::write(
+            &temp,
+            serde_json::to_vec(&receipt).map_err(io::Error::other)?,
+        )?;
+        fs::rename(&temp, &dest)?;
+        Ok(source)
     }
 
     /// Write the session-start line exactly once, text-free, mirroring the
@@ -141,80 +176,6 @@ impl CliTranscriptLane {
         event.audio_start_seconds = segments.first().map(|segment| segment.start_ts);
         event.audio_end_seconds = segments.last().map(|segment| segment.end_ts);
         self.write(event)
-    }
-
-    /// Retain this run's audio as `sessions/<session_id>.wav`.
-    ///
-    /// `RIFF....WAVE` sources keep their bytes. Any other container is decoded
-    /// with `load_audio_file` and written as PCM-16 WAV. Identical retained
-    /// bytes share one inode via `sessions/.index/<sha256>` and a hard link
-    /// (copy if linking is refused). Demux identity stays that session path.
-    /// `last_session.wav` is a latest-app-take alias and is never written here.
-    pub fn retain_source_wav(&self, source: &Path) -> io::Result<PathBuf> {
-        self.retain_source_wav_at(
-            source,
-            &codescribe_core::config::Config::config_dir().join("sessions"),
-        )
-    }
-
-    pub fn retain_source_wav_at(&self, source: &Path, sessions_dir: &Path) -> io::Result<PathBuf> {
-        let id = self.session_id.as_str();
-        if !is_safe_session_stem(id) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "session id is not a safe wav filename",
-            ));
-        }
-        let meta = fs::metadata(source)?;
-        if !meta.is_file() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "CLI source wav must be a regular file",
-            ));
-        }
-        fs::create_dir_all(sessions_dir)?;
-        let dest = sessions_dir.join(format!("{id}.wav"));
-        if dest.file_name().and_then(|name| name.to_str()) == Some("last_session.wav") {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "CLI file verdict must not retain last_session.wav as identity",
-            ));
-        }
-        if source == dest {
-            return Ok(dest);
-        }
-
-        let owned_temp = if sniff_riff_wave(source)? {
-            None
-        } else {
-            let tmp = retain_temp_path(sessions_dir);
-            if let Err(err) = decode_container_to_wav(source, &tmp) {
-                let _ = fs::remove_file(&tmp);
-                return Err(err);
-            }
-            Some(tmp)
-        };
-        let retained_is_owned_temp = owned_temp.is_some();
-        let installed = {
-            let retained = owned_temp.as_deref().unwrap_or(source);
-            install_retained_identity(id, retained, &dest, sessions_dir, retained_is_owned_temp)
-        };
-        match installed {
-            Ok(consumed_owned_temp) => {
-                if let Some(tmp) = owned_temp
-                    && !consumed_owned_temp
-                {
-                    let _ = fs::remove_file(tmp);
-                }
-                Ok(dest)
-            }
-            Err(err) => {
-                if let Some(tmp) = owned_temp {
-                    let _ = fs::remove_file(tmp);
-                }
-                Err(err)
-            }
-        }
     }
 
     /// Close the session. Like the app's bus, this never writes a terminal line
@@ -312,235 +273,11 @@ impl CliTranscriptLane {
     }
 }
 
-const HASH_BUF_BYTES: usize = 8 * 1024 * 1024;
-
 fn is_safe_session_stem(id: &str) -> bool {
     (8..=80).contains(&id.len())
         && id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-}
-
-fn retain_temp_path(sessions_dir: &Path) -> PathBuf {
-    sessions_dir.join(format!(".retain-{}.tmp", Uuid::new_v4()))
-}
-
-fn sniff_riff_wave(path: &Path) -> io::Result<bool> {
-    // path is the CLI source this run was told to transcribe (metadata-checked
-    // regular file) or a sessions-dir minted temp; reading it is the purpose.
-    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- path is the user-named transcription source (metadata-checked regular file) or a minted sessions temp; reading it is the tool's function.
-    let mut file = File::open(path)?;
-    let mut header = [0u8; 12];
-    let read = file.read(&mut header)?;
-    Ok(read == 12 && header.starts_with(b"RIFF") && &header[8..12] == b"WAVE")
-}
-
-fn sha256_file(path: &Path) -> io::Result<String> {
-    // Same contract as sniff_riff_wave: the retained bytes we just wrote or
-    // the metadata-checked CLI source; hashing them is the dedupe identity.
-    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- path is the user-named transcription source (metadata-checked regular file) or a minted sessions temp; hashing it is the dedupe identity.
-    let mut file = File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut buf = vec![0u8; HASH_BUF_BYTES];
-    loop {
-        let n = file.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    Ok(format!("{:x}", hasher.finalize()))
-}
-
-fn parse_canonical_wav_name(name: &str) -> Option<&str> {
-    if name.contains('/') || name.contains('\\') || name.contains('\0') {
-        return None;
-    }
-    if name == "last_session.wav" || name.starts_with('.') {
-        return None;
-    }
-    let stem = name.strip_suffix(".wav")?;
-    if !is_safe_session_stem(stem) {
-        return None;
-    }
-    Some(name)
-}
-
-fn read_live_canonical(index_path: &Path, sessions_dir: &Path) -> io::Result<Option<PathBuf>> {
-    let text = match fs::read_to_string(index_path) {
-        Ok(text) => text,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(err),
-    };
-    let Some(name) = parse_canonical_wav_name(text.trim()) else {
-        return Ok(None);
-    };
-    let canonical = sessions_dir.join(name);
-    match fs::symlink_metadata(&canonical) {
-        Ok(meta) if meta.is_file() => Ok(Some(canonical)),
-        Ok(_) => Ok(None),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(err),
-    }
-}
-
-fn write_index_atomic(index_dir: &Path, digest: &str, canonical_name: &str) -> io::Result<()> {
-    let dest = index_dir.join(digest);
-    let tmp = index_dir.join(format!(".retain-{}.tmp", Uuid::new_v4()));
-    if let Err(err) = fs::write(&tmp, format!("{canonical_name}\n")) {
-        let _ = fs::remove_file(&tmp);
-        return Err(err);
-    }
-    fs::rename(&tmp, dest).inspect_err(|_| {
-        let _ = fs::remove_file(&tmp);
-    })
-}
-
-fn is_hard_link_fallback(err: &io::Error) -> bool {
-    matches!(
-        err.kind(),
-        io::ErrorKind::AlreadyExists
-            | io::ErrorKind::PermissionDenied
-            | io::ErrorKind::CrossesDevices
-    ) || matches!(
-        err.raw_os_error(),
-        Some(libc::EXDEV | libc::EPERM | libc::EEXIST | libc::EACCES)
-    )
-}
-
-fn same_regular_inode(left: &Path, right: &Path) -> io::Result<bool> {
-    let right_meta = match fs::symlink_metadata(right) {
-        Ok(meta) => meta,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(err) => return Err(err),
-    };
-    if right_meta.file_type().is_symlink() || !right_meta.is_file() {
-        return Ok(false);
-    }
-    let left_meta = fs::symlink_metadata(left)?;
-    if left_meta.file_type().is_symlink() || !left_meta.is_file() {
-        return Ok(false);
-    }
-    Ok(left_meta.dev() == right_meta.dev() && left_meta.ino() == right_meta.ino())
-}
-
-fn publish_retained_path(
-    from: &Path,
-    dest: &Path,
-    sessions_dir: &Path,
-    try_link: bool,
-) -> io::Result<()> {
-    if same_regular_inode(from, dest)? {
-        return Ok(());
-    }
-    let tmp = retain_temp_path(sessions_dir);
-    let prepared = if try_link {
-        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- tmp is sessions_dir + minted `.retain-<uuid>.tmp`; from is a validated sessions leaf.
-        match fs::hard_link(from, &tmp) {
-            Ok(()) => Ok(()),
-            Err(err) if is_hard_link_fallback(&err) => {
-                let _ = fs::remove_file(&tmp);
-                copy_to_minted_temp(from, &tmp)
-            }
-            Err(err) => {
-                let _ = fs::remove_file(&tmp);
-                Err(err)
-            }
-        }
-    } else {
-        copy_to_minted_temp(from, &tmp)
-    };
-    if let Err(err) = prepared {
-        let _ = fs::remove_file(&tmp);
-        return Err(err);
-    }
-    fs::rename(&tmp, dest).inspect_err(|_| {
-        let _ = fs::remove_file(&tmp);
-    })
-}
-
-fn install_retained_identity(
-    session_id: &str,
-    retained: &Path,
-    dest: &Path,
-    sessions_dir: &Path,
-    retained_is_owned_temp: bool,
-) -> io::Result<bool> {
-    let digest = sha256_file(retained)?;
-    let index_dir = sessions_dir.join(".index");
-    fs::create_dir_all(&index_dir)?;
-    let index_path = index_dir.join(&digest);
-    if let Some(canonical) = read_live_canonical(&index_path, sessions_dir)? {
-        publish_retained_path(&canonical, dest, sessions_dir, true)?;
-        return Ok(false);
-    }
-    let consumed_owned_temp = if retained_is_owned_temp {
-        fs::rename(retained, dest)?;
-        true
-    } else {
-        publish_retained_path(retained, dest, sessions_dir, false)?;
-        false
-    };
-    write_index_atomic(&index_dir, &digest, &format!("{session_id}.wav"))?;
-    Ok(consumed_owned_temp)
-}
-
-fn copy_to_minted_temp(from: &Path, tmp: &Path) -> io::Result<()> {
-    // tmp is sessions_dir + minted `.retain-<uuid>.tmp`; `from` is either the
-    // metadata-checked source or a validated sessions leaf. Destination identity
-    // is never a user-controlled path.
-    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- dest is sessions_dir + minted temp or safe session id; source metadata-checked as a regular file.
-    fs::copy(from, tmp).map(|_| ())
-}
-
-fn decode_container_to_wav(source: &Path, dest: &Path) -> io::Result<()> {
-    let (samples, sample_rate) =
-        codescribe_core::audio::load_audio_file(source).map_err(io::Error::other)?;
-    let written = write_pcm16_wav(dest, &samples, sample_rate);
-    drop(samples);
-    written
-}
-
-fn write_pcm16_wav(path: &Path, samples: &[f32], sample_rate: u32) -> io::Result<()> {
-    if sample_rate == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "decoded sample rate is 0",
-        ));
-    }
-    let data_bytes = samples
-        .len()
-        .checked_mul(2)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "decoded wav is too large"))?;
-    let data_size = u32::try_from(data_bytes)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "decoded wav is too large"))?;
-    let riff_size = 36u32
-        .checked_add(data_size)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "decoded wav is too large"))?;
-    let file = OpenOptions::new().write(true).create_new(true).open(path)?;
-    let mut writer = io::BufWriter::new(file);
-    writer.write_all(b"RIFF")?;
-    writer.write_all(&riff_size.to_le_bytes())?;
-    writer.write_all(b"WAVE")?;
-    writer.write_all(b"fmt ")?;
-    writer.write_all(&16u32.to_le_bytes())?;
-    writer.write_all(&1u16.to_le_bytes())?;
-    writer.write_all(&1u16.to_le_bytes())?;
-    writer.write_all(&sample_rate.to_le_bytes())?;
-    writer.write_all(&sample_rate.saturating_mul(2).to_le_bytes())?;
-    writer.write_all(&2u16.to_le_bytes())?;
-    writer.write_all(&16u16.to_le_bytes())?;
-    writer.write_all(b"data")?;
-    writer.write_all(&data_size.to_le_bytes())?;
-    for &sample in samples {
-        let scaled = (sample.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16;
-        writer.write_all(&scaled.to_le_bytes())?;
-    }
-    writer.flush()?;
-    writer
-        .into_inner()
-        .map_err(|err| err.into_error())?
-        .sync_all()
 }
 
 #[cfg(test)]
@@ -718,50 +455,6 @@ mod tests {
             .find(|event| event.status == "transcript_sealed")
             .expect("sealed event");
         assert_eq!(sealed.text, spoken.join(" "));
-    }
-
-    #[test]
-    fn file_verdict_keeps_its_own_session_wav_never_last_session_identity() {
-        let temp = tempfile::tempdir().unwrap();
-        let sessions = temp.path().join("sessions");
-        let source = temp.path().join("last_session.wav");
-        std::fs::write(&source, tiny_pcm16_wav(16_000, &[0, 1, -1])).unwrap();
-        let bus = temp.path().join("events.jsonl");
-        let lane = CliTranscriptLane::open_at("cli-wav-01".into(), TranscriptMode::Dictation, bus)
-            .unwrap();
-
-        let dest = lane.retain_source_wav_at(&source, &sessions).unwrap();
-        assert_eq!(dest, sessions.join("cli-wav-01.wav"));
-        assert_eq!(dest.file_name().unwrap(), "cli-wav-01.wav");
-        assert_ne!(dest.file_name().unwrap(), "last_session.wav");
-        assert_eq!(
-            std::fs::read(&dest).unwrap(),
-            std::fs::read(&source).unwrap()
-        );
-        assert!(!sessions.join("last_session.wav").exists());
-    }
-
-    fn tiny_pcm16_wav(sample_rate: u32, samples: &[i16]) -> Vec<u8> {
-        let data_size = u32::try_from(samples.len() * 2).expect("fixture");
-        let riff_size = 36 + data_size;
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(b"RIFF");
-        bytes.extend_from_slice(&riff_size.to_le_bytes());
-        bytes.extend_from_slice(b"WAVE");
-        bytes.extend_from_slice(b"fmt ");
-        bytes.extend_from_slice(&16u32.to_le_bytes());
-        bytes.extend_from_slice(&1u16.to_le_bytes());
-        bytes.extend_from_slice(&1u16.to_le_bytes());
-        bytes.extend_from_slice(&sample_rate.to_le_bytes());
-        bytes.extend_from_slice(&(sample_rate * 2).to_le_bytes());
-        bytes.extend_from_slice(&2u16.to_le_bytes());
-        bytes.extend_from_slice(&16u16.to_le_bytes());
-        bytes.extend_from_slice(b"data");
-        bytes.extend_from_slice(&data_size.to_le_bytes());
-        for sample in samples {
-            bytes.extend_from_slice(&sample.to_le_bytes());
-        }
-        bytes
     }
 
     /// Same rule the app's bus holds: no terminal line for a session that never

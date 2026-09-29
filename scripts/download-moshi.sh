@@ -15,12 +15,16 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/share-new-model-tokenizer.sh
+. "$SCRIPT_DIR/lib/share-new-model-tokenizer.sh"
 # All models go to ~/.codescribe/models/
 MODELS_DIR="${HOME}/.codescribe/models"
 
 # Parse arguments
 DOWNLOAD_MOSHIKO=true
 DOWNLOAD_MOSHIKA=true
+NEW_MOSHIKO=false
+NEW_MOSHIKA=false
 
 if [ "${1:-}" = "moshiko" ]; then
     DOWNLOAD_MOSHIKA=false
@@ -56,6 +60,7 @@ if [ "$DOWNLOAD_MOSHIKO" = true ]; then
         echo "    rm -rf $MOSHIKO_DIR"
         echo ""
     else
+        if [ ! -d "$MOSHIKO_DIR" ]; then NEW_MOSHIKO=true; fi
         echo "📦 Downloading Moshiko (male voice) ~8GB..."
         echo "   Source: kyutai/moshiko-candle-q8"
         echo ""
@@ -81,6 +86,7 @@ if [ "$DOWNLOAD_MOSHIKA" = true ]; then
         echo "    rm -rf $MOSHIKA_DIR"
         echo ""
     else
+        if [ ! -d "$MOSHIKA_DIR" ]; then NEW_MOSHIKA=true; fi
         echo "📦 Downloading Moshika (female voice) ~8GB..."
         echo "   Source: kyutai/moshika-candle-q8"
         echo ""
@@ -93,6 +99,12 @@ if [ "$DOWNLOAD_MOSHIKA" = true ]; then
         echo "✅ Moshika downloaded successfully!"
         echo ""
     fi
+fi
+
+if [ "$NEW_MOSHIKA" = true ]; then
+    share_new_model_tokenizers "$MODELS_DIR/moshika-q8" "$MODELS_DIR/moshiko-q8"
+elif [ "$NEW_MOSHIKO" = true ]; then
+    share_new_model_tokenizers "$MODELS_DIR/moshiko-q8" "$MODELS_DIR/moshika-q8"
 fi
 
 # Check for Mimi codec (shared with CSM)

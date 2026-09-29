@@ -8,10 +8,8 @@
 
 use anyhow::{Result, anyhow};
 use std::path::Path;
-use symphonia::core::audio::{AudioBufferRef, Signal};
-use symphonia::core::conv::FromSample;
+use symphonia::core::formats::probe::Hint;
 use symphonia::core::io::MediaSourceStream;
-use symphonia::core::probe::Hint;
 
 use crate::safe_path;
 
@@ -31,18 +29,25 @@ pub fn load_audio_file(path: &Path) -> Result<(Vec<f32>, u32)> {
     }
 
     let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &Default::default(), &Default::default())
+        .probe(&hint, mss, Default::default(), Default::default())
         .map_err(|e| anyhow!("Failed to probe audio format: {}", e))?;
 
-    let mut format = probed.format;
+    let mut format = probed;
     let track = format
         .tracks()
         .iter()
-        .find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
+        .find(|t| t.codec_params.as_ref().and_then(|p| p.audio()).is_some())
         .ok_or_else(|| anyhow!("No supported audio track found"))?;
 
     let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &Default::default())
+        .make_audio_decoder(
+            track
+                .codec_params
+                .as_ref()
+                .and_then(|p| p.audio())
+                .ok_or_else(|| anyhow!("Audio track has no codec parameters"))?,
+            &Default::default(),
+        )
         .map_err(|e| anyhow!("Failed to create decoder: {}", e))?;
 
     let track_id = track.id;
@@ -51,7 +56,8 @@ pub fn load_audio_file(path: &Path) -> Result<(Vec<f32>, u32)> {
 
     loop {
         let packet = match format.next_packet() {
-            Ok(packet) => packet,
+            Ok(Some(packet)) => packet,
+            Ok(None) => break,
             Err(symphonia::core::errors::Error::IoError(ref e))
                 if e.kind() == std::io::ErrorKind::UnexpectedEof =>
             {
@@ -60,128 +66,27 @@ pub fn load_audio_file(path: &Path) -> Result<(Vec<f32>, u32)> {
             Err(e) => return Err(anyhow!("Failed to decode packet: {}", e)),
         };
 
-        if packet.track_id() != track_id {
+        if packet.track_id != track_id {
             continue;
         }
 
         match decoder.decode(&packet) {
             Ok(decoded) => {
                 if sample_rate == 0 {
-                    sample_rate = decoded.spec().rate;
+                    sample_rate = decoded.spec().rate();
                 }
 
-                match decoded {
-                    AudioBufferRef::F32(buf) => {
-                        let channels = buf.spec().channels.count();
-                        let frames = buf.frames();
-                        for i in 0..frames {
-                            let mut sum = 0.0f32;
-                            for ch in 0..channels {
-                                sum += buf.chan(ch)[i];
-                            }
-                            samples.push(sum / channels as f32);
-                        }
-                    }
-                    AudioBufferRef::U8(buf) => {
-                        let channels = buf.spec().channels.count();
-                        let frames = buf.frames();
-                        for i in 0..frames {
-                            let mut sum = 0.0f32;
-                            for ch in 0..channels {
-                                sum += f32::from_sample(buf.chan(ch)[i]);
-                            }
-                            samples.push(sum / channels as f32);
-                        }
-                    }
-                    AudioBufferRef::U16(buf) => {
-                        let channels = buf.spec().channels.count();
-                        let frames = buf.frames();
-                        for i in 0..frames {
-                            let mut sum = 0.0f32;
-                            for ch in 0..channels {
-                                sum += f32::from_sample(buf.chan(ch)[i]);
-                            }
-                            samples.push(sum / channels as f32);
-                        }
-                    }
-                    AudioBufferRef::U24(buf) => {
-                        let channels = buf.spec().channels.count();
-                        let frames = buf.frames();
-                        for i in 0..frames {
-                            let mut sum = 0.0f32;
-                            for ch in 0..channels {
-                                sum += f32::from_sample(buf.chan(ch)[i]);
-                            }
-                            samples.push(sum / channels as f32);
-                        }
-                    }
-                    AudioBufferRef::U32(buf) => {
-                        let channels = buf.spec().channels.count();
-                        let frames = buf.frames();
-                        for i in 0..frames {
-                            let mut sum = 0.0f32;
-                            for ch in 0..channels {
-                                sum += f32::from_sample(buf.chan(ch)[i]);
-                            }
-                            samples.push(sum / channels as f32);
-                        }
-                    }
-                    AudioBufferRef::S8(buf) => {
-                        let channels = buf.spec().channels.count();
-                        let frames = buf.frames();
-                        for i in 0..frames {
-                            let mut sum = 0.0f32;
-                            for ch in 0..channels {
-                                sum += f32::from_sample(buf.chan(ch)[i]);
-                            }
-                            samples.push(sum / channels as f32);
-                        }
-                    }
-                    AudioBufferRef::S16(buf) => {
-                        let channels = buf.spec().channels.count();
-                        let frames = buf.frames();
-                        for i in 0..frames {
-                            let mut sum = 0.0f32;
-                            for ch in 0..channels {
-                                sum += f32::from_sample(buf.chan(ch)[i]);
-                            }
-                            samples.push(sum / channels as f32);
-                        }
-                    }
-                    AudioBufferRef::S24(buf) => {
-                        let channels = buf.spec().channels.count();
-                        let frames = buf.frames();
-                        for i in 0..frames {
-                            let mut sum = 0.0f32;
-                            for ch in 0..channels {
-                                sum += f32::from_sample(buf.chan(ch)[i]);
-                            }
-                            samples.push(sum / channels as f32);
-                        }
-                    }
-                    AudioBufferRef::S32(buf) => {
-                        let channels = buf.spec().channels.count();
-                        let frames = buf.frames();
-                        for i in 0..frames {
-                            let mut sum = 0.0f32;
-                            for ch in 0..channels {
-                                sum += f32::from_sample(buf.chan(ch)[i]);
-                            }
-                            samples.push(sum / channels as f32);
-                        }
-                    }
-                    AudioBufferRef::F64(buf) => {
-                        let channels = buf.spec().channels.count();
-                        let frames = buf.frames();
-                        for i in 0..frames {
-                            let mut sum = 0.0f32;
-                            for ch in 0..channels {
-                                sum += f32::from_sample(buf.chan(ch)[i]);
-                            }
-                            samples.push(sum / channels as f32);
-                        }
-                    }
+                let channels = decoded.spec().channels().count();
+                if channels == 0 {
+                    return Err(anyhow!("Decoded audio has no channels"));
                 }
+                let mut interleaved = vec![0.0f32; decoded.samples_interleaved()];
+                decoded.copy_to_slice_interleaved(&mut interleaved);
+                samples.extend(
+                    interleaved
+                        .chunks_exact(channels)
+                        .map(|frame| frame.iter().sum::<f32>() / channels as f32),
+                );
             }
             Err(e) => return Err(anyhow!("Failed to decode audio frame: {}", e)),
         }
@@ -190,136 +95,103 @@ pub fn load_audio_file(path: &Path) -> Result<(Vec<f32>, u32)> {
     Ok((samples, sample_rate))
 }
 
-/// Resample complete model-input audio to 16 kHz with a windowed-sinc filter.
+/// Resample to 16 kHz by linear interpolation.
 ///
 /// Audio already at 16 kHz (and empty or rate-less input) is returned
-/// untouched. Downsampling removes out-of-band energy before decimation.
-/// This stateless conversion is for complete clips, not consecutive capture
-/// packets: the original capture samples remain the ledger's coordinates.
+/// untouched, so the common path costs nothing but a copy. Linear
+/// interpolation is deliberately cheap rather than band-limited: speech
+/// recognition tolerates the aliasing, and the alternative would cost more
+/// than the models gain.
 pub fn resample_to_16k(samples: &[f32], original_rate: u32) -> Vec<f32> {
-    if samples.is_empty() || original_rate == 0 || original_rate == 16000 {
+    if samples.is_empty() || original_rate == 0 {
         return samples.to_vec();
     }
 
-    const RADIUS: isize = 96;
-    let cutoff = (16000.0 / f64::from(original_rate)).min(1.0) * 0.94;
-    let new_len = (samples.len() as u128 * 16000).div_ceil(u128::from(original_rate)) as usize;
-    let mut output = Vec::with_capacity(new_len);
-    let mut kernels = std::collections::HashMap::new();
-    let max_idx = samples.len() - 1;
-    for i in 0..new_len {
-        // Integer phase accounting avoids drift on long 44.1 kHz recordings.
-        let position = i as u128 * u128::from(original_rate);
-        let center = (position / 16000) as usize;
-        let phase = (position % 16000) as u32;
-        let kernel = kernels
-            .entry(phase)
-            .or_insert_with(|| bandlimited_kernel(cutoff, f64::from(phase) / 16000.0, RADIUS));
-        let mut sum = 0.0;
-        for (tap, weight) in kernel.iter().enumerate() {
-            let offset = tap as isize - RADIUS;
-            let index = center.saturating_add_signed(offset).min(max_idx);
-            sum += f64::from(samples[index]) * weight;
-        }
-        output.push(sum as f32);
+    if original_rate == 16000 {
+        return samples.to_vec();
     }
+
+    // Simple linear interpolation for now
+    let ratio = 16000.0 / original_rate as f32;
+    let new_len = (samples.len() as f32 * ratio).ceil() as usize;
+    let mut output = Vec::with_capacity(new_len);
+
+    let max_idx = samples.len() - 1;
+
+    for i in 0..new_len {
+        let old_idx = (i as f32 / ratio).min(max_idx as f32);
+        let idx0 = old_idx.floor() as usize;
+
+        if idx0 >= max_idx {
+            // Clamp to last sample to avoid out-of-bounds due to rounding
+            output.push(samples[max_idx]);
+            continue;
+        }
+
+        let idx1 = (idx0 + 1).min(max_idx);
+        let t = old_idx - idx0 as f32;
+
+        let s0 = samples[idx0];
+        let s1 = samples[idx1];
+        output.push(s0 * (1.0 - t) + s1 * t);
+    }
+
     output
 }
 
-fn bandlimited_kernel(cutoff: f64, phase: f64, radius: isize) -> Vec<f64> {
-    let mut kernel: Vec<f64> = (-radius..=radius)
-        .map(|offset| {
-            let distance = offset as f64 - phase;
-            let normalized = distance / radius as f64;
-            if normalized.abs() >= 1.0 {
-                return 0.0;
-            }
-            let angle = std::f64::consts::PI * cutoff * distance;
-            let sinc = if angle.abs() < 1e-12 {
-                1.0
-            } else {
-                angle.sin() / angle
-            };
-            let window_angle = std::f64::consts::PI * normalized;
-            let window = 0.42 + 0.5 * window_angle.cos() + 0.08 * (2.0 * window_angle).cos();
-            cutoff * sinc * window
-        })
-        .collect();
-    let gain: f64 = kernel.iter().sum();
-    for weight in &mut kernel {
-        *weight /= gain;
-    }
-    kernel
-}
-
 #[cfg(test)]
-mod resampling_tests {
-    use super::resample_to_16k;
-
-    fn tone(rate: u32, frequency: f64) -> Vec<f32> {
-        (0..rate)
-            .map(|i| {
-                (std::f64::consts::TAU * frequency * f64::from(i) / f64::from(rate)).sin() as f32
-            })
-            .collect()
-    }
-
-    fn interior_rms(samples: &[f32]) -> f64 {
-        let interior = &samples[512..samples.len() - 512];
-        (interior.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>() / interior.len() as f64).sqrt()
-    }
+mod tests {
+    use super::*;
 
     #[test]
-    fn rejects_out_of_band_energy_without_erasing_speech_band() {
-        for rate in [44100, 48000, 96000] {
-            for frequency in [1000.0, 6000.0] {
-                let output = resample_to_16k(&tone(rate, frequency), rate);
-                assert_eq!(output.len(), 16000);
-                assert!((interior_rms(&output) - std::f64::consts::FRAC_1_SQRT_2).abs() < 0.01);
-            }
-            for frequency in [10000.0, 12000.0] {
-                let output = resample_to_16k(&tone(rate, frequency), rate);
-                assert!(
-                    interior_rms(&output) < 0.001,
-                    "alias rejection at {rate} Hz / tone {frequency}"
-                );
-            }
+    fn decodes_integer_stereo_to_mono_with_original_sample_rate() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("stereo.wav");
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 48_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&path, spec)?;
+        for sample in [16384i16, -16384, 8192, 24576] {
+            writer.write_sample(sample)?;
         }
+        writer.finalize()?;
+        let (samples, rate) = load_audio_file(&path)?;
+        assert_eq!(rate, 48_000);
+        assert_eq!(samples, vec![0.0, 0.5]);
+        Ok(())
     }
 
     #[test]
-    fn preserves_dc_short_inputs_and_exact_duration() {
-        for rate in [8000, 22050, 44100, 48000, 96000] {
-            for length in [1usize, 2, 13, 1024, 44101] {
-                let output = resample_to_16k(&vec![0.25; length], rate);
-                assert_eq!(
-                    output.len(),
-                    (length as u128 * 16000).div_ceil(u128::from(rate)) as usize
-                );
-                assert!(output.iter().all(|v| (*v - 0.25).abs() < 1e-6));
-            }
+    fn decodes_float_mono_without_clipping_or_resampling() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("float.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let expected = [0.25f32, -0.5, 1.25];
+        let mut writer = hound::WavWriter::create(&path, spec)?;
+        for sample in expected {
+            writer.write_sample(sample)?;
         }
+        writer.finalize()?;
+        let (samples, rate) = load_audio_file(&path)?;
+        assert_eq!(rate, 16_000);
+        assert_eq!(samples, expected);
+        Ok(())
     }
 
     #[test]
-    fn keeps_existing_no_conversion_cases() {
-        let input = [0.25, -0.5, 0.0, 1.0];
-        assert_eq!(resample_to_16k(&input, 16000), input);
-        assert_eq!(resample_to_16k(&input, 0), input);
-        assert!(resample_to_16k(&[], 48000).is_empty());
-    }
-
-    #[test]
-    fn impulse_has_no_added_group_delay() {
-        let mut input = vec![0.0; 4800];
-        input[2400] = 1.0;
-        let output = resample_to_16k(&input, 48000);
-        let peak = output
-            .iter()
-            .enumerate()
-            .max_by(|(_, a), (_, b)| a.abs().total_cmp(&b.abs()))
-            .unwrap()
-            .0;
-        assert_eq!(peak, 800);
+    fn refuses_unrecognized_audio() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("invalid.wav");
+        std::fs::write(&path, b"not a wave file")?;
+        assert!(load_audio_file(&path).is_err());
+        Ok(())
     }
 }

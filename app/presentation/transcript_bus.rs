@@ -4,10 +4,11 @@
 //! [`PresentationEmitter`]. It never opens audio, accepts arbitrary text,
 //! re-transcribes a file, or reconstructs text from UI deltas.
 
-use std::fs::OpenOptions;
+use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use chrono::{SecondsFormat, Utc};
 use codescribe_core::pipeline::acoustic_ledger::{
@@ -81,6 +82,12 @@ pub struct TranscriptSession {
     /// capture-time sessions set this false because that caret fact exists
     /// only at the later defer click.
     pub latched_target_is_self: bool,
+    /// Agent-channel audience stamped on sealed rows. `Some("*")` is the Fn+0
+    /// broadcast. `None` is every dictation row: readers that ignore the field
+    /// keep the previous contract.
+    pub audience: Option<String>,
+    /// Hold-badge preview only. Paste and the overlay document stay off.
+    pub badge_only: bool,
 }
 
 /// Grain of one published span. Word pins are engine evidence; utterance
@@ -166,7 +173,10 @@ pub struct ProjectedPresentationReceipt {
     pub capture_epoch: u64,
     pub sample_start: u64,
     pub sample_end: u64,
-    pub source_seal_receipt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_seal_receipt: Option<String>,
+    #[serde(default)]
+    pub sentence_break_before: bool,
     pub source_label: String,
     pub left_context: String,
     pub left_context_sha256: String,
@@ -185,6 +195,7 @@ impl From<&IncrementalShapingReceipt> for ProjectedPresentationReceipt {
             sample_start: receipt.occurrence.sample_start,
             sample_end: receipt.occurrence.sample_end,
             source_seal_receipt: receipt.source_seal_receipt.clone(),
+            sentence_break_before: receipt.sentence_break_before,
             source_label: receipt.source_label.clone(),
             left_context: receipt.left_context.clone(),
             left_context_sha256: receipt.left_context_sha256.clone(),
@@ -315,6 +326,10 @@ pub struct TranscriptBusEvidenceEvent {
     pub document_index: u64,
     pub label: String,
     pub rendered_text: String,
+    /// Optional sink-ready bytes. This is populated only on the lifecycle
+    /// terminal for a composer delivery; `rendered_text` remains reducer truth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_text: Option<String>,
     #[serde(default)]
     pub phase: TranscriptProjectionPhase,
     #[serde(default)]
@@ -345,6 +360,9 @@ pub struct TranscriptBusEvidenceEvent {
     /// an evidence revision describes the document, never its destination.
     #[serde(default)]
     pub delivery: TranscriptDelivery,
+    /// Agent-channel audience. Omitted when the session has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<String>,
     pub acoustic_receipts: Vec<ProjectedAcousticReceipt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seal_coverage: Option<ProjectedSealCoverageReceipt>,
@@ -352,6 +370,176 @@ pub struct TranscriptBusEvidenceEvent {
     pub comparison: Option<ProjectedTranscriptComparisonReceipt>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub consultation_presentations: Vec<ProjectedConsultationPresentation>,
+}
+
+/// One previously published document revision, read from the Bus journal.
+/// This is display evidence, never a mutation input or a substitute reducer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentHistoryEntry {
+    pub revision: u64,
+    pub rendered_text: String,
+    pub provenance: String,
+    pub emitted_at: String,
+}
+
+pub(crate) const HISTORY_SCHEMA: &str = "codescribe.transcript-history.v1";
+
+#[derive(Serialize, Deserialize)]
+struct CompactHistoryRow {
+    schema: String,
+    session_id: String,
+    revision: u64,
+    rendered_text: String,
+    provenance: String,
+    emitted_at: String,
+}
+
+/// A compact copy of a reducer revision whose large acoustic row may expire.
+/// It preserves the existing Bus-derived history without retaining receipts.
+pub(crate) fn compact_history_row(line: &str) -> Option<(String, u64, String)> {
+    let event = serde_json::from_str::<TranscriptBusEvidenceEvent>(line).ok()?;
+    let entry = history_entry_from_event(&event)?;
+    let row = CompactHistoryRow {
+        schema: HISTORY_SCHEMA.to_string(),
+        session_id: event.session_id.clone(),
+        revision: entry.revision,
+        rendered_text: entry.rendered_text,
+        provenance: entry.provenance,
+        emitted_at: entry.emitted_at,
+    };
+    let encoded = serde_json::to_string(&row).ok()?;
+    Some((row.session_id, row.revision, encoded))
+}
+
+fn history_entry_from_event(event: &TranscriptBusEvidenceEvent) -> Option<DocumentHistoryEntry> {
+    if event.document_index != 0
+        || event.reducer_revision == 0
+        || event.reducer_action == "session_ended"
+        || event.rendered_text.trim().is_empty()
+    {
+        return None;
+    }
+    let receipt = (event.reducer_action == "apply_manual_edit")
+        .then(|| {
+            event
+                .acoustic_receipts
+                .first()
+                .and_then(|acoustic| acoustic.manual_edit_receipt.as_deref())
+        })
+        .flatten();
+    let provenance = ["user-edit", "retranscribe", "formatter", "light-plus"]
+        .into_iter()
+        .find(|kind| receipt.is_some_and(|id| id.starts_with(&format!("{kind}-"))))
+        .map(str::to_string)
+        .unwrap_or_else(|| match event.reducer_action.as_str() {
+            "apply_ledger_decision" => "acoustic-ledger".to_string(),
+            "apply_incremental_shaping" => "light-plus".to_string(),
+            "apply_consultation_presentation" => "consultation".to_string(),
+            action => action.to_string(),
+        });
+    Some(DocumentHistoryEntry {
+        revision: event.reducer_revision,
+        rendered_text: event.rendered_text.clone(),
+        provenance,
+        emitted_at: event.emitted_at.clone(),
+    })
+}
+
+/// Read the already published history for one take. A missing journal means
+/// there is no persisted history; it never licenses reconstructing it in UI.
+pub fn document_history(session_id: &str) -> io::Result<Vec<DocumentHistoryEntry>> {
+    document_history_at(&transcript_bus_path(), session_id)
+}
+
+pub(crate) fn document_history_at(
+    path: &Path,
+    session_id: &str,
+) -> io::Result<Vec<DocumentHistoryEntry>> {
+    let mut bytes_read = 0;
+    document_history_at_counted(path, session_id, &mut bytes_read)
+}
+
+fn document_history_at_counted(
+    path: &Path,
+    session_id: &str,
+    bytes_read: &mut u64,
+) -> io::Result<Vec<DocumentHistoryEntry>> {
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- path is the app-owned transcript_bus_path() or an explicit test temporary Bus path, never request input.
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    // Recent takes live at the tail. Read blocks backwards and stop at this
+    // session's started row; other sessions may be interleaved, so merely
+    // seeing another session is not a safe stopping condition.
+    let mut position = file.metadata()?.len();
+    let mut prefix = Vec::new();
+    let mut rows = Vec::new();
+    let mut found_start = false;
+    while position > 0 && !found_start {
+        let width = position.min(64 * 1024) as usize;
+        position -= width as u64;
+        file.seek(SeekFrom::Start(position))?;
+        let mut block = vec![0; width];
+        file.read_exact(&mut block)?;
+        *bytes_read += width as u64;
+        block.extend_from_slice(&prefix);
+        let mut end = block.len();
+        for index in (0..block.len()).rev() {
+            if block[index] != b'\n' {
+                continue;
+            }
+            let line = &block[index + 1..end];
+            end = index;
+            let Ok(row) = serde_json::from_slice::<serde_json::Value>(line) else {
+                continue;
+            };
+            if row.get("session_id").and_then(|value| value.as_str()) != Some(session_id) {
+                continue;
+            }
+            if row.get("status").and_then(|value| value.as_str()) == Some("session_started") {
+                found_start = true;
+                break;
+            }
+            rows.push(line.to_vec());
+        }
+        prefix = block[..end].to_vec();
+    }
+    if !found_start && !prefix.is_empty() {
+        rows.push(prefix);
+    }
+    rows.reverse();
+    let mut revisions = std::collections::BTreeMap::new();
+    for line in rows {
+        if let Ok(row) = serde_json::from_slice::<CompactHistoryRow>(&line)
+            && row.schema == HISTORY_SCHEMA
+            && row.session_id == session_id
+            && !row.rendered_text.trim().is_empty()
+        {
+            revisions
+                .entry((row.session_id, row.revision))
+                .or_insert(DocumentHistoryEntry {
+                    revision: row.revision,
+                    rendered_text: row.rendered_text,
+                    provenance: row.provenance,
+                    emitted_at: row.emitted_at,
+                });
+            continue;
+        }
+        let Ok(event) = serde_json::from_slice::<TranscriptBusEvidenceEvent>(&line) else {
+            continue;
+        };
+        if event.session_id != session_id {
+            continue;
+        }
+        if let Some(entry) = history_entry_from_event(&event) {
+            revisions
+                .entry((event.session_id, entry.revision))
+                .or_insert(entry);
+        }
+    }
+    Ok(revisions.into_values().collect())
 }
 
 /// Group-level provenance, deliberately separate from per-word acoustic rows.
@@ -420,12 +608,15 @@ pub enum TranscriptDelivery {
     /// The document belongs to the Agent composer draft of the thread that
     /// owned the capture. Pending until the receiver admits it.
     ComposerPending,
-    /// A system sink (synthetic paste or armed deferred insert) accepted the
-    /// text at the OS boundary.
+    /// A synthetic paste accepted the text at the OS boundary.
     SinkAccepted,
     /// The stop path finished without any sink taking the text. It stays
     /// recoverable in the overlay and the session archive.
     Retained,
+    /// The text was copied to the clipboard without posting a paste.
+    CopiedToClipboard,
+    /// The text is armed for a later explicit insert, not pasted yet.
+    DeferredInsertArmed,
 }
 
 /// Why the controller left a Bus session. Typed on purpose: the terminal
@@ -527,6 +718,58 @@ struct TranscriptBusWriter {
     last_projection: Option<TranscriptBusEvidenceEvent>,
 }
 
+/// All in-process Bus sessions for a path append through this one descriptor.
+/// Compaction takes this exact lock and replaces the descriptor after rename.
+static BUS_FILES: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<File>>>>> = OnceLock::new();
+
+pub(crate) fn shared_bus_file(path: &Path) -> io::Result<Arc<Mutex<File>>> {
+    let registry = BUS_FILES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut registry = registry.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some(file) = registry.get(path).and_then(Weak::upgrade) {
+        return Ok(file);
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = open_bus_append_file(path)?;
+    let shared = Arc::new(Mutex::new(file));
+    registry.insert(path.to_path_buf(), Arc::downgrade(&shared));
+    Ok(shared)
+}
+
+pub(crate) fn open_bus_append_file(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.create(true).append(true).read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(file)
+}
+
+struct SharedBusWriter(Arc<Mutex<File>>);
+
+impl Write for SharedBusWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .write_all(bytes)?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 impl TranscriptBus {
     fn projection_availability(
         &self,
@@ -534,13 +777,19 @@ impl TranscriptBus {
         take_in_progress: bool,
         session_wav_exists: bool,
     ) -> TranscriptProjectionAvailability {
-        resolve_transcript_projection_availability(
+        let mut availability = resolve_transcript_projection_availability(
             has_text,
             take_in_progress,
             session_wav_exists,
             self.session.has_latched_target,
             self.session.latched_target_is_self,
-        )
+        );
+        if self.session.badge_only {
+            availability.can_paste = false;
+            availability.can_insert = false;
+            availability.can_send_to_agent = false;
+        }
+        availability
     }
 
     pub(crate) fn session_id(&self) -> &str {
@@ -648,6 +897,23 @@ impl TranscriptBus {
             .writer
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        // The authenticated reducer revision carries the ledger's coverage
+        // verdict even before session_ended. A document rewrite cannot clear
+        // that verdict; the ended row also preserves it for later revisions.
+        let phase = if is_user_revision
+            && (revision
+                .seal_coverage
+                .as_ref()
+                .is_some_and(|coverage| !coverage.status.is_complete())
+                || writer
+                    .last_projection
+                    .as_ref()
+                    .is_some_and(|event| event.phase == TranscriptProjectionPhase::CoverageRefused))
+        {
+            TranscriptProjectionPhase::CoverageRefused
+        } else {
+            phase
+        };
         if writer
             .last_projection
             .as_ref()
@@ -707,6 +973,7 @@ impl TranscriptBus {
                 document_index: document_index as u64,
                 label: entry.label.clone(),
                 rendered_text: revision.rendered_text.clone(),
+                delivery_text: None,
                 phase,
                 can_paste: availability.can_paste,
                 can_insert: availability.can_insert,
@@ -720,6 +987,7 @@ impl TranscriptBus {
                 // An evidence revision states what the document is, never where
                 // it went. Only `publish_ended` stamps a delivery disposition.
                 delivery: TranscriptDelivery::Unattempted,
+                audience: self.session.audience.clone(),
                 acoustic_receipts: vec![Self::project_serial(
                     serial,
                     entry.word_evidence_receipts.clone(),
@@ -805,19 +1073,8 @@ impl TranscriptBus {
             std::fs::create_dir_all(parent)?;
         }
 
-        let mut options = OpenOptions::new();
-        options.create(true).append(true).read(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&path)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        }
+        let shared = shared_bus_file(&path)?;
+        let mut file = shared.lock().unwrap_or_else(|error| error.into_inner());
 
         // A prior partial write is not an append boundary. Do not join a new
         // session onto it, truncate evidence, or retry the unknown payload.
@@ -832,7 +1089,12 @@ impl TranscriptBus {
                 ));
             }
         }
-        Ok(Self::with_writer(session, path, Some(Box::new(file))))
+        drop(file);
+        Ok(Self::with_writer(
+            session,
+            path,
+            Some(Box::new(SharedBusWriter(shared))),
+        ))
     }
 
     /// Announce the recording start exactly once, even if persistence fails.
@@ -866,6 +1128,18 @@ impl TranscriptBus {
         reason: TranscriptSessionEndReason,
         session_wav_exists: bool,
         delivery: TranscriptDelivery,
+    ) -> Option<TranscriptBusEvidenceEvent> {
+        self.publish_ended_with_delivery_text(reason, session_wav_exists, delivery, None)
+    }
+
+    /// End a session while keeping a delivery-only payload distinct from the
+    /// reducer-owned document. Only the controller's composer route uses it.
+    pub fn publish_ended_with_delivery_text(
+        &self,
+        reason: TranscriptSessionEndReason,
+        session_wav_exists: bool,
+        delivery: TranscriptDelivery,
+        delivery_text: Option<String>,
     ) -> Option<TranscriptBusEvidenceEvent> {
         let mut writer = self
             .writer
@@ -949,6 +1223,7 @@ impl TranscriptBus {
                     document_index: 0,
                     label: String::new(),
                     rendered_text: String::new(),
+                    delivery_text: None,
                     phase,
                     can_paste: availability.can_paste,
                     can_insert: availability.can_insert,
@@ -959,6 +1234,7 @@ impl TranscriptBus {
                     terminal: true,
                     lifecycle_terminal: true,
                     delivery,
+                    audience: self.session.audience.clone(),
                     acoustic_receipts: Vec::new(),
                     consultation_presentations: Vec::new(),
                     seal_coverage: None,
@@ -981,6 +1257,7 @@ impl TranscriptBus {
         // The last committed evidence event carried `Unattempted`; the
         // lifecycle line is the one place a disposition is stated.
         terminal.delivery = delivery;
+        terminal.delivery_text = delivery_text;
         writer.last_projection = Some(terminal.clone());
         Some(terminal)
     }
@@ -1139,6 +1416,140 @@ mod tests {
     };
     use std::sync::Arc;
 
+    #[test]
+    fn history_lists_three_revisions_of_one_take_with_provenance() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("history.jsonl");
+        let bus = TranscriptBus::open_at(session("history-take"), path.clone(), None).unwrap();
+        bus.publish_started();
+        let (ledger, _, base) = committed_fixture("history-take");
+        let published = bus.publish_revision(&base, &ledger);
+        assert_eq!(published.len(), 2);
+        let mut formatter = published[0].clone();
+        formatter.reducer_revision += 1;
+        formatter.reducer_action = "apply_manual_edit".to_string();
+        formatter.rendered_text = "Formatted words".to_string();
+        formatter.acoustic_receipts[0].manual_edit_receipt =
+            Some("formatter-history-take-2-3-0".to_string());
+        let mut retranscribe = formatter.clone();
+        retranscribe.reducer_revision += 1;
+        retranscribe.rendered_text = "Retranscribed words".to_string();
+        retranscribe.acoustic_receipts[0].manual_edit_receipt =
+            Some("retranscribe-history-take-3-4-1".to_string());
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, "{}", serde_json::to_string(&formatter).unwrap()).unwrap();
+        writeln!(file, "{}", serde_json::to_string(&retranscribe).unwrap()).unwrap();
+        let history = document_history_at(&path, "history-take").unwrap();
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].revision, base.revision);
+        assert_eq!(history[0].provenance, "acoustic-ledger");
+        assert_eq!(history[1].provenance, "formatter");
+        assert_eq!(history[2].provenance, "retranscribe");
+        assert_eq!(history[2].rendered_text, "Retranscribed words");
+        assert!(
+            document_history_at(&path, "another-take")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn recent_take_history_reads_only_the_bus_tail() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("large-history.jsonl");
+        let row = format!(
+            "{{\"schema\":\"codescribe.transcript.v1\",\"session_id\":\"old\",\"padding\":\"{}\"}}\n",
+            "x".repeat(2048)
+        );
+        let mut out = std::fs::File::create(&path).unwrap();
+        while out.metadata().unwrap().len() < 10 * 1024 * 1024 {
+            out.write_all(row.as_bytes()).unwrap();
+        }
+        drop(out);
+        let older_bytes = std::fs::metadata(&path).unwrap().len();
+        let bus = TranscriptBus::open_at(session("recent-take"), path.clone(), None).unwrap();
+        bus.publish_started();
+        let (ledger, _, base) = committed_fixture("recent-take");
+        assert!(!bus.publish_revision(&base, &ledger).is_empty());
+        let recent_bytes = std::fs::metadata(&path).unwrap().len() - older_bytes;
+        let mut bytes_read = 0;
+        let history = document_history_at_counted(&path, "recent-take", &mut bytes_read).unwrap();
+        assert!(!history.is_empty());
+        assert!(
+            bytes_read <= recent_bytes + 64 * 1024,
+            "read {bytes_read} bytes for {recent_bytes} bytes of recent-session rows"
+        );
+    }
+
+    #[test]
+    fn history_versions_match_when_each_revision_carries_text_only_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let repeated_path = temp.path().join("repeated.jsonl");
+        let deduplicated_path = temp.path().join("deduplicated.jsonl");
+        let bus =
+            TranscriptBus::open_at(session("history-once"), repeated_path.clone(), None).unwrap();
+        bus.publish_started();
+        let (ledger, _, base) = committed_fixture("history-once");
+        let mut versions = vec![bus.publish_revision(&base, &ledger)[0].clone()];
+        for offset in 1..=2 {
+            let mut next = versions[0].clone();
+            next.reducer_revision += offset;
+            next.reducer_action = "apply_manual_edit".to_string();
+            next.rendered_text = format!("version {}", next.reducer_revision);
+            versions.push(next);
+        }
+        let start = r#"{"schema":"codescribe.transcript.v1","session_id":"history-once","status":"session_started"}"#;
+        let mut repeated = format!("{start}\n");
+        let mut deduplicated = format!("{start}\n");
+        for event in &versions {
+            let full = serde_json::to_string(event).unwrap();
+            repeated.push_str(&format!("{full}\n{full}\n"));
+            let mut without_text = serde_json::to_value(event).unwrap();
+            without_text
+                .as_object_mut()
+                .unwrap()
+                .remove("rendered_text");
+            deduplicated.push_str(&format!(
+                "{full}\n{}\n",
+                serde_json::to_string(&without_text).unwrap()
+            ));
+        }
+        std::fs::write(&repeated_path, repeated).unwrap();
+        std::fs::write(&deduplicated_path, deduplicated).unwrap();
+        let expected = document_history_at(&repeated_path, "history-once").unwrap();
+        assert_eq!(expected.len(), 3);
+        assert_eq!(
+            document_history_at(&deduplicated_path, "history-once").unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn compaction_preserves_revision_history_for_expired_evidence() {
+        use std::time::{Duration, SystemTime};
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("history-retention.jsonl");
+        let bus = TranscriptBus::open_at(session("old-take"), path.clone(), None).unwrap();
+        let (ledger, _, base) = committed_fixture("old-take");
+        let mut event = bus.publish_revision(&base, &ledger)[0].clone();
+        event.emitted_at = "2020-01-01T00:00:00Z".to_string();
+        std::fs::write(&path, format!(
+            "{{\"schema\":\"codescribe.transcript.v1\",\"session_id\":\"old-take\",\"status\":\"session_started\"}}\n{}\n{{\"schema\":\"codescribe.transcript.v1\",\"session_id\":\"old-take\",\"status\":\"session_ended\"}}\n",
+            serde_json::to_string(&event).unwrap()
+        )).unwrap();
+        let before = document_history_at(&path, "old-take").unwrap();
+        assert_eq!(before.len(), 1);
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_times(
+            std::fs::FileTimes::new().set_modified(SystemTime::now() - Duration::from_secs(120)),
+        )
+        .unwrap();
+        let report =
+            super::super::transcript_bus_maintenance::compact_bus(&path, 14, false).unwrap();
+        assert_eq!(report.evidence_rows_dropped, 1);
+        assert_eq!(document_history_at(&path, "old-take").unwrap(), before);
+    }
+
     #[derive(Default)]
     struct Fault {
         remaining: Option<usize>,
@@ -1185,7 +1596,59 @@ mod tests {
             mode: TranscriptMode::Agent,
             has_latched_target: false,
             latched_target_is_self: false,
+            audience: None,
+            badge_only: false,
         }
+    }
+
+    #[test]
+    fn channel_rows_carry_audience_and_do_not_offer_paste() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut channel = session("channel-leon");
+        channel.audience = Some("Leon".to_string());
+        channel.badge_only = true;
+        let bus = TranscriptBus::open_at(channel, dir.path().join("channel.jsonl"), None).unwrap();
+        let (ledger, _, revision) = committed_fixture("channel-leon");
+        let events = bus.publish_revision(&revision, &ledger);
+        assert!(!events.is_empty());
+        assert!(events.iter().all(|event| {
+            event.audience.as_deref() == Some("Leon")
+                && !event.can_paste
+                && !event.can_insert
+                && !event.can_send_to_agent
+        }));
+        let raw = std::fs::read_to_string(dir.path().join("channel.jsonl")).unwrap();
+        assert!(raw.contains("\"audience\":\"Leon\"") || raw.contains("\"audience\": \"Leon\""));
+
+        let plain_dir = tempfile::tempdir().unwrap();
+        let plain = TranscriptBus::open_at(
+            session("plain-take"),
+            plain_dir.path().join("plain.jsonl"),
+            None,
+        )
+        .unwrap();
+        let (ledger, _, revision) = committed_fixture("plain-take");
+        let events = plain.publish_revision(&revision, &ledger);
+        assert!(events.iter().all(|event| event.audience.is_none()));
+        let raw = std::fs::read_to_string(plain_dir.path().join("plain.jsonl")).unwrap();
+        assert!(
+            !raw.contains("\"audience\""),
+            "rows without an audience omit the field: {raw}"
+        );
+
+        let broadcast_dir = tempfile::tempdir().unwrap();
+        let mut broadcast = session("channel-all");
+        broadcast.audience = Some("*".to_string());
+        broadcast.badge_only = true;
+        let bus = TranscriptBus::open_at(broadcast, broadcast_dir.path().join("all.jsonl"), None)
+            .unwrap();
+        let (ledger, _, revision) = committed_fixture("channel-all");
+        let events = bus.publish_revision(&revision, &ledger);
+        assert!(
+            events
+                .iter()
+                .all(|event| event.audience.as_deref() == Some("*"))
+        );
     }
 
     fn inject_fault(bus: &TranscriptBus) -> Arc<Mutex<Fault>> {
@@ -1452,11 +1915,18 @@ mod tests {
     }
 
     fn committed_fixture(id: &str) -> (AcousticLedger, TranscriptReducer, TranscriptRevision) {
+        committed_fixture_with_first_label(id, "Zażółć")
+    }
+
+    fn committed_fixture_with_first_label(
+        id: &str,
+        first_label: &str,
+    ) -> (AcousticLedger, TranscriptReducer, TranscriptRevision) {
         let mut ledger = AcousticLedger::new();
         let mut reducer = TranscriptReducer::default();
         let calibration = EnergyCalibration::new("bus-fault-fixture", 1.0, 1);
         let mut revision = None;
-        for (index, label) in ["Zażółć", "gęślą\n jaźń."].into_iter().enumerate() {
+        for (index, label) in [first_label, "gęślą\n jaźń."].into_iter().enumerate() {
             let start = index as u64 * 16_000;
             let occurrence = OccurrenceIdentity::new(id, 7, start, start + 16_000);
             let evidence = AcousticEvidence {
@@ -1848,6 +2318,8 @@ mod tests {
                 mode: TranscriptMode::Agent,
                 has_latched_target: false,
                 latched_target_is_self: false,
+                audience: None,
+                badge_only: false,
             },
             path.clone(),
             Some(48_000),
@@ -1888,6 +2360,8 @@ mod tests {
             mode: TranscriptMode::Dictation,
             has_latched_target: false,
             latched_target_is_self: false,
+            audience: None,
+            badge_only: false,
         };
 
         let never_started = TranscriptBus::open_at(session.clone(), path.clone(), None).unwrap();
@@ -1954,6 +2428,8 @@ mod tests {
                 mode: TranscriptMode::Agent,
                 has_latched_target: false,
                 latched_target_is_self: false,
+                audience: None,
+                badge_only: false,
             },
             path,
             None,
@@ -1988,6 +2464,8 @@ mod tests {
                 mode: TranscriptMode::Dictation,
                 has_latched_target: false,
                 latched_target_is_self: false,
+                audience: None,
+                badge_only: false,
             },
             path,
             None,
@@ -2036,7 +2514,8 @@ mod tests {
     // Preserve predecessor negative controls across the publication recovery.
     #[test]
     fn incremental_bus_refuses_rendered_bytes_not_bound_to_the_shaping_receipt() {
-        let (mut ledger, mut reducer, _) = committed_fixture("shaping-bytes");
+        let (mut ledger, mut reducer, _) =
+            committed_fixture_with_first_label("shaping-bytes", "zażółć");
         let occurrence = OccurrenceIdentity::new("shaping-bytes", 7, 0, 16_000);
         ledger.schedule_frontier(occurrence.clone(), [ObservationProducer::Apple]);
         assert!(ledger.note_frontier_return(&occurrence, ObservationProducer::Apple));
@@ -2059,7 +2538,8 @@ mod tests {
 
     #[test]
     fn incremental_bus_refuses_a_shaping_receipt_absent_from_the_ledger() {
-        let (mut ledger, mut reducer, _) = committed_fixture("shaping-forgery");
+        let (mut ledger, mut reducer, _) =
+            committed_fixture_with_first_label("shaping-forgery", "zażółć");
         let occurrence = OccurrenceIdentity::new("shaping-forgery", 7, 0, 16_000);
         ledger.schedule_frontier(occurrence.clone(), [ObservationProducer::Apple]);
         assert!(ledger.note_frontier_return(&occurrence, ObservationProducer::Apple));
@@ -2092,7 +2572,8 @@ mod tests {
     /// stays `listening`.
     #[test]
     fn an_incremental_shaping_publishes_a_listening_revision_without_closing_the_book() {
-        let (mut ledger, mut reducer, committed) = committed_fixture("shaping-bus");
+        let (mut ledger, mut reducer, committed) =
+            committed_fixture_with_first_label("shaping-bus", "zażółć");
         let occurrence = OccurrenceIdentity::new("shaping-bus", 7, 0, 16_000);
         ledger.schedule_frontier(occurrence.clone(), [ObservationProducer::Apple]);
         assert!(ledger.note_frontier_return(&occurrence, ObservationProducer::Apple));
@@ -2134,9 +2615,9 @@ mod tests {
             );
         }
         // Only the shaped occurrence changed; the open one is byte-exact.
-        assert_eq!(committed.rendered_text, "Zażółć gęślą\n jaźń.");
-        assert_eq!(shaping.rendered_text, "Zażółć. gęślą\n jaźń.");
-        assert_eq!(events[0].label, "Zażółć", "the spoken label is unchanged");
+        assert_eq!(committed.rendered_text, "zażółć gęślą\n jaźń.");
+        assert_eq!(shaping.rendered_text, "Zażółć gęślą\n jaźń.");
+        assert_eq!(events[0].label, "zażółć", "the spoken label is unchanged");
 
         assert!(
             !bus.writer.lock().unwrap().sealed,
@@ -2145,7 +2626,8 @@ mod tests {
     }
     #[test]
     fn retained_shaping_authenticates_the_complete_ordered_snapshot_or_emits_nothing() {
-        let (mut ledger, mut reducer, _) = committed_fixture("retained-proof");
+        let (mut ledger, mut reducer, _) =
+            committed_fixture_with_first_label("retained-proof", "zażółć");
         let first = OccurrenceIdentity::new("retained-proof", 7, 0, 16_000);
         let second = OccurrenceIdentity::new("retained-proof", 7, 16_000, 32_000);
         for occurrence in [&first, &second] {
@@ -2201,7 +2683,8 @@ mod tests {
         }
         // Same acoustic labels/geometry/seal IDs, but no minted shaping:
         // a valid private snapshot still needs the exact live ledger receipt.
-        let (mut without_shaping, _, _) = committed_fixture("retained-proof");
+        let (mut without_shaping, _, _) =
+            committed_fixture_with_first_label("retained-proof", "zażółć");
         for occurrence in [&first, &second] {
             without_shaping.schedule_frontier(occurrence.clone(), [ObservationProducer::Apple]);
             assert!(without_shaping.note_frontier_return(occurrence, ObservationProducer::Apple));
@@ -2237,7 +2720,8 @@ mod tests {
 
     #[test]
     fn serialized_projection_absence_and_malformed_proof_never_mint_authority() {
-        let (mut ledger, mut reducer, plain) = committed_fixture("serialized-shape");
+        let (mut ledger, mut reducer, plain) =
+            committed_fixture_with_first_label("serialized-shape", "zażółć");
         let temp = tempfile::tempdir().unwrap();
         let bus =
             TranscriptBus::open_at(session("serialized-shape"), temp.path().join("bus"), None)
@@ -2268,7 +2752,6 @@ mod tests {
         );
         for field in [
             "source_revision",
-            "source_seal_receipt",
             "left_context",
             "left_context_sha256",
             "shaped_text",
@@ -2296,5 +2779,144 @@ mod tests {
                     .receipt_id
         }));
         assert_eq!(ledger.incremental_shapings().len(), count);
+    }
+
+    /// A covered overlap receipt is conserved and visible to the reducer, and
+    /// the bus still publishes one committed occurrence.
+    #[test]
+    fn unanchored_overlap_does_not_publish_a_second_bus_token() {
+        use codescribe_core::pipeline::acoustic_ledger::MutationReceipt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let bus =
+            TranscriptBus::open_with_path(session("unanchored-bus"), temp.path().join("bus.jsonl"));
+        bus.publish_started();
+        let mut ledger = AcousticLedger::new();
+        let mut reducer = TranscriptReducer::default();
+        let admitted = OccurrenceIdentity::new("unanchored-bus", 7, 24_000, 48_000);
+        let calibration = EnergyCalibration::new("bus-unanchored", 1.0, 1);
+        let evidence = AcousticEvidence {
+            occurrence: admitted.clone(),
+            duration_ms: 1_000.0,
+            energy_integral: 10.0,
+            mean_rms_dbfs: -12.0,
+            peak_dbfs: -3.0,
+            vad_open_sample: Some(admitted.sample_start),
+            vad_close_sample: Some(admitted.sample_end),
+            evidence_calibration_version: calibration.version.clone(),
+        };
+        assert!(ledger.qualify(&evidence, &calibration).is_qualified());
+        let observation =
+            ObservationIdentity::new(ObservationProducer::Apple, 1, 0, admitted.clone());
+        let receipt = ledger.admit(&observation, "beta");
+        let revision = reducer
+            .apply_ledger_mutation(&ledger, &observation, &receipt)
+            .expect("committed neighbour");
+        let events = bus.publish_revision(&revision, &ledger);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].sample_start, 24_000);
+        assert_eq!(events[0].sample_end, 48_000);
+        assert_eq!(events[0].rendered_text, "beta");
+
+        let covered = OccurrenceIdentity::new("unanchored-bus", 7, 32_000, 40_000);
+        let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 2, 0, covered);
+        let unanchored = ledger.admit(&whisper, "beta");
+        assert!(matches!(
+            &unanchored,
+            MutationReceipt::KeepVisibleUnanchored { label, .. } if label == "beta"
+        ));
+        assert!(
+            reducer
+                .apply_ledger_mutation(&ledger, &whisper, &unanchored)
+                .is_none()
+        );
+        assert_eq!(reducer.visible_projection(), "beta");
+        assert_eq!(revision.entries.len(), 1);
+        assert_eq!(ledger.conservation().kept_visible_unanchored, 1);
+        assert_eq!(ledger.text_of(&admitted), Some("beta"));
+        let writer = bus.writer.lock().unwrap();
+        assert_eq!(writer.sequence, events[0].sequence);
+        assert_eq!(
+            writer
+                .last_projection
+                .as_ref()
+                .map(|event| event.rendered_text.as_str()),
+            Some("beta")
+        );
+        assert_eq!(
+            writer
+                .last_projection
+                .as_ref()
+                .map(|event| event.sample_end),
+            Some(48_000)
+        );
+    }
+
+    /// A differing alternative kept wholly inside a committed occurrence is
+    /// reducer paint evidence only. The next committed revision the Bus
+    /// publishes carries the committed label, never the alternative, and the
+    /// seal of that occurrence closes the evidence.
+    #[test]
+    fn differing_unanchored_alternative_never_enters_a_bus_revision() {
+        use codescribe_core::pipeline::acoustic_ledger::NoAuthorityReason;
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("bus.jsonl");
+        let bus = TranscriptBus::open_with_path(session("alternative-bus"), path.clone());
+        bus.publish_started();
+        let mut ledger = AcousticLedger::new();
+        let mut reducer = TranscriptReducer::default();
+        let apple = OccurrenceIdentity::new("alternative-bus", 7, 0, 48_000);
+        let calibration = EnergyCalibration::new("bus-alternative", 1.0, 1);
+        let evidence = AcousticEvidence {
+            occurrence: apple.clone(),
+            duration_ms: 3_000.0,
+            energy_integral: 10.0,
+            mean_rms_dbfs: -12.0,
+            peak_dbfs: -3.0,
+            vad_open_sample: Some(apple.sample_start),
+            vad_close_sample: Some(apple.sample_end),
+            evidence_calibration_version: calibration.version.clone(),
+        };
+        assert!(ledger.qualify(&evidence, &calibration).is_qualified());
+        let observation = ObservationIdentity::new(ObservationProducer::Apple, 1, 0, apple.clone());
+        let receipt = ledger.admit(&observation, "Apple mówi tak");
+        let revision = reducer
+            .apply_ledger_mutation(&ledger, &observation, &receipt)
+            .expect("committed Apple occurrence");
+        assert_eq!(bus.publish_revision(&revision, &ledger).len(), 1);
+
+        let pin = OccurrenceIdentity::new("alternative-bus", 7, 16_000, 32_000);
+        let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 2, 1_000, pin);
+        let kept = ledger.keep_visible_unanchored(
+            &whisper,
+            "Whisper mówi inaczej",
+            NoAuthorityReason::ExclusiveTailAwaitingWholeSpan,
+        );
+        assert!(
+            reducer
+                .apply_ledger_mutation(&ledger, &whisper, &kept)
+                .is_none()
+        );
+        assert_eq!(reducer.visible_projection(), "Apple mówi tak");
+        assert_eq!(
+            reducer.unanchored_evidence("alternative-bus", 7)[0].text,
+            "Whisper mówi inaczej"
+        );
+
+        ledger.schedule_frontier(apple.clone(), [ObservationProducer::Apple]);
+        assert!(ledger.note_frontier_return(&apple, ObservationProducer::Apple));
+        let seal = ledger.seal(&apple).expect("closed occurrence").clone();
+        let sealed = reducer.apply_ledger_seal(&seal).expect("seal revision");
+        let events = bus.publish_revision(&sealed, &ledger);
+        assert!(!events.is_empty());
+        assert!(events.iter().all(|event| {
+            !event.rendered_text.contains("Whisper") && !event.label.contains("Whisper")
+        }));
+        assert!(
+            reducer.unanchored_evidence("alternative-bus", 7).is_empty(),
+            "the seal over its range closed the evidence"
+        );
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("Whisper"));
     }
 }

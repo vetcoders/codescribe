@@ -3,6 +3,38 @@ import XCTest
 @testable import Codescribe
 
 final class OverlayResizeHitTests: XCTestCase {
+  @MainActor
+  func testOverlayYieldsToMissionControlAcrossPresenceLevels() {
+    let panel = DictationOverlayWindow.make(
+      state: OverlayState(),
+      textScale: TextScaleController(key: "OverlayResizeHitTests.missionControl"))
+    defer { panel.orderOut(nil) }
+    for policy in [OverlayPresencePolicy.rest, .yield, .capture] {
+      panel.level = policy.windowLevel
+      XCTAssertTrue(panel.collectionBehavior.contains(.transient))
+      XCTAssertFalse(panel.collectionBehavior.contains(.stationary))
+      XCTAssertTrue(panel.collectionBehavior.contains(.canJoinAllSpaces))
+      XCTAssertTrue(panel.collectionBehavior.contains(.fullScreenAuxiliary))
+    }
+  }
+
+  @MainActor
+  func testCappedOverlayDoesNotReadOrMeasureProjectedText() throws {
+    let screen = try XCTUnwrap(NSScreen.main)
+    let cap = max(
+      DictationOverlayWindow.minSize.height,
+      floor(screen.visibleFrame.height * OverlayContentSizePolicy.maximumScreenFraction))
+    var reads = 0
+    func projectedText() -> String {
+      reads += 1
+      return String(repeating: "recorded words\n", count: 2_000)
+    }
+    let height = OverlayContentSizePolicy.preferredHeight(
+      for: projectedText(), width: 470, textScale: 1, screen: screen, currentHeight: cap)
+    XCTAssertEqual(height, cap)
+    XCTAssertEqual(reads, 0, "A full-sized panel cannot grow; do not lay out its transcript again")
+  }
+
   private let bounds = NSRect(x: 0, y: 0, width: 400, height: 300)
   private let band = OverlayResizeHit.band
 
@@ -37,6 +69,10 @@ final class OverlayResizeHitTests: XCTestCase {
     root.layoutSubtreeIfNeeded()
 
     let edgePoints = [
+      (
+        "bottom-grip",
+        NSPoint(x: root.bounds.midX, y: OverlayResizeChrome.gripRect(in: root.bounds).midY)
+      ),
       ("left-edge", NSPoint(x: 6, y: root.bounds.midY)),
       ("right-edge", NSPoint(x: root.bounds.maxX - 6, y: root.bounds.midY)),
       ("bottom-right-corner", NSPoint(x: root.bounds.maxX - 6, y: 6)),
@@ -59,7 +95,7 @@ final class OverlayResizeHitTests: XCTestCase {
       )
     }
     XCTAssertTrue(
-      panel.isWindowDragHit(at: NSPoint(x: 28, y: root.bounds.maxY - 22)),
+      panel.isWindowDragHit(at: NSPoint(x: 60, y: root.bounds.maxY - 22)),
       "header interior must still be a drag handle"
     )
   }
@@ -90,7 +126,9 @@ final class OverlayResizeHitTests: XCTestCase {
 
     let y = root.bounds.maxY - 22
     let probes: [(String, CGFloat)] = [
-      ("brand", 28),
+      // The wordmark: inert text over the header drag region, right of the
+      // 24 pt close target that now sits where the 7 pt dot used to end.
+      ("brand", 60),
       ("after-brand", 150),
       ("center-waveform", root.bounds.midX),
       ("before-timer", root.bounds.maxX - 150),
@@ -135,7 +173,7 @@ final class OverlayResizeHitTests: XCTestCase {
     root.layoutSubtreeIfNeeded()
 
     let dragPoints = [
-      ("header", NSPoint(x: 28, y: root.bounds.maxY - 22)),
+      ("header", NSPoint(x: 60, y: root.bounds.maxY - 22)),
       ("body margin", NSPoint(x: 18, y: root.bounds.midY)),
     ]
     for (region, point) in dragPoints {
@@ -203,7 +241,7 @@ final class OverlayResizeHitTests: XCTestCase {
 
     let requested = NSSize(width: 100, height: 50)
     let dragPoints = [
-      ("header", NSPoint(x: 28, y: root.bounds.maxY - 22)),
+      ("header", NSPoint(x: 60, y: root.bounds.maxY - 22)),
       ("body-margin", NSPoint(x: 18, y: root.bounds.midY)),
     ]
 
@@ -285,9 +323,12 @@ final class OverlayResizeHitTests: XCTestCase {
     let transcriptFrame = screenFrame(of: transcript.enclosingScrollView!, in: panel)
     XCTAssertLessThanOrEqual(firstLine.maxY, headerFrame.minY + 1)
     XCTAssertGreaterThanOrEqual(lastLine.minY, transcriptFrame.minY - 1)
-    XCTAssertLessThan(
-      transcriptFrame.minY - panel.frame.minY, 24,
-      "no dock or reserved action padding may consume the transcript bottom")
+    XCTAssertEqual(transcriptFrame.minY, panel.frame.minY, accuracy: 1)
+    let scroll = try XCTUnwrap(transcript.enclosingScrollView)
+    XCTAssertGreaterThan(scroll.contentInsets.bottom, 24)
+    XCTAssertGreaterThanOrEqual(
+      lastLine.minY, transcriptFrame.minY + scroll.contentInsets.bottom - 1,
+      "The last line must remain reachable above the floating footer")
   }
 
   @MainActor
@@ -454,6 +495,83 @@ final class OverlayResizeHitTests: XCTestCase {
     XCTAssertEqual(OverlayResizeHit.edge(at: NSPoint(x: 398, y: 2), in: bounds), .bottomRight)
   }
 
+  @MainActor
+  func testGripAndItsVerticalMarginUseBottomResizeAndCursorAtBothWindowSizes() {
+    for size in [DictationOverlayWindow.defaultSize, DictationOverlayWindow.minSize] {
+      let bounds = NSRect(origin: .zero, size: size)
+      let grip = OverlayResizeChrome.gripRect(in: bounds)
+      XCTAssertEqual(grip.size, NSSize(width: 38, height: 4))
+      let grab = grip.insetBy(dx: 0, dy: -4)
+      for x in [grab.minX, grab.midX, grab.maxX] {
+        for y in [grab.minY, grab.midY, grab.maxY] {
+          let point = NSPoint(x: x, y: y)
+          XCTAssertEqual(OverlayResizeHit.edge(at: point, in: bounds), .bottom)
+          XCTAssertTrue(
+            OverlayResizeHit.cursorRects(in: bounds).contains { rect, cursor in
+              rect.contains(point) && cursor == OverlayResizeHit.cursor(for: .bottom)
+            })
+        }
+      }
+    }
+  }
+
+  @MainActor
+  func testBottomGripGeometryResizesAndClampsWithoutChangingAnchorMode() throws {
+    let oldAnchor = OverlayPlacement.anchor
+    let oldFreeMotion = OverlayPlacement.freeMotion
+    defer {
+      OverlayPlacement.anchor = oldAnchor
+      OverlayPlacement.freeMotion = oldFreeMotion
+    }
+    let state = OverlayState(autoSendEnabled: { false })
+    state.selectPlacementAnchor(.topRight)
+    let start = NSRect(x: 100, y: 80, width: 470, height: 280)
+    let bounds = NSRect(origin: .zero, size: start.size)
+    let grip = OverlayResizeChrome.gripRect(in: bounds)
+    let edge = try XCTUnwrap(
+      OverlayResizeHit.edge(at: NSPoint(x: grip.midX, y: grip.midY), in: bounds))
+    for (dy, expectedHeight) in [(CGFloat(-80), CGFloat(360)), (CGFloat(200), CGFloat(260))] {
+      let resized = OverlayResizeHit.apply(
+        edge: edge, start: start, dx: 40, dy: dy, minSize: DictationOverlayWindow.minSize)
+      // The panel's resize callback records activity; only a window drag ends
+      // through recordUserDrag. No synthetic mouse tracking or real engine.
+      state.userResizedOverlay()
+      XCTAssertEqual(resized.height, expectedHeight)
+      XCTAssertEqual(resized.maxY, start.maxY)
+      XCTAssertEqual(resized.width, start.width)
+      XCTAssertEqual(resized.minX, start.minX)
+      XCTAssertEqual(state.placementAnchor, .topRight)
+      XCTAssertFalse(state.freeMotion)
+      XCTAssertFalse(OverlayPlacement.freeMotion)
+    }
+  }
+
+  func testActionsHitRectClearsEveryResizeBandAtDefaultAndMinimumSizes() {
+    for size in [DictationOverlayWindow.defaultSize, DictationOverlayWindow.minSize] {
+      let bounds = NSRect(origin: .zero, size: size)
+      let actions = OverlayResizeChrome.actionsRect(in: bounds)
+      let interior = bounds.insetBy(dx: OverlayResizeHit.band, dy: OverlayResizeHit.band)
+      // Strict containment proves clearance for every point, including the
+      // boundary of the capsule's rectangular hit envelope.
+      XCTAssertGreaterThan(actions.minX, interior.minX)
+      XCTAssertLessThan(actions.maxX, interior.maxX)
+      XCTAssertGreaterThan(actions.minY, interior.minY)
+      XCTAssertLessThan(actions.maxY, interior.maxY)
+      for x in stride(from: actions.minX, through: actions.maxX, by: CGFloat(0.5)) {
+        for y in stride(from: actions.minY, through: actions.maxY, by: CGFloat(0.5)) {
+          XCTAssertNil(OverlayResizeHit.edge(at: NSPoint(x: x, y: y), in: bounds))
+        }
+      }
+    }
+  }
+
+  func testSideIndicatorsFollowPointerAndDisableAnimationForReduceMotion() {
+    XCTAssertEqual(OverlayResizeChrome.sideIndicatorOpacity(pointerInside: false), 0)
+    XCTAssertGreaterThan(OverlayResizeChrome.sideIndicatorOpacity(pointerInside: true), 0)
+    XCTAssertNil(OverlayResizeChrome.sideIndicatorAnimation(reduceMotion: true))
+    XCTAssertNotNil(OverlayResizeChrome.sideIndicatorAnimation(reduceMotion: false))
+  }
+
   func testJustInsideTheBandIsStillInterior() {
     let inset = band + 1
     XCTAssertNil(OverlayResizeHit.edge(at: NSPoint(x: inset, y: 150), in: bounds))
@@ -532,6 +650,7 @@ final class OverlayResizeHitTests: XCTestCase {
         documentIndex: sequence - 1,
         label: "live",
         renderedText: text,
+        deliveryText: nil,
         phase: "listening",
         canPaste: false,
         canInsert: false,

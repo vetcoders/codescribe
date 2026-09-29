@@ -7,23 +7,100 @@ struct OverlayDockLayout: Equatable {
   var visibleIntents: [OverlayIntent] { projectedIntents.filter { $0 != .close } }
 }
 
-enum OverlayChromeVisibility {
-  /// Chrome stays ephemeral (Founder cut): pointer, keyboard focus or VoiceOver
-  /// reveal it, nothing else. `retainedWork` is the one standing exception and
-  /// it defaults off, so every existing caller keeps the ephemeral contract.
-  ///
-  /// Unacknowledged superseded work has to be reachable without the user first
-  /// guessing to hover a panel that is currently showing a NEW take. Revealing
-  /// the rail exposes the labelled recover/discard commands only — never the
-  /// previous words, which stay off the canvas.
-  static func actionsVisible(
-    pointerInside: Bool,
-    keyboardFocus: Bool,
-    voiceOver: Bool,
-    retainedWork: Bool = false
-  ) -> Bool {
-    pointerInside || keyboardFocus || voiceOver || retainedWork
+/// The overlay needs a quiet text-only state; tools are transient. Retained work
+/// is a badge, never a reveal trigger. This state has no document authority.
+struct OverlayActionsPresentation {
+  enum Phase: Equatable { case idle, open }
+  private(set) var phase: Phase = .idle
+  private(set) var pointerInside = false
+  private(set) var panelPresented = false
+  private(set) var keyboardFocused = false
+  private(set) var hideDeadline: ContinuousClock.Instant?
+
+  mutating func pointerChanged(_ inside: Bool, at now: ContinuousClock.Instant = .now) {
+    pointerInside = inside
+    interact(at: now)
   }
+
+  mutating func toggle(at now: ContinuousClock.Instant = .now) {
+    if phase == .open {
+      dismiss()
+    } else {
+      phase = .open
+      interact(at: now)
+    }
+  }
+
+  mutating func interact(at now: ContinuousClock.Instant = .now) {
+    hideDeadline =
+      phase == .open && !pointerInside && !panelPresented && !keyboardFocused
+      ? now.advanced(by: .seconds(3)) : nil
+  }
+
+  mutating func expire(at now: ContinuousClock.Instant = .now) {
+    guard phase == .open, !pointerInside, !panelPresented, !keyboardFocused, let hideDeadline,
+      now >= hideDeadline
+    else { return }
+    dismiss()
+  }
+
+  mutating func dismiss() {
+    phase = .idle
+    hideDeadline = nil
+  }
+
+  mutating func reset() { self = Self() }
+
+  mutating func focusChanged(_ focused: Bool) {
+    keyboardFocused = focused
+    interact()
+  }
+
+  mutating func panelChanged(_ presented: Bool) {
+    panelPresented = presented
+    interact()
+  }
+
+  static func finishingLabel(mode: OverlayMode, transcribing: Bool, terminal: Bool) -> String? {
+    !terminal && (transcribing || mode == .finalizing) ? "Finishing…" : nil
+  }
+}
+
+/// One capsule for the cap and tools. An opaque palette token replaces material
+/// when transparency is reduced; no glass reaches the resize band's hit region.
+struct OverlayActionsSurface: ViewModifier {
+  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  let palette: OverlayAppearancePalette
+  let glassNamespace: Namespace.ID
+
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if reduceTransparency {
+      content
+        .background { Capsule().fill(palette.desktopBackground.color) }
+        .overlay { Capsule().strokeBorder(palette.border.color, lineWidth: 1) }
+    } else if #available(macOS 26.0, *) {
+      content
+        .glassEffect(.regular.interactive(), in: Capsule())
+        .glassEffectID("overlay-actions", in: glassNamespace)
+        .glassEffectTransition(reduceMotion ? .identity : .matchedGeometry)
+    } else {
+      content
+        .background { Capsule().fill(.regularMaterial) }
+        .overlay { Capsule().strokeBorder(palette.border.color, lineWidth: 1) }
+    }
+  }
+}
+
+/// Symbols shared by the rendered controls and their collision census.
+enum OverlayControlSymbols {
+  static let history = "clock.arrow.circlepath"
+  static let previousTake = "tray.and.arrow.up"
+  static let actions = "ellipsis"
+  static let autoPasteOff = "arrow.down.to.line"
+  static let autoPasteOn = "arrow.down.to.line.compact"
+  static let placement = "location.viewfinder"
 }
 
 enum OverlayDockVisuals {
@@ -32,139 +109,120 @@ enum OverlayDockVisuals {
   }
 }
 
-/// The overlay's sole action surface. The reducer owns action availability;
-/// this view only renders the projected commands, the engine chip, the
-/// transient notice and formatting level floating over the transcript.
+/// Fixed icon row. Hover content lives above its anchor, outside row layout.
 @MainActor
 struct OverlayIntentRail: View {
-  @FocusState private var focusedControl: String?
-  let onFocusChange: (Bool) -> Void
+  @State private var presented: String?
   let phase: String
   let intents: [OverlayIntent]
   let palette: OverlayAppearancePalette
-  let footerEngineLabel: String
-  let footerNotice: String?
-  let footerEngineDot: Color
+  var formatLevel: FormattingPolicyOption = .correction
+  var cloudRetranscribeConfigured = false
   let onIntent: (OverlayIntent) -> Void
-  let onRetranscribe: (OverlayRetranscribePass) -> Void
-
-  init(
-    phase: String,
-    intents: [OverlayIntent],
-    palette: OverlayAppearancePalette,
-    footerEngineLabel: String = "",
-    footerNotice: String? = nil,
-    footerEngineDot: Color = .clear,
-    onIntent: @escaping (OverlayIntent) -> Void,
-    onRetranscribe: @escaping (OverlayRetranscribePass) -> Void = { _ in },
-    onFocusChange: @escaping (Bool) -> Void = { _ in }
-  ) {
-    self.onFocusChange = onFocusChange
-    self.phase = phase
-    self.intents = intents
-    self.palette = palette
-    self.footerEngineLabel = footerEngineLabel
-    self.footerNotice = footerNotice
-    self.footerEngineDot = footerEngineDot
-    self.onIntent = onIntent
-    self.onRetranscribe = onRetranscribe
-  }
+  var onRetranscribe: (OverlayRetranscribePass) -> Void = { _ in }
+  var onFormatOnce: (FormattingPolicyOption) -> Void = { _ in }
+  var onDismiss: () -> Void = {}
+  var onInteraction: () -> Void = {}
+  var onPresentationChange: (Bool) -> Void = { _ in }
 
   var body: some View {
-    VStack(spacing: 4) {
-      HStack(spacing: CSSpace.xs) {
-        engineChip
-        footerNoticeText
+    HStack(spacing: 2) {
+      OverlayHoverControl(
+        id: "overlay-history-menu", title: "Transcription history", palette: palette,
+        presented: $presented
+      ) {
+        Image(systemName: OverlayControlSymbols.history).frame(width: 24, height: 24)
+      } detail: { _ in
+        OverlayTranscriptHistory()
       }
-      .padding(.horizontal, 8)
-      .background(.regularMaterial, in: Capsule())
-      HStack(spacing: 4) {
-        ForEach(intents, id: \.self) { intent in
-          if intent == .retranscribe {
-            retranscribeMenu
-              .focused($focusedControl, equals: intent.rawValue)
-          } else if intent != .close {
-            OverlayDockButton(
-              title: intent.accessibilityLabel,
-              systemImage: intent.systemImage,
-              hint: intent.accessibilityHint,
-              identifier: "overlay-intent-\(intent.rawValue)",
-              palette: palette
-            ) {
-              dispatch(intent)
+      if intents.contains(.recoverSuperseded) || intents.contains(.discardSuperseded) {
+        OverlayHoverControl(
+          id: "overlay-previous-take-menu", title: "Previous take", palette: palette,
+          presented: $presented
+        ) {
+          Image(systemName: OverlayControlSymbols.previousTake).frame(width: 24, height: 24)
+        } detail: { close in
+          VStack(alignment: .leading, spacing: 8) {
+            if intents.contains(.recoverSuperseded) {
+              Button(OverlayIntent.recoverSuperseded.accessibilityLabel) {
+                close()
+                dispatch(.recoverSuperseded)
+              }
+              .accessibilityIdentifier("overlay-intent-recover-superseded")
             }
-            .focused($focusedControl, equals: intent.rawValue)
+            if intents.contains(.discardSuperseded) {
+              Button(OverlayIntent.discardSuperseded.accessibilityLabel, role: .destructive) {
+                close()
+                dispatch(.discardSuperseded)
+              }
+              .accessibilityIdentifier("overlay-intent-discard-superseded")
+            }
           }
         }
       }
-      .padding(6)
-      .buttonStyle(.plain)
-      .background(.regularMaterial, in: Capsule())
-      .overlay { Capsule().strokeBorder(palette.border.color, lineWidth: 1) }
+      ForEach(OverlayDockLayout(projectedIntents: intents).visibleIntents, id: \.self) { intent in
+        if intent != .recoverSuperseded && intent != .discardSuperseded {
+          OverlayHoverControl(
+            id: "overlay-intent-\(intent.rawValue)", title: intent.accessibilityLabel,
+            palette: palette, presented: $presented,
+            action: intent == .format || intent == .retranscribe ? nil : { dispatch(intent) }
+          ) {
+            Image(systemName: intent.systemImage).frame(width: 24, height: 24)
+          } detail: { close in
+            if intent == .format {
+              HStack(spacing: 10) {
+                ForEach([FormattingPolicyOption.correction, .smart, .max], id: \.rawValue) {
+                  level in
+                  Button(level.visibleName) {
+                    close()
+                    formatOnce(level)
+                  }
+                  .accessibilityIdentifier("overlay-format-level-\(level.rawValue)")
+                }
+              }
+              .buttonStyle(.borderless)
+              .controlSize(.small)
+              .font(.system(size: 11, weight: .medium))
+            } else if intent == .retranscribe {
+              HStack(spacing: 10) {
+                Button("Local") {
+                  close()
+                  retranscribe(.fullHq)
+                }
+                .accessibilityIdentifier("overlay-retranscribe-hq")
+                if cloudRetranscribeConfigured {
+                  Button("Cloud") {
+                    close()
+                    retranscribe(.cloud)
+                  }
+                  .accessibilityIdentifier("overlay-retranscribe-cloud")
+                }
+              }
+              .buttonStyle(.borderless)
+              .controlSize(.small)
+              .font(.system(size: 11, weight: .medium))
+            } else {
+              Text(intent.accessibilityLabel)
+            }
+          }
+          .accessibilityHint(intent.accessibilityHint)
+        }
+      }
     }
-    .fixedSize(horizontal: false, vertical: true)
-    .frame(maxWidth: .infinity, alignment: .center)
-    .onChange(of: focusedControl) { _, control in onFocusChange(control != nil) }
+    .fixedSize(horizontal: true, vertical: true)
+    .onChange(of: presented) { _, value in
+      onPresentationChange(value != nil)
+      if value != nil { onInteraction() }
+    }
+    .onDisappear { onPresentationChange(false) }
+    .onExitCommand {
+      presented = nil
+      onDismiss()
+    }
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Overlay actions")
     .accessibilityValue(Self.accessibilityValue(for: phase))
     .accessibilityIdentifier("overlay-intent-dock")
-  }
-
-  /// Serving-engine evidence, inert. Truncates first when the window sits at
-  /// its 320 pt floor so the commands never do.
-  private var engineChip: some View {
-    HStack(spacing: CSSpace.xxs) {
-      Text("●")
-        .foregroundStyle(footerEngineDot)
-      Text(footerEngineLabel)
-        .foregroundStyle(palette.mutedText.color)
-        .lineLimit(1)
-        .truncationMode(.tail)
-    }
-    .csMono(10, .medium)
-    .layoutPriority(-1)
-    .allowsHitTesting(false)
-    .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("overlay-footer-engine")
-  }
-
-  @ViewBuilder
-  private var footerNoticeText: some View {
-    if let footerNotice, !footerNotice.isEmpty {
-      Text(footerNotice)
-        .csMono(10, .medium)
-        .foregroundStyle(palette.mutedText.color)
-        .lineLimit(1)
-        .truncationMode(.tail)
-        .accessibilityIdentifier("overlay-footer-notice")
-    }
-  }
-
-  /// Retranscribe is opt-in with the pass picked here: Full HQ (local
-  /// Whisper file pass) or Cloud. The formatting level is not overlay chrome;
-  /// the operator sets it in the tray quick settings (Founder 2026-09-09).
-  private var retranscribeMenu: some View {
-    Menu {
-      ForEach(OverlayRetranscribePass.allCases) { pass in
-        Button(pass.visibleName) { retranscribe(pass) }
-          .help(pass.help)
-          .accessibilityIdentifier("overlay-retranscribe-\(pass.rawValue)")
-      }
-    } label: {
-      Label(OverlayIntent.retranscribe.accessibilityLabel, systemImage: OverlayIntent.retranscribe.systemImage)
-        .labelStyle(.iconOnly)
-        .frame(width: 32, height: 28)
-        .contentShape(RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous))
-        .foregroundStyle(palette.primaryText.color)
-    }
-    .menuStyle(.button)
-    .buttonStyle(.plain)
-    .menuIndicator(.hidden)
-    .help(OverlayIntent.retranscribe.accessibilityHint)
-    .accessibilityLabel(OverlayIntent.retranscribe.accessibilityLabel)
-    .accessibilityHint(OverlayIntent.retranscribe.accessibilityHint)
-    .accessibilityIdentifier("overlay-intent-\(OverlayIntent.retranscribe.rawValue)")
   }
 
   static func projectedIntents(for state: OverlayState) -> [OverlayIntent] {
@@ -175,6 +233,7 @@ struct OverlayIntentRail: View {
       return recoveryIntents(for: state) + [.commitRevision, .discardRevision, .close]
     }
     return recoveryIntents(for: state)
+      + (state.canUndoRetranscribe ? [.undoRetranscribe] : [])
       + projectedIntents(
         phase: state.mode,
         canPaste: state.canPaste,
@@ -209,12 +268,9 @@ struct OverlayIntentRail: View {
   /// only Close would have hidden the recovery behind the word "error" while
   /// the producer was saying, bit by bit, that recovery was available.
   ///
-  /// Format is the deliberate exception on both. `OverlayState.relayFormatIntent`
-  /// refuses unless `mode == .formatted`, so projecting it here would paint a
-  /// button that does nothing — and the shape it would produce if that guard
-  /// were ever loosened is a refused take relabelled `formatted` by a UI
-  /// command. A false `canFormat` bit is honoured everywhere; on these two
-  /// phases a true one is declined by the receiver, not by the producer.
+  /// Format remains available for refused coverage when the reducer projects
+  /// permission. The request still passes through the terminal revision CAS;
+  /// any reducer refusal is shown to the user without changing the seal verdict.
   static func projectedIntents(
     phase: OverlayMode,
     canPaste: Bool,
@@ -236,7 +292,14 @@ struct OverlayIntentRail: View {
         + (canFormat ? [.format] : [])
         + (canSendToAgent ? [.sendToAgent] : [])
         + [.close]
-    case .coverageRefused, .error:
+    case .coverageRefused:
+      ((canPaste || canInsert) ? [.insertPaste] : [])
+        + (canCopy ? [.copy] : [])
+        + (canRetranscribe ? [.retranscribe] : [])
+        + (canFormat ? [.format] : [])
+        + (canSendToAgent ? [.sendToAgent] : [])
+        + [.close]
+    case .error:
       ((canPaste || canInsert) ? [.insertPaste] : [])
         + (canCopy ? [.copy] : [])
         + (canRetranscribe ? [.retranscribe] : [])
@@ -252,43 +315,18 @@ struct OverlayIntentRail: View {
   }
 
   func dispatch(_ intent: OverlayIntent) {
+    onInteraction()
     onIntent(intent)
   }
 
   func retranscribe(_ pass: OverlayRetranscribePass) {
+    onInteraction()
     onRetranscribe(pass)
   }
-}
 
-@MainActor
-private struct OverlayDockButton: View {
-  @State private var isHovering = false
-
-  let title: String
-  let systemImage: String
-  let hint: String
-  let identifier: String
-  let palette: OverlayAppearancePalette
-  let action: () -> Void
-
-  var body: some View {
-    Button(title, systemImage: systemImage, action: action)
-      .buttonStyle(.plain)
-      .labelStyle(.iconOnly)
-      .frame(width: 32, height: 28)
-      .contentShape(RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous))
-      .foregroundStyle(palette.primaryText.color)
-      .background {
-        RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous)
-          .fill(
-            palette.primaryText.color.opacity(
-              OverlayDockVisuals.hoverOpacity(isHovering: isHovering)))
-      }
-      .onHover { isHovering = $0 }
-      .help(title)
-      .accessibilityLabel(title)
-      .accessibilityHint(hint)
-      .accessibilityIdentifier(identifier)
+  func formatOnce(_ level: FormattingPolicyOption) {
+    onInteraction()
+    onFormatOnce(level)
   }
 }
 
@@ -301,10 +339,11 @@ extension OverlayIntent {
     case .copy: "Copy transcript"
     case .insertPaste: "Insert transcript"
     case .retranscribe: "Retranscribe recording"
+    case .undoRetranscribe: "Undo retranscribe"
     case .format: "Format transcript"
     case .sendToAgent: "Send transcript to Agent"
-    case .recoverSuperseded: "Recover previous transcript"
-    case .discardSuperseded: "Discard previous transcript"
+    case .recoverSuperseded: "Copy previous take to clipboard"
+    case .discardSuperseded: "Discard previous take"
     case .close: "Close overlay"
     }
   }
@@ -317,6 +356,7 @@ extension OverlayIntent {
     case .copy: "Copies the projected transcript"
     case .insertPaste: "Sends the projected transcript to the selected destination"
     case .retranscribe: "Requests another transcription of this recording"
+    case .undoRetranscribe: "Restores the transcript this retranscribe replaced, as a new revision"
     case .format: "Requests formatting between takes"
     case .sendToAgent: "Sends the accepted transcript to Agent"
     case .recoverSuperseded:
@@ -334,9 +374,10 @@ extension OverlayIntent {
     case .copy: "doc.on.doc"
     case .insertPaste: "arrow.down.doc"
     case .retranscribe: "arrow.clockwise"
+    case .undoRetranscribe: "arrow.uturn.backward"
     case .format: "textformat"
     case .sendToAgent: "paperplane"
-    case .recoverSuperseded: "clock.arrow.circlepath"
+    case .recoverSuperseded: "arrow.up.doc"
     case .discardSuperseded: "trash"
     case .close: "circle.fill"
     }

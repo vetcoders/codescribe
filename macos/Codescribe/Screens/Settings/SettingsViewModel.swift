@@ -63,53 +63,25 @@ func formatActiveSTT(lastServing: LastServingVerdict?) -> String {
   }
 }
 
-/// Product truth for the local Whisper lane shown in Dictation settings.
-/// This is deliberately not a boolean: a persisted `phase1` token is only a
-/// configured request, while model validation decides whether the next take
-/// can actually use it.
+/// Readiness of the mode-selected local refinement lane and its diagnostic env override.
 enum LocalWhisperRuntimeState: Equatable {
   case notSelected
-  case directEngineReady
-  case directEngineNotReady
   case livePatchingConfigured
   case livePatchingNotReady
-  case livePatchingConfigurationMismatch
-}
-
-let localWhisperLivePatchingRuntimeValue = "phase1"
-
-func wholeSessionFinalPassSubtitle(asrModeId: String) -> String {
-  if asrModeId == "local_power" {
-    return
-      "Off. This controls only a full-file decode after Stop; live Whisper refinement continues during the take."
-  }
-  return
-    "Off. No full-file decode runs after Stop. Apple live remains the only transcription lane for this mode."
+  case degradedEnvOverride
 }
 
 func resolveLocalWhisperRuntimeState(
   asrModeId: String,
-  sttEngineId: String,
   layeredValue: String?,
   modelAvailable: Bool
 ) -> LocalWhisperRuntimeState {
   guard asrModeId == "local_power" else { return .notSelected }
-
-  if sttEngineId == "whisper" || sttEngineId == "candle" {
-    return modelAvailable ? .directEngineReady : .directEngineNotReady
+  let value = layeredValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  guard value == nil || value == "" || value == "phase1" || value == "1" else {
+    return .degradedEnvOverride
   }
-
-  // Runtime product policy treats an absent promoted key as ArmedDefault.
-  // Only an explicit phase1 token or absence can claim configured truth;
-  // explicit `off` and every unknown token are named configuration drift.
-  let normalizedLayeredValue = layeredValue?.lowercased()
-  guard
-    normalizedLayeredValue == nil || normalizedLayeredValue == localWhisperLivePatchingRuntimeValue
-  else {
-    return .livePatchingConfigurationMismatch
-  }
-  guard modelAvailable else { return .livePatchingNotReady }
-  return .livePatchingConfigured
+  return modelAvailable ? .livePatchingConfigured : .livePatchingNotReady
 }
 
 enum SettingsSectionAvailability: Equatable {
@@ -227,7 +199,6 @@ enum SettingsPanelDestination: Equatable {
   case shortcuts
   case providers
   case agent
-  case prompts
   case dictation
   case audio
   case dictionary
@@ -245,6 +216,7 @@ enum SettingsPanelCapability: Hashable {
   case agentStatus
   case mcpServers
   case toolPermissions
+  case prompts
 }
 
 // Every rail section declares its product truth explicitly. The raw value is a
@@ -256,7 +228,6 @@ enum SettingsSection: String, CaseIterable, Identifiable {
   case shortcuts
   case keys
   case agent
-  case prompts
   case engine
   case audio
   case voiceLab
@@ -272,7 +243,6 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case .shortcuts: return "Hotkeys"
     case .keys: return "Providers"
     case .agent: return "Agent"
-    case .prompts: return "Prompts"
     case .engine: return "Dictation"
     case .audio: return "Audio"
     case .voiceLab: return "Dictionary"
@@ -288,7 +258,6 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case .shortcuts: return .shortcuts
     case .keys: return .providers
     case .agent: return .agent
-    case .prompts: return .prompts
     case .engine: return .dictation
     case .audio: return .audio
     case .voiceLab: return .dictionary
@@ -302,20 +271,20 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     switch self {
     case .lab:
       return DeveloperSurface.isEnabled() ? .available : .hidden
-    case .creator, .shortcuts, .keys, .agent, .prompts, .engine, .audio, .voiceLab, .license, .user:
+    case .creator, .shortcuts, .keys, .agent, .engine, .audio, .voiceLab, .license, .user:
       return .available
     }
   }
 
   var isInteractive: Bool { availability == .available }
 
-  /// Sidebar grouping. A flat ten-item list forces the user to read every row;
+  /// Sidebar grouping. A flat nine-item list forces the user to read every row;
   /// native sidebars carry `Section` headers for free, so the rail states what
   /// each area is FOR instead of relying on the reader's memory.
   var group: SettingsSectionGroup {
     switch self {
     case .creator, .shortcuts, .audio: return .setup
-    case .keys, .agent, .prompts, .engine, .voiceLab, .lab: return .intelligence
+    case .keys, .agent, .engine, .voiceLab, .lab: return .intelligence
     case .license, .user: return .account
     }
   }
@@ -328,7 +297,6 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case .shortcuts: return "keyboard"
     case .keys: return "key.horizontal"
     case .agent: return "cpu"
-    case .prompts: return "text.bubble"
     case .engine: return "waveform"
     case .audio: return "mic"
     case .voiceLab: return "character.book.closed"
@@ -346,8 +314,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case .creator: return ["setup", "onboarding", "permissions", "quick start", "language"]
     case .shortcuts: return ["hotkey", "keyboard", "shortcut", "trigger", "hold", "toggle"]
     case .keys: return ["api key", "provider", "openai", "anthropic", "endpoint", "model", "token"]
-    case .agent: return ["mcp", "tools", "workspace", "permissions", "server"]
-    case .prompts: return ["system prompt", "persona", "assistive", "instructions"]
+    case .agent: return ["mcp", "tools", "workspace", "permissions", "server", "auto-send"]
     case .engine:
       return ["stt", "whisper", "apple", "speech", "transcription", "asr", "cloud", "consent"]
     case .audio: return ["microphone", "mikrofon", "input", "device", "levels"]
@@ -366,126 +333,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     let visible = allCases.filter { $0.availability != .hidden }
     guard !needle.isEmpty else { return visible }
     return visible.filter { section in
-      section.title.lowercased().contains(needle)
-        || section.searchKeywords.contains { $0.contains(needle) }
-    }
-  }
-}
-
-/// A page inside a section. Long panels (Agent stacks five independent
-/// subsystems; Dictation grew four hand-rolled collapsibles) become one page per
-/// subsystem instead of one endless scroll.
-///
-/// Pages live in the SIDEBAR TREE rather than in tabs on purpose: a tab is
-/// invisible to the settings search and to deep links, so "mcp" or a health
-/// footer pointing at a broken lane could never land on it. As tree children
-/// they are addressable by exactly the same mechanisms as a top-level section.
-enum SettingsPage: String, CaseIterable, Identifiable {
-  // Agent
-  case agentLanes
-  case agentWorkspace
-  case agentStatus
-  case agentTools
-  case agentMcp
-  // Prompts — one page per prompt file; the stacked editor was four
-  // TextEditors in one scroll ("scrollowany potworek", operator 2026-08-09).
-  case promptCorrection
-  case promptSmart
-  case promptMax
-  case promptAssistive
-
-  var id: String { rawValue }
-
-  var section: SettingsSection {
-    switch self {
-    case .agentLanes, .agentWorkspace, .agentStatus, .agentTools, .agentMcp:
-      return .agent
-    case .promptCorrection, .promptSmart, .promptMax, .promptAssistive:
-      return .prompts
-    }
-  }
-
-  var title: String {
-    switch self {
-    case .agentLanes: return "LLM lanes"
-    case .agentWorkspace: return "Workspace roots"
-    case .agentStatus: return "Capabilities"
-    case .agentTools: return "Tool permissions"
-    case .agentMcp: return "MCP servers"
-    case .promptCorrection: return "Correction"
-    case .promptSmart: return "Smart"
-    case .promptMax: return "Max"
-    case .promptAssistive: return "Assistive"
-    }
-  }
-
-  var symbol: String {
-    switch self {
-    case .agentLanes: return "arrow.triangle.branch"
-    case .agentWorkspace: return "folder"
-    case .agentStatus: return "checklist"
-    case .agentTools: return "lock.shield"
-    case .agentMcp: return "server.rack"
-    case .promptCorrection: return "text.badge.checkmark"
-    case .promptSmart: return "wand.and.stars"
-    case .promptMax: return "text.alignleft"
-    case .promptAssistive: return "person.wave.2"
-    }
-  }
-
-  var searchKeywords: [String] {
-    switch self {
-    case .agentLanes: return ["provider", "model", "endpoint", "assistive", "formatting"]
-    case .agentWorkspace: return ["roots", "directory", "repo", "path"]
-    case .agentStatus: return ["capability", "native", "enhanced", "readiness"]
-    case .agentTools: return ["permission", "allow", "ask", "deny", "tool"]
-    case .agentMcp: return ["mcp", "server", "stdio", "transport"]
-    case .promptCorrection: return ["prompt", "formatting", "correction", "formatting.txt"]
-    case .promptSmart: return ["prompt", "smart", "formatting-smart"]
-    case .promptMax: return ["prompt", "max", "prose", "formatting-max"]
-    case .promptAssistive: return ["prompt", "assistive", "assistant", "system"]
-    }
-  }
-
-  static func pages(in section: SettingsSection) -> [SettingsPage] {
-    allCases.filter { $0.section == section }
-  }
-
-  /// Pages a query should surface, so search reaches inside a long section
-  /// instead of stopping at its title.
-  static func matching(query: String) -> [SettingsPage] {
-    let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    guard !needle.isEmpty else { return allCases }
-    return allCases.filter { page in
-      page.title.lowercased().contains(needle)
-        || page.searchKeywords.contains { $0.contains(needle) }
-    }
-  }
-}
-
-/// One selectable row in the rail: a section, or a page inside it.
-enum SettingsRoute: Hashable, Identifiable {
-  case section(SettingsSection)
-  case page(SettingsPage)
-
-  var id: String {
-    switch self {
-    case .section(let section): return "section:\(section.rawValue)"
-    case .page(let page): return "page:\(page.rawValue)"
-    }
-  }
-
-  var section: SettingsSection {
-    switch self {
-    case .section(let section): return section
-    case .page(let page): return page.section
-    }
-  }
-
-  var page: SettingsPage? {
-    switch self {
-    case .section: return nil
-    case .page(let page): return page
+      section.title.localizedStandardContains(needle)
+        || section.searchKeywords.contains { $0.localizedStandardContains(needle) }
     }
   }
 }
@@ -938,9 +787,33 @@ enum SettingsQuickStartAction: String, CaseIterable {
 @MainActor
 final class SettingsViewModel: ObservableObject {
   @Published var section: SettingsSection = .creator
-  /// Page within `section`, when that section is paginated. Always kept
-  /// consistent with `section` by the `select` overloads — never written raw.
-  @Published private(set) var page: SettingsPage?
+  /// Selected tab within `section`, when that section has tabs. Navigation
+  /// state only — never persisted. Written exclusively by the `select`
+  /// overloads; `currentTab` clamps it against raw `section` writes.
+  @Published private(set) var tab: SettingsTab?
+
+  /// The tab `section` shows: the selected tab when it belongs to `section`,
+  /// otherwise the section's first tab; nil for sections without tabs. Settable
+  /// so the tab bar binds by key path; writes route through `select(_:)` and a
+  /// nil write is dropped.
+  var currentTab: SettingsTab? {
+    get {
+      if let tab, tab.section == section { return tab }
+      return SettingsTab.tabs(in: section).first
+    }
+    set {
+      if let newValue { select(newValue) }
+    }
+  }
+
+  /// Sidebar selection. `List` selection is optional by contract; a nil write
+  /// (⌘-click clearing a row) must not blank the detail pane, so it is dropped.
+  var sidebarSelection: SettingsSection? {
+    get { section }
+    set {
+      if let newValue { select(newValue) }
+    }
+  }
 
   /// Dictation seam for the "Open overlay" quick-start card. Defaulted to the
   /// live tray toggle but only dereferenced on click, so unit tests can inject
@@ -1507,9 +1380,9 @@ final class SettingsViewModel: ObservableObject {
   func select(_ target: SettingsSection) {
     guard target.availability == .available else { return }
     section = target
-    // Landing on a section shows its first page; sections without pages keep
-    // page == nil and render whole.
-    page = SettingsPage.pages(in: target).first
+    // Landing on a section shows its first tab; sections without tabs keep
+    // tab == nil and render whole.
+    tab = SettingsTab.tabs(in: target).first
     if target == .agent {
       refreshModelDiscoveries(providerIds: LLMLane.allCases.map { llmLane($0).providerId })
     }
@@ -1518,24 +1391,11 @@ final class SettingsViewModel: ObservableObject {
     }
   }
 
-  /// Select a specific page. Routes through `select` so the section's refresh
-  /// side effects fire exactly once regardless of which row the user clicked.
-  func select(_ target: SettingsPage) {
+  /// Select a specific tab. Routes through `select` so the section's refresh
+  /// side effects fire exactly as they do for a sidebar click.
+  func select(_ target: SettingsTab) {
     select(target.section)
-    page = target
-  }
-
-  func select(_ route: SettingsRoute) {
-    switch route {
-    case .section(let section): select(section)
-    case .page(let page): select(page)
-    }
-  }
-
-  /// The rail row that should read as selected for the current state.
-  var route: SettingsRoute {
-    if let page { return .page(page) }
-    return .section(section)
+    tab = target
   }
 
   // MARK: - Reset app data (recoverable destructive action)
@@ -1812,6 +1672,10 @@ final class SettingsViewModel: ObservableObject {
     persist("AI_FORMATTING_ENABLED", on ? "1" : "0")
   }
 
+  func setAgentAutoSend(_ on: Bool) {
+    persist("AGENT_AUTO_SEND", on ? "1" : "0")
+  }
+
   func setFormattingLevel(_ level: String) {
     guard let policy = FormattingPolicyOption(storedValue: level) else {
       lastError = "Unknown formatting policy: \(level)"
@@ -1951,6 +1815,17 @@ final class SettingsViewModel: ObservableObject {
   func setToggleSilenceSeconds(_ seconds: Float) {
     settings.toggleSilenceSec = seconds
     persist("TOGGLE_SILENCE_SEC", String(format: "%.1f", seconds))
+  }
+
+  func setWhisperContextWindowSeconds(_ seconds: Float) {
+    settings.whisperContextWindowSec = seconds
+    persist("WHISPER_CONTEXT_WINDOW_SEC", String(format: "%.1f", seconds))
+  }
+
+  func setLightPlusSentencePauseSeconds(_ seconds: Float) {
+    let bounded = min(2.0, max(0.3, seconds))
+    settings.lightPlusSentencePauseSec = bounded
+    persist("LIGHT_PLUS_SENTENCE_PAUSE_SEC", String(format: "%.1f", bounded))
   }
 
   func setSoundFeedbackEnabled(_ enabled: Bool) {
@@ -2111,79 +1986,7 @@ final class SettingsViewModel: ObservableObject {
     persist("CODESCRIBE_BUFFERED_INTERIM_SEC", String(format: "%.1f", value))
   }
 
-  // MARK: - STT engine / layered transcription (Engine panel controls)
-
-  /// Selected STT engine id ("auto" | "apple" | "whisper"); empty → product default Apple.
-  var sttEngineId: String {
-    let raw = (settings.sttEngine ?? "apple").lowercased()
-    switch raw {
-    case "auto", "apple", "whisper", "candle": return raw == "candle" ? "whisper" : raw
-    default: return "apple"
-    }
-  }
-
-  /// Display label for the current STT engine selection.
-  var sttEngineLabel: String {
-    switch sttEngineId {
-    case "apple": return "Apple (live)"
-    case "whisper", "candle": return "Whisper (Candle)"
-    case "auto": return "Auto (Apple-first)"
-    default: return "Apple (live)"
-    }
-  }
-
-  /// Honest dual-brain note when preference and Active STT last run diverge.
-  var sttEngineTruthNote: String? {
-    let pref = sttEngineId
-    let active = activeSTT.lowercased()
-    if active.contains("not yet") || active.isEmpty { return nil }
-    // Preference Apple but last run was Whisper recovery / file pass is OK
-    // to mention once when the chip is clearly whisper while user picked apple.
-    if pref == "apple", active.contains("whisper") {
-      return
-        "Preference: Apple live · last take used Whisper (final/recovery). Live partials stay Apple."
-    }
-    if pref == "whisper" || pref == "candle", active.contains("apple") {
-      return "Preference: Whisper · last take was Apple live — check env override or restart."
-    }
-    return nil
-  }
-
-  func setSttEngine(_ id: String) {
-    let normalized: String
-    switch id.lowercased() {
-    case "auto": normalized = "auto"
-    case "whisper", "candle": normalized = "whisper"
-    default: normalized = "apple"
-    }
-    settings.sttEngine = normalized
-    // Local Power has one product shape. Apple/Auto requires live local
-    // patching; direct Whisper does not run a second patcher beside itself.
-    // Persist both values atomically, then `persistMany` reloads the bridge
-    // snapshot so Settings cannot keep an optimistic state the runtime did not
-    // accept.
-    if asrModeId == "local_power" {
-      let layered =
-        normalized == "auto" || normalized == "apple"
-        ? localWhisperLivePatchingRuntimeValue : "off"
-      settings.layeredTranscription = layered
-      persistMany([
-        CsConfigEntry(key: "CODESCRIBE_STT_ENGINE", value: normalized),
-        CsConfigEntry(key: "CODESCRIBE_LAYERED_TRANSCRIPTION", value: layered),
-      ])
-      refreshWhisperModelStatus()
-    } else {
-      // Persist promotes to settings.json AND reconciles process env + .env
-      // (single brain — no CODESCRIBE_STT_ENGINE lottery).
-      persist("CODESCRIBE_STT_ENGINE", normalized)
-    }
-  }
-
-  func setFinalPassMode(_ id: String) {
-    _ = id
-    settings.finalPassMode = "off"
-    persist("FINAL_PASS_MODE", "off")
-  }
+  // MARK: - ASR mode
 
   /// Product ASR lane shown in Dictation. Cloud never displays without granted consent.
   var asrModeId: String {
@@ -2215,31 +2018,18 @@ final class SettingsViewModel: ObservableObject {
     switch id.lowercased() {
     case "local_power":
       settings.asrMode = "local_power"
-      let layered =
-        sttEngineId == "auto" || sttEngineId == "apple"
-        ? localWhisperLivePatchingRuntimeValue : "off"
-      settings.layeredTranscription = layered
-      persistMany([
-        CsConfigEntry(key: "CODESCRIBE_ASR_MODE", value: "local_power"),
-        CsConfigEntry(key: "CODESCRIBE_LAYERED_TRANSCRIPTION", value: layered),
-      ])
+      persist("CODESCRIBE_ASR_MODE", "local_power")
       refreshWhisperModelStatus()
     case "cloud":
       settings.asrMode = "cloud"
       settings.cloudConsent = "granted"
-      settings.layeredTranscription = "off"
       persistMany([
         CsConfigEntry(key: "CODESCRIBE_CLOUD_CONSENT", value: "granted"),
         CsConfigEntry(key: "CODESCRIBE_ASR_MODE", value: "cloud"),
-        CsConfigEntry(key: "CODESCRIBE_LAYERED_TRANSCRIPTION", value: "off"),
       ])
     default:
       settings.asrMode = "apple_only"
-      settings.layeredTranscription = "off"
-      persistMany([
-        CsConfigEntry(key: "CODESCRIBE_ASR_MODE", value: "apple_only"),
-        CsConfigEntry(key: "CODESCRIBE_LAYERED_TRANSCRIPTION", value: "off"),
-      ])
+      persist("CODESCRIBE_ASR_MODE", "apple_only")
     }
   }
 
@@ -2252,29 +2042,16 @@ final class SettingsViewModel: ObservableObject {
   var localWhisperRuntimeState: LocalWhisperRuntimeState {
     resolveLocalWhisperRuntimeState(
       asrModeId: asrModeId,
-      sttEngineId: sttEngineId,
       layeredValue: settings.layeredTranscription,
       modelAvailable: localWhisperStatus.available
     )
   }
 
-  /// Re-read both persisted arming truth and full model-bundle validation.
-  /// This is the repair/recheck action for external config drift; it never
-  /// paints an optimistic ON state.
+  /// Re-read the diagnostic env override and full model-bundle validation.
+  /// This recheck never paints an optimistic ON state.
   func recheckLocalWhisperRuntime() {
     guard let engine else { return }
     applyLoadedSettings(engine.loadSettings())
-    refreshWhisperModelStatus()
-  }
-
-  /// Repair only the named configuration mismatch. Missing/invalid weights are
-  /// handled by the model download surface, never by pretending Phase 1 is on.
-  func repairLocalWhisperLivePatching() {
-    guard asrModeId == "local_power", sttEngineId == "auto" || sttEngineId == "apple" else {
-      return
-    }
-    settings.layeredTranscription = localWhisperLivePatchingRuntimeValue
-    persist("CODESCRIBE_LAYERED_TRANSCRIPTION", localWhisperLivePatchingRuntimeValue)
     refreshWhisperModelStatus()
   }
 
@@ -2317,6 +2094,56 @@ final class SettingsViewModel: ObservableObject {
       ? "cmd" : "shift"
     settings.holdArmModifier = normalized
     persist("HOLD_ARM_MODIFIER", normalized)
+  }
+
+  /// Agent-channel modifier: `"ctrl"` (default) or `"fn"`. Command is not offered.
+  var channelModifier: String {
+    settings.channelModifier.lowercased() == "fn" ? "fn" : "ctrl"
+  }
+
+  func setChannelModifier(_ value: String) {
+    let normalized = value.lowercased() == "fn" ? "fn" : "ctrl"
+    settings.channelModifier = normalized
+    writeHotkeySurface("AGENT_CHANNEL_MODIFIER", normalized) {
+      try hotkeys?.setChannelModifier(normalized)
+    }
+  }
+
+  /// Quick Fn press toggles dictation. Off until the Founder turns it on.
+  var fnTapTogglesDictation: Bool { settings.fnTapTogglesDictation }
+
+  func setFnTapTogglesDictation(_ enabled: Bool) {
+    settings.fnTapTogglesDictation = enabled
+    writeHotkeySurface("FN_TAP_TOGGLES_DICTATION", enabled ? "1" : "0") {
+      try hotkeys?.setFnTapTogglesDictation(enabled)
+    }
+  }
+
+  /// Middle mouse button follows Fn. Off until chosen. The click is not swallowed.
+  var middleMouseActsAsFn: Bool { settings.middleMouseActsAsFn }
+
+  func setMiddleMouseActsAsFn(_ enabled: Bool) {
+    settings.middleMouseActsAsFn = enabled
+    writeHotkeySurface("MIDDLE_MOUSE_ACTS_AS_FN", enabled ? "1" : "0") {
+      try hotkeys?.setMiddleMouseActsAsFn(enabled)
+    }
+  }
+
+  /// One settings.json write. The hotkeys seam persists when it is injected;
+  /// otherwise the shared config router does. Either path reloads the detector.
+  private func writeHotkeySurface(
+    _ key: String, _ value: String, viaHotkeys: () throws -> Void
+  ) {
+    if hotkeys != nil {
+      do {
+        try viaHotkeys()
+        if let engine { applyLoadedSettings(engine.loadSettings()) }
+      } catch {
+        lastError = String(describing: error)
+      }
+      return
+    }
+    persist(key, value)
   }
 
   /// Deferred-insert chord from the canonical persisted settings snapshot.

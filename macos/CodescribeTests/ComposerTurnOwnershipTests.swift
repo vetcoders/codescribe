@@ -131,7 +131,8 @@ final class ComposerTurnOwnershipTests: XCTestCase {
     let name = "Codescribe.ComposerTurnOwnershipTests." + UUID().uuidString
     let defaults = UserDefaults(suiteName: name)!
     addTeardownBlock { UserDefaults(suiteName: name)?.removePersistentDomain(forName: name) }
-    let store = AgentChatStore(threadsProvider: StubThreadsProvider(), persistenceDefaults: defaults)
+    let store = AgentChatStore(
+      threadsProvider: StubThreadsProvider(), persistenceDefaults: defaults)
     let surface = FakeCaptureSurface(recording: recording)
     let dictation = RealComposerDictation(store: store, hotkeys: surface)
     store.dictation = dictation
@@ -251,7 +252,7 @@ final class ComposerTurnOwnershipTests: XCTestCase {
     }
     XCTAssertNil(f.store.dictationThreadID, "a take that never began owns nothing")
     XCTAssertFalse(f.store.ownsLiveDictation)
-    f.store.setDictationPhase(.recording) // A foreign lifecycle cannot revive the failed request.
+    f.store.setDictationPhase(.recording)  // A foreign lifecycle cannot revive the failed request.
     f.dictation.toggle()
     await settle(f)
     XCTAssertFalse(stopRequested(f.surface.calls))
@@ -271,7 +272,7 @@ final class ComposerTurnOwnershipTests: XCTestCase {
     }
     XCTAssertFalse(f.store.ownsLiveDictation)
     XCTAssertEqual(f.store.dictationThreadID, f.threadA)
-    f.store.setDictationPhase(.recording) // A later foreign phase cannot grant another stop.
+    f.store.setDictationPhase(.recording)  // A later foreign phase cannot grant another stop.
     f.dictation.toggle()
     await settle(f)
     XCTAssertEqual(stopCount(f.surface.calls), 2)
@@ -302,7 +303,7 @@ final class ComposerTurnOwnershipTests: XCTestCase {
     f.surface.onStart = { [store = f.store, threadB = f.threadB] in
       store.endDictationSession()
       store.select(threadB)
-      store.setDictationPhase(.recording) // Another surface started after our terminal.
+      store.setDictationPhase(.recording)  // Another surface started after our terminal.
     }
 
     f.dictation.toggle()
@@ -444,7 +445,9 @@ final class ComposerTurnOwnershipTests: XCTestCase {
     XCTAssertEqual(f.surface.calls, calls)
     XCTAssertEqual(f.store.dictationThreadID, f.threadA)
     XCTAssertEqual(f.store.dictationPhase, .preparing)
-    XCTAssertEqual(f.store.receiveDictationTranscript("A's exact words", captureID: "capture-1"), .parked(threadID: f.threadA))
+    XCTAssertEqual(
+      f.store.receiveDictationTranscript("A's exact words", captureID: "capture-1"),
+      .parked(threadID: f.threadA))
     XCTAssertTrue(f.store.finishDictationCapture(sessionID: "capture-1"))
     XCTAssertEqual(f.store.draft, "")
     f.store.select(f.threadA)
@@ -463,7 +466,11 @@ final class ComposerTurnOwnershipTests: XCTestCase {
     f.surface.stopOutcome = .pending
     f.dictation.toggle()
     await settle(f)
-    XCTAssertEqual(f.surface.calls.filter { if case .stop("capture-1") = $0 { return true }; return false }.count, 2)
+    XCTAssertEqual(
+      f.surface.calls.filter {
+        if case .stop("capture-1") = $0 { return true }
+        return false
+      }.count, 2)
     XCTAssertFalse(f.store.ownsLiveDictation)
   }
 
@@ -502,13 +509,17 @@ final class ComposerTurnOwnershipTests: XCTestCase {
     f.surface.stopFails = false
     f.dictation.toggle()
     await settle(f)
-    XCTAssertEqual(f.surface.calls, [.isRecording, .startComposerTurn, .stop("capture-1"), .stop("capture-1")])
+    XCTAssertEqual(
+      f.surface.calls, [.isRecording, .startComposerTurn, .stop("capture-1"), .stop("capture-1")])
     XCTAssertEqual(f.store.currentComposerCaptureRequestID, request)
     XCTAssertEqual(f.store.dictationThreadID, f.threadA)
     XCTAssertEqual(f.store.draft, "B's unsent draft")
     XCTAssertFalse(f.store.composerStopRetryAvailable)
-    XCTAssertTrue(f.store.composerCaptureAwaitingTerminal, "Stopped is not delivery acknowledgement")
-    XCTAssertEqual(f.store.receiveDictationTranscript("A's recovered words", captureID: "capture-1"), .parked(threadID: f.threadA))
+    XCTAssertTrue(
+      f.store.composerCaptureAwaitingTerminal, "Stopped is not delivery acknowledgement")
+    XCTAssertEqual(
+      f.store.receiveDictationTranscript("A's recovered words", captureID: "capture-1"),
+      .parked(threadID: f.threadA))
     XCTAssertTrue(f.store.finishDictationCapture(sessionID: "capture-1"))
     XCTAssertEqual(f.store.draft, "B's unsent draft")
     f.store.select(f.threadA)
@@ -536,7 +547,8 @@ final class ComposerTurnOwnershipTests: XCTestCase {
     f.surface.stopFails = false
     f.dictation.toggle()
     await settle(f)
-    XCTAssertEqual(f.surface.calls, [.isRecording, .startComposerTurn, .stop("capture-1"), .stop("capture-1")])
+    XCTAssertEqual(
+      f.surface.calls, [.isRecording, .startComposerTurn, .stop("capture-1"), .stop("capture-1")])
     XCTAssertTrue(f.store.composerCaptureAwaitingTerminal)
   }
 
@@ -559,7 +571,8 @@ final class ComposerTurnOwnershipTests: XCTestCase {
     f.store.endDictationSession()
     f.store.select(f.threadB)
     let replacement = f.store.beginComposerCaptureRequest(threadID: f.threadB)
-    f.store.completeComposerCaptureStart(replacement, live: true, handle: CsCaptureHandle(captureId: "capture-2"))
+    f.store.completeComposerCaptureStart(
+      replacement, live: true, handle: CsCaptureHandle(captureId: "capture-2"))
     gate.release()
     await settle(f)
     XCTAssertNotEqual(oldRequest, replacement)
@@ -567,7 +580,8 @@ final class ComposerTurnOwnershipTests: XCTestCase {
     XCTAssertEqual(f.store.composerCaptureHandle?.captureId, "capture-2")
     XCTAssertTrue(f.store.ownsLiveDictation)
     XCTAssertEqual(f.store.dictationThreadID, f.threadB)
-    f.store.reportComposerStopFailure("late failure", requestID: oldRequest, handle: CsCaptureHandle(captureId: "capture-1"))
+    f.store.reportComposerStopFailure(
+      "late failure", requestID: oldRequest, handle: CsCaptureHandle(captureId: "capture-1"))
     XCTAssertFalse(f.store.composerStopRetryAvailable)
     XCTAssertTrue(f.store.ownsLiveDictation)
   }

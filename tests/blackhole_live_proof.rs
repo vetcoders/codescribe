@@ -4,6 +4,9 @@
 
 #![cfg(target_os = "macos")]
 
+#[path = "support/asr_settings.rs"]
+mod asr_settings;
+
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -97,7 +100,7 @@ async fn blackhole_session_proof() {
     );
     unsafe {
         std::env::set_var("AUDIO_INPUT_DEVICE", "BlackHole 2ch");
-        std::env::set_var("CODESCRIBE_STT_ENGINE", "apple");
+        std::env::set_var("CODESCRIBE_ASR_MODE", "apple_only");
         std::env::set_var("CODESCRIBE_APPLE_STT_BRIDGE", bridge_path);
         std::env::set_var("CODESCRIBE_BRIDGE_DISCLAIM", "1");
     }
@@ -116,6 +119,7 @@ async fn blackhole_session_proof() {
     let mut recorder = StreamingRecorder::new().expect("recorder init");
     recorder.set_event_sink(Some(sink.clone()));
 
+    let _isolated = asr_settings::IsolatedAsrSettings::from_requested_mode();
     let runtime_settings = Arc::new(
         codescribe_core::config::Config::load_runtime_snapshot_without_keychain()
             .expect("load runtime snapshot"),

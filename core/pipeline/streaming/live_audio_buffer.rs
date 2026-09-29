@@ -166,6 +166,11 @@ impl LiveAudioBuffer {
         self.samples.len()
     }
 
+    /// Absolute sample index of the oldest retained sample.
+    pub(crate) fn retained_start_sample(&self) -> u64 {
+        self.start_index
+    }
+
     /// Session time of the oldest retained sample.
     pub(crate) fn retained_start_secs(&self) -> f32 {
         self.start_index as f32 / self.sample_rate as f32

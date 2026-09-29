@@ -16,9 +16,11 @@ import SwiftUI
 /// previous app the moment editing ends.
 final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   var onUserMove: (() -> Void)?
+  var onUserDragEnded: ((NSPoint) -> Void)?
   var onUserResize: (() -> Void)?
   fileprivate var presence: OverlayPresence?
   private var dragStart: (mouse: NSPoint, frame: NSRect)?
+  private var dragMoved = false
   private var expandedSize: NSSize?
   var sizeForPersistence: NSSize { expandedSize ?? frame.size }
 
@@ -98,21 +100,29 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// container's own resize band continue through ordinary AppKit dispatch
   /// untouched.
   override func sendEvent(_ event: NSEvent) {
-    if event.type == .leftMouseDown { dragStart = nil }
+    if event.type == .leftMouseDown {
+      dragStart = nil
+      dragMoved = false
+    }
     switch event.type {
     case .leftMouseDown where isWindowDragHit(at: event.locationInWindow):
       dragStart = (screenPoint(for: event), frame)
     case .leftMouseDragged where dragStart != nil:
       guard let dragStart else { return }
       let current = screenPoint(for: event)
+      let previousOrigin = frame.origin
       setFrameOrigin(
         NSPoint(
           x: dragStart.frame.minX + current.x - dragStart.mouse.x,
           y: dragStart.frame.minY + current.y - dragStart.mouse.y
         )
       )
+      dragMoved = dragMoved || frame.origin != previousOrigin
     case .leftMouseUp where dragStart != nil:
       dragStart = nil
+      let moved = dragMoved
+      dragMoved = false
+      if moved { onUserDragEnded?(frame.origin) }
     default:
       super.sendEvent(event)
     }
@@ -180,8 +190,8 @@ private final class OverlayContentContainer: NSView {
     hosting.frame = bounds
   }
 
-  /// AppKit's borderless resize strip is ~1–2 px. Claim the 12 pt band first
-  /// so SwiftUI / movable-background do not steal the edge.
+  /// AppKit's borderless resize strip is ~1–2 px. Claim the 16 pt band first,
+  /// including the bottom capsule and its margin, so SwiftUI cannot steal it.
   override func hitTest(_ point: NSPoint) -> NSView? {
     if window?.styleMask.contains(.resizable) == true,
       OverlayResizeHit.edge(at: point, in: bounds) != nil
@@ -285,6 +295,9 @@ enum DictationOverlayWindow {
       guard !OverlayController.isApplyingFrame else { return }
       state?.userDraggedOverlay()
     }
+    panel.onUserDragEnded = { [weak state] origin in
+      state?.recordUserDrag(at: origin)
+    }
     panel.onUserResize = { [weak state] in
       guard !OverlayController.isApplyingFrame else { return }
       state?.userResizedOverlay()
@@ -312,7 +325,9 @@ enum DictationOverlayWindow {
     // raises to statusBar for the capture chord and yields to system alerts.
     panel.level = OverlayPresencePolicy.rest.windowLevel
     panel.sharingType = .readOnly
-    panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+    // AppKit hides transient panels during Mission Control and restores them
+    // afterwards without ending the take or rebuilding its content.
+    panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
     panel.isFloatingPanel = true
     panel.hidesOnDeactivate = false
     // One explicit AppKit path owns dragging on every supported OS version.

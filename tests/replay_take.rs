@@ -11,16 +11,14 @@
 //!
 //! ```bash
 //! CODESCRIBE_REPLAY_WAV=/path/to/take.wav \
-//! CODESCRIBE_STT_ENGINE=apple \
+//! CODESCRIBE_ASR_MODE=apple_only \
 //! CODESCRIBE_APPLE_STT_BRIDGE=/Applications/Codescribe.app/Contents/MacOS/codescribe-stt-bridge \
 //! CODESCRIBE_BRIDGE_DISCLAIM=1 \
 //! cargo test --test replay_take -- --ignored --nocapture
 //! ```
 //!
 //! Notes from the incident that built this:
-//! - Without `CODESCRIBE_STT_ENGINE=apple` the session router can take the
-//!   VAD/Whisper path and an Apple-lane defect will NOT reproduce — the first
-//!   replay of the incident did exactly that and returned a clean transcript.
+//! - `CODESCRIBE_ASR_MODE=apple_only` selects the Layer 0 product lane.
 //! - Without `CODESCRIBE_APPLE_STT_BRIDGE` the worker spawns by bare name,
 //!   fails, and the session mills the whole take against a dead engine before
 //!   admitting it at stop time.
@@ -30,6 +28,9 @@
 //! W13-0: when the replay emits `UtteranceFinal.segments`, this harness prints
 //! a word-span histogram (duration / overlap / restart). That is the only
 //! honest pl-PL Apple-span measurement — the in-repo fixtures are synthetic.
+
+#[path = "support/asr_settings.rs"]
+mod asr_settings;
 
 #[path = "support/w13_clock.rs"]
 mod w13_clock;
@@ -44,7 +45,11 @@ async fn replay_operator_take() {
 
     let wav = std::env::var("CODESCRIBE_REPLAY_WAV")
         .expect("set CODESCRIBE_REPLAY_WAV to the recording to replay");
-    let settings = codescribe_core::config::UserSettings::load();
+    let isolated = asr_settings::IsolatedAsrSettings::from_requested_mode();
+    let mut settings = isolated.settings.clone();
+    if let Ok(mode) = std::env::var("CODESCRIBE_ASR_MODE") {
+        settings.asr_mode = Some(mode);
+    }
     let replay = codescribe::controller::production_replay::replay_overlay_recording(
         std::path::Path::new(&wav),
         Some("pl".to_string()),

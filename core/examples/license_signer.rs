@@ -22,7 +22,7 @@ use base64::Engine as _;
 use chrono::{Months, Utc};
 use codescribe_core::licensing::{DEFAULT_AGENTIC_SKU, LICENSE_PREFIX, LicenseClaims};
 use ed25519_dalek::{Signer, SigningKey};
-use rand::RngCore;
+use rand::TryRng;
 use sha2::{Digest, Sha256};
 
 /// RFC 8032 test-vector seed — the checked-in development signer. Publicly
@@ -51,7 +51,10 @@ fn main() -> ExitCode {
 /// cannot capture the secret alongside the shareable half.
 fn keygen() -> ExitCode {
     let mut seed = [0_u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut seed);
+    if let Err(error) = rand::rngs::SysRng.try_fill_bytes(&mut seed) {
+        eprintln!("Cannot obtain signing-key entropy: {error}");
+        return ExitCode::FAILURE;
+    }
     let signing = SigningKey::from_bytes(&seed);
     let public_hex = hex(signing.verifying_key().as_bytes());
     let fingerprint = hex(&Sha256::digest(public_hex.as_bytes()));

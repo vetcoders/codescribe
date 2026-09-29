@@ -32,6 +32,14 @@ final class RealChatEngine: AgentChatEngine {
     assistiveRouting.setAssistiveTargetThread(backendId: backendId)
   }
 
+  func recordSendOrigin(
+    _ origin: AgentSendOrigin, chars: Int, threadId: String, recordingActive: Bool
+  ) {
+    agent.recordComposerSend(
+      origin: origin.rawValue, chars: UInt64(chars), threadId: threadId,
+      recordingActive: recordingActive)
+  }
+
   func availabilityDetail() -> String? {
     let availability = agent.availability()
     if availability.available { return nil }

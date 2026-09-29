@@ -670,8 +670,8 @@
               "file": "core/audio/streaming_recorder.rs",
               "required_code": [
                 "let next_capture_epoch = self.capture_epoch.checked_add(1)",
-                "tx.try_send(data.to_vec())",
-                "self.recorder.start().await?",
+                "self.acquire_capture_subscriber(CaptureSubscriberKind::Take, tx)",
+                "self.recorder.start().await",
                 "self.capture_epoch = next_capture_epoch",
                 "let actual_sample_rate = self.recorder.actual_sample_rate()",
                 "let capture_device_name = self.recorder.last_input_device().map(str::to_owned)",
@@ -781,10 +781,14 @@
                 "return false;",
                 "let apple_words = apple_segments_on_pcm_clock(state, disjoint);",
                 "let (sliced, leftover) = slice_apple_words(ledger, &fusion_words);",
+                "let exclusive = exclusive_closed_spans(ledger.utterances());",
                 "for silero in ledger",
                 ".filter(|utterance| utterance.closed)",
                 "let has_apple_label = !text.trim().is_empty();",
-                "let occurrence = OccurrenceIdentity::from(&silero.range);",
+                "let (owned_start, owned_end) = match exclusive.get(&utterance_id) {",
+                "let occurrence = OccurrenceIdentity::new(",
+                "owned_start,",
+                "owned_end,",
                 "if !qualify_owned_occurrence(state, &occurrence) {",
                 "RefinementFailure::PcmUnavailable",
                 "RefinementFailure::QualificationRefused",
@@ -842,12 +846,36 @@
                 "return None;",
                 "if !ledger.is_qualified(&occurrence) {",
                 "return None;",
-                "let receipt = ledger.admit(&observation, label);",
+                "let receipt = ledger.admit_pinned_label(&observation, label, words);",
                 "EngineEvent::LedgerMutation {",
                 "let closed = ledger.note_frontier_return(&occurrence, producer);",
                 "EngineEvent::LedgerSeal { receipt: seal }",
                 "Some(receipt)"
               ]
+            },
+            {
+              "symbol": "admit_pinned_label",
+              "file": "core/pipeline/acoustic_ledger.rs",
+              "required_code": [
+                "if observation.producer != ObservationProducer::Apple",
+                "|| self.is_sealed(occurrence)",
+                "|| words.is_empty()",
+                "return self.admit(observation, label);",
+                "if end <= start",
+                "|| midpoint < occurrence.sample_start",
+                "|| midpoint >= occurrence.sample_end",
+                "return self.admit(observation, label);",
+                "slots.sort_by(|a, b| {",
+                ".any(|pair| pair[0].sample_end > pair[1].sample_start)",
+                "|| compose_label(&slots) != label",
+                "return self.admit(observation, label);",
+                "self.admit_with_slots(observation, label, Some(slots), false)"
+              ]
+            },
+            {
+              "symbol": "decide_observation",
+              "file": "core/pipeline/acoustic_ledger.rs",
+              "required_code": ["if overlaps && !has_word_pins {"]
             },
             {
               "symbol": "qualify",
@@ -923,9 +951,16 @@
               "minimum_count": 1
             },
             {
-              "callee": "seal_utterance_final",
+              "callee": "close_apple_phrase",
               "callee_file": "core/pipeline/streaming/apple_live_session.rs",
               "caller": "emit_stream_events",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "seal_utterance_final",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "close_apple_phrase",
               "caller_file": "core/pipeline/streaming/apple_live_session.rs",
               "minimum_count": 1
             },
@@ -1171,7 +1206,7 @@
               "file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
               "required_code": [
                 "struct OverlayIntentRail: View",
-                "ForEach(intents, id: \\.self)",
+                "ForEach(OverlayDockLayout(projectedIntents: intents).visibleIntents, id: \\.self)",
                 "dispatch(intent)",
                 "func dispatch(_ intent: OverlayIntent)",
                 "onIntent(intent)"

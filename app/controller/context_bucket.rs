@@ -18,6 +18,50 @@ use uuid::Uuid;
 
 /// Payload size above which a capture spills to disk instead of going inline.
 pub(crate) const DEFAULT_INLINE_LIMIT_BYTES: usize = 16 * 1024;
+const SELECTION_LABEL_PREFIX: &str = "selection_";
+const IMAGE_LABEL_PREFIX: &str = "image_";
+
+/// Remove only references in the label grammar minted by this bucket. Other
+/// braced user text is ordinary dictation and remains untouched.
+pub(crate) fn strip_markers_for_delivery(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('{') {
+        let (before, candidate) = rest.split_at(open);
+        result.push_str(before);
+        let marker_end = [SELECTION_LABEL_PREFIX, IMAGE_LABEL_PREFIX]
+            .into_iter()
+            .find_map(|prefix| {
+                let digits = candidate.strip_prefix('{')?.strip_prefix(prefix)?;
+                let count = digits.bytes().take_while(u8::is_ascii_digit).count();
+                (digits
+                    .as_bytes()
+                    .first()
+                    .is_some_and(|digit| matches!(*digit, b'1'..=b'9'))
+                    && digits.as_bytes().get(count) == Some(&b'}'))
+                .then_some(1 + prefix.len() + count + 1)
+            });
+        if let Some(end) = marker_end {
+            let had_space_before = result.chars().last().is_some_and(char::is_whitespace);
+            if had_space_before {
+                result = result.trim_end_matches(char::is_whitespace).to_string();
+            }
+            rest = &candidate[end..];
+            let had_space_after = rest.chars().next().is_some_and(char::is_whitespace);
+            if had_space_after {
+                rest = rest.trim_start_matches(char::is_whitespace);
+            }
+            if (had_space_before || had_space_after) && !result.is_empty() && !rest.is_empty() {
+                result.push(' ');
+            }
+        } else {
+            result.push('{');
+            rest = &candidate[1..];
+        }
+    }
+    result.push_str(rest);
+    result
+}
 
 /// Reference handed back to the caller after a successful capture, so the
 /// transcript can point at the stored item.
@@ -228,7 +272,7 @@ impl ContextBucket {
             return Ok(None);
         }
 
-        let label = format!("selection_{}", self.items.len() + 1);
+        let label = format!("{SELECTION_LABEL_PREFIX}{}", self.items.len() + 1);
         let payload = if selected_text.len() <= self.inline_limit_bytes {
             SelectionPayload::Inline(selected_text)
         } else {
@@ -272,7 +316,7 @@ impl ContextBucket {
                 self.images_dir.display()
             )
         })?;
-        let label = format!("image_{}", self.images.len() + 1);
+        let label = format!("{IMAGE_LABEL_PREFIX}{}", self.images.len() + 1);
         let path = self
             .images_dir
             .join(format!("{label}-{}.png", Uuid::new_v4()));
@@ -296,6 +340,33 @@ impl ContextBucket {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outward_text_removes_only_bucket_labels_and_repairs_marker_spacing() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let mut bucket = ContextBucket::new_selections_only(temp.path().join("selections"), 1024);
+        let selection = bucket
+            .add_selection(0, "captured".to_string())
+            .expect("selection capture")
+            .expect("nonempty selection");
+        let image = bucket
+            .add_image_png(b"png")
+            .expect("image capture")
+            .expect("nonempty image");
+        let document = format!(
+            "  {{{}}} alpha  {{{}}}  beta {{name}} {{selection_x}} {{selection_0}}  ",
+            selection.label, image.label
+        );
+        assert_eq!(
+            strip_markers_for_delivery(&document),
+            "alpha beta {name} {selection_x} {selection_0}  "
+        );
+        assert_eq!(
+            strip_markers_for_delivery("bard{selection_1}zo {image_1} lubię"),
+            "bardzo lubię"
+        );
+        assert_eq!(strip_markers_for_delivery("{name} typed"), "{name} typed");
+    }
 
     /// Empty PNG byte slice is a silent no-op — no file, no marker.
     #[test]

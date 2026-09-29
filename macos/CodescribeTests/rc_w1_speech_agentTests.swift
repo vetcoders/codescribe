@@ -170,7 +170,8 @@ final class RCW1SpeechAgentTests: XCTestCase {
     XCTAssertEqual(store.threadSearchQuery, "")
     XCTAssertEqual(store.selectedThreadID, selected)
     XCTAssertEqual(store.threads.filter { $0.backendId == "alpha" }.count, 1)
-    XCTAssertTrue(store.currentThread?.messages.contains { $0.role == .you && $0.text == "Hello" } == true)
+    XCTAssertTrue(
+      store.currentThread?.messages.contains { $0.role == .you && $0.text == "Hello" } == true)
     store.ingestVoiceCancelled(threadId: "alpha")
   }
 
