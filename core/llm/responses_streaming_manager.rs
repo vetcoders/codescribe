@@ -1634,17 +1634,12 @@ struct StreamItem {
     name: Option<String>,
 }
 
-/// Leaf content part on a lifecycle event. Text lives in `text` or, for
-/// reasoning summaries, in `summary`. Terminal `output` items use
-/// [`ResponsesOutputItem`] instead of this type.
+/// Lifecycle diagnostics consume only the part kind; terminal text is read by
+/// `responses_output`.
 #[derive(Debug, Deserialize)]
 struct StreamContentPart {
     #[serde(rename = "type")]
     part_type: String,
-    #[serde(default)]
-    text: Option<String>,
-    #[serde(default)]
-    summary: Option<String>,
 }
 
 /// Unit and mockito SSE tests for auth, channel extraction, and agent events.
