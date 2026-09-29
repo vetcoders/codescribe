@@ -463,7 +463,6 @@ struct PermissionStepView: View {
   /// Primary CTA mirrors Settings matrix: in-app request while undetermined
   /// (when the scope supports it), System Settings deep-link once determined.
   private var primaryTitle: String {
-    if state.isGranted { return "Granted" }
     if state == .notDetermined, kind.supportsInAppPermissionRequest {
       return "Allow \(kind.rawValue)"
     }
@@ -483,36 +482,36 @@ struct PermissionStepView: View {
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
 
-      statusRow
-        .padding(.top, 4)
-
-      HStack(spacing: 10) {
-        Button(primaryTitle) {
-          guard !state.isGranted else { return }
-          model.grantPermission(for: kind)
-        }.modifier(SetupActionStyle(prominent: true))
-        Button("Refresh status") {
-          model.refreshPermissions()
-        }.modifier(SetupActionStyle())
+      HStack(spacing: 16) {
+        statusRow
+        Button("Refresh status") { model.refreshPermissions() }
+          .buttonStyle(.link)
       }
       .padding(.top, 4)
 
-      if kind == .fullDiskAccess {
-        Text("Optional — skip it to limit file-aware features only.")
+      if !state.isGranted {
+        Button(primaryTitle) { model.grantPermission(for: kind) }
+          .modifier(SetupActionStyle(prominent: true))
+      }
+
+      if !state.isGranted {
+        if kind == .fullDiskAccess {
+          Text("Optional — skip it to limit file-aware features only.")
+            .font(.callout)
+            .foregroundStyle(CSColor.textFaint)
+        } else if kind == .speechRecognition {
+          Text(
+            "Required for Apple live dictation. Without it Codescribe cannot run on-device Speech."
+          )
           .font(.callout)
           .foregroundStyle(CSColor.textFaint)
-      } else if kind == .speechRecognition {
-        Text(
-          "Required for Apple live dictation. Without it Codescribe cannot run on-device Speech."
-        )
-        .font(.callout)
-        .foregroundStyle(CSColor.textFaint)
-      } else {
-        Text(
-          "You can continue without granting this, but the matching feature stays off until you do."
-        )
-        .font(.callout)
-        .foregroundStyle(CSColor.textFaint)
+        } else {
+          Text(
+            "You can continue without granting this, but the matching feature stays off until you do."
+          )
+          .font(.callout)
+          .foregroundStyle(CSColor.textFaint)
+        }
       }
     }
   }
@@ -524,16 +523,7 @@ struct PermissionStepView: View {
         .font(CSFont.mono(12, .semibold))
         .foregroundStyle(statusColor)
     }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 10)
-    .background(
-      RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-        .fill(CSColor.surfaceRaised(0.03))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
-    )
+
   }
 
   private var statusColor: Color {

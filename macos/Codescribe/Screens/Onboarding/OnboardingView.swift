@@ -14,7 +14,7 @@ struct OnboardingView: View {
   var body: some View {
     Group {
       if #available(macOS 26, *) {
-        GlassEffectContainer(spacing: 20) { content }
+        GlassEffectContainer(spacing: 0) { content }
       } else {
         content
       }
@@ -28,13 +28,14 @@ struct OnboardingView: View {
           startPoint: .topLeading, endPoint: .bottomTrailing)
       }
     }
+    .csFocusPolicy()
     .controlSize(.regular)
     .onAppear { model.refreshForCurrentStep() }
   }
 
   private var content: some View {
     VStack(spacing: 0) {
-      header.padding(.horizontal, 24).padding(.top, 16)
+      header
       ScrollView {
         stepBody
           .frame(maxWidth: .infinity, alignment: .leading)
@@ -89,8 +90,9 @@ struct OnboardingView: View {
         .controlSize(.small)
         .accessibilityLabel("Setup progress")
     }
-    .padding(22)
-    .modifier(SetupGlass())
+    .padding(.horizontal, 28)
+    .padding(.top, 24)
+    .padding(.bottom, 12)
   }
 
   // MARK: - Step dispatch
