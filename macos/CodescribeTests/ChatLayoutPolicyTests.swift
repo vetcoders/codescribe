@@ -102,7 +102,7 @@ final class ChatLayoutPolicyTests: XCTestCase {
   func testNativeSidebarItemEnforcesBoundsAfterWindowAttachment() throws {
     final class LayoutEngine: ChatEngineFixture {}
     let store = AgentChatStore(
-      engine: LayoutEngine(), threads: [ChatThread(title: "A thread", meta: "now")])
+      engine: LayoutEngine(), threads: [ChatThread(title: "A thread", meta: "now", model: "gpt-6-sol")])
     let host = NSHostingController(rootView: AgentChatView(store: store))
     let window = NSWindow(contentViewController: host)
     window.setContentSize(NSSize(width: 1120, height: 720))
@@ -113,6 +113,7 @@ final class ChatLayoutPolicyTests: XCTestCase {
       if let split = view as? NSSplitView { return split.delegate as? NSSplitViewController }
       return view.subviews.lazy.compactMap { find($0) }.first
     }
+    XCTAssertEqual(window.title, "Agent — gpt-6-sol")
     let split = try XCTUnwrap(find(host.view), "Native split must be reachable after attachment")
     let item = try XCTUnwrap(split.splitViewItems.first(where: { $0.behavior == .sidebar }))
     XCTAssertEqual(item.minimumThickness, 267)

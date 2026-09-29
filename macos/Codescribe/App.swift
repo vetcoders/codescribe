@@ -647,7 +647,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     let hosting = NSHostingController(rootView: root)
     let window = NSWindow(contentViewController: hosting)
-    window.title = "codescribe — Agent"
+    window.title = "Agent"
     window.setContentSize(NSSize(width: 1120, height: 720))
     window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
     window.titlebarAppearsTransparent = true

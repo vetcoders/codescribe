@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// Agent Chat MVP shell. `NavigationSplitView`: local in-memory thread rail ↔
+/// Agent Chat shell: native split between the thread rail and
 /// thread view. Turns render You / Tool-activity / Assistant; `send` routes a
 /// streamed `streamReply` turn through the injected `AgentChatEngine`.
 struct AgentChatView: View {
@@ -34,7 +34,7 @@ struct AgentChatView: View {
     }
     .csFocusPolicy()
     .developerPowerCorner(padding: 8)
-    .background(AgentWindowCapabilities(isPinned: isPinned))
+    .background(AgentWindowCapabilities(isPinned: isPinned, model: store.currentThread?.model))
     .frame(
       minWidth: AgentWindowMetrics.minWidth,
       idealWidth: AgentWindowMetrics.idealWidth,
@@ -113,6 +113,7 @@ enum AgentWindowLevelPolicy {
 
 private struct AgentWindowCapabilities: NSViewRepresentable {
   let isPinned: Bool
+  let model: String?
 
   func makeNSView(context: Context) -> NSView {
     let view = NSView(frame: .zero)
@@ -126,6 +127,8 @@ private struct AgentWindowCapabilities: NSViewRepresentable {
 
   private func configure(_ window: NSWindow?) {
     window?.level = AgentWindowLevelPolicy.level(isPinned: isPinned)
+    let name = model?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    window?.title = name.isEmpty ? "Agent" : "Agent — \(name)"
   }
 }
 
@@ -139,12 +142,12 @@ private struct AgentColumns<Sidebar: View, Detail: View>: NSViewControllerRepres
     let controller = NSSplitViewController()
     controller.splitView.isVertical = true
     controller.splitView.dividerStyle = .thin
-    let rail = NSSplitViewItem(sidebarWithViewController: NSHostingController(rootView: sidebar))
+    let rail = NSSplitViewItem(sidebarWithViewController: NSHostingController(rootView: AnyView(sidebar.environment(\.self, context.environment))))
     rail.minimumThickness = AgentSidebarMode.expanded.minimumWidth
     rail.maximumThickness = AgentSidebarMode.expanded.maximumWidth
     rail.canCollapse = false
     controller.addSplitViewItem(rail)
-    let conversation = NSSplitViewItem(viewController: NSHostingController(rootView: detail))
+    let conversation = NSSplitViewItem(viewController: NSHostingController(rootView: AnyView(detail.environment(\.self, context.environment))))
     conversation.minimumThickness = 320
     controller.addSplitViewItem(conversation)
     return controller
@@ -152,8 +155,10 @@ private struct AgentColumns<Sidebar: View, Detail: View>: NSViewControllerRepres
 
   func updateNSViewController(_ controller: NSSplitViewController, context: Context) {
     let rail = controller.splitViewItems[0]
-    (rail.viewController as? NSHostingController<Sidebar>)?.rootView = sidebar
-    (controller.splitViewItems[1].viewController as? NSHostingController<Detail>)?.rootView = detail
+    (rail.viewController as? NSHostingController<AnyView>)?.rootView =
+      AnyView(sidebar.environment(\.self, context.environment))
+    (controller.splitViewItems[1].viewController as? NSHostingController<AnyView>)?.rootView =
+      AnyView(detail.environment(\.self, context.environment))
     rail.isCollapsed = !sidebarExpanded
   }
 }
