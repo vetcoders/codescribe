@@ -960,15 +960,22 @@ impl StreamingRecorder {
     ///
     /// A dictation take that is still subscribed keeps the stream. This does
     /// not run the take's stop tail.
-    pub async fn end_channel_session(&mut self, id: CaptureSubscriberId) -> Result<bool> {
+    pub async fn end_channel_session(
+        &mut self,
+        id: CaptureSubscriberId,
+    ) -> Result<(bool, Option<std::path::PathBuf>)> {
         let position = self
             .channel_tasks
             .iter()
             .position(|task| task.subscriber == id);
         let removed = position.map(|index| self.channel_tasks.remove(index));
         let last = self.release_capture_subscriber(id);
+        let mut audio_path = None;
         if last && self.recorder.is_active() {
-            self.recorder.stop().await?;
+            // Channel audio retention parity (W5): a channel that owns the
+            // capture keeps its whole-capture WAV, like a dictation take. A
+            // shared capture stays open and owes this channel no WAV.
+            audio_path = self.recorder.stop().await?;
         }
         if let Some(removed) = removed {
             removed
@@ -978,7 +985,7 @@ impl StreamingRecorder {
             drop(removed.lifecycle);
             drop(removed.last_window);
         }
-        Ok(last)
+        Ok((last, audio_path))
     }
 
     /// Stop the session and return the accumulated transcript plus the WAV path.

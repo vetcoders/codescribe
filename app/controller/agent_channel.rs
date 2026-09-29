@@ -124,6 +124,8 @@ pub(crate) struct OpenAgentChannel {
     pub mode: ChannelOpenMode,
     /// Dedicated channel bus; `None` writes receipts to the shared bus.
     pub bus: Option<PathBuf>,
+    /// Last non-empty projection, so the archived take carries its words.
+    pub last_text: Arc<StdMutex<String>>,
 }
 
 /// Open-channel fact for the overlay. W2 exposes it; the overlay paint is separate.
@@ -300,6 +302,7 @@ impl RecordingController {
         let silence_sec = runtime_settings.values().toggle_silence_sec;
         let opened_at = SystemTime::now();
         let last_voice_at = Arc::new(StdMutex::new(opened_at));
+        let last_text = Arc::new(StdMutex::new(String::new()));
         let mut session_id = None;
         let mut recorder_guard = self.recorder.lock().await;
         let recorder = recorder_guard.as_mut().ok_or_else(|| {
@@ -351,6 +354,7 @@ impl RecordingController {
                 let open_label = channel_open_label(digit);
                 hold_badge::update_transcript(cursor_token, &open_label, false);
                 let voice_clock = Arc::clone(&last_voice_at);
+                let heard_text = Arc::clone(&last_text);
                 let emitter = Arc::new(
                     PresentationEmitter::new_with_authority(
                         Arc::new(TokioMutex::new(String::new())),
@@ -368,6 +372,9 @@ impl RecordingController {
                         *voice_clock
                             .lock()
                             .unwrap_or_else(|error| error.into_inner()) = SystemTime::now();
+                        projection.text.clone_into(
+                            &mut heard_text.lock().unwrap_or_else(|error| error.into_inner()),
+                        );
                         hold_badge::update_transcript(
                             cursor_token,
                             &projection.text,
@@ -417,6 +424,7 @@ impl RecordingController {
                 session_id,
                 mode,
                 bus: bound.bus,
+                last_text,
             },
         );
         drop(recorder_guard);
@@ -448,11 +456,30 @@ impl RecordingController {
     }
 
     async fn close_open_channel(&self, open: OpenAgentChannel) -> Result<()> {
-        {
+        let retained_audio = {
             let mut recorder_guard = self.recorder.lock().await;
-            if let Some(recorder) = recorder_guard.as_mut() {
-                recorder.end_channel_session(open.subscriber).await?;
+            match recorder_guard.as_mut() {
+                Some(recorder) => {
+                    let (_last, audio_path) = recorder.end_channel_session(open.subscriber).await?;
+                    audio_path
+                }
+                None => None,
             }
+        };
+        if let Some(path) = retained_audio.as_deref() {
+            // W5 retention parity: a capture the channel owned joins the same
+            // take store and retention rules as dictation. The slug carries
+            // the heard words; a voiceless close archives as no-speech.
+            let heard = open
+                .last_text
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
+            super::retain_session_audio(
+                open.session_id.as_deref(),
+                path,
+                codescribe_core::state::SessionTranscriptArchive::Committed(&heard),
+            );
         }
         let state = self.current_state().await;
         let channels = self.agent_channels.lock().await;
