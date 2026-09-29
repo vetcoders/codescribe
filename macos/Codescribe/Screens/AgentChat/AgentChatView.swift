@@ -29,12 +29,6 @@ struct AgentChatView: View {
   var body: some View {
     NavigationSplitView(columnVisibility: $columnVisibility) {
       ThreadRail(store: store, mode: .expanded)
-        // Constrain the column content as well as its preferred split width;
-        // the native divider can otherwise drag beyond the preference bounds.
-        .frame(
-          minWidth: AgentSidebarMode.expanded.minimumWidth,
-          maxWidth: AgentSidebarMode.expanded.maximumWidth
-        )
         .navigationSplitViewColumnWidth(
           min: AgentSidebarMode.expanded.minimumWidth,
           ideal: AgentSidebarMode.expanded.idealWidth,
@@ -151,7 +145,25 @@ private struct AgentWindowCapabilities: NSViewRepresentable {
   }
 
   private func configure(_ window: NSWindow?) {
-    window?.level = AgentWindowLevelPolicy.level(isPinned: isPinned)
+    guard let window else { return }
+    window.level = AgentWindowLevelPolicy.level(isPinned: isPinned)
+    guard let split = Self.splitController(in: window.contentViewController),
+      let sidebar = split.splitViewItems.first
+    else { return }
+    sidebar.minimumThickness = AgentSidebarMode.expanded.minimumWidth
+    sidebar.maximumThickness = AgentSidebarMode.expanded.maximumWidth
+    if !sidebar.isCollapsed, let column = split.splitView.subviews.first {
+      let bounded = min(sidebar.maximumThickness, max(sidebar.minimumThickness, column.frame.width))
+      if abs(column.frame.width - bounded) > 1 {
+        split.splitView.setPosition(bounded, ofDividerAt: 0)
+      }
+    }
+  }
+
+  private static func splitController(in controller: NSViewController?) -> NSSplitViewController? {
+    guard let controller else { return nil }
+    if let split = controller as? NSSplitViewController { return split }
+    return controller.children.lazy.compactMap { splitController(in: $0) }.first
   }
 }
 
