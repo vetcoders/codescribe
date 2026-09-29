@@ -2651,6 +2651,7 @@ final class OverlayStateTests: XCTestCase {
   @MainActor
   func testFormattedOverlayMinimumHeightSnapshotRenders() throws {
     let state = OverlayState()
+    state.toggleCollapsed()
     let longTranscript = Array(
       repeating:
         "Choose Insert to paste the text where you want it and press Return. The clipboard is untouched.",
@@ -2665,15 +2666,29 @@ final class OverlayStateTests: XCTestCase {
       rootView: DictationOverlayView(state: state)
         .environment(\.csTextScale, 0.8)
         .frame(width: size.width, height: size.height)
-        .preferredColorScheme(.dark)
+        .environment(\.colorScheme, .dark)
     )
+    let appearance = try XCTUnwrap(NSAppearance(named: .darkAqua))
+    let window = NSWindow(
+      contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless],
+      backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    defer { window.close() }
+    window.appearance = appearance
+    hostingView.appearance = appearance
+    hostingView.sizingOptions = []
+    hostingView.safeAreaRegions = []
+    window.contentView = hostingView
+    window.setContentSize(size)
     hostingView.frame = CGRect(origin: .zero, size: size)
     hostingView.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.03))
     guard let bitmap = hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds) else {
       return XCTFail("could not allocate the formatted overlay bitmap")
     }
-    hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
+    appearance.performAsCurrentDrawingAppearance {
+      hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
+    }
     guard let png = bitmap.representation(using: .png, properties: [:]) else {
       XCTFail("could not render the formatted overlay")
       return
@@ -2690,23 +2705,29 @@ final class OverlayStateTests: XCTestCase {
     // here mean the transcript escaped its clipped body.
     let scaleX = CGFloat(bitmap.pixelsWide) / size.width
     let scaleY = CGFloat(bitmap.pixelsHigh) / size.height
-    var leakedBrightPixels = 0
-    for x in Int(390 * scaleX)..<Int(520 * scaleX) {
-      for y in Int(6 * scaleY)..<Int(28 * scaleY) {
-        guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else {
-          continue
-        }
-        if color.redComponent > 0.7 && color.greenComponent > 0.7
-          && color.blueComponent > 0.7 && color.alphaComponent > 0.5
-        {
-          leakedBrightPixels += 1
+    func brightPixels(x: Range<Int>, y: Range<Int>) -> Int {
+      var count = 0
+      for column in x {
+        for row in y {
+          guard let color = bitmap.colorAt(x: column, y: row)?.usingColorSpace(.deviceRGB)
+          else { continue }
+          if color.redComponent > 0.7 && color.greenComponent > 0.7
+            && color.blueComponent > 0.7 && color.alphaComponent > 0.5
+          { count += 1 }
         }
       }
+      return count
     }
+    // Bitmap rows start at the top. Prove text rendered before checking its
+    // exclusion from the bottom strip; a collapsed/empty canvas cannot pass.
+    XCTAssertGreaterThan(
+      brightPixels(x: Int(40 * scaleX)..<Int(520 * scaleX),
+                   y: Int(60 * scaleY)..<Int(170 * scaleY)),
+      Int(100 * scaleX * scaleY), "transcript body did not render")
     XCTAssertLessThan(
-      leakedBrightPixels, Int(20 * scaleX * scaleY),
-      "formatted transcript painted into the footer band"
-    )
+      brightPixels(x: Int(390 * scaleX)..<Int(520 * scaleX),
+                   y: Int((size.height - 28) * scaleY)..<Int((size.height - 6) * scaleY)),
+      Int(20 * scaleX * scaleY), "formatted transcript painted into the footer band")
   }
 
   func testProjectionFixturesMirrorEveryCanvasField() {
