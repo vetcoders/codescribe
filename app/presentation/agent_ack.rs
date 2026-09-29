@@ -121,12 +121,9 @@ pub fn scan(bridge_home: &Path, fallback_bus: &Path) -> io::Result<ScanStats> {
         let Some(binding) = channels.get(&lease.provider_session_id) else {
             continue;
         };
-        let mut markers: Vec<PathBuf> = match fs::read_dir(&dir) {
-            Ok(entries) => entries
-                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-                .collect(),
-            Err(error) => return Err(error),
-        };
+        let mut markers: Vec<PathBuf> = fs::read_dir(&dir)?
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .collect();
         markers.sort();
         for marker_path in markers {
             let Some(delivery_id) = marker_delivery_id(&marker_path, &lease_id)? else {
