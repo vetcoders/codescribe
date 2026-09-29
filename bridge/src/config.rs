@@ -2257,12 +2257,8 @@ fn copy_path_without_following_symlinks(source: &Path, destination: &Path) -> st
         // WHY: `destination` is an app-created child of ~/.Trash and `target`
         // is whatever the user's own link already pointed at; this call
         // recreates the link itself without following or writing through its
-        // target. Preserving the link is required for a recoverable reset.
-        // WHEN: the pre-push gate (`semgrep scan --config auto --error`)
-        // flags this line as rust.actix path traversal (2026-09-08, after the
-        // vc-prune silencer strip); no request input reaches either path.
-        // WHERE: symlink recreation only; regular files go through `fs::copy`.
-        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
+        // target. Preserving the link is required for a recoverable reset;
+        // regular files go through `fs::copy`.
         std::os::unix::fs::symlink(target, destination)?;
         return Ok(());
     }

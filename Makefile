@@ -1026,7 +1026,7 @@ check:
 	@echo "=== Clippy (workspace, all targets) ==="
 	@cargo clippy --workspace --all-targets -- -D warnings
 	@echo "=== Semgrep ==="
-	@semgrep scan --config auto --config .semgrep.yaml --error .
+	@semgrep scan --config auto --config .semgrep.yaml --error $(SEMGREP_EXCLUDED_RULES) .
 	@echo "=== Env registry ==="
 	@bash scripts/validate-envs.sh
 	@echo "=== Gate ledger ==="
@@ -1131,8 +1131,17 @@ test-keychain-session:
 canary-catalog:
 	@bash scripts/canaries.sh --list
 
+# Two registry rules are excluded wherever the blocking semgrep gate runs:
+# the rust.actix path-traversal rule (this tree has no actix and no
+# request-tainted paths; it fires on store-owned directory fsyncs and a
+# symlink recreation) and the JavaScript insecure-websocket rule (it fires on
+# a Rust test's 127.0.0.1 loopback literal). This variable is the definition
+# site; .pre-commit-config.yaml and .github/workflows/semgrep.yml repeat the
+# flags verbatim because they cannot read Make variables.
+SEMGREP_EXCLUDED_RULES := --exclude-rule rust.actix.path-traversal.tainted-path.tainted-path --exclude-rule javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
+
 semgrep:
-	@semgrep scan --config auto --error --quiet .
+	@semgrep scan --config auto --error --quiet $(SEMGREP_EXCLUDED_RULES) .
 
 # Not a verification target (advisory, never blocking) — deliberately absent from the GATE LEDGER.
 semgrep-house:

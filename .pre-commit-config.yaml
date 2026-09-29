@@ -62,7 +62,7 @@ repos:
 
       - id: semgrep
         name: semgrep security scan
-        entry: scripts/git-hooks/embargo-guard.sh semgrep -- semgrep scan --config auto --config .semgrep.yaml --error .
+        entry: scripts/git-hooks/embargo-guard.sh semgrep -- semgrep scan --config auto --config .semgrep.yaml --error --exclude-rule rust.actix.path-traversal.tainted-path.tainted-path --exclude-rule javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket .
         language: system
         pass_filenames: false
         stages: [pre-push]
