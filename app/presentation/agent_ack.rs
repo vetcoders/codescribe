@@ -13,6 +13,7 @@ use std::time::SystemTime;
 
 use chrono::{SecondsFormat, Utc};
 use serde_json::{Value, json};
+use std::borrow::Cow;
 
 use super::transcript_bus::shared_bus_file;
 
@@ -81,23 +82,23 @@ pub fn scan(bridge_home: &Path, fallback_bus: &Path) -> io::Result<ScanStats> {
         let key = bus.to_string_lossy().into_owned();
         let mut mark = cursor.bus_marks.get(&key).copied().unwrap_or_default();
         let before = mark;
-        fold_bus_delta(bus, &mut mark, |value| {
-            if value.get("kind").and_then(Value::as_str) == Some("agent_ack")
-                && let Some(id) = delivery_id_of(value)
+        fold_bus_delta(bus, &mut mark, |row| {
+            if row.kind.as_deref() == Some("agent_ack")
+                && let Some(id) = delivery_id_of(row)
                 && cursor.emitted.insert(id.to_string())
             {
                 dirty = true;
             }
             // A seal row read once must keep proving its delivery on later
             // passes, which no longer re-read history.
-            if let Some(id) = seal_delivery_id(value) {
+            if let Some(id) = seal_delivery_id(row) {
                 let id = id.to_string();
                 if !cursor.emitted.contains(&id) && cursor.known_seals.insert(id) {
                     dirty = true;
                 }
             }
-            if let Some(reply_id) = spoken_reply_id(value) {
-                if reply_is_recent(value) {
+            if let Some(reply_id) = spoken_reply_id(row) {
+                if reply_is_recent(row) {
                     note_spoken_reply(&mut cursor, &mut dirty, &reply_id);
                 } else {
                     remember_reply(&mut cursor, &mut dirty, &reply_id);
@@ -434,7 +435,11 @@ fn load_leases(bridge_home: &Path) -> Vec<LeaseRecord> {
                 items
                     .iter()
                     .filter_map(|item| {
-                        let id = delivery_id_of(item)?.to_string();
+                        let id = item
+                            .get("delivery_id")
+                            .and_then(Value::as_str)
+                            .filter(|id| is_delivery_id(id))?
+                            .to_string();
                         let kind = item.get("kind").and_then(Value::as_str).map(str::to_string);
                         Some(PendingDelivery { id, kind })
                     })
@@ -503,8 +508,36 @@ fn load_channels(bridge_home: &Path) -> BTreeMap<String, ChannelBinding> {
 /// 500 ms loop drains large histories a slice at a time.
 const FOLD_CHUNK: usize = 4 << 20;
 const FOLD_PASS_BUDGET: u64 = 64 << 20;
+/// A single row larger than this is dropped unparsed. The scan only reads
+/// acknowledgment metadata; no legitimate ack, seal or reply row approaches
+/// this size, and an unbounded row must not hold the scan's memory hostage.
+const FOLD_MAX_LINE: usize = 8 << 20;
 
-fn fold_bus_delta(path: &Path, mark: &mut BusMark, on_line: impl FnMut(&Value)) -> io::Result<()> {
+/// The only bus-row fields the ack scan reads. Typed deserialization skips
+/// building a JSON tree for every row: sampling on build 1452 placed 97% of
+/// the scan in `from_str::<Value>` and 41% in memmove, almost all of it
+/// materializing transcript payloads the scan never looks at.
+#[derive(Default, serde::Deserialize)]
+struct AckScanRow<'a> {
+    #[serde(default, borrow)]
+    kind: Option<Cow<'a, str>>,
+    #[serde(default, borrow)]
+    status: Option<Cow<'a, str>>,
+    #[serde(default, borrow)]
+    delivery_id: Option<Cow<'a, str>>,
+    #[serde(default)]
+    spoken: Option<bool>,
+    #[serde(default, borrow)]
+    reply_id: Option<Cow<'a, str>>,
+    #[serde(default, borrow)]
+    emitted_at: Option<Cow<'a, str>>,
+}
+
+fn fold_bus_delta(
+    path: &Path,
+    mark: &mut BusMark,
+    on_line: impl FnMut(&AckScanRow),
+) -> io::Result<()> {
     fold_bus_delta_budgeted(path, mark, FOLD_PASS_BUDGET, on_line)
 }
 
@@ -512,7 +545,7 @@ fn fold_bus_delta_budgeted(
     path: &Path,
     mark: &mut BusMark,
     budget: u64,
-    mut on_line: impl FnMut(&Value),
+    mut on_line: impl FnMut(&AckScanRow),
 ) -> io::Result<()> {
     let mut file = match fs::File::open(path) {
         Ok(file) => file,
@@ -538,35 +571,60 @@ fn fold_bus_delta_budgeted(
     file.seek(SeekFrom::Start(mark.offset))?;
 
     let fresh = mark.offset == 0;
+    let mut head_set = !fresh;
     let mut chunk = vec![0_u8; FOLD_CHUNK];
     let mut carry: Vec<u8> = Vec::new();
     let mut consumed: u64 = 0;
+    // Bytes of the current oversize row already dropped from `carry`. The
+    // offset advances past them only once the row's newline lands, so a row
+    // still being appended is never split.
+    let mut oversize_dropped: u64 = 0;
     'passes: loop {
         let read = file.read(&mut chunk)?;
         if read == 0 {
             break;
         }
         carry.extend_from_slice(&chunk[..read]);
-        while let Some(newline) = carry.iter().position(|byte| *byte == b'\n') {
-            if fresh && consumed == 0 {
-                let head_len = (newline + 1).min(256);
-                mark.head_len = head_len as u32;
-                mark.head_hash = hash_bytes(&carry[..head_len]);
-                mark.ino = ino;
-            }
-            {
+        if !head_set && (carry.len() >= 256 || carry.contains(&b'\n')) {
+            let head_len = carry
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map(|newline| newline + 1)
+                .unwrap_or(carry.len())
+                .min(256);
+            mark.head_len = head_len as u32;
+            mark.head_hash = hash_bytes(&carry[..head_len]);
+            mark.ino = ino;
+            head_set = true;
+        }
+        loop {
+            let Some(newline) = carry.iter().position(|byte| *byte == b'\n') else {
+                if carry.len() > FOLD_MAX_LINE {
+                    oversize_dropped += carry.len() as u64;
+                    carry.clear();
+                }
+                break;
+            };
+            if oversize_dropped == 0 && newline <= FOLD_MAX_LINE {
                 let line = &carry[..newline];
                 if let Ok(line) = std::str::from_utf8(line) {
                     let line = line.trim();
+                    // Every row the scan can act on names a delivery_id or is
+                    // an agent_reply. Our bus writers (serde_json, python
+                    // json.dumps) emit these keys as literal ASCII, so the
+                    // substring test is a sound prefilter and most transcript
+                    // rows skip deserialization entirely.
                     if !line.is_empty()
-                        && let Ok(value) = serde_json::from_str::<Value>(line)
+                        && (line.contains("\"delivery_id\"") || line.contains("\"agent_reply\""))
+                        && let Ok(row) = serde_json::from_str::<AckScanRow>(line)
                     {
-                        on_line(&value);
+                        on_line(&row);
                     }
                 }
             }
             carry.drain(..=newline);
-            consumed += newline as u64 + 1;
+            consumed += oversize_dropped + newline as u64 + 1;
+            oversize_dropped = 0;
             // Budget bounds one pass, never a single line: with at least one
             // line consumed the mark advances and the next pass continues.
             if consumed >= budget {
@@ -629,11 +687,8 @@ fn marker_delivery_id(path: &Path, lease_id: &str) -> io::Result<Option<String>>
     }
 }
 
-fn delivery_id_of(value: &Value) -> Option<&str> {
-    value
-        .get("delivery_id")
-        .and_then(Value::as_str)
-        .filter(|id| is_delivery_id(id))
+fn delivery_id_of<'a>(row: &'a AckScanRow<'_>) -> Option<&'a str> {
+    row.delivery_id.as_deref().filter(|id| is_delivery_id(id))
 }
 
 fn is_delivery_id(value: &str) -> bool {
@@ -652,34 +707,32 @@ fn safe_lease_id(value: &str) -> bool {
 }
 
 /// The delivery id of a bus row that proves a seal, if this row is one.
-fn seal_delivery_id(value: &Value) -> Option<&str> {
-    let sealed = value.get("kind").and_then(Value::as_str) == Some("seal")
-        || value.get("status").and_then(Value::as_str) == Some("transcript_sealed");
-    if sealed { delivery_id_of(value) } else { None }
+fn seal_delivery_id<'a>(row: &'a AckScanRow<'_>) -> Option<&'a str> {
+    let sealed =
+        row.kind.as_deref() == Some("seal") || row.status.as_deref() == Some("transcript_sealed");
+    if sealed { delivery_id_of(row) } else { None }
 }
 
-fn spoken_reply_id(value: &Value) -> Option<String> {
-    if value.get("kind").and_then(Value::as_str) != Some("agent_reply") {
+fn spoken_reply_id(row: &AckScanRow<'_>) -> Option<String> {
+    if row.kind.as_deref() != Some("agent_reply") {
         return None;
     }
-    if value.get("spoken").and_then(Value::as_bool) != Some(true) {
+    if row.spoken != Some(true) {
         return None;
     }
-    value
-        .get("reply_id")
-        .and_then(Value::as_str)
+    row.reply_id
+        .as_deref()
         .filter(|id| !id.is_empty())
         .map(str::to_string)
         .or_else(|| {
-            value
-                .get("emitted_at")
-                .and_then(Value::as_str)
+            row.emitted_at
+                .as_deref()
                 .map(|emitted| format!("emitted:{emitted}"))
         })
 }
 
-fn reply_is_recent(value: &Value) -> bool {
-    let Some(stamp) = value.get("emitted_at").and_then(Value::as_str) else {
+fn reply_is_recent(row: &AckScanRow<'_>) -> bool {
+    let Some(stamp) = row.emitted_at.as_deref() else {
         return true;
     };
     let Ok(emitted) = chrono::DateTime::parse_from_rfc3339(stamp) else {
@@ -1115,6 +1168,51 @@ mod tests {
         fold_bus_delta_budgeted(&bus, &mut mark, u64::MAX, |_| seen += 1).unwrap();
         assert_eq!(seen, 40);
         assert_eq!(mark.offset, line_len * 40);
+    }
+
+    #[test]
+    fn an_oversize_row_is_dropped_and_the_scan_moves_past_it() {
+        let root = tempfile::tempdir().unwrap();
+        let bus = root.path().join("bus.jsonl");
+        let pad = "x".repeat(FOLD_MAX_LINE + 1024);
+        let oversize = format!(
+            "{}\n",
+            json!({"schema": "codescribe.transcript.v1", "kind": "seal", "delivery_id": HIDDEN_ID, "pad": pad})
+        );
+        let normal = seal_row(SEAL_ID);
+        fs::write(&bus, format!("{oversize}{normal}")).unwrap();
+
+        let mut mark = BusMark::default();
+        let mut seen = Vec::new();
+        fold_bus_delta(&bus, &mut mark, |row| {
+            seen.push(row.delivery_id.clone().map(Cow::into_owned));
+        })
+        .unwrap();
+        assert_eq!(
+            seen,
+            vec![Some(SEAL_ID.to_string())],
+            "the oversize row is dropped unparsed; the next row is read"
+        );
+        assert_eq!(
+            mark.offset,
+            (oversize.len() + normal.len()) as u64,
+            "the offset advances past the dropped row"
+        );
+
+        // An oversize row still missing its newline holds the offset: the
+        // writer may still be appending it, and the scan must not split it.
+        let mut file = OpenOptions::new().append(true).open(&bus).unwrap();
+        file.write_all("y".repeat(FOLD_MAX_LINE + 1024).as_bytes())
+            .unwrap();
+        drop(file);
+        let before = mark.offset;
+        let mut extra = 0_usize;
+        fold_bus_delta(&bus, &mut mark, |_| extra += 1).unwrap();
+        assert_eq!(extra, 0);
+        assert_eq!(
+            mark.offset, before,
+            "a rowless tail never advances the mark"
+        );
     }
 
     #[test]
