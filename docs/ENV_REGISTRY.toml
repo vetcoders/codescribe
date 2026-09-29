@@ -16,7 +16,7 @@
 
 [meta]
 version = "1.2.0"
-updated = "2026-08-27"
+updated = "2026-09-29"
 
 [vars.CODESCRIBE_BIN]
 default = ""
@@ -1725,3 +1725,38 @@ type = "string"
 reload = "hot"
 category = "llm"
 description = "OpenAI assistant speech model; xAI accepts no model field."
+
+[vars.LLM_ANTHROPIC_OAUTH_CLIENT_ID]
+default = ""
+type = "string"
+reload = "restart"
+category = "llm"
+description = "Override of the default public desktop OAuth client id used for Anthropic sign-in; empty means the built-in public client id (see NOTICE)."
+
+[vars.LLM_OPENAI_OAUTH_CLIENT_ID]
+default = ""
+type = "string"
+reload = "restart"
+category = "llm"
+description = "Override of the default public desktop OAuth client id used for the ChatGPT sign-in loopback flow; empty means the built-in public Codex CLI client id (see NOTICE)."
+
+[vars.LLM_XAI_OAUTH_CLIENT_ID]
+default = ""
+type = "string"
+reload = "restart"
+category = "llm"
+description = "Override of the default public desktop OAuth client id used for xAI/Grok sign-in; empty means the built-in public Grok CLI client id (see NOTICE)."
+
+[vars.ONBOARDING_MODE]
+default = ""
+type = "string"
+reload = "restart"
+category = "onboarding"
+description = "Persisted onboarding operating lane (basic|agentic), promoted from settings.json by the onboarding flow; empty means the lane has not been chosen yet."
+
+[vars.TRANSCRIPT_TAGGING_ENABLED]
+default = ""
+type = "bool"
+reload = "restart"
+category = "transcript"
+description = "Opt-in switch for the transcript delivery tagging lane; unset/empty keeps tagging off."
