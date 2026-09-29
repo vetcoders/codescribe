@@ -776,10 +776,17 @@ An open channel session also appends `codescribe.channel-session.v1` (`kind: cha
 live. `state: sealed` with `reason: silence` means
 `CODESCRIBE_CHANNEL_AUTOSEAL_SECS` elapsed without new channel text. `0`
 disables that cap. `state: sealed` with `reason: hangup` means Fn+digit was
-pressed again and nothing reopens the session. Each channel session gets at
+pressed again and nothing reopens the session. `state: sealed` with
+`reason: orphan` means the process that opened the session ended without
+sealing it (quit or crash); the next controller start writes it for every
+session whose `open` row is still the newest `channel-session` row of its
+channel, reading only the last 64 MiB of each bus (shared, and every
+dedicated bus the binding names). A session followed by a newer row of its
+channel is already over and gets no orphan row. Each channel session gets at
 most one `sealed` row, on the bus that carried its `open` row, after its
 capture closed and whether or not the ledger issued a terminal seal. The row names `opened_at`, `provider`,
-`provider_session_id`, and `utterance_silence_sec`. `ChannelHudState` carries
+`provider_session_id`, and `utterance_silence_sec`, repeated from the `open`
+row; followers pair the two rows on them. `ChannelHudState` carries
 the same open fact, including provider and session, for the overlay. The
 overlay paint itself is a separate cut.
 

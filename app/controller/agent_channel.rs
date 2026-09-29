@@ -3,11 +3,12 @@
 //! The channel is not a dictation take and not a `State` variant. It subscribes
 //! to the shared capture, seals on a repeated digit, on its own utterance
 //! silence, or after `CODESCRIBE_CHANNEL_AUTOSEAL_SECS` without new channel
-//! text, and stamps `audience` on Bus rows. Paste and the overlay document
-//! stay off. The hold badge is the preview; `ChannelHudState` is the open-mic
-//! fact the overlay paints from.
+//! text, and stamps `audience` on Bus rows. A session a previous process left
+//! open is sealed as an orphan when the controller starts. Paste and the
+//! overlay document stay off. The hold badge is the preview; `ChannelHudState`
+//! is the open-mic fact the overlay paints from.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -110,6 +111,16 @@ struct BindingEntry {
     bus: Option<String>,
 }
 
+impl BindingEntry {
+    fn bus(&self) -> Option<PathBuf> {
+        self.bus
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct OpenAgentChannel {
     pub subscriber: CaptureSubscriberId,
@@ -209,6 +220,10 @@ pub(crate) enum ChannelSealReason {
     Silence,
     /// Fn+digit pressed again: the Founder hung up and nothing reopens it.
     Hangup,
+    /// The process that opened the session ended without closing it (quit,
+    /// crash, or a build that wrote no hang-up row). The next controller
+    /// start seals it; no microphone of this process ever belonged to it.
+    Orphan,
 }
 
 impl ChannelSealReason {
@@ -216,8 +231,177 @@ impl ChannelSealReason {
         match self {
             Self::Silence => "silence",
             Self::Hangup => "hangup",
+            Self::Orphan => "orphan",
         }
     }
+}
+
+/// The one writer of a channel session's `sealed` row, for every reason.
+/// `open` is the session as its `open` row stated it; the seal repeats that
+/// identity — channel, agent, `session_id`, `opened_at`, provider — because
+/// followers pair the two rows on it (the overlay projection closes a
+/// channel only when the seal's `opened_at` equals the open session's).
+fn append_seal_receipt(
+    bus: &Path,
+    reason: ChannelSealReason,
+    open: &crate::presentation::agent_ack::ChannelSessionLine<'_>,
+) -> std::io::Result<()> {
+    let line = crate::presentation::agent_ack::channel_session_line(
+        &crate::presentation::agent_ack::ChannelSessionLine {
+            state: "sealed",
+            reason: reason.as_str(),
+            ..*open
+        },
+    );
+    crate::presentation::agent_ack::append_json_line(bus, &line)
+}
+
+/// Bytes of each bus tail the orphan reconciliation reads: the budget of one
+/// ack-scan pass. The shared bus runs to tens of GB and a full rescan once
+/// took the machine's RAM; an orphan's `open` row is followed only by what
+/// its own process wrote before it ended (on the Founder's bus, 64 MiB is
+/// about twelve hours of dictation).
+const ORPHAN_SCAN_WINDOW_BYTES: u64 = 64 << 20;
+
+/// One `sealed` row the startup reconciliation appended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OrphanSeal {
+    pub bus: PathBuf,
+    pub channel: String,
+    pub session_id: String,
+}
+
+/// The newest `channel-session` row of each channel within the last `window`
+/// bytes of `bus`. Streams the tail one row at a time, so memory holds a
+/// row, never the file; only rows naming the schema are parsed. A missing
+/// bus has no rows.
+fn latest_channel_rows(
+    bus: &Path,
+    window: u64,
+) -> std::io::Result<BTreeMap<String, serde_json::Value>> {
+    use std::io::{BufRead, BufReader, Seek, SeekFrom};
+
+    let schema = crate::presentation::agent_ack::CHANNEL_SESSION_SCHEMA;
+    let file = match std::fs::File::open(bus) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(BTreeMap::new());
+        }
+        Err(error) => return Err(error),
+    };
+    let start = file.metadata()?.len().saturating_sub(window);
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    if start > 0 {
+        // Start on a row boundary: from the byte before the window, drop
+        // everything through the first newline — only the row the window
+        // cut in half, or nothing when the window begins exactly on a row.
+        reader.seek(SeekFrom::Start(start - 1))?;
+        reader.read_until(b'\n', &mut line)?;
+    }
+    let mut latest = BTreeMap::new();
+    loop {
+        line.clear();
+        if reader.read_until(b'\n', &mut line)? == 0 {
+            break;
+        }
+        let Ok(text) = std::str::from_utf8(&line) else {
+            continue;
+        };
+        if !text.contains(schema) {
+            continue;
+        }
+        let Ok(row) = serde_json::from_str::<serde_json::Value>(text) else {
+            continue;
+        };
+        if row.get("schema").and_then(serde_json::Value::as_str) != Some(schema) {
+            continue;
+        }
+        if let Some(channel) = row.get("channel").and_then(serde_json::Value::as_str) {
+            latest.insert(channel.to_string(), row);
+        }
+    }
+    Ok(latest)
+}
+
+/// An `open` row as the session line its seal repeats, or `None` when the
+/// row is not an open session, names no session, or belongs to `live`.
+fn orphan_open_line<'a>(
+    row: &'a serde_json::Value,
+    live: &BTreeSet<String>,
+) -> Option<crate::presentation::agent_ack::ChannelSessionLine<'a>> {
+    use serde_json::Value;
+
+    if row.get("state").and_then(Value::as_str) != Some("open") {
+        return None;
+    }
+    let session_id = row.get("session_id").and_then(Value::as_str)?;
+    if live.contains(session_id) {
+        return None;
+    }
+    let opened_at =
+        chrono::DateTime::parse_from_rfc3339(row.get("opened_at").and_then(Value::as_str)?).ok()?;
+    Some(crate::presentation::agent_ack::ChannelSessionLine {
+        state: "open",
+        reason: "opened",
+        channel: row.get("channel").and_then(Value::as_str)?,
+        agent: row.get("agent").and_then(Value::as_str)?,
+        session_id: Some(session_id),
+        autoseal_secs: row
+            .get("autoseal_secs")
+            .and_then(Value::as_u64)
+            .unwrap_or_default(),
+        opened_at: SystemTime::from(opened_at),
+        utterance_silence_sec: row
+            .get("utterance_silence_sec")
+            .and_then(Value::as_f64)
+            .unwrap_or_default() as f32,
+        provider: row.get("provider").and_then(Value::as_str),
+        provider_session_id: row.get("provider_session_id").and_then(Value::as_str),
+    })
+}
+
+/// Seals with `reason: orphan` every session whose `open` row is still the
+/// newest `channel-session` row of its channel on its bus, unless this
+/// process owns it (`live`). The seal lands on that same bus. A session
+/// already followed by a newer row of its channel was ended for every
+/// follower by that row — a seal, or the successor's `open` — and gets
+/// nothing. Idempotent: the seal becomes the channel's newest row, so the
+/// next start finds nothing open.
+fn seal_orphaned_sessions(
+    buses: &[PathBuf],
+    live: &BTreeSet<String>,
+    window: u64,
+) -> Vec<OrphanSeal> {
+    let mut sealed = Vec::new();
+    for bus in buses {
+        let latest = match latest_channel_rows(bus, window) {
+            Ok(latest) => latest,
+            Err(error) => {
+                tracing::warn!(%error, bus = %bus.display(), "orphan channel scan could not read the bus");
+                continue;
+            }
+        };
+        for row in latest.values() {
+            let Some(open) = orphan_open_line(row, live) else {
+                continue;
+            };
+            match append_seal_receipt(bus, ChannelSealReason::Orphan, &open) {
+                Ok(()) => sealed.push(OrphanSeal {
+                    bus: bus.clone(),
+                    channel: open.channel.to_string(),
+                    session_id: open.session_id.unwrap_or_default().to_string(),
+                }),
+                Err(error) => tracing::warn!(
+                    %error,
+                    bus = %bus.display(),
+                    channel = open.channel,
+                    "orphan channel seal was not appended"
+                ),
+            }
+        }
+    }
+    sealed
 }
 
 pub fn binding_path() -> PathBuf {
@@ -277,17 +461,11 @@ pub fn resolve_digit(digit: u8, path: &Path) -> Result<BoundAgentSession, Channe
             detail: format!("digit {digit} must name audience, provider, and provider_session_id"),
         });
     }
-    let bus = entry
-        .bus
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from);
     Ok(BoundAgentSession {
         audience: audience.to_string(),
         provider: Some(provider.to_string()),
         provider_session_id: Some(provider_session_id.to_string()),
-        bus,
+        bus: entry.bus(),
     })
 }
 
@@ -489,14 +667,16 @@ impl RecordingController {
         Ok(())
     }
 
-    /// The one closing throne of a channel session, for silence and hang-up
-    /// alike. It consumes the open record, which its caller removed from
-    /// `agent_channels` exactly once, so a session gets at most one `sealed`
-    /// receipt. The receipt follows the capture close: `end_channel_session`
-    /// joins the transcription task, so every evidence row of the session is
-    /// already on the bus when a follower reads the boundary. It does not
-    /// wait for a ledger terminal seal: a take whose coverage was refused has
-    /// no other row that releases its words.
+    /// The one closing throne of a live channel session, for silence and
+    /// hang-up alike (a session no live process owns is sealed by
+    /// [`Self::seal_orphaned_channel_sessions`]). It consumes the open record,
+    /// which its caller removed from `agent_channels` exactly once, so a
+    /// session gets at most one `sealed` receipt. The receipt follows the
+    /// capture close: `end_channel_session` joins the transcription task, so
+    /// every evidence row of the session is already on the bus when a
+    /// follower reads the boundary. It does not wait for a ledger terminal
+    /// seal: a take whose coverage was refused has no other row that
+    /// releases its words.
     async fn close_open_channel(
         &self,
         digit: u8,
@@ -530,24 +710,20 @@ impl RecordingController {
                 codescribe_core::state::SessionTranscriptArchive::Committed(&heard),
             );
         }
-        let line = crate::presentation::agent_ack::channel_session_line(
-            &crate::presentation::agent_ack::ChannelSessionLine {
-                state: "sealed",
-                reason: reason.as_str(),
-                channel: &digit.to_string(),
-                agent: &open.audience,
-                session_id: open.session_id.as_deref(),
-                autoseal_secs,
-                opened_at: open.opened_at,
-                utterance_silence_sec: open.silence_sec,
-                provider: open.provider.as_deref(),
-                provider_session_id: open.provider_session_id.as_deref(),
-            },
-        );
+        let opened = crate::presentation::agent_ack::ChannelSessionLine {
+            state: "open",
+            reason: "opened",
+            channel: &digit.to_string(),
+            agent: &open.audience,
+            session_id: open.session_id.as_deref(),
+            autoseal_secs,
+            opened_at: open.opened_at,
+            utterance_silence_sec: open.silence_sec,
+            provider: open.provider.as_deref(),
+            provider_session_id: open.provider_session_id.as_deref(),
+        };
         let seal_receipt_bus = open.bus.as_deref().unwrap_or(shared_bus);
-        if let Err(error) =
-            crate::presentation::agent_ack::append_json_line(seal_receipt_bus, &line)
-        {
+        if let Err(error) = append_seal_receipt(seal_receipt_bus, reason, &opened) {
             tracing::warn!(
                 %error,
                 digit,
@@ -563,15 +739,68 @@ impl RecordingController {
         Ok(())
     }
 
-    /// Ack watcher plus the channel silence cap. Started once, from the live
-    /// controller, so unit tests that only construct a controller do not scan
-    /// the real bridge home.
+    /// Startup reconciliation of the channel-session ledger. A session whose
+    /// `open` row is still the newest row of its channel belongs to a
+    /// process that ended without sealing it — this controller has only just
+    /// started, so no such microphone is live. Each gets one `sealed` row
+    /// with `reason: orphan` on the bus that carried its `open` row: the
+    /// shared bus, or a dedicated bus the binding names. Sessions this
+    /// controller already owns are left alone. The channel lock is held for
+    /// the scan and the appends, so a digit pressed meanwhile opens after
+    /// them and no orphan row can follow a new session's `open` row.
+    pub(crate) async fn seal_orphaned_channel_sessions(
+        &self,
+        shared_bus: &Path,
+        binding_file: &Path,
+    ) -> Vec<OrphanSeal> {
+        let channels = self.agent_channels.lock().await;
+        let live: BTreeSet<String> = channels
+            .values()
+            .filter_map(|open| open.session_id.clone())
+            .collect();
+        let mut buses = vec![shared_bus.to_path_buf()];
+        if let Ok(binding) = load_binding(binding_file) {
+            for bus in binding.bindings.values().filter_map(BindingEntry::bus) {
+                if !buses.contains(&bus) {
+                    buses.push(bus);
+                }
+            }
+        }
+        let sealed = tokio::task::spawn_blocking(move || {
+            seal_orphaned_sessions(&buses, &live, ORPHAN_SCAN_WINDOW_BYTES)
+        })
+        .await;
+        drop(channels);
+        match sealed {
+            Ok(sealed) => sealed,
+            Err(error) => {
+                tracing::warn!(%error, "orphan channel reconciliation stopped");
+                Vec::new()
+            }
+        }
+    }
+
+    /// Orphan reconciliation, then the ack watcher plus the channel silence
+    /// cap. Started once, from the live controller, so unit tests that only
+    /// construct a controller do not scan the real bridge home.
     pub fn spawn_channel_guards(self: &Arc<Self>, handle: tokio::runtime::Handle) {
         if self.channel_guards_started.swap(true, Ordering::SeqCst) {
             return;
         }
         let controller = Arc::clone(self);
         handle.spawn(async move {
+            let orphans = controller
+                .seal_orphaned_channel_sessions(
+                    &crate::presentation::transcript_bus::transcript_bus_path(),
+                    &binding_path(),
+                )
+                .await;
+            if !orphans.is_empty() {
+                tracing::info!(
+                    ?orphans,
+                    "sealed channel sessions a previous process left open"
+                );
+            }
             loop {
                 if controller.shutdown_requested.load(Ordering::SeqCst) {
                     break;
@@ -1404,6 +1633,261 @@ mod tests {
                 ("agent-channel-3-before".to_string(), "hangup".to_string()),
                 ("agent-channel-3-after".to_string(), "silence".to_string()),
             ]
+        );
+    }
+
+    /// Byte shape of the `open` row the writer put on the shared bus for a
+    /// channel whose app was then quit (observed 2026-09-29, channel 2).
+    /// Identities are neutral; field order and formats are the writer's.
+    const ORPHAN_SESSION: &str = "agent-channel-2-5f0c1d2e-20df-4f28-954f-0a1b2c3d4e5f";
+    const ORPHAN_OPEN_ROW: &str = r#"{"agent":"Leon","autoseal_secs":5,"channel":"2","emitted_at":"2026-09-29T17:22:06.346400Z","kind":"channel_session","loud":true,"opened_at":"2026-09-29T17:22:06.265163Z","provider":"claude-code","provider_session_id":"leon-session","reason":"opened","schema":"codescribe.channel-session.v1","session_id":"agent-channel-2-5f0c1d2e-20df-4f28-954f-0a1b2c3d4e5f","state":"open","utterance_silence_sec":5.0}"#;
+    /// The session's ledger terminal seal, which followed its `open` row.
+    /// It is transcript evidence, not a channel-session boundary.
+    const ORPHAN_TERMINAL_SEAL_ROW: &str = r#"{"schema":"codescribe.transcript-evidence.v1","sequence":3,"session_id":"agent-channel-2-5f0c1d2e-20df-4f28-954f-0a1b2c3d4e5f","reducer_revision":5,"reducer_action":"record_ledger_terminal_seal","document_index":0,"rendered_text":"Iwo","terminal":false,"audience":"Leon"}"#;
+    /// An earlier session of the same channel that the orphan superseded.
+    const SUPERSEDED_OPEN_ROW: &str = r#"{"agent":"Leon","autoseal_secs":5,"channel":"2","emitted_at":"2026-09-29T16:34:23.279789Z","kind":"channel_session","loud":true,"opened_at":"2026-09-29T16:34:23.199613Z","provider":"claude-code","provider_session_id":"leon-session","reason":"opened","schema":"codescribe.channel-session.v1","session_id":"agent-channel-2-superseded","state":"open","utterance_silence_sec":5.0}"#;
+    const CHANNEL_2_BINDING: &str = r#"{"schema":"vc.agent-audience-binding.v1","bindings":{"2":{"audience":"Leon","provider":"claude-code","provider_session_id":"leon-session"}}}"#;
+
+    /// Appends rows exactly as another process left them.
+    fn append_raw(bus: &Path, rows: &[&str]) {
+        use std::io::Write;
+        if let Some(parent) = bus.parent() {
+            std::fs::create_dir_all(parent).expect("bus dir");
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(bus)
+            .expect("bus");
+        for row in rows {
+            writeln!(file, "{row}").expect("row");
+        }
+    }
+
+    /// The `open` row a Live dispatch writes for `session` on channel 3.
+    fn live_open_line(session: &str) -> crate::presentation::agent_ack::ChannelSessionLine<'_> {
+        crate::presentation::agent_ack::ChannelSessionLine {
+            state: "open",
+            reason: "opened",
+            channel: "3",
+            agent: "Leon",
+            session_id: Some(session),
+            autoseal_secs: 5,
+            opened_at: SystemTime::now(),
+            utterance_silence_sec: 5.0,
+            provider: Some("codex"),
+            provider_session_id: Some("leon-session"),
+        }
+    }
+
+    fn write_open_row(bus: &Path, open: &crate::presentation::agent_ack::ChannelSessionLine<'_>) {
+        crate::presentation::agent_ack::append_json_line(
+            bus,
+            &crate::presentation::agent_ack::channel_session_line(open),
+        )
+        .expect("open row");
+    }
+
+    /// The observed bug: channel 2's newest row stayed `open` after the app
+    /// quit, and the overlay painted a live microphone forever. One start
+    /// seals it with the key the overlay projection pairs on.
+    #[tokio::test]
+    async fn a_session_a_previous_process_left_open_gets_one_orphan_seal() {
+        let controller = RecordingController::new_without_keychain();
+        let dir = tempfile::tempdir().expect("temp");
+        let binding = write_binding(dir.path(), CHANNEL_2_BINDING);
+        let shared_bus = dir.path().join("transcript-events.jsonl");
+        append_raw(
+            &shared_bus,
+            &[
+                SUPERSEDED_OPEN_ROW,
+                ORPHAN_OPEN_ROW,
+                ORPHAN_TERMINAL_SEAL_ROW,
+            ],
+        );
+
+        let sealed = controller
+            .seal_orphaned_channel_sessions(&shared_bus, &binding)
+            .await;
+
+        assert_eq!(
+            sealed,
+            vec![OrphanSeal {
+                bus: shared_bus.clone(),
+                channel: "2".to_string(),
+                session_id: ORPHAN_SESSION.to_string(),
+            }]
+        );
+        let rows = bus_rows(&shared_bus);
+        assert_eq!(rows.len(), 4, "{rows:?}");
+        assert_eq!(
+            sealed_rows(&rows),
+            vec![(ORPHAN_SESSION.to_string(), "orphan".to_string())],
+            "the superseded session was ended by its successor's open row"
+        );
+        let (open, seal) = (&rows[1], &rows[3]);
+        assert_eq!(seal["schema"], "codescribe.channel-session.v1");
+        assert_eq!(seal["kind"], "channel_session");
+        assert_eq!(seal["state"], "sealed");
+        assert_eq!(seal["reason"], "orphan");
+        assert_eq!(seal["loud"], false);
+        // OverlayChannelDelivery.Bus keys a channel's session on these and
+        // lets a non-open row close it only when `opened_at` is the open
+        // session's own, byte for byte.
+        for key in [
+            "channel",
+            "agent",
+            "session_id",
+            "opened_at",
+            "provider",
+            "provider_session_id",
+            "autoseal_secs",
+            "utterance_silence_sec",
+        ] {
+            assert_eq!(seal[key], open[key], "{key}");
+        }
+        let latest = latest_channel_rows(&shared_bus, ORPHAN_SCAN_WINDOW_BYTES).expect("scan");
+        assert_eq!(
+            latest["2"]["state"], "sealed",
+            "channel 2 is no longer open"
+        );
+    }
+
+    #[tokio::test]
+    async fn sessions_sealed_by_silence_or_hang_up_get_no_orphan_row() {
+        let controller = RecordingController::new_without_keychain();
+        let dir = tempfile::tempdir().expect("temp");
+        let (binding, channel_bus) = write_dedicated_binding(dir.path());
+        let shared_bus = dir.path().join("shared-bus.jsonl");
+        for (session, reason) in [
+            ("agent-channel-3-silence", ChannelSealReason::Silence),
+            ("agent-channel-3-hangup", ChannelSealReason::Hangup),
+        ] {
+            let open = live_open_line(session);
+            write_open_row(&channel_bus, &open);
+            append_seal_receipt(&channel_bus, reason, &open).expect("seal");
+        }
+        let before = std::fs::read(&channel_bus).expect("bus");
+
+        let sealed = controller
+            .seal_orphaned_channel_sessions(&shared_bus, &binding)
+            .await;
+
+        assert!(sealed.is_empty(), "{sealed:?}");
+        assert_eq!(std::fs::read(&channel_bus).expect("bus"), before);
+        assert!(!shared_bus.exists());
+    }
+
+    #[tokio::test]
+    async fn a_second_start_writes_no_second_orphan_row() {
+        let dir = tempfile::tempdir().expect("temp");
+        let binding = write_binding(dir.path(), CHANNEL_2_BINDING);
+        let shared_bus = dir.path().join("transcript-events.jsonl");
+        append_raw(&shared_bus, &[ORPHAN_OPEN_ROW, ORPHAN_TERMINAL_SEAL_ROW]);
+
+        let first = RecordingController::new_without_keychain()
+            .seal_orphaned_channel_sessions(&shared_bus, &binding)
+            .await;
+        let second = RecordingController::new_without_keychain()
+            .seal_orphaned_channel_sessions(&shared_bus, &binding)
+            .await;
+
+        assert_eq!(first.len(), 1, "{first:?}");
+        assert!(second.is_empty(), "{second:?}");
+        assert_eq!(
+            sealed_rows(&bus_rows(&shared_bus)),
+            vec![(ORPHAN_SESSION.to_string(), "orphan".to_string())]
+        );
+    }
+
+    /// W5 buses: the `open` row sits on the binding's dedicated bus, so the
+    /// orphan seal lands there and the shared bus is not touched.
+    #[tokio::test]
+    async fn an_open_row_on_a_dedicated_bus_is_sealed_on_that_bus() {
+        let controller = RecordingController::new_without_keychain();
+        let dir = tempfile::tempdir().expect("temp");
+        let (binding, channel_bus) = write_dedicated_binding(dir.path());
+        let shared_bus = dir.path().join("shared-bus.jsonl");
+        append_raw(&shared_bus, &[ORPHAN_TERMINAL_SEAL_ROW]);
+        let shared_before = std::fs::read(&shared_bus).expect("shared bus");
+        let open = live_open_line("agent-channel-3-orphan");
+        write_open_row(&channel_bus, &open);
+
+        let sealed = controller
+            .seal_orphaned_channel_sessions(&shared_bus, &binding)
+            .await;
+
+        assert_eq!(
+            sealed,
+            vec![OrphanSeal {
+                bus: channel_bus.clone(),
+                channel: "3".to_string(),
+                session_id: "agent-channel-3-orphan".to_string(),
+            }]
+        );
+        assert_eq!(
+            sealed_rows(&bus_rows(&channel_bus)),
+            vec![("agent-channel-3-orphan".to_string(), "orphan".to_string())]
+        );
+        assert_eq!(
+            std::fs::read(&shared_bus).expect("shared bus"),
+            shared_before
+        );
+    }
+
+    /// A session this controller opened is live, not an orphan, even when its
+    /// `open` row is its channel's newest.
+    #[tokio::test]
+    async fn a_session_this_process_owns_is_never_sealed_as_an_orphan() {
+        let controller = RecordingController::new_without_keychain();
+        let dir = tempfile::tempdir().expect("temp");
+        let (binding, channel_bus) = write_dedicated_binding(dir.path());
+        let shared_bus = dir.path().join("shared-bus.jsonl");
+        open_stamped(&controller, &binding, &shared_bus, "agent-channel-3-live").await;
+        write_open_row(&channel_bus, &live_open_line("agent-channel-3-live"));
+        let before = std::fs::read(&channel_bus).expect("bus");
+
+        let sealed = controller
+            .seal_orphaned_channel_sessions(&shared_bus, &binding)
+            .await;
+
+        assert!(sealed.is_empty(), "{sealed:?}");
+        assert_eq!(std::fs::read(&channel_bus).expect("bus"), before);
+        assert!(controller.agent_channel_snapshot(3).await.is_some());
+    }
+
+    /// The scan reads a bounded tail and starts on a row boundary: a row the
+    /// window cuts is dropped whole, a row the window starts on is kept.
+    #[test]
+    fn the_orphan_scan_reads_only_whole_rows_of_the_bus_tail() {
+        let dir = tempfile::tempdir().expect("temp");
+        let bus = dir.path().join("bus.jsonl");
+        let older = SUPERSEDED_OPEN_ROW.replace(r#""channel":"2""#, r#""channel":"4""#);
+        append_raw(&bus, &[older.as_str(), ORPHAN_OPEN_ROW]);
+        let newest = ORPHAN_OPEN_ROW.len() as u64 + 1;
+
+        let exact = latest_channel_rows(&bus, newest).expect("scan");
+        assert_eq!(exact.keys().collect::<Vec<_>>(), vec!["2"]);
+        let one_more = latest_channel_rows(&bus, newest + 1).expect("scan");
+        assert_eq!(one_more.keys().collect::<Vec<_>>(), vec!["2"]);
+        let cut = latest_channel_rows(&bus, newest - 1).expect("scan");
+        assert!(cut.is_empty(), "{cut:?}");
+        let whole = latest_channel_rows(&bus, ORPHAN_SCAN_WINDOW_BYTES).expect("scan");
+        assert_eq!(whole.keys().collect::<Vec<_>>(), vec!["2", "4"]);
+
+        let sealed = seal_orphaned_sessions(std::slice::from_ref(&bus), &BTreeSet::new(), newest);
+        assert_eq!(
+            sealed
+                .iter()
+                .map(|seal| seal.channel.as_str())
+                .collect::<Vec<_>>(),
+            vec!["2"],
+            "an open row outside the window is not read"
+        );
+        assert!(
+            latest_channel_rows(&dir.path().join("missing.jsonl"), newest)
+                .expect("missing bus")
+                .is_empty()
         );
     }
 }
