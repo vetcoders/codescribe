@@ -26,6 +26,7 @@
 pub mod admission;
 /// Fn+digit agent channels. Not a take and not a `State` variant.
 mod agent_channel;
+pub use agent_channel::ChannelHudState;
 /// Per-session assistive context bag (selection, app, images).
 mod context_bucket;
 /// One destination throne: intent → Agent / Orient / paste. Focus is not king.
@@ -1313,6 +1314,9 @@ pub struct RecordingController {
     ///
     /// Lock order: this mutex before the recorder mutex.
     agent_channels: Mutex<std::collections::HashMap<u8, agent_channel::OpenAgentChannel>>,
+
+    /// The ack watcher and channel silence cap already have a task.
+    channel_guards_started: AtomicBool,
 }
 
 /// The shared handles one conversation audio loop moves into its task.
@@ -1533,6 +1537,7 @@ impl RecordingController {
             conversation_task: Arc::new(Mutex::new(None)),
             event_broadcast,
             agent_channels: Mutex::new(std::collections::HashMap::new()),
+            channel_guards_started: AtomicBool::new(false),
         }
     }
 

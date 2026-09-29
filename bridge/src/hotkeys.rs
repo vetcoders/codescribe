@@ -220,6 +220,8 @@ fn ensure_controller(
     let controller = guard.get_or_insert_with(|| {
         let controller = Arc::new(RecordingController::new_without_keychain());
         spawn_max_approval_forwarder(&controller, handle.clone());
+        #[cfg(not(test))]
+        controller.spawn_channel_guards(handle.clone());
         spawn_event_forwarder(Arc::clone(&controller), handle);
         controller
     });
