@@ -14,7 +14,6 @@ struct OverlayAppearancePalette: Equatable, Sendable {
   let listeningStatus: OverlayColorToken
   let processingStatus: OverlayColorToken
   let successStatus: OverlayColorToken
-  let neutralStatus: OverlayColorToken
   let errorStatus: OverlayColorToken
   let shadowOpacity: Double
 
@@ -28,7 +27,6 @@ struct OverlayAppearancePalette: Equatable, Sendable {
     listeningStatus: OverlayColorToken(0x9B4528),
     processingStatus: OverlayColorToken(0x8A5B00),
     successStatus: OverlayColorToken(0x4D5E2D),
-    neutralStatus: OverlayColorToken(0x5F5A52),
     errorStatus: OverlayColorToken(0xA2302B),
     shadowOpacity: 0.16
   )
@@ -43,7 +41,6 @@ struct OverlayAppearancePalette: Equatable, Sendable {
     listeningStatus: OverlayColorToken(0xE08A64),
     processingStatus: OverlayColorToken(0xE2BE5B),
     successStatus: OverlayColorToken(0xB5C98D),
-    neutralStatus: OverlayColorToken(0xA9A39B),
     errorStatus: OverlayColorToken(0xFFAAA5),
     shadowOpacity: 0.20
   )
@@ -54,18 +51,5 @@ struct OverlayAppearancePalette: Equatable, Sendable {
 
   static func resolve(_ appearance: OverlayAppearance) -> OverlayAppearancePalette {
     appearance == .dark ? .dark : .light
-  }
-
-  /// Refused coverage uses caution amber, never the green success token.
-  /// Palette tests verify opaque contrast; glass needs live compositor checks.
-  func statusToken(for mode: OverlayMode) -> OverlayColorToken {
-    switch mode {
-    case .listening: listeningStatus
-    case .finalizing: processingStatus
-    case .coverageRefused: processingStatus
-    case .formatted: successStatus
-    case .noSpeech: neutralStatus
-    case .error: errorStatus
-    }
   }
 }

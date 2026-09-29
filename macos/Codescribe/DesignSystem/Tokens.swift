@@ -53,6 +53,9 @@ enum CSPalette {
   static let assistive = NSColor(hex: 0x9B72F2)
   static let olive = NSColor(hex: 0x5F6B3E)
   static let indicatorRecording = NSColor(hex: 0xFF3B30)
+  /// Capture is live but nothing reaches speaking level. Founder intent
+  /// s04-027 (2026-09-25): the indicator is yellow while you are not speaking.
+  static let indicatorSilence = NSColor(hex: 0xFFCC00)
   static let danger = NSColor(hex: 0xD84A4A)
 
   // Surfaces — warm ink in dark, warm paper in light.

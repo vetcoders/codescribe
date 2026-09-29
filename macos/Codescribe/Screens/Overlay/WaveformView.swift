@@ -24,10 +24,24 @@ final class AudioLevelMeter {
   /// Smoothed display gain in 0...1, or nil when no live signal has arrived.
   @ObservationIgnored private(set) var gain: Double?
   private(set) var hasLowInputSignal = false
+  /// Measured capture blocks have stayed below speaking level for
+  /// `silenceHoldSeconds`. Energy only: the engine emits no Silero
+  /// `VadStart`/`VadEnd` today, so this claims "nothing at speaking level",
+  /// never "no speech". Missing or delayed blocks never count as silence.
+  private(set) var isSilent = false
   @ObservationIgnored private var lastBlockAt: TimeInterval?
   @ObservationIgnored private var lastSpeechAt: TimeInterval?
+  @ObservationIgnored private var quietSince: TimeInterval?
   @ObservationIgnored private var speechSeconds = 0.0
   @ObservationIgnored private var speechEnergy = 0.0
+
+  /// A block below this level counts toward silence.
+  static let silenceFloorDB = -52.0
+  /// A block above this level ends silence at once. The gap between the two
+  /// levels keeps a soft syllable from flickering the light.
+  static let speakingLevelDB = -48.0
+  /// Ordinary pauses between words and sentences stay shorter than this.
+  static let silenceHoldSeconds = 1.2
 
   /// Map one linear RMS block onto display gain: dB scale (speech at a normal
   /// mic distance lives around −45…−25 dBFS), fast attack / slow release so
@@ -46,20 +60,24 @@ final class AudioLevelMeter {
     let current = gain ?? 0
     let smoothing = target > current ? 0.6 : 0.15
     gain = current + (target - current) * smoothing
-    assessInput(rms: Double(rms), speechActive: speechActive, now: now)
+    assessInput(rms: Double(rms), db: db, speechActive: speechActive, now: now)
   }
 
-  private func assessInput(rms: Double, speechActive: Bool, now: TimeInterval) {
+  private func assessInput(rms: Double, db: Double, speechActive: Bool, now: TimeInterval) {
     guard now.isFinite else { return }
     defer { lastBlockAt = now }
     guard let lastBlockAt else { return }
     let elapsed = now - lastBlockAt
-    // Missing or delayed callbacks are not measured speech duration.
+    // Missing or delayed callbacks are not measured speech duration, and
+    // they are not measured silence either.
     guard elapsed > 0, elapsed <= 0.25 else {
       speechSeconds = 0
       speechEnergy = 0
+      quietSince = nil
+      if isSilent { isSilent = false }
       return
     }
+    assessSilence(db: db, speechActive: speechActive, now: now)
     if let lastSpeechAt, now - lastSpeechAt > 1.5 {
       speechSeconds = 0
       speechEnergy = 0
@@ -83,11 +101,36 @@ final class AudioLevelMeter {
     speechEnergy = 0
   }
 
+  /// Schmitt trigger over consecutive measured blocks: silence needs an
+  /// unbroken quiet run of `silenceHoldSeconds`; one block at speaking level
+  /// ends it immediately, so the light turns back the moment you speak. A VAD
+  /// speech verdict, when the engine sends one, outranks the energy reading.
+  private func assessSilence(db: Double, speechActive: Bool, now: TimeInterval) {
+    if speechActive || db > Self.speakingLevelDB {
+      quietSince = nil
+      if isSilent { isSilent = false }
+      return
+    }
+    guard db < Self.silenceFloorDB else {
+      // Between the two levels: an ongoing silence holds, a quiet run that
+      // has not yet become silence starts over.
+      if !isSilent { quietSince = nil }
+      return
+    }
+    let since = quietSince ?? now
+    quietSince = since
+    if !isSilent, now - since >= Self.silenceHoldSeconds {
+      isSilent = true
+    }
+  }
+
   func reset() {
     gain = nil
     hasLowInputSignal = false
+    isSilent = false
     lastBlockAt = nil
     lastSpeechAt = nil
+    quietSince = nil
     speechSeconds = 0
     speechEnergy = 0
   }

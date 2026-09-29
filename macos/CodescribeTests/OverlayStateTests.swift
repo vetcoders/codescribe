@@ -1035,9 +1035,10 @@ final class OverlayStateTests: XCTestCase {
         mode: .formatted, hasPresentationStatus: false, isCollapsed: false,
         hasLowInputSignal: true
       ).showsCoverageWarning)
-    XCTAssertEqual(
-      OverlayCoverageStatus.message,
-      "Recording quality low. Run mic calibration and check surroundings.")
+    // Only the measured quiet input is a microphone fact; it alone may send
+    // the user to mic calibration.
+    XCTAssertEqual(OverlayWarningCopy.quietInput.owner, .microphone)
+    XCTAssertTrue(OverlayWarningCopy.quietInput.sentence.contains("mic calibration"))
   }
 
   func testQuietInputAdvisoryRequiresSpeechAndRecoversWithoutFlicker() {
@@ -3876,7 +3877,8 @@ final class OverlayStateTests: XCTestCase {
 
     projectText("usable words", to: state, phase: "coverage_refused", canCopy: true, terminal: true)
 
-    XCTAssertEqual(state.coverageRefusalNotice, OverlayState.defaultCoverageRefusalNotice)
+    XCTAssertEqual(state.coverageRefusalNotice, OverlayWarningCopy.sealRefused(nil).sentence)
+    XCTAssertEqual(state.footerWarning?.owner, .engine, "a refused seal is the engine's fact")
     XCTAssertEqual(
       state.coverageRefusalDetail,
       "No seal was recorded for this take, so nothing here is certified complete.")
@@ -4036,7 +4038,8 @@ final class OverlayStateTests: XCTestCase {
       XCTAssertEqual(state.statusText, "unsealed transcript")
       XCTAssertEqual(
         state.coverageRefusalNotice,
-        "These words were kept, but the transcript was not sealed")
+        "The engine measured full coverage but did not finish sealing this take, so the text is kept unsealed."
+      )
       XCTAssertEqual(
         state.coverageRefusalDetail,
         "Acoustic coverage was measured as complete, but this transcript has no current terminal seal."
@@ -4056,10 +4059,10 @@ final class OverlayStateTests: XCTestCase {
 
   func testTypedCoverageExplainsIncompleteAndEveryUnavailableReasonWithoutChangingBytes() {
     let cases: [(CsProjectedSealCoverageReceipt, String, String)] = [
-      (coverage(.incomplete), "incomplete coverage", "Incomplete coverage"),
+      (coverage(.incomplete), "incomplete coverage", "no words for 50% of the speech"),
       (
         coverage(.unavailable, reason: .notObserved), "measurement unavailable",
-        "No acoustic measurement"
+        "no acoustic measurement was taken"
       ),
       (
         coverage(.unavailable, reason: .identityMismatch), "measurement unavailable",
@@ -4077,7 +4080,7 @@ final class OverlayStateTests: XCTestCase {
         coverage(.unavailable, reason: .unknown), "measurement unavailable",
         "measurement was unavailable"
       ),
-      (coverage(.unknown), "unverified coverage", "could not be verified"),
+      (coverage(.unknown), "unverified coverage", "no coverage measurement"),
     ]
     for (receipt, status, explanation) in cases {
       let state = OverlayState()

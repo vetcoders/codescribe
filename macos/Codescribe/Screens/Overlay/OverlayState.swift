@@ -526,35 +526,29 @@ final class OverlayState {
   @ObservationIgnored private var eventTask: Task<Void, Never>?
 
   static let defaultNoSpeechNotice = "No speech detected"
-  /// Missing coverage is unverified, never proof of missing words.
-  static let defaultCoverageRefusalNotice =
-    "Coverage could not be verified — these words were kept, not sealed"
 
   /// Display copy distinguishes measured coverage from refused finality.
   /// Absent coverage is unknown; complete coverage does not mint a terminal seal.
+  /// The notice is the engine-owned sentence the footer chip also shows.
   private var coverageRefusalCopy: (status: String, notice: String) {
-    guard let coverage = latestTranscriptProjection?.sealCoverage else {
-      return ("unverified coverage", Self.defaultCoverageRefusalNotice)
+    let coverage = latestTranscriptProjection?.sealCoverage
+    let notice = OverlayWarningCopy.sealRefused(coverage).sentence
+    switch coverage?.status {
+    case .incomplete: return ("incomplete coverage", notice)
+    case .unavailable: return ("measurement unavailable", notice)
+    case .complete: return ("unsealed transcript", notice)
+    case .unknown, nil: return ("unverified coverage", notice)
     }
-    switch coverage.status {
-    case .incomplete:
-      return ("incomplete coverage", "Incomplete coverage — these words were kept, not sealed")
-    case .unavailable:
-      let explanation: String
-      switch coverage.unavailableReason {
-      case .notObserved: explanation = "No acoustic measurement was available for this take"
-      case .identityMismatch: explanation = "The acoustic measurement did not match this take"
-      case .invalidMeasurement: explanation = "The acoustic measurement could not be used"
-      case .partialObservation:
-        explanation = "The acoustic measurement covered only part of this take"
-      case .unknown, nil: explanation = "The acoustic measurement was unavailable"
-      }
-      return ("measurement unavailable", "\(explanation) — these words were kept, not sealed")
-    case .complete:
-      return ("unsealed transcript", "These words were kept, but the transcript was not sealed")
-    case .unknown:
-      return ("unverified coverage", Self.defaultCoverageRefusalNotice)
+  }
+
+  /// The footer warning and whose fact it is: a refused seal belongs to the
+  /// engine, a quiet input to the microphone. Nil when neither applies.
+  var footerWarning: OverlayWarningCopy? {
+    if mode == .coverageRefused {
+      return .sealRefused(latestTranscriptProjection?.sealCoverage)
     }
+    if mode == .listening && levelMeter.hasLowInputSignal { return .quietInput }
+    return nil
   }
 
   /// Admission metadata only; no transcript or acoustic adjudication is stored.
@@ -746,6 +740,15 @@ final class OverlayState {
   var statusRippling: Bool {
     mode == .listening
       && (audioReady || vadActive)
+  }
+
+  /// The header status light, or nil when no take is live. Projection only:
+  /// phase from the reducer, mode from the tray feed, silence from measured
+  /// capture level.
+  var recordingLight: OverlayRecordingLight? {
+    OverlayRecordingLight.resolve(
+      mode: mode, terminal: terminal, recording: recording, transcribing: transcribing,
+      indicatorMode: indicatorMode, silent: levelMeter.isSilent)
   }
 
   private static func displayEngineChip(_ engine: String) -> String {

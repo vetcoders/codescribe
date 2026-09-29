@@ -96,6 +96,7 @@ final class DesignSystemAdaptiveTests: XCTestCase {
       ("assistive", CSPalette.assistive),
       ("olive", CSPalette.olive),
       ("indicatorRecording", CSPalette.indicatorRecording),
+      ("indicatorSilence", CSPalette.indicatorSilence),
       ("danger", CSPalette.danger),
     ]
     for (name, token) in fixedTokens {

@@ -566,8 +566,8 @@ struct DictationOverlayView: View {
         if showsDiagnostics && state.compactProjection?.degraded == true {
           Image(systemName: "exclamationmark.bubble.fill")
             .foregroundStyle(palette.processingStatus.color)
-            .help("Detected speech is not fully transcribed")
-            .accessibilityLabel("Detected speech is not fully transcribed")
+            .help(OverlayWarningCopy.liveTranscriptBehind.sentence)
+            .accessibilityLabel(OverlayWarningCopy.liveTranscriptBehind.sentence)
             .accessibilityIdentifier("overlay-acoustic-warning")
         }
         if let error = state.expansionPreferenceError {
@@ -584,6 +584,9 @@ struct DictationOverlayView: View {
           )
         }
         autoPasteControl
+        if let light = state.recordingLight {
+          OverlayRecordingLightView(light: light, palette: palette, animates: overlayVisible)
+        }
         sessionTimer
           .allowsHitTesting(false)
         OverlayPlacementMenu(state: state, palette: palette)
@@ -715,11 +718,11 @@ struct DictationOverlayView: View {
           transcriptStatus
         }
       }
-    } else if bottomChromeSlots.showsCoverageWarning {
+    } else if bottomChromeSlots.showsCoverageWarning, let warning = state.footerWarning {
       OverlayCoverageStatus(
-        palette: palette, canRetranscribe: state.terminal && state.canRetranscribe,
+        warning: warning, palette: palette,
+        canRetranscribe: state.terminal && state.canRetranscribe,
         cloudConfigured: state.cloudRetranscribeConfigured,
-        diagnosticNotice: showsDiagnostics ? state.coverageRefusalNotice : nil,
         diagnosticDetail: showsDiagnostics ? state.coverageRefusalDetail : nil,
         onRetranscribe: { state.retranscribe(pass: $0) }
       )

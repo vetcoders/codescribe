@@ -140,8 +140,13 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(header.contains("if let error = state.expansionPreferenceError"))
     let refusal = try section(of: source, from: "case .coverageRefused:", to: "case .noSpeech:")
     XCTAssertFalse(refusal.contains("coverageRefusedBody"))
-    XCTAssertTrue(source.contains("if bottomChromeSlots.showsCoverageWarning {"))
+    XCTAssertTrue(
+      source.contains(
+        "if bottomChromeSlots.showsCoverageWarning, let warning = state.footerWarning {"))
     XCTAssertTrue(source.contains("OverlayCoverageStatus("))
+    XCTAssertFalse(
+      source.contains("diagnosticNotice"),
+      "the refusal sentence is the chip's own copy, never a lab-only second notice")
   }
 
   func testExpansionClampsBottomAnchorsLowDragsAndSmallerNegativeDisplay() {
