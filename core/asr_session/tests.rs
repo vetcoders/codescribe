@@ -792,10 +792,10 @@ fn production_layer1_cloud_forwards_native_pcm_over_real_websocket() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let endpoint = format!(
-        // WHY: test-only loopback server on 127.0.0.1 with no TLS and no network egress;
-        // WHEN: unit tests only; WHERE: the production lane takes the wss:// live endpoint
-        // from the loader snapshot, never this literal (semgrep detect-insecure-websocket).
-        "ws://{}/v1/audio/transcribe", // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
+        // Test-only loopback server on 127.0.0.1 with no TLS and no network
+        // egress; the production lane takes the wss:// live endpoint from the
+        // loader snapshot, never this literal.
+        "ws://{}/v1/audio/transcribe",
         listener.local_addr().unwrap()
     );
     environment.set("STT_LIVE_ENDPOINT", &endpoint);

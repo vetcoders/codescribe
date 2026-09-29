@@ -2044,14 +2044,8 @@ impl UserSettings {
             // WHY: `parent` is derived only from the canonical internal
             // settings path above (CODESCRIBE_DATA_DIR / Application Support),
             // never from request or user input; opening it read-only is the
-            // directory fsync that makes the rename durable.
-            // WHEN: the pre-push gate (`semgrep scan --config auto --error`)
-            // flags this line as rust.actix path traversal (2026-09-08, after
-            // the vc-prune silencer strip); the local `--config auto` run does
-            // not, so the waiver must survive both.
-            // WHERE: this fsync only — the write above targets `tmp`, which is
-            // created with `create_new`.
-            // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
+            // directory fsync that makes the rename durable; the write above
+            // targets `tmp`, which is created with `create_new`.
             File::open(parent)?.sync_all()?;
             Ok(())
         })();
