@@ -664,6 +664,58 @@ final class OverlayState {
     applyPreferredExpansion()
     keepVisibleBetweenTakes = engine?.overlayKeepVisibleBetweenTakes() ?? false
     engine?.setListener(listener)
+    if engine is ControllerDictationEngine {
+      observeChannelDelivery(
+        using: OverlayChannelDeliveryReader(root: OverlayChannelDeliveryReader.productionRoot()))
+    }
+  }
+
+  private(set) var channelDelivery: [OverlayChannelDelivery] = []
+  private(set) var channelStatusUnavailable = false
+  var hasOpenChannel: Bool { channelDelivery.contains(where: \.isOpen) }
+  @ObservationIgnored var onChannelPresentationChanged: (() -> Void)?
+  @ObservationIgnored var onChannelChromeHeightChanged: ((CGFloat) -> Void)?
+  private(set) var channelChromeHeight: CGFloat = 0
+  @ObservationIgnored private var channelObservationTask: Task<Void, Never>?
+
+  func updateChannelChromeHeight(_ height: CGFloat) {
+    guard abs(height - channelChromeHeight) > 0.5 else { return }
+    channelChromeHeight = height
+    onChannelChromeHeightChanged?(height)
+  }
+
+  func observeChannelDelivery(using reader: OverlayChannelDeliveryReader) {
+    channelObservationTask?.cancel()
+    channelObservationTask = Task { @MainActor [weak self] in
+      while !Task.isCancelled {
+        do {
+          let snapshot = try await reader.read()
+          guard !Task.isCancelled, self != nil else { return }
+          self?.applyChannelDelivery(snapshot)
+        } catch {
+          guard !Task.isCancelled, let self else { return }
+          if !channelStatusUnavailable {
+            channelStatusUnavailable = true
+            onChannelPresentationChanged?()
+          }
+        }
+        do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+      }
+    }
+  }
+
+  func applyChannelDelivery(_ snapshot: [OverlayChannelDelivery]) {
+    guard snapshot != channelDelivery || channelStatusUnavailable else { return }
+    let wasOpen = hasOpenChannel
+    channelDelivery = snapshot
+    channelStatusUnavailable = false
+    if snapshot.isEmpty { updateChannelChromeHeight(0) }
+    if hasOpenChannel {
+      cancelAutoHide()
+    } else if wasOpen && terminal {
+      restartAutoHideCountdown()
+    }
+    onChannelPresentationChanged?()
   }
 
   private func apply(_ event: OverlayListenerEvent) {
@@ -1680,6 +1732,10 @@ final class OverlayState {
   }
 
   private func restartAutoHideCountdown() {
+    if hasOpenChannel {
+      cancelAutoHide()
+      return
+    }
     if keepVisibleBetweenTakes && !agentSessionArmed {
       cancelAutoHide()
       return
