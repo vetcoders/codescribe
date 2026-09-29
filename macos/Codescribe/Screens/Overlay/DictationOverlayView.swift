@@ -316,9 +316,22 @@ struct DictationOverlayView: View {
   // MARK: Header
 
   private var header: some View {
-    ViewThatFits(in: .horizontal) {
-      fullHeader
-      narrowHeader
+    VStack(spacing: 6) {
+      ViewThatFits(in: .horizontal) {
+        fullHeader
+        narrowHeader
+      }
+      if !state.channelDelivery.isEmpty || state.channelStatusUnavailable {
+        OverlayChannelStatusView(
+          channels: state.channelDelivery, unavailable: state.channelStatusUnavailable,
+          palette: palette
+        )
+        .onGeometryChange(for: CGFloat.self) {
+          $0.size.height + 6
+        } action: {
+          state.updateChannelChromeHeight($0)
+        }
+      }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.horizontal, 16)

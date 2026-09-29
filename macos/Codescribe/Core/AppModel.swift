@@ -206,6 +206,12 @@ final class OverlayController: ObservableObject {
     state.onTranscriptPresentationChanged = { [weak self] in
       self?.resizeForProjectedContent()
     }
+    state.onChannelPresentationChanged = { [weak self] in
+      guard let self else { return }
+      // A channel's live microphone must remain visible even when ordinary
+      // dictation is hidden. This only paints evidence; it never opens capture.
+      if self.state.hasOpenChannel { self.show() } else { self.resizeForProjectedContent() }
+    }
     state.onSuccessfulDictation = {
       Task { @MainActor in
         _ = await ActivationPing.shared.recordFirstSuccessfulDictation()
@@ -289,7 +295,9 @@ final class OverlayController: ObservableObject {
     let clamped = DictationOverlayWindow.clamp(panel.frame.size, to: screen)
     let size = NSSize(
       width: clamped.width,
-      height: state.isCollapsed ? DictationOverlayWindow.collapsedHeight : clamped.height)
+      height: state.isCollapsed
+        ? DictationOverlayWindow.collapsedHeight + state.channelChromeHeight
+        : max(clamped.height, DictationOverlayWindow.minSize.height + state.channelChromeHeight))
     let origin: NSPoint?
     if state.freeMotion {
       origin = OverlayPlacement.restoredOrigin(size: size, on: screen) ?? panel.frame.origin
@@ -373,6 +381,7 @@ final class OverlayController: ObservableObject {
   }
 
   func hide() {
+    guard !state.hasOpenChannel else { return }
     // Persist the user's chosen size for next launch (replaces frame autosave,
     // which used to write back the old feedback loop's runaway sizes) — and,
     // in free motion, the dragged origin.
@@ -391,6 +400,7 @@ final class OverlayController: ObservableObject {
   /// chat window). The overlay's job is done — fade it out immediately instead
   /// of lingering over the conversation it just fed.
   func hideForAgentHandoff() {
+    guard !state.hasOpenChannel else { return }
     guard let panel, panel.isVisible else { return }
     DictationOverlayWindow.persist(
       size: (panel as? FloatingOverlayPanel)?.sizeForPersistence ?? panel.frame.size)
@@ -410,6 +420,7 @@ final class OverlayController: ObservableObject {
       { [weak self] in
         defer { fadedPanel.alphaValue = 1 }
         guard let self else { return }
+        guard !self.state.hasOpenChannel else { return }
         // Still the live window, but a successor capture owns it now: this fade
         // has no authority over the take that replaced its own. A panel that is
         // no longer current is an orphan and is ordered out either way.
