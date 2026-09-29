@@ -346,7 +346,7 @@ args = argparse.Namespace(
     bus=bus, name="james", all=False, become=False, follow=False, once=False,
     from_start=True, drafts=False, provider="codex", session="pipe-session",
     lease=None, bridge_home=bridge_home, lease_ttl=120.0, debug=False,
-    interval=0.0,
+    interval=0.0, coalesce=False, on_seal=None,
 )
 original = sys.stdout
 sys.stdout = FailSecondWrite()
@@ -990,6 +990,189 @@ o = json.loads(sys.argv[1])
 assert o["routing_match"] == "audience", o
 assert o["text"] == "future field tolerance", o
 assert o["audience"] == "james", o
+PY
+
+# ── One-command channel engine (#74 W1): coalesce, on-seal, status, attach ──
+
+# Coalescing folds a revision storm into one live envelope per document while
+# the seal stays a separate envelope; the newest revision wins.
+COAL_HOME="$WORKDIR/coalesce-bridge"
+: >"$BUS"
+for i in $(seq 20 69); do
+  seal "James, rewizja numer $i." utterance_revised "$i"
+done
+seal "James, dokument zamknięty." transcript_sealed 70
+python3 "$DEMUX" \
+  --bus "$BUS" --bridge-home "$COAL_HOME" \
+  --provider codex --session codex-coalesce --name james \
+  --drafts --from-start --coalesce >/dev/null
+python3 - "$COAL_HOME" <<'PY'
+import json, sys
+from pathlib import Path
+leases = list((Path(sys.argv[1]) / "leases").glob("*.json"))
+assert len(leases) == 1, leases
+state = json.loads(leases[0].read_text(encoding="utf-8"))
+kinds = sorted(item["kind"] for item in state["pending"])
+assert kinds == ["revised", "seal"], kinds
+revised = next(item for item in state["pending"] if item["kind"] == "revised")
+assert "numer 69" in revised["text"], revised["text"]
+PY
+
+# Status reads the marker store: the backlog is pending minus markers, never
+# the raw pending length the lease file keeps until the follower's sweep.
+status_line="$(python3 "$DEMUX" --bus "$BUS" --bridge-home "$COAL_HOME" \
+  --provider codex --session codex-coalesce --status)"
+python3 - "$status_line" <<'PY'
+import json, sys
+o = json.loads(sys.argv[1])
+assert o["attached"] is True, o
+assert o["pending_file"] == 2, o
+assert o["backlog"] == 2, o
+assert o["unacked_seals"] == 1, o
+assert o["last_seal"] and "zamkni" in o["last_seal"]["text"], o
+assert o["follower_alive"] is False, o
+PY
+seal_id="$(python3 - "$COAL_HOME" <<'PY'
+import json, sys
+from pathlib import Path
+lease = next((Path(sys.argv[1]) / "leases").glob("*.json"))
+state = json.loads(lease.read_text(encoding="utf-8"))
+print(next(i["delivery_id"] for i in state["pending"] if i["kind"] == "seal"))
+PY
+)"
+python3 "$DEMUX" --bus "$BUS" --bridge-home "$COAL_HOME" \
+  --provider codex --session codex-coalesce --ack "$seal_id" >/dev/null
+status_line="$(python3 "$DEMUX" --bus "$BUS" --bridge-home "$COAL_HOME" \
+  --provider codex --session codex-coalesce --status)"
+python3 - "$status_line" <<'PY'
+import json, sys
+o = json.loads(sys.argv[1])
+assert o["pending_file"] == 2, o
+assert o["acknowledged_markers"] == 1, o
+assert o["backlog"] == 1, o
+assert o["unacked_seals"] == 0, o
+PY
+
+# The on-seal hook fires exactly once per freshly queued seal: a storm of
+# revisions stays silent, and a rerun replaying the pending seal on the same
+# lease does not re-fire it.
+HOOK_HOME="$WORKDIR/hook-bridge"
+HOOK_LOG="$WORKDIR/hook.log"
+: >"$BUS"
+: >"$HOOK_LOG"
+for i in $(seq 20 29); do
+  seal "James, rewizja $i." utterance_revised "$i"
+done
+seal "James, pierwszy seal." transcript_sealed 30
+run_hooked() {
+  python3 "$DEMUX" \
+    --bus "$BUS" --bridge-home "$HOOK_HOME" \
+    --provider codex --session codex-hook --name james \
+    --drafts --from-start --coalesce \
+    --on-seal "printf '%s\\n' \"\$CODESCRIBE_SEAL_DELIVERY_ID\" >>$HOOK_LOG" \
+    >/dev/null
+}
+run_hooked
+for _ in $(seq 1 30); do
+  test -s "$HOOK_LOG" && break
+  sleep 0.1
+done
+test "$(wc -l <"$HOOK_LOG" | tr -d ' ')" = "1"
+run_hooked
+sleep 0.3
+test "$(wc -l <"$HOOK_LOG" | tr -d ' ')" = "1"
+
+# Attach is the one command from zero to a listening channel: it binds the
+# channel, spawns exactly one coalescing follower, and prints a receipt with
+# the voice profile. A second attach reuses the live follower.
+ATTACH_HOME="$WORKDIR/attach-bridge"
+: >"$BUS"
+mkdir -p "$ATTACH_HOME"
+python3 - "$ATTACH_HOME" <<'PY'
+import json, sys
+from pathlib import Path
+Path(sys.argv[1], "voices.json").write_text(
+    json.dumps(
+        {
+            "schema": "codescribe.agent-voice-binding.v1",
+            "bindings": {"james": "sal"},
+            "profiles": {"james": {"voice": "sal", "speed": 1.1}},
+        }
+    ),
+    encoding="utf-8",
+)
+PY
+receipt="$(python3 "$DEMUX" --bus "$BUS" --bridge-home "$ATTACH_HOME" \
+  --provider codex --session codex-attach --name james \
+  --attach --channel 3)"
+follower_pid="$(python3 - "$receipt" "$ATTACH_HOME" <<'PY'
+import json, sys
+from pathlib import Path
+o = json.loads(sys.argv[1])
+assert o["kind"] == "attach_receipt", o
+assert o["channel"] == "3", o
+assert o["audience"] == "james", o
+assert o["follower_spawned"] is True, o
+assert o["voice"]["voice"] == "sal", o
+assert o["voice"]["speed"] == 1.1, o
+binding = json.loads(
+    Path(sys.argv[2], "vc.agent-audience-binding.v1.json").read_text(encoding="utf-8")
+)
+assert binding["schema"] == "vc.agent-audience-binding.v1", binding
+entry = binding["bindings"]["3"]
+assert entry["audience"] == "james", entry
+assert entry["provider_session_id"] == "codex-attach", entry
+print(o["follower_pid"])
+PY
+)"
+# The spawned follower actually delivers: a fresh addressed seal lands in the
+# lease mailbox without any further command.
+seal "James, dostawa przez attach." transcript_sealed 40
+delivered=""
+for _ in $(seq 1 50); do
+  delivered="$(python3 - "$ATTACH_HOME" <<'PY'
+import json
+from pathlib import Path
+import sys
+leases = list((Path(sys.argv[1]) / "leases").glob("*.json"))
+if leases:
+    state = json.loads(leases[0].read_text(encoding="utf-8"))
+    for item in state.get("pending", []):
+        if item.get("kind") == "seal" and "attach" in (item.get("text") or ""):
+            print("delivered")
+PY
+)"
+  test -n "$delivered" && break
+  sleep 0.1
+done
+test "$delivered" = "delivered"
+receipt2="$(python3 "$DEMUX" --bus "$BUS" --bridge-home "$ATTACH_HOME" \
+  --provider codex --session codex-attach --name james \
+  --attach --channel 3)"
+python3 - "$receipt2" "$follower_pid" <<'PY'
+import json, sys
+o = json.loads(sys.argv[1])
+assert o["follower_spawned"] is False, o
+assert o["follower_pid"] == int(sys.argv[2]), o
+PY
+kill "$follower_pid" 2>/dev/null || true
+
+# --say resolves voice and speed from the profile store, not from hardcodes.
+python3 - "$DEMUX" "$ATTACH_HOME" <<'PY'
+import importlib.util
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("bus_demux_profile_test", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(module)
+profile = module.voice_profile(Path(sys.argv[2]), "james")
+assert profile["voice"] == "sal", profile
+assert profile["speed"] == 1.1, profile
+fallback = module.voice_profile(Path(sys.argv[2]), "nieznany")
+assert fallback["voice"] == "leo", fallback
+assert fallback["speed"] == module.DEFAULT_SPEECH_SPEED, fallback
 PY
 
 echo "bus-demux: ok"

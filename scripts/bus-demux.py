@@ -52,7 +52,12 @@ ATTACH_SCHEMA = "codescribe.agent-bridge.attach.v1"
 EVENT_SCHEMA = "codescribe.agent-bridge.event.v1"
 ACTIVE_NAMES_SCHEMA = "codescribe.agent-bridge.active-names.v1"
 AGENT_REPLY_SCHEMA = "codescribe.agent-reply.v1"
+AUDIENCE_BINDING_SCHEMA = "vc.agent-audience-binding.v1"
+AUDIENCE_BINDING_FILENAME = "vc.agent-audience-binding.v1.json"
+ATTACH_RECEIPT_SCHEMA = "codescribe.agent-bridge.attach-receipt.v1"
+STATUS_SCHEMA = "codescribe.agent-bridge.status.v1"
 DEFAULT_LEASE_TTL_SECONDS = 120.0
+DEFAULT_SPEECH_SPEED = 1.25
 ASSIGN_RE = re.compile(
     r"(?i)(?:będziesz(?:\s+od)?\s+teraz|nazywam\s+cię|nazywasz\s+się|"
     r"you(?:['’]re|\s+are)|cześć|hello)\s+([A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]{2,32})"
@@ -776,6 +781,7 @@ class SessionLease:
         requested_id: str | None,
         ttl_seconds: float,
         follow_from_end: bool,
+        coalesce: bool = False,
     ) -> None:
         self.root = root
         self.provider = provider.casefold()
@@ -783,6 +789,7 @@ class SessionLease:
         self.name = name.casefold() if name else None
         self.bus = str(bus.expanduser().resolve(strict=False))
         self.ttl_seconds = ttl_seconds
+        self.coalesce = coalesce
         canonical_lease_id = lease_identifier(provider, provider_session_id)
         if requested_id and requested_id != canonical_lease_id:
             raise ValueError(
@@ -927,6 +934,20 @@ class SessionLease:
             return False
         if delivery_id in self.pending:
             return False
+        if self.coalesce and payload.get("kind") in ("draft", "revised"):
+            # A reducer storm re-states one document ~250 times per sentence.
+            # Under coalescing the newest revision replaces its predecessors
+            # in the mailbox instead of stacking toward the 256 cap; the seal
+            # stays a separate envelope so terminal delivery is never merged.
+            key = (payload.get("session_id"), payload.get("document_index"))
+            stale = [
+                queued_id
+                for queued_id, item in self.pending.items()
+                if item.get("kind") in ("draft", "revised")
+                and (item.get("session_id"), item.get("document_index")) == key
+            ]
+            for queued_id in stale:
+                del self.pending[queued_id]
         pending_bytes = sum(
             len(json.dumps(item, ensure_ascii=False).encode("utf-8"))
             for item in self.pending.values()
@@ -1053,6 +1074,32 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
     return 0
 
 
+def fire_seal_hook(command: str, payload: dict[str, Any]) -> None:
+    """Detached wake hook, exactly once per freshly queued seal.
+
+    The hook must never block or kill the delivery loop: it runs in its own
+    session with the seal's identity in the environment, and a hook that
+    cannot spawn is reported on stderr rather than raised.
+    """
+    import subprocess
+
+    environment = dict(os.environ)
+    environment["CODESCRIBE_SEAL_DELIVERY_ID"] = str(payload.get("delivery_id") or "")
+    environment["CODESCRIBE_SEAL_SESSION_ID"] = str(payload.get("session_id") or "")
+    environment["CODESCRIBE_SEAL_TEXT"] = str(payload.get("text") or "")
+    try:
+        subprocess.Popen(
+            ["/bin/sh", "-c", command],
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as error:
+        sys.stderr.write(f"bus-demux: on-seal hook failed to spawn: {error}\n")
+
+
 def run(args: argparse.Namespace) -> int:
     path: Path = args.bus
     name: str | None = args.name.casefold() if args.name else None
@@ -1075,6 +1122,7 @@ def run(args: argparse.Namespace) -> int:
                 requested_id=args.lease,
                 ttl_seconds=args.lease_ttl,
                 follow_from_end=bool(args.follow and not args.from_start),
+                coalesce=bool(args.coalesce),
             )
         except (OSError, RuntimeError, ValueError) as error:
             sys.stderr.write(f"bus-demux: session lease refused: {error}\n")
@@ -1097,6 +1145,8 @@ def run(args: argparse.Namespace) -> int:
         try:
             if not lease or lease.queue_delivery(payload):
                 emit(payload)
+                if args.on_seal and payload.get("kind") == "seal":
+                    fire_seal_hook(args.on_seal, payload)
         except BufferError:
             # Preserve the already normalized envelope. Re-normalizing its
             # raw evidence row would suppress a terminal phase on retry.
@@ -1281,6 +1331,30 @@ def bound_voice(root: Path, name: str | None) -> str:
     return "leo"
 
 
+def voice_profile(root: Path, name: str | None) -> dict[str, Any]:
+    """Full voice profile for a name from <bridge-home>/voices.json.
+
+    `profiles.<name>` (voice, speed, style) wins over the flat `bindings`
+    entry; both fall back to the male default so an unprofiled agent still
+    speaks. The Founder's approved profiles are the single voice truth —
+    callers must not hardcode a voice around this.
+    """
+    profile: dict[str, Any] = {}
+    if name:
+        mapping = read_json(root / "voices.json") or {}
+        profiles = mapping.get("profiles")
+        if isinstance(profiles, dict):
+            candidate = profiles.get(str(name).lower())
+            if isinstance(candidate, dict):
+                profile = dict(candidate)
+    if not isinstance(profile.get("voice"), str) or not profile.get("voice"):
+        profile["voice"] = bound_voice(root, name)
+    speed = profile.get("speed")
+    if not isinstance(speed, (int, float)) or speed <= 0:
+        profile["speed"] = DEFAULT_SPEECH_SPEED
+    return profile
+
+
 def _speak_xai(text: str, voice: str, speed: float) -> tuple[bool, str | None]:
     """Same TTS lane as the app (api.x.ai/v1/tts, PCM s16le 24 kHz), played via afplay."""
     import http.client
@@ -1350,7 +1424,9 @@ def say_reply(args: argparse.Namespace) -> int:
     The Bus is the canonical relay for agent replies; xAI is only the speaker,
     so a failed synthesis still lands the row (spoken=false with the reason).
     """
-    voice = args.voice or bound_voice(args.bridge_home, args.name)
+    profile = voice_profile(args.bridge_home, args.name)
+    voice = args.voice or str(profile["voice"])
+    speed = args.speed if args.speed is not None else float(profile["speed"])
     reply: dict[str, Any] = {
         "schema": AGENT_REPLY_SCHEMA,
         "kind": "agent_reply",
@@ -1361,10 +1437,10 @@ def say_reply(args: argparse.Namespace) -> int:
         "provider_session_id": args.session,
         "text": args.say,
         "voice": voice,
-        "speed": args.speed,
+        "speed": speed,
         "spoken": False,
     }
-    spoken, error = _speak_xai(args.say, voice, args.speed)
+    spoken, error = _speak_xai(args.say, voice, speed)
     reply["spoken"] = spoken
     if error:
         reply["tts_error"] = error
@@ -1376,6 +1452,210 @@ def say_reply(args: argparse.Namespace) -> int:
         os.close(descriptor)
     emit(reply)
     return 0 if spoken else 5
+
+
+def follower_pidfile(root: Path, lease_id: str) -> Path:
+    return root / "runtime" / "followers" / f"{lease_id}.pid"
+
+
+def live_follower_pid(root: Path, lease_id: str) -> int | None:
+    """Live follower pid recorded for a lease; a stale pidfile reports None."""
+    value = read_json(follower_pidfile(root, lease_id))
+    pid = value.get("pid") if isinstance(value, dict) else None
+    if isinstance(pid, int) and process_is_alive(pid):
+        return pid
+    return None
+
+
+def write_channel_binding(
+    root: Path, channel: str, name: str, provider: str, provider_session_id: str
+) -> Path:
+    """Bind one agent channel to this provider session, preserving the rest."""
+    path = root / AUDIENCE_BINDING_FILENAME
+    state = read_json(path) or {}
+    bindings = state.get("bindings")
+    if not isinstance(bindings, dict):
+        bindings = {}
+    bindings[str(channel)] = {
+        "audience": name.casefold(),
+        "provider": provider.casefold(),
+        "provider_session_id": provider_session_id,
+    }
+    atomic_json(path, {"schema": AUDIENCE_BINDING_SCHEMA, "bindings": bindings})
+    return path
+
+
+def attach_command(args: argparse.Namespace) -> int:
+    """One command from zero to a listening channel: binding, follower, receipt.
+
+    Writes the audience binding for the channel, ensures exactly one follower
+    owns this provider session's lease (spawning a coalescing one when none is
+    alive), and prints a receipt with the lease, cursor, voice profile and
+    follower pid. The receipt alone never proves listening — only a take that
+    lands in the mailbox does, so callers verify with a fresh seal before
+    claiming they hear anything.
+    """
+    import subprocess
+
+    root: Path = args.bridge_home
+    name = args.name.casefold()
+    binding_path = write_channel_binding(
+        root, args.channel, name, args.provider, args.session
+    )
+    lease_id = lease_identifier(args.provider, args.session)
+    lease_path = root / "leases" / f"{lease_id}.json"
+    resumed = lease_path.exists()
+    pid = live_follower_pid(root, lease_id)
+    spawned = False
+    log_path = root / "runtime" / "followers" / f"{lease_id}.log"
+    if pid is None:
+        command = [
+            sys.executable,
+            os.path.abspath(__file__),
+            "--bus",
+            str(args.bus),
+            "--bridge-home",
+            str(root),
+            "--provider",
+            args.provider,
+            "--session",
+            args.session,
+            "--name",
+            name,
+            "--drafts",
+            "--follow",
+            "--coalesce",
+        ]
+        if args.on_seal:
+            command += ["--on-seal", args.on_seal]
+        log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with open(log_path, "ab") as log:
+            child = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=log,
+                start_new_session=True,
+            )
+        atomic_json(
+            follower_pidfile(root, lease_id),
+            {"lease_id": lease_id, "pid": child.pid, "started_at": utc_now()},
+        )
+        pid = child.pid
+        spawned = True
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            state = read_json(lease_path)
+            if state and state.get("schema") == LEASE_SCHEMA and state.get("pid") == pid:
+                break
+            if not process_is_alive(pid):
+                sys.stderr.write(
+                    "bus-demux: attach failed: follower exited during startup; "
+                    f"see {log_path}\n"
+                )
+                return 3
+            time.sleep(0.1)
+    state = read_json(lease_path) or {}
+    emit(
+        {
+            "schema": ATTACH_RECEIPT_SCHEMA,
+            "kind": "attach_receipt",
+            "channel": str(args.channel),
+            "audience": name,
+            "provider": args.provider.casefold(),
+            "provider_session_id": args.session,
+            "lease_id": lease_id,
+            "cursor": state.get("cursor"),
+            "resumed": resumed,
+            "follower_pid": pid,
+            "follower_spawned": spawned,
+            "follower_log": str(log_path),
+            "coalesce_requested": True,
+            "on_seal_hook": bool(args.on_seal),
+            "voice": voice_profile(root, name),
+            "binding_path": str(binding_path),
+        }
+    )
+    return 0
+
+
+def status_command(args: argparse.Namespace) -> int:
+    """One truthful read of a session's channel.
+
+    The lease file keeps acknowledged envelopes until the follower's next
+    sweep, so its raw pending length overstates the backlog; the marker
+    store is the receipt truth and the backlog here is pending minus markers.
+    """
+    root: Path = args.bridge_home
+    lease_id = lease_identifier(args.provider, args.session)
+    state = read_json(root / "leases" / f"{lease_id}.json")
+    pending = state.get("pending") if isinstance(state, dict) else None
+    if not isinstance(pending, list):
+        pending = []
+    try:
+        markers = {
+            entry[: -len(".json")]
+            for entry in os.listdir(root / "acknowledgments" / lease_id)
+            if entry.endswith(".json")
+        }
+    except OSError:
+        markers = set()
+    unacked = [
+        item
+        for item in pending
+        if isinstance(item, dict) and item.get("delivery_id") not in markers
+    ]
+    seals = [item for item in unacked if item.get("kind") == "seal"]
+    last_seal = max(
+        seals, key=lambda item: str(item.get("emitted_at") or ""), default=None
+    )
+    heartbeat = state.get("heartbeat_unix") if isinstance(state, dict) else None
+    lease_pid = state.get("pid") if isinstance(state, dict) else None
+    follower_alive = bool(
+        isinstance(heartbeat, (int, float))
+        and time.time() - float(heartbeat) <= args.lease_ttl
+        and process_is_alive(lease_pid)
+    )
+    channel = None
+    binding = read_json(root / AUDIENCE_BINDING_FILENAME) or {}
+    bindings = binding.get("bindings")
+    if isinstance(bindings, dict):
+        for slot, entry in bindings.items():
+            if (
+                isinstance(entry, dict)
+                and entry.get("provider_session_id") == args.session
+            ):
+                channel = str(slot)
+                break
+    name = state.get("name") if isinstance(state, dict) else None
+    emit(
+        {
+            "schema": STATUS_SCHEMA,
+            "kind": "status",
+            "lease_id": lease_id,
+            "attached": state is not None,
+            "channel": channel,
+            "name": name,
+            "follower_alive": follower_alive,
+            "follower_pid": lease_pid if follower_alive else None,
+            "pending_file": len(pending),
+            "acknowledged_markers": len(markers),
+            "backlog": len(unacked),
+            "unacked_seals": len(seals),
+            "last_seal": (
+                {
+                    "delivery_id": last_seal.get("delivery_id"),
+                    "emitted_at": last_seal.get("emitted_at"),
+                    "text": str(last_seal.get("text") or "")[:160],
+                }
+                if last_seal
+                else None
+            ),
+            "voice": voice_profile(root, name if isinstance(name, str) else None),
+            "cursor": state.get("cursor") if isinstance(state, dict) else None,
+        }
+    )
+    return 0
 
 
 def main() -> int:
@@ -1422,6 +1702,34 @@ def main() -> int:
         "--drafts", action="store_true", help="also emit draft/revised envelopes"
     )
     parser.add_argument(
+        "--coalesce",
+        action="store_true",
+        help="newest draft/revision replaces its predecessors in the mailbox; "
+        "seals stay separate envelopes",
+    )
+    parser.add_argument(
+        "--on-seal",
+        dest="on_seal",
+        default=None,
+        help="shell hook fired once per freshly queued seal "
+        "(CODESCRIBE_SEAL_DELIVERY_ID/_SESSION_ID/_TEXT in its environment)",
+    )
+    parser.add_argument(
+        "--attach",
+        action="store_true",
+        help="bind --channel to this provider session, ensure one coalescing "
+        "follower, print an attach receipt, and exit",
+    )
+    parser.add_argument(
+        "--channel", default=None, help="agent channel digit (1-9) for --attach"
+    )
+    parser.add_argument(
+        "--status",
+        action="store_true",
+        help="print one truthful channel status (backlog = pending minus "
+        "acknowledgment markers) and exit",
+    )
+    parser.add_argument(
         "--provider", help="client id, for example codex or claude-code"
     )
     parser.add_argument(
@@ -1449,7 +1757,13 @@ def main() -> int:
         default=None,
         help="TTS voice id; defaults to the name's binding in <bridge-home>/voices.json",
     )
-    parser.add_argument("--speed", type=float, default=1.25)
+    parser.add_argument(
+        "--speed",
+        type=float,
+        default=None,
+        help="TTS speed; defaults to the name's profile in voices.json, "
+        f"then {DEFAULT_SPEECH_SPEED}",
+    )
     args = parser.parse_args()
     if args.bus is None:
         args.bus = bus_path()
@@ -1478,6 +1792,28 @@ def main() -> int:
         except (OSError, ValueError) as error:
             sys.stderr.write(f"bus-demux: acknowledgment refused: {error}\n")
             return 3
+    if args.attach or args.channel is not None:
+        if not (args.attach and args.channel is not None):
+            parser.error("--attach and --channel travel together")
+        if not args.provider or not args.name:
+            parser.error("--attach requires --provider/--session and --name")
+        if args.follow or args.once or args.from_start or args.all or args.become:
+            parser.error("--attach takes no read mode")
+        if args.say is not None or args.status:
+            parser.error("--attach combines with no other command")
+        if not re.fullmatch(r"[1-9]", str(args.channel)):
+            parser.error("--channel must be a single digit 1-9")
+        try:
+            return attach_command(args)
+        except OSError as error:
+            sys.stderr.write(f"bus-demux: attach refused: {error}\n")
+            return 3
+    if args.status:
+        if not args.provider:
+            parser.error("--status requires --provider and --session")
+        if args.follow or args.once or args.from_start or args.say is not None:
+            parser.error("--status combines with no other command")
+        return status_command(args)
     if args.say is not None:
         if not args.provider or not args.name:
             parser.error("--say requires --provider/--session and --name")
