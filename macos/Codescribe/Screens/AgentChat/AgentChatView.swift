@@ -6,6 +6,7 @@ import SwiftUI
 /// streamed `streamReply` turn through the injected `AgentChatEngine`.
 struct AgentChatView: View {
   @StateObject var store: AgentChatStore
+  @State private var sidebarContentWidth = AgentSidebarMetrics.minimumWidth
   private let maxPermissions: SettingsViewModel?
   /// Persist only the user's expanded/collapsed choice; AppKit owns column geometry.
   @AppStorage("AgentChat.sidebarExpanded.v1") private var sidebarExpanded = true
@@ -19,7 +20,10 @@ struct AgentChatView: View {
   var body: some View {
     AgentColumns(
       sidebarExpanded: sidebarExpanded,
-      sidebar: ThreadRail(store: store, mode: .expanded),
+      sidebarMaximumWidth: AgentSidebarMetrics.boundedMaximum(sidebarContentWidth),
+      sidebar: ThreadRail(store: store) { width in
+        if width > 0 { sidebarContentWidth = width }
+      },
       detail: ThreadDetail(
         store: store,
         isSidebarExpanded: sidebarExpanded,
@@ -84,22 +88,12 @@ enum AgentWindowMetrics {
   static let collapsedTrafficLightClearance: CGFloat = 70
 }
 
-/// The rail's two presentation states and the column geometry each owns. Pure,
-/// so the widths are unit-testable without rendering a split view.
-enum AgentSidebarMode: Equatable {
-  case expanded
-  case compact
-
-  /// Icon strip width: one hit target plus symmetric padding.
-  static let compactWidth: CGFloat = 56
-
-  var isExpanded: Bool { self == .expanded }
-  var minimumWidth: CGFloat { isExpanded ? 267 : Self.compactWidth }
-  var idealWidth: CGFloat { isExpanded ? 300 : Self.compactWidth }
-  var maximumWidth: CGFloat { isExpanded ? 360 : Self.compactWidth }
-
-  static func toggled(_ mode: AgentSidebarMode) -> AgentSidebarMode {
-    mode == .expanded ? .compact : .expanded
+/// Bounds enforced by the native sidebar item. Collapsing removes the whole column.
+enum AgentSidebarMetrics {
+  static let minimumWidth: CGFloat = 267
+  static let maximumWidth: CGFloat = 360
+  static func boundedMaximum(_ contentWidth: CGFloat) -> CGFloat {
+    min(maximumWidth, max(minimumWidth, ceil(contentWidth)))
   }
 }
 
@@ -135,6 +129,7 @@ private struct AgentWindowCapabilities: NSViewRepresentable {
 /// One native owner for the divider's hard bounds and collapse state.
 private struct AgentColumns<Sidebar: View, Detail: View>: NSViewControllerRepresentable {
   let sidebarExpanded: Bool
+  let sidebarMaximumWidth: CGFloat
   let sidebar: Sidebar
   let detail: Detail
 
@@ -142,12 +137,16 @@ private struct AgentColumns<Sidebar: View, Detail: View>: NSViewControllerRepres
     let controller = NSSplitViewController()
     controller.splitView.isVertical = true
     controller.splitView.dividerStyle = .thin
-    let rail = NSSplitViewItem(sidebarWithViewController: NSHostingController(rootView: AnyView(sidebar.environment(\.self, context.environment))))
-    rail.minimumThickness = AgentSidebarMode.expanded.minimumWidth
-    rail.maximumThickness = AgentSidebarMode.expanded.maximumWidth
+    let rail = NSSplitViewItem(
+      sidebarWithViewController: NSHostingController(
+        rootView: AnyView(sidebar.environment(\.self, context.environment))))
+    rail.minimumThickness = AgentSidebarMetrics.minimumWidth
+    rail.maximumThickness = sidebarMaximumWidth
     rail.canCollapse = false
     controller.addSplitViewItem(rail)
-    let conversation = NSSplitViewItem(viewController: NSHostingController(rootView: AnyView(detail.environment(\.self, context.environment))))
+    let conversation = NSSplitViewItem(
+      viewController: NSHostingController(
+        rootView: AnyView(detail.environment(\.self, context.environment))))
     conversation.minimumThickness = 320
     controller.addSplitViewItem(conversation)
     return controller
@@ -159,6 +158,12 @@ private struct AgentColumns<Sidebar: View, Detail: View>: NSViewControllerRepres
       AnyView(sidebar.environment(\.self, context.environment))
     (controller.splitViewItems[1].viewController as? NSHostingController<AnyView>)?.rootView =
       AnyView(detail.environment(\.self, context.environment))
+    if rail.maximumThickness != sidebarMaximumWidth {
+      rail.maximumThickness = sidebarMaximumWidth
+      if !rail.isCollapsed, rail.viewController.view.frame.width > sidebarMaximumWidth {
+        controller.splitView.setPosition(sidebarMaximumWidth, ofDividerAt: 0)
+      }
+    }
     rail.isCollapsed = !sidebarExpanded
   }
 }
@@ -168,7 +173,7 @@ private struct AgentColumns<Sidebar: View, Detail: View>: NSViewControllerRepres
 private struct ThreadDetail: View {
   @ObservedObject var store: AgentChatStore
   /// Sidebar controls live in the DETAIL header so the toggle stays reachable
-  /// while the rail is in its compact icon state.
+  /// while the native sidebar is collapsed.
   let isSidebarExpanded: Bool
   @Binding var isPinned: Bool
   let toggleSidebar: () -> Void

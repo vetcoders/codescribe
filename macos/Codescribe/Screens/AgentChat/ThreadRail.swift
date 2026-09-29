@@ -1,144 +1,45 @@
 import SwiftUI
 
-/// Left rail, two states. `.expanded`: title, search field, thread list,
-/// and a native New Thread button. `.compact`: a narrow icon strip that
-/// keeps thread switching and New Thread one click away — the rail is never
-/// removed from the split view, so the window can't show an empty band.
+/// Thread list content; the native split controller owns sidebar collapse and width.
 struct ThreadRail: View {
   @ObservedObject var store: AgentChatStore
-  var mode: AgentSidebarMode = .expanded
+  var onContentWidthChanged: (CGFloat) -> Void = { _ in }
   @State private var search: String = ""
   @State private var deleteCandidate: ChatThread?
   @State private var editingThreadID: UUID?
   @State private var renameDraft: String = ""
 
   var body: some View {
-    Group {
-      if mode.isExpanded {
-        expandedRail
-      } else {
-        compactRail
+    expandedRail
+      .onPreferenceChange(ThreadRailWidthPreference.self, perform: onContentWidthChanged)
+      .onChange(of: search) { _, newValue in
+        store.searchThreads(newValue)
       }
-    }
-    .onChange(of: search) { _, newValue in
-      store.searchThreads(newValue)
-    }
-    .onChange(of: store.threadSearchQuery) { _, newValue in
-      if search.trimmingCharacters(in: .whitespacesAndNewlines) != newValue {
-        search = newValue
-      }
-    }
-    .confirmationDialog(
-      "Delete this thread?",
-      isPresented: Binding(
-        get: { deleteCandidate != nil },
-        set: { if !$0 { deleteCandidate = nil } }
-      ),
-      titleVisibility: .visible
-    ) {
-      Button("Delete Thread", role: .destructive) {
-        if let deleteCandidate {
-          store.delete(deleteCandidate)
-          self.deleteCandidate = nil
+      .onChange(of: store.threadSearchQuery) { _, newValue in
+        if search.trimmingCharacters(in: .whitespacesAndNewlines) != newValue {
+          search = newValue
         }
       }
-      Button("Cancel", role: .cancel) {
-        deleteCandidate = nil
-      }
-    } message: {
-      Text("This removes the persisted conversation from the thread store.")
-    }
-  }
-
-  /// Narrow icon strip: brand dot, one dot per recent thread (active tinted),
-  /// and a "+" footer. No fixed frame — the column width owns the geometry.
-  private var compactRail: some View {
-    VStack(spacing: 0) {
-      ModeDot(color: CSColor.terracotta, size: 9)
-        .padding(.top, 10)
-        .padding(.bottom, 8)
-
-      ScrollView {
-        LazyVStack(spacing: 6) {
-          ForEach(sectionedThreads, id: \.section) { group in
-            if group.section == .maxConsultations {
-              Divider().padding(.horizontal, 6)
-              Image(systemName: "sparkles")
-                .font(CSFont.ui(9, .semibold))
-                .foregroundStyle(CSColor.textTertiary)
-                .help(group.section.title)
-                .accessibilityLabel(group.section.title)
-            }
-            ForEach(group.threads) { thread in
-              let title = ThreadRowTitle.displayTitle(for: thread)
-              let isActive = thread.id == store.selectedThreadID
-              Button {
-                store.select(thread.id)
-              } label: {
-                Group {
-                  if thread.isMaxConsultation {
-                    Image(systemName: "sparkles")
-                  } else {
-                    Text(ThreadRowTitle.compactMonogram(for: thread))
-                  }
-                }
-                .font(CSFont.ui(11, .semibold))
-                .foregroundStyle(
-                  isActive ? CSColor.chromeAccent : Color.secondary
-                )
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-                .frame(width: 28, height: 28)
-                .background(
-                  isActive
-                    ? CSColor.chromeAccent.opacity(0.12)
-                    : Color.primary.opacity(0.03)
-                )
-                .clipShape(
-                  RoundedRectangle(cornerRadius: 8, style: .continuous)
-                )
-                .overlay(
-                  RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(
-                      isActive
-                        ? CSColor.chromeAccent.opacity(0.45)
-                        : Color.primary.opacity(0.08),
-                      lineWidth: 1
-                    )
-                )
-                .contentShape(Rectangle())
-              }
-              .csFocusRing()
-              .help(title)
-              .accessibilityLabel(title)
-              .accessibilityAddTraits(isActive ? [.isSelected] : [])
-            }
+      .confirmationDialog(
+        "Delete this thread?",
+        isPresented: Binding(
+          get: { deleteCandidate != nil },
+          set: { if !$0 { deleteCandidate = nil } }
+        ),
+        titleVisibility: .visible
+      ) {
+        Button("Delete Thread", role: .destructive) {
+          if let deleteCandidate {
+            store.delete(deleteCandidate)
+            self.deleteCandidate = nil
           }
         }
-        .padding(.vertical, 4)
+        Button("Cancel", role: .cancel) {
+          deleteCandidate = nil
+        }
+      } message: {
+        Text("This removes the persisted conversation from the thread store.")
       }
-      .scrollContentBackground(.hidden)
-
-      Button(action: { store.newThread() }) {
-        Text("+")
-          .font(CSFont.ui(15, .semibold))
-          .foregroundStyle(Color.secondary)
-          .frame(width: 30, height: 30)
-          .overlay(
-            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-              .strokeBorder(
-                Color.primary.opacity(0.14),
-                style: StrokeStyle(lineWidth: 1, dash: [4, 3])
-              )
-          )
-          .contentShape(Rectangle())
-      }
-      .csFocusRing()
-      .help("New thread")
-      .accessibilityLabel("New thread")
-      .padding(.vertical, 8)
-    }
-    .frame(maxWidth: .infinity, maxHeight: .infinity)
   }
 
   private var expandedRail: some View {
@@ -299,27 +200,12 @@ enum ThreadRowTitle {
     )
   }
 
-  /// Identity for the collapsed rail. The strip used to draw one anonymous
-  /// 7pt dot per thread — a vertical row of identical dots that told the user
-  /// nothing and forced a hover-and-wait tooltip to pick a conversation
-  /// (UI_DIVERGENCE_AUDIT pkt 2). Two initials from the display title carry
-  /// enough identity at 28pt; the digit/letter scan keeps titles that open
-  /// with punctuation or an emoji from yielding a blank tile.
-  static func compactMonogram(
-    for thread: ChatThread,
-    now: Date = Date(),
-    calendar: Calendar = .current
-  ) -> String {
-    let title = displayTitle(for: thread, now: now, calendar: calendar)
-    let words =
-      title
-      .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
-      .prefix(2)
-    let initials = words.compactMap { $0.first }.map(String.init).joined()
-    // `displayTitle` always resolves to a string carrying a letter or digit
-    // (ThreadTitlePolicy rejects the rest and the date fallback never is),
-    // so the dot is a guard against a future title source, not a live case.
-    return initials.isEmpty ? "•" : initials.uppercased()
+}
+
+private struct ThreadRailWidthPreference: PreferenceKey {
+  static let defaultValue: CGFloat = 0
+  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+    value = max(value, nextValue())
   }
 }
 
@@ -337,6 +223,50 @@ private struct ThreadRow: View {
   @FocusState private var renameFieldFocused: Bool
 
   var body: some View {
+    rowContent(measuring: false)
+      .background {
+        // Measure the same fonts, symbols, metadata and spacing before truncation.
+        // The probe never contains a rename field or participates in interaction.
+        rowContent(measuring: true)
+          .fixedSize(horizontal: true, vertical: true)
+          .hidden()
+          .allowsHitTesting(false)
+          .accessibilityHidden(true)
+          .background {
+            GeometryReader { geometry in
+              Color.clear.preference(
+                key: ThreadRailWidthPreference.self,
+                // Row padding: 12pt per side; rail list padding: 10pt per side.
+                value: geometry.size.width + 2 * 12 + 2 * 10)
+            }
+          }
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.horizontal, 12)
+      // Two-line rail rows stay list-dense. 11pt of vertical padding plus the
+      // title and meta was reading as a stack of cards.
+      .padding(.vertical, 7)
+      .background(isActive ? CSColor.chromeAccent.opacity(0.12) : .clear)
+      .overlay(
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+          .strokeBorder(isActive ? CSColor.chromeAccent.opacity(0.28) : .clear, lineWidth: 1)
+      )
+      .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+      .contextMenu {
+        Button("Rename") {
+          onBeginRename()
+        }
+        Button(thread.isFavorite ? "Unfavorite" : "Favorite") {
+          onToggleFavorite()
+        }
+        Divider()
+        Button("Delete Thread", role: .destructive) {
+          onRequestDelete()
+        }
+      }
+  }
+
+  private func rowContent(measuring: Bool) -> some View {
     VStack(alignment: .leading, spacing: 4) {
       HStack(spacing: 7) {
         if thread.isMaxConsultation {
@@ -348,7 +278,7 @@ private struct ThreadRow: View {
         if isActive {
           Circle().fill(CSColor.chromeAccent).frame(width: 6, height: 6)
         }
-        if isEditing {
+        if isEditing && !measuring {
           TextField("", text: $renameDraft)
             .textFieldStyle(.plain)
             .font(CSFont.ui(13, .semibold))
@@ -363,26 +293,21 @@ private struct ThreadRow: View {
               if !focused, isEditing { onCommitRename() }
             }
         } else {
-          Text(ThreadRowTitle.displayTitle(for: thread))
-            .font(CSFont.ui(13, isActive ? .semibold : .medium))
-            .foregroundStyle(isActive ? ChatPalette.nameActive : ChatPalette.nameInactive)
-            .lineLimit(1)
-            .onTapGesture(count: 2) { onBeginRename() }
+          if measuring {
+            titleLabel
+          } else {
+            titleLabel.onTapGesture(count: 2) { onBeginRename() }
+          }
         }
         Spacer(minLength: 4)
-        Button(action: onToggleFavorite) {
-          CSIconView(
-            icon: thread.isFavorite ? .starFill : .star,
-            size: 11,
-            weight: .semibold,
-            color: thread.isFavorite ? CSColor.oliveLight : CSColor.textTertiary
-          )
-          .frame(width: 18, height: 18)
-          .contentShape(Rectangle())
+        if measuring {
+          favoriteLabel
+        } else {
+          Button(action: onToggleFavorite) { favoriteLabel }
+            .csFocusRing()
+            .opacity(thread.isFavorite || isActive ? 1 : 0.38)
+            .help(thread.isFavorite ? "Unfavorite thread" : "Favorite thread")
         }
-        .csFocusRing()
-        .opacity(thread.isFavorite || isActive ? 1 : 0.38)
-        .help(thread.isFavorite ? "Unfavorite thread" : "Favorite thread")
       }
       HStack(spacing: 6) {
         if let tag = ModelTag.display(for: thread.model) {
@@ -406,30 +331,24 @@ private struct ThreadRow: View {
           .foregroundStyle(isActive ? ChatPalette.activeThreadSub : CSColor.textTertiary)
       }
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.horizontal, 12)
-    // Two-line rail rows stay list-dense. 11pt of vertical padding plus the
-    // title and meta was reading as a stack of cards.
-    .padding(.vertical, 7)
-    .background(isActive ? CSColor.chromeAccent.opacity(0.12) : .clear)
-    .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .strokeBorder(isActive ? CSColor.chromeAccent.opacity(0.28) : .clear, lineWidth: 1)
-    )
-    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-    .contextMenu {
-      Button("Rename") {
-        onBeginRename()
-      }
-      Button(thread.isFavorite ? "Unfavorite" : "Favorite") {
-        onToggleFavorite()
-      }
-      Divider()
-      Button("Delete Thread", role: .destructive) {
-        onRequestDelete()
-      }
-    }
   }
+
+  private var titleLabel: some View {
+    Text(ThreadRowTitle.displayTitle(for: thread))
+      .font(CSFont.ui(13, isActive ? .semibold : .medium))
+      .foregroundStyle(isActive ? ChatPalette.nameActive : ChatPalette.nameInactive)
+      .lineLimit(1)
+  }
+
+  private var favoriteLabel: some View {
+    CSIconView(
+      icon: thread.isFavorite ? .starFill : .star, size: 11, weight: .semibold,
+      color: thread.isFavorite ? CSColor.oliveLight : CSColor.textTertiary
+    )
+    .frame(width: 18, height: 18)
+    .contentShape(Rectangle())
+  }
+
 }
 
 /// Short model chip on a thread row. Path prefixes are stripped; the three
