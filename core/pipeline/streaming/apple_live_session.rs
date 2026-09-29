@@ -1895,6 +1895,16 @@ fn pin_intersects(pin: &OccurrenceIdentity, member: &OccurrenceIdentity) -> bool
     pin.sample_end > member.sample_start && pin.sample_start < member.sample_end
 }
 
+/// Admission window one overlap-pin routing pass runs against: the request
+/// that produced the segments and the PCM bounds the admit filter used.
+/// Grouping these was the separate cut promised when CL-W2 added the
+/// producer argument.
+struct AdmitWindow {
+    request_id: u64,
+    sample_start: u64,
+    sample_end: u64,
+}
+
 impl AppleSealState {
     /// Replace the presentation mirror from the worker's actual held words.
     /// Call only after the ledger events for the same transition were sent.
@@ -2521,9 +2531,11 @@ impl AppleSealState {
         let owners = self.word_owners();
         let routes = self.route_overlap_pins(
             ev_tx,
-            commit.sample_start,
-            commit.sample_start,
-            commit.sample_end,
+            AdmitWindow {
+                request_id: commit.sample_start,
+                sample_start: commit.sample_start,
+                sample_end: commit.sample_end,
+            },
             &owners,
             segments,
             LedgerObservationProducer::CloudLive,
@@ -3034,18 +3046,19 @@ impl AppleSealState {
     /// visible at its own PCM range and does not enter the committed map.
     /// An utterance pin that intersects a member without fitting it blocks
     /// replacement of that whole member.
-    // CL-W2 added the producer argument; grouping the window bounds is a separate cut.
-    #[allow(clippy::too_many_arguments)]
     fn route_overlap_pins(
         &mut self,
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
-        request_id: u64,
-        admit_sample_start: u64,
-        admit_sample_end: u64,
+        window: AdmitWindow,
         members: &[(u64, OccurrenceIdentity)],
         segments: &[TimedTailSegment],
         producer: LedgerObservationProducer,
     ) -> Vec<MemberPinRoute> {
+        let AdmitWindow {
+            request_id,
+            sample_start: admit_sample_start,
+            sample_end: admit_sample_end,
+        } = window;
         let word_grain = !segments.is_empty()
             && segments
                 .iter()
@@ -3426,9 +3439,11 @@ impl AppleSealState {
         };
         let routes = self.route_overlap_pins(
             ev_tx,
-            request_id,
-            admit_sample_start,
-            admit_sample_end,
+            AdmitWindow {
+                request_id,
+                sample_start: admit_sample_start,
+                sample_end: admit_sample_end,
+            },
             &owners,
             segments,
             LedgerObservationProducer::Whisper,
@@ -5619,9 +5634,11 @@ fn admit_debt_occurrence_recovery(
         let owners = state.word_owners();
         let routes = state.route_overlap_pins(
             ev_tx,
-            payload.identity.request_id,
-            occurrence.sample_start,
-            occurrence.sample_end,
+            AdmitWindow {
+                request_id: payload.identity.request_id,
+                sample_start: occurrence.sample_start,
+                sample_end: occurrence.sample_end,
+            },
             &owners,
             &payload.segments,
             LedgerObservationProducer::Whisper,
@@ -16175,9 +16192,11 @@ mod rc_w2_test_rehab {
         let owners = cloud.word_owners();
         cloud.route_overlap_pins(
             &tx,
-            1,
-            0,
-            sample(1.0),
+            AdmitWindow {
+                request_id: 1,
+                sample_start: 0,
+                sample_end: sample(1.0),
+            },
             &owners,
             std::slice::from_ref(&pin),
             LedgerObservationProducer::CloudLive,
@@ -16191,9 +16210,11 @@ mod rc_w2_test_rehab {
         };
         whisper.route_overlap_pins(
             &tx,
-            1,
-            0,
-            sample(1.0),
+            AdmitWindow {
+                request_id: 1,
+                sample_start: 0,
+                sample_end: sample(1.0),
+            },
             &whisper.word_owners(),
             &[whisper_pin],
             LedgerObservationProducer::Whisper,
@@ -19135,9 +19156,11 @@ mod relay_l1_overlap_admission_tests {
         let pin = word_pin(&lane.state.session_id, text, 26_000, 46_000);
         let routes = lane.state.route_overlap_pins(
             &lane.tx,
-            1,
-            0,
-            end,
+            AdmitWindow {
+                request_id: 1,
+                sample_start: 0,
+                sample_end: end,
+            },
             &[(1, occurrence)],
             &[pin],
             LedgerObservationProducer::Whisper,
@@ -19695,9 +19718,11 @@ mod relay_l1_overlap_admission_tests {
         let member = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, 96_000);
         let routes = lane.state.route_overlap_pins(
             &lane.tx,
-            1,
-            48_000,
-            96_000,
+            AdmitWindow {
+                request_id: 1,
+                sample_start: 48_000,
+                sample_end: 96_000,
+            },
             &[(1, member)],
             &[
                 word_pin(session, "w", 60_000, 64_000),
@@ -19855,9 +19880,11 @@ mod relay_l1_overlap_admission_tests {
         );
         let routes = lane.state.route_overlap_pins(
             &lane.tx,
-            2,
-            48_000,
-            96_000,
+            AdmitWindow {
+                request_id: 2,
+                sample_start: 48_000,
+                sample_end: 96_000,
+            },
             &[(1, owner)],
             &[word_pin(session, "szew", 45_000, 53_000)],
             LedgerObservationProducer::Whisper,
@@ -19929,9 +19956,11 @@ mod relay_l1_overlap_admission_tests {
         stage(&mut lane, 2, second.clone(), "apple second");
         let routes = lane.state.route_overlap_pins(
             &lane.tx,
-            3,
-            0,
-            96_000,
+            AdmitWindow {
+                request_id: 3,
+                sample_start: 0,
+                sample_end: 96_000,
+            },
             &[(1, first.clone()), (2, second.clone())],
             &[
                 word_pin(session, "first", 8_000, 20_000),
@@ -20025,9 +20054,11 @@ mod relay_l1_overlap_admission_tests {
         stage(&mut lane, 1, member.clone(), "apple");
         let routes = lane.state.route_overlap_pins(
             &lane.tx,
-            2,
-            48_000,
-            96_000,
+            AdmitWindow {
+                request_id: 2,
+                sample_start: 48_000,
+                sample_end: 96_000,
+            },
             &[(1, member)],
             &[word_pin("seam-apple-held", "nowe", 60_000, 70_000)],
             LedgerObservationProducer::Whisper,
@@ -20043,9 +20074,11 @@ mod relay_l1_overlap_admission_tests {
         let member = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 48_000, 96_000);
         let routes = lane.state.route_overlap_pins(
             &lane.tx,
-            2,
-            48_000,
-            96_000,
+            AdmitWindow {
+                request_id: 2,
+                sample_start: 48_000,
+                sample_end: 96_000,
+            },
             &[(1, member)],
             &[word_pin("seam-normal", "zwykle", 60_000, 70_000)],
             LedgerObservationProducer::Whisper,
