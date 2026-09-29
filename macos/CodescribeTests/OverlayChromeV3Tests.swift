@@ -94,6 +94,34 @@ final class OverlayChromeV3Tests: XCTestCase {
     }
   }
 
+  func testLongFooterMessageDoesNotStealTranscriptHeight() throws {
+    for width in [320.0, 900.0] {
+      let state = OverlayState.previewFormatted()
+      let panel = DictationOverlayWindow.make(
+        state: state,
+        textScale: TextScaleController(key: "OverlayFooterBudgetTests.\(width)"))
+      defer {
+        panel.orderOut(nil)
+        (panel as? FloatingOverlayPanel)?.invalidatePresence()
+      }
+      panel.setContentSize(NSSize(width: width, height: 350))
+      panel.orderFrontRegardless()
+      let root = try XCTUnwrap(panel.contentView)
+      root.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+      root.layoutSubtreeIfNeeded()
+      let text = try XCTUnwrap(descendant(LiveTranscriptNativeTextView.self, in: root))
+      let scroll = try XCTUnwrap(text.enclosingScrollView)
+      let initialInset = scroll.contentInsets.bottom
+      let originalText = text.string
+      state.showToast(String(repeating: "A long message that must stay in one row. ", count: 20))
+      RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+      root.layoutSubtreeIfNeeded()
+      XCTAssertEqual(scroll.contentInsets.bottom, initialInset, accuracy: 1)
+      XCTAssertEqual(text.string, originalText)
+    }
+  }
+
   private func descendant<T: NSView>(_ type: T.Type, in root: NSView) -> T? {
     if let view = root as? T { return view }
     return root.subviews.lazy.compactMap { self.descendant(type, in: $0) }.first

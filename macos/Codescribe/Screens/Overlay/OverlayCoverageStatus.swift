@@ -18,9 +18,10 @@ struct OverlayCoverageStatus: View {
       id: "overlay-coverage-status", title: "Recording quality details", palette: palette,
       presented: $presented
     ) {
-      Label(Self.message, systemImage: "info.circle")
+      Label("Recording quality low — review", systemImage: "info.circle")
         .font(.system(size: 11))
-        .fixedSize(horizontal: false, vertical: true)
+        .lineLimit(1)
+        .truncationMode(.tail)
         .foregroundStyle(palette.processingStatus.color)
     } detail: { close in
       VStack(alignment: .leading, spacing: 10) {

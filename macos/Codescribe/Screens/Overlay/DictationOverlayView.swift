@@ -50,6 +50,7 @@ struct DictationOverlayView: View {
   @State private var overlayVisible = false
   @State private var headerHeight: CGFloat = 48
   @State private var footerHeight: CGFloat = 64
+  @State private var footerDetail: String?
   @Bindable var state: OverlayState
 
   // Geometry constants local to this surface. The window is user-resizable;
@@ -153,8 +154,6 @@ struct DictationOverlayView: View {
       VStack(spacing: 0) {
         if !state.isCollapsed {
           VStack(spacing: CSSpace.sm) {
-            transcriptStatus
-              .padding(.horizontal, 20)
             HStack(spacing: 6) {
               OverlayEvidenceChip(
                 state: state, palette: palette, actionsOpen: actions.phase == .open,
@@ -237,22 +236,10 @@ struct DictationOverlayView: View {
             // The AppKit edge intercept and existing header/body drag regions stay in place.
             .frame(maxWidth: .infinity, alignment: .center)
             .padding(.horizontal, OverlayResizeChrome.actionsBottomInset)
-            if let notice = state.toast {
-              Text(notice)
-                .csMono(10, .medium)
-                .lineLimit(2)
-                .padding(.horizontal, 20)
-                .accessibilityIdentifier("overlay-footer-notice")
-            }
-            if bottomChromeSlots.showsCoverageWarning {
-              OverlayCoverageStatus(
-                palette: palette, canRetranscribe: state.terminal && state.canRetranscribe,
-                cloudConfigured: state.cloudRetranscribeConfigured,
-                diagnosticNotice: showsDiagnostics ? state.coverageRefusalNotice : nil,
-                diagnosticDetail: showsDiagnostics ? state.coverageRefusalDetail : nil,
-                onRetranscribe: { state.retranscribe(pass: $0) }
-              )
-            }
+            footerMessageRow
+              .frame(height: 18)
+              .padding(.horizontal, 20)
+
           }
           .padding(.bottom, OverlayResizeChrome.actionsBottomInset)
         } else if let label = OverlayActionsPresentation.finishingLabel(
@@ -270,7 +257,6 @@ struct DictationOverlayView: View {
             .allowsHitTesting(false)
         }
       }
-      .modifier(OverlayHeaderChrome(atTop: false))
       .onGeometryChange(for: CGFloat.self) {
         $0.size.height
       } action: {
@@ -523,6 +509,55 @@ struct DictationOverlayView: View {
       .background { OverlayWindowDragRegion(identifier: "overlay-body-drag-region") }
   }
 
+  /// One message slot below the floating tools; details never grow the footer.
+  private var footerMessage: String? {
+    if let error = state.revisionCommitError ?? state.formatterError ?? state.recoveryFailure {
+      return error
+    }
+    if state.formatterCommitPending { return "Formatting revision…" }
+    if state.revisionCommitPending { return "Committing revision…" }
+    if state.isRevisionDraftDirty { return "Draft · not committed" }
+    if let notice = state.toast { return notice }
+    if let status = state.presentationStatus { return status.headline }
+    if state.mode == .error {
+      return state.errorMessage
+        ?? (state.activeText.isEmpty ? "Transcription failed" : "Delivery interrupted")
+    }
+    if state.mode == .noSpeech { return state.noSpeechNotice }
+    return nil
+  }
+
+  @ViewBuilder
+  private var footerMessageRow: some View {
+    if let message = footerMessage {
+      OverlayHoverControl(
+        id: "overlay-footer-message", title: message, palette: palette, presented: $footerDetail
+      ) {
+        Text(message)
+          .csMono(10, .medium)
+          .lineLimit(1)
+          .truncationMode(.tail)
+          .foregroundStyle(palette.primaryText.color)
+          .accessibilityIdentifier("overlay-footer-notice")
+      } detail: { _ in
+        VStack(alignment: .leading, spacing: 8) {
+          Text(message).fixedSize(horizontal: false, vertical: true)
+          transcriptStatus
+        }
+      }
+    } else if bottomChromeSlots.showsCoverageWarning {
+      OverlayCoverageStatus(
+        palette: palette, canRetranscribe: state.terminal && state.canRetranscribe,
+        cloudConfigured: state.cloudRetranscribeConfigured,
+        diagnosticNotice: showsDiagnostics ? state.coverageRefusalNotice : nil,
+        diagnosticDetail: showsDiagnostics ? state.coverageRefusalDetail : nil,
+        onRetranscribe: { state.retranscribe(pass: $0) }
+      )
+    } else {
+      Color.clear.accessibilityHidden(true)
+    }
+  }
+
   @ViewBuilder
   private var transcriptStatus: some View {
     if let status = state.presentationStatus {
@@ -759,12 +794,11 @@ private struct OverlayRenderVisibility: NSViewRepresentable {
 }
 
 private struct OverlayHeaderChrome: ViewModifier {
-  var atTop = true
 
   func body(content: Content) -> some View {
     content.background {
       GeometryReader { geometry in
-        let fade: CGFloat = 24
+        let fade: CGFloat = 12
         let height = geometry.size.height + fade
         chrome
           .frame(height: height)
@@ -775,11 +809,11 @@ private struct OverlayHeaderChrome: ViewModifier {
                 .init(color: .black, location: max(0, 1 - fade / height)),
                 .init(color: .clear, location: 1),
               ],
-              startPoint: atTop ? .top : .bottom,
-              endPoint: atTop ? .bottom : .top
+              startPoint: .top,
+              endPoint: .bottom
             )
           }
-          .offset(y: atTop ? 0 : -fade)
+          .opacity(0.35)
       }
       .allowsHitTesting(false)
       .accessibilityHidden(true)
@@ -809,7 +843,7 @@ private struct OverlayScrollEdgeEffects: ViewModifier {
   @ViewBuilder
   func body(content: Content) -> some View {
     if #available(macOS 26.0, *) {
-      content.scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+      content.scrollEdgeEffectStyle(.soft, for: .top)
     } else {
       content
     }

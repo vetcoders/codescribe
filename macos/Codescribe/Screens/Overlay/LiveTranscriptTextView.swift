@@ -88,9 +88,22 @@ struct LiveTranscriptTextView: NSViewRepresentable {
   }
 
   func updateNSView(_ scrollView: NSScrollView, context: Context) {
+    let oldInsets = scrollView.contentInsets
+    let insetsChanged =
+      oldInsets.top != contentInsets.top || oldInsets.bottom != contentInsets.bottom
+      || oldInsets.left != contentInsets.left || oldInsets.right != contentInsets.right
     scrollView.contentInsets = contentInsets
     guard let textView = scrollView.documentView as? LiveTranscriptNativeTextView else { return }
     update(textView, coordinator: context.coordinator)
+    if insetsChanged {
+      let coordinator = context.coordinator
+      DispatchQueue.main.async { [weak textView, weak coordinator] in
+        guard let textView, let coordinator, coordinator.followsTail, !coordinator.isEditing,
+          textView.selectedRange().length == 0
+        else { return }
+        textView.revealTranscriptTail()
+      }
+    }
   }
 
   static func makeTextView() -> LiveTranscriptNativeTextView {
@@ -185,7 +198,7 @@ struct LiveTranscriptTextView: NSViewRepresentable {
         guard let textView, coordinator?.followsTail == true,
           (textView.string as NSString).length == tail.location
         else { return }
-        textView.scrollRangeToVisible(tail)
+        textView.revealTranscriptTail()
       }
     }
     coordinator.applyingUpdate = false
@@ -260,6 +273,23 @@ struct LiveTranscriptTextView: NSViewRepresentable {
 /// When editable, gaining first responder is what makes the hosting
 /// `FloatingOverlayPanel` key; resigning gives the keyboard back.
 final class LiveTranscriptNativeTextView: NSTextView {
+  func revealTranscriptTail() {
+    let length = (string as NSString).length
+    let range = NSRange(location: max(0, length - 1), length: min(1, length))
+    scrollRangeToVisible(range)
+    guard length > 0, let scroll = enclosingScrollView, let window else { return }
+    // TextKit may reveal the insertion point while the glyph's descent still
+    // extends into the bottom content inset. Measure the full glyph on screen.
+    let glyph = firstRect(forCharacterRange: range, actualRange: nil)
+    let viewport = window.convertToScreen(scroll.convert(scroll.bounds, to: nil))
+    let overlap = viewport.minY + scroll.contentInsets.bottom - glyph.minY
+    guard overlap > 0, glyph.height > 0 else { return }
+    var origin = scroll.contentView.bounds.origin
+    origin.y += isFlipped ? overlap : -overlap
+    scroll.contentView.scroll(to: origin)
+    scroll.reflectScrolledClipView(scroll.contentView)
+  }
+
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
   private var editCoordinator: LiveTranscriptTextView.Coordinator? {
