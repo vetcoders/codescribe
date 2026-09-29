@@ -56,36 +56,40 @@ struct TrayRow: View {
   }
 
   var body: some View {
-    HStack(spacing: 11) {
-      CSIconView(icon: icon, size: 13, color: iconColor ?? titleColor)
-        .frame(width: 18)
-      Text(title)
-        .font(CSFont.ui(13, titleWeight))
-        .foregroundStyle(titleColor)
-        .frame(maxWidth: .infinity, alignment: .leading)
-      if let shortcut {
-        Text(shortcut)
-          .font(CSFont.mono(10, .medium))
-          .foregroundStyle(shortcutColor)
+    Button(action: action) {
+      HStack(spacing: 11) {
+        CSIconView(icon: icon, size: 13, color: iconColor ?? titleColor)
+          .frame(width: 18)
+        Text(title)
+          .font(CSFont.ui(13, titleWeight))
+          .foregroundStyle(titleColor)
+          .frame(maxWidth: .infinity, alignment: .leading)
+        if let shortcut {
+          Text(shortcut)
+            .font(CSFont.mono(10, .medium))
+            .foregroundStyle(shortcutColor)
+        }
+        if let expanded = disclosureExpanded {
+          CSIconView(icon: TrayDisclosureChevron.icon, size: 11, color: CSColor.textFaint)
+            .rotationEffect(
+              .degrees(TrayDisclosureChevron.rotationDegrees(expanded: expanded))
+            )
+        }
       }
-      if let expanded = disclosureExpanded {
-        CSIconView(icon: TrayDisclosureChevron.icon, size: 11, color: CSColor.textFaint)
-          .rotationEffect(
-            .degrees(TrayDisclosureChevron.rotationDegrees(expanded: expanded))
-          )
-      }
+      .padding(.horizontal, 12)
+      .padding(.vertical, 9)
+      .background(
+        RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous).fill(fillColor)
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+          .strokeBorder(borderColor, lineWidth: 1)
+      )
+      .contentShape(Rectangle())
     }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 9)
-    .background(
-      RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous).fill(fillColor)
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-        .strokeBorder(borderColor, lineWidth: 1)
-    )
-    .contentShape(Rectangle())
-    .onTapGesture(perform: action)
+    .buttonStyle(.plain)
+    .accessibilityLabel(title)
+    .accessibilityValue(disclosureExpanded.map { $0 ? "Expanded" : "Collapsed" } ?? shortcut ?? "")
     .onHover { hovering = $0 }
   }
 }
@@ -94,11 +98,21 @@ struct TrayRow: View {
 struct TrayChildRow: View {
   let title: String
   var suffix: String? = nil
-  var action: () -> Void = {}
+  var action: (() -> Void)? = nil
 
   @State private var hovering = false
 
   var body: some View {
+    if let action {
+      Button(action: action) { label }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+    } else {
+      label
+    }
+  }
+
+  private var label: some View {
     HStack(spacing: 5) {
       Text(title)
         .font(CSFont.ui(12, .medium))
@@ -117,8 +131,6 @@ struct TrayChildRow: View {
         .fill(hovering ? CSColor.surfaceRaised(0.05) : .clear)
     )
     .contentShape(Rectangle())
-    .onTapGesture(perform: action)
-    .onHover { hovering = $0 }
   }
 }
 

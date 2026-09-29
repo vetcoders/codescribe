@@ -16,6 +16,7 @@ struct TrayMenuView: View {
   // macOS 14+ action to open the app's Settings scene — replaces the fragile
   // private `showSettingsWindow:` selector that stopped working on newer macOS.
   @Environment(\.openWindow) private var openWindow
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     VStack(spacing: 0) {
@@ -60,6 +61,7 @@ struct TrayMenuView: View {
     }
     .padding(7)
     .frame(width: 300)
+    .transaction { if reduceMotion { $0.disablesAnimations = true } }
     .onAppear { viewModel.refreshStatus() }
     .onDisappear { viewModel.collapseDisclosures() }
   }
