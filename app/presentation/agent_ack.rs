@@ -55,20 +55,19 @@ pub fn scan(bridge_home: &Path, fallback_bus: &Path) -> io::Result<ScanStats> {
     let leases = load_leases(bridge_home);
     let mut buses = vec![fallback_bus.to_path_buf()];
     for lease in &leases {
-        if let Some(bus) = lease.bus.as_ref() {
-            if !buses.iter().any(|known| known == bus) {
-                buses.push(bus.clone());
-            }
+        if let Some(bus) = lease.bus.as_ref()
+            && !buses.iter().any(|known| known == bus)
+        {
+            buses.push(bus.clone());
         }
     }
     let bus_lines = read_buses(&buses)?;
     for value in &bus_lines {
-        if value.get("kind").and_then(Value::as_str) == Some("agent_ack") {
-            if let Some(id) = delivery_id_of(value) {
-                if cursor.emitted.insert(id.to_string()) {
-                    dirty = true;
-                }
-            }
+        if value.get("kind").and_then(Value::as_str) == Some("agent_ack")
+            && let Some(id) = delivery_id_of(value)
+            && cursor.emitted.insert(id.to_string())
+        {
+            dirty = true;
         }
         if let Some(reply_id) = spoken_reply_id(value) {
             if reply_is_recent(value) {
@@ -184,33 +183,36 @@ pub(crate) fn append_json_line(bus: &Path, value: &Value) -> io::Result<()> {
     guard.flush()
 }
 
-pub(crate) fn channel_session_line(
-    state: &str,
-    reason: &str,
-    channel: &str,
-    agent: &str,
-    session_id: Option<&str>,
-    autoseal_secs: u64,
-    opened_at: SystemTime,
-    utterance_silence_sec: f32,
-    provider: Option<&str>,
-    provider_session_id: Option<&str>,
-) -> Value {
+/// One channel-session lifecycle receipt, before serialization.
+pub(crate) struct ChannelSessionLine<'a> {
+    pub state: &'a str,
+    pub reason: &'a str,
+    pub channel: &'a str,
+    pub agent: &'a str,
+    pub session_id: Option<&'a str>,
+    pub autoseal_secs: u64,
+    pub opened_at: SystemTime,
+    pub utterance_silence_sec: f32,
+    pub provider: Option<&'a str>,
+    pub provider_session_id: Option<&'a str>,
+}
+
+pub(crate) fn channel_session_line(line: &ChannelSessionLine<'_>) -> Value {
     json!({
         "schema": CHANNEL_SESSION_SCHEMA,
         "kind": "channel_session",
-        "state": state,
-        "reason": reason,
-        "channel": channel,
-        "agent": agent,
-        "session_id": session_id,
+        "state": line.state,
+        "reason": line.reason,
+        "channel": line.channel,
+        "agent": line.agent,
+        "session_id": line.session_id,
         "emitted_at": utc_now(),
-        "autoseal_secs": autoseal_secs,
-        "loud": state == "open",
-        "opened_at": system_time_rfc3339(opened_at),
-        "utterance_silence_sec": utterance_silence_sec,
-        "provider": provider,
-        "provider_session_id": provider_session_id,
+        "autoseal_secs": line.autoseal_secs,
+        "loud": line.state == "open",
+        "opened_at": system_time_rfc3339(line.opened_at),
+        "utterance_silence_sec": line.utterance_silence_sec,
+        "provider": line.provider,
+        "provider_session_id": line.provider_session_id,
     })
 }
 

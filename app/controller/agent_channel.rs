@@ -378,16 +378,18 @@ impl RecordingController {
         drop(channels);
         if matches!(mode, ChannelOpenMode::Live) {
             let line = crate::presentation::agent_ack::channel_session_line(
-                "open",
-                "opened",
-                &digit.to_string(),
-                &audience,
-                receipt_session.as_deref(),
-                channel_autoseal_secs(),
-                opened_at,
-                silence_sec,
-                receipt_provider.as_deref(),
-                receipt_provider_session.as_deref(),
+                &crate::presentation::agent_ack::ChannelSessionLine {
+                    state: "open",
+                    reason: "opened",
+                    channel: &digit.to_string(),
+                    agent: &audience,
+                    session_id: receipt_session.as_deref(),
+                    autoseal_secs: channel_autoseal_secs(),
+                    opened_at,
+                    utterance_silence_sec: silence_sec,
+                    provider: receipt_provider.as_deref(),
+                    provider_session_id: receipt_provider_session.as_deref(),
+                },
             );
             if let Err(error) = crate::presentation::agent_ack::append_json_line(
                 &crate::presentation::transcript_bus::transcript_bus_path(),
@@ -493,16 +495,18 @@ impl RecordingController {
                 continue;
             }
             let line = crate::presentation::agent_ack::channel_session_line(
-                "sealed",
-                "silence",
-                &channel,
-                &agent,
-                session_id.as_deref(),
-                secs,
-                opened_at,
-                silence_sec,
-                provider.as_deref(),
-                provider_session_id.as_deref(),
+                &crate::presentation::agent_ack::ChannelSessionLine {
+                    state: "sealed",
+                    reason: "silence",
+                    channel: &channel,
+                    agent: &agent,
+                    session_id: session_id.as_deref(),
+                    autoseal_secs: secs,
+                    opened_at,
+                    utterance_silence_sec: silence_sec,
+                    provider: provider.as_deref(),
+                    provider_session_id: provider_session_id.as_deref(),
+                },
             );
             if let Err(error) = crate::presentation::agent_ack::append_json_line(bus, &line) {
                 tracing::warn!(%error, digit, "channel silence receipt was not appended");
