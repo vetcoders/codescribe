@@ -3919,6 +3919,7 @@ mod runtime_snapshot_cache_tests {
     /// data dir, with Drop restoring the process env the test mutated.
     struct IsolatedSettings {
         _dir: tempfile::TempDir,
+        _bundle: codescribe_core::config::keychain::test_support::BundleCacheGuard,
         previous: Vec<(&'static str, Option<OsString>)>,
     }
 
@@ -3927,6 +3928,7 @@ mod runtime_snapshot_cache_tests {
             let dir = tempfile::tempdir().unwrap();
             let mut keys = vec![
                 "CODESCRIBE_DATA_DIR",
+                "CODESCRIBE_DISABLE_KEYCHAIN",
                 "CODESCRIBE_VOICE_LAB_SRC",
                 "CODESCRIBE_ENV_PATH",
                 "LLM_API_KEY",
@@ -3944,6 +3946,11 @@ mod runtime_snapshot_cache_tests {
                     unsafe {
                         if key == "CODESCRIBE_DATA_DIR" {
                             std::env::set_var(key, dir.path());
+                        } else if key == "CODESCRIBE_DISABLE_KEYCHAIN" {
+                            // A private data directory does not disable Keychain.
+                            // Dependency builds must opt out explicitly, including
+                            // custom target directories outside /target/debug/deps.
+                            std::env::set_var(key, "1");
                         } else {
                             std::env::remove_var(key);
                         }
@@ -3955,6 +3962,7 @@ mod runtime_snapshot_cache_tests {
             super::invalidate_runtime_snapshot_cache();
             Self {
                 _dir: dir,
+                _bundle: codescribe_core::config::keychain::test_support::install_bundle(&[]),
                 previous,
             }
         }

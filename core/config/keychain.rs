@@ -536,18 +536,19 @@ fn explicit_env_for(account: &str) -> Option<String> {
 
 /// Test-only view of a decoded Keychain bundle: what seal-time readers see when
 /// secrets exist in Keychain and nowhere in the process environment.
-#[cfg(test)]
-pub(crate) mod test_support {
+#[cfg(any(test, feature = "test-isolation"))]
+#[doc(hidden)]
+pub mod test_support {
     use super::{KeychainBundle, read_bundle_cache, write_bundle_cache};
 
     /// Restores whatever bundle cache existed before the fixture on drop.
-    pub(crate) struct BundleCacheGuard {
+    pub struct BundleCacheGuard {
         previous: Option<KeychainBundle>,
     }
 
     /// Install `keys` as the process bundle cache, exactly as a decoded
     /// Keychain read would leave it.
-    pub(crate) fn install_bundle(keys: &[(&str, &str)]) -> BundleCacheGuard {
+    pub fn install_bundle(keys: &[(&str, &str)]) -> BundleCacheGuard {
         let previous = read_bundle_cache();
         let mut bundle = KeychainBundle::default();
         for (account, secret) in keys {
@@ -560,6 +561,7 @@ pub(crate) mod test_support {
     }
 
     /// Current bundle cache as plain account → secret pairs.
+    #[cfg(test)]
     pub(crate) fn snapshot_bundle() -> Option<std::collections::HashMap<String, String>> {
         read_bundle_cache().map(|bundle| bundle.keys.into_iter().collect())
     }
