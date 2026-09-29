@@ -15,7 +15,7 @@ import XCTest
 /// not polling and not an accident of some unrelated refresh.
 @MainActor
 final class ThreadsRefreshTests: XCTestCase {
-  private final class StubThreadsProvider: ChatThreadsProviding {
+  private final class StubThreadsProvider: ThreadsFixture {
     /// (backendId, title) rows returned newest-first, mirroring the
     /// ThreadStore index order ("index top" = most recently updated).
     var stubbed: [(id: String, title: String)]
@@ -38,29 +38,10 @@ final class ThreadsRefreshTests: XCTestCase {
       }
     }
 
-    func searchThreads(query: String) throws -> [ChatThread] { try listThreads() }
-    func loadMessages(backendId: String) -> [ChatMessage] { [] }
-    func deleteThread(backendId: String) -> Bool { true }
-    func setThreadFavorite(backendId: String, isFavorite: Bool) -> Bool { true }
-    func renameThread(backendId: String, title: String) -> Bool { true }
-    func setGeneratedTitle(backendId: String, title: String) -> Bool { true }
-    func exportThreadMarkdown(backendId: String, assistantOnly: Bool) -> String? { nil }
-    func generateThreadId() -> String { "t_generated" }
   }
 
   private func backendIds(_ store: AgentChatStore) -> [String] {
     store.threads.compactMap(\.backendId)
-  }
-
-  /// Refresh triggers coalesce onto the next main-queue tick (so a popover
-  /// close / window-ordering storm never runs disk re-reads inside the
-  /// notification callout — sample 2026-08-07 10:43, main thread 93/93 in
-  /// `_NSPopoverCloseAndAnimate → refreshThreadsFromExternalChange`).
-  /// Tests drain that tick before asserting.
-  private func drainMainQueue() {
-    let drained = expectation(description: "main queue drained")
-    DispatchQueue.main.async { drained.fulfill() }
-    wait(for: [drained], timeout: 2)
   }
 
   private func postWindowActivation() {

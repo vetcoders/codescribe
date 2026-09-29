@@ -6,27 +6,19 @@ import XCTest
 
 @MainActor
 final class AgentSpeechTests: XCTestCase {
-  private final class Engine: AgentChatEngine {
+  private final class Engine: ChatEngineFixture {
     var unavailable: String?
     var spoken: [String] = []
     var failure: Error?
     var stopCount = 0
-    func isAvailable() -> Bool { true }
-    func availabilityDetail() -> String? { nil }
     func speechAvailability() -> String? { unavailable }
     func speak(text: String) async throws {
       if let failure { throw failure }
       spoken.append(text)
     }
     func stopSpeaking() { stopCount += 1 }
-    func generateThreadTitle(_ text: String) async throws -> String? { nil }
-    func cancelReply(threadId: String) -> Bool { false }
-    func streamReply(
-      _ text: String, threadId: String, attachmentPaths: [String],
-      onDelta: @escaping @MainActor (String) -> Void,
-      onReasoning: @escaping @MainActor (String) -> Void,
-      onToolExecuting: @escaping @MainActor (String, String) -> Void,
-      onToolResult: @escaping @MainActor (String, String, Bool, String) -> Void
+    func acceptReply(
+      _ text: String, threadId _: String, attachmentPaths _: [String]
     ) async throws -> String { text }
   }
 

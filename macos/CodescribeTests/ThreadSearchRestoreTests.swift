@@ -8,7 +8,7 @@ import XCTest
 /// field must restore the full rail, whatever the last query matched.
 @MainActor
 final class ThreadSearchRestoreTests: XCTestCase {
-  private final class StubThreadsProvider: ChatThreadsProviding {
+  private final class StubThreadsProvider: ThreadsFixture {
     var stubbed: [(id: String, title: String)]
     private(set) var listCalls = 0
     private(set) var searchQueries: [String] = []
@@ -33,14 +33,6 @@ final class ThreadSearchRestoreTests: XCTestCase {
       let q = query.lowercased()
       return stubbed.filter { $0.title.lowercased().contains(q) }.map(row)
     }
-
-    func loadMessages(backendId: String) -> [ChatMessage] { [] }
-    func deleteThread(backendId: String) -> Bool { true }
-    func setThreadFavorite(backendId: String, isFavorite: Bool) -> Bool { true }
-    func renameThread(backendId: String, title: String) -> Bool { true }
-    func setGeneratedTitle(backendId: String, title: String) -> Bool { true }
-    func exportThreadMarkdown(backendId: String, assistantOnly: Bool) -> String? { nil }
-    func generateThreadId() -> String { "t_generated" }
   }
 
   private func backendIds(_ store: AgentChatStore) -> [String] {
