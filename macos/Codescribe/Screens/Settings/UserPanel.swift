@@ -15,18 +15,11 @@ struct UserPanel: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      EyebrowLabel(text: "Settings · User")
-        .onAppear { repairSummary = configRepairSummary() }
-      Text("Local by design.")
-        .font(CSFont.ui(26, .bold))
-        .tracking(-0.5)
-        .foregroundStyle(CSColor.textHigh)
-        .padding(.top, 6)
-      Text("No account is required. Your configuration and transcript history stay on this Mac.")
-        .font(CSFont.ui(12.5))
-        .lineSpacing(2)
-        .foregroundStyle(CSColor.textMutedAlt)
-        .padding(.top, 8)
+      SettingsPageHeader(
+        "Local by design.",
+        blurb: "No account is required. Your configuration and transcript history stay on this Mac."
+      )
+      .onAppear { repairSummary = configRepairSummary() }
 
       SettingsSectionLabel("Running build")
         .padding(.top, CSSpace.section)
@@ -37,12 +30,12 @@ struct UserPanel: View {
         divider
         infoRow("Built", model.buildInfo.builtAt)
       }
-      .csSettingsCard()
+      .settingsGroupedInset()
 
       if let repairSummary {
         Text(repairSummary)
           .font(CSFont.ui(12.5))
-          .foregroundStyle(CSColor.textMutedAlt)
+          .foregroundStyle(Color.secondary)
           .textSelection(.enabled)
           .padding(.top, CSSpace.control)
       }
@@ -54,7 +47,7 @@ struct UserPanel: View {
         divider
         pathRow("Transcripts", model.transcriptsPath)
       }
-      .csSettingsCard()
+      .settingsGroupedInset()
 
       SettingsSectionLabel("Anonymous activation")
         .padding(.top, CSSpace.section)
@@ -75,7 +68,7 @@ struct UserPanel: View {
         "Off by default. The event contains only the app version and macOS version — never audio or transcript text."
       )
       .font(CSFont.mono(10.5, .regular))
-      .foregroundStyle(CSColor.textMutedAlt)
+      .foregroundStyle(Color.secondary)
       .padding(.top, 7)
 
       SettingsSectionLabel("Agent transcript tagging")
@@ -95,21 +88,21 @@ struct UserPanel: View {
 
       Text("Template")
         .font(CSFont.mono(10, .semibold))
-        .foregroundStyle(CSColor.textFaint)
+        .foregroundStyle(Color.secondary)
         .padding(.top, 12)
       TextField("Transcript tag template", text: transcriptTemplateBinding, axis: .vertical)
         .font(CSFont.mono(11.5, .regular))
-        .foregroundStyle(CSColor.textBody)
+        .foregroundStyle(Color.primary)
         .textFieldStyle(.plain)
         .lineLimit(3...8)
-        .csSettingsCard()
+        .settingsGroupedInset()
         .accessibilityLabel("Transcript tag template editor")
         .accessibilityValue(model.settings.transcriptTagTemplate)
 
       if let warning = model.transcriptTagTemplateWarning {
         Text(warning)
           .font(CSFont.mono(10.5, .medium))
-          .foregroundStyle(CSColor.dangerLight)
+          .foregroundStyle(CSColor.danger)
           .padding(.top, 7)
           .accessibilityLabel("Transcript tag template warning")
           .accessibilityValue(warning)
@@ -119,16 +112,16 @@ struct UserPanel: View {
         ForEach(transcriptTagTemplatePlaceholders, id: \.self) { placeholder in
           Text(placeholder)
             .font(CSFont.mono(10, .semibold))
-            .foregroundStyle(CSColor.textMutedAlt)
+            .foregroundStyle(Color.secondary)
             .padding(.horizontal, 7)
             .padding(.vertical, 4)
             .background(
               Capsule(style: .continuous)
-                .fill(CSColor.surfaceRaised(0.04))
+                .fill(Color.primary.opacity(0.08))
             )
             .overlay(
               Capsule(style: .continuous)
-                .strokeBorder(CSColor.hairline(0.10), lineWidth: 1)
+                .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
             )
         }
         Spacer(minLength: 0)
@@ -144,14 +137,14 @@ struct UserPanel: View {
 
       Text("Live preview")
         .font(CSFont.mono(10, .semibold))
-        .foregroundStyle(CSColor.textFaint)
+        .foregroundStyle(Color.secondary)
         .padding(.top, 12)
       Text(model.transcriptTagPreview)
         .font(CSFont.mono(11.5, .regular))
-        .foregroundStyle(CSColor.textBodyAlt)
+        .foregroundStyle(Color.primary)
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .csSettingsCard()
+        .settingsGroupedInset()
         .accessibilityLabel("Transcript tag template preview")
         .accessibilityValue(model.transcriptTagPreview)
 
@@ -218,11 +211,11 @@ struct UserPanel: View {
     HStack(spacing: 14) {
       Text(label)
         .font(CSFont.ui(12.5, .medium))
-        .foregroundStyle(CSColor.textMutedAlt)
+        .foregroundStyle(Color.secondary)
         .frame(width: 90, alignment: .leading)
       Text(value)
         .font(CSFont.mono(11.5, .medium))
-        .foregroundStyle(CSColor.textBody)
+        .foregroundStyle(Color.primary)
         .textSelection(.enabled)
         .accessibilityLabel(label)
         .accessibilityValue(value)
@@ -236,10 +229,10 @@ struct UserPanel: View {
     VStack(alignment: .leading, spacing: 5) {
       Text(label)
         .font(CSFont.ui(12.5, .semibold))
-        .foregroundStyle(CSColor.textBody)
+        .foregroundStyle(Color.primary)
       Text(path.isEmpty ? "not loaded yet" : path)
         .font(CSFont.mono(10.5, .regular))
-        .foregroundStyle(CSColor.textMutedAlt)
+        .foregroundStyle(Color.secondary)
         .textSelection(.enabled)
         .lineLimit(2)
         .truncationMode(.middle)
@@ -252,7 +245,7 @@ struct UserPanel: View {
   }
 
   private var divider: some View {
-    Rectangle().fill(CSColor.hairline(0.06)).frame(height: 1)
+    Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
   }
 
 }
@@ -270,7 +263,7 @@ private struct ResetAgentSection: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       SettingsSectionLabel("Reset Agent")
-        .foregroundStyle(CSColor.dangerLight)
+        .foregroundStyle(CSColor.danger)
 
       Text(
         "Moves only Agent conversations, runtime identity, MCP and tool state to Trash. "
@@ -278,7 +271,7 @@ private struct ResetAgentSection: View {
           + "Recordings, transcriptions, dictionary, lexicon, quality reports, prompts, audio, hotkeys, dictation, license, and macOS permissions are preserved."
       )
       .font(CSFont.mono(11, .medium))
-      .foregroundStyle(CSColor.textMutedAlt)
+      .foregroundStyle(Color.secondary)
       .fixedSize(horizontal: false, vertical: true)
       .padding(.top, 6)
 
@@ -289,7 +282,7 @@ private struct ResetAgentSection: View {
       } label: {
         Text("Reset Agent…")
           .font(CSFont.ui(12, .semibold))
-          .foregroundStyle(CSColor.dangerLight)
+          .foregroundStyle(CSColor.danger)
           .padding(.horizontal, 16)
           .padding(.vertical, 8)
           .background(
@@ -342,7 +335,7 @@ private struct ResetAppDataSection: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       SettingsSectionLabel("Danger zone")
-        .foregroundStyle(CSColor.dangerLight)
+        .foregroundStyle(CSColor.danger)
 
       Text(
         "Moves recordings, transcript history, conversations, logs, preferences, "
@@ -350,14 +343,14 @@ private struct ResetAppDataSection: View {
           + "Your assistive.txt and formatting.txt base prompts are preserved by default."
       )
       .font(CSFont.mono(11, .medium))
-      .foregroundStyle(CSColor.textMutedAlt)
+      .foregroundStyle(Color.secondary)
       .fixedSize(horizontal: false, vertical: true)
       .padding(.top, 6)
 
       Toggle(isOn: $includeKeys) {
         Text("Also remove API keys from Keychain")
           .font(CSFont.ui(12.5, .medium))
-          .foregroundStyle(CSColor.textBody)
+          .foregroundStyle(Color.primary)
       }
       .toggleStyle(.checkbox)
       .padding(.top, 13)
@@ -365,7 +358,7 @@ private struct ResetAppDataSection: View {
       Toggle(isOn: $includePrompts) {
         Text("Also reset my base prompts (assistive.txt and formatting.txt)")
           .font(CSFont.ui(12.5, .medium))
-          .foregroundStyle(CSColor.textBody)
+          .foregroundStyle(Color.primary)
       }
       .toggleStyle(.checkbox)
       .padding(.top, 9)
@@ -380,7 +373,7 @@ private struct ResetAppDataSection: View {
       } label: {
         Text("Move app data to Trash…")
           .font(CSFont.ui(12, .semibold))
-          .foregroundStyle(CSColor.dangerLight)
+          .foregroundStyle(CSColor.danger)
           .padding(.horizontal, 16)
           .padding(.vertical, 8)
           .background(
@@ -429,7 +422,5 @@ private struct ResetAppDataSection: View {
   #Preview("User panel") {
     ScrollView { UserPanel(model: .preview(.user)) }
       .frame(width: 720, height: 720)
-      .background(CSColor.windowWash)
-      .preferredColorScheme(.dark)
   }
 #endif

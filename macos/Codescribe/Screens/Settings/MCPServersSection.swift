@@ -17,7 +17,7 @@ struct MCPServersSection: View {
 
       Text("Edited on disk in mcp.json. Hand edits (env, custom fields) are preserved.")
         .font(CSFont.mono(11, .medium))
-        .foregroundStyle(CSColor.textFaint)
+        .foregroundStyle(Color.secondary)
         .padding(.top, 4)
 
       if model.mcpServers.isEmpty {
@@ -51,7 +51,7 @@ struct MCPServersSection: View {
       } label: {
         Text("Clear MCP configuration…")
           .font(CSFont.mono(10.5, .semibold))
-          .foregroundStyle(CSColor.dangerLight)
+          .foregroundStyle(CSColor.danger)
       }
       .csFocusRing()
       .padding(.top, 13)
@@ -73,26 +73,26 @@ struct MCPServersSection: View {
     VStack(alignment: .leading, spacing: 6) {
       Text("No MCP servers yet — this is optional.")
         .font(CSFont.ui(12.5, .semibold))
-        .foregroundStyle(CSColor.textBody)
+        .foregroundStyle(Color.primary)
       Text(
         "MCP servers extend the agent with extra tools like code search, "
           + "PR review, or web search. Add your first server below, or skip it "
           + "and wire one any time."
       )
       .font(CSFont.mono(11, .medium))
-      .foregroundStyle(CSColor.textFaint)
+      .foregroundStyle(Color.secondary)
       .fixedSize(horizontal: false, vertical: true)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.horizontal, 16)
     .padding(.vertical, 14)
     .background(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .fill(CSColor.surfaceRaised(0.02))
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .fill(Color.primary.opacity(0.04))
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
     )
   }
 }
@@ -108,10 +108,10 @@ private struct MCPServerRow: View {
   let onRemove: () -> Void
 
   private var accent: Color {
-    guard server.enabled else { return CSColor.textFaint }
+    guard server.enabled else { return Color.secondary }
     if pending { return CSColor.amber }
-    if let result { return result.ok ? CSColor.olive : CSColor.terracottaLight }
-    return CSColor.textFaint
+    if let result { return result.ok ? CSColor.olive : CSColor.terracotta }
+    return Color.secondary
   }
 
   private var commandLine: String {
@@ -127,7 +127,7 @@ private struct MCPServerRow: View {
         Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
         Text(server.name)
           .font(CSFont.ui(13.5, .semibold))
-          .foregroundStyle(CSColor.textBody)
+          .foregroundStyle(Color.primary)
         Spacer(minLength: 0)
         enabledButton
         testButton
@@ -136,7 +136,7 @@ private struct MCPServerRow: View {
 
       Text(commandLine)
         .font(CSFont.mono(11.5, .regular))
-        .foregroundStyle(CSColor.textMutedAlt)
+        .foregroundStyle(Color.secondary)
         .lineLimit(1)
         .truncationMode(.middle)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -144,7 +144,7 @@ private struct MCPServerRow: View {
       if !server.envKeys.isEmpty {
         Text("env: \(server.envKeys.joined(separator: ", "))")
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textFaint)
+          .foregroundStyle(Color.secondary)
           .lineLimit(1)
           .truncationMode(.middle)
       }
@@ -182,31 +182,31 @@ private struct MCPServerRow: View {
           if let identity = Self.handshakeIdentity(result) {
             Text(identity)
               .font(CSFont.mono(10, .medium))
-              .foregroundStyle(CSColor.textFaint)
+              .foregroundStyle(Color.secondary)
               .lineLimit(1)
               .truncationMode(.middle)
           }
         } else {
           resultLine(
             text: "degraded — \(result.error)",
-            color: CSColor.terracottaLight
+            color: CSColor.terracotta
           )
         }
       } else {
         resultLine(
           text: server.enabled ? "disconnected — not tested" : "disconnected — disabled",
-          color: CSColor.textFaint
+          color: Color.secondary
         )
       }
     }
     .padding(.horizontal, 15)
     .padding(.vertical, 12)
     .background(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .fill(accent.opacity(0.05))
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .strokeBorder(accent.opacity(0.16), lineWidth: 1)
     )
   }
@@ -233,7 +233,7 @@ private struct MCPServerRow: View {
     Button(action: onToggle) {
       Text(server.enabled ? "enabled" : "disabled")
         .font(CSFont.mono(10, .semibold))
-        .foregroundStyle(server.enabled ? CSColor.oliveLight : CSColor.textFaint)
+        .foregroundStyle(server.enabled ? CSColor.oliveLight : Color.secondary)
         .padding(.horizontal, 9)
         .padding(.vertical, 5)
         .background(
@@ -253,16 +253,16 @@ private struct MCPServerRow: View {
     Button(action: onTest) {
       Text("Test")
         .font(CSFont.mono(10, .semibold))
-        .foregroundStyle(pending ? CSColor.textFaint : CSColor.textBodyAlt)
+        .foregroundStyle(pending ? Color.secondary : Color.primary)
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
         .background(
           RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .fill(CSColor.surfaceRaised(0.04))
+            .fill(Color.primary.opacity(0.08))
         )
         .overlay(
           RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
         )
     }
     .csFocusRing()
@@ -272,15 +272,15 @@ private struct MCPServerRow: View {
 
   private var removeButton: some View {
     Button(action: onRemove) {
-      CSIconView(icon: .delete, size: 11, weight: .semibold, color: CSColor.terracottaLight)
+      CSIconView(icon: .delete, size: 11, weight: .semibold, color: CSColor.terracotta)
         .frame(width: 28, height: 26)
         .background(
           RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .fill(CSColor.surfaceRaised(0.04))
+            .fill(Color.primary.opacity(0.08))
         )
         .overlay(
           RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
         )
     }
     .csFocusRing()
@@ -316,7 +316,7 @@ private struct MCPAddServerForm: View {
       Text("ADD SERVER")
         .font(CSFont.mono(10, .semibold))
         .tracking(0.5)
-        .foregroundStyle(CSColor.textMuted)
+        .foregroundStyle(Color.secondary)
 
       Picker("Transport", selection: $remote) {
         Text("Local process").tag(false)
@@ -330,12 +330,12 @@ private struct MCPAddServerForm: View {
         SecureField("bearer token (optional, saved in Keychain)", text: $token)
           .textFieldStyle(.plain)
           .font(CSFont.mono(12, .regular))
-          .foregroundStyle(CSColor.textBody)
+          .foregroundStyle(Color.primary)
           .padding(.horizontal, 11)
           .padding(.vertical, 8)
           .background(
             RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-              .fill(CSColor.surfaceRaised(0.03))
+              .fill(Color.primary.opacity(0.06))
           )
       } else {
         field(placeholder: "command (e.g. prview)", text: $command, mono: true)
@@ -347,7 +347,7 @@ private struct MCPAddServerForm: View {
         Button(action: submit) {
           Text("Add")
             .font(CSFont.ui(12, .semibold))
-            .foregroundStyle(canAdd ? CSColor.oliveLight : CSColor.textFaint)
+            .foregroundStyle(canAdd ? CSColor.oliveLight : Color.secondary)
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
             .background(
@@ -366,12 +366,12 @@ private struct MCPAddServerForm: View {
     .padding(.horizontal, 15)
     .padding(.vertical, 13)
     .background(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .fill(CSColor.surfaceRaised(0.03))
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .fill(Color.primary.opacity(0.06))
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
     )
   }
 
@@ -379,16 +379,16 @@ private struct MCPAddServerForm: View {
     TextField(placeholder, text: text)
       .textFieldStyle(.plain)
       .font(mono ? CSFont.mono(12, .regular) : CSFont.ui(12, .regular))
-      .foregroundStyle(CSColor.textBody)
+      .foregroundStyle(Color.primary)
       .padding(.horizontal, 11)
       .padding(.vertical, 8)
       .background(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-          .fill(CSColor.surfaceRaised(0.03))
+          .fill(Color.primary.opacity(0.06))
       )
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-          .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
       )
       .onSubmit(submit)
   }

@@ -68,13 +68,13 @@ struct AgentLanesTab: View {
       .clipShape(.rect(cornerRadius: CSRadius.composer))
       .overlay {
         RoundedRectangle(cornerRadius: CSRadius.composer)
-          .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
       }
       .padding(.top, CSSpace.control)
     }
   }
 
   private var divider: some View {
-    Rectangle().fill(CSColor.hairline(0.05)).frame(height: 1)
+    Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
   }
 }

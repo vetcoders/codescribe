@@ -294,17 +294,10 @@ struct AudioPanel: View {
     VStack(alignment: .leading, spacing: 0) {
       HStack(alignment: .top, spacing: 12) {
         VStack(alignment: .leading, spacing: 0) {
-          EyebrowLabel(text: "Settings · Audio")
-          Text("Hear the real input.")
-            .font(CSFont.ui(26, .bold))
-            .tracking(-0.5)
-            .foregroundStyle(CSColor.textHigh)
-            .padding(.top, 6)
-          Text("Device choice and sound feedback use the live recorder config.")
-            .font(CSFont.ui(12.5))
-            .lineSpacing(2)
-            .foregroundStyle(CSColor.textMutedAlt)
-            .padding(.top, 8)
+          SettingsPageHeader(
+            "Hear the real input.",
+            blurb: "Device choice and sound feedback use the live recorder config."
+          )
         }
         Spacer(minLength: 0)
         Button("Refresh") {
@@ -365,7 +358,7 @@ struct AudioPanel: View {
       HStack {
         Text("Reset removes the preference; it never writes an empty device name.")
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textFaint)
+          .foregroundStyle(Color.secondary)
         Spacer(minLength: 12)
         Button("Use system default") {
           model.resetAudioInputDevice()
@@ -377,7 +370,7 @@ struct AudioPanel: View {
         .accessibilityLabel("Reset audio input to system default")
       }
     }
-    .csSettingsCard()
+    .settingsGroupedInset()
   }
 
   /// The controller's precondition for any take, and the one operator step
@@ -390,18 +383,18 @@ struct AudioPanel: View {
       if let notice = model.calibrationNotice {
         Text(notice)
           .font(CSFont.ui(11.5))
-          .foregroundStyle(CSColor.textMutedAlt)
+          .foregroundStyle(Color.secondary)
           .accessibilityLabel("Calibration result")
       }
     }
-    .csSettingsCard()
+    .settingsGroupedInset()
   }
 
   private var readinessCockpit: some View {
     VStack(alignment: .leading, spacing: 0) {
       if let error = model.admissionReadError {
         statusRow(
-          color: CSColor.terracottaLight,
+          color: CSColor.terracotta,
           title: "Readiness check unavailable",
           detail: error
         )
@@ -418,12 +411,12 @@ struct AudioPanel: View {
       ) { step in
         readinessStep(step)
         if step.id != .recording {
-          Divider().overlay(CSColor.hairline(0.06))
+          Divider().overlay(Color.primary.opacity(0.12))
         }
       }
     }
     .padding(CSSpace.md)
-    .background(CSColor.surfaceRaised(0.03))
+    .background(Color.primary.opacity(0.06))
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Recording readiness")
@@ -449,11 +442,11 @@ struct AudioPanel: View {
       VStack(alignment: .leading, spacing: 3) {
         Text(step.title)
           .font(CSFont.ui(12.5, .semibold))
-          .foregroundStyle(CSColor.textBody)
+          .foregroundStyle(Color.primary)
         Text(step.detail)
           .font(CSFont.ui(11.5))
           .lineSpacing(2)
-          .foregroundStyle(CSColor.textMutedAlt)
+          .foregroundStyle(Color.secondary)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       .accessibilityElement(children: .ignore)
@@ -492,7 +485,7 @@ struct AudioPanel: View {
                 "\(SettingsViewModel.calibrationRemainingSeconds(elapsedSeconds: elapsed)) s left"
               )
               .font(CSFont.mono(9.5, .medium))
-              .foregroundStyle(CSColor.textFaint)
+              .foregroundStyle(Color.secondary)
             }
           }
           .accessibilityLabel("Calibration capture progress")
@@ -579,11 +572,11 @@ struct AudioPanel: View {
         HStack {
           Text("Volume")
             .font(CSFont.ui(12.5, .medium))
-            .foregroundStyle(CSColor.textMutedAlt)
+            .foregroundStyle(Color.secondary)
           Spacer(minLength: 0)
           Text("\(Int((model.settings.soundVolume * 100).rounded()))%")
             .font(CSFont.mono(10.5, .semibold))
-            .foregroundStyle(CSColor.textBody)
+            .foregroundStyle(Color.primary)
         }
         Slider(value: soundVolumeBinding, in: 0...1, step: 0.05)
           .tint(CSColor.chromeAccent)
@@ -592,7 +585,7 @@ struct AudioPanel: View {
           .accessibilityValue("\(Int((model.settings.soundVolume * 100).rounded())) percent")
       }
     }
-    .csSettingsCard()
+    .settingsGroupedInset()
   }
 
   private var deviceOptions: [String] {
@@ -657,16 +650,16 @@ struct AudioPanel: View {
       VStack(alignment: .leading, spacing: 3) {
         Text(title)
           .font(CSFont.ui(12.5, .semibold))
-          .foregroundStyle(CSColor.textBody)
+          .foregroundStyle(Color.primary)
         Text(detail)
           .font(CSFont.ui(11.5))
           .lineSpacing(2)
-          .foregroundStyle(CSColor.textMutedAlt)
+          .foregroundStyle(Color.secondary)
       }
       Spacer(minLength: 0)
     }
     .padding(CSSpace.md)
-    .background(CSColor.surfaceRaised(0.03))
+    .background(Color.primary.opacity(0.06))
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
   }
 
@@ -674,7 +667,7 @@ struct AudioPanel: View {
     switch tone {
     case .healthy: return CSColor.oliveLight
     case .fallback: return CSColor.amber
-    case .unavailable: return CSColor.terracottaLight
+    case .unavailable: return CSColor.terracotta
     }
   }
 

@@ -13,11 +13,11 @@ struct PreviewTimingSlider: View {
       HStack {
         Text(title)
           .font(CSFont.ui(12, .medium))
-          .foregroundStyle(CSColor.textMutedAlt)
+          .foregroundStyle(Color.secondary)
         Spacer(minLength: 0)
         Text(valueLabel)
           .font(CSFont.mono(10.5, .semibold))
-          .foregroundStyle(CSColor.textBody)
+          .foregroundStyle(Color.primary)
       }
       Slider(value: $value, in: range, step: step)
         .tint(CSColor.chromeAccent)

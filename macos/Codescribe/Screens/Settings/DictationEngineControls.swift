@@ -71,7 +71,7 @@ struct DictationEngineControls: View {
     case .livePatchingNotReady, .degradedEnvOverride:
       CSColor.amber
     case .notSelected:
-      CSColor.textMutedAlt
+      Color.secondary
     }
   }
 }

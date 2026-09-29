@@ -123,10 +123,10 @@ private struct PromptEditor: View {
         VStack(alignment: .leading, spacing: 2) {
           Text(title)
             .font(CSFont.ui(14, .semibold))
-            .foregroundStyle(CSColor.textHigh)
+            .foregroundStyle(Color.primary)
           Text(subtitle)
             .font(CSFont.ui(11.5))
-            .foregroundStyle(CSColor.textMutedAlt)
+            .foregroundStyle(Color.secondary)
         }
         Spacer(minLength: 0)
         HStack(spacing: 8) {
@@ -191,7 +191,7 @@ private struct PromptEditor: View {
     }
     .csFocusRing()
     .font(CSFont.ui(11.5, .semibold))
-    .foregroundStyle(CSColor.textMutedAlt)
+    .foregroundStyle(Color.secondary)
     .help("Restore only \(title.lowercased())")
     .accessibilityHint("Requires confirmation and keeps a recoverable backup.")
   }
@@ -201,15 +201,15 @@ private struct PromptEditor: View {
       Text(promptSourceLabel(snapshot?.source))
         .font(CSFont.mono(10.5, .semibold))
         .foregroundStyle(
-          snapshot?.source == "read_error" ? CSColor.dangerLight : CSColor.textMutedAlt)
+          snapshot?.source == "read_error" ? CSColor.danger : Color.secondary)
       Text(snapshot?.path ?? "Path unavailable")
         .font(CSFont.mono(10.5, .regular))
-        .foregroundStyle(CSColor.textMuted)
+        .foregroundStyle(Color.secondary)
         .textSelection(.enabled)
       if let error = snapshot?.readError, !error.isEmpty {
         Text(error)
           .font(CSFont.mono(10.5, .regular))
-          .foregroundStyle(CSColor.dangerLight)
+          .foregroundStyle(CSColor.danger)
       }
     }
     .accessibilityElement(children: .combine)
@@ -223,10 +223,10 @@ private struct PromptEditor: View {
     if editing {
       TextEditor(text: $text)
         .font(CSFont.mono(12.5, .regular))
-        .foregroundStyle(CSColor.textBody)
+        .foregroundStyle(Color.primary)
         .scrollContentBackground(.hidden)
         .frame(minHeight: 132)
-        .csSettingsCard(padding: CSSpace.md)
+        .settingsGroupedInset(padding: CSSpace.md)
     } else {
       // Reuse the chat markdown renderer (MarkdownText, ChatComponents.swift):
       // it is dependency-free (DesignSystem tokens only) and carries headings,
@@ -234,7 +234,7 @@ private struct PromptEditor: View {
       MarkdownText(raw: text.isEmpty ? "_No prompt set._" : text, size: 13)
         .frame(maxWidth: .infinity, alignment: .leading)
         .frame(minHeight: 132, alignment: .topLeading)
-        .csSettingsCard(padding: CSSpace.md)
+        .settingsGroupedInset(padding: CSSpace.md)
     }
   }
 }
@@ -252,7 +252,5 @@ func promptSourceLabel(_ source: String?) -> String {
   #Preview("Prompt panel") {
     ScrollView { PromptPanel(model: .preview(.agent)) }
       .frame(width: 720, height: 620)
-      .background(CSColor.windowWash)
-      .preferredColorScheme(.dark)
   }
 #endif

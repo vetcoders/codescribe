@@ -1,9 +1,9 @@
 import SwiftUI
 
-/// The one grammar for every settings pane that outgrew a single scroll: the
-/// section eyebrow, a segmented tab bar, then the selected tab's headline,
-/// blurb and content — one tab at a time. It replaces both the stacked
-/// collapsibles and the child rows the sidebar used to grow per pane.
+/// The one grammar for every settings pane that outgrew a single scroll: a
+/// pinned segmented tab bar, then the selected tab's headline, blurb and
+/// content. The sidebar already names the section, so the pane does not
+/// repeat it.
 struct SettingsTabbedPane<Content: View>: View {
   @ObservedObject var model: SettingsViewModel
   let section: SettingsSection
@@ -11,41 +11,28 @@ struct SettingsTabbedPane<Content: View>: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      VStack(alignment: .leading, spacing: 0) {
-        EyebrowLabel(text: "Settings · \(section.title)")
-        SettingsTabBar(model: model, section: section)
-          .padding(.top, CSSpace.md)
-      }
-      .padding(.horizontal, CSSpace.xl)
-      .padding(.vertical, CSSpace.section)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .background(CSColor.windowWash)
+      SettingsTabBar(model: model, section: section)
+        .controlSize(.regular)
+        .padding(.horizontal, CSSpace.xl)
+        .padding(.vertical, CSSpace.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      Divider()
 
       ScrollView {
         VStack(alignment: .leading, spacing: 0) {
           if let tab = model.currentTab {
-            Text(tab.headline)
-              .font(CSFont.ui(26, .bold))
-              .tracking(-0.5)
-              .foregroundStyle(CSColor.textHigh)
-
-            Text(tab.blurb)
-              .font(CSFont.ui(12.5))
-              .lineSpacing(2)
-              .foregroundStyle(CSColor.textMutedAlt)
-              .padding(.top, CSSpace.sm)
+            SettingsPageHeader(tab.headline, blurb: tab.blurb)
           }
 
           content
             .padding(.top, CSSpace.lg)
         }
         .padding(.horizontal, CSSpace.xl)
-        .padding(.bottom, CSSpace.section)
+        .padding(.vertical, CSSpace.section)
         .frame(maxWidth: .infinity, alignment: .leading)
       }
       .scrollContentBackground(.hidden)
       .id(model.currentTab)
     }
-    .background(CSColor.windowWash)
   }
 }

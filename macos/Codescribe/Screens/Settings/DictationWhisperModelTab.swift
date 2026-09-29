@@ -31,7 +31,7 @@ struct DictationWhisperModelTab: View {
           }
           Text(model.whisperDownloadDetail ?? "Downloading…")
             .font(CSFont.mono(10.5, .medium))
-            .foregroundStyle(CSColor.textFaint)
+            .foregroundStyle(Color.secondary)
             .lineLimit(2)
         }
       } else if !status.available {
@@ -57,7 +57,7 @@ struct DictationWhisperModelTab: View {
       } else {
         Text("This build embeds Whisper (fat SKU). Runtime download is not required.")
           .font(CSFont.mono(10.5, .medium))
-          .foregroundStyle(CSColor.textFaint)
+          .foregroundStyle(Color.secondary)
       }
 
       SettingsSectionLabel("Data footprint")
