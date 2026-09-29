@@ -244,7 +244,7 @@ struct Composer: View {
         Spacer(minLength: 8)
         Button("Enter license") {
           SettingsDeepLink.shared.pendingSection = .license
-          openWindow(id: SettingsView.windowID)
+          openWindow.presentSettings()
         }
         .csFocusRing()
         .font(CSFont.mono(10.5, .semibold))

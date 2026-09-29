@@ -300,7 +300,7 @@ private struct ThreadDetail: View {
         )
         .accessibilityValue(isPinned ? "Pinned" : "Unpinned")
 
-        Button(action: { openWindow(id: SettingsView.windowID) }) {
+        Button(action: { openWindow.presentSettings() }) {
           CSIconView(icon: .settings, size: 14)
         }
         .csFocusRing()

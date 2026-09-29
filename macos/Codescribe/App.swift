@@ -39,6 +39,38 @@ final class AgentSummonAction {
   }
 }
 
+/// Testable seam for an explicit Settings open: the tray row, the Agent chrome
+/// button, the license gate and ⌘, all route here through `presentSettings()`.
+///
+/// Settings is a plain SwiftUI `Window` in an LSUIElement app, and the tray
+/// hosts its rows in a non-activating panel. `openWindow` alone therefore put
+/// Settings on screen while Codescribe stayed inactive, and the next click
+/// beside it left the window under the frontmost app (Founder, 2026-09-29).
+/// Settings now arrives the way an explicit Agent open does
+/// (`AppDelegate.showAgent`): Codescribe becomes the active app first, then the
+/// scene fronts its window as key. Opening the tray menu itself never comes
+/// here — only an entry that names Settings does.
+@MainActor
+struct SettingsOpenAction {
+  let activateApp: @MainActor () -> Void
+  let openScene: @MainActor () -> Void
+
+  func perform() {
+    activateApp()
+    openScene()
+  }
+}
+
+extension OpenWindowAction {
+  @MainActor
+  func presentSettings() {
+    SettingsOpenAction(
+      activateApp: { NSApp.activate(ignoringOtherApps: true) },
+      openScene: { self(id: SettingsView.windowID) }
+    ).perform()
+  }
+}
+
 /// UniFFI callbacks arrive off-main. This listener performs exactly one hop to
 /// the AppDelegate-owned action and carries no recording/model payload.
 final class AgentAppActionListener: CsAppActionListener, Sendable {
@@ -105,7 +137,7 @@ struct CodescribeApp: App {
     .windowResizability(.contentMinSize)
     .commands {
       CommandGroup(replacing: .appSettings) {
-        Button("Settings…") { openWindow(id: SettingsView.windowID) }
+        Button("Settings…") { openWindow.presentSettings() }
           .keyboardShortcut(",", modifiers: .command)
       }
     }
@@ -205,6 +237,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool { false }
+
+  /// A reopen — Dock icon click, `open -a`, a Finder or Spotlight launch of the
+  /// already running app — presents nothing. Left unhandled, SwiftUI answers a
+  /// reopen by presenting a window scene, and the only one here is the Settings
+  /// `Window`: a scratch probe on 2026-09-29 (accessory app, one `Window`
+  /// scene, `kAEReopenApplication` sent to itself) got the closed window back
+  /// on screen, and returning false kept it closed. Settings opens only from an
+  /// explicit entry (`OpenWindowAction.presentSettings`).
+  func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool)
+    -> Bool
+  {
+    false
+  }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     guard !shouldExitForDuplicate, !Self.isRunningTests else { return }
