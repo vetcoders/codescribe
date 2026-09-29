@@ -1211,6 +1211,7 @@ final class OverlayStateTests: XCTestCase {
     state.setKeepVisibleBetweenTakes(true)
     var closes = 0
     state.onClose = { closes += 1 }
+    state.onCloseIntent = { closes += 1 }
 
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
@@ -1873,6 +1874,7 @@ final class OverlayStateTests: XCTestCase {
     var closeCount = 0
     var sentText: String?
     state.onClose = { closeCount += 1 }
+    state.onCloseIntent = { closeCount += 1 }
     state.onSendToAgent = { sentText = $0 }
     let delivered = expectation(description: "agent button delivered")
     engine.onAssistiveSend = { delivered.fulfill() }
@@ -3560,7 +3562,7 @@ final class OverlayStateTests: XCTestCase {
     // as AppModel does with the real engine; pin only after that attach.
     state.engine = engine
     state.setKeepVisibleBetweenTakes(true)
-    state.onClose = { controller.hide() }
+    // Close reaches the panel through the controller's own intent wiring.
 
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
@@ -3732,6 +3734,7 @@ final class OverlayStateTests: XCTestCase {
     let state = OverlayState(nowProvider: { clock.now })
     var closes = 0
     state.onClose = { closes += 1 }
+    state.onCloseIntent = { closes += 1 }
     state.onComposerTranscript = { text, _ in .retained(text) }
     projectText(
       "recover these words", to: state, phase: "coverage_refused", canCopy: true,

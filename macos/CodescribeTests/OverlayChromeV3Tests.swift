@@ -58,7 +58,7 @@ final class OverlayChromeV3Tests: XCTestCase {
   func testCloseUsesProductionIntentRoute() {
     let state = OverlayState.previewFormatted()
     var closed = false
-    state.onClose = { closed = true }
+    state.onCloseIntent = { closed = true }
     XCTAssertTrue(OverlayIntentRail.projectedIntents(for: state).contains(.close))
     state.relayIntent(.close)
     XCTAssertTrue(closed)

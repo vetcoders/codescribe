@@ -797,9 +797,14 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   func testBrandDotClosesTheOverlay() throws {
     let state = OverlayState.previewListening()
     var closes = 0
-    state.onClose = { closes += 1 }
+    var lifecycleCloses = 0
+    state.onCloseIntent = { closes += 1 }
+    state.onClose = { lifecycleCloses += 1 }
     state.relayIntent(.close)
-    XCTAssertEqual(closes, 1, "The close intent the brand dot relays must reach onClose")
+    XCTAssertEqual(closes, 1, "The close intent the brand dot relays must reach onCloseIntent")
+    XCTAssertEqual(
+      lifecycleCloses, 0,
+      "The human close is not an automatic hide an open channel may veto")
 
     let source = try overlaySource()
     let header = try headerSource(source)

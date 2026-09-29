@@ -430,8 +430,13 @@ final class OverlayState {
   /// Handoff to the agent surface — wired by the orchestrator (routes the text
   /// into AgentChat, which streams it through `CodescribeAgent.streamReply`).
   var onSendToAgent: ((String) -> Void)?
-  /// Dismiss the floating window — wired by the orchestrator.
+  /// Dismiss the floating window when the overlay's own lifecycle ends
+  /// (auto-hide, warmup watchdog, agent delivery) — wired by the orchestrator,
+  /// which keeps an open agent channel on screen against it.
   var onClose: (() -> Void)?
+  /// The human Close intent (the brand dot) — wired by the orchestrator to a
+  /// dismissal that no automatic visibility rule can veto.
+  var onCloseIntent: (() -> Void)?
   /// Window chrome only: folding never ends capture or creates text edits.
   /// Leaving an edited canvas uses its existing commit-on-blur path.
   private(set) var isCollapsed = true
@@ -1270,7 +1275,7 @@ final class OverlayState {
     warmingUp = false
     transcribing = false
     isFinalPass = false
-    onClose?()
+    onCloseIntent?()
   }
 
   func refreshRetranscriptionAvailability() {

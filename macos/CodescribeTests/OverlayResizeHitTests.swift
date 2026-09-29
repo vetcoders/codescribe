@@ -141,11 +141,12 @@ final class OverlayResizeHitTests: XCTestCase {
     }
 
     // The placement Menu's measured non-drag hit span at the 470 pt test width
-    // is x = 335.75…359.75 (third control from the right, after the preview
-    // toggle and Stop). Annex A2 removed the Auto Paste chip, so the full
-    // header now fits at this width and the menu moved from maxX − 157.25.
+    // is x = 371…394.75 (third control from the right, after the preview
+    // toggle and Stop). Stop became a 22 pt circle like the chevron (Founder,
+    // 2026-09-29: "ten stop jest olbrzymi"), so the menu moved from maxX −
+    // 122.25 and the waveform kept the width the word "Stop" used to take.
     // Its focus/key view must receive a click, not window drag.
-    let placementMenuPoint = NSPoint(x: root.bounds.maxX - 122.25, y: y)
+    let placementMenuPoint = NSPoint(x: root.bounds.maxX - 87.125, y: y)
     let placementMenuHit = try XCTUnwrap(root.hitTest(placementMenuPoint))
     XCTAssertTrue(
       hitChain(from: placementMenuHit).contains("NSHostingView"),
@@ -185,6 +186,79 @@ final class OverlayResizeHitTests: XCTestCase {
     XCTAssertFalse(
       panel.isWindowDragHit(at: NSPoint(x: root.bounds.maxX - 27, y: y)),
       "The collapse control must answer clicks, not window drags")
+  }
+
+  /// Founder, 2026-09-29, build 1502: "Przycisk zamykania NIE reaguje". The
+  /// click was never lost in hit testing — it reached the close intent, and
+  /// `OverlayController.hide()` then refused because the bus still carried an
+  /// `open` channel-session row that no `sealed` row or `session_ended` ever
+  /// closed. A real click on the brand dot, routed through the non-activating
+  /// panel exactly like a pointer, must take the panel off screen at both
+  /// header widths even while a channel reads as open.
+  @MainActor
+  func testBrandDotClickClosesThePanelWhileAChannelReadsOpen() throws {
+    for size in [NSSize(width: 470, height: 280), DictationOverlayWindow.minSize] {
+      let state = OverlayState.previewListening()
+      var builtPanel: FloatingOverlayPanel?
+      var orderedOut = 0
+      let controller = OverlayController(
+        state: state, engine: nil,
+        overlayEnabledProvider: { true }, assistiveStatusProvider: { false },
+        panelFactory: { state, scale in
+          let panel = DictationOverlayWindow.make(state: state, textScale: scale)
+          panel.setContentSize(size)
+          builtPanel = panel as? FloatingOverlayPanel
+          return panel
+        },
+        orderPanelFront: { $0.orderFrontRegardless() },
+        orderPanelOut: { panel in
+          orderedOut += 1
+          panel.orderOut(nil)
+        }
+      )
+      // The open row is what surfaced the panel in the first place.
+      state.applyChannelDelivery([
+        OverlayChannelDelivery(
+          channel: "2", agent: "agent", deliveryID: nil, stage: nil, isOpen: true)
+      ])
+      let panel = try XCTUnwrap(builtPanel, "an open channel must show the panel")
+      defer {
+        panel.orderOut(nil)
+        panel.invalidatePresence()
+      }
+      panel.setContentSize(size)
+      let root = try XCTUnwrap(panel.contentView)
+      root.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+      root.layoutSubtreeIfNeeded()
+      XCTAssertTrue(panel.isVisible)
+
+      // The dot is the leading 7 pt of the brand block's inert drag region.
+      let brand = try XCTUnwrap(descendant(identifier: "overlay-header-inert-drag-region", in: root))
+      let brandFrame = root.convert(brand.bounds, from: brand)
+      let dot = NSPoint(x: brandFrame.minX + 3.5, y: brandFrame.midY)
+      let hit = try XCTUnwrap(root.hitTest(dot))
+      XCTAssertNil(
+        OverlayResizeHit.edge(at: dot, in: root.bounds),
+        "width \(size.width): the resize band claims the brand dot")
+      XCTAssertFalse(
+        panel.isWindowDragHit(at: dot),
+        "width \(size.width): the brand dot is routed to window drag: \(hitChain(from: hit))")
+
+      let timestamp = ProcessInfo.processInfo.systemUptime
+      panel.sendEvent(
+        mouseEvent(.leftMouseDown, at: dot, in: panel, timestamp: timestamp, eventNumber: 5_100))
+      panel.sendEvent(
+        mouseEvent(
+          .leftMouseUp, at: dot, in: panel, timestamp: timestamp + 0.01, eventNumber: 5_101,
+          pressure: 0))
+      RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+      XCTAssertEqual(orderedOut, 1, "width \(size.width): the brand dot click must close")
+      XCTAssertFalse(panel.isVisible, "width \(size.width): the panel is still on screen")
+      XCTAssertTrue(state.hasOpenChannel, "closing the panel does not rewrite channel evidence")
+      withExtendedLifetime(controller) {}
+    }
   }
 
   @MainActor

@@ -170,6 +170,11 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     state.applyChannelDelivery([])
     controller.hide()
     XCTAssertEqual(hidden, 1)
+    // Automatic hides yield to the open channel; the human Close intent does not.
+    state.applyChannelDelivery([open])
+    state.relayIntent(.close)
+    XCTAssertEqual(hidden, 2, "an open channel must never veto the brand-dot close")
+    XCTAssertTrue(state.hasOpenChannel, "closing the panel does not rewrite channel evidence")
   }
 
   func testChannelDetailsDoNotIncreaseCollapsedPanelHeight() {

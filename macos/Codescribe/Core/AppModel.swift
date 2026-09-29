@@ -218,6 +218,7 @@ final class OverlayController: ObservableObject {
       }
     }
     state.onClose = { [weak self] in self?.hide() }
+    state.onCloseIntent = { [weak self] in self?.dismiss() }
     state.onSendToAgent = { [weak self] text in
       guard !text.isEmpty else { return }
       // Rust already persisted and streamed the turn. TurnStarted opened
@@ -379,8 +380,24 @@ final class OverlayController: ObservableObject {
     handleAssistiveStatusChange(assistiveStatusProvider())
   }
 
+  /// Automatic hides — auto-hide, agent handoff, the Assistive lane, the
+  /// overlay toggle — yield to an open agent channel: its live microphone
+  /// stays on screen.
   func hide() {
     guard !state.hasOpenChannel else { return }
+    orderOut()
+  }
+
+  /// The human Close intent (brand dot). An open channel keeps the panel up
+  /// against every automatic hide, never against this click. Build 1502
+  /// swallowed it behind a channel-session `open` row that no `sealed` row or
+  /// `session_ended` ever closed (Founder, 2026-09-29: "Przycisk zamykania NIE
+  /// reaguje"). New channel evidence may show the panel again.
+  func dismiss() {
+    orderOut()
+  }
+
+  private func orderOut() {
     // Persist the user's chosen size for next launch (replaces frame autosave,
     // which used to write back the old feedback loop's runaway sizes) — and,
     // in free motion, the dragged origin.

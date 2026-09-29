@@ -51,6 +51,12 @@ struct OverlayRecordingControls: View {
   let onIntent: (OverlayIntent) -> Void
   let onPreviewToggle: () -> Void
 
+  /// Stop and the preview chevron are one family: the same hairline circle,
+  /// the same height as every other header control. Stop carries no word —
+  /// the red square is the whole signal, and the width it no longer takes
+  /// goes to the waveform (Founder, 2026-09-29: "ten stop jest olbrzymi").
+  static let controlDiameter: CGFloat = 22
+
   var showsStop: Bool { canFinish }
   var previewAccessibilityLabel: String {
     isPreviewCollapsed ? "Show live preview" : "Hide live preview"
@@ -92,26 +98,19 @@ struct OverlayRecordingControls: View {
 
   private var stopButton: some View {
     Button(action: finishRecording) {
-      HStack(spacing: compact ? 0 : 4) {
-        if !compact {
-          Image(systemName: "stop.fill")
-            .font(.system(size: 9, weight: .semibold))
+      Image(systemName: "stop.fill")
+        .font(.system(size: 9, weight: .semibold))
+        .foregroundStyle(palette.errorStatus.color)
+        .frame(width: Self.controlDiameter, height: Self.controlDiameter)
+        .contentShape(Circle())
+        .overlay {
+          Circle()
+            .strokeBorder(
+              palette.errorStatus.color.opacity(0.42),
+              lineWidth: 1 / max(displayScale, 1)
+            )
+            .accessibilityHidden(true)
         }
-        Text("Stop")
-          .font(CSFont.ui(compact ? 10 : 11, .semibold))
-      }
-      .foregroundStyle(palette.errorStatus.color)
-      .padding(.horizontal, compact ? 3 : 9)
-      .frame(height: compact ? 22 : 26)
-      .contentShape(Capsule())
-      .overlay {
-        Capsule()
-          .strokeBorder(
-            palette.errorStatus.color.opacity(0.42),
-            lineWidth: 1 / max(displayScale, 1)
-          )
-          .accessibilityHidden(true)
-      }
     }
     .buttonStyle(.plain)
     .csFocusOutline()
@@ -137,7 +136,7 @@ struct OverlayRecordingControls: View {
       Image(systemName: previewSymbol)
         .font(.system(size: 11, weight: .semibold))
         .foregroundStyle(palette.mutedText.color)
-        .frame(width: 22, height: 22)
+        .frame(width: Self.controlDiameter, height: Self.controlDiameter)
         .contentShape(Circle())
         .overlay {
           Circle()

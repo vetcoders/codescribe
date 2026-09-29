@@ -735,6 +735,17 @@ final class OverlayIntentRailTests: XCTestCase {
     XCTAssertGreaterThanOrEqual(
       preview.height, 22, "\(context) preview hit target is too short", file: file, line: line
     )
+    // Founder, 2026-09-29: "ten stop jest olbrzymi". Stop is the chevron's
+    // twin — one hairline circle, no word — so it can never outgrow the row.
+    XCTAssertEqual(
+      stop.width, preview.width, accuracy: 0.5,
+      "\(context) Stop is wider than the chevron", file: file, line: line)
+    XCTAssertEqual(
+      stop.height, preview.height, accuracy: 0.5,
+      "\(context) Stop is taller than the chevron", file: file, line: line)
+    XCTAssertEqual(
+      stop.width, OverlayRecordingControls.controlDiameter, accuracy: 0.5,
+      "\(context) Stop left the shared control diameter", file: file, line: line)
     XCTAssertFalse(stop.intersects(preview), "\(context) controls overlap", file: file, line: line)
     XCTAssertFalse(
       stop.intersects(waveform), "\(context) Stop overlaps the meter", file: file, line: line
