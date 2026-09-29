@@ -7,8 +7,13 @@ With a known name and channel, one call replaces the manual saga below:
 ```bash
 python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
   --attach --channel <1-9> --name <name> \
-  --provider <claude-code|codex|...> --session <provider-session-id>
+  --provider <claude-code|codex|...> --session <provider-session-id> \
+  [--voice <voice-id>] [--speed <factor>] [--tts-vendor xai|openai]
 ```
+
+With `--provider claude-code`, `--session` may be omitted: the helper reads
+`$CLAUDE_CODE_SESSION_ID`. Codex exposes no such variable; pass its thread id.
+This holds for every command below.
 
 It atomically writes the channel's entry in
 `~/.codescribe/agent-bridge/vc.agent-audience-binding.v1.json`, ensures exactly
@@ -22,6 +27,13 @@ document, while every seal stays its own envelope. Pass
 `--on-seal '<cmd>'` to forward a detached wake hook to the spawned follower;
 the hook receives `CODESCRIBE_SEAL_DELIVERY_ID`, `CODESCRIBE_SEAL_SESSION_ID`
 and `CODESCRIBE_SEAL_TEXT`, and fires exactly once per freshly queued seal.
+
+`--voice`, `--speed` and `--tts-vendor` are stored in this name's profile in
+`~/.codescribe/agent-bridge/voices.json` by a locked merge; other names'
+profiles and keys stay. Every later `--say` for the name uses it. Pass them only
+when the Founder named the voice. The receipt reports `voice_source` (`flag`,
+`profile` or `default` = `leo`) and `voices_file` (`present` or `missing`). An
+unreadable `voices.json` refuses the attach before the channel is claimed.
 
 An occupied channel refuses a different provider, session or name before starting
 any follower. The error identifies the owner and free slots. Repeating the same
@@ -39,7 +51,14 @@ python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
 `backlog` there is pending minus acknowledgment markers; the raw `pending`
 length of the lease file overstates it, because acknowledged envelopes stay
 in the file until the follower's next sweep. The receipt never proves
-listening — verify with a fresh named take before claiming it.
+listening — verify with a fresh named take before claiming it. Feed the
+monitor from `--watch` ([Monitor](monitor.md#watch-stream)).
+
+A take whose ledger refuses terminal finality (incomplete acoustic coverage)
+still reaches the mailbox as a seal with `coverage: "refused"` and
+`state_change_allowed: false`, once the channel moves on: a silence seal, a
+reopen, or the session's `session_ended` row. A hang-up (second digit or Fn
+press) releases it only when the app writes one of those rows.
 
 ## Preflight
 

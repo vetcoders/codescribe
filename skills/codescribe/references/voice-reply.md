@@ -19,18 +19,42 @@ had said it.
   before speaking. If the last recording state transition entered `REC_*`,
   a take is live.
 
-## Helper
+## Speak with `--say`
 
-Speak through the host's text-to-speech helper; do not synthesize ad hoc.
+`--say` is the only voice path. It appends one `codescribe.agent-reply.v1` row
+to the bus, then speaks through the same TTS lane as the app (xAI by default;
+OpenAI when the profile or `--tts-vendor` says so):
 
-- On the Founder's machines the helper is `speak-xai "text"`. It uses xAI TTS
-  in the same speech lane Codescribe's own agent uses (PCM 24 kHz, speed
-  1.25), with voice `leo`, authenticated by the local `grok login` session.
-  `speak-xai --dry "text"` synthesizes without playing, for checks.
-- If no helper exists, say so in chat. Do not install a helper, mint keys or
-  edit provider configuration in order to speak.
+```bash
+python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
+  --say "Build gotowy. Czeka na decyzję o wydaniu." \
+  --provider <provider> --session <provider-session-id>
+```
+
+- `--name` defaults to the name on this session's lease. Voice and speed come
+  from that name's profile in `~/.codescribe/agent-bridge/voices.json`;
+  `--voice` / `--speed` override a single reply. A profile is stored by
+  `--attach --voice` (see [Attach](attach.md)).
+- `--provider claude-code` may omit `--session`; the helper reads
+  `$CLAUDE_CODE_SESSION_ID`. Codex passes its thread id.
 - The helper reads its own credentials. Never pass tokens as arguments and
-  never print them.
+  never print them. Do not install another helper, mint keys or edit provider
+  configuration in order to speak.
+
+A failed synthesis still lands the row, with `spoken: false`, `tts_error` and a
+`reason`; the command exits 5. The body of a refused request is never printed.
+
+| `reason`              | Meaning                                                |
+| --------------------- | ------------------------------------------------------ |
+| `credential_missing`  | No credential found; `grok login` or the Keychain item |
+| `credential_rejected` | Token or key refused; the Founder re-authenticates     |
+| `quota_exhausted`     | Spending limit or credits used up; the Founder decides |
+| `http_<code>`         | Other refusal; report the code                         |
+| `network`             | The request did not complete; one retry is reasonable  |
+| `playback_failed`     | Audio arrived, `afplay` failed                         |
+
+Report a failed reply in chat with its `reason`; do not retry a
+`credential_*` or `quota_exhausted` refusal in a loop.
 
 ## What to say
 

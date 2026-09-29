@@ -22,17 +22,19 @@ explain the skill or print commands for the user to run.
    `connection_refused: installed helper lacks channel ownership protection`.
    Do not substitute a racy read-before-write check in this prompt.
 4. Invoke the helper once with `--attach --channel <channel> --name <name>
-   --provider codex --session <actual-session-id>`. Use structured subprocess
-   arguments or proper shell quoting. On an occupied slot, report its owner
-   and available slots. Never overwrite, detach another agent, silently choose
-   another slot, or retry with a different identity.
+   --provider codex --session <actual-session-id>`, adding `--voice <voice>`
+   when a voice was supplied. Use structured subprocess arguments or proper
+   shell quoting. On an occupied slot, report its owner and available slots.
+   Never overwrite, detach another agent, silently choose another slot, or
+   retry with a different identity.
 5. Retain the attach receipt and arm a supported wake mechanism for its one
    follower. Verify the mechanism actually delivers into this conversation.
    If only active-turn polling is available, keep the listening turn open
    and report `active_polling`; never promise replies after the turn ends.
-6. Read `--status` for the same provider/session. Retain the requested voice
-   for this connection's `--say --voice <voice>` calls; do not rewrite the
-   global voice profile. Do not speak during a live take or merely to test.
+6. Read `--status` for the same provider/session. A supplied voice is stored
+   in this name's profile only (receipt `voice_source: "flag"`); other names'
+   profiles stay. Later `--say` calls need no `--voice`. Do not speak during a
+   live take or merely to test.
 7. Return one short result: name, channel, voice and delivery disposition.
    Use `attached_unverified` until a fresh named utterance reaches this chat;
    only then use `listening_verified`. A receipt or running PID alone is not

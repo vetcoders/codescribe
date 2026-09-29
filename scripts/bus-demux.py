@@ -45,6 +45,10 @@ EVIDENCE_SCHEMA = "codescribe.transcript-evidence.v1"
 #: The bridge reads them only as flush boundaries for the coverage-refused
 #: safety net below; it never turns them into transcript envelopes.
 CHANNEL_SESSION_SCHEMA = "codescribe.channel-session.v1"
+#: Clean lifecycle terminal. For the flush net it is the hang-up boundary:
+#: a channel closed by a second digit / Fn press is not reopened, so no
+#: later channel-session row would ever release its refused take.
+SESSION_ENDED = "session_ended"
 TERMINAL_SEAL = "record_ledger_terminal_seal"
 #: A ledger that refuses terminal finality (incomplete acoustic coverage or
 #: pending text recovery) emits no terminal seal at all, and before this net
@@ -499,10 +503,12 @@ class EvidenceNormalizer:
     Channel safety net: a ledger that refuses terminal finality emits no
     terminal seal, so an addressed utterance would vanish without a trace.
     The normalizer keeps the latest snapshot per document of each unsealed
-    channel session and, when a ``channel-session`` receipt shows the channel
-    moved on (a silence seal or a fresh open), flushes those documents as
-    ``coverage: "refused"`` seal envelopes via :meth:`pop_flushes`.  The words
-    are delivered; certification is honestly withheld.
+    channel session and, when the session is over — a ``channel-session``
+    receipt shows the channel moved on (any non-open state for the session,
+    or a fresh open of the same channel), or the session's own
+    ``session_ended`` lifecycle row marks a hang-up — flushes those documents
+    as ``coverage: "refused"`` seal envelopes via :meth:`pop_flushes`.  The
+    words are delivered once; certification is honestly withheld.
     """
 
     #: Unsealed channel sessions retained for the flush net. The quiet
@@ -512,7 +518,10 @@ class EvidenceNormalizer:
 
     def __init__(self) -> None:
         self._terminal_seals: set[str] = set()
-        self._sealed_sessions: set[str] = set()
+        # Sessions whose delivery is settled: a terminal seal was reported or
+        # the refused flush already carried their words. A late row for such
+        # a session must not re-arm the net and deliver the take twice.
+        self._settled_sessions: set[str] = set()
         self._session_docs: dict[str, dict[Any, dict[str, Any]]] = {}
         self._flushes: list[dict[str, Any]] = []
 
@@ -528,13 +537,17 @@ class EvidenceNormalizer:
             self._consume_channel_row(event)
             return None
         if event.get("schema") != EVIDENCE_SCHEMA:
+            if event.get("status") == SESSION_ENDED:
+                self._flush_session(
+                    str(event.get("session_id") or ""), event.get("emitted_at")
+                )
             return event
         document = event.get("rendered_text")
         if not isinstance(document, str):
             return None
         if str(event.get("reducer_action") or "") == TERMINAL_SEAL:
             session = str(event.get("session_id") or "")
-            self._sealed_sessions.add(session)
+            self._settled_sessions.add(session)
             self._session_docs.pop(session, None)
             seal_id = terminal_seal_identity(event)
             if seal_id in self._terminal_seals:
@@ -551,7 +564,7 @@ class EvidenceNormalizer:
         session = str(event.get("session_id") or "")
         if not clean.get("audience") or channel_of_session(session) is None:
             return
-        if session in self._sealed_sessions:
+        if session in self._settled_sessions:
             return
         docs = self._session_docs.setdefault(session, {})
         docs[clean.get("document_index")] = clean
@@ -562,7 +575,9 @@ class EvidenceNormalizer:
         channel = str(row.get("channel") or "")
         session = str(row.get("session_id") or "")
         due: list[str] = []
-        if str(row.get("state") or "") == "sealed" and session in self._session_docs:
+        # Only "open" keeps a session alive; a silence seal or any closing
+        # state the app writes for this session ends it.
+        if str(row.get("state") or "") != "open" and session in self._session_docs:
             due.append(session)
         for cached in list(self._session_docs):
             if (
@@ -576,8 +591,9 @@ class EvidenceNormalizer:
 
     def _flush_session(self, session: str, emitted_at: Any) -> None:
         docs = self._session_docs.pop(session, None)
-        if not docs or session in self._sealed_sessions:
+        if not docs or session in self._settled_sessions:
             return
+        self._settled_sessions.add(session)
         seen_texts: set[str] = set()
         for doc_index, clean in sorted(docs.items(), key=lambda item: str(item[0])):
             text = clean.get("text") or ""
@@ -854,6 +870,18 @@ def lease_identifier(provider: str, provider_session_id: str) -> str:
     # greeting follower onto a fresh cursor.
     identity = "\0".join((provider.casefold(), provider_session_id))
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
+
+
+#: Providers that hand their own conversation id to child processes. Codex
+#: exposes none, so its session is never guessed and stays an explicit flag.
+PROVIDER_SESSION_ENV = {"claude-code": "CLAUDE_CODE_SESSION_ID"}
+
+
+def provider_session_from_env(provider: str) -> str | None:
+    """The provider's own session id from its environment, when it sets one."""
+    key = PROVIDER_SESSION_ENV.get(provider.casefold())
+    value = os.environ.get(key, "").strip() if key else ""
+    return value or None
 
 
 def process_is_alive(pid: Any) -> bool:
@@ -1180,9 +1208,16 @@ def delivery_acknowledged(root: Path, lease_id: str, delivery_id: str) -> bool:
 
 
 def acknowledge_delivery(args: argparse.Namespace) -> int:
-    delivery_id = args.ack
-    if not re.fullmatch(r"[0-9a-f]{24}", delivery_id):
-        raise ValueError("invalid delivery id")
+    """Record receipt of one or more deliveries, all or nothing.
+
+    Every id is checked before any marker is written: one unknown id refuses
+    the whole call, so a batch never half-acknowledges the mailbox.
+    """
+    delivery_ids = list(dict.fromkeys(args.ack))
+    if not delivery_ids or any(
+        not re.fullmatch(r"[0-9a-f]{24}", delivery_id) for delivery_id in delivery_ids
+    ):
+        raise ValueError("invalid delivery id; nothing acknowledged")
     lease_id = lease_identifier(args.provider, args.session)
     state = read_json(args.bridge_home / "leases" / f"{lease_id}.json")
     if (
@@ -1199,18 +1234,34 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
         raise ValueError(
             "acknowledgment does not belong to this provider session and bus"
         )
-    if not delivery_acknowledged(args.bridge_home, lease_id, delivery_id):
-        pending = state.get("pending", [])
-        if not isinstance(pending, list) or not any(
-            isinstance(payload, dict) and payload.get("delivery_id") == delivery_id
+    pending = state.get("pending", [])
+    pending_ids = (
+        {
+            payload.get("delivery_id")
             for payload in pending
-        ):
-            raise ValueError("delivery is not pending for this provider session")
+            if isinstance(payload, dict)
+        }
+        if isinstance(pending, list)
+        else set()
+    )
+    unread = [
+        delivery_id
+        for delivery_id in delivery_ids
+        if not delivery_acknowledged(args.bridge_home, lease_id, delivery_id)
+    ]
+    for delivery_id in unread:
+        if delivery_id not in pending_ids:
+            raise ValueError(
+                f"delivery {delivery_id} is not pending for this provider session; "
+                "nothing acknowledged"
+            )
+    for delivery_id in unread:
         atomic_json(
             args.bridge_home / "acknowledgments" / lease_id / f"{delivery_id}.json",
             {"lease_id": lease_id, "delivery_id": delivery_id},
         )
-    emit({"kind": "acknowledged", "lease_id": lease_id, "delivery_id": delivery_id})
+    for delivery_id in delivery_ids:
+        emit({"kind": "acknowledged", "lease_id": lease_id, "delivery_id": delivery_id})
     return 0
 
 
@@ -1506,51 +1557,211 @@ def _openai_speech_key() -> str | None:
     return key or None
 
 
-def bound_voice(root: Path, name: str | None) -> str:
-    """Voice bound to a name in <bridge-home>/voices.json; the male default otherwise."""
+VOICES_FILENAME = "voices.json"
+DEFAULT_VOICE = "leo"
+
+
+def _stored_voice(root: Path, name: str | None) -> str | None:
+    """The flat ``bindings`` voice for a name, when the store has one."""
     if name:
-        mapping = read_json(root / "voices.json") or {}
+        mapping = read_json(root / VOICES_FILENAME) or {}
         bindings = mapping.get("bindings", mapping)
         voice = bindings.get(str(name).lower()) if isinstance(bindings, dict) else None
         if isinstance(voice, str) and voice:
             return voice
-    return "leo"
+    return None
 
 
-def voice_profile(root: Path, name: str | None) -> dict[str, Any]:
-    """Full voice profile for a name from <bridge-home>/voices.json.
+def voice_profile_with_source(
+    root: Path, name: str | None
+) -> tuple[dict[str, Any], str]:
+    """Voice profile plus where its voice came from: ``profile`` or ``default``.
 
-    `profiles.<name>` (voice, speed, style) wins over the flat `bindings`
-    entry; both fall back to the male default so an unprofiled agent still
-    speaks. The Founder's approved profiles are the single voice truth —
-    callers must not hardcode a voice around this.
+    `profiles.<name>` (voice, speed, style, provider) wins over the flat
+    `bindings` entry; both fall back to the male default so an unprofiled
+    agent still speaks.
     """
     profile: dict[str, Any] = {}
     if name:
-        mapping = read_json(root / "voices.json") or {}
+        mapping = read_json(root / VOICES_FILENAME) or {}
         profiles = mapping.get("profiles")
         if isinstance(profiles, dict):
             candidate = profiles.get(str(name).lower())
             if isinstance(candidate, dict):
                 profile = dict(candidate)
+    source = "profile"
     if not isinstance(profile.get("voice"), str) or not profile.get("voice"):
-        profile["voice"] = bound_voice(root, name)
+        stored = _stored_voice(root, name)
+        profile["voice"] = stored or DEFAULT_VOICE
+        source = "profile" if stored else "default"
     speed = profile.get("speed")
     if not isinstance(speed, (int, float)) or speed <= 0:
         profile["speed"] = DEFAULT_SPEECH_SPEED
-    return profile
+    return profile, source
 
 
-def _speak_xai(text: str, voice: str, speed: float) -> tuple[bool, str | None]:
-    """Same TTS lane as the app (api.x.ai/v1/tts, PCM s16le 24 kHz), played via afplay."""
+def voice_profile(root: Path, name: str | None) -> dict[str, Any]:
+    """Full voice profile for a name from <bridge-home>/voices.json.
+
+    The Founder's approved profiles are the single voice truth — callers must
+    not hardcode a voice around this.
+    """
+    return voice_profile_with_source(root, name)[0]
+
+
+def _voice_store(path: Path) -> dict[str, Any]:
+    """Current voices.json content; an unreadable store refuses, never resets."""
+    if not path.exists():
+        return {}
+    state = read_json(path)
+    if state is None or (
+        "profiles" in state and not isinstance(state.get("profiles"), dict)
+    ):
+        raise OSError("voice profiles are unreadable or invalid; nothing changed")
+    return state
+
+
+def write_voice_profile(
+    root: Path,
+    name: str,
+    *,
+    voice: str | None,
+    speed: float | None,
+    vendor: str | None,
+) -> Path:
+    """Merge one name's voice profile into voices.json; other profiles stay.
+
+    Same convention as :func:`write_channel_binding`: an exclusive lock on a
+    stable sibling around read/merge/atomic replace, so concurrent attaches
+    cannot drop each other's profiles.
+    """
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = root / VOICES_FILENAME
+    with open(path.with_suffix(".lock"), "a+b") as lock:
+        os.fchmod(lock.fileno(), 0o600)
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        state = _voice_store(path)
+        profiles = dict(state.get("profiles") or {})
+        key = name.lower()
+        entry = profiles.get(key)
+        entry = dict(entry) if isinstance(entry, dict) else {}
+        if voice:
+            entry["voice"] = voice
+        if speed is not None:
+            entry["speed"] = speed
+        if vendor:
+            entry["provider"] = vendor
+        profiles[key] = entry
+        state["profiles"] = profiles
+        atomic_json(path, state)
+    return path
+
+
+#: Bounded read of a refused TTS response, for classification only.
+TTS_ERROR_BODY_BYTES = 8192
+#: Error-code field markers. Only these named fields of a JSON error body are
+#: inspected, and only the resulting enum ever leaves the classifier: a vendor
+#: body can quote the rejected credential back.
+TTS_QUOTA_MARKERS = (
+    "spending-limit",
+    "spending limit",
+    "insufficient_quota",
+    "credits",
+    "quota",
+)
+TTS_CREDENTIAL_MARKERS = (
+    "could not be validated",
+    "invalid_api_key",
+    "invalid api key",
+    "incorrect api key",
+    "invalid_token",
+    "unauthenticated",
+    "unauthorized",
+)
+
+
+def tts_failure_reason(status: int, body: bytes) -> str:
+    """``quota_exhausted`` | ``credential_rejected`` | ``http_<status>``.
+
+    xAI answers both an unvalidated token and an exhausted spending limit
+    with 403 (two Founder replies failed that way on 2026-09-29 as a bare
+    "tts request failed (403)"), so the status alone cannot tell the agent
+    whether to re-login or to top up.
+    """
+    fields: list[str] = []
+
+    def collect(node: Any, depth: int) -> None:
+        # Vendors nest at most one ``error`` object; deeper is not an error code.
+        if not isinstance(node, dict) or depth > 2:
+            return
+        for key in ("code", "error", "message", "type"):
+            value = node.get(key)
+            if isinstance(value, str):
+                fields.append(value.casefold())
+            elif isinstance(value, dict):
+                collect(value, depth + 1)
+
+    try:
+        collect(json.loads(body.decode("utf-8", errors="replace")), 0)
+    except (ValueError, RecursionError):
+        pass
+    marker_text = "\n".join(fields)
+    if any(marker in marker_text for marker in TTS_QUOTA_MARKERS):
+        return "quota_exhausted"
+    if status == 401 or any(
+        marker in marker_text for marker in TTS_CREDENTIAL_MARKERS
+    ):
+        return "credential_rejected"
+    return f"http_{status}"
+
+
+def _tts_exchange(request: Any) -> tuple[bytes | None, str | None, str | None]:
+    """POST one TTS request: (pcm, None, None) or (None, error, reason).
+
+    Install only TLS transport: no file handler, proxy or redirect handler.
+    Certificate and hostname verification are enabled explicitly by the
+    default TLS context. The error string names the status or exception
+    class only; the reason is an enum. Neither echoes the body.
+    """
     import http.client
     import ssl
     import urllib.error
     import urllib.request
 
+    opener = urllib.request.OpenerDirector()
+    opener.add_handler(
+        urllib.request.HTTPSHandler(context=ssl.create_default_context())
+    )
+    try:
+        with opener.open(request, timeout=60) as response:
+            if not 200 <= response.status < 300:
+                try:
+                    detail = response.read(TTS_ERROR_BODY_BYTES)
+                except (OSError, http.client.HTTPException):
+                    detail = b""
+                return (
+                    None,
+                    f"tts request failed ({response.status})",
+                    tts_failure_reason(response.status, detail),
+                )
+            return response.read(), None, None
+    except (OSError, urllib.error.URLError, http.client.HTTPException) as error:
+        return None, f"tts request failed ({error.__class__.__name__})", "network"
+
+
+def _speak_xai(
+    text: str, voice: str, speed: float
+) -> tuple[bool, str | None, str | None]:
+    """Same TTS lane as the app (api.x.ai/v1/tts, PCM s16le 24 kHz), played via afplay."""
+    import urllib.request
+
     key = _xai_speech_key()
     if not key:
-        return False, "no xAI credential (run: grok login, or Keychain LLM_XAI_API_KEY)"
+        return (
+            False,
+            "no xAI credential (run: grok login, or Keychain LLM_XAI_API_KEY)",
+            "credential_missing",
+        )
     body = json.dumps(
         {
             "text": text,
@@ -1560,29 +1771,25 @@ def _speak_xai(text: str, voice: str, speed: float) -> tuple[bool, str | None]:
             "speed": speed,
         }
     ).encode("utf-8")
-    # Install only TLS transport: no file handler, proxy or redirect handler.
-    # The URL remains literal at the actual I/O call, with certificate and
-    # hostname verification enabled explicitly by the default TLS context.
-    opener = urllib.request.OpenerDirector()
-    opener.add_handler(
-        urllib.request.HTTPSHandler(context=ssl.create_default_context())
-    )
-    # Headers ride on the Request: opener.addheaders lose to the default
-    # Content-Type that do_request_ installs first for any request with data,
-    # and the API rejects a JSON body labelled x-www-form-urlencoded (415).
+    # The URL stays literal where the Request is built. Headers ride on the
+    # Request: opener.addheaders lose to the default Content-Type that
+    # do_request_ installs first for any request with data, and the API
+    # rejects a JSON body labelled x-www-form-urlencoded (415).
     request = urllib.request.Request(
         "https://api.x.ai/v1/tts",
         data=body,
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
     )
-    try:
-        with opener.open(request, timeout=60) as response:
-            if not 200 <= response.status < 300:
-                return False, f"tts request failed ({response.status})"
-            pcm = response.read()
-    except (OSError, urllib.error.URLError, http.client.HTTPException) as error:
-        return False, f"tts request failed ({error.__class__.__name__})"
-    return _play_pcm_24k(pcm)
+    return _speak_pcm(*_tts_exchange(request))
+
+
+def _speak_pcm(
+    pcm: bytes | None, error: str | None, reason: str | None
+) -> tuple[bool, str | None, str | None]:
+    if pcm is None:
+        return False, error, reason
+    played, play_error = _play_pcm_24k(pcm)
+    return played, play_error, None if played else "playback_failed"
 
 
 def _play_pcm_24k(pcm: bytes) -> tuple[bool, str | None]:
@@ -1612,16 +1819,19 @@ def _play_pcm_24k(pcm: bytes) -> tuple[bool, str | None]:
     return True, None
 
 
-def _speak_openai(text: str, voice: str, speed: float) -> tuple[bool, str | None]:
+def _speak_openai(
+    text: str, voice: str, speed: float
+) -> tuple[bool, str | None, str | None]:
     """Same TTS lane as the app (api.openai.com/v1/audio/speech, PCM s16le 24 kHz)."""
-    import http.client
-    import ssl
-    import urllib.error
     import urllib.request
 
     key = _openai_speech_key()
     if not key:
-        return False, "no OpenAI credential (add Keychain item LLM_OPENAI_API_KEY or export it)"
+        return (
+            False,
+            "no OpenAI credential (add Keychain item LLM_OPENAI_API_KEY or export it)",
+            "credential_missing",
+        )
     model = os.environ.get("SPEECH_TTS_MODEL_OPENAI", "").strip() or "gpt-4o-mini-tts-2025-12-15"
     body = json.dumps(
         {
@@ -1632,31 +1842,35 @@ def _speak_openai(text: str, voice: str, speed: float) -> tuple[bool, str | None
             "speed": speed,
         }
     ).encode("utf-8")
-    # The same TLS-only opener discipline as the xAI speaker.
-    opener = urllib.request.OpenerDirector()
-    opener.add_handler(
-        urllib.request.HTTPSHandler(context=ssl.create_default_context())
-    )
     request = urllib.request.Request(
         "https://api.openai.com/v1/audio/speech",
         data=body,
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
     )
-    try:
-        with opener.open(request, timeout=60) as response:
-            if not 200 <= response.status < 300:
-                return False, f"tts request failed ({response.status})"
-            pcm = response.read()
-    except (OSError, urllib.error.URLError, http.client.HTTPException) as error:
-        return False, f"tts request failed ({error.__class__.__name__})"
-    return _play_pcm_24k(pcm)
+    return _speak_pcm(*_tts_exchange(request))
+
+
+def lease_name(root: Path, provider: str, session: str) -> str | None:
+    """The name a provider session's lease already carries, if any."""
+    lease_id = lease_identifier(provider, session)
+    state = read_json(root / "leases" / f"{lease_id}.json")
+    if (
+        not state
+        or state.get("schema") != LEASE_SCHEMA
+        or state.get("provider") != provider.casefold()
+        or state.get("provider_session_id") != session
+    ):
+        return None
+    name = state.get("name")
+    return name if isinstance(name, str) and name else None
 
 
 def say_reply(args: argparse.Namespace) -> int:
     """Append one agent-reply row to the canonical Bus, then speak it.
 
     The Bus is the canonical relay for agent replies; xAI is only the speaker,
-    so a failed synthesis still lands the row (spoken=false with the reason).
+    so a failed synthesis still lands the row (spoken=false with the error
+    and a ``reason`` enum the agent can act on).
     """
     profile = voice_profile(args.bridge_home, args.name)
     voice = args.voice or str(profile["voice"])
@@ -1677,10 +1891,12 @@ def say_reply(args: argparse.Namespace) -> int:
         "spoken": False,
     }
     speaker = _speak_openai if vendor == "openai" else _speak_xai
-    spoken, error = speaker(args.say, voice, speed)
+    spoken, error, reason = speaker(args.say, voice, speed)
     reply["spoken"] = spoken
     if error:
         reply["tts_error"] = error
+    if reason:
+        reply["reason"] = reason
     line = json.dumps(reply, ensure_ascii=False) + "\n"
     descriptor = os.open(args.bus, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
     try:
@@ -1783,15 +1999,25 @@ def attach_command(args: argparse.Namespace) -> int:
     Writes the audience binding for the channel, ensures exactly one follower
     owns this provider session's lease (spawning a coalescing one when none is
     alive), and prints a receipt with the lease, cursor, voice profile and
-    follower pid. The receipt alone never proves listening — only a take that
-    lands in the mailbox does, so callers verify with a fresh seal before
-    claiming they hear anything.
+    follower pid. ``--voice`` / ``--speed`` / ``--tts-vendor`` persist into
+    this name's profile in voices.json, so every later ``--say`` speaks with
+    it. The receipt alone never proves listening — only a take that lands in
+    the mailbox does, so callers verify with a fresh seal before claiming
+    they hear anything.
     """
     import signal
     import subprocess
 
     root: Path = args.bridge_home
     name = args.name.casefold()
+    persist_voice = bool(args.voice or args.speed is not None or args.tts_vendor)
+    voice_source = voice_profile_with_source(root, name)[1]
+    if persist_voice:
+        # Refuse an unreadable profile store before claiming the channel, so a
+        # refusal still means nothing changed.
+        _voice_store(root / VOICES_FILENAME)
+    if args.voice:
+        voice_source = "flag"
     if not getattr(args, "bus_overridden", False):
         # W5: every channel owns a dedicated bus so one follower never chews
         # another audience's rows. An explicit --bus keeps the caller's word.
@@ -1805,6 +2031,10 @@ def attach_command(args: argparse.Namespace) -> int:
     binding_path = write_channel_binding(
         root, args.channel, name, args.provider, args.session, bus=resolved_bus
     )
+    if persist_voice:
+        write_voice_profile(
+            root, name, voice=args.voice, speed=args.speed, vendor=args.tts_vendor
+        )
     lease_id = lease_identifier(args.provider, args.session)
     lease_path = root / "leases" / f"{lease_id}.json"
     resumed = lease_path.exists()
@@ -1905,6 +2135,10 @@ def attach_command(args: argparse.Namespace) -> int:
             "coalesce_requested": True,
             "on_seal_hook": bool(args.on_seal),
             "voice": voice_profile(root, name),
+            "voice_source": voice_source,
+            "voices_file": "present"
+            if (root / VOICES_FILENAME).exists()
+            else "missing",
             "binding_path": str(binding_path),
         }
     )
@@ -1990,6 +2224,93 @@ def status_command(args: argparse.Namespace) -> int:
     return 0
 
 
+WATCH_TEXT_LIMIT = 500
+
+
+def watch_line(payload: Any, lease_id: str | None) -> dict[str, Any] | None:
+    """One compact monitor line for an envelope worth waking the agent for.
+
+    Drafts and revisions stay in the mailbox. The watch surfaces seals
+    (certified or coverage-refused), anything allowed to change state, and
+    routing-ambiguity notices that need the Founder to re-address.
+    """
+    if not isinstance(payload, dict) or payload.get("schema") != EVENT_SCHEMA:
+        return None
+    if lease_id and payload.get("lease_id") not in (None, lease_id):
+        return None
+    if not (
+        payload.get("status") == SEALED
+        or payload.get("state_change_allowed") is True
+        or payload.get("kind") == "routing_ambiguity"
+        or payload.get("coverage") == COVERAGE_REFUSED
+    ):
+        return None
+    return {
+        "kind": payload.get("kind"),
+        "status": payload.get("status"),
+        "coverage": payload.get("coverage"),
+        "sca": payload.get("state_change_allowed") is True,
+        "delivery_id": payload.get("delivery_id"),
+        "text": str(payload.get("text") or "")[:WATCH_TEXT_LIMIT],
+    }
+
+
+def watch_command(args: argparse.Namespace) -> int:
+    """Compact, line-buffered monitor of one session's follower output.
+
+    Reads the follower log that ``--attach`` writes (or ``--from-file``) and
+    prints one JSON line per notable envelope, each delivery once. It never
+    touches the lease, cursor or acknowledgments: the watch observes, the
+    conversation acknowledges with ``--ack`` after it accepted the words.
+    """
+    lease_id = (
+        lease_identifier(args.provider, args.session) if args.provider else None
+    )
+    source: Path = args.from_file or (
+        args.bridge_home / "runtime" / "followers" / f"{lease_id}.log"
+    )
+    seen: set[str] = set()
+
+    def pump(entries: list[tuple[str, int]]) -> None:
+        for raw, _cursor in entries:
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                continue  # follower stderr shares the log
+            line = watch_line(payload, lease_id)
+            if line is None:
+                continue
+            identity = str(line["delivery_id"] or payload.get("source_event_id") or raw)
+            if identity in seen:
+                continue  # a restarted follower replays its pending mailbox
+            seen.add(identity)
+            emit(line)
+
+    if args.once:
+        if not source.is_file():
+            sys.stderr.write(f"bus-demux: watch source missing: {source}\n")
+            return 1
+        pump(iter_new_lines(source, 0)[0])
+        return 0
+    offset = 0
+    if not args.from_start:
+        try:
+            offset = source.stat().st_size
+        except FileNotFoundError:
+            offset = 0
+    sys.stderr.write(f"bus-demux: watching {source}\n")
+    trigger = BusEventTrigger(source, args.interval)
+    try:
+        while True:
+            entries, offset = iter_new_lines(source, offset)
+            pump(entries)
+            trigger.wait(timeout=1.0)
+    except KeyboardInterrupt:
+        return 130
+    finally:
+        trigger.close()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bus", type=Path, default=None, help="override bus path")
@@ -2064,13 +2385,35 @@ def main() -> int:
         "acknowledgment markers) and exit",
     )
     parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="print one compact JSON line per seal, refused take, state-changing "
+        "or routing-ambiguity envelope from this session's follower log "
+        "(line-buffered; --once reads the log and exits)",
+    )
+    parser.add_argument(
+        "--from-file",
+        dest="from_file",
+        type=Path,
+        default=None,
+        help="--watch source instead of the session's follower log",
+    )
+    parser.add_argument(
         "--provider", help="client id, for example codex or claude-code"
     )
     parser.add_argument(
-        "--session", help="stable provider-session id used for cursor recovery"
+        "--session",
+        help="stable provider-session id used for cursor recovery; with "
+        "--provider claude-code it defaults to $CLAUDE_CODE_SESSION_ID",
     )
     parser.add_argument("--lease", help="reattach to an explicit lease id")
-    parser.add_argument("--ack", help="acknowledge a delivery for --provider/--session")
+    parser.add_argument(
+        "--ack",
+        nargs="+",
+        metavar="DELIVERY_ID",
+        help="acknowledge one or more deliveries for --provider/--session "
+        "(all or nothing)",
+    )
     parser.add_argument(
         "--bridge-home", type=Path, default=None, help="override lease/receipt root"
     )
@@ -2084,25 +2427,28 @@ def main() -> int:
     parser.add_argument("--interval", type=float, default=0.15)
     parser.add_argument(
         "--say",
-        help="append an agent reply to the canonical Bus and speak it through vendor TTS",
+        help="append an agent reply to the canonical Bus and speak it through "
+        "vendor TTS; --name defaults to the name on this session's lease",
     )
     parser.add_argument(
         "--tts-vendor",
         choices=("xai", "openai"),
         default=None,
-        help="TTS speaker; defaults to the name's profile provider in voices.json, then xai",
+        help="TTS speaker; defaults to the name's profile provider in voices.json, "
+        "then xai; with --attach it is stored in the profile",
     )
     parser.add_argument(
         "--voice",
         default=None,
-        help="TTS voice id; defaults to the name's binding in <bridge-home>/voices.json",
+        help="TTS voice id; defaults to the name's profile in "
+        "<bridge-home>/voices.json; with --attach it is stored in the profile",
     )
     parser.add_argument(
         "--speed",
         type=float,
         default=None,
         help="TTS speed; defaults to the name's profile in voices.json, "
-        f"then {DEFAULT_SPEECH_SPEED}",
+        f"then {DEFAULT_SPEECH_SPEED}; with --attach it is stored in the profile",
     )
     args = parser.parse_args()
     args.bus_overridden = args.bus is not None
@@ -2121,10 +2467,36 @@ def main() -> int:
         return 0 if installation_idle(args.bus) else 2
     if args.bridge_home is None:
         args.bridge_home = bridge_home()
+    if args.provider and not args.session:
+        args.session = provider_session_from_env(args.provider)
     if bool(args.provider) != bool(args.session):
-        parser.error("--provider and --session must be supplied together")
+        parser.error(
+            "--provider and --session must be supplied together "
+            "(only claude-code falls back to $CLAUDE_CODE_SESSION_ID)"
+        )
     if args.lease and not args.provider:
         parser.error("--lease requires --provider and --session")
+    if args.speed is not None and args.speed <= 0:
+        parser.error("--speed must be positive")
+    if args.voice is not None and not args.voice.strip():
+        parser.error("--voice needs a voice id")
+    if args.watch or args.from_file is not None:
+        if not args.watch:
+            parser.error("--from-file travels with --watch")
+        if (
+            args.ack
+            or args.attach
+            or args.channel is not None
+            or args.status
+            or args.say is not None
+            or args.active_names
+        ):
+            parser.error("--watch combines with no other command")
+        if args.follow or args.all or args.become or args.lease:
+            parser.error("--watch takes only --once or --from-start")
+        if not args.provider and args.from_file is None:
+            parser.error("--watch requires --provider/--session or --from-file")
+        return watch_command(args)
     if args.ack:
         if not args.provider or args.follow or args.once or args.from_start:
             parser.error("--ack requires --provider/--session and no read mode")
@@ -2156,12 +2528,18 @@ def main() -> int:
             parser.error("--status combines with no other command")
         return status_command(args)
     if args.say is not None:
-        if not args.provider or not args.name:
-            parser.error("--say requires --provider/--session and --name")
+        if not args.provider:
+            parser.error("--say requires --provider/--session")
         if args.follow or args.once or args.from_start or args.all or args.become:
             parser.error("--say takes no read mode")
         if not args.say.strip():
             parser.error("--say needs non-empty text")
+        if not args.name:
+            # The lease already knows the name --status reports; an explicit
+            # --name still wins.
+            args.name = lease_name(args.bridge_home, args.provider, args.session)
+            if not args.name:
+                parser.error("--say needs --name, or an attached lease carrying one")
         try:
             return say_reply(args)
         except OSError as error:
