@@ -29,7 +29,7 @@ use super::settings::{
     SettingsSnapshotValidationError, UserSettings, normalize_agent_workspace_roots,
     parse_agent_workspace_roots,
 };
-use super::types::{Config, DeferredInsertShortcut};
+use super::types::{Config, DeferredInsertShortcut, PasteMode};
 use crate::llm::account_auth;
 use crate::llm::provider::{LlmMode, ProviderKind, ProviderRef, ProviderRegistry, WireFamily};
 
@@ -1092,7 +1092,7 @@ impl Config {
 
         // AI Formatting
         env_flag_enabled!("AI_FORMATTING_ENABLED", self.ai_formatting_enabled);
-        env_flag_enabled!("AUTO_PASTE_ENABLED", self.auto_paste_enabled);
+        env_parse!("PASTE_MODE", self.paste_mode);
         env_parse!("TRANSCRIPT_SEND_MODE", self.transcript_send_mode);
         env_flag_enabled!(
             "CODESCRIBE_TRANSCRIPT_TAGGING",
@@ -1338,11 +1338,7 @@ impl Config {
             self.ai_formatting_enabled,
             settings.ai_formatting_enabled
         );
-        apply_copy!(
-            "AUTO_PASTE_ENABLED",
-            self.auto_paste_enabled,
-            settings.auto_paste_enabled
-        );
+        apply_copy!("PASTE_MODE", self.paste_mode, settings.paste_mode);
         apply_copy!(
             "CODESCRIBE_TRANSCRIPT_TAGGING",
             self.transcript_tagging_enabled,
@@ -1582,7 +1578,14 @@ impl Config {
             .then(|| FormattingPolicy::parse(value))
             .transpose()?
             .map(|policy| policy.as_str().to_string());
-        let value = normalized_formatting.as_deref().unwrap_or(value);
+        let normalized_paste_mode = (key == "PASTE_MODE")
+            .then(|| value.parse::<PasteMode>().map_err(anyhow::Error::msg))
+            .transpose()?
+            .map(PasteMode::as_str);
+        let value = normalized_formatting
+            .as_deref()
+            .or(normalized_paste_mode)
+            .unwrap_or(value);
 
         // API keys (vendor and custom-provider accounts) → Keychain
         if super::keychain::is_known_account(key) {
@@ -1649,6 +1652,9 @@ impl Config {
             );
             if *key == "FORMATTING_LEVEL" {
                 FormattingPolicy::parse(value)?;
+            }
+            if *key == "PASTE_MODE" {
+                value.parse::<PasteMode>().map_err(anyhow::Error::msg)?;
             }
         }
 
@@ -2002,17 +2008,17 @@ mod tests {
         let _pack = TestEnvGuard::unset("CODESCRIBE_VOICE_LAB_SRC");
         let _key = TestEnvGuard::unset("STT_FILE_API_KEY");
         let _retired = TestEnvGuard::unset("STT_API_KEY");
-        let _auto_paste = TestEnvGuard::unset("AUTO_PASTE_ENABLED");
+        let _paste_mode = TestEnvGuard::unset("PASTE_MODE");
         let _roots = TestEnvGuard::unset("AGENT_WORKSPACE_ROOTS");
         let _bundle = super::super::keychain::test_support::install_bundle(&[]);
         let dir = TempDir::new().unwrap();
         set_env_for_test("CODESCRIBE_DATA_DIR", dir.path());
-        let env = "STT_FILE_API_KEY=synthetic-import-key\nAUTO_PASTE_ENABLED=false\nAGENT_WORKSPACE_ROOTS=/tmp/synthetic-workspace\n";
+        let env = "STT_FILE_API_KEY=synthetic-import-key\nPASTE_MODE=off\nAGENT_WORKSPACE_ROOTS=/tmp/synthetic-workspace\n";
         fs::write(dir.path().join(".env"), env).unwrap();
         {
             let probe = super::super::keychain::CredentialAcquisitionProbe::forbid();
             let snapshot = Config::load_runtime_snapshot_without_keychain().unwrap();
-            assert_eq!(snapshot.user_settings().auto_paste_enabled, Some(false));
+            assert_eq!(snapshot.user_settings().paste_mode, Some(PasteMode::Off));
             assert_eq!(
                 snapshot
                     .user_settings()
@@ -2023,7 +2029,7 @@ mod tests {
             );
             assert!(UserSettings::settings_path().exists());
             let mut edited = UserSettings::load();
-            assert_eq!(edited.auto_paste_enabled, Some(false));
+            assert_eq!(edited.paste_mode, Some(PasteMode::Off));
             assert_eq!(edited.pending_env_key_imports.len(), 1);
             edited.show_dock_icon = Some(true);
             edited.save().unwrap();
@@ -2034,7 +2040,7 @@ mod tests {
         }
         // Unit-test secret writes use synthetic env, never the OS credential store.
         let snapshot = Config::load_runtime_snapshot().unwrap();
-        assert_eq!(snapshot.user_settings().auto_paste_enabled, Some(false));
+        assert_eq!(snapshot.user_settings().paste_mode, Some(PasteMode::Off));
         assert_eq!(snapshot.user_settings().show_dock_icon, Some(true));
         assert!(snapshot.user_settings().pending_env_key_imports.is_empty());
         assert!(UserSettings::settings_path().exists());
@@ -2767,15 +2773,15 @@ mod tests {
         }
 
         let _tmp = setup_isolated_data_dir();
-        let _auto_paste = TestEnvGuard::unset("AUTO_PASTE_ENABLED");
+        let _paste_mode = TestEnvGuard::unset("PASTE_MODE");
         let _dock = TestEnvGuard::unset("SHOW_DOCK_ICON");
         let start = std::sync::Arc::new(std::sync::Barrier::new(3));
         let first_start = start.clone();
         let first = std::thread::spawn(move || {
             first_start.wait();
             Config::default()
-                .save_to_env("AUTO_PASTE_ENABLED", "0")
-                .expect("persist auto paste")
+                .save_to_env("PASTE_MODE", "off")
+                .expect("persist paste mode")
         });
         let second_start = start.clone();
         let second = std::thread::spawn(move || {
@@ -2789,7 +2795,7 @@ mod tests {
         second.join().expect("second config writer joins");
 
         let persisted = UserSettings::load();
-        assert_eq!(persisted.auto_paste_enabled, Some(false));
+        assert_eq!(persisted.paste_mode, Some(PasteMode::Off));
         assert_eq!(persisted.show_dock_icon, Some(false));
         fs::write(
             std::env::var_os(CHILD_WITNESS).expect("config RMW child witness path"),
@@ -2984,32 +2990,45 @@ mod tests {
         assert_eq!(live.restore_clipboard_delay_ms, 450);
     }
 
-    /// AUTO_PASTE single/batch writes reload live without shadowing process env.
+    /// PASTE_MODE single/batch writes reload live without shadowing process
+    /// env, normalize case, and refuse an unknown mode without touching disk.
     #[test]
     #[serial]
-    fn auto_paste_single_and_batch_writes_are_hot_reloadable_without_env_shadow() {
+    fn paste_mode_single_and_batch_writes_are_hot_reloadable_without_env_shadow() {
         let _tmp = setup_isolated_data_dir();
-        let _runtime = TestEnvGuard::unset("AUTO_PASTE_ENABLED");
+        let _runtime = TestEnvGuard::unset("PASTE_MODE");
         let config = Config::default();
+        assert_eq!(
+            Config::load_without_keychain().paste_mode,
+            PasteMode::Safe,
+            "a fresh install arms Safe"
+        );
 
         config
-            .save_to_env("AUTO_PASTE_ENABLED", "0")
-            .expect("save auto paste off");
-        assert_eq!(UserSettings::load().auto_paste_enabled, Some(false));
-        assert!(!Config::load_without_keychain().auto_paste_enabled);
+            .save_to_env("PASTE_MODE", "Off")
+            .expect("save paste mode off");
+        assert_eq!(UserSettings::load().paste_mode, Some(PasteMode::Off));
+        assert_eq!(Config::load_without_keychain().paste_mode, PasteMode::Off);
 
         config
-            .save_to_env_many(&[("AUTO_PASTE_ENABLED", "1")])
-            .expect("save auto paste on");
-        assert_eq!(UserSettings::load().auto_paste_enabled, Some(true));
-        assert!(Config::load_without_keychain().auto_paste_enabled);
+            .save_to_env_many(&[("PASTE_MODE", "comfort")])
+            .expect("save paste mode comfort");
+        assert_eq!(UserSettings::load().paste_mode, Some(PasteMode::Comfort));
+        assert_eq!(
+            Config::load_without_keychain().paste_mode,
+            PasteMode::Comfort
+        );
+
+        assert!(config.save_to_env("PASTE_MODE", "always").is_err());
+        assert!(config.save_to_env_many(&[("PASTE_MODE", "on")]).is_err());
+        assert_eq!(UserSettings::load().paste_mode, Some(PasteMode::Comfort));
 
         let env_path = Config::env_path();
         if env_path.exists() {
             let env = Config::parse_env_file(&env_path).expect("parse optional env");
-            assert!(!env.contains_key("AUTO_PASTE_ENABLED"));
+            assert!(!env.contains_key("PASTE_MODE"));
         }
-        assert!(std::env::var("AUTO_PASTE_ENABLED").is_err());
+        assert!(std::env::var("PASTE_MODE").is_err());
     }
 
     /// FORMATTING_LEVEL aliases normalize identically on single and batch paths.

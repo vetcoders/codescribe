@@ -192,6 +192,48 @@ enum DeferredInsertShortcutOption: String, CaseIterable, Identifiable, Equatable
   }
 }
 
+/// Automatic paste policy (`PASTE_MODE`, core `PasteMode`). One stored
+/// choice shared by Settings and the tray Quick settings row.
+extension CsPasteMode {
+  /// Settings order; the tray row cycles through it.
+  static let allModes: [CsPasteMode] = [.safe, .comfort, .off]
+
+  /// Canonical wire identifier for `update_config` (`PasteMode::as_str`).
+  var wireId: String {
+    switch self {
+    case .safe: return "safe"
+    case .comfort: return "comfort"
+    case .off: return "off"
+    }
+  }
+
+  var visibleName: String {
+    switch self {
+    case .safe: return "Safe"
+    case .comfort: return "Comfort"
+    case .off: return "Off"
+    }
+  }
+
+  /// One sentence per mode for the Settings segmented control.
+  var blurb: String {
+    switch self {
+    case .safe:
+      return "Pastes only into a text field; terminals only when it doesn't look like a command."
+    case .comfort:
+      return "Pastes wherever the caret is, terminals too; commands and password fields are held."
+    case .off:
+      return "Never pastes automatically; the transcript stays on the overlay."
+    }
+  }
+
+  /// Safe → Comfort → Off → Safe.
+  var next: CsPasteMode {
+    let index = Self.allModes.firstIndex(of: self) ?? 0
+    return Self.allModes[(index + 1) % Self.allModes.count]
+  }
+}
+
 /// Panel a rail section routes to. `SettingsView`'s detail switch consumes this
 /// map exhaustively, so routing stays testable without rendering.
 enum SettingsPanelDestination: Equatable {
@@ -2186,6 +2228,17 @@ final class SettingsViewModel: ObservableObject {
   func setDeferredInsertShortcut(_ option: DeferredInsertShortcutOption) {
     deferredInsertShortcut = option
     persist("CODESCRIBE_DEFERRED_INSERT_SHORTCUT", option.wireId)
+  }
+
+  /// Automatic paste mode from the canonical settings snapshot.
+  var pasteMode: CsPasteMode { settings.pasteMode }
+
+  /// Persists `PASTE_MODE` through the config router (settings.json; the
+  /// running controller reloads on write). Optimistic like the other setters:
+  /// the selection sticks and a failed write surfaces in `lastError`.
+  func setPasteMode(_ mode: CsPasteMode) {
+    settings.pasteMode = mode
+    persist("PASTE_MODE", mode.wireId)
   }
 
   // MARK: - Agent workspace roots (list_projects tool)

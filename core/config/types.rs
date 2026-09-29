@@ -7,11 +7,74 @@ use std::str::FromStr;
 
 use super::defaults::*;
 
-/// Serde default for [`Config::auto_paste_enabled`]: pasting is on unless the
-/// user turns it off, so configs written before the field existed keep the
-/// historical behaviour.
-const fn default_auto_paste_enabled() -> bool {
-    true
+/// Automatic paste policy for Orient dictation (Hold Fn / Globe, Double Left
+/// Option, toggle Finish). One persisted choice, three modes — Founder
+/// 2026-09-25: "tryb safe / comfort / off … to będzie koniec dysputy".
+///
+/// The delivery throne (`app/controller/delivery_route.rs`) reads this as a
+/// veto on the paste gun; it never picks a destination by itself. Explicit
+/// overlay Insert and To Agent are not governed by it.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum PasteMode {
+    /// Paste only into a focused, editable, non-password text field. A
+    /// terminal target is pasted only when the executable-content guard
+    /// passes. Anything else is held on the clipboard with a notification.
+    #[default]
+    Safe,
+    /// Paste wherever the caret is, terminals included. Password fields and
+    /// the executable-content guard for terminals still hold the paste.
+    Comfort,
+    /// Never paste automatically. The transcript stays on the overlay and in
+    /// history; the pasteboard is not touched.
+    Off,
+}
+
+impl PasteMode {
+    /// Every mode in Settings order.
+    pub const ALL: [Self; 3] = [Self::Safe, Self::Comfort, Self::Off];
+
+    /// Canonical wire/persisted spelling; round-trips through [`FromStr`].
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Safe => "safe",
+            Self::Comfort => "comfort",
+            Self::Off => "off",
+        }
+    }
+
+    /// The single reader of the retired boolean `auto_paste_enabled`.
+    ///
+    /// No Founder decision records what "on" meant for terminals; the old
+    /// setting pasted into every foreign caret. `true` maps to [`Self::Safe`]
+    /// (Claude's assumption, 2026-09-29) and `false` to [`Self::Off`].
+    pub const fn from_retired_auto_paste(enabled: bool) -> Self {
+        if enabled { Self::Safe } else { Self::Off }
+    }
+}
+
+impl std::fmt::Display for PasteMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for PasteMode {
+    /// Parse error payload for [`PasteMode`] wire identifiers.
+    type Err = String;
+
+    /// Parse `safe` / `comfort` / `off`. Anything else is an error, never a
+    /// silent default: an unknown value must not arm a more permissive mode.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "safe" => Ok(Self::Safe),
+            "comfort" => Ok(Self::Comfort),
+            "off" => Ok(Self::Off),
+            _ => Err(format!(
+                "unknown PASTE_MODE {value:?}; expected safe, comfort, or off"
+            )),
+        }
+    }
 }
 
 /// First-class work modes used by the runtime and settings UI.
@@ -516,11 +579,11 @@ pub struct Config {
     #[serde(default)]
     pub ai_formatting_enabled: bool,
 
-    /// User-owned automatic paste policy for non-assistive dictation.
-    /// Assistive, empty/no-speech, Notes save-only, and safety branches remain
-    /// controller-owned vetoes even when this preference is enabled.
-    #[serde(default = "default_auto_paste_enabled")]
-    pub auto_paste_enabled: bool,
+    /// User-owned automatic paste policy for non-assistive dictation
+    /// (`PASTE_MODE`). Assistive, empty/no-speech, Notes save-only, and safety
+    /// branches remain controller-owned vetoes in every mode.
+    #[serde(default)]
+    pub paste_mode: PasteMode,
 
     /// Strategy for sending transcript (end-of-utterance vs streaming)
     #[serde(default)]
@@ -704,7 +767,7 @@ impl Default for Config {
             middle_mouse_acts_as_fn: false,
             whisper_language: Language::default(),
             ai_formatting_enabled: false,
-            auto_paste_enabled: default_auto_paste_enabled(),
+            paste_mode: PasteMode::default(),
             transcript_send_mode: TranscriptSendMode::default(),
             transcript_tagging_enabled: false,
             transcript_tag_template: default_transcript_tag_template(),

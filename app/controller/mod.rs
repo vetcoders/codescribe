@@ -44,9 +44,9 @@ mod transcript_delivery;
 mod types;
 
 pub use delivery_route::{
-    DeliveryIntent, DeliveryRoute, OverlayPasteDelivery, OverlayPasteResult,
-    delivery_intent_from_session, format_delivery_route_line, overlay_insert_facts,
-    resolve_delivery_route,
+    DeliveryIntent, DeliveryRoute, OverlayPasteDelivery, OverlayPasteResult, PasteTarget,
+    TERMINAL_APPS, delivery_intent_from_session, format_delivery_route_line, is_terminal_app,
+    looks_executable, overlay_insert_facts, paste_hold_notice, resolve_delivery_route,
 };
 pub(crate) use delivery_route::{
     TranscriptProjectionAvailability, resolve_transcript_projection_availability,
@@ -80,7 +80,7 @@ use crate::audio::streaming_recorder::{
     CaptureStopFailure, CaptureTurnIntent, StreamingRecorder, TerminalSealRefused,
 };
 use crate::config::models::ModelManager;
-use crate::config::{Config, FormattingPolicy, RuntimeSettingsSnapshot, UserSettings};
+use crate::config::{Config, FormattingPolicy, PasteMode, RuntimeSettingsSnapshot, UserSettings};
 use crate::os::clipboard;
 use crate::os::hold_badge::BadgeMode;
 use crate::os::hotkeys::{self, HoldMode};
@@ -2003,15 +2003,7 @@ impl RecordingController {
         }
         let to_agent = resolve_delivery_route(
             DeliveryIntent::OverlayToAgent,
-            DeliveryFacts {
-                has_text: true,
-                no_speech: false,
-                auto_paste_enabled: false,
-                overlay_enabled: true,
-                live_stream_session: false,
-                commit_required: false,
-                latched_target_is_self: false,
-            },
+            overlay_insert_facts(true, false),
         );
         info!(
             "{}",
@@ -2504,12 +2496,16 @@ impl RecordingController {
             (assistive, force_ai, capture_turn, seal_refused),
             &config,
             |route, text, target| async move {
-                if route == DeliveryRoute::DeferredInsert {
-                    self.arm_overlay_text(&text, target, Some("Codescribe".to_string()))
-                        .await
-                } else {
-                    self.execute_clipboard_paste(text, target, "Stop-path paste")
-                        .await
+                match route {
+                    DeliveryRoute::DeferredInsert => {
+                        self.arm_overlay_text(&text, target, Some("Codescribe".to_string()))
+                            .await
+                    }
+                    DeliveryRoute::ClipboardHold => Self::hold_on_clipboard(&text, target),
+                    _ => {
+                        self.execute_clipboard_paste(text, target, "Stop-path paste")
+                            .await
+                    }
                 }
             },
         )
@@ -2605,6 +2601,9 @@ impl RecordingController {
                         (assistive, force_ai, capture_turn, false),
                         &config,
                         |route, payload, target_app| async move {
+                            if route == DeliveryRoute::ClipboardHold {
+                                return Self::hold_on_clipboard(&payload, target_app);
+                            }
                             if route == DeliveryRoute::DeferredInsert && !preempted {
                                 return self
                                     .arm_overlay_text(
@@ -3000,12 +2999,25 @@ impl RecordingController {
         let notes_save_only = config.quick_notes_enabled && config.quick_notes_save_only;
         let intent = delivery_intent_from_session(assistive, force_ai, notes_save_only);
         let latched_target = self.pre_overlay_frontmost_app.read().await.clone();
+        // Only an armed Orient paste needs the caret observed; the probe can
+        // hold that paste, never redirect it.
+        let paste_target = if matches!(
+            intent,
+            DeliveryIntent::OrientDictation | DeliveryIntent::OrientFormat
+        ) && config.paste_mode != PasteMode::Off
+        {
+            helpers::observe_paste_target(latched_target.as_deref())
+        } else {
+            PasteTarget::UNOBSERVED
+        };
         let decision = resolve_delivery_route(
             intent,
             DeliveryFacts {
                 has_text: !trimmed.is_empty(),
                 no_speech: false,
-                auto_paste_enabled: config.auto_paste_enabled,
+                paste_mode: config.paste_mode,
+                paste_target,
+                executable_payload: looks_executable(trimmed),
                 overlay_enabled: config.transcription_overlay_enabled,
                 live_stream_session: false,
                 commit_required: false,
@@ -3014,12 +3026,15 @@ impl RecordingController {
         );
         info!(
             seal_refused,
+            paste_target = ?paste_target,
             "{}",
             format_delivery_route_line(intent, decision, latched_target.as_deref())
         );
         if !matches!(
             decision.route,
-            DeliveryRoute::ClipboardPaste | DeliveryRoute::DeferredInsert
+            DeliveryRoute::ClipboardPaste
+                | DeliveryRoute::DeferredInsert
+                | DeliveryRoute::ClipboardHold
         ) {
             // No sink was selected. The committed text is still readable in the
             // overlay and the session archive, so this is retained, not lost.
@@ -3036,6 +3051,13 @@ impl RecordingController {
         };
         let payload = self.delivery_tagger.render(trimmed, config, Some(mode));
         let outcome = sink(decision.route, payload, latched_target).await;
+        if let (Some(notice), Ok(result)) = (paste_hold_notice(decision), outcome.as_ref())
+            && result.delivery == OverlayPasteDelivery::CopiedToClipboard
+        {
+            // The notice is the question the guard asks (Founder s04-036); the
+            // user's own ⌘V is the only answer that pastes.
+            helpers::announce_paste_hold(notice);
+        }
         self.finish_stop_delivery(outcome, seal_refused).await
     }
 
@@ -3175,6 +3197,20 @@ impl RecordingController {
             *shortcut_label = Some(config.deferred_insert_shortcut.label().to_string());
         }
         Ok(OverlayPasteDelivery::DeferredInsertArmed)
+    }
+
+    /// Execute the throne's `ClipboardHold`: leave the transcript on the
+    /// pasteboard for the user's own ⌘V and post no synthetic keystroke. The
+    /// caller announces why (`paste_hold_notice`).
+    fn hold_on_clipboard(payload: &str, target_app: Option<String>) -> Result<OverlayPasteResult> {
+        clipboard::set_clipboard(payload).context("held paste: failed to write clipboard")?;
+        Ok(OverlayPasteResult {
+            delivery: OverlayPasteDelivery::CopiedToClipboard,
+            target_app_name: target_app,
+            frontmost_app_name: crate::os::selection::current_frontmost_app_name(),
+            deferred_insert_shortcut: None,
+            deferred_insert_failure: None,
+        })
     }
 
     /// Arm tagged overlay text for Paste Here. Shared by the throne's
@@ -6315,17 +6351,17 @@ mod terminal_delivery_target_falsifiers {
     /// a second time.
     #[tokio::test]
     async fn stop_clipboard_and_deferred_routes_receive_one_tagged_payload() {
-        for (auto_paste_enabled, force_ai, expected_route) in [
-            (true, false, DeliveryRoute::ClipboardPaste),
-            (false, false, DeliveryRoute::DeferredInsert),
-            (true, true, DeliveryRoute::ClipboardPaste),
+        for (paste_mode, force_ai, expected_route) in [
+            (PasteMode::Safe, false, DeliveryRoute::ClipboardPaste),
+            (PasteMode::Comfort, false, DeliveryRoute::ClipboardPaste),
+            (PasteMode::Safe, true, DeliveryRoute::ClipboardPaste),
         ] {
             let controller = RecordingController::new_without_keychain();
             controller.delivery_tagger.begin("dictation", "pl");
             let config = Config {
                 transcript_tagging_enabled: true,
                 transcript_tag_template: "<codescribe mode=\"{mode}\">{text}</codescribe>".into(),
-                auto_paste_enabled,
+                paste_mode,
                 transcription_overlay_enabled: true,
                 quick_notes_enabled: false,
                 ..Config::default()
@@ -6333,10 +6369,10 @@ mod terminal_delivery_target_falsifiers {
 
             controller
                 .deliver_stop_transcript_with_sink(
-                    Some(if auto_paste_enabled {
-                        "tagged-clipboard"
+                    Some(if force_ai {
+                        "tagged-format"
                     } else {
-                        "tagged-deferred"
+                        "tagged-dictation"
                     }),
                     "{selection_1} working  {image_1}  text {name}",
                     (false, force_ai, CaptureTurnIntent::HandsFree, false),
@@ -6467,7 +6503,7 @@ mod terminal_delivery_target_falsifiers {
     async fn sink_admission_after_last_window_ignores_slow_tail_work() {
         let controller = RecordingController::new_without_keychain();
         let config = Config {
-            auto_paste_enabled: true,
+            paste_mode: PasteMode::Safe,
             ..Config::default()
         };
         let l1 = tokio::spawn(async { tokio::time::sleep(Duration::from_millis(650)).await });
@@ -6926,7 +6962,7 @@ mod refusal_recovery_tests {
         calls: &AtomicUsize,
     ) -> Result<TranscriptDelivery> {
         let config = Config {
-            auto_paste_enabled: true,
+            paste_mode: PasteMode::Safe,
             quick_notes_enabled: false,
             ..Config::default()
         };
@@ -8490,7 +8526,7 @@ mod refusal_recovery_tests {
             let mut take = take(State::RecHold, true).await;
             let controller = &take.controller;
             let mut config = controller.get_config().await;
-            config.auto_paste_enabled = true;
+            config.paste_mode = PasteMode::Safe;
             config.quick_notes_enabled = false;
             let calls = AtomicUsize::new(0);
             let call_count = &calls;
@@ -9320,7 +9356,7 @@ mod c15d_settings_one_path_falsifiers {
         let before_digest = before.digest().as_str().to_string();
         let before_delay = before.values().hold_start_delay_ms;
         let mut settings = UserSettings::load();
-        settings.auto_paste_enabled = Some(false);
+        settings.paste_mode = Some(PasteMode::Off);
         settings.save().unwrap();
         assert!(
             controller
@@ -9330,7 +9366,7 @@ mod c15d_settings_one_path_falsifiers {
         );
         let after = controller.runtime_settings_arc().await;
         assert!(!Arc::ptr_eq(&before, &after));
-        assert!(!after.values().auto_paste_enabled);
+        assert_eq!(after.values().paste_mode, PasteMode::Off);
         assert!(
             !controller
                 .runtime_settings_refresh_pending
@@ -9466,7 +9502,7 @@ mod c15d_settings_one_path_falsifiers {
         let before = controller.runtime_settings_arc().await;
         *controller.state.write().await = State::RecToggle;
         let mut settings = UserSettings::load();
-        settings.auto_paste_enabled = Some(false);
+        settings.paste_mode = Some(PasteMode::Off);
         settings.save().unwrap();
         assert!(
             !controller
@@ -9493,7 +9529,7 @@ mod c15d_settings_one_path_falsifiers {
             .unwrap();
         let after = controller.runtime_settings_arc().await;
         assert!(!Arc::ptr_eq(&before, &after));
-        assert!(!after.values().auto_paste_enabled);
+        assert_eq!(after.values().paste_mode, PasteMode::Off);
         assert!(
             !controller
                 .runtime_settings_refresh_pending

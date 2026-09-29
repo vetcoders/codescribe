@@ -27,6 +27,7 @@ struct ShortcutsPanel: View {
 
       bindingRows.padding(.top, CSSpace.lg)
       inputSurfaceSection.padding(.top, 12)
+      pasteModeSection.padding(.top, 12)
       deferredInsertSection.padding(.top, 12)
       badgeLegend.padding(.top, 12)
 
@@ -329,6 +330,71 @@ struct ShortcutsPanel: View {
 
   private var middleMouseBinding: Binding<Bool> {
     Binding(get: { model.middleMouseActsAsFn }, set: { model.setMiddleMouseActsAsFn($0) })
+  }
+
+  // MARK: Automatic paste mode
+
+  /// Safe / Comfort / Off — one persisted `PASTE_MODE` shared with the tray
+  /// Quick settings row. Each mode carries its one-sentence contract so the
+  /// choice is explained where it is made.
+  private var pasteModeSection: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      SettingsSectionLabel("Automatic paste")
+      HStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 2) {
+          Text("Paste after dictation")
+            .font(CSFont.ui(12.5, .semibold))
+            .foregroundStyle(Color.primary)
+          Text("Where the transcript goes when a Hold or toggle take ends.")
+            .font(CSFont.ui(10.5, .medium))
+            .foregroundStyle(Color.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+
+        Picker("Paste mode", selection: pasteModeBinding) {
+          ForEach(CsPasteMode.allModes, id: \.self) { mode in
+            Text(mode.visibleName).tag(mode)
+          }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(width: 260)
+        .accessibilityIdentifier("settings.pasteMode")
+      }
+      VStack(alignment: .leading, spacing: 3) {
+        ForEach(CsPasteMode.allModes, id: \.self) { mode in
+          HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(mode.visibleName)
+              .font(CSFont.ui(10.5, .semibold))
+              .foregroundStyle(mode == model.pasteMode ? Color.primary : Color.secondary)
+              .frame(width: 58, alignment: .leading)
+            Text(mode.blurb)
+              .font(CSFont.ui(10.5, .medium))
+              .foregroundStyle(Color.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+        }
+      }
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 11)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .fill(Color.primary.opacity(0.05))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+    )
+  }
+
+  private var pasteModeBinding: Binding<CsPasteMode> {
+    Binding(
+      get: { model.pasteMode },
+      set: { model.setPasteMode($0) }
+    )
   }
 
   // MARK: Deferred insert chord

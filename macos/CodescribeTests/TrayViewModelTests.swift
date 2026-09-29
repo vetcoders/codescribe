@@ -9,7 +9,7 @@ final class TrayViewModelTests: XCTestCase {
     let engine = TrackingTrayEngine(
       showDockIcon: true,
       overlayEnabled: true,
-      autoPasteEnabled: true,
+      pasteMode: .safe,
       autoFormatLevel: .correction,
       notesMode: false,
       startInAssistive: false,
@@ -32,7 +32,7 @@ final class TrayViewModelTests: XCTestCase {
     let trayEngine = TrackingTrayEngine(
       showDockIcon: true,
       overlayEnabled: true,
-      autoPasteEnabled: true,
+      pasteMode: .safe,
       autoFormatLevel: .correction,
       notesMode: false,
       startInAssistive: false,
@@ -91,7 +91,7 @@ final class TrayViewModelTests: XCTestCase {
     let engine = TrackingTrayEngine(
       showDockIcon: true,
       overlayEnabled: true,
-      autoPasteEnabled: true,
+      pasteMode: .safe,
       autoFormatLevel: .correction,
       notesMode: false,
       startInAssistive: false,
@@ -233,7 +233,7 @@ final class TrayViewModelTests: XCTestCase {
     let engine = TrackingTrayEngine(
       showDockIcon: true,
       overlayEnabled: false,
-      autoPasteEnabled: false,
+      pasteMode: .comfort,
       autoFormatLevel: .smart,
       notesMode: false,
       startInAssistive: true
@@ -241,7 +241,7 @@ final class TrayViewModelTests: XCTestCase {
     let model = TrayViewModel(engine: engine)
     model.showDockIcon = false
     model.overlayEnabled = true
-    model.autoPasteEnabled = true
+    model.pasteMode = .off
     model.autoFormatLevel = .off
     model.notesModeEnabled = true
     model.startInAssistive = false
@@ -250,7 +250,7 @@ final class TrayViewModelTests: XCTestCase {
 
     XCTAssertTrue(model.showDockIcon)
     XCTAssertFalse(model.overlayEnabled)
-    XCTAssertFalse(model.autoPasteEnabled)
+    XCTAssertEqual(model.pasteMode, .comfort)
     XCTAssertEqual(model.autoFormatLevel, .smart)
     XCTAssertFalse(model.notesModeEnabled)
     XCTAssertTrue(model.startInAssistive)
@@ -261,7 +261,7 @@ final class TrayViewModelTests: XCTestCase {
     let engine = TrackingTrayEngine(
       showDockIcon: true,
       overlayEnabled: false,
-      autoPasteEnabled: true,
+      pasteMode: .safe,
       autoFormatLevel: .correction,
       notesMode: false,
       startInAssistive: false
@@ -277,26 +277,51 @@ final class TrayViewModelTests: XCTestCase {
     XCTAssertEqual(engine.currentToggleReads, 2)
   }
 
-  func testAutoPasteWriteReconcilesSuccessAndFailureToPersistedTruth() {
+  func testPasteModeWriteReconcilesSuccessAndFailureToPersistedTruth() {
     for persists in [true, false] {
       let engine = TrackingTrayEngine(
         showDockIcon: true,
         overlayEnabled: true,
-        autoPasteEnabled: false,
+        pasteMode: .off,
         autoFormatLevel: .correction,
         notesMode: false,
         startInAssistive: false
       )
-      engine.persistAutoPasteWrites = persists
+      engine.persistPasteModeWrites = persists
       let model = TrayViewModel(engine: engine)
       model.refreshStatus()
 
-      model.setAutoPasteEnabled(true)
+      model.setPasteMode(.comfort)
 
-      XCTAssertEqual(model.autoPasteEnabled, persists)
-      XCTAssertEqual(engine.autoPasteWrites, [true])
+      XCTAssertEqual(model.pasteMode, persists ? .comfort : .off)
+      XCTAssertEqual(engine.pasteModeWrites, [.comfort])
       XCTAssertEqual(engine.currentToggleReads, 2)
     }
+  }
+
+  /// The Quick settings row cycles Safe → Comfort → Off → Safe, one persisted
+  /// write per click, each re-read from the engine.
+  func testPasteModeRowCyclesThreeModesBackToStart() {
+    let engine = TrackingTrayEngine(
+      showDockIcon: true,
+      overlayEnabled: true,
+      pasteMode: .safe,
+      autoFormatLevel: .correction,
+      notesMode: false,
+      startInAssistive: false
+    )
+    let model = TrayViewModel(engine: engine)
+    model.refreshStatus()
+
+    var observed: [CsPasteMode] = [model.pasteMode]
+    for _ in 0..<3 {
+      model.setPasteMode(model.pasteMode.next)
+      observed.append(model.pasteMode)
+    }
+
+    XCTAssertEqual(observed, [.safe, .comfort, .off, .safe])
+    XCTAssertEqual(engine.pasteModeWrites, [.comfort, .off, .safe])
+    XCTAssertEqual(CsPasteMode.allModes.map(\.visibleName), ["Safe", "Comfort", "Off"])
   }
 
   func testAutoFormatWritesEveryNormalizedLevelAndReconcilesSuccess() {
@@ -304,7 +329,7 @@ final class TrayViewModelTests: XCTestCase {
       let engine = TrackingTrayEngine(
         showDockIcon: true,
         overlayEnabled: true,
-        autoPasteEnabled: true,
+        pasteMode: .safe,
         autoFormatLevel: level == .off ? .max : .off,
         notesMode: false,
         startInAssistive: false
@@ -326,7 +351,7 @@ final class TrayViewModelTests: XCTestCase {
       let engine = TrackingTrayEngine(
         showDockIcon: true,
         overlayEnabled: true,
-        autoPasteEnabled: true,
+        pasteMode: .safe,
         autoFormatLevel: persisted,
         notesMode: false,
         startInAssistive: false
@@ -377,17 +402,17 @@ private final class TrackingTrayEngine: TrayEngine {
   var agentAvailable = true
   var showDockIcon: Bool
   var overlayEnabled: Bool
-  var autoPasteEnabled: Bool
+  var pasteMode: CsPasteMode
   var autoFormatLevel: FormattingPolicyOption
   var notesMode: Bool
   var startInAssistive: Bool
   var holdBadgeOption: HoldBadgeOption
   var persistOverlayWrites = true
-  var persistAutoPasteWrites = true
+  var persistPasteModeWrites = true
   var persistAutoFormatWrites = true
   private(set) var currentToggleReads = 0
   private(set) var quickToggleWrites: [TrayQuickToggle] = []
-  private(set) var autoPasteWrites: [Bool] = []
+  private(set) var pasteModeWrites: [CsPasteMode] = []
   private(set) var autoFormatWrites: [String] = []
   private(set) var holdBadgeWrites: [HoldBadgeOption] = []
   var holdBadgeReader: (() -> HoldBadgeOption)?
@@ -396,7 +421,7 @@ private final class TrackingTrayEngine: TrayEngine {
   init(
     showDockIcon: Bool,
     overlayEnabled: Bool,
-    autoPasteEnabled: Bool,
+    pasteMode: CsPasteMode,
     autoFormatLevel: FormattingPolicyOption,
     notesMode: Bool,
     startInAssistive: Bool,
@@ -404,7 +429,7 @@ private final class TrackingTrayEngine: TrayEngine {
   ) {
     self.showDockIcon = showDockIcon
     self.overlayEnabled = overlayEnabled
-    self.autoPasteEnabled = autoPasteEnabled
+    self.pasteMode = pasteMode
     self.autoFormatLevel = autoFormatLevel
     self.notesMode = notesMode
     self.startInAssistive = startInAssistive
@@ -419,7 +444,7 @@ private final class TrackingTrayEngine: TrayEngine {
   func currentToggles() -> (
     showDockIcon: Bool,
     overlayEnabled: Bool,
-    autoPasteEnabled: Bool,
+    pasteMode: CsPasteMode,
     autoFormatLevel: FormattingPolicyOption,
     notesMode: Bool,
     startInAssistive: Bool,
@@ -429,7 +454,7 @@ private final class TrackingTrayEngine: TrayEngine {
     return (
       showDockIcon,
       overlayEnabled,
-      autoPasteEnabled,
+      pasteMode,
       autoFormatLevel,
       notesMode,
       startInAssistive,
@@ -449,10 +474,10 @@ private final class TrackingTrayEngine: TrayEngine {
     }
   }
 
-  func setAutoPasteEnabled(_ enabled: Bool) {
-    autoPasteWrites.append(enabled)
-    if persistAutoPasteWrites {
-      autoPasteEnabled = enabled
+  func setPasteMode(_ mode: CsPasteMode) {
+    pasteModeWrites.append(mode)
+    if persistPasteModeWrites {
+      pasteMode = mode
     }
   }
 

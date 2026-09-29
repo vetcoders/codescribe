@@ -55,7 +55,7 @@ protocol TrayEngine: AnyObject {
   func currentToggles() -> (
     showDockIcon: Bool,
     overlayEnabled: Bool,
-    autoPasteEnabled: Bool,
+    pasteMode: CsPasteMode,
     autoFormatLevel: FormattingPolicyOption,
     notesMode: Bool,
     startInAssistive: Bool,
@@ -64,7 +64,7 @@ protocol TrayEngine: AnyObject {
   func setQuickToggle(_ toggle: TrayQuickToggle, enabled: Bool)
   /// Persist user-owned delivery/formatting policy. Callers always re-read
   /// `currentToggles()` after these writes instead of assuming success.
-  func setAutoPasteEnabled(_ enabled: Bool)
+  func setPasteMode(_ mode: CsPasteMode)
   func setAutoFormatLevel(_ level: FormattingPolicyOption)
   func setHoldBadgeOption(_ option: HoldBadgeOption) -> Bool
   /// Notes Mode is a two-key flag (quick-notes enabled + save-only) written as
@@ -91,7 +91,7 @@ final class MockTrayEngine: TrayEngine {
   var agentAvailable: Bool
   var showDockIcon: Bool
   var overlayEnabled: Bool
-  var autoPasteEnabled: Bool
+  var pasteMode: CsPasteMode
   var autoFormatLevel: FormattingPolicyOption
   var notesMode: Bool
   var startInAssistive: Bool
@@ -104,7 +104,7 @@ final class MockTrayEngine: TrayEngine {
     agentAvailable: Bool = true,
     showDockIcon: Bool = true,
     overlayEnabled: Bool = false,
-    autoPasteEnabled: Bool = true,
+    pasteMode: CsPasteMode = .safe,
     autoFormatLevel: FormattingPolicyOption = .correction,
     notesMode: Bool = false,
     startInAssistive: Bool = false,
@@ -116,7 +116,7 @@ final class MockTrayEngine: TrayEngine {
     self.agentAvailable = agentAvailable
     self.showDockIcon = showDockIcon
     self.overlayEnabled = overlayEnabled
-    self.autoPasteEnabled = autoPasteEnabled
+    self.pasteMode = pasteMode
     self.autoFormatLevel = autoFormatLevel
     self.notesMode = notesMode
     self.startInAssistive = startInAssistive
@@ -134,7 +134,7 @@ final class MockTrayEngine: TrayEngine {
   func currentToggles() -> (
     showDockIcon: Bool,
     overlayEnabled: Bool,
-    autoPasteEnabled: Bool,
+    pasteMode: CsPasteMode,
     autoFormatLevel: FormattingPolicyOption,
     notesMode: Bool,
     startInAssistive: Bool,
@@ -143,7 +143,7 @@ final class MockTrayEngine: TrayEngine {
     (
       showDockIcon,
       overlayEnabled,
-      autoPasteEnabled,
+      pasteMode,
       autoFormatLevel,
       notesMode,
       startInAssistive,
@@ -158,7 +158,7 @@ final class MockTrayEngine: TrayEngine {
     }
   }
 
-  func setAutoPasteEnabled(_ enabled: Bool) { autoPasteEnabled = enabled }
+  func setPasteMode(_ mode: CsPasteMode) { pasteMode = mode }
   func setAutoFormatLevel(_ level: FormattingPolicyOption) { autoFormatLevel = level }
   func setHoldBadgeOption(_ option: HoldBadgeOption) -> Bool {
     holdBadgeOption = option

@@ -1261,7 +1261,7 @@
               "required_code": [
                 "has_text",
                 "latched_target_is_self",
-                "auto_paste_enabled: false",
+                "paste_mode: PasteMode::Off",
                 "overlay_enabled: true",
                 "live_stream_session: false",
                 "commit_required: false"

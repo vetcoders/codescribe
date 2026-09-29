@@ -320,14 +320,14 @@ consequences and `docs/TRANSCRIPT_BUS.md` for the projected wire contract.
 
 ### 3.3 Dictation overlay / tray
 
-| Front                         | UniFFI                                             | Handler                                                         |
-| ----------------------------- | -------------------------------------------------- | --------------------------------------------------------------- |
-| Committed transcript truth    | `CsTranscriptProjectionEvent`                      | ledger receipt → reducer → Transcript Bus → listener projection |
-| Ephemeral/raw observations    | `EngineEventWire` IPC diagnostics                  | never cross `CsTranscriptionListener`; never delivery writers   |
-| PCM sideband evidence         | `EngineEventWire::SidebandEvidence`                | Silero ingress → IPC → bridge diagnostic; reducer no-op         |
-| Recording service object      | `CodescribeHotkeys`                                | shared controller recording API                                 |
-| Tray status glyphs            | `CodescribeTrayStatus` + listener                  | controller tray payload                                         |
-| Auto-paste / auto-format tray | `set_auto_paste_enabled` / `set_auto_format_level` | `UserSettings` + live toggles                                   |
+| Front                         | UniFFI                                     | Handler                                                         |
+| ----------------------------- | ------------------------------------------ | --------------------------------------------------------------- |
+| Committed transcript truth    | `CsTranscriptProjectionEvent`              | ledger receipt → reducer → Transcript Bus → listener projection |
+| Ephemeral/raw observations    | `EngineEventWire` IPC diagnostics          | never cross `CsTranscriptionListener`; never delivery writers   |
+| PCM sideband evidence         | `EngineEventWire::SidebandEvidence`        | Silero ingress → IPC → bridge diagnostic; reducer no-op         |
+| Recording service object      | `CodescribeHotkeys`                        | shared controller recording API                                 |
+| Tray status glyphs            | `CodescribeTrayStatus` + listener          | controller tray payload                                         |
+| Paste mode / auto-format tray | `set_paste_mode` / `set_auto_format_level` | `UserSettings` + live toggles                                   |
 
 ### 3.4 STT engine dispatch (the nit)
 

@@ -68,7 +68,7 @@ pub use prompts::{CapturedPrompt, CapturedRuntimePrompts};
 // Re-export types
 pub use types::{
     ChannelModifier, Config, DeferredInsertShortcut, HoldArmModifier, ModeBinding,
-    OverlayPositionMode, ShortcutBinding, TranscriptSendMode, WorkMode,
+    OverlayPositionMode, PasteMode, ShortcutBinding, TranscriptSendMode, WorkMode,
 };
 // Language re-exported for external consumers (GUI apps)
 pub use cloud_asr::{

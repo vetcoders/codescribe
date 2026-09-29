@@ -17,7 +17,7 @@ final class TrayViewModel: ObservableObject {
   // Quick config toggles (reflected on disk via the engine).
   @Published var showDockIcon: Bool = true
   @Published var overlayEnabled: Bool = true
-  @Published var autoPasteEnabled: Bool = true
+  @Published var pasteMode: CsPasteMode = .safe
   @Published var autoFormatLevel: FormattingPolicyOption = .correction
   @Published var notesModeEnabled: Bool = false
   @Published var startInAssistive: Bool = false
@@ -116,7 +116,7 @@ final class TrayViewModel: ObservableObject {
     if let toggles = engine.currentToggles() {
       showDockIcon = toggles.showDockIcon
       overlayEnabled = toggles.overlayEnabled
-      autoPasteEnabled = toggles.autoPasteEnabled
+      pasteMode = toggles.pasteMode
       autoFormatLevel = toggles.autoFormatLevel
       notesModeEnabled = toggles.notesMode
       startInAssistive = toggles.startInAssistive
@@ -195,14 +195,14 @@ final class TrayViewModel: ObservableObject {
     refreshStatus()
   }
 
-  /// Persisted delivery policy. Re-read the complete tray snapshot after the
-  /// write so a rejected save never leaves an optimistic switch behind.
-  func setAutoPasteEnabled(_ enabled: Bool) {
+  /// Persisted paste mode. Re-read the complete tray snapshot after the
+  /// write so a rejected save never leaves an optimistic mode behind.
+  func setPasteMode(_ mode: CsPasteMode) {
     guard let engine else {
-      autoPasteEnabled = enabled
+      pasteMode = mode
       return
     }
-    engine.setAutoPasteEnabled(enabled)
+    engine.setPasteMode(mode)
     refreshStatus()
   }
 

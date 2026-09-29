@@ -246,12 +246,12 @@ reload = "hot"
 category = "ui"
 description = "Enable live non-assistive transcription overlay; when disabled the next capture uses a buffered no-overlay profile"
 
-[vars.AUTO_PASTE_ENABLED]
-default = "1"
-type = "bool"
+[vars.PASTE_MODE]
+default = "safe"
+type = "string"
 reload = "hot"
 category = "clipboard"
-description = "Automatically paste completed non-assistive dictation; no-speech, empty output, Notes save-only, assistive, and safety failures remain hard vetoes"
+description = "Automatic paste of completed non-assistive dictation: safe (only into a focused editable non-password field; terminals only when the executable-content guard passes; otherwise held on the clipboard with a notification), comfort (wherever the caret is, terminals included; password fields and the terminal guard still hold), off (never paste; nothing touches the pasteboard). No-speech, empty output, Notes save-only and assistive remain hard vetoes. Replaces the retired AUTO_PASTE_ENABLED bool (settings.json true -> safe, false -> off)"
 
 [vars.TRAY_START_ASSISTIVE]
 default = "0"

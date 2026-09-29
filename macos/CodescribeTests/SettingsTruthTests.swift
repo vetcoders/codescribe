@@ -1484,6 +1484,35 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertTrue(writes.isEmpty, "passive refresh must not write the picker value back")
   }
 
+  /// Safe / Comfort / Off write the one promoted `PASTE_MODE` key with the
+  /// core wire spelling, and a passive load restores the persisted mode
+  /// without writing it back.
+  func testPasteModePickerRoundTripsAndRestoresWithoutWriteBack() {
+    var persisted = CsSettings.sample
+    persisted.pasteMode = .comfort
+    var writes: [(String, String)] = []
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(
+        settingsLoader: { persisted },
+        updateConfigObserver: { writes.append(($0, $1)) })
+    )
+    _ = ShortcutsPanel(model: model)
+    XCTAssertEqual(model.pasteMode, .comfort)
+    model.refresh()
+    XCTAssertTrue(writes.isEmpty, "a passive load must not write the paste mode back")
+
+    let cases: [(CsPasteMode, String)] = [(.safe, "safe"), (.comfort, "comfort"), (.off, "off")]
+    for (mode, wireValue) in cases {
+      persisted.pasteMode = mode
+      model.setPasteMode(mode)
+      XCTAssertEqual(writes.last?.0, "PASTE_MODE")
+      XCTAssertEqual(writes.last?.1, wireValue)
+      XCTAssertEqual(model.pasteMode, mode)
+    }
+    XCTAssertEqual(CsPasteMode.allModes.count, 3)
+    XCTAssertEqual(Set(CsPasteMode.allModes.map(\.blurb)).count, 3, "one sentence per mode")
+  }
+
   /// Active STT consumes last serving verdict; Apple→Whisper fallback must not
   /// display configured Apple preference.
   func testActiveSTTUsesServingVerdictNotConfiguredEngine() {

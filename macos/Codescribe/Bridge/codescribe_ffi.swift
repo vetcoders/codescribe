@@ -1438,9 +1438,9 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
     func setAutoFormatLevel(level: String) throws  -> CsTrayToggles
 
     /**
-     * Persist Auto Paste and return the prompt-free post-write truth in one
-     * result. Callers may re-read `tray_toggles()` after an error; no optimistic
-     * bridge cache is retained.
+     * On/off switch over the same stored `paste_mode`, for binary surfaces
+     * (the overlay chip). Off stores `off`; on re-arms `safe` only when the
+     * mode is `off`, so an armed `comfort` choice survives a redundant on.
      */
     func setAutoPasteEnabled(enabled: Bool) throws  -> CsTrayToggles
 
@@ -1479,6 +1479,13 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
      * Persist the pin only on a changed user choice.
      */
     func setOverlayKeepVisibleBetweenTakes(enabled: Bool)  -> Bool
+
+    /**
+     * Persist the paste mode and return the prompt-free post-write truth in
+     * one result. Callers may re-read `tray_toggles()` after an error; no
+     * optimistic bridge cache is retained.
+     */
+    func setPasteMode(mode: CsPasteMode) throws  -> CsTrayToggles
 
     /**
      * Settings JSON belongs to the settings loader, not the app-data directory.
@@ -2070,9 +2077,9 @@ open func setAutoFormatLevel(level: String)throws  -> CsTrayToggles  {
 }
 
     /**
-     * Persist Auto Paste and return the prompt-free post-write truth in one
-     * result. Callers may re-read `tray_toggles()` after an error; no optimistic
-     * bridge cache is retained.
+     * On/off switch over the same stored `paste_mode`, for binary surfaces
+     * (the overlay chip). Off stores `off`; on re-arms `safe` only when the
+     * mode is `off`, so an armed `comfort` choice survives a redundant on.
      */
 open func setAutoPasteEnabled(enabled: Bool)throws  -> CsTrayToggles  {
     return try  FfiConverterTypeCsTrayToggles_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
@@ -2161,6 +2168,20 @@ open func setOverlayKeepVisibleBetweenTakes(enabled: Bool) -> Bool  {
     uniffi_codescribe_ffi_fn_method_codescribeconfig_set_overlay_keep_visible_between_takes(
             self.uniffiCloneHandle(),
         FfiConverterBool.lower(enabled),$0
+    )
+})
+}
+
+    /**
+     * Persist the paste mode and return the prompt-free post-write truth in
+     * one result. Callers may re-read `tray_toggles()` after an error; no
+     * optimistic bridge cache is retained.
+     */
+open func setPasteMode(mode: CsPasteMode)throws  -> CsTrayToggles  {
+    return try  FfiConverterTypeCsTrayToggles_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_method_codescribeconfig_set_paste_mode(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCsPasteMode_lower(mode),$0
     )
 })
 }
@@ -11190,6 +11211,10 @@ public struct CsSettings: Equatable, Hashable {
     public var whisperLanguage: CsLanguage
     public var aiFormattingEnabled: Bool
     /**
+     * Automatic paste policy (`PASTE_MODE`). Written back via `update_config`.
+     */
+    public var pasteMode: CsPasteMode
+    /**
      * `TranscriptSendMode::as_str()` — `"end_of_utterance"` / `"streaming"`.
      */
     public var transcriptSendMode: String
@@ -11297,6 +11322,9 @@ public struct CsSettings: Equatable, Hashable {
          * The tap stays listen-only, so the click still reaches the frontmost app.
          */middleMouseActsAsFn: Bool, whisperLanguage: CsLanguage, aiFormattingEnabled: Bool,
         /**
+         * Automatic paste policy (`PASTE_MODE`). Written back via `update_config`.
+         */pasteMode: CsPasteMode,
+        /**
          * `TranscriptSendMode::as_str()` — `"end_of_utterance"` / `"streaming"`.
          */transcriptSendMode: String, transcriptTaggingEnabled: Bool, transcriptTagTemplate: String, aiMaxTokens: Int32, aiAssistiveMaxTokens: Int32, showTrayGlyph: Bool, showDockIcon: Bool, transcriptionOverlayEnabled: Bool, holdIndicator: Bool, holdBadgeSize: UInt32, holdBadgeOffsetX: Int32, holdBadgeOffsetY: Int32,
         /**
@@ -11342,6 +11370,7 @@ public struct CsSettings: Equatable, Hashable {
         self.middleMouseActsAsFn = middleMouseActsAsFn
         self.whisperLanguage = whisperLanguage
         self.aiFormattingEnabled = aiFormattingEnabled
+        self.pasteMode = pasteMode
         self.transcriptSendMode = transcriptSendMode
         self.transcriptTaggingEnabled = transcriptTaggingEnabled
         self.transcriptTagTemplate = transcriptTagTemplate
@@ -11419,6 +11448,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 middleMouseActsAsFn: FfiConverterBool.read(from: &buf),
                 whisperLanguage: FfiConverterTypeCsLanguage.read(from: &buf),
                 aiFormattingEnabled: FfiConverterBool.read(from: &buf),
+                pasteMode: FfiConverterTypeCsPasteMode.read(from: &buf),
                 transcriptSendMode: FfiConverterString.read(from: &buf),
                 transcriptTaggingEnabled: FfiConverterBool.read(from: &buf),
                 transcriptTagTemplate: FfiConverterString.read(from: &buf),
@@ -11484,6 +11514,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterBool.write(value.middleMouseActsAsFn, into: &buf)
         FfiConverterTypeCsLanguage.write(value.whisperLanguage, into: &buf)
         FfiConverterBool.write(value.aiFormattingEnabled, into: &buf)
+        FfiConverterTypeCsPasteMode.write(value.pasteMode, into: &buf)
         FfiConverterString.write(value.transcriptSendMode, into: &buf)
         FfiConverterBool.write(value.transcriptTaggingEnabled, into: &buf)
         FfiConverterString.write(value.transcriptTagTemplate, into: &buf)
@@ -12851,8 +12882,13 @@ public struct CsTrayToggles: Equatable, Hashable {
     public var showDockIcon: Bool
     public var transcriptionOverlayEnabled: Bool
     /**
-     * User-owned automatic delivery policy. Assistive and controller safety
-     * vetoes can still prevent a paste for a particular recording.
+     * User-owned automatic paste policy. Assistive and controller safety
+     * vetoes can still prevent or hold a paste for a particular recording.
+     */
+    public var pasteMode: CsPasteMode
+    /**
+     * Read-only projection `paste_mode != off` for binary on/off surfaces.
+     * Never persisted; `paste_mode` is the one stored choice.
      */
     public var autoPasteEnabled: Bool
     /**
@@ -12881,8 +12917,12 @@ public struct CsTrayToggles: Equatable, Hashable {
     // declare one manually.
     public init(showDockIcon: Bool, transcriptionOverlayEnabled: Bool,
         /**
-         * User-owned automatic delivery policy. Assistive and controller safety
-         * vetoes can still prevent a paste for a particular recording.
+         * User-owned automatic paste policy. Assistive and controller safety
+         * vetoes can still prevent or hold a paste for a particular recording.
+         */pasteMode: CsPasteMode,
+        /**
+         * Read-only projection `paste_mode != off` for binary on/off surfaces.
+         * Never persisted; `paste_mode` is the one stored choice.
          */autoPasteEnabled: Bool,
         /**
          * Normalized automatic formatting policy: off, correction, smart, or max.
@@ -12902,6 +12942,7 @@ public struct CsTrayToggles: Equatable, Hashable {
          */holdBadgeSize: UInt32) {
         self.showDockIcon = showDockIcon
         self.transcriptionOverlayEnabled = transcriptionOverlayEnabled
+        self.pasteMode = pasteMode
         self.autoPasteEnabled = autoPasteEnabled
         self.formattingLevel = formattingLevel
         self.startAssistive = startAssistive
@@ -12926,6 +12967,7 @@ public struct FfiConverterTypeCsTrayToggles: FfiConverterRustBuffer {
             try CsTrayToggles(
                 showDockIcon: FfiConverterBool.read(from: &buf),
                 transcriptionOverlayEnabled: FfiConverterBool.read(from: &buf),
+                pasteMode: FfiConverterTypeCsPasteMode.read(from: &buf),
                 autoPasteEnabled: FfiConverterBool.read(from: &buf),
                 formattingLevel: FfiConverterString.read(from: &buf),
                 startAssistive: FfiConverterBool.read(from: &buf),
@@ -12938,6 +12980,7 @@ public struct FfiConverterTypeCsTrayToggles: FfiConverterRustBuffer {
     public static func write(_ value: CsTrayToggles, into buf: inout [UInt8]) {
         FfiConverterBool.write(value.showDockIcon, into: &buf)
         FfiConverterBool.write(value.transcriptionOverlayEnabled, into: &buf)
+        FfiConverterTypeCsPasteMode.write(value.pasteMode, into: &buf)
         FfiConverterBool.write(value.autoPasteEnabled, into: &buf)
         FfiConverterString.write(value.formattingLevel, into: &buf)
         FfiConverterBool.write(value.startAssistive, into: &buf)
@@ -14257,6 +14300,92 @@ public func FfiConverterTypeCsOverlayHighlightKind_lift(_ buf: RustBuffer) throw
 #endif
 public func FfiConverterTypeCsOverlayHighlightKind_lower(_ value: CsOverlayHighlightKind) -> RustBuffer {
     return FfiConverterTypeCsOverlayHighlightKind.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * Automatic paste policy (`PASTE_MODE`), one-to-one with core [`PasteMode`].
+ */
+
+public enum CsPasteMode: Equatable, Hashable {
+
+    /**
+     * Paste only into a focused, editable, non-password field; terminals
+     * only past the executable-content guard. Otherwise held on the clipboard.
+     */
+    case safe
+    /**
+     * Paste wherever the caret is, terminals included; password fields and
+     * the terminal guard still hold.
+     */
+    case comfort
+    /**
+     * Never paste automatically.
+     */
+    case off
+
+
+
+}
+
+#if compiler(>=6)
+extension CsPasteMode: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsPasteMode: FfiConverterRustBuffer {
+    typealias SwiftType = CsPasteMode
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsPasteMode {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .safe
+
+        case 2: return .comfort
+
+        case 3: return .off
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CsPasteMode, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .safe:
+            writeInt(&buf, Int32(1))
+
+
+        case .comfort:
+            writeInt(&buf, Int32(2))
+
+
+        case .off:
+            writeInt(&buf, Int32(3))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsPasteMode_lift(_ buf: RustBuffer) throws -> CsPasteMode {
+    return try FfiConverterTypeCsPasteMode.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsPasteMode_lower(_ value: CsPasteMode) -> RustBuffer {
+    return FfiConverterTypeCsPasteMode.lower(value)
 }
 
 
@@ -16734,7 +16863,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_auto_format_level() != 8217) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_auto_paste_enabled() != 24726) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_auto_paste_enabled() != 24266) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_formatting_prompt() != 21880) {
@@ -16756,6 +16885,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_overlay_keep_visible_between_takes() != 23903) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_paste_mode() != 45447) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_settings_file_path() != 60048) {

@@ -221,13 +221,19 @@ struct TrayMenuView: View {
     }
   }
 
-  /// Auto Paste shares the exact baseline row (icon + trailing On/Off keycap)
-  /// with Show Dock Icon and Transcription Overlay — one visual grammar for
-  /// every quick toggle. TrayRow keeps the locked palette and geometry.
+  /// Auto Paste is a cycling row in the Auto Format grammar: each click
+  /// advances Safe → Comfort → Off → Safe (one stored `PASTE_MODE`, the same
+  /// choice as Settings › Shortcuts). The current mode sits in the keycap.
   private var autoPasteToggle: some View {
-    toggleRow(icon: .send, title: "Auto Paste", isOn: viewModel.autoPasteEnabled) {
-      viewModel.setAutoPasteEnabled($0)
-    }
+    TrayRow(
+      icon: .send,
+      title: "Auto Paste",
+      shortcut: viewModel.pasteMode.visibleName,
+      shortcutColor: viewModel.pasteMode == .off ? CSColor.textFaintAlt : CSColor.oliveLight
+    ) { viewModel.setPasteMode(viewModel.pasteMode.next) }
+    .accessibilityLabel("Auto Paste")
+    .accessibilityValue(viewModel.pasteMode.visibleName)
+    .accessibilityHint("Cycle automatic paste mode")
   }
 
   /// Auto Format is a cycling row in the same baseline grammar: each click

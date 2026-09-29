@@ -13,6 +13,7 @@ import Foundation
 //   WHISPER_LANGUAGE      "pl" | "en"
 //   AI_FORMATTING_ENABLED "1" | "0"
 //   FORMATTING_LEVEL      "off" | "correction" | "smart" | "max"
+//   PASTE_MODE            "safe" | "comfort" | "off"
 //   USE_LOCAL_STT         "1" | "0"
 //   LOCAL_MODEL / STT_{FILE,LIVE}_ENDPOINT / LLM_<LANE>_PROVIDER / LLM_<LANE>_MODEL ...  free strings
 //   (no endpoint keys: endpoints belong to providers — vendors factory-pinned, custom rows CRUD)
@@ -762,6 +763,7 @@ extension CsSettings {
     middleMouseActsAsFn: false,
     whisperLanguage: .polish,
     aiFormattingEnabled: true,
+    pasteMode: .safe,
     transcriptSendMode: "end_of_utterance",
     transcriptTaggingEnabled: false,
     transcriptTagTemplate: "<codescribe mode=\"{mode}\" lang=\"{lang}\">\n{text}\n</codescribe>",
