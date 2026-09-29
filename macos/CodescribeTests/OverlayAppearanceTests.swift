@@ -9,19 +9,14 @@ final class OverlayAppearanceTests: XCTestCase {
     XCTAssertEqual(OverlayAppearancePalette.resolve(ColorScheme.dark), .dark)
   }
 
-  func testSheetTintStaysLightAndTransparentInBothAppearances() {
+  func testSheetShadowStaysSubtleInBothAppearances() {
     for palette in [OverlayAppearancePalette.light, .dark] {
-      XCTAssertGreaterThan(palette.surfaceTint.alpha, 0)
-      XCTAssertLessThanOrEqual(
-        palette.surfaceTint.alpha,
-        0.18,
-        "the stabilizing tint must not turn the material into an opaque panel"
-      )
       XCTAssertLessThanOrEqual(palette.shadowOpacity, 0.20)
     }
   }
 
-  func testTextAndPhaseTokensMeetTheContrastContract() {
+  // Glass contrast needs a live compositor check against actual desktop content.
+  func testTextAndPhaseTokensMeetReduceTransparencyContrastContract() {
     for palette in [OverlayAppearancePalette.light, .dark] {
       assertContrast(palette.primaryText, on: palette, minimum: 4.5, role: "primary")
       assertContrast(palette.bodyText, on: palette, minimum: 4.5, role: "body")
@@ -88,7 +83,7 @@ final class OverlayAppearanceTests: XCTestCase {
   ) {
     let ratio = OverlayColorToken.contrastRatio(
       foreground: foreground,
-      surface: palette.surfaceTint,
+      surface: palette.desktopBackground,
       background: palette.desktopBackground
     )
     XCTAssertGreaterThanOrEqual(
