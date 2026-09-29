@@ -20,6 +20,8 @@ pub mod playback;
 pub mod recorder;
 /// Continuous mic capture that yields frames without stopping the session.
 pub mod streaming_recorder;
+/// Deadline gate that keeps channel capture off the speaker while agent speech plays.
+pub mod tts_duck;
 
 // Re-export main types at module level
 pub use loader::load_audio_file;
