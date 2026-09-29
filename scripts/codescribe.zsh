@@ -14,14 +14,22 @@
 # and a bare tty without becoming a second transcript authority.
 
 codescribe-insert-last() {
-  local text
-  # stderr carries the receipt (session, chars, bus path); the prompt only
-  # wants the words, so let the receipt go to the terminal and keep stdout.
-  text=$(command codescribe transcribe last 2>/dev/null)
-  if (( $? != 0 )) || [[ -z $text ]]; then
-    zle -M "codescribe: nic do wklejenia — bus nie ma zamkniętej wypowiedzi"
+  local text receipt rc
+  # stderr carries the receipt (session, chars, bus path). Inside a zle
+  # widget it cannot go straight to the terminal without garbling the line
+  # editor, so capture it and surface it through the zle message area when
+  # the insert fails instead of discarding the diagnostic.
+  receipt="$(mktemp)"
+  text=$(command codescribe transcribe last 2>"$receipt")
+  rc=$?
+  if (( rc != 0 )) || [[ -z $text ]]; then
+    local detail
+    detail="$(tail -n 1 -- "$receipt" 2>/dev/null)"
+    rm -f -- "$receipt"
+    zle -M "codescribe: ${detail:-nic do wklejenia — bus nie ma zamkniętej wypowiedzi}"
     return 1
   fi
+  rm -f -- "$receipt"
   LBUFFER+="$text"
 }
 zle -N codescribe-insert-last
