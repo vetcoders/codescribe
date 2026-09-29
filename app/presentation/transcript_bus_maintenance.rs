@@ -651,27 +651,28 @@ mod tests {
     use super::*;
     use serial_test::serial;
 
+    fn dictation_bus_session(
+        session_id: impl Into<String>,
+    ) -> crate::presentation::transcript_bus::TranscriptSession {
+        use crate::presentation::transcript_bus::{TranscriptMode, TranscriptSession};
+        TranscriptSession {
+            session_id: session_id.into(),
+            mode: TranscriptMode::Dictation,
+            has_latched_target: false,
+            latched_target_is_self: false,
+            audience: None,
+            badge_only: false,
+        }
+    }
+
     #[test]
     fn app_append_survives_compaction_and_remains_on_visible_path() {
-        use crate::presentation::transcript_bus::{
-            TranscriptBus, TranscriptMode, TranscriptSession,
-        };
+        use crate::presentation::transcript_bus::TranscriptBus;
 
         let dir = temp("live-append");
         let path = dir.join("transcript-events.jsonl");
-        let bus = TranscriptBus::open_at(
-            TranscriptSession {
-                session_id: "live-append".into(),
-                mode: TranscriptMode::Dictation,
-                has_latched_target: false,
-                latched_target_is_self: false,
-                audience: None,
-                badge_only: false,
-            },
-            path.clone(),
-            None,
-        )
-        .expect("open bus");
+        let bus = TranscriptBus::open_at(dictation_bus_session("live-append"), path.clone(), None)
+            .expect("open bus");
         bus.publish_started();
         let before = std::fs::read_to_string(&path).expect("read start");
         append_aged_evidence(&path);
@@ -697,24 +698,11 @@ mod tests {
 
     #[test]
     fn app_compaction_preserves_every_concurrent_session_append() {
-        use crate::presentation::transcript_bus::{
-            TranscriptBus, TranscriptMode, TranscriptSession,
-        };
+        use crate::presentation::transcript_bus::TranscriptBus;
         let dir = temp("concurrent-append");
         let path = dir.join("transcript-events.jsonl");
-        let first = TranscriptBus::open_at(
-            TranscriptSession {
-                session_id: "seed".into(),
-                mode: TranscriptMode::Dictation,
-                has_latched_target: false,
-                latched_target_is_self: false,
-                audience: None,
-                badge_only: false,
-            },
-            path.clone(),
-            None,
-        )
-        .unwrap();
+        let first =
+            TranscriptBus::open_at(dictation_bus_session("seed"), path.clone(), None).unwrap();
         first.publish_started();
         append_aged_evidence(&path);
         let shared = super::super::transcript_bus::shared_bus_file(&path).unwrap();
@@ -725,14 +713,7 @@ mod tests {
             ready_tx.send(()).unwrap();
             for index in 0..100 {
                 let bus = TranscriptBus::open_at(
-                    TranscriptSession {
-                        session_id: format!("concurrent-{index}"),
-                        mode: TranscriptMode::Dictation,
-                        has_latched_target: false,
-                        latched_target_is_self: false,
-                        audience: None,
-                        badge_only: false,
-                    },
+                    dictation_bus_session(format!("concurrent-{index}")),
                     writer_path.clone(),
                     None,
                 )
@@ -757,9 +738,7 @@ mod tests {
 
     #[test]
     fn owned_compaction_locked_reads_depend_on_appended_tail_not_prefix() {
-        use crate::presentation::transcript_bus::{
-            TranscriptBus, TranscriptMode, TranscriptSession,
-        };
+        use crate::presentation::transcript_bus::TranscriptBus;
         const TAIL_ROWS: usize = 10;
         let mut locked_counts = Vec::new();
         for prefix_bytes in [1024 * 1024, 10 * 1024 * 1024] {
@@ -768,14 +747,7 @@ mod tests {
             let buses: Vec<_> = (0..TAIL_ROWS)
                 .map(|index| {
                     TranscriptBus::open_at(
-                        TranscriptSession {
-                            session_id: format!("new-take-{index}"),
-                            mode: TranscriptMode::Dictation,
-                            has_latched_target: false,
-                            latched_target_is_self: false,
-                            audience: None,
-                            badge_only: false,
-                        },
+                        dictation_bus_session(format!("new-take-{index}")),
                         path.clone(),
                         None,
                     )

@@ -410,7 +410,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   // UX35C-a contracts, authored under W1; execution belongs to the integrator.
   func testActionsAreInsertedOnlyAfterActivationAndHaveNoPinState() throws {
     let source = try overlaySource()
-    let tools = try section(of: source, from: "HStack(spacing: 2)", to: "/// 1px separator")
+    let tools = try section(
+      of: source, from: "HStack(spacing: 2)", to: "private var header: some View")
     XCTAssertTrue(containsGuardedIntentRail(tools))
     XCTAssertTrue(tools.contains("actions.toggle()"))
     XCTAssertTrue(tools.contains(".onHover { actions.pointerChanged($0) }"))
@@ -478,7 +479,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
 
   func testIdleRetainedTakeAndVoiceOverDoNotMountToolsThenCapOpensAndCloses() throws {
     let source = try overlaySource()
-    let tools = try section(of: source, from: "HStack(spacing: 2)", to: "/// 1px separator")
+    let tools = try section(
+      of: source, from: "HStack(spacing: 2)", to: "private var header: some View")
     let cap = try section(of: tools, from: "Button {", to: "if actions.phase == .open {")
     XCTAssertTrue(cap.contains("actions.toggle()"))
     XCTAssertTrue(cap.contains(".accessibilityIdentifier(\"overlay-tools-handle\")"))
@@ -563,12 +565,19 @@ final class OverlayChromeFounderCutTests: XCTestCase {
 
   func testTakeStartAndCollapseRemoveMountedTools() throws {
     let source = try overlaySource()
-    let canvas = try section(of: source, from: "private func canvasStack", to: "/// 1px separator")
+    let canvas = try section(
+      of: source, from: "private func canvasStack", to: "private var header: some View")
     XCTAssertTrue(
       canvas.range(
         of:
-          #"if !state\.isCollapsed \{\s*VStack\(spacing: CSSpace\.sm\) \{\s*transcriptStatus\s*\.padding\(\.horizontal, 20\)\s*HStack\(spacing: 6\)"#,
+          #"if !state\.isCollapsed \{\s*VStack\(spacing: CSSpace\.sm\) \{\s*HStack\(spacing: 6\)"#,
         options: .regularExpression) != nil)
+    XCTAssertTrue(
+      canvas.range(
+        of: #"footerMessageRow\s*\.frame\(height: 18\)"#,
+        options: .regularExpression) != nil,
+      "The floating tools retain one fixed-height message row")
+    XCTAssertFalse(canvas.contains("transcriptStatus"))
     XCTAssertTrue(containsGuardedIntentRail(canvas))
     XCTAssertTrue(canvas.contains("actions.toggle()"))
     XCTAssertTrue(
@@ -661,7 +670,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
 
   func testReducedMotionAndTransparencyApplyToTheEntireActionsSurface() throws {
     let source = try overlaySource()
-    let tools = try section(of: source, from: "HStack(spacing: 2)", to: "/// 1px separator")
+    let tools = try section(
+      of: source, from: "HStack(spacing: 2)", to: "private var header: some View")
     XCTAssertTrue(tools.contains(".animation(reduceMotion ? nil :"))
     XCTAssertTrue(tools.contains("transaction.animation = nil"))
     XCTAssertTrue(tools.contains("transaction.disablesAnimations = true"))
@@ -674,7 +684,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
 
   func testFinishingNoticeSurvivesFoldWithoutChangingBarHeight() throws {
     let canvas = try section(
-      of: overlaySource(), from: "private func canvasStack", to: "/// 1px separator")
+      of: overlaySource(), from: "private func canvasStack", to: "private var header: some View")
     let expanded = try section(of: canvas, from: "if !state.isCollapsed,", to: ".onGeometryChange(")
     let folded = try section(
       of: canvas, from: "} else if let label = OverlayActionsPresentation.finishingLabel(",
@@ -736,7 +746,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   func testResizeChromeUsesTheGeometryContractsWithoutAddingSwiftUIHitTargets() throws {
     let source = try overlaySource()
     let chrome = try section(
-      of: source, from: "private func canvasStack", to: "/// 1px separator")
+      of: source, from: "private func canvasStack", to: "private var header: some View")
     XCTAssertTrue(
       chrome.contains("? nil : OverlayResizeChrome.actionsWidth(narrow: true)")
     )

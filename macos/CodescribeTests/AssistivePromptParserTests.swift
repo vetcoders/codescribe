@@ -367,7 +367,7 @@ final class AssistivePromptParserTests: XCTestCase {
 
 /// Provider with per-backend message tables so select(legacy) → select(live)
 /// exercises the real lazy-load path without sharing one message array.
-private final class MultiThreadStubProvider: ChatThreadsProviding {
+private final class MultiThreadStubProvider: ThreadsFixture {
   private let messagesByBackendId: [String: [ChatMessage]]
   private let threads: [ChatThread]
 
@@ -377,21 +377,14 @@ private final class MultiThreadStubProvider: ChatThreadsProviding {
   }
 
   func listThreads() -> [ChatThread] { threads }
-  func searchThreads(query: String) -> [ChatThread] { threads }
   func loadMessages(backendId: String) -> [ChatMessage] {
     messagesByBackendId[backendId] ?? []
   }
-  func deleteThread(backendId: String) -> Bool { true }
-  func setThreadFavorite(backendId: String, isFavorite: Bool) -> Bool { true }
-  func renameThread(backendId: String, title: String) -> Bool { true }
-  func setGeneratedTitle(backendId: String, title: String) -> Bool { true }
-  func exportThreadMarkdown(backendId: String, assistantOnly: Bool) -> String? { nil }
-  func generateThreadId() -> String { "t_generated" }
 }
 
 /// Minimal threads provider: one persisted thread whose messages carry the wire
 /// skeleton, standing in for ThreadStore JSON written before the display split.
-private final class StubThreadsProvider: ChatThreadsProviding {
+private final class StubThreadsProvider: ThreadsFixture {
   private let thread: ChatThread
   private let messages: [ChatMessage]
 
@@ -401,12 +394,5 @@ private final class StubThreadsProvider: ChatThreadsProviding {
   }
 
   func listThreads() -> [ChatThread] { [thread] }
-  func searchThreads(query: String) -> [ChatThread] { [thread] }
   func loadMessages(backendId: String) -> [ChatMessage] { messages }
-  func deleteThread(backendId: String) -> Bool { true }
-  func setThreadFavorite(backendId: String, isFavorite: Bool) -> Bool { true }
-  func renameThread(backendId: String, title: String) -> Bool { true }
-  func setGeneratedTitle(backendId: String, title: String) -> Bool { true }
-  func exportThreadMarkdown(backendId: String, assistantOnly: Bool) -> String? { nil }
-  func generateThreadId() -> String { "t_generated" }
 }

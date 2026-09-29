@@ -262,10 +262,6 @@ struct XaiDeviceCodeResp {
     #[serde(default)]
     verification_uri_complete: Option<String>,
     #[serde(default)]
-    #[allow(dead_code)]
-    // OpenCode reads this for poll deadline; we use DeviceAuthConfig.max_wait.
-    expires_in: Option<u64>,
-    #[serde(default)]
     interval: Option<u64>,
 }
 

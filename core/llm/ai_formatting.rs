@@ -31,6 +31,7 @@ use crate::config::{FormattingPolicy, RuntimeLlmLane, RuntimeSettingsSnapshot};
 
 use super::account_auth;
 use super::provider::{ProviderKind, WireFamily, capability_policy};
+use super::responses_output::{ResponsesOutputItem, extract_output_channels};
 use super::responses_streaming_manager::{
     AuthHeaderMode, ResponsesStreamingManager, StreamCallbacks,
 };
@@ -788,37 +789,11 @@ fn anthropic_image_source_from_data_url(url: &str) -> Option<AnthropicImageSourc
     })
 }
 
-/// Responses API response format
+/// Responses API response format.
 #[derive(Debug, Deserialize)]
 struct ResponsesResponse {
     id: String,
-    output: Vec<OutputItem>,
-}
-
-/// One item of a Responses API output array.
-///
-/// `item_type` distinguishes a `message` from a `reasoning` item; the split
-/// matters because only the former may reach the user's transcript.
-#[derive(Debug, Deserialize)]
-struct OutputItem {
-    #[serde(rename = "type")]
-    item_type: String,
-    #[serde(default)]
-    content: Option<Vec<ContentPart>>,
-}
-
-/// A content part inside an output item.
-///
-/// Text arrives under `text` for output parts and under `summary` for reasoning
-/// summaries, so both are accepted and normalised downstream.
-#[derive(Debug, Deserialize)]
-struct ContentPart {
-    #[serde(rename = "type")]
-    part_type: String,
-    #[serde(default)]
-    text: Option<String>,
-    #[serde(default)]
-    summary: Option<String>,
+    output: Vec<ResponsesOutputItem>,
 }
 
 /// Anthropic Messages response format
@@ -841,63 +816,6 @@ struct AnthropicResponseContent {
     part_type: String,
     #[serde(default)]
     text: Option<String>,
-}
-
-/// The meaningful text of a content part, preferring `text` over `summary`.
-///
-/// Whitespace-only parts collapse to `None` so they cannot pad the joined output.
-fn part_text(part: &ContentPart) -> Option<&str> {
-    part.text
-        .as_deref()
-        .or(part.summary.as_deref())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-}
-
-/// Fold a Responses output array into the assistant and reasoning channels.
-///
-/// The item type gates the part type: `output_text` counts only inside a
-/// `message`. That guard is what keeps a reasoning model's internal narration
-/// out of the text that gets pasted into the user's document.
-fn extract_output_channels(output: &[OutputItem]) -> ProviderOutput {
-    let mut assistant_parts = Vec::new();
-    let mut reasoning_parts = Vec::new();
-
-    for item in output {
-        let Some(parts) = item.content.as_ref() else {
-            continue;
-        };
-        let is_message = item.item_type == "message";
-        let is_reasoning = item.item_type == "reasoning";
-
-        for part in parts {
-            match part.part_type.as_str() {
-                "output_text" | "text" if is_message => {
-                    if let Some(text) = part_text(part) {
-                        assistant_parts.push(text.to_string());
-                    }
-                }
-                "reasoning_summary_text" if is_message || is_reasoning => {
-                    if let Some(text) = part_text(part) {
-                        reasoning_parts.push(text.to_string());
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    let assistant_text = assistant_parts.join("").trim().to_string();
-    let reasoning_text = reasoning_parts.join("").trim().to_string();
-
-    ProviderOutput {
-        assistant_text,
-        reasoning_text: if reasoning_text.is_empty() {
-            None
-        } else {
-            Some(reasoning_text)
-        },
-    }
 }
 
 /// Concatenate the text blocks of an Anthropic response.
@@ -1712,6 +1630,45 @@ async fn call_anthropic_messages_resolved(
     })
 }
 
+/// Chain state shared by the JSON and SSE formatting calls.
+///
+/// Thread titles do not use this: a title is one shot and must not join the
+/// conversation chain.
+fn responses_chain_request(
+    user_message: &str,
+    system_prompt: &str,
+    assistive: bool,
+    model: String,
+    stream: bool,
+) -> (
+    crate::state::conversation::AiMode,
+    Option<String>,
+    ResponsesRequest,
+) {
+    let ai_mode = if assistive {
+        crate::state::conversation::AiMode::Assistive
+    } else {
+        crate::state::conversation::AiMode::Formatting
+    };
+    let previous_response_id =
+        crate::state::conversation::get_previous_response_id_for_mode(ai_mode);
+    let temperature = get_temperature(assistive);
+    let request = ResponsesRequest {
+        model,
+        input: build_responses_input(
+            system_prompt,
+            previous_response_id.as_deref(),
+            build_responses_user_content(user_message),
+        ),
+        instructions: chained_instructions(system_prompt, previous_response_id.as_deref()),
+        previous_response_id: previous_response_id.clone(),
+        max_output_tokens: None,
+        temperature,
+        stream,
+    };
+    (ai_mode, previous_response_id, request)
+}
+
 /// Call LLM endpoint using /v1/responses API
 ///
 /// Uses mode-aware config: LLM_{FORMATTING,ASSISTIVE}_{ENDPOINT,MODEL,API_KEY}
@@ -1725,22 +1682,8 @@ async fn call_llm_endpoint(
     let endpoint = lane.endpoint().to_string();
     let model = lane.model().to_string();
     let (api_key, bearer_only) = resolve_lane_auth(lane).await?;
-
-    // Temperature from env (None = skip parameter for models that don't support it)
     let temperature = get_temperature(assistive);
 
-    // Determine AI mode for conversation tracking (separate streams per mode)
-    let ai_mode = if assistive {
-        crate::state::conversation::AiMode::Assistive
-    } else {
-        crate::state::conversation::AiMode::Formatting
-    };
-
-    // Get previous_response_id for this mode's conversation chain
-    let previous_response_id =
-        crate::state::conversation::get_previous_response_id_for_mode(ai_mode);
-
-    // TRACE: full chain details for debugging (before model is moved)
     trace!(
         "LLM request chain: endpoint={}, model={}, mode={}, temp={:?}",
         endpoint,
@@ -1755,21 +1698,8 @@ async fn call_llm_endpoint(
         temperature
     );
 
-    // Build Responses API request (no token limit - let API decide)
-    let request = ResponsesRequest {
-        model,
-        input: build_responses_input(
-            system_prompt,
-            previous_response_id.as_deref(),
-            build_responses_user_content(user_message),
-        ),
-        // Param on the first turn only; chained turns carry the prompt in input.
-        instructions: chained_instructions(system_prompt, previous_response_id.as_deref()),
-        previous_response_id: previous_response_id.clone(),
-        max_output_tokens: None,
-        temperature,
-        stream: false,
-    };
+    let (ai_mode, _previous_response_id, request) =
+        responses_chain_request(user_message, system_prompt, assistive, model, false);
 
     // API keys use dual-header (Bearer + x-api-key). OAuth access tokens are
     // Bearer-only — OpenAI rejects account tokens posted as x-api-key.
@@ -1794,7 +1724,11 @@ async fn call_llm_endpoint(
     let responses_result: ResponsesResponse =
         response.json().await.context("Failed to parse response")?;
 
-    let output = extract_output_channels(&responses_result.output);
+    let channels = extract_output_channels(&responses_result.output);
+    let output = ProviderOutput {
+        assistant_text: channels.assistant_text,
+        reasoning_text: channels.reasoning_text,
+    };
 
     if output.assistant_text.is_empty() {
         anyhow::bail!("No text content in response (id: {})", responses_result.id);
@@ -1848,22 +1782,8 @@ async fn call_llm_endpoint_streaming(
     } else {
         AuthHeaderMode::BearerAndApiKey
     };
-
-    // Temperature from env (None = skip parameter for models that don't support it)
     let temperature = get_temperature(assistive);
 
-    // Determine AI mode for conversation tracking (separate streams per mode)
-    let ai_mode = if assistive {
-        crate::state::conversation::AiMode::Assistive
-    } else {
-        crate::state::conversation::AiMode::Formatting
-    };
-
-    // Get previous_response_id for this mode's conversation chain
-    let previous_response_id =
-        crate::state::conversation::get_previous_response_id_for_mode(ai_mode);
-
-    // TRACE: full chain details for debugging (before model is moved)
     trace!(
         "SSE request chain: endpoint={}, model={}, mode={}, temp={:?}",
         endpoint,
@@ -1878,21 +1798,8 @@ async fn call_llm_endpoint_streaming(
         temperature
     );
 
-    // No token limit - let API decide
-    let request = ResponsesRequest {
-        model,
-        input: build_responses_input(
-            system_prompt,
-            previous_response_id.as_deref(),
-            build_responses_user_content(user_message),
-        ),
-        // Param on the first turn only; chained turns carry the prompt in input.
-        instructions: chained_instructions(system_prompt, previous_response_id.as_deref()),
-        previous_response_id: previous_response_id.clone(),
-        max_output_tokens: None,
-        temperature,
-        stream: true,
-    };
+    let (ai_mode, previous_response_id, request) =
+        responses_chain_request(user_message, system_prompt, assistive, model, true);
 
     let StreamRequestContext {
         callbacks,

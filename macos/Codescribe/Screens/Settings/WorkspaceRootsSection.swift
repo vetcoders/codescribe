@@ -24,7 +24,7 @@ struct WorkspaceRootsSection: View {
       )
       .font(CSFont.ui(11.5))
       .lineSpacing(2)
-      .foregroundStyle(CSColor.textMutedAlt)
+      .foregroundStyle(Color.secondary)
       .padding(.top, 8)
 
       VStack(spacing: 8) {
@@ -42,7 +42,7 @@ struct WorkspaceRootsSection: View {
             .font(CSFont.ui(12, .semibold))
         }
         .csFocusRing()
-        .foregroundStyle(CSColor.textBody)
+        .foregroundStyle(Color.primary)
 
         Spacer()
 
@@ -52,7 +52,7 @@ struct WorkspaceRootsSection: View {
         } label: {
           Text("Save roots")
             .font(CSFont.ui(12, .semibold))
-            .foregroundStyle(isDirty ? CSColor.textHigh : CSColor.textFaint)
+            .foregroundStyle(isDirty ? Color.primary : Color.secondary)
         }
         .csFocusRing()
         .disabled(!isDirty)
@@ -78,13 +78,13 @@ struct WorkspaceRootsSection: View {
       )
       .textFieldStyle(.plain)
       .font(CSFont.mono(12, .regular))
-      .foregroundStyle(CSColor.textBody)
+      .foregroundStyle(Color.primary)
       .frame(maxWidth: .infinity, alignment: .leading)
 
       Button {
         rows.remove(at: index)
       } label: {
-        CSIconView(icon: .remove, size: 13, weight: .semibold, color: CSColor.textFaint)
+        CSIconView(icon: .remove, size: 13, weight: .semibold, color: Color.secondary)
       }
       .csFocusRing()
     }
@@ -92,11 +92,11 @@ struct WorkspaceRootsSection: View {
     .padding(.vertical, 9)
     .background(
       RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-        .fill(CSColor.surfaceRaised(0.03))
+        .fill(Color.primary.opacity(0.06))
     )
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
     )
   }
 

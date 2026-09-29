@@ -2,7 +2,7 @@ import SwiftUI
 
 /// A projected uncertainty, not a verdict about the words or their delivery.
 struct OverlayCoverageStatus: View {
-  @Environment(\.openSettings) private var openSettings
+  @Environment(\.openWindow) private var openWindow
   static let message =
     "Recording quality low. Run mic calibration and check surroundings."
   let palette: OverlayAppearancePalette
@@ -19,7 +19,7 @@ struct OverlayCoverageStatus: View {
       presented: $presented
     ) {
       Label("Recording quality low — review", systemImage: "info.circle")
-        .font(.system(size: 11))
+        .font(CSFont.ui(11, .medium))
         .lineLimit(1)
         .truncationMode(.tail)
         .foregroundStyle(palette.processingStatus.color)
@@ -30,7 +30,7 @@ struct OverlayCoverageStatus: View {
         Button("Mic calibration in Settings…") {
           close()
           SettingsDeepLink.present(.audio, anchor: .audioReadiness)
-          openSettings()
+          openWindow(id: SettingsView.windowID)
           NSApp.activate(ignoringOtherApps: true)
         }
         .controlSize(.small)
@@ -38,7 +38,7 @@ struct OverlayCoverageStatus: View {
         if let diagnosticNotice, let diagnosticDetail {
           Divider()
           Text(diagnosticNotice)
-          Text(diagnosticDetail).font(.system(size: 10, design: .monospaced))
+          Text(diagnosticDetail).font(CSFont.mono(10, .medium))
         }
         if canRetranscribe {
           Text("Transcribe again")
@@ -56,7 +56,7 @@ struct OverlayCoverageStatus: View {
           }
           .buttonStyle(.borderless)
           .controlSize(.small)
-          .font(.system(size: 11, weight: .medium))
+          .font(CSFont.ui(11, .medium))
         }
       }
       .frame(width: 250)

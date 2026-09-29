@@ -154,64 +154,23 @@ pub const MIN_TOKENS_FOR_REWRITE_GUARD: usize = 6;
 
 impl QualityRecord {
     /// New record for one overlay edit, stamped now with a fresh
-    /// `correction_id` at revision 1. Confidence fields are left empty; use
-    /// [`QualityRecord::new_with_confidence`] when STT reported them.
-    pub fn new(
-        raw_text: String,
-        delivered_text: String,
-        edited_text: String,
-        mode: &str,
-        model: Option<String>,
-        formatting_level: Option<String>,
-        action: Option<&str>,
-    ) -> Self {
-        Self::new_with_confidence(
-            raw_text,
-            delivered_text,
-            edited_text,
-            mode,
-            model,
-            formatting_level,
-            action,
-            None,
-            None,
-            Vec::new(),
-        )
-    }
-
-    /// Full constructor, including the STT confidence signals (W11-C).
+    /// `correction_id` at revision 1. The payload rides in the same
+    /// [`OverlayCorrectionInput`] every caller already holds;
+    /// `canonical_level` is the parsed formatting level the commit path
+    /// validated — the raw `input.formatting_level` string is never persisted.
     ///
-    /// An unavailable clock yields `timestamp_ms == 0` rather than a panic: the
+    /// The timestamp falls back to zero when the clock misbehaves: the
     /// correction itself is the evidence, and refusing to record it because the
-    /// system clock misbehaved would lose the operator's actual work.
-    // allow(too_many_arguments): WHY — ten positional parameters are the
-    // telescoping tail of `new` -> `new_with_confidence`; every one is a column
-    // of the quality JSONL row, not a behaviour switch. WHEN — re-added
-    // 2026-09-08 by the vc-prune Wave 5 silencer strip after clippy fired
-    // `too many arguments (9/7)`; the strip confirms the lint is authentic, not
-    // a false positive. WHERE — the fix is one `OverlayCorrectionInput` struct
-    // shared with `commit_overlay_correction_with_confidence` /
-    // `_with_provenance` below and threaded through `bridge/src/quality.rs:189`
-    // (the UniFFI entry). That crosses the FFI signature and was out of budget
-    // for a silencer-strip cut; it is filed as the wave's headline smell.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_with_confidence(
-        raw_text: String,
-        delivered_text: String,
-        edited_text: String,
-        mode: &str,
-        model: Option<String>,
-        formatting_level: Option<String>,
-        action: Option<&str>,
-        avg_logprob: Option<f32>,
-        speech_pct: Option<f32>,
-        confidence_flags: Vec<String>,
+    /// system clock misbehaved would lose the Founder's actual work.
+    pub fn from_correction(
+        input: &OverlayCorrectionInput,
+        canonical_level: Option<String>,
     ) -> Self {
         let timestamp_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        let meta = match action {
+        let meta = match input.action.as_deref() {
             Some(a) => serde_json::json!({ "source": "overlay-final", "action": a }),
             None => serde_json::json!({ "source": "overlay-final" }),
         };
@@ -220,15 +179,15 @@ impl QualityRecord {
             revision: 1,
             timestamp_ms,
             session_id: None,
-            mode: mode.to_string(),
-            model,
-            formatting_level,
-            raw_text,
-            delivered_text,
-            edited_text,
-            avg_logprob,
-            speech_pct,
-            confidence_flags,
+            mode: input.mode.clone(),
+            model: input.model.clone(),
+            formatting_level: canonical_level,
+            raw_text: input.raw_text.clone(),
+            delivered_text: input.delivered_text.clone(),
+            edited_text: input.edited_text.clone(),
+            avg_logprob: input.avg_logprob,
+            speech_pct: input.speech_pct,
+            confidence_flags: input.confidence_flags.clone(),
             meta,
         }
     }
@@ -1314,114 +1273,41 @@ mod commit_teaches_lexicon_tests {
     }
 }
 
-/// High-level: save the quality record for the overlay edit AND feed lexicon candidates.
-/// Called from bridge (and tests). Returns path + honest pairs-learned count.
-/// `action` (e.g. "copy", "send", "close") is carried into meta for future analytics (P2-03 triage over-correct).
-pub fn commit_overlay_correction(
-    raw_text: &str,
-    delivered_text: &str,
-    edited_text: &str,
-    mode: &str,
-    model: Option<String>,
-    action: Option<&str>,
-) -> Result<OverlayCorrectionCommit> {
-    commit_overlay_correction_with_level(
-        raw_text,
-        delivered_text,
-        edited_text,
-        mode,
-        model,
-        action,
-        Some(FormattingPolicy::Correction.as_str()),
-    )
-}
-
-/// Persist quality evidence with canonical level provenance. Candidate learning
-/// is deliberately narrower than evidence capture: only Correction keeps the
-/// existing custom-lexicon behavior; Off, Smart, and Max remain evidence-only.
-pub fn commit_overlay_correction_with_level(
-    raw_text: &str,
-    delivered_text: &str,
-    edited_text: &str,
-    mode: &str,
-    model: Option<String>,
-    action: Option<&str>,
-    formatting_level: Option<&str>,
-) -> Result<OverlayCorrectionCommit> {
-    commit_overlay_correction_with_confidence(
-        raw_text,
-        delivered_text,
-        edited_text,
-        mode,
-        model,
-        action,
-        formatting_level,
-        None,
-        None,
-        Vec::new(),
-    )
-}
-
-/// Like [`commit_overlay_correction_with_level`], plus optional STT confidence
-/// fields recorded on the quality JSONL line (W11-C / LL-D).
-// allow(too_many_arguments): WHY — rung three of the four-rung telescoping
-// chain `commit_overlay_correction` -> `_with_level` -> `_with_confidence` ->
-// `_with_provenance`, each rung adding parameters rather than a payload type.
-// WHEN — re-added 2026-09-08 by the vc-prune Wave 5 silencer strip (clippy:
-// `too many arguments (10/7)`). WHERE — collapses together with
-// `new_with_confidence` and `_with_provenance` once `OverlayCorrectionInput`
-// exists; do not add a fifth rung.
-#[allow(clippy::too_many_arguments)]
-pub fn commit_overlay_correction_with_confidence(
-    raw_text: &str,
-    delivered_text: &str,
-    edited_text: &str,
-    mode: &str,
-    model: Option<String>,
-    action: Option<&str>,
-    formatting_level: Option<&str>,
-    avg_logprob: Option<f32>,
-    speech_pct: Option<f32>,
-    confidence_flags: Vec<String>,
-) -> Result<OverlayCorrectionCommit> {
-    commit_overlay_correction_with_provenance(
-        raw_text,
-        delivered_text,
-        edited_text,
-        mode,
-        model,
-        action,
-        formatting_level,
-        None,
-        avg_logprob,
-        speech_pct,
-        confidence_flags,
-    )
+/// One payload for one overlay quality commit. It replaces the four-rung
+/// telescoping chain (`commit_overlay_correction` → `_with_level` →
+/// `_with_confidence` → `_with_provenance`) that carried two
+/// `too_many_arguments` silencers: every caller states the fields it has and
+/// `Default` covers the rest.
+#[derive(Debug, Clone, Default)]
+pub struct OverlayCorrectionInput {
+    pub raw_text: String,
+    pub delivered_text: String,
+    pub edited_text: String,
+    pub mode: String,
+    pub model: Option<String>,
+    pub action: Option<String>,
+    /// Canonical formatting level. Candidate learning is deliberately narrower
+    /// than evidence capture: only Correction keeps the custom-lexicon
+    /// behavior; Off, Smart and Max remain evidence-only.
+    pub formatting_level: Option<String>,
+    pub edit_provenance: Option<String>,
+    pub avg_logprob: Option<f32>,
+    pub speech_pct: Option<f32>,
+    pub confidence_flags: Vec<String>,
 }
 
 /// Persist one overlay receipt while keeping delivery action separate from the
-/// explicit editor provenance that alone may vote in the three-confirmation gate.
-// allow(too_many_arguments): WHY — the widest rung of the telescoping chain
-// (11 parameters) and the only one production reaches from outside this file,
-// via the UniFFI export at `bridge/src/quality.rs:189`. WHEN — re-added
-// 2026-09-08 by the vc-prune Wave 5 silencer strip (clippy: `too many
-// arguments (11/7)`). WHERE — changing this signature changes the Swift-facing
-// ABI, so the `OverlayCorrectionInput` cut must land here and in
-// `bridge/src/quality.rs` in one commit.
-#[allow(clippy::too_many_arguments)]
-pub fn commit_overlay_correction_with_provenance(
-    raw_text: &str,
-    delivered_text: &str,
-    edited_text: &str,
-    mode: &str,
-    model: Option<String>,
-    action: Option<&str>,
-    formatting_level: Option<&str>,
-    edit_provenance: Option<&str>,
-    avg_logprob: Option<f32>,
-    speech_pct: Option<f32>,
-    confidence_flags: Vec<String>,
-) -> Result<OverlayCorrectionCommit> {
+/// explicit editor provenance that alone may vote in the three-confirmation
+/// gate. High-level: save the quality record for the overlay edit AND feed
+/// lexicon candidates; returns path + honest pairs-learned count.
+pub fn commit_overlay_correction(input: OverlayCorrectionInput) -> Result<OverlayCorrectionCommit> {
+    let raw_text = input.raw_text.as_str();
+    let delivered_text = input.delivered_text.as_str();
+    let edited_text = input.edited_text.as_str();
+    let mode = input.mode.as_str();
+    let action = input.action.as_deref();
+    let formatting_level = input.formatting_level.as_deref();
+    let edit_provenance = input.edit_provenance.as_deref();
     let formatting_level = formatting_level
         .map(FormattingPolicy::parse)
         .transpose()?
@@ -1433,18 +1319,7 @@ pub fn commit_overlay_correction_with_provenance(
     // Correction only — Off, Smart and Max stay evidence-only (PR #82 review).
     let teaches =
         commit_teaches_lexicon(mode, action, formatting_level.as_deref(), edit_provenance);
-    let mut record = QualityRecord::new_with_confidence(
-        raw_text.to_string(),
-        delivered_text.to_string(),
-        edited_text.to_string(),
-        mode,
-        model,
-        formatting_level,
-        action,
-        avg_logprob,
-        speech_pct,
-        confidence_flags,
-    );
+    let mut record = QualityRecord::from_correction(&input, formatting_level);
     if let Some(provenance) = edit_provenance
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -1517,34 +1392,31 @@ pub fn commit_overlay_correction_with_provenance(
 /// is no word to teach until a human supplies one in Voice Lab.
 pub fn teach_span(variant: &str, canonical: &str, kind: &str) -> Result<OverlayCorrectionCommit> {
     match kind {
-        "speech_gap" => commit_overlay_correction_with_confidence(
-            variant,
-            variant,
-            if canonical.trim().is_empty() {
+        "speech_gap" => commit_overlay_correction(OverlayCorrectionInput {
+            raw_text: variant.to_string(),
+            delivered_text: variant.to_string(),
+            edited_text: if canonical.trim().is_empty() {
                 "∅"
             } else {
                 canonical
-            },
-            "overlay-span",
-            None,
-            Some("teach-span-gap"),
-            Some(FormattingPolicy::Off.as_str()),
-            None,
-            None,
-            vec!["speech_gap".to_string()],
-        ),
-        _ => commit_overlay_correction_with_confidence(
-            variant,
-            variant,
-            canonical,
-            "overlay-span",
-            None,
-            Some("teach-span"),
-            Some(FormattingPolicy::Correction.as_str()),
-            None,
-            None,
-            vec!["lexicon_corrected".to_string()],
-        ),
+            }
+            .to_string(),
+            mode: "overlay-span".to_string(),
+            action: Some("teach-span-gap".to_string()),
+            formatting_level: Some(FormattingPolicy::Off.as_str().to_string()),
+            confidence_flags: vec!["speech_gap".to_string()],
+            ..Default::default()
+        }),
+        _ => commit_overlay_correction(OverlayCorrectionInput {
+            raw_text: variant.to_string(),
+            delivered_text: variant.to_string(),
+            edited_text: canonical.to_string(),
+            mode: "overlay-span".to_string(),
+            action: Some("teach-span".to_string()),
+            formatting_level: Some(FormattingPolicy::Correction.as_str().to_string()),
+            confidence_flags: vec!["lexicon_corrected".to_string()],
+            ..Default::default()
+        }),
     }
 }
 
@@ -2214,19 +2086,16 @@ mod tests {
         unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root) };
 
         let commit = |action: &str, provenance: Option<&str>| {
-            commit_overlay_correction_with_provenance(
-                "ajwo",
-                "ajwo",
-                "Iwo",
-                "overlay",
-                None,
-                Some(action),
-                Some("correction"),
-                provenance,
-                None,
-                None,
-                Vec::new(),
-            )
+            commit_overlay_correction(OverlayCorrectionInput {
+                raw_text: "ajwo".to_string(),
+                delivered_text: "ajwo".to_string(),
+                edited_text: "Iwo".to_string(),
+                mode: "overlay".to_string(),
+                action: Some(action.to_string()),
+                formatting_level: Some("correction".to_string()),
+                edit_provenance: provenance.map(str::to_string),
+                ..Default::default()
+            })
             .unwrap()
         };
 
@@ -2272,14 +2141,16 @@ mod tests {
 
     #[test]
     fn repeated_revision_of_one_correction_id_is_one_vote() {
-        let mut first = QualityRecord::new(
-            "ajwo".into(),
-            "ajwo".into(),
-            "Iwo".into(),
-            "overlay",
-            None,
+        let mut first = QualityRecord::from_correction(
+            &OverlayCorrectionInput {
+                raw_text: "ajwo".into(),
+                delivered_text: "ajwo".into(),
+                edited_text: "Iwo".into(),
+                mode: "overlay".into(),
+                action: Some("copy".into()),
+                ..Default::default()
+            },
             Some("correction".into()),
-            Some("copy"),
         );
         first
             .meta
@@ -2339,14 +2210,16 @@ mod tests {
         let delivered = format!("{body}zaznaczenie koniec");
         let edited = format!("{body}selection koniec");
 
-        let evidence = commit_overlay_correction(
-            &delivered,
-            &delivered,
-            &edited,
-            "overlay",
-            Some("whisper".into()),
-            Some("copy"),
-        )
+        let evidence = commit_overlay_correction(OverlayCorrectionInput {
+            raw_text: delivered.to_string(),
+            delivered_text: delivered.to_string(),
+            edited_text: edited.to_string(),
+            mode: "overlay".to_string(),
+            model: Some("whisper".into()),
+            action: Some("copy".to_string()),
+            formatting_level: Some(FormattingPolicy::Correction.as_str().to_string()),
+            ..Default::default()
+        })
         .expect("commit long dictation evidence");
         assert_eq!(evidence.pairs_learned, 0);
         let first = teach_span("zaznaczenie", "selection", "lexicon_corrected")
@@ -2419,14 +2292,16 @@ mod tests {
         }
 
         for expected in [0, 0, 1] {
-            let outcome = commit_overlay_correction(
-                "kubernetis",
-                "kubernetis",
-                "Kubernetes",
-                "overlay",
-                None,
-                Some("teach-dictionary"),
-            )
+            let outcome = commit_overlay_correction(OverlayCorrectionInput {
+                raw_text: "kubernetis".to_string(),
+                delivered_text: "kubernetis".to_string(),
+                edited_text: "Kubernetes".to_string(),
+                mode: "overlay".to_string(),
+                model: None,
+                action: Some("teach-dictionary".to_string()),
+                formatting_level: Some(FormattingPolicy::Correction.as_str().to_string()),
+                ..Default::default()
+            })
             .expect("dictionary teach gesture");
             assert_eq!(outcome.pairs_learned, expected);
         }
@@ -2451,14 +2326,16 @@ mod tests {
 
         teach_span("pansiwe", "Pensieve", "lexicon_corrected").unwrap();
         for action in ["copy", "close"] {
-            let evidence = commit_overlay_correction(
-                "pansiwe",
-                "pansiwe",
-                "Pensieve",
-                "overlay",
-                None,
-                Some(action),
-            )
+            let evidence = commit_overlay_correction(OverlayCorrectionInput {
+                raw_text: "pansiwe".to_string(),
+                delivered_text: "pansiwe".to_string(),
+                edited_text: "Pensieve".to_string(),
+                mode: "overlay".to_string(),
+                model: None,
+                action: Some(action.to_string()),
+                formatting_level: Some(FormattingPolicy::Correction.as_str().to_string()),
+                ..Default::default()
+            })
             .expect("copy/close evidence");
             assert_eq!(evidence.pairs_learned, 0);
             assert!(evidence.evidence_only);
@@ -2552,14 +2429,16 @@ mod tests {
             std::env::remove_var("CODESCRIBE_DATA_DIR");
         }
         let result = std::panic::catch_unwind(|| {
-            let _ = save_quality_record(&QualityRecord::new(
-                "r".into(),
-                "d".into(),
-                "e".into(),
-                "overlay",
+            let _ = save_quality_record(&QualityRecord::from_correction(
+                &OverlayCorrectionInput {
+                    raw_text: "r".into(),
+                    delivered_text: "d".into(),
+                    edited_text: "e".into(),
+                    mode: "overlay".into(),
+                    action: Some("copy".into()),
+                    ..Default::default()
+                },
                 None,
-                None,
-                Some("copy"),
             ));
         });
         assert!(result.is_err(), "must panic when CODESCRIBE_DATA_DIR unset");
@@ -2574,17 +2453,19 @@ mod tests {
         assert_eq!(old.speech_pct, None);
         assert!(old.confidence_flags.is_empty());
 
-        let mut fresh = QualityRecord::new_with_confidence(
-            "r".into(),
-            "d".into(),
-            "e".into(),
-            "overlay",
-            None,
+        let mut fresh = QualityRecord::from_correction(
+            &OverlayCorrectionInput {
+                raw_text: "r".into(),
+                delivered_text: "d".into(),
+                edited_text: "e".into(),
+                mode: "overlay".into(),
+                action: Some("copy".into()),
+                avg_logprob: Some(-0.42),
+                speech_pct: Some(0.91),
+                confidence_flags: vec!["low_logprob".into()],
+                ..Default::default()
+            },
             Some("correction".into()),
-            Some("copy"),
-            Some(-0.42),
-            Some(0.91),
-            vec!["low_logprob".into()],
         );
         fresh.timestamp_ms = 99;
         let encoded = serde_json::to_string(&fresh).expect("encode");
@@ -2863,14 +2744,16 @@ mod tests {
             std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
         }
 
-        let commit = commit_overlay_correction(
-            "uni agentka here",
-            "uni agentka here",
-            "Junie here",
-            "overlay",
-            Some("whisper".into()),
-            Some("test"),
-        )
+        let commit = commit_overlay_correction(OverlayCorrectionInput {
+            raw_text: "uni agentka here".to_string(),
+            delivered_text: "uni agentka here".to_string(),
+            edited_text: "Junie here".to_string(),
+            mode: "overlay".to_string(),
+            model: Some("whisper".into()),
+            action: Some("test".to_string()),
+            formatting_level: Some(FormattingPolicy::Correction.as_str().to_string()),
+            ..Default::default()
+        })
         .expect("commit should succeed");
         let p = commit.quality_path.clone();
         assert!(p.ends_with("corrections.jsonl"));
@@ -2931,14 +2814,16 @@ mod tests {
         }
 
         // "copy" action + distinct raw (real STT vs post-delivered)
-        let p = commit_overlay_correction(
-            "raw stt with selection here",
-            "delivered with selection",
-            "edited with selection",
-            "overlay",
-            Some("whisper-large".into()),
-            Some("copy"),
-        )
+        let p = commit_overlay_correction(OverlayCorrectionInput {
+            raw_text: "raw stt with selection here".to_string(),
+            delivered_text: "delivered with selection".to_string(),
+            edited_text: "edited with selection".to_string(),
+            mode: "overlay".to_string(),
+            model: Some("whisper-large".into()),
+            action: Some("copy".to_string()),
+            formatting_level: Some(FormattingPolicy::Correction.as_str().to_string()),
+            ..Default::default()
+        })
         .expect("commit copy action")
         .quality_path;
         assert!(
@@ -2964,14 +2849,16 @@ mod tests {
         );
 
         // "send" action variant
-        let p2 = commit_overlay_correction(
-            "another raw",
-            "delivered2",
-            "edited2",
-            "overlay",
-            None,
-            Some("send"),
-        )
+        let p2 = commit_overlay_correction(OverlayCorrectionInput {
+            raw_text: "another raw".to_string(),
+            delivered_text: "delivered2".to_string(),
+            edited_text: "edited2".to_string(),
+            mode: "overlay".to_string(),
+            model: None,
+            action: Some("send".to_string()),
+            formatting_level: Some(FormattingPolicy::Correction.as_str().to_string()),
+            ..Default::default()
+        })
         .expect("commit send")
         .quality_path;
         assert!(p2.starts_with(&temp_root));
@@ -3004,14 +2891,16 @@ mod tests {
         }
 
         let long = "x".repeat(150);
-        let commit = commit_overlay_correction(
-            &long,
-            "delivered long",
-            &long,
-            "overlay",
-            None,
-            Some("close"),
-        )
+        let commit = commit_overlay_correction(OverlayCorrectionInput {
+            raw_text: long.to_string(),
+            delivered_text: "delivered long".to_string(),
+            edited_text: long.to_string(),
+            mode: "overlay".to_string(),
+            model: None,
+            action: Some("close".to_string()),
+            formatting_level: Some(FormattingPolicy::Correction.as_str().to_string()),
+            ..Default::default()
+        })
         .expect("quality record even for long (lexicon guard separate)");
         assert_eq!(commit.pairs_learned, 0);
         assert_eq!(commit.acknowledgement_message(), "Saved as evidence");
@@ -3064,23 +2953,27 @@ mod tests {
                 .is_empty()
         );
 
-        commit_overlay_correction(
-            "raw one",
-            "uni agentka",
-            "Junie",
-            "overlay",
-            None,
-            Some("copy"),
-        )
+        commit_overlay_correction(OverlayCorrectionInput {
+            raw_text: "raw one".to_string(),
+            delivered_text: "uni agentka".to_string(),
+            edited_text: "Junie".to_string(),
+            mode: "overlay".to_string(),
+            model: None,
+            action: Some("copy".to_string()),
+            formatting_level: Some(FormattingPolicy::Correction.as_str().to_string()),
+            ..Default::default()
+        })
         .expect("first correction");
-        commit_overlay_correction(
-            "raw two",
-            "luks tri mapa",
-            "Loctree map",
-            "overlay",
-            None,
-            Some("send"),
-        )
+        commit_overlay_correction(OverlayCorrectionInput {
+            raw_text: "raw two".to_string(),
+            delivered_text: "luks tri mapa".to_string(),
+            edited_text: "Loctree map".to_string(),
+            mode: "overlay".to_string(),
+            model: None,
+            action: Some("send".to_string()),
+            formatting_level: Some(FormattingPolicy::Correction.as_str().to_string()),
+            ..Default::default()
+        })
         .expect("second correction");
 
         let records = recent_quality_records(1).expect("recent records");
@@ -3159,14 +3052,16 @@ mod tests {
                 .expect("known formatting level")
                 .as_str()
                 .to_string();
-            let record = QualityRecord::new(
-                "raw".into(),
-                "delivered".into(),
-                "edited".into(),
-                "overlay",
-                None,
+            let record = QualityRecord::from_correction(
+                &OverlayCorrectionInput {
+                    raw_text: "raw".into(),
+                    delivered_text: "delivered".into(),
+                    edited_text: "edited".into(),
+                    mode: "overlay".into(),
+                    action: Some("copy".into()),
+                    ..Default::default()
+                },
                 Some(level),
-                Some("copy"),
             );
             let encoded = serde_json::to_string(&record).expect("serialize quality record");
             let decoded: QualityRecord =
@@ -3195,15 +3090,15 @@ mod tests {
             ("max", "maxvariant", "MaxCanonical"),
             ("off", "rawvariant", "RawCanonical"),
         ] {
-            commit_overlay_correction_with_level(
-                delivered,
-                delivered,
-                edited,
-                "overlay",
-                None,
-                Some("copy"),
-                Some(level),
-            )
+            commit_overlay_correction(OverlayCorrectionInput {
+                raw_text: delivered.to_string(),
+                delivered_text: delivered.to_string(),
+                edited_text: edited.to_string(),
+                mode: "overlay".to_string(),
+                action: Some("copy".to_string()),
+                formatting_level: Some(level.to_string()),
+                ..Default::default()
+            })
             .expect("quality evidence commit");
         }
 
@@ -3225,14 +3120,16 @@ mod tests {
         let temp_root = temp_dir.path().canonicalize().unwrap();
         unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root) };
 
-        let outcome = commit_overlay_correction(
-            "A to jest pierwsze w oknie nie wybu słów tylko poprawiamy lokal power Meksyku.",
-            "A to jest pierwsze w oknie nie wybu słów tylko poprawiamy lokal power Meksyku.",
-            "Apple jest pierwszy, Whisper poprawia w oknie, nie wyjebujemy słów, tylko poprawiamy. Local power, leksykon.",
-            "overlay",
-            None,
-            Some("copy"),
-        )
+        let outcome = commit_overlay_correction(OverlayCorrectionInput {
+            raw_text: "A to jest pierwsze w oknie nie wybu słów tylko poprawiamy lokal power Meksyku.".to_string(),
+            delivered_text: "A to jest pierwsze w oknie nie wybu słów tylko poprawiamy lokal power Meksyku.".to_string(),
+            edited_text: "Apple jest pierwszy, Whisper poprawia w oknie, nie wyjebujemy słów, tylko poprawiamy. Local power, leksykon.".to_string(),
+            mode: "overlay".to_string(),
+            model: None,
+            action: Some("copy".to_string()),
+            formatting_level: Some(FormattingPolicy::Correction.as_str().to_string()),
+            ..Default::default()
+        })
         .expect("quality evidence");
         assert_eq!(outcome.pairs_learned, 0);
         assert!(outcome.evidence_only);
@@ -3285,15 +3182,15 @@ mod tests {
             std::env::set_var(LEXICON_MIN_CORRECTIONS_ENV, "1");
         };
 
-        commit_overlay_correction_with_level(
-            "rawvariant",
-            "formattervariant",
-            "FirstCanonical",
-            "overlay",
-            None,
-            Some("copy"),
-            Some("correction"),
-        )
+        commit_overlay_correction(OverlayCorrectionInput {
+            raw_text: "rawvariant".to_string(),
+            delivered_text: "formattervariant".to_string(),
+            edited_text: "FirstCanonical".to_string(),
+            mode: "overlay".to_string(),
+            action: Some("copy".to_string()),
+            formatting_level: Some("correction".to_string()),
+            ..Default::default()
+        })
         .expect("seed correction");
         let id = recent_quality_records(1).unwrap()[0].logical_id();
 
@@ -3326,14 +3223,16 @@ mod tests {
             std::env::set_var(LEXICON_MIN_CORRECTIONS_ENV, "1");
         }
 
-        let quality_path = commit_overlay_correction(
-            "uni agentka",
-            "uni agentka",
-            "Junie",
-            "overlay",
-            None,
-            Some("copy"),
-        )
+        let quality_path = commit_overlay_correction(OverlayCorrectionInput {
+            raw_text: "uni agentka".to_string(),
+            delivered_text: "uni agentka".to_string(),
+            edited_text: "Junie".to_string(),
+            mode: "overlay".to_string(),
+            model: None,
+            action: Some("copy".to_string()),
+            formatting_level: Some(FormattingPolicy::Correction.as_str().to_string()),
+            ..Default::default()
+        })
         .expect("initial correction")
         .quality_path;
         let original = recent_quality_records(10).expect("initial projection")[0].clone();
@@ -3426,8 +3325,17 @@ mod tests {
 
     /// One committed record inside an isolated data dir; returns its logical ID.
     fn seed_voice_lab_record(delivered: &str, edited: &str) -> String {
-        commit_overlay_correction(delivered, delivered, edited, "overlay", None, Some("copy"))
-            .expect("seed correction");
+        commit_overlay_correction(OverlayCorrectionInput {
+            raw_text: delivered.to_string(),
+            delivered_text: delivered.to_string(),
+            edited_text: edited.to_string(),
+            mode: "overlay".to_string(),
+            model: None,
+            action: Some("copy".to_string()),
+            formatting_level: Some(FormattingPolicy::Correction.as_str().to_string()),
+            ..Default::default()
+        })
+        .expect("seed correction");
         recent_quality_records(1).expect("seed projection")[0].logical_id()
     }
 

@@ -52,7 +52,7 @@ final class AgentChatCancellationTests: XCTestCase {
     }
   }
 
-  private final class SpyEngine: AgentChatEngine {
+  private final class SpyEngine: ChatEngineFixture {
     let firstStreamStarted: XCTestExpectation
     let emitPartialAndTool: Bool
     let state = LockedState()
@@ -64,10 +64,6 @@ final class AgentChatCancellationTests: XCTestCase {
       self.firstStreamStarted = firstStreamStarted
       self.emitPartialAndTool = emitPartialAndTool
     }
-
-    func isAvailable() -> Bool { true }
-    func availabilityDetail() -> String? { nil }
-    func generateThreadTitle(_ text: String) async throws -> String? { nil }
 
     func streamReply(
       _ text: String,

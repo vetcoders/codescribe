@@ -1597,7 +1597,11 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertLessThan(header.lowerBound, scroll.lowerBound)
     XCTAssertEqual(
       pane.components(separatedBy: "SettingsTabBar(model: model, section: section)").count, 2)
-    XCTAssertTrue(pane[..<scroll.lowerBound].contains(".background(CSColor.windowWash)"))
+    XCTAssertFalse(pane.contains("windowWash"))
+    XCTAssertFalse(pane.contains("preferredColorScheme"))
+    XCTAssertTrue(pane[..<scroll.lowerBound].contains("Divider()"))
+    XCTAssertTrue(
+      pane[scroll.lowerBound...].contains("SettingsPageHeader(tab.headline, blurb: tab.blurb)"))
     XCTAssertTrue(pane[scroll.lowerBound...].contains(".id(model.currentTab)"))
 
     let detail = try settingsLayoutSource("SettingsView.swift")

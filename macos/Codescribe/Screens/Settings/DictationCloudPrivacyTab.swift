@@ -11,7 +11,7 @@ struct DictationCloudPrivacyTab: View {
       ForEach(CloudPrivacyCopy.lines, id: \.self) { line in
         Text(line)
           .font(CSFont.ui(11.5))
-          .foregroundStyle(CSColor.textMutedAlt)
+          .foregroundStyle(Color.secondary)
           .frame(maxWidth: .infinity, alignment: .leading)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -24,8 +24,8 @@ struct DictationCloudPrivacyTab: View {
       .foregroundStyle(model.cloudConsentGranted ? CSColor.oliveLight : CSColor.amber)
       Text("Endpoints and keys live on Providers › Speech-to-text Cloud Service.")
         .font(CSFont.ui(11.5))
-        .foregroundStyle(CSColor.textMutedAlt)
+        .foregroundStyle(Color.secondary)
     }
-    .csSettingsCard()
+    .settingsGroupedInset()
   }
 }

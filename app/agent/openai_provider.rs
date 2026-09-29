@@ -337,29 +337,17 @@ impl AgentProvider for OpenAiProvider {
         Ok(rx)
     }
 
-    /// Wrap tool output as a user `ToolResult` message for the next model turn.
     fn build_tool_result(
         &self,
         call_id: &str,
         content: Vec<ContentBlock>,
         is_error: bool,
     ) -> Message {
-        Message::new(
-            Role::User,
-            vec![ContentBlock::ToolResult {
-                tool_use_id: call_id.to_string(),
-                content,
-                is_error,
-            }],
-        )
+        super::user_tool_result(call_id, content, is_error)
     }
 
-    /// Build an inline image content block from raw bytes and media type.
     fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
-        ContentBlock::Image {
-            data: data.to_vec(),
-            media_type: media_type.to_string(),
-        }
+        super::image_block(data, media_type)
     }
 
     /// Initial-response and inter-chunk timeouts for the streaming manager.
@@ -968,6 +956,23 @@ mod tests {
     use reqwest::Client;
     use serde_json::json;
     use tokio::sync::{Mutex, mpsc};
+
+    /// Offline Responses client bound to a stored chain. No socket is opened.
+    fn chained_test_provider(stored_chain: Arc<Mutex<Option<String>>>) -> OpenAiProvider {
+        OpenAiProvider {
+            client: Client::new(),
+            endpoint: "http://unused.invalid/v1/responses".to_string(),
+            api_key: "test-key".to_string(),
+            api_key_account: None,
+            default_model: "gpt-5.5".to_string(),
+            use_previous_response_id: true,
+            previous_response_id: stored_chain,
+            initial_response_timeout: Duration::from_secs(1),
+            inter_chunk_timeout: Duration::from_secs(1),
+            use_account_auth: false,
+            provider: ProviderKind::OpenAiResponses,
+        }
+    }
 
     /// Restores process env after a serial request-boundary test.
     struct ScopedEnv {
@@ -1809,19 +1814,7 @@ mod tests {
     #[tokio::test]
     async fn apply_chain_reset_clears_stored_previous_response_id_when_requested() {
         let stored_chain = Arc::new(Mutex::new(Some("resp_prev_failed".to_string())));
-        let provider = OpenAiProvider {
-            client: Client::new(),
-            endpoint: "http://unused.invalid/v1/responses".to_string(),
-            api_key: "test-key".to_string(),
-            api_key_account: None,
-            default_model: "gpt-5.5".to_string(),
-            use_previous_response_id: true,
-            previous_response_id: Arc::clone(&stored_chain),
-            initial_response_timeout: Duration::from_secs(1),
-            inter_chunk_timeout: Duration::from_secs(1),
-            use_account_auth: false,
-            provider: ProviderKind::OpenAiResponses,
-        };
+        let provider = chained_test_provider(Arc::clone(&stored_chain));
 
         // Pre-condition: stored chain holds prior failed attempt's response id.
         assert_eq!(
@@ -1847,19 +1840,7 @@ mod tests {
     #[tokio::test]
     async fn restore_response_chain_reinstates_pre_turn_id_after_user_stop() {
         let stored_chain = Arc::new(Mutex::new(Some("resp_pre_turn".to_string())));
-        let provider = OpenAiProvider {
-            client: Client::new(),
-            endpoint: "http://unused.invalid/v1/responses".to_string(),
-            api_key: "test-key".to_string(),
-            api_key_account: None,
-            default_model: "gpt-5.5".to_string(),
-            use_previous_response_id: true,
-            previous_response_id: Arc::clone(&stored_chain),
-            initial_response_timeout: Duration::from_secs(1),
-            inter_chunk_timeout: Duration::from_secs(1),
-            use_account_auth: false,
-            provider: ProviderKind::OpenAiResponses,
-        };
+        let provider = chained_test_provider(Arc::clone(&stored_chain));
 
         // Mid-turn advance (tool round) or dirty cancel would move the live id.
         *stored_chain.lock().await = Some("resp_mid_turn_cancelled".to_string());
@@ -1883,19 +1864,7 @@ mod tests {
     #[tokio::test]
     async fn apply_chain_reset_preserves_stored_chain_when_not_requested() {
         let stored_chain = Arc::new(Mutex::new(Some("resp_keep_me".to_string())));
-        let provider = OpenAiProvider {
-            client: Client::new(),
-            endpoint: "http://unused.invalid/v1/responses".to_string(),
-            api_key: "test-key".to_string(),
-            api_key_account: None,
-            default_model: "gpt-5.5".to_string(),
-            use_previous_response_id: true,
-            previous_response_id: Arc::clone(&stored_chain),
-            initial_response_timeout: Duration::from_secs(1),
-            inter_chunk_timeout: Duration::from_secs(1),
-            use_account_auth: false,
-            provider: ProviderKind::OpenAiResponses,
-        };
+        let provider = chained_test_provider(Arc::clone(&stored_chain));
 
         let options = StreamOptions::default();
         assert!(!options.reset_chain, "default must NOT reset chain");
@@ -1964,19 +1933,7 @@ mod tests {
         // reset. apply_chain_reset must zero the stored chain so the rebuild
         // sees id=None.
         let stored_chain = Arc::new(Mutex::new(Some(chain_id.to_string())));
-        let provider = OpenAiProvider {
-            client: Client::new(),
-            endpoint: "http://unused.invalid/v1/responses".to_string(),
-            api_key: "test-key".to_string(),
-            api_key_account: None,
-            default_model: "gpt-5.5".to_string(),
-            use_previous_response_id: true,
-            previous_response_id: Arc::clone(&stored_chain),
-            initial_response_timeout: Duration::from_secs(1),
-            inter_chunk_timeout: Duration::from_secs(1),
-            use_account_auth: false,
-            provider: ProviderKind::OpenAiResponses,
-        };
+        let provider = chained_test_provider(Arc::clone(&stored_chain));
         let reset_options = StreamOptions {
             reset_chain: true,
             ..StreamOptions::default()

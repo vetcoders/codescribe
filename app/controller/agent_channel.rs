@@ -15,6 +15,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Result, anyhow};
+use codescribe_core::config::Config;
 use codescribe_core::pipeline::acoustic_ledger::AcousticLedger;
 use codescribe_core::pipeline::contracts::EventSink;
 use serde::Deserialize;
@@ -304,7 +305,19 @@ impl RecordingController {
                     badge_only: true,
                 })
                 .map(Arc::new);
-                hold_badge::show_badge_for_mode(BadgeMode::Assistive);
+                // The Pointer Indicator knob rules every badge path: Settings
+                // promises "Base size; Agent mode stays proportionally larger",
+                // so the channel dot is the persisted base times the Assistive
+                // multiplier, and Off means no dot while the channel listens.
+                let badge_settings = Config::load_without_keychain();
+                if badge_settings.hold_indicator {
+                    hold_badge::show_hold_badge_with_config(
+                        hold_badge::HoldBadgeConfig::from_mode_with_base_diameter(
+                            BadgeMode::Assistive,
+                            f64::from(badge_settings.hold_badge_size),
+                        ),
+                    );
+                }
                 let cursor_token = hold_badge::take_token();
                 let open_label = channel_open_label(digit);
                 hold_badge::update_transcript(cursor_token, &open_label, false);

@@ -635,35 +635,14 @@ final class OverlayResizeHitTests: XCTestCase {
   @MainActor
   private func project(_ text: String, sequence: UInt64, to state: OverlayState) {
     state.applyTranscriptProjection(
-      CsTranscriptProjectionEvent(
-        schema: "codescribe.transcript_projection.v1",
+      transcriptProjection(
         sequence: sequence,
         emittedAt: "2026-09-06T00:00:00Z",
         sessionId: "w5-t16-overlay-fixture",
-        mode: "dictation",
-        reducerRevision: sequence,
-        reducerAction: "w5_t16_projection_fixture",
-        occurrenceSessionId: "w5-t16-overlay-fixture",
-        captureEpoch: 1,
-        sampleStart: (sequence - 1) * 16_000,
-        sampleEnd: sequence * 16_000,
-        documentIndex: sequence - 1,
-        label: "live",
         renderedText: text,
-        deliveryText: nil,
         phase: "listening",
-        canPaste: false,
-        canInsert: false,
-        canCopy: !text.isEmpty,
-        canRetranscribe: false,
-        canFormat: false,
-        canSendToAgent: false,
         terminal: false,
-        lifecycleTerminal: false,
-        delivery: .unattempted,
-        acousticReceipts: [],
-        sealCoverage: nil,
-        consultationPresentations: []
+        reducerAction: "w5_t16_projection_fixture"
       )
     )
   }

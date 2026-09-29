@@ -46,12 +46,8 @@ final class AgentChatQueueTests: XCTestCase {
 
   /// Engine whose streams stay open until the test releases them, so a turn
   /// can be held "active" while more messages are accepted.
-  private final class GatedEngine: AgentChatEngine {
+  private final class GatedEngine: ChatEngineFixture {
     let state = GatedState()
-
-    func isAvailable() -> Bool { true }
-    func availabilityDetail() -> String? { nil }
-    func generateThreadTitle(_ text: String) async throws -> String? { nil }
 
     func streamReply(
       _ text: String,
@@ -71,24 +67,12 @@ final class AgentChatQueueTests: XCTestCase {
       return true
     }
 
-    func installToolApprovalHandler(
-      _ handler: @escaping @MainActor (PendingToolApproval) -> Void
-    ) {}
-
     func resolveToolApproval(
       _ request: PendingToolApproval, approved: Bool, remember: Bool
     ) -> Bool { true }
   }
 
-  private final class StubProvider: ChatThreadsProviding {
-    func listThreads() -> [ChatThread] { [] }
-    func searchThreads(query: String) -> [ChatThread] { [] }
-    func loadMessages(backendId: String) -> [ChatMessage] { [] }
-    func deleteThread(backendId: String) -> Bool { true }
-    func setThreadFavorite(backendId: String, isFavorite: Bool) -> Bool { true }
-    func renameThread(backendId: String, title: String) -> Bool { true }
-    func setGeneratedTitle(backendId: String, title: String) -> Bool { true }
-    func exportThreadMarkdown(backendId: String, assistantOnly: Bool) -> String? { nil }
+  private final class StubProvider: ThreadsFixture {
     func generateThreadId() -> String { "t_\(UUID().uuidString)" }
   }
 

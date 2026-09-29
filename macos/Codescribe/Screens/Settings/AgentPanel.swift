@@ -53,7 +53,7 @@ struct LLMLanesSection: View {
       )
       .font(CSFont.ui(11.5))
       .lineSpacing(2)
-      .foregroundStyle(CSColor.textMutedAlt)
+      .foregroundStyle(Color.secondary)
 
       if let notice = model.laneResetNotice {
         LaneResetNotice(text: notice)
@@ -63,7 +63,7 @@ struct LLMLanesSection: View {
         LLMLaneEditor(model: model, lane: lane)
         if lane != LLMLane.allCases.last {
           Rectangle()
-            .fill(CSColor.hairline(0.05))
+            .fill(Color.primary.opacity(0.12))
             .frame(height: 1)
         }
       }
@@ -83,7 +83,7 @@ private struct LLMLaneEditor: View {
     switch laneModel.discovery.status {
     case "fresh": return CSColor.olive
     case "cached": return CSColor.amber
-    case "no_key", "loading": return CSColor.textFaint
+    case "no_key", "loading": return Color.secondary
     default: return CSColor.terracotta
     }
   }
@@ -93,10 +93,10 @@ private struct LLMLaneEditor: View {
       VStack(alignment: .leading, spacing: 2) {
         Text(lane.title)
           .font(CSFont.ui(14.5, .bold))
-          .foregroundStyle(CSColor.textHigh)
+          .foregroundStyle(Color.primary)
         Text(lane.subtitle)
           .font(CSFont.ui(11.5))
-          .foregroundStyle(CSColor.textMutedAlt)
+          .foregroundStyle(Color.secondary)
       }
 
       SettingsControlRow(title: "Provider", subtitle: lane.providerKey) {
@@ -169,7 +169,7 @@ private struct LLMLaneEditor: View {
               model.setLLMModel("", for: lane)
             }
             .font(CSFont.ui(11.5, .semibold))
-            .foregroundStyle(CSColor.textMutedAlt)
+            .foregroundStyle(Color.secondary)
             .csFocusRing()
             .help("Clear this model override")
             .accessibilityLabel("Reset \(lane.title) model")
@@ -184,14 +184,14 @@ private struct LLMLaneEditor: View {
           .frame(width: 7, height: 7)
         Text(laneModel.discoveryDescription)
           .font(CSFont.mono(10.5, .medium))
-          .foregroundStyle(CSColor.textFaint)
+          .foregroundStyle(Color.secondary)
           .lineLimit(2)
         Spacer(minLength: 0)
         Button("Refresh") {
           model.refreshModelDiscovery(providerId: laneModel.providerId)
         }
         .font(CSFont.ui(11, .semibold))
-        .foregroundStyle(CSColor.textMutedAlt)
+        .foregroundStyle(Color.secondary)
         .csFocusRing()
         .accessibilityLabel("Refresh \(lane.title) models")
       }
@@ -209,7 +209,5 @@ private struct LLMLaneEditor: View {
   #Preview("Agent panel") {
     ScrollView { AgentPanel(model: .preview(.agent)) }
       .frame(width: 720, height: 900)
-      .background(CSColor.windowWash)
-      .preferredColorScheme(.dark)
   }
 #endif

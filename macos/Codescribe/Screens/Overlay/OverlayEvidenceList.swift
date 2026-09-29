@@ -73,11 +73,12 @@ struct OverlayEvidenceChip: View {
   private func label(count: Int, line: String) -> some View {
     HStack(spacing: 4) {
       Image(systemName: "waveform")
+        .font(.system(size: 11, weight: .medium))
       Text(expanded ? line : "\(count)")
+        .font(CSFont.ui(11, .medium))
         .lineLimit(1)
         .truncationMode(.head)
     }
-    .font(.system(size: 11, weight: .medium))
     .padding(.horizontal, 10)
     .frame(height: OverlayResizeChrome.actionsHeight)
     .frame(maxWidth: expanded ? .infinity : nil, alignment: .trailing)

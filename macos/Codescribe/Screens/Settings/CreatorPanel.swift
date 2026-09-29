@@ -11,12 +11,7 @@ struct CreatorPanel: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      EyebrowLabel(text: "Settings · Creator")
-      Text("Get set up.")
-        .font(CSFont.ui(26, .bold))
-        .tracking(-0.5)
-        .foregroundStyle(CSColor.textHigh)
-        .padding(.top, 6)
+      SettingsPageHeader("Get set up.")
 
       SettingsSectionLabel("Permission checklist")
         .padding(.top, CSSpace.section)
@@ -78,7 +73,7 @@ struct CreatorPanel: View {
           if let notice = model.maxConsultationNotice {
             Text(notice)
               .font(.callout)
-              .foregroundStyle(CSColor.textHigh)
+              .foregroundStyle(Color.primary)
               .frame(maxWidth: .infinity, alignment: .leading)
           }
         }
@@ -147,7 +142,7 @@ struct CreatorPanel: View {
         "Install the Codescribe skill and bus helper from this app. No repository clone or manual file copying is needed."
       )
       .font(.callout)
-      .foregroundStyle(CSColor.textHigh)
+      .foregroundStyle(Color.primary)
       ForEach(AgentBridgeClient.allCases) { client in
         SettingsControlRow(
           title: client.displayName,
@@ -171,15 +166,15 @@ struct CreatorPanel: View {
       Button("Refresh installation status", action: model.refreshCreatorAgentBridge)
       Text(model.creatorAgentBridgeStatus.detail)
         .font(.caption)
-        .foregroundStyle(CSColor.textMutedAlt)
+        .foregroundStyle(Color.secondary)
         .textSelection(.enabled)
       if let notice = model.creatorAgentBridgeNotice {
-        Text(notice).font(.callout).foregroundStyle(CSColor.textHigh).textSelection(.enabled)
+        Text(notice).font(.callout).foregroundStyle(Color.primary).textSelection(.enabled)
       }
       if let error = model.creatorAgentBridgeError {
         Text(error)
           .font(.callout)
-          .foregroundStyle(CSColor.terracottaLight)
+          .foregroundStyle(CSColor.terracotta)
           .textSelection(.enabled)
       }
     }
@@ -277,29 +272,29 @@ private struct LanguageIdentityRow: View {
       VStack(alignment: .leading, spacing: 2) {
         Text("Whisper language")
           .font(CSFont.ui(13.5, .semibold))
-          .foregroundStyle(CSColor.textBody)
+          .foregroundStyle(Color.primary)
         Text("Choose automatic detection or a language-specialized path")
           .font(CSFont.ui(11.5))
-          .foregroundStyle(CSColor.textMutedAlt)
+          .foregroundStyle(Color.secondary)
       }
 
       LanguageIdentityPicker(selection: $selection)
 
       Text(LanguageIdentityPresentation.supportingCopy)
         .font(CSFont.ui(10.5))
-        .foregroundStyle(CSColor.textMutedAlt)
+        .foregroundStyle(Color.secondary)
         .fixedSize(horizontal: false, vertical: true)
     }
     .padding(.horizontal, 15)
     .padding(.vertical, 12)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .fill(CSColor.surfaceRaised(0.025))
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .fill(Color.primary.opacity(0.05))
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
     )
   }
 }
@@ -329,10 +324,10 @@ private struct LanguageIdentityPicker: View {
             } else {
               Text("Automatic detection")
                 .font(CSFont.ui(8.5, .medium))
-                .foregroundStyle(CSColor.textMutedAlt)
+                .foregroundStyle(Color.secondary)
             }
           }
-          .foregroundStyle(isSelected ? CSColor.textHigh : CSColor.textBody)
+          .foregroundStyle(isSelected ? Color.primary : Color.secondary)
           .frame(maxWidth: .infinity, minHeight: 43)
           .padding(.horizontal, 5)
           .background(
@@ -342,7 +337,7 @@ private struct LanguageIdentityPicker: View {
           .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
               .strokeBorder(
-                isSelected ? CSColor.chromeAccent.opacity(0.5) : CSColor.hairline(0.07),
+                isSelected ? CSColor.chromeAccent.opacity(0.5) : Color.primary.opacity(0.12),
                 lineWidth: 1
               )
           )
@@ -370,25 +365,16 @@ struct SettingsControlRow<Control: View>: View {
     HStack(spacing: 12) {
       VStack(alignment: .leading, spacing: 2) {
         Text(title)
-          .font(CSFont.ui(13.5, .semibold))
-          .foregroundStyle(CSColor.textBody)
+          .font(.body.weight(.semibold))
+          .foregroundStyle(.primary)
         Text(subtitle)
-          .font(CSFont.ui(11.5))
-          .foregroundStyle(CSColor.textMutedAlt)
+          .font(.subheadline)
+          .foregroundStyle(.secondary)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       control()
     }
-    .padding(.horizontal, 15)
-    .padding(.vertical, 12)
-    .background(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .fill(CSColor.surfaceRaised(0.025))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
-    )
+    .settingsGroupedInset()
   }
 }
 
@@ -407,7 +393,7 @@ private struct PermissionChecklistRow: View {
       statusBadge
       Text(kind.rawValue)
         .font(CSFont.ui(13.5, .medium))
-        .foregroundStyle(CSColor.textBody)
+        .foregroundStyle(Color.primary)
         .frame(maxWidth: .infinity, alignment: .leading)
       if granted {
         Text("granted")
@@ -430,7 +416,7 @@ private struct PermissionChecklistRow: View {
               : "open System Settings"
           )
           .font(CSFont.mono(11, .semibold))
-          .foregroundStyle(CSColor.terracottaLight)
+          .foregroundStyle(CSColor.terracotta)
         }
         .csFocusRing()
       }
@@ -438,11 +424,11 @@ private struct PermissionChecklistRow: View {
     .padding(.horizontal, 15)
     .padding(.vertical, 13)
     .background(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .fill((granted ? CSColor.olive : CSColor.terracotta).opacity(0.08))
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .strokeBorder((granted ? CSColor.olive : CSColor.terracotta).opacity(0.22), lineWidth: 1)
     )
   }
@@ -455,7 +441,7 @@ private struct PermissionChecklistRow: View {
         icon: granted ? .success : .warning,
         size: 11,
         weight: .semibold,
-        color: granted ? CSColor.oliveLight : CSColor.terracottaLight
+        color: granted ? CSColor.oliveLight : CSColor.terracotta
       )
     }
     .frame(width: 20, height: 20)
@@ -480,15 +466,15 @@ private struct QuickStartCard: View {
   var body: some View {
     Button(action: action) {
       VStack(alignment: .leading, spacing: 0) {
-        CSIconView(icon: icon, size: 16, color: CSColor.textHigh)
+        CSIconView(icon: icon, size: 16, color: Color.primary)
         Text(title)
           .font(CSFont.ui(13, .semibold))
-          .foregroundStyle(CSColor.textHigh)
+          .foregroundStyle(Color.primary)
           .padding(.top, 9)
         Text(subtitle)
           .font(CSFont.ui(11.5))
           .lineSpacing(2)
-          .foregroundStyle(CSColor.textMutedAlt)
+          .foregroundStyle(Color.secondary)
           .padding(.top, 3)
         Spacer(minLength: 0)
       }
@@ -497,11 +483,11 @@ private struct QuickStartCard: View {
       .padding(.vertical, 16)
       .background(
         RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-          .fill(CSColor.surfaceRaised(hovered ? 0.05 : 0.025))
+          .fill(Color.primary.opacity(hovered ? 0.1 : 0.05))
       )
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-          .strokeBorder(CSColor.hairline(hovered ? 0.14 : 0.07), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
       )
       .contentShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
     }
@@ -517,7 +503,5 @@ private struct QuickStartCard: View {
   #Preview("Creator panel") {
     ScrollView { CreatorPanel(model: .preview) }
       .frame(width: 720, height: 620)
-      .background(CSColor.windowWash)
-      .preferredColorScheme(.dark)
   }
 #endif

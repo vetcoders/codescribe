@@ -261,16 +261,13 @@ pub async fn run_login_server(opts: ServerOptions) -> Result<LoginServer, Accoun
 ///
 /// Separating the decision from the reply is what lets a single variant —
 /// [`ResponseAndExit`] — express "answer the browser, then stop the server"
-/// without the handler needing to reach the server loop.
+/// without the handler needing to reach the server loop. Login completion
+/// answers in that one response, so the browser does not depend on a second
+/// hop to `localhost` (IPv6 trap on `127.0.0.1`-bound listeners).
 ///
 /// [`ResponseAndExit`]: HandledRequest::ResponseAndExit
 enum HandledRequest {
     Response(Response<Cursor<Vec<u8>>>),
-    /// Kept for rare 302 paths (e.g. future multi-hop success pages). Callback
-    /// completion now uses [`ResponseAndExit`] so login does not depend on a
-    /// second hop to `localhost` (IPv6 trap on `127.0.0.1`-bound listeners).
-    #[allow(dead_code)]
-    Redirect(Header),
     ResponseAndExit {
         headers: Vec<Header>,
         body: Vec<u8>,
@@ -288,11 +285,6 @@ async fn respond(
 ) -> Option<Result<(), AccountAuthError>> {
     match handled {
         HandledRequest::Response(response) => {
-            let _ = tokio::task::spawn_blocking(move || request.respond(response)).await;
-            None
-        }
-        HandledRequest::Redirect(header) => {
-            let response = Response::empty(302).with_header(header);
             let _ = tokio::task::spawn_blocking(move || request.respond(response)).await;
             None
         }

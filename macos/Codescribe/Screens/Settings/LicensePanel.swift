@@ -7,19 +7,11 @@ struct LicensePanel: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      EyebrowLabel(text: "Settings · License")
-      Text("Basic stays free.")
-        .font(CSFont.ui(26, .bold))
-        .tracking(-0.5)
-        .foregroundStyle(CSColor.textHigh)
-        .padding(.top, 6)
-      Text(
-        "A signed CSK1 key unlocks the Agentic lane. Validation is local and the key stays in the macOS Keychain."
+      SettingsPageHeader(
+        "Basic stays free.",
+        blurb:
+          "A signed CSK1 key unlocks the Agentic lane. Validation is local and the key stays in the macOS Keychain."
       )
-      .font(CSFont.ui(12.5))
-      .lineSpacing(2)
-      .foregroundStyle(CSColor.textMutedAlt)
-      .padding(.top, 8)
 
       SettingsSectionLabel("License status")
         .padding(.top, CSSpace.section)
@@ -40,7 +32,7 @@ struct LicensePanel: View {
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
-          .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
       )
 
       SettingsSectionLabel("Enter or restore key")
@@ -49,11 +41,11 @@ struct LicensePanel: View {
         .font(CSFont.mono(11.5, .regular))
         .textFieldStyle(.plain)
         .padding(CSSpace.md)
-        .background(CSColor.surfaceRaised(0.04))
+        .background(Color.primary.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
         .overlay(
           RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-            .strokeBorder(CSColor.hairline(0.10), lineWidth: 1)
+            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
         )
         .padding(.top, CSSpace.control)
         .accessibilityLabel("Codescribe license key")
@@ -84,7 +76,7 @@ struct LicensePanel: View {
             model.removeLicense()
           }
           .csFocusRing()
-          .foregroundStyle(CSColor.dangerLight)
+          .foregroundStyle(CSColor.danger)
         }
       }
       .padding(.top, 12)
@@ -92,7 +84,7 @@ struct LicensePanel: View {
       if let error = model.licenseError {
         Text(error)
           .font(CSFont.mono(10.5, .medium))
-          .foregroundStyle(CSColor.dangerLight)
+          .foregroundStyle(CSColor.danger)
           .padding(.top, 10)
           .textSelection(.enabled)
       }
@@ -102,7 +94,7 @@ struct LicensePanel: View {
       )
       .font(CSFont.ui(11.5))
       .lineSpacing(2)
-      .foregroundStyle(CSColor.textFaintAlt)
+      .foregroundStyle(Color.secondary)
       .padding(.top, 18)
     }
     .padding(.horizontal, CSSpace.xl)
@@ -120,7 +112,7 @@ struct LicensePanel: View {
   }
 
   private var divider: some View {
-    Rectangle().fill(CSColor.hairline(0.05)).frame(height: 1)
+    Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
   }
 }
 
@@ -128,7 +120,5 @@ struct LicensePanel: View {
   #Preview("License panel") {
     ScrollView { LicensePanel(model: .preview(.license)) }
       .frame(width: 720, height: 760)
-      .background(CSColor.windowWash)
-      .preferredColorScheme(.dark)
   }
 #endif

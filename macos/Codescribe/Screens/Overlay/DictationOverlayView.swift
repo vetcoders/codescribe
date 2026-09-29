@@ -56,7 +56,7 @@ struct DictationOverlayView: View {
   // Geometry constants local to this surface. The window is user-resizable;
   // content fills the frame and never goes narrower than `windowMinWidth`.
   // `DictationOverlayWindow.minSize.height` MUST stay ≥ chrome + `bodyMinHeight`
-  // or GlassPanel paints past the window rect and squares the corners.
+  // or the canvas paints past the window rect and squares the corners.
   private let windowMinWidth: CGFloat = 320
   private let bodyMinHeight: CGFloat = 0
   private let transcriptMinHeight: CGFloat = 32
@@ -92,13 +92,13 @@ struct DictationOverlayView: View {
     }
     .csFocusPolicy()
     .frame(minWidth: windowMinWidth, maxWidth: .infinity, maxHeight: .infinity)
-    // Terminal corner clip (U22): GlassPanel paints its background from the
+    // Terminal corner clip (U22): the canvas paints its background from the
     // CONTENT column's size, not the window's. Whenever the column outgrows
     // the window frame — a mid-edge-drag beat, a stale persisted size below
     // the chrome+body sum — that background used to spill past the window
     // rect and surface as a SQUARE corner under the rounded glass. Clipping
     // the whole panel to the window-frame rounded rect closes that class of
-    // regression regardless of the height arithmetic. The GlassPanel shadow
+    // regression regardless of the height arithmetic. The panel shadow
     // already falls outside the borderless window (never rendered), so this
     // clip costs nothing visually.
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous))
@@ -236,9 +236,11 @@ struct DictationOverlayView: View {
             // The AppKit edge intercept and existing header/body drag regions stay in place.
             .frame(maxWidth: .infinity, alignment: .center)
             .padding(.horizontal, OverlayResizeChrome.actionsBottomInset)
-            footerMessageRow
-              .frame(height: 18)
-              .padding(.horizontal, 20)
+            if footerMessage != nil || bottomChromeSlots.showsCoverageWarning {
+              footerMessageRow
+                .frame(height: 18)
+                .padding(.horizontal, 20)
+            }
 
           }
           .padding(.bottom, OverlayResizeChrome.actionsBottomInset)
@@ -396,14 +398,14 @@ struct DictationOverlayView: View {
       HStack(spacing: compact ? 4 : 8) {
         if showsDiagnostics && state.compactProjection?.degraded == true {
           Image(systemName: "exclamationmark.bubble.fill")
-            .foregroundStyle(.orange)
+            .foregroundStyle(palette.processingStatus.color)
             .help("Detected speech is not fully transcribed")
             .accessibilityLabel("Detected speech is not fully transcribed")
             .accessibilityIdentifier("overlay-acoustic-warning")
         }
         if let error = state.expansionPreferenceError {
           Image(systemName: "exclamationmark.triangle.fill")
-            .foregroundStyle(.orange)
+            .foregroundStyle(palette.processingStatus.color)
             .help(error)
             .accessibilityLabel(error)
             .accessibilityIdentifier("overlay-preference-save-error")

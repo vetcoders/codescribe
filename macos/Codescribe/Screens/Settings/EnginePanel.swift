@@ -35,7 +35,5 @@ struct EnginePanel: View {
   #Preview("Dictation panel") {
     EnginePanel(model: .preview(.engine))
       .frame(width: 720, height: 620)
-      .background(CSColor.windowWash)
-      .preferredColorScheme(.dark)
   }
 #endif

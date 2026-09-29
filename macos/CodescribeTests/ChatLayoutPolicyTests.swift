@@ -1,3 +1,5 @@
+import AppKit
+import SwiftUI
 import XCTest
 
 @testable import Codescribe
@@ -88,6 +90,54 @@ final class ChatLayoutPolicyTests: XCTestCase {
       AgentSidebarMode.expanded.maximumWidth,
       "window floor must stay wider than a fully dragged rail so native collapse is not the only way to keep detail visible"
     )
+  }
+
+  func testSidebarHasReadableFloorAndBoundedExpansion() {
+    XCTAssertEqual(AgentSidebarMode.expanded.minimumWidth, 267)
+    XCTAssertEqual(AgentSidebarMode.expanded.idealWidth, 300)
+    XCTAssertEqual(AgentSidebarMode.expanded.maximumWidth, 360)
+  }
+
+  @MainActor
+  func testNativeSidebarItemEnforcesBoundsAfterWindowAttachment() throws {
+    final class LayoutEngine: ChatEngineFixture {}
+    let store = AgentChatStore(
+      engine: LayoutEngine(), threads: [ChatThread(title: "A thread", meta: "now", model: "gpt-6-sol")])
+    let host = NSHostingController(rootView: AgentChatView(store: store))
+    let window = NSWindow(contentViewController: host)
+    window.setContentSize(NSSize(width: 1120, height: 720))
+    window.orderFrontRegardless()
+    defer { window.orderOut(nil) }
+    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    func find(_ view: NSView) -> NSSplitViewController? {
+      if let split = view as? NSSplitView { return split.delegate as? NSSplitViewController }
+      return view.subviews.lazy.compactMap { find($0) }.first
+    }
+    XCTAssertEqual(window.title, "Agent — gpt-6-sol")
+    let split = try XCTUnwrap(find(host.view), "Native split must be reachable after attachment")
+    let item = try XCTUnwrap(split.splitViewItems.first(where: { $0.behavior == .sidebar }))
+    XCTAssertEqual(item.minimumThickness, 267)
+    XCTAssertEqual(item.maximumThickness, 360)
+    for windowWidth in [1120.0, 640.0, 1800.0, 800.0] {
+      window.setContentSize(NSSize(width: windowWidth, height: 720))
+      for proposed in [1600.0, 50.0, 300.0, 900.0, 0.0] {
+        split.splitView.setPosition(proposed, ofDividerAt: 0)
+        split.splitView.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        let width = item.viewController.view.frame.width
+        XCTAssertFalse(item.isCollapsed)
+        XCTAssertGreaterThanOrEqual(width, 266)
+        XCTAssertLessThanOrEqual(width, 361)
+        XCTAssertGreaterThanOrEqual(split.splitViewItems[1].viewController.view.frame.width, 319)
+      }
+      item.isCollapsed = true
+      RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+      XCTAssertTrue(item.isCollapsed)
+      item.isCollapsed = false
+      RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+      XCTAssertGreaterThanOrEqual(item.viewController.view.frame.width, 266)
+      XCTAssertLessThanOrEqual(item.viewController.view.frame.width, 361)
+    }
   }
 
   // MARK: - R1 window-collapse clamps

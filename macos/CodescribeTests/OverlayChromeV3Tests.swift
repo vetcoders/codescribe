@@ -114,10 +114,16 @@ final class OverlayChromeV3Tests: XCTestCase {
       let scroll = try XCTUnwrap(text.enclosingScrollView)
       let initialInset = scroll.contentInsets.bottom
       let originalText = text.string
+      state.showToast("Copied")
+      RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+      root.layoutSubtreeIfNeeded()
+      let messageInset = scroll.contentInsets.bottom
+      XCTAssertGreaterThan(messageInset, initialInset, "No notice must leave no reserved row")
+      XCTAssertLessThanOrEqual(messageInset - initialInset, 27)
       state.showToast(String(repeating: "A long message that must stay in one row. ", count: 20))
       RunLoop.main.run(until: Date().addingTimeInterval(0.05))
       root.layoutSubtreeIfNeeded()
-      XCTAssertEqual(scroll.contentInsets.bottom, initialInset, accuracy: 1)
+      XCTAssertEqual(scroll.contentInsets.bottom, messageInset, accuracy: 1)
       XCTAssertEqual(text.string, originalText)
     }
   }

@@ -13,10 +13,10 @@ struct OAuthClientIdEditor: View {
     VStack(alignment: .leading, spacing: CSSpace.sm) {
       Text("\(accountBrand) OAuth client id")
         .font(CSFont.ui(12.5, .semibold))
-        .foregroundStyle(CSColor.textBody)
+        .foregroundStyle(Color.primary)
       Text("Optional override (settings.json) — empty restores the shipped default.")
         .font(CSFont.ui(11.5))
-        .foregroundStyle(CSColor.textMutedAlt)
+        .foregroundStyle(Color.secondary)
         .fixedSize(horizontal: false, vertical: true)
       HStack(spacing: 8) {
         TextField(placeholder, text: $draft)

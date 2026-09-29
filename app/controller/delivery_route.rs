@@ -68,6 +68,19 @@ pub struct OverlayPasteResult {
     pub deferred_insert_failure: Option<String>,
 }
 
+impl OverlayPasteResult {
+    /// No transport ran. Destination selection stays in [`resolve_delivery_route`].
+    pub(crate) fn noop() -> Self {
+        Self {
+            delivery: OverlayPasteDelivery::Noop,
+            target_app_name: None,
+            frontmost_app_name: None,
+            deferred_insert_shortcut: None,
+            deferred_insert_failure: None,
+        }
+    }
+}
+
 impl DeliveryRoute {
     /// Stable telemetry label (snake_case, one token).
     pub const fn as_str(self) -> &'static str {

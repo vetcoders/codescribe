@@ -13,15 +13,15 @@ struct OverlayMiniTooltip: ViewModifier {
         .onHover { hovered = $0 }
       if hovered && enabled {
         Text(title)
-          .font(.system(size: 10, weight: .medium))
+          .font(CSFont.ui(10, .medium))
           .foregroundStyle(palette.primaryText.color)
           .lineLimit(1)
           .fixedSize()
           .padding(.horizontal, 7)
           .padding(.vertical, 4)
-          .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+          .background(.regularMaterial, in: RoundedRectangle(cornerRadius: CSRadius.chip))
           .overlay {
-            RoundedRectangle(cornerRadius: 6).strokeBorder(palette.border.color)
+            RoundedRectangle(cornerRadius: CSRadius.chip).strokeBorder(palette.border.color)
           }
           .allowsHitTesting(false)
           .accessibilityHidden(true)
@@ -92,7 +92,7 @@ struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
       attachmentAnchor: .rect(.bounds), arrowEdge: .top
     ) {
       detail { presented = nil }
-        .font(.system(size: 12, weight: .medium))
+        .font(CSFont.ui(12, .medium))
         .foregroundStyle(palette.primaryText.color)
         .padding(10)
         .frame(maxWidth: 280)

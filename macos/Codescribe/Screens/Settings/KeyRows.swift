@@ -14,17 +14,17 @@ private struct SettingsInputChrome: ViewModifier {
     content
       .textFieldStyle(.plain)
       .font(CSFont.mono(12, .regular))
-      .foregroundStyle(CSColor.textBody)
+      .foregroundStyle(Color.primary)
       .autocorrectionDisabled()
       .padding(.horizontal, 11)
       .padding(.vertical, 8)
       .background(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-          .fill(CSColor.surfaceRaised(0.03))
+          .fill(Color.primary.opacity(0.06))
       )
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-          .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
       )
   }
 }
@@ -43,7 +43,7 @@ struct SettingsSaveButton: View {
     Button(action: action) {
       Text(title)
         .font(CSFont.ui(12, .semibold))
-        .foregroundStyle(enabled ? CSColor.chromeAccent : CSColor.textFaint)
+        .foregroundStyle(enabled ? CSColor.chromeAccent : Color.secondary)
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
         .background(
@@ -60,7 +60,7 @@ struct SettingsSaveButton: View {
   }
 }
 
-/// Neutral chip button (Test / Remove / Sign out / Edit): surface fill, hairline.
+/// Neutral chip button (Test / Remove / Sign out / Edit).
 struct SettingsChipButton<Label: View>: View {
   var enabled: Bool = true
   let action: () -> Void
@@ -73,11 +73,11 @@ struct SettingsChipButton<Label: View>: View {
         .padding(.vertical, 7)
         .background(
           RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-            .fill(CSColor.surfaceRaised(0.03))
+            .fill(Color.primary.opacity(0.06))
         )
         .overlay(
           RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-            .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
         )
     }
     .csFocusRing()
@@ -91,7 +91,7 @@ extension SettingsChipButton where Label == Text {
     self.init(enabled: enabled, action: action) {
       Text(title)
         .font(CSFont.ui(11.5, .semibold))
-        .foregroundStyle(enabled ? tint : CSColor.textFaint)
+        .foregroundStyle(enabled ? tint : Color.secondary)
     }
   }
 }
@@ -115,7 +115,7 @@ struct SettingsUrlRow: View {
   @State private var loadedInitial = false
 
   private var isSet: Bool { !current.isEmpty }
-  private var accent: Color { isSet ? CSColor.olive : CSColor.textFaint }
+  private var accent: Color { isSet ? CSColor.olive : Color.secondary }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -123,14 +123,14 @@ struct SettingsUrlRow: View {
         Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
         Text(title)
           .font(CSFont.ui(13.5, .semibold))
-          .foregroundStyle(CSColor.textBody)
+          .foregroundStyle(Color.primary)
         Text(keyLabel)
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textFaint)
+          .foregroundStyle(Color.secondary)
         Spacer(minLength: 0)
         Text(isSet ? "set" : unsetLabel)
           .font(CSFont.mono(10, .semibold))
-          .foregroundStyle(isSet ? CSColor.oliveLight : CSColor.textFaint)
+          .foregroundStyle(isSet ? CSColor.oliveLight : Color.secondary)
       }
 
       HStack(spacing: 8) {
@@ -145,7 +145,7 @@ struct SettingsUrlRow: View {
       Text(help)
         .font(CSFont.ui(11.5))
         .lineSpacing(2)
-        .foregroundStyle(CSColor.textMutedAlt)
+        .foregroundStyle(Color.secondary)
     }
     .onAppear {
       if !loadedInitial {
@@ -178,7 +178,7 @@ struct KeyRow: View {
   @State private var draft: String = ""
 
   private var accent: Color {
-    isSet ? CSColor.olive : (optional ? CSColor.textFaint : CSColor.terracotta)
+    isSet ? CSColor.olive : (optional ? Color.secondary : CSColor.terracotta)
   }
 
   var body: some View {
@@ -187,10 +187,10 @@ struct KeyRow: View {
         Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
         Text(label)
           .font(CSFont.ui(13.5, .semibold))
-          .foregroundStyle(CSColor.textBody)
+          .foregroundStyle(Color.primary)
         Text(account)
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textFaint)
+          .foregroundStyle(Color.secondary)
         Spacer(minLength: 0)
         if let probeResult {
           KeyProbeChip(result: probeResult)
@@ -218,7 +218,7 @@ struct KeyRow: View {
             }
           }
           .frame(width: 26, height: 18)
-          .foregroundStyle(isSet ? CSColor.textMutedAlt : CSColor.textFaint)
+          .foregroundStyle(Color.secondary)
         }
         .help(isSet ? "Test this key" : "Save a key first to test it")
         .accessibilityLabel("Test \(label)")
@@ -226,7 +226,7 @@ struct KeyRow: View {
         SettingsChipButton(enabled: isSet, action: onClear) {
           CSIconView(
             icon: .delete, size: 12, weight: .semibold,
-            color: isSet ? CSColor.terracottaLight : CSColor.textFaint
+            color: isSet ? CSColor.terracotta : Color.secondary
           )
           .frame(width: 10, height: 18)
         }
@@ -237,9 +237,12 @@ struct KeyRow: View {
     // Presence-tinted card: green when set, red (required) / grey (optional) when not.
     .padding(.horizontal, 15)
     .padding(.vertical, 13)
-    .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(accent.opacity(0.06)))
+    .background(
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .fill(accent.opacity(0.06))
+    )
     .overlay(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .strokeBorder(accent.opacity(0.18), lineWidth: 1)
     )
   }
@@ -291,9 +294,9 @@ struct KeyProbeChip: View {
   private var tint: Color {
     switch result.status {
     case .ok: return CSColor.oliveLight
-    case .invalid, .noQuota: return CSColor.terracottaLight
+    case .invalid, .noQuota: return CSColor.terracotta
     case .network: return CSColor.amber
-    case .missing, .unsupported: return CSColor.textFaint
+    case .missing, .unsupported: return Color.secondary
     }
   }
 
@@ -331,7 +334,7 @@ struct AccountLoginRow: View {
   @State private var editingClientId = false
 
   private var signedIn: Bool { provider.accountSignedIn }
-  private var accent: Color { signedIn ? CSColor.olive : CSColor.textFaint }
+  private var accent: Color { signedIn ? CSColor.olive : Color.secondary }
 
   /// Short brand for the account row — OpenCode-style, not a client-id dump.
   private var accountBrand: String {
@@ -349,7 +352,7 @@ struct AccountLoginRow: View {
         Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
         Text("\(accountBrand) account")
           .font(CSFont.ui(12.5, .semibold))
-          .foregroundStyle(CSColor.textBody)
+          .foregroundStyle(Color.primary)
         // "signed in as <email>" / "not signed in" / "awaiting app registration".
         Text(provider.accountStatusMessage)
           .font(CSFont.mono(10, .semibold))
@@ -358,14 +361,14 @@ struct AccountLoginRow: View {
         if let loginNotice, !loginNotice.isEmpty {
           Text(loginNotice)
             .font(CSFont.mono(10, .medium))
-            .foregroundStyle(CSColor.terracottaLight)
+            .foregroundStyle(CSColor.terracotta)
             .lineLimit(1)
             .help(loginNotice)
         }
         Spacer(minLength: 0)
         if signedIn {
           SettingsChipButton(
-            "Sign out", tint: CSColor.terracottaLight, enabled: !loginPending, action: onSignOut
+            "Sign out", tint: CSColor.terracotta, enabled: !loginPending, action: onSignOut
           )
           .help("Remove the stored \(accountBrand) account tokens")
           .accessibilityLabel("Sign out of \(accountBrand)")
@@ -387,7 +390,7 @@ struct AccountLoginRow: View {
             .font(CSFont.ui(12, .semibold))
           }
           .foregroundStyle(
-            provider.accountLoginEnabled && !loginPending ? CSColor.oliveLight : CSColor.textFaint
+            provider.accountLoginEnabled && !loginPending ? CSColor.oliveLight : Color.secondary
           )
         }
         .help(provider.accountStatusMessage)
@@ -400,7 +403,7 @@ struct AccountLoginRow: View {
       Button("Advanced · OAuth client id…", action: openClientIdEditor)
         .buttonStyle(.plain)
         .font(CSFont.mono(10, .medium))
-        .foregroundStyle(CSColor.textFaint)
+        .foregroundStyle(Color.secondary)
         .csFocusRing()
         .popover(isPresented: $editingClientId, arrowEdge: .bottom) {
           OAuthClientIdEditor(

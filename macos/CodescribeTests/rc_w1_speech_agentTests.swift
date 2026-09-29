@@ -8,7 +8,7 @@ import XCTest
 final class RCW1SpeechAgentTests: XCTestCase {
   private enum ReadFailure: Error { case unavailable }
 
-  private final class Threads: ChatThreadsProviding {
+  private final class Threads: ThreadsFixture {
     var failList = false
     var failSearch = false
     var records = [("alpha", "Alpha"), ("beta", "Beta"), ("gamma", "Gamma")]
@@ -30,25 +30,18 @@ final class RCW1SpeechAgentTests: XCTestCase {
       return records.filter { $0.1.localizedStandardContains(query) }.map(row)
     }
 
-    func loadMessages(backendId: String) -> [ChatMessage] { [] }
     func deleteThread(backendId: String) -> Bool {
       records.removeAll { $0.0 == backendId }
       return true
     }
-    func setThreadFavorite(backendId: String, isFavorite: Bool) -> Bool { true }
-    func renameThread(backendId: String, title: String) -> Bool { true }
-    func setGeneratedTitle(backendId: String, title: String) -> Bool { true }
-    func exportThreadMarkdown(backendId: String, assistantOnly: Bool) -> String? { nil }
     func generateThreadId() -> String { "rc-w1-draft" }
   }
 
-  private final class SpeechEngine: AgentChatEngine {
+  private final class SpeechEngine: ChatEngineFixture {
     var pending: [CheckedContinuation<Void, Error>] = []
     var targets: [String?] = []
     var stopCount = 0
     let starts = AsyncStream<Void>.makeStream()
-    func isAvailable() -> Bool { true }
-    func availabilityDetail() -> String? { nil }
     func speechAvailability() -> String? { nil }
     func speak(text: String) async throws {
       try await withCheckedThrowingContinuation { continuation in
@@ -58,14 +51,8 @@ final class RCW1SpeechAgentTests: XCTestCase {
     }
     func stopSpeaking() { stopCount += 1 }
     func setAssistiveTargetThread(backendId: String?) { targets.append(backendId) }
-    func generateThreadTitle(_ text: String) async throws -> String? { nil }
-    func cancelReply(threadId: String) -> Bool { false }
-    func streamReply(
-      _ text: String, threadId: String, attachmentPaths: [String],
-      onDelta: @escaping @MainActor (String) -> Void,
-      onReasoning: @escaping @MainActor (String) -> Void,
-      onToolExecuting: @escaping @MainActor (String, String) -> Void,
-      onToolResult: @escaping @MainActor (String, String, Bool, String) -> Void
+    func acceptReply(
+      _ text: String, threadId _: String, attachmentPaths _: [String]
     ) async throws -> String { text }
   }
 

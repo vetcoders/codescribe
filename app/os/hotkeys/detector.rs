@@ -1133,6 +1133,23 @@ mod tests {
         }
     }
 
+    /// Dictation on Fn hold, formatting on double-left Option, assistive on double-right.
+    fn fn_hold_double_option_config() -> HotkeyRuntimeConfig {
+        test_config(
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::DoubleRightOption,
+        )
+    }
+
+    fn fn_hold_double_option_detector() -> (HotkeyDetector, HotkeyRuntimeConfig, Instant) {
+        (
+            HotkeyDetector::default(),
+            fn_hold_double_option_config(),
+            Instant::now(),
+        )
+    }
+
     /// Shorthand HotkeyModifierSnapshot constructor for compact test tables.
     fn mods(
         ctrl: bool,
@@ -1152,11 +1169,7 @@ mod tests {
 
     #[test]
     fn fn_digit_toggles_an_agent_channel_once_per_press() {
-        let mut config = test_config(
-            ShortcutBinding::HoldFn,
-            ShortcutBinding::DoubleLeftOption,
-            ShortcutBinding::DoubleRightOption,
-        );
+        let mut config = fn_hold_double_option_config();
         config.channel_modifier = ChannelModifier::Fn;
         let now = Instant::now();
         let mut detector = HotkeyDetector::default();
@@ -1219,11 +1232,7 @@ mod tests {
     #[test]
     /// ⌘⇧Space emits ShowAgent once per physical press; repeats and wrong mods are silent.
     fn detector_show_agent_command_table_emits_once_per_space_press() {
-        let config = test_config(
-            ShortcutBinding::HoldFn,
-            ShortcutBinding::DoubleLeftOption,
-            ShortcutBinding::DoubleRightOption,
-        );
+        let config = fn_hold_double_option_config();
         let base = Instant::now();
         let command_shift = mods(false, false, true, true, false);
 
@@ -1279,11 +1288,7 @@ mod tests {
     #[test]
     /// Configured deferred-insert chord fires InsertHere once; key-repeat is suppressed.
     fn detector_deferred_insert_command_uses_configured_chord_once_per_press() {
-        let mut config = test_config(
-            ShortcutBinding::HoldFn,
-            ShortcutBinding::DoubleLeftOption,
-            ShortcutBinding::DoubleRightOption,
-        );
+        let mut config = fn_hold_double_option_config();
         config.deferred_insert_shortcut = DeferredInsertShortcut::CommandShiftV;
         let mut detector = HotkeyDetector::default();
         let base = Instant::now();
@@ -1443,13 +1448,7 @@ mod tests {
     #[test]
     /// Fn hold produces one Hold(Down) after delay and matching Hold(Up) on release.
     fn detector_fn_hold_emits_down_and_up_for_one_physical_hold() {
-        let mut detector = HotkeyDetector::default();
-        let config = test_config(
-            ShortcutBinding::HoldFn,
-            ShortcutBinding::DoubleLeftOption,
-            ShortcutBinding::DoubleRightOption,
-        );
-        let base = Instant::now();
+        let (mut detector, config, base) = fn_hold_double_option_detector();
 
         assert_eq!(
             detector.feed(
@@ -1485,13 +1484,7 @@ mod tests {
     #[test]
     /// Fn then Shift attaches selection; release stays Raw dictation.
     fn detector_fn_then_shift_attaches_selection_and_up_stays_raw() {
-        let mut detector = HotkeyDetector::default();
-        let config = test_config(
-            ShortcutBinding::HoldFn,
-            ShortcutBinding::DoubleLeftOption,
-            ShortcutBinding::DoubleRightOption,
-        );
-        let base = Instant::now();
+        let (mut detector, config, base) = fn_hold_double_option_detector();
 
         assert_eq!(
             detector.feed(
@@ -1537,13 +1530,7 @@ mod tests {
     #[test]
     /// Fn+Shift from idle is dictation, not Assistive / Chat.
     fn detector_fn_shift_from_idle_stays_dictation() {
-        let mut detector = HotkeyDetector::default();
-        let config = test_config(
-            ShortcutBinding::HoldFn,
-            ShortcutBinding::DoubleLeftOption,
-            ShortcutBinding::DoubleRightOption,
-        );
-        let base = Instant::now();
+        let (mut detector, config, base) = fn_hold_double_option_detector();
 
         assert_eq!(
             detector.feed(
@@ -1590,13 +1577,7 @@ mod tests {
     #[test]
     /// Two Shift pulses during one Fn hold emit two AttachSelection events.
     fn detector_two_shift_pulses_emit_two_attach_selection() {
-        let mut detector = HotkeyDetector::default();
-        let config = test_config(
-            ShortcutBinding::HoldFn,
-            ShortcutBinding::DoubleLeftOption,
-            ShortcutBinding::DoubleRightOption,
-        );
-        let base = Instant::now();
+        let (mut detector, config, base) = fn_hold_double_option_detector();
 
         assert_eq!(
             detector.feed(
@@ -1741,11 +1722,7 @@ mod tests {
 
         for (gap_ms, expect_toggle) in table {
             let mut detector = HotkeyDetector::default();
-            let config = test_config(
-                ShortcutBinding::HoldFn,
-                ShortcutBinding::DoubleLeftOption,
-                ShortcutBinding::DoubleRightOption,
-            );
+            let config = fn_hold_double_option_config();
             let base = Instant::now();
 
             assert_eq!(
@@ -1804,13 +1781,7 @@ mod tests {
     #[test]
     /// Right Option double-tap routes to ToggleAssistive, not formatting toggle.
     fn detector_right_option_double_tap_emits_toggle_assistive() {
-        let mut detector = HotkeyDetector::default();
-        let config = test_config(
-            ShortcutBinding::HoldFn,
-            ShortcutBinding::DoubleLeftOption,
-            ShortcutBinding::DoubleRightOption,
-        );
-        let base = Instant::now();
+        let (mut detector, config, base) = fn_hold_double_option_detector();
 
         // First tap: press then release right Option.
         assert_eq!(
@@ -2037,11 +2008,7 @@ mod tests {
             );
 
             // Wrong arm: default arm is Shift; hold Fn + Cmd → arm_ignored INFO once.
-            let hold_fn_config = test_config(
-                ShortcutBinding::HoldFn,
-                ShortcutBinding::DoubleLeftOption,
-                ShortcutBinding::DoubleRightOption,
-            );
+            let hold_fn_config = fn_hold_double_option_config();
             let _ = detector.feed(
                 HotkeyDetectorInput::FlagsChanged {
                     now: base + Duration::from_millis(400),
@@ -2080,13 +2047,7 @@ mod tests {
     #[test]
     /// Active modifier combo blocks Option double-tap with ModifierComboActive.
     fn detector_reports_modifier_blocked_option_double_tap() {
-        let mut detector = HotkeyDetector::default();
-        let config = test_config(
-            ShortcutBinding::HoldFn,
-            ShortcutBinding::DoubleLeftOption,
-            ShortcutBinding::DoubleRightOption,
-        );
-        let base = Instant::now();
+        let (mut detector, config, base) = fn_hold_double_option_detector();
 
         assert_eq!(
             detector.feed(
@@ -2285,13 +2246,7 @@ mod tests {
     #[test]
     /// After an Option combo with another key, double-tap state resets cleanly.
     fn detector_resets_combo_flags_after_option_combo() {
-        let mut detector = HotkeyDetector::default();
-        let config = test_config(
-            ShortcutBinding::HoldFn,
-            ShortcutBinding::DoubleLeftOption,
-            ShortcutBinding::DoubleRightOption,
-        );
-        let base = Instant::now();
+        let (mut detector, config, base) = fn_hold_double_option_detector();
 
         assert_eq!(
             detector.feed(
@@ -2504,11 +2459,7 @@ mod tests {
 
     #[test]
     fn ctrl_digit_opens_channel_and_fn_digit_does_not_when_ctrl_selected() {
-        let config = test_config(
-            ShortcutBinding::HoldFn,
-            ShortcutBinding::DoubleLeftOption,
-            ShortcutBinding::DoubleRightOption,
-        );
+        let config = fn_hold_double_option_config();
         assert_eq!(config.channel_modifier, ChannelModifier::Ctrl);
         let now = Instant::now();
         let mut detector = HotkeyDetector::default();
@@ -2553,11 +2504,7 @@ mod tests {
 
     #[test]
     fn fn_digit_opens_channel_when_fn_selected_and_ctrl_digit_does_not() {
-        let mut config = test_config(
-            ShortcutBinding::HoldFn,
-            ShortcutBinding::DoubleLeftOption,
-            ShortcutBinding::DoubleRightOption,
-        );
+        let mut config = fn_hold_double_option_config();
         config.channel_modifier = ChannelModifier::Fn;
         let now = Instant::now();
         let mut detector = HotkeyDetector::default();
@@ -2592,11 +2539,7 @@ mod tests {
 
     #[test]
     fn cmd_digit_never_opens_a_channel_under_any_configuration() {
-        let base = test_config(
-            ShortcutBinding::HoldFn,
-            ShortcutBinding::DoubleLeftOption,
-            ShortcutBinding::DoubleRightOption,
-        );
+        let base = fn_hold_double_option_config();
         let now = Instant::now();
         for modifier in [ChannelModifier::Ctrl, ChannelModifier::Fn] {
             let mut config = base;
@@ -2634,11 +2577,7 @@ mod tests {
 
     #[test]
     fn fn_tap_below_threshold_toggles_dictation_only_when_enabled() {
-        let mut config = test_config(
-            ShortcutBinding::HoldFn,
-            ShortcutBinding::DoubleLeftOption,
-            ShortcutBinding::DoubleRightOption,
-        );
+        let mut config = fn_hold_double_option_config();
         let base = Instant::now();
         let mut held = HotkeyDetector::default();
         assert_eq!(
@@ -2685,11 +2624,7 @@ mod tests {
 
     #[test]
     fn fn_hold_past_threshold_stays_hold_to_talk_with_tap_enabled() {
-        let mut config = test_config(
-            ShortcutBinding::HoldFn,
-            ShortcutBinding::DoubleLeftOption,
-            ShortcutBinding::DoubleRightOption,
-        );
+        let mut config = fn_hold_double_option_config();
         config.fn_tap_toggles_dictation = true;
         let base = Instant::now();
         let mut detector = HotkeyDetector::default();
@@ -2733,11 +2668,7 @@ mod tests {
 
     #[test]
     fn middle_button_press_release_mirrors_fn_hold_semantics_when_enabled() {
-        let mut config = test_config(
-            ShortcutBinding::HoldFn,
-            ShortcutBinding::DoubleLeftOption,
-            ShortcutBinding::DoubleRightOption,
-        );
+        let mut config = fn_hold_double_option_config();
         config.middle_mouse_acts_as_fn = true;
         let base = Instant::now();
         let mut detector = HotkeyDetector::default();
@@ -2760,11 +2691,7 @@ mod tests {
 
     #[test]
     fn middle_button_is_inert_when_the_option_is_off() {
-        let config = test_config(
-            ShortcutBinding::HoldFn,
-            ShortcutBinding::DoubleLeftOption,
-            ShortcutBinding::DoubleRightOption,
-        );
+        let config = fn_hold_double_option_config();
         assert!(!config.middle_mouse_acts_as_fn);
         let base = Instant::now();
         let mut detector = HotkeyDetector::default();

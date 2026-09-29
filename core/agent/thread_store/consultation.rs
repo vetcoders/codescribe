@@ -215,7 +215,6 @@ fn selection_path(store: &ThreadStore) -> Result<PathBuf> {
     let selection_dir = directory.join("selection");
     fs::create_dir_all(&selection_dir)?;
     // Directory durability only: canonical store child, no content read or write.
-    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
     File::open(&directory)?.sync_all()?;
     let selection_dir = canonical_existing_child(&directory, &selection_dir)?;
     Ok(selection_dir.join("current.json"))
@@ -225,7 +224,6 @@ fn consultation_directory(store: &ThreadStore) -> Result<PathBuf> {
     let directory = store.threads_dir.join("consultations");
     fs::create_dir_all(&directory)?;
     // Sync the configured storage root, not a path supplied by a consultation.
-    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
     File::open(&store.threads_dir)?.sync_all()?;
     canonical_existing_child(&store.threads_dir, &directory)
 }
@@ -279,7 +277,6 @@ fn persist_json(path: &Path, value: &impl Serialize) -> Result<()> {
     file.sync_all()?;
     fs::rename(&temporary, path)?;
     // Sync the validated journal/selection parent after rename; no content access.
-    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
     File::open(path.parent().context("consultation state parent")?)?.sync_all()?;
     Ok(())
 }

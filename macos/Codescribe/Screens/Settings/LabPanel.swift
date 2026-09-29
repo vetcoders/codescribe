@@ -7,21 +7,16 @@ struct LabPanel: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      EyebrowLabel(text: "Settings · \(SettingsSection.lab.title)")
-      Text("Voice Lab")
-        .font(CSFont.ui(26, .bold))
-        .foregroundStyle(CSColor.textHigh)
-      Text(
-        labMode
+      SettingsPageHeader(
+        "Voice Lab",
+        blurb: labMode
           ? "Lab mode is on. Overlay follows the tray toggle — Lab does not steal it."
           : "Open the loopback Voice Lab. Production builds never show this panel."
       )
-      .font(CSFont.ui(12.5))
-      .foregroundStyle(CSColor.textMutedAlt)
 
       Toggle("Lab mode", isOn: $labMode)
         .toggleStyle(.switch)
-        .font(CSFont.ui(13, .medium))
+        .font(.body)
 
       Button("Open Voice Lab") {
         Task { await VoiceLabRuntime.shared.openConsole() }

@@ -28,7 +28,7 @@ struct ToolPermissionsSection: View {
           + "\"Always allow\" from the approval card writes the same identity key."
       )
       .font(CSFont.mono(11, .medium))
-      .foregroundStyle(CSColor.textFaint)
+      .foregroundStyle(Color.secondary)
       .padding(.top, 4)
 
       defaultsCard
@@ -56,7 +56,7 @@ struct ToolPermissionsSection: View {
     VStack(alignment: .leading, spacing: 10) {
       Text("Defaults")
         .font(CSFont.ui(12.5, .semibold))
-        .foregroundStyle(CSColor.textBody)
+        .foregroundStyle(Color.primary)
 
       HStack(spacing: 12) {
         defaultPicker(title: "Read-only", selection: $model.readOnlyDefaultPicker)
@@ -67,12 +67,12 @@ struct ToolPermissionsSection: View {
     .padding(CSSpace.card)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .fill(CSColor.surfaceRaised(0.02))
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .fill(Color.primary.opacity(0.04))
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
     )
   }
 
@@ -80,7 +80,7 @@ struct ToolPermissionsSection: View {
     VStack(alignment: .leading, spacing: 4) {
       Text(title)
         .font(CSFont.mono(10, .medium))
-        .foregroundStyle(CSColor.textFaint)
+        .foregroundStyle(Color.secondary)
       Picker(title, selection: selection) {
         Text("Allow").tag("allow")
         Text("Ask").tag("ask")
@@ -95,7 +95,7 @@ struct ToolPermissionsSection: View {
   private var emptyCapabilities: some View {
     Text("No tools registered yet — open the agent once or add an MCP server.")
       .font(CSFont.mono(11, .medium))
-      .foregroundStyle(CSColor.textFaint)
+      .foregroundStyle(Color.secondary)
       .padding(.vertical, 10)
   }
 }
@@ -203,15 +203,15 @@ struct ToolCapabilityRow: View {
       VStack(alignment: .leading, spacing: 2) {
         Text(item.name)
           .font(CSFont.ui(12.5, .semibold))
-          .foregroundStyle(CSColor.textBody)
+          .foregroundStyle(Color.primary)
           .lineLimit(1)
         Text(item.identity)
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textFaint)
+          .foregroundStyle(Color.secondary)
           .lineLimit(1)
         Text("\(item.origin) · \(item.risk)")
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textFaint)
+          .foregroundStyle(Color.secondary)
       }
       Spacer(minLength: 8)
       Picker("Permission for \(item.name)", selection: $level) {
@@ -226,12 +226,12 @@ struct ToolCapabilityRow: View {
     .padding(.horizontal, 14)
     .padding(.vertical, 10)
     .background(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .fill(CSColor.surfaceRaised(0.02))
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .fill(Color.primary.opacity(0.04))
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .strokeBorder(CSColor.hairline(0.06), lineWidth: 1)
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
     )
   }
 }

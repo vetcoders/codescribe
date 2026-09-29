@@ -393,8 +393,9 @@ async fn fetch_openai_models(
             provider: reference.clone(),
             message: format!("failed to parse models response: {error}"),
         })?;
-    // The Responses family carries no display name; every vendor on this
-    // wire (OpenAI, xAI, Libraxis) is read by the same `data[].id` rule.
+    // Responses-family discovery uses the Libraxis reader (`data[].id`, trimmed).
+    // OpenAI's opaque-id reader and xAI's `models` key are separate pins and
+    // are not consulted on this path.
     Ok(vendors::libraxis::models_from_response(&parsed)
         .into_iter()
         .map(|(id, _)| DiscoveredModel {

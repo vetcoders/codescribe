@@ -1851,78 +1851,46 @@ impl UserSettings {
     /// collapse to `None` rather than failing, which is what lets a partially
     /// written file still load.
     pub(super) fn from_v2(v2: SettingsV2) -> Self {
+        macro_rules! copy {
+            ($root:expr, $leaf:ident) => {
+                $root.as_ref().and_then(|node| node.$leaf)
+            };
+            ($root:expr, $step:ident, $leaf:ident) => {
+                $root
+                    .as_ref()
+                    .and_then(|node| node.$step.as_ref())
+                    .and_then(|node| node.$leaf)
+            };
+        }
+        macro_rules! cloned {
+            ($root:expr, $leaf:ident) => {
+                $root.as_ref().and_then(|node| node.$leaf.clone())
+            };
+            ($root:expr, $step:ident, $leaf:ident) => {
+                $root
+                    .as_ref()
+                    .and_then(|node| node.$step.as_ref())
+                    .and_then(|node| node.$leaf.clone())
+            };
+        }
+
         Self {
-            whisper_language: v2.speech.as_ref().and_then(|s| s.language.clone()),
-            hold_exclusive: v2
-                .interaction
-                .as_ref()
-                .and_then(|i| i.hold.as_ref())
-                .and_then(|h| h.exclusive),
-            hold_arm_modifier: v2
-                .interaction
-                .as_ref()
-                .and_then(|i| i.hold.as_ref())
-                .and_then(|h| h.arm_modifier.clone()),
-            channel_modifier: v2
-                .interaction
-                .as_ref()
-                .and_then(|i| i.channel_modifier.clone()),
-            fn_tap_toggles_dictation: v2
-                .interaction
-                .as_ref()
-                .and_then(|i| i.fn_tap_toggles_dictation),
-            middle_mouse_acts_as_fn: v2
-                .interaction
-                .as_ref()
-                .and_then(|i| i.middle_mouse_acts_as_fn),
-            mode_bindings: v2
-                .interaction
-                .as_ref()
-                .and_then(|i| i.mode_bindings.clone()),
-            hold_start_delay_ms: v2
-                .interaction
-                .as_ref()
-                .and_then(|i| i.hold.as_ref())
-                .and_then(|h| h.start_delay_ms),
-            double_tap_interval_ms: v2
-                .interaction
-                .as_ref()
-                .and_then(|i| i.trigger.as_ref())
-                .and_then(|t| t.double_tap_interval_ms),
-            toggle_silence_sec: v2
-                .interaction
-                .as_ref()
-                .and_then(|i| i.trigger.as_ref())
-                .and_then(|t| t.toggle_silence_timeout_sec),
-            ai_formatting_enabled: v2
-                .speech
-                .as_ref()
-                .and_then(|s| s.formatting.as_ref())
-                .and_then(|f| f.enabled),
-            auto_paste_enabled: v2
-                .interaction
-                .as_ref()
-                .and_then(|interaction| interaction.auto_paste_enabled),
-            transcript_tagging_enabled: v2
-                .speech
-                .as_ref()
-                .and_then(|s| s.formatting.as_ref())
-                .and_then(|f| f.transcript_tagging_enabled),
-            transcript_tag_template: v2
-                .speech
-                .as_ref()
-                .and_then(|s| s.formatting.as_ref())
-                .and_then(|f| f.transcript_tag_template.clone()),
-            beep_on_start: v2
-                .audio
-                .as_ref()
-                .and_then(|a| a.feedback.as_ref())
-                .and_then(|f| f.beep_on_start),
-            sound_volume: v2
-                .audio
-                .as_ref()
-                .and_then(|a| a.feedback.as_ref())
-                .and_then(|f| f.volume),
+            whisper_language: cloned!(v2.speech, language),
+            hold_exclusive: copy!(v2.interaction, hold, exclusive),
+            hold_arm_modifier: cloned!(v2.interaction, hold, arm_modifier),
+            channel_modifier: cloned!(v2.interaction, channel_modifier),
+            fn_tap_toggles_dictation: copy!(v2.interaction, fn_tap_toggles_dictation),
+            middle_mouse_acts_as_fn: copy!(v2.interaction, middle_mouse_acts_as_fn),
+            mode_bindings: cloned!(v2.interaction, mode_bindings),
+            hold_start_delay_ms: copy!(v2.interaction, hold, start_delay_ms),
+            double_tap_interval_ms: copy!(v2.interaction, trigger, double_tap_interval_ms),
+            toggle_silence_sec: copy!(v2.interaction, trigger, toggle_silence_timeout_sec),
+            ai_formatting_enabled: copy!(v2.speech, formatting, enabled),
+            auto_paste_enabled: copy!(v2.interaction, auto_paste_enabled),
+            transcript_tagging_enabled: copy!(v2.speech, formatting, transcript_tagging_enabled),
+            transcript_tag_template: cloned!(v2.speech, formatting, transcript_tag_template),
+            beep_on_start: copy!(v2.audio, feedback, beep_on_start),
+            sound_volume: copy!(v2.audio, feedback, volume),
             formatting_level: v2
                 .speech
                 .as_ref()
@@ -1930,11 +1898,7 @@ impl UserSettings {
                 .and_then(|f| f.level.as_deref())
                 .and_then(|value| FormattingPolicy::parse(value).ok())
                 .map(|policy| policy.as_str().to_string()),
-            llm_formatting_provider: v2
-                .speech
-                .as_ref()
-                .and_then(|s| s.formatting.as_ref())
-                .and_then(|f| f.llm_provider.clone()),
+            llm_formatting_provider: cloned!(v2.speech, formatting, llm_provider),
             llm_custom_providers: v2
                 .providers
                 .as_ref()
@@ -1950,54 +1914,21 @@ impl UserSettings {
                 .as_ref()
                 .map(|p| p.pending_env_key_imports.clone())
                 .unwrap_or_default(),
-            llm_assistive_model: v2
-                .speech
-                .as_ref()
-                .and_then(|s| s.assistive.as_ref())
-                .and_then(|a| a.llm_model.clone()),
-            llm_assistive_provider: v2
-                .speech
-                .as_ref()
-                .and_then(|s| s.assistive.as_ref())
-                .and_then(|a| a.provider.clone()),
-            chat_zoom: v2.ui.as_ref().and_then(|ui| ui.chat_zoom),
-            show_dock_icon: v2.ui.as_ref().and_then(|ui| ui.show_dock_icon),
-            transcription_overlay_enabled: v2
-                .ui
-                .as_ref()
-                .and_then(|ui| ui.transcription_overlay_enabled),
-            tray_start_assistive: v2.ui.as_ref().and_then(|ui| ui.tray_start_assistive),
-            overlay_expanded_by_default: v2
-                .ui
-                .as_ref()
-                .and_then(|ui| ui.overlay_expanded_by_default),
-            show_transcript_at_take_start: v2
-                .ui
-                .as_ref()
-                .and_then(|ui| ui.show_transcript_at_take_start),
-            overlay_keep_visible_between_takes: v2
-                .ui
-                .as_ref()
-                .and_then(|ui| ui.overlay_keep_visible_between_takes),
-            hold_indicator: v2.ui.as_ref().and_then(|ui| ui.hold_indicator),
-            hold_badge_size: v2.ui.as_ref().and_then(|ui| ui.hold_badge_size),
-            deferred_insert_shortcut: v2
-                .interaction
-                .as_ref()
-                .and_then(|interaction| interaction.deferred_insert_shortcut.clone()),
-            restore_clipboard: v2
-                .interaction
-                .as_ref()
-                .and_then(|interaction| interaction.restore_clipboard),
-            restore_clipboard_delay_ms: v2
-                .interaction
-                .as_ref()
-                .and_then(|interaction| interaction.restore_clipboard_delay_ms),
-            llm_formatting_model: v2
-                .speech
-                .as_ref()
-                .and_then(|s| s.formatting.as_ref())
-                .and_then(|f| f.llm_model.clone()),
+            llm_assistive_model: cloned!(v2.speech, assistive, llm_model),
+            llm_assistive_provider: cloned!(v2.speech, assistive, provider),
+            chat_zoom: copy!(v2.ui, chat_zoom),
+            show_dock_icon: copy!(v2.ui, show_dock_icon),
+            transcription_overlay_enabled: copy!(v2.ui, transcription_overlay_enabled),
+            tray_start_assistive: copy!(v2.ui, tray_start_assistive),
+            overlay_expanded_by_default: copy!(v2.ui, overlay_expanded_by_default),
+            show_transcript_at_take_start: copy!(v2.ui, show_transcript_at_take_start),
+            overlay_keep_visible_between_takes: copy!(v2.ui, overlay_keep_visible_between_takes),
+            hold_indicator: copy!(v2.ui, hold_indicator),
+            hold_badge_size: copy!(v2.ui, hold_badge_size),
+            deferred_insert_shortcut: cloned!(v2.interaction, deferred_insert_shortcut),
+            restore_clipboard: copy!(v2.interaction, restore_clipboard),
+            restore_clipboard_delay_ms: copy!(v2.interaction, restore_clipboard_delay_ms),
+            llm_formatting_model: cloned!(v2.speech, formatting, llm_model),
             use_local_stt: v2
                 .speech
                 .as_ref()
@@ -2005,131 +1936,48 @@ impl UserSettings {
                 .and_then(|e| e.mode.as_ref())
                 .filter(|mode| !mode.trim().is_empty())
                 .map(|mode| mode == "local_whisper"),
-            local_model: v2
-                .speech
-                .as_ref()
-                .and_then(|s| s.engine.as_ref())
-                .and_then(|e| e.local_model_id.clone()),
-            stt_file_endpoint: v2
-                .speech
-                .as_ref()
-                .and_then(|s| s.engine.as_ref())
-                .and_then(|e| e.file_transcription_endpoint.clone()),
-            stt_live_endpoint: v2
-                .speech
-                .as_ref()
-                .and_then(|s| s.engine.as_ref())
-                .and_then(|e| e.live_transcription_endpoint.clone()),
-            stt_cloud_refine_endpoint: v2
-                .speech
-                .as_ref()
-                .and_then(|s| s.engine.as_ref())
-                .and_then(|e| e.cloud_refine_endpoint.clone()),
-            transcript_send_mode: v2.interaction.as_ref().and_then(|i| i.send_mode.clone()),
-            audio_input_device: v2.audio.as_ref().and_then(|a| a.input_device_id.clone()),
+            local_model: cloned!(v2.speech, engine, local_model_id),
+            stt_file_endpoint: cloned!(v2.speech, engine, file_transcription_endpoint),
+            stt_live_endpoint: cloned!(v2.speech, engine, live_transcription_endpoint),
+            stt_cloud_refine_endpoint: cloned!(v2.speech, engine, cloud_refine_endpoint),
+            transcript_send_mode: cloned!(v2.interaction, send_mode),
+            audio_input_device: cloned!(v2.audio, input_device_id),
             seal_lane_armed: v2
                 .audio
                 .as_ref()
                 .and_then(|audio| audio.seal_lane_armed)
                 .or(Some(DEFAULT_SEAL_LANE_ARMED)),
-            sound_name: v2
-                .audio
-                .as_ref()
-                .and_then(|a| a.feedback.as_ref())
-                .and_then(|f| f.sound_name.clone()),
-            history_enabled: v2.features.as_ref().and_then(|f| f.history_enabled),
-            quick_notes_enabled: v2.features.as_ref().and_then(|f| f.quick_notes_enabled),
-            quick_notes_save_only: v2.features.as_ref().and_then(|f| f.quick_notes_save_only),
-            start_at_login: v2.system.as_ref().and_then(|s| s.start_at_login),
-            qube_daemon_autostart: v2.system.as_ref().and_then(|s| s.qube_daemon_autostart),
-            qube_donor: v2.system.as_ref().and_then(|s| s.qube_donor.clone()),
-            onboarding_mode: v2.system.as_ref().and_then(|s| s.onboarding_mode.clone()),
-            agent_workspace_roots: v2
-                .system
-                .as_ref()
-                .and_then(|s| s.agent_workspace_roots.clone()),
-            openai_oauth_client_id: v2
-                .system
-                .as_ref()
-                .and_then(|s| s.openai_oauth_client_id.clone()),
-            anthropic_oauth_client_id: v2
-                .system
-                .as_ref()
-                .and_then(|s| s.anthropic_oauth_client_id.clone()),
-            xai_oauth_client_id: v2
-                .system
-                .as_ref()
-                .and_then(|s| s.xai_oauth_client_id.clone()),
-            agent_enter_sends: v2.interaction.as_ref().and_then(|i| i.agent_enter_sends),
-            agent_auto_send: v2.interaction.as_ref().and_then(|i| i.agent_auto_send),
-            buffer_delay_ms: v2
-                .speech
-                .as_ref()
-                .and_then(|s| s.emission.as_ref())
-                .and_then(|e| e.buffer_delay_ms),
-            typing_cps: v2
-                .speech
-                .as_ref()
-                .and_then(|s| s.emission.as_ref())
-                .and_then(|e| e.typing_cps),
-            emit_words_max: v2
-                .speech
-                .as_ref()
-                .and_then(|s| s.emission.as_ref())
-                .and_then(|e| e.emit_words_max),
-            buffered_interim_sec: v2
-                .speech
-                .as_ref()
-                .and_then(|s| s.emission.as_ref())
-                .and_then(|e| e.interim_cadence_sec),
-            whisper_model: v2
-                .speech
-                .as_ref()
-                .and_then(|s| s.engine.as_ref())
-                .and_then(|e| e.whisper_model.clone()),
-            whisper_context_window_sec: v2
-                .speech
-                .as_ref()
-                .and_then(|s| s.engine.as_ref())
-                .and_then(|e| e.whisper_context_window_sec),
-            light_plus_sentence_pause_sec: v2
-                .speech
-                .as_ref()
-                .and_then(|s| s.engine.as_ref())
-                .and_then(|e| e.light_plus_sentence_pause_sec),
-            backend_max_upload_mb: v2
-                .speech
-                .as_ref()
-                .and_then(|s| s.engine.as_ref())
-                .and_then(|e| e.cloud_max_upload_mb),
-            stt_initial_prompt_enabled: v2
-                .speech
-                .as_ref()
-                .and_then(|s| s.engine.as_ref())
-                .and_then(|e| e.initial_prompt_enabled),
-            asr_mode: v2
-                .speech
-                .as_ref()
-                .and_then(|s| s.engine.as_ref())
-                .and_then(|e| e.asr_mode.clone()),
-            asr_gateway_url: v2
-                .speech
-                .as_ref()
-                .and_then(|s| s.engine.as_ref())
-                .and_then(|e| e.gateway_session_url.clone()),
-            cloud_consent: v2
-                .system
-                .as_ref()
-                .and_then(|s| s.cloud_audio_egress_consent.clone()),
-            cloud_consent_at: v2
-                .system
-                .as_ref()
-                .and_then(|s| s.cloud_audio_egress_consent_at.clone()),
-            agent_permissions: v2.agent.as_ref().and_then(|a| a.permissions.clone()),
-            agent_capabilities: v2.agent.as_ref().and_then(|a| a.capabilities.clone()),
+            sound_name: cloned!(v2.audio, feedback, sound_name),
+            history_enabled: copy!(v2.features, history_enabled),
+            quick_notes_enabled: copy!(v2.features, quick_notes_enabled),
+            quick_notes_save_only: copy!(v2.features, quick_notes_save_only),
+            start_at_login: copy!(v2.system, start_at_login),
+            qube_daemon_autostart: copy!(v2.system, qube_daemon_autostart),
+            qube_donor: cloned!(v2.system, qube_donor),
+            onboarding_mode: cloned!(v2.system, onboarding_mode),
+            agent_workspace_roots: cloned!(v2.system, agent_workspace_roots),
+            openai_oauth_client_id: cloned!(v2.system, openai_oauth_client_id),
+            anthropic_oauth_client_id: cloned!(v2.system, anthropic_oauth_client_id),
+            xai_oauth_client_id: cloned!(v2.system, xai_oauth_client_id),
+            agent_enter_sends: copy!(v2.interaction, agent_enter_sends),
+            agent_auto_send: copy!(v2.interaction, agent_auto_send),
+            buffer_delay_ms: copy!(v2.speech, emission, buffer_delay_ms),
+            typing_cps: copy!(v2.speech, emission, typing_cps),
+            emit_words_max: copy!(v2.speech, emission, emit_words_max),
+            buffered_interim_sec: copy!(v2.speech, emission, interim_cadence_sec),
+            whisper_model: cloned!(v2.speech, engine, whisper_model),
+            whisper_context_window_sec: copy!(v2.speech, engine, whisper_context_window_sec),
+            light_plus_sentence_pause_sec: copy!(v2.speech, engine, light_plus_sentence_pause_sec),
+            backend_max_upload_mb: copy!(v2.speech, engine, cloud_max_upload_mb),
+            stt_initial_prompt_enabled: copy!(v2.speech, engine, initial_prompt_enabled),
+            asr_mode: cloned!(v2.speech, engine, asr_mode),
+            asr_gateway_url: cloned!(v2.speech, engine, gateway_session_url),
+            cloud_consent: cloned!(v2.system, cloud_audio_egress_consent),
+            cloud_consent_at: cloned!(v2.system, cloud_audio_egress_consent_at),
+            agent_permissions: cloned!(v2.agent, permissions),
+            agent_capabilities: cloned!(v2.agent, capabilities),
         }
     }
-
     /// Reject a file that would load into nonsense: unsupported schema version,
     /// out-of-range zoom, or an unparseable formatting level. Runs on both read
     /// and write, so a bad value can neither be loaded nor persisted.
@@ -2196,14 +2044,8 @@ impl UserSettings {
             // WHY: `parent` is derived only from the canonical internal
             // settings path above (CODESCRIBE_DATA_DIR / Application Support),
             // never from request or user input; opening it read-only is the
-            // directory fsync that makes the rename durable.
-            // WHEN: the pre-push gate (`semgrep scan --config auto --error`)
-            // flags this line as rust.actix path traversal (2026-09-08, after
-            // the vc-prune silencer strip); the local `--config auto` run does
-            // not, so the waiver must survive both.
-            // WHERE: this fsync only — the write above targets `tmp`, which is
-            // created with `create_new`.
-            // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
+            // directory fsync that makes the rename durable; the write above
+            // targets `tmp`, which is created with `create_new`.
             File::open(parent)?.sync_all()?;
             Ok(())
         })();
@@ -2752,6 +2594,165 @@ impl UserSettings {
     /// Sets a string-valued setting by its .env key name and saves.
     pub fn set_string(&mut self, key: &str, value: &str) {
         let before = self.clone();
+        match self.stage_string(key, value, false) {
+            Ok(true) => self.save_if_changed(&before, "set_string", key),
+            Ok(false) => {}
+            Err(error) => warn!("Rejected setting write for {key}: {error}"),
+        }
+    }
+
+    /// Refine endpoint stored for this intent, or the shipped REST default.
+    pub fn cloud_refine_endpoint_or_default(&self) -> String {
+        self.stt_cloud_refine_endpoint
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(super::defaults::default_cloud_refine_endpoint)
+    }
+
+    /// Resolve the effective Layer 1 product mode from this settings snapshot.
+    ///
+    /// The one sanctioned read path: combines the persisted `asr_mode`, the
+    /// consent record, and the `use_local_stt` choice through
+    /// [`crate::config::cloud_asr::resolve_asr_product_mode`]. Callers must not
+    /// re-derive policy from the raw fields.
+    pub fn resolved_asr_mode(&self) -> crate::config::cloud_asr::ResolvedAsrMode {
+        crate::config::cloud_asr::resolve_asr_product_mode(
+            self.asr_mode.as_deref(),
+            self.cloud_consent.as_deref(),
+            self.use_local_stt,
+        )
+    }
+
+    /// Sets a boolean-valued setting by its .env key name and saves.
+    pub fn set_bool(&mut self, key: &str, value: bool) {
+        let before = self.clone();
+        if self.store_bool(key, value) {
+            self.save_if_changed(&before, "set_bool", key);
+        } else {
+            warn!("Unknown bool setting key: {key}");
+        }
+    }
+
+    /// Sets a u64-valued setting by its .env key name and saves.
+    pub fn set_u64(&mut self, key: &str, value: u64) {
+        let before = self.clone();
+        if self.store_u64(key, value) {
+            self.save_if_changed(&before, "set_u64", key);
+        } else {
+            warn!("Unknown u64 setting key: {key}");
+        }
+    }
+
+    /// Sets an f32-valued setting by its .env key name and saves.
+    pub fn set_f32(&mut self, key: &str, value: f32) {
+        let before = self.clone();
+        if self.store_f32(key, value) {
+            self.save_if_changed(&before, "set_f32", key);
+        } else {
+            warn!("Unknown f32 setting key: {key}");
+        }
+    }
+
+    /// Single-key promoted write used by `Config::save_to_env`.
+    ///
+    /// Parse failures for numbers are skipped. Invalid strings warn and leave
+    /// the stored value unchanged. Formatting is validated by the caller before
+    /// this runs, so a bad formatting level still fails the whole save.
+    pub(crate) fn write_wire(&mut self, key: &str, value: &str) -> anyhow::Result<()> {
+        let before = self.clone();
+        if self.assign_wire(key, value, false)? {
+            self.save_if_changed(&before, "save_to_env", key);
+        }
+        Ok(())
+    }
+
+    /// Apply one promoted wire value without saving.
+    ///
+    /// `batch` selects `save_to_env_many` policy: an invalid STT endpoint or
+    /// formatting level aborts the batch, while hold, channel, and
+    /// deferred-insert parse failures stay silent. Callers that save one key
+    /// pass `false` and get the warn-and-keep policy.
+    pub(crate) fn assign_wire(
+        &mut self,
+        key: &str,
+        value: &str,
+        batch: bool,
+    ) -> anyhow::Result<bool> {
+        const U64_KEYS: &[&str] = &[
+            "HOLD_START_DELAY_MS",
+            "DOUBLE_TAP_INTERVAL_MS",
+            "CODESCRIBE_BUFFER_DELAY_MS",
+            "CODESCRIBE_EMIT_WORDS_MAX",
+            "BACKEND_MAX_UPLOAD_MB",
+            "HOLD_BADGE_SIZE",
+            "RESTORE_CLIPBOARD_DELAY_MS",
+        ];
+        const F32_KEYS: &[&str] = &[
+            "SOUND_VOLUME",
+            "TOGGLE_SILENCE_SEC",
+            "WHISPER_CONTEXT_WINDOW_SEC",
+            "LIGHT_PLUS_SENTENCE_PAUSE_SEC",
+            "CODESCRIBE_TYPING_CPS",
+            "CODESCRIBE_BUFFERED_INTERIM_SEC",
+        ];
+        const BOOL_KEYS: &[&str] = &[
+            "AI_FORMATTING_ENABLED",
+            "AUTO_PASTE_ENABLED",
+            "TRANSCRIPT_TAGGING_ENABLED",
+            "BEEP_ON_START",
+            "SHOW_DOCK_ICON",
+            "TRANSCRIPTION_OVERLAY_ENABLED",
+            "TRAY_START_ASSISTIVE",
+            "HOLD_EXCLUSIVE",
+            "FN_TAP_TOGGLES_DICTATION",
+            "MIDDLE_MOUSE_ACTS_AS_FN",
+            "USE_LOCAL_STT",
+            "HISTORY_ENABLED",
+            "QUICK_NOTES_ENABLED",
+            "QUICK_NOTES_SAVE_ONLY",
+            "START_AT_LOGIN",
+            "QUBE_DAEMON_AUTOSTART",
+            "AGENT_ENTER_SENDS",
+            "AGENT_AUTO_SEND",
+            "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED",
+            "HOLD_INDICATOR",
+            "RESTORE_CLIPBOARD",
+            SILERO_FUSION_ENV,
+        ];
+        if U64_KEYS.contains(&key) {
+            return Ok(value
+                .parse::<u64>()
+                .ok()
+                .is_some_and(|parsed| self.store_u64(key, parsed)));
+        }
+        if F32_KEYS.contains(&key) {
+            return Ok(value
+                .parse::<f32>()
+                .ok()
+                .is_some_and(|parsed| self.store_f32(key, parsed)));
+        }
+        if BOOL_KEYS.contains(&key) {
+            let parsed = matches!(value, "1" | "true" | "yes" | "on");
+            return Ok(self.store_bool(key, parsed));
+        }
+        self.stage_string(key, value, batch)
+    }
+
+    /// Stage one string setting. `Ok(false)` means the write was refused or
+    /// the key is unknown. `Err` is only a batch-fatal validator.
+    fn stage_string(&mut self, key: &str, value: &str, batch: bool) -> anyhow::Result<bool> {
+        let reject = |message: String, strict_batch: bool| -> anyhow::Result<bool> {
+            if !batch {
+                warn!("{message}");
+                Ok(false)
+            } else if strict_batch {
+                Err(anyhow::anyhow!(message))
+            } else {
+                Ok(false)
+            }
+        };
         match key {
             "WHISPER_LANGUAGE" => self.whisper_language = Some(value.to_owned()),
             "LLM_ASSISTIVE_MODEL" => self.llm_assistive_model = Some(value.to_owned()),
@@ -2774,8 +2775,7 @@ impl UserSettings {
             "FORMATTING_LEVEL" => match FormattingPolicy::parse(value) {
                 Ok(policy) => self.formatting_level = Some(policy.as_str().to_string()),
                 Err(error) => {
-                    warn!("Rejected formatting policy write: {error}");
-                    return;
+                    return reject(format!("Rejected formatting policy write: {error}"), true);
                 }
             },
             "CODESCRIBE_DEFERRED_INSERT_SHORTCUT" => {
@@ -2784,8 +2784,10 @@ impl UserSettings {
                         self.deferred_insert_shortcut = Some(shortcut.wire_id().to_string())
                     }
                     Err(error) => {
-                        warn!("Rejected deferred-insert shortcut write: {error}");
-                        return;
+                        return reject(
+                            format!("Rejected deferred-insert shortcut write: {error}"),
+                            false,
+                        );
                     }
                 }
             }
@@ -2808,8 +2810,12 @@ impl UserSettings {
                     match crate::stt::validate_stt_endpoint(lane, value) {
                         Ok(endpoint) => Some(endpoint),
                         Err(error) => {
-                            warn!(%error, "Rejected STT endpoint write");
-                            return;
+                            return if batch {
+                                Err(anyhow::Error::from(error))
+                            } else {
+                                warn!(%error, "Rejected STT endpoint write");
+                                Ok(false)
+                            };
                         }
                     }
                 };
@@ -2824,7 +2830,7 @@ impl UserSettings {
             "WHISPER_MODEL" => self.whisper_model = Some(value.to_owned()),
             "ONBOARDING_MODE" => self.onboarding_mode = Some(value.to_owned()),
             "CODESCRIBE_ASR_MODE" => {
-                // Empty clears back to derivation (legacy choice or Apple-only).
+                // Empty clears back to derivation (the stored choice or Apple-only).
                 let trimmed = value.trim();
                 if trimmed.is_empty() {
                     self.asr_mode = None;
@@ -2832,8 +2838,7 @@ impl UserSettings {
                     match trimmed.parse::<crate::config::cloud_asr::AsrProductMode>() {
                         Ok(mode) => self.asr_mode = Some(mode.as_str().to_string()),
                         Err(error) => {
-                            warn!("Rejected ASR mode write: {error}");
-                            return;
+                            return reject(format!("Rejected ASR mode write: {error}"), false);
                         }
                     }
                 }
@@ -2853,8 +2858,12 @@ impl UserSettings {
                         self.cloud_consent_at = Some(chrono::Utc::now().to_rfc3339());
                     }
                     _ => {
-                        warn!("Rejected cloud consent write (expected granted|denied): {value}");
-                        return;
+                        return reject(
+                            format!(
+                                "Rejected cloud consent write (expected granted|denied): {value}"
+                            ),
+                            false,
+                        );
                     }
                 }
             }
@@ -2866,8 +2875,10 @@ impl UserSettings {
                     match crate::config::cloud_asr::GatewaySessionMint::new(trimmed) {
                         Ok(mint) => self.asr_gateway_url = Some(mint.url().to_string()),
                         Err(error) => {
-                            warn!("Rejected ASR gateway URL write: {error}");
-                            return;
+                            return reject(
+                                format!("Rejected ASR gateway URL write: {error}"),
+                                false,
+                            );
                         }
                     }
                 }
@@ -2877,8 +2888,10 @@ impl UserSettings {
                 match normalized.as_str() {
                     "on" | "off" => self.qube_donor = Some(normalized),
                     _ => {
-                        warn!("Rejected qube_donor write (expected on|off): {value}");
-                        return;
+                        return reject(
+                            format!("Rejected qube_donor write (expected on|off): {value}"),
+                            false,
+                        );
                     }
                 }
             }
@@ -2889,52 +2902,26 @@ impl UserSettings {
             "HOLD_ARM_MODIFIER" => match value.parse::<crate::config::HoldArmModifier>() {
                 Ok(arm) => self.hold_arm_modifier = Some(arm.as_str().to_string()),
                 Err(error) => {
-                    warn!("Rejected hold arm modifier write: {error}");
-                    return;
+                    return reject(format!("Rejected hold arm modifier write: {error}"), false);
                 }
             },
             "AGENT_CHANNEL_MODIFIER" => match value.parse::<crate::config::ChannelModifier>() {
                 Ok(modifier) => self.channel_modifier = Some(modifier.as_str().to_string()),
                 Err(error) => {
-                    warn!("Rejected agent channel modifier write: {error}");
-                    return;
+                    return reject(
+                        format!("Rejected agent channel modifier write: {error}"),
+                        false,
+                    );
                 }
             },
             other => {
-                warn!("Unknown string setting key: {other}");
-                return;
+                return reject(format!("Unknown string setting key: {other}"), false);
             }
         }
-        self.save_if_changed(&before, "set_string", key);
+        Ok(true)
     }
 
-    /// Refine endpoint stored for this intent, or the shipped REST default.
-    pub fn cloud_refine_endpoint_or_default(&self) -> String {
-        self.stt_cloud_refine_endpoint
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-            .unwrap_or_else(super::defaults::default_cloud_refine_endpoint)
-    }
-
-    /// Resolve the effective Layer 1 product mode from this settings snapshot.
-    ///
-    /// The one sanctioned read path: combines the persisted `asr_mode`, the
-    /// consent record, and the legacy `use_local_stt` choice through
-    /// [`crate::config::cloud_asr::resolve_asr_product_mode`]. Callers must not
-    /// re-derive policy from the raw fields.
-    pub fn resolved_asr_mode(&self) -> crate::config::cloud_asr::ResolvedAsrMode {
-        crate::config::cloud_asr::resolve_asr_product_mode(
-            self.asr_mode.as_deref(),
-            self.cloud_consent.as_deref(),
-            self.use_local_stt,
-        )
-    }
-
-    /// Sets a boolean-valued setting by its .env key name and saves.
-    pub fn set_bool(&mut self, key: &str, value: bool) {
-        let before = self.clone();
+    fn store_bool(&mut self, key: &str, value: bool) -> bool {
         match key {
             "AI_FORMATTING_ENABLED" => self.ai_formatting_enabled = Some(value),
             "AUTO_PASTE_ENABLED" => self.auto_paste_enabled = Some(value),
@@ -2960,17 +2947,12 @@ impl UserSettings {
             "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED" => {
                 self.stt_initial_prompt_enabled = Some(value)
             }
-            other => {
-                warn!("Unknown bool setting key: {other}");
-                return;
-            }
+            _ => return false,
         }
-        self.save_if_changed(&before, "set_bool", key);
+        true
     }
 
-    /// Sets a u64-valued setting by its .env key name and saves.
-    pub fn set_u64(&mut self, key: &str, value: u64) {
-        let before = self.clone();
+    fn store_u64(&mut self, key: &str, value: u64) -> bool {
         match key {
             "HOLD_START_DELAY_MS" => self.hold_start_delay_ms = Some(value),
             "DOUBLE_TAP_INTERVAL_MS" => self.double_tap_interval_ms = Some(value),
@@ -2979,17 +2961,12 @@ impl UserSettings {
             "BACKEND_MAX_UPLOAD_MB" => self.backend_max_upload_mb = Some(value),
             "HOLD_BADGE_SIZE" => self.hold_badge_size = Some(value),
             "RESTORE_CLIPBOARD_DELAY_MS" => self.restore_clipboard_delay_ms = Some(value),
-            other => {
-                warn!("Unknown u64 setting key: {other}");
-                return;
-            }
+            _ => return false,
         }
-        self.save_if_changed(&before, "set_u64", key);
+        true
     }
 
-    /// Sets an f32-valued setting by its .env key name and saves.
-    pub fn set_f32(&mut self, key: &str, value: f32) {
-        let before = self.clone();
+    fn store_f32(&mut self, key: &str, value: f32) -> bool {
         match key {
             "SOUND_VOLUME" => self.sound_volume = Some(value),
             "TOGGLE_SILENCE_SEC" => self.toggle_silence_sec = Some(value),
@@ -3003,12 +2980,9 @@ impl UserSettings {
             }
             "CODESCRIBE_TYPING_CPS" => self.typing_cps = Some(value),
             "CODESCRIBE_BUFFERED_INTERIM_SEC" => self.buffered_interim_sec = Some(value),
-            other => {
-                warn!("Unknown f32 setting key: {other}");
-                return;
-            }
+            _ => return false,
         }
-        self.save_if_changed(&before, "set_f32", key);
+        true
     }
 }
 

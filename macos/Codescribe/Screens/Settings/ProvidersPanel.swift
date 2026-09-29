@@ -15,20 +15,11 @@ struct ProvidersPanel: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      EyebrowLabel(text: "Settings · \(SettingsSection.keys.title)")
-      Text("Providers.")
-        .font(CSFont.ui(26, .bold))
-        .tracking(-0.5)
-        .foregroundStyle(CSColor.textHigh)
-        .padding(.top, 6)
-
-      Text(
-        "Keys and endpoints. Vendors always use their factory endpoint; a custom provider is any host that speaks /v1/responses or /v1/messages. Which model each lane sends lives under Agent › Request lanes."
+      SettingsPageHeader(
+        "Providers.",
+        blurb:
+          "Keys and endpoints. Vendors always use their factory endpoint; a custom provider is any host that speaks /v1/responses or /v1/messages. Which model each lane sends lives under Agent › Request lanes."
       )
-      .font(CSFont.ui(12.5))
-      .lineSpacing(2)
-      .foregroundStyle(CSColor.textMutedAlt)
-      .padding(.top, 8)
 
       if let notice = model.laneResetNotice {
         LaneResetNotice(text: notice)
@@ -61,7 +52,7 @@ struct ProvidersPanel: View {
         Text("●").font(CSFont.mono(11, .medium)).foregroundStyle(CSColor.olive)
         Text("secrets live only in the Keychain — presence shown, value hidden")
           .font(CSFont.mono(11, .medium))
-          .foregroundStyle(CSColor.textFaint)
+          .foregroundStyle(Color.secondary)
       }
       .padding(.top, 16)
     }
@@ -129,30 +120,30 @@ struct ProviderCard: View {
       HStack(spacing: 10) {
         Text(provider.displayName)
           .font(CSFont.ui(14.5, .bold))
-          .foregroundStyle(CSColor.textHigh)
+          .foregroundStyle(Color.primary)
         Text(wireLabel)
           .font(CSFont.mono(10, .semibold))
-          .foregroundStyle(CSColor.textMutedAlt)
+          .foregroundStyle(Color.secondary)
           .padding(.horizontal, 7)
           .padding(.vertical, 3)
-          .background(Capsule().fill(CSColor.surfaceRaised(0.05)))
-          .overlay(Capsule().strokeBorder(CSColor.hairline(0.1), lineWidth: 1))
+          .background(Capsule().fill(Color.primary.opacity(0.1)))
+          .overlay(Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 1))
           .accessibilityLabel("\(wireLabel) wire")
         Spacer(minLength: 0)
         if isCustom {
-          SettingsChipButton("Edit", tint: CSColor.textMutedAlt) { onEdit?() }
+          SettingsChipButton("Edit", tint: Color.secondary) { onEdit?() }
             .accessibilityLabel("Edit custom provider \(provider.displayName)")
-          SettingsChipButton("Remove", tint: CSColor.terracottaLight) { confirmRemove = true }
+          SettingsChipButton("Remove", tint: CSColor.terracotta) { confirmRemove = true }
             .accessibilityLabel("Remove custom provider \(provider.displayName)")
         }
       }
       HStack(spacing: 8) {
         Text(isCustom ? "endpoint" : "factory endpoint")
           .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textFaint)
+          .foregroundStyle(Color.secondary)
         Text(provider.endpoint)
           .font(CSFont.mono(11.5, .medium))
-          .foregroundStyle(CSColor.textBodyAlt)
+          .foregroundStyle(Color.primary)
           .lineLimit(1)
           .truncationMode(.middle)
           .textSelection(.enabled)
@@ -175,7 +166,7 @@ struct ProviderCard: View {
         )
       }
     }
-    .csSettingsCard()
+    .settingsGroupedInset()
     .accessibilityElement(children: .contain)
     .accessibilityLabel("\(provider.displayName) \(isCustom ? "custom provider" : "provider")")
     .confirmationDialog(
@@ -212,7 +203,7 @@ struct CustomProvidersSection: View {
             .font(CSFont.ui(12, .semibold))
         }
         .csFocusRing()
-        .foregroundStyle(CSColor.textBody)
+        .foregroundStyle(Color.primary)
         .accessibilityIdentifier("providers-add-custom")
       }
 
@@ -221,13 +212,13 @@ struct CustomProvidersSection: View {
       )
       .font(CSFont.ui(11.5))
       .lineSpacing(2)
-      .foregroundStyle(CSColor.textMutedAlt)
+      .foregroundStyle(Color.secondary)
       .padding(.top, 8)
 
       if model.customProviders.isEmpty {
         Text("No custom providers yet.")
           .font(CSFont.mono(11, .medium))
-          .foregroundStyle(CSColor.textFaint)
+          .foregroundStyle(Color.secondary)
           .padding(.top, 12)
       } else {
         VStack(spacing: 8) {
@@ -272,10 +263,10 @@ struct CustomProviderForm: View {
       Text(isEdit ? "Edit custom provider." : "Add custom provider.")
         .font(CSFont.ui(20, .bold))
         .tracking(-0.3)
-        .foregroundStyle(CSColor.textHigh)
+        .foregroundStyle(Color.primary)
       Text("The endpoint is normalized to the wire's canonical path on save.")
         .font(CSFont.ui(11.5))
-        .foregroundStyle(CSColor.textMutedAlt)
+        .foregroundStyle(Color.secondary)
 
       field("Name") {
         TextField("e.g. Libraxis", text: $name)
@@ -311,7 +302,7 @@ struct CustomProviderForm: View {
       if let error {
         Text(error)
           .font(CSFont.mono(11, .medium))
-          .foregroundStyle(CSColor.terracottaLight)
+          .foregroundStyle(CSColor.terracotta)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("custom-provider-form-error")
       }
@@ -330,7 +321,6 @@ struct CustomProviderForm: View {
     }
     .padding(24)
     .frame(width: 480)
-    .background(CSColor.windowWash)
     .onAppear {
       if case .edit(let provider) = target {
         name = provider.displayName
@@ -347,7 +337,7 @@ struct CustomProviderForm: View {
     VStack(alignment: .leading, spacing: 5) {
       Text(title)
         .font(CSFont.mono(10.5, .semibold))
-        .foregroundStyle(CSColor.textMuted)
+        .foregroundStyle(Color.secondary)
       control()
     }
   }
@@ -391,7 +381,7 @@ struct SpeechToTextSection: View {
       Text("Cloud mode and consent stay on Dictation; endpoints and keys live here.")
         .font(CSFont.ui(11.5))
         .lineSpacing(2)
-        .foregroundStyle(CSColor.textMutedAlt)
+        .foregroundStyle(Color.secondary)
         .padding(.top, 4)
       VStack(spacing: 8) {
         ForEach(model.sttLanes, id: \.id) { lane in
@@ -414,10 +404,10 @@ struct SttLaneCard: View {
     VStack(alignment: .leading, spacing: 10) {
       Text(lane.title)
         .font(CSFont.ui(14.5, .bold))
-        .foregroundStyle(CSColor.textHigh)
+        .foregroundStyle(Color.primary)
       Text(lane.accepts)
         .font(CSFont.mono(10.5, .medium))
-        .foregroundStyle(CSColor.textMutedAlt)
+        .foregroundStyle(Color.secondary)
         .fixedSize(horizontal: false, vertical: true)
       SettingsUrlRow(
         title: "Endpoint",
@@ -441,7 +431,7 @@ struct SttLaneCard: View {
         )
       }
     }
-    .csSettingsCard()
+    .settingsGroupedInset()
     .accessibilityElement(children: .contain)
     .accessibilityLabel("\(lane.title) lane")
   }
@@ -460,7 +450,7 @@ struct ServiceKeysSection: View {
       Text("GitHub token. Speech-to-text endpoints and keys live in the section above.")
         .font(CSFont.ui(11.5))
         .lineSpacing(2)
-        .foregroundStyle(CSColor.textMutedAlt)
+        .foregroundStyle(Color.secondary)
         .padding(.top, 8)
       VStack(spacing: 8) {
         ForEach(model.serviceKeyAccounts, id: \.self) { account in
@@ -478,7 +468,5 @@ struct ServiceKeysSection: View {
   #Preview("Providers panel") {
     ScrollView { ProvidersPanel(model: .preview(.keys)) }
       .frame(width: 720, height: 900)
-      .background(CSColor.windowWash)
-      .preferredColorScheme(.dark)
   }
 #endif

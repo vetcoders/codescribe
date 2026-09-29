@@ -154,35 +154,18 @@ final class OverlayEditKeyGateTests: XCTestCase {
   ) {
     let isFormatted = phase == "formatted"
     state.applyTranscriptProjection(
-      CsTranscriptProjectionEvent(
-        schema: "codescribe.transcript_projection.v1",
+      transcriptProjection(
         sequence: sequence,
         emittedAt: "2026-09-08T00:00:00Z",
         sessionId: "edit-key-gate-fixture",
-        mode: "dictation",
-        reducerRevision: sequence,
-        reducerAction: terminal ? "record_ledger_terminal_seal" : "record_ledger_projection",
-        occurrenceSessionId: "edit-key-gate-fixture",
-        captureEpoch: 1,
-        sampleStart: (sequence - 1) * 16_000,
-        sampleEnd: sequence * 16_000,
-        documentIndex: sequence - 1,
-        label: terminal ? "terminal" : "live",
         renderedText: text,
-        deliveryText: nil,
         phase: phase,
+        terminal: terminal,
+        reducerAction: terminal ? "record_ledger_terminal_seal" : "record_ledger_projection",
         canPaste: isFormatted,
         canInsert: isFormatted,
-        canCopy: !text.isEmpty,
         canRetranscribe: isFormatted,
-        canFormat: isFormatted,
-        canSendToAgent: false,
-        terminal: terminal,
-        lifecycleTerminal: terminal,
-        delivery: .unattempted,
-        acousticReceipts: [],
-        sealCoverage: nil,
-        consultationPresentations: []
+        canFormat: isFormatted
       )
     )
   }

@@ -203,55 +203,30 @@ final class OverlayRefusalLayoutHangTests: XCTestCase {
   private func listeningProjection(_ text: String, sequence: UInt64) -> CsTranscriptProjectionEvent
   {
     let sampleEnd = UInt64(7_680 + 595_000 * sequence)
-    let receipt = CsProjectedAcousticReceipt(
-      acousticSerialVersion: 1,
-      acousticSerial: "hang-acoustic-\(sequence)",
+    let receipt = projectedAcousticReceipt(
+      serial: "hang-acoustic-\(sequence)",
       sessionId: "hang-session",
-      captureEpoch: 1,
       sampleStart: 7_680,
       sampleEnd: sampleEnd,
-      durationMs: UInt64(sampleEnd / 48),
-      energyIntegral: 1,
-      meanRmsDbfs: -20,
-      peakDbfs: -6,
-      vadOpenSample: 7_680,
-      vadCloseSample: sampleEnd,
-      evidenceCalibrationVersion: "cal2-macbook-pro-microphone-1",
-      wordEvidenceReceipts: ["hang-word-evidence-\(sequence)"],
-      layerDecisionReceipts: ["hang-layer-decision-\(sequence)"],
-      sealReceipt: nil,
-      manualEditReceipt: nil,
-      presentationReceipt: nil
+      wordEvidence: ["hang-word-evidence-\(sequence)"],
+      layerDecisions: ["hang-layer-decision-\(sequence)"],
+      durationMs: sampleEnd / 48,
+      calibration: "cal2-macbook-pro-microphone-1"
     )
-    return CsTranscriptProjectionEvent(
-      schema: "codescribe.transcript_projection.v1",
+    return transcriptProjection(
       sequence: sequence,
       emittedAt: "2026-09-06T10:04:06Z",
       sessionId: "hang-session",
-      mode: "dictation",
-      reducerRevision: 3 + sequence,
+      renderedText: text,
+      phase: "listening",
+      terminal: false,
       reducerAction: "record_ledger_projection",
-      occurrenceSessionId: "hang-session",
-      captureEpoch: 1,
+      reducerRevision: 3 + sequence,
       sampleStart: 7_680,
       sampleEnd: sampleEnd,
       documentIndex: 0,
-      label: "live",
-      renderedText: text,
-      deliveryText: nil,
-      phase: "listening",
-      canPaste: false,
-      canInsert: false,
       canCopy: true,
-      canRetranscribe: false,
-      canFormat: false,
-      canSendToAgent: false,
-      terminal: false,
-      lifecycleTerminal: false,
-      delivery: .unattempted,
-      acousticReceipts: [receipt],
-      sealCoverage: nil,
-      consultationPresentations: []
+      acousticReceipts: [receipt]
     )
   }
 
