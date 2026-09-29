@@ -14,21 +14,46 @@ struct WelcomeStepView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
       EyebrowLabel(text: "Welcome")
-      Text("Codescribe turns your voice into text — anywhere.")
-        .font(CSFont.ui(28, .bold))
-        .tracking(-0.5)
-        .foregroundStyle(CSColor.textHigh)
+      Text("Think it. Say it. Keep your flow.")
+        .font(.title2.weight(.semibold))
+        .foregroundStyle(.primary)
         .fixedSize(horizontal: false, vertical: true)
       Text(
-        "This quick setup grants the macOS permissions Codescribe needs, "
-          + "picks your language and hotkeys, and optionally wires up an AI "
-          + "provider. You can change everything later in Settings."
+        "Bring your words into the apps you already use. We’ll connect your microphone, "
+          + "choose your language and shortcuts, and optionally add an AI "
+          + "assistant. Every choice can be changed later in Settings."
       )
-      .font(CSFont.ui(14))
+      .font(.body)
       .lineSpacing(3)
-      .foregroundStyle(CSColor.textMutedAlt)
+      .foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
+
+      HStack(alignment: .top, spacing: 14) {
+        invitation(
+          "Speak naturally", symbol: "waveform", detail: "Capture a thought while it’s fresh.")
+        invitation(
+          "Shape your words", symbol: "text.alignleft", detail: "Review and refine your transcript."
+        )
+        invitation(
+          "Choose where it goes", symbol: "paperplane", detail: "Keep control of the destination.")
+      }
+      .padding(.top, 20)
     }
+  }
+
+  private func invitation(_ title: String, symbol: String, detail: String) -> some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Image(systemName: symbol)
+        .font(.system(size: 26, weight: .medium))
+        .accessibilityHidden(true)
+      Text(title).font(.headline)
+      Text(detail).font(.callout).foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .frame(maxWidth: .infinity, minHeight: 135, alignment: .topLeading)
+    .padding(18)
+    .modifier(SetupGlass())
+    .accessibilityElement(children: .combine)
   }
 }
 
@@ -45,14 +70,13 @@ private struct OnboardingStepHeader: View {
     VStack(alignment: .leading, spacing: 16) {
       EyebrowLabel(text: eyebrow)
       Text(title)
-        .font(CSFont.ui(26, .bold))
-        .tracking(-0.5)
-        .foregroundStyle(CSColor.textHigh)
+        .font(.title2.weight(.semibold))
+        .foregroundStyle(.primary)
         .fixedSize(horizontal: false, vertical: true)
       Text(blurb)
-        .font(CSFont.ui(14))
+        .font(.body)
         .lineSpacing(3)
-        .foregroundStyle(CSColor.textMutedAlt)
+        .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
     }
   }
@@ -69,51 +93,24 @@ struct OnboardingChoiceCard: View {
   var body: some View {
     Button(action: action) {
       HStack(alignment: .top, spacing: 12) {
-        ZStack {
-          Circle()
-            .strokeBorder(
-              isSelected ? CSColor.chromeAccent.opacity(0.9) : CSColor.hairline(0.18),
-              lineWidth: 1.5
-            )
-            .frame(width: 16, height: 16)
-          if isSelected {
-            Circle().fill(CSColor.chromeAccent).frame(width: 8, height: 8)
-          }
-        }
-        .padding(.top, 1)
+        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+          .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
         VStack(alignment: .leading, spacing: 3) {
-          Text(title)
-            .font(CSFont.ui(13.5, .semibold))
-            .foregroundStyle(CSColor.textHigh)
+          Text(title).font(.body.weight(.semibold))
           if let subtitle {
             Text(subtitle)
-              .font(CSFont.ui(12))
-              .lineSpacing(2)
-              .foregroundStyle(CSColor.textMutedAlt)
+              .font(.callout)
+              .foregroundStyle(.secondary)
               .fixedSize(horizontal: false, vertical: true)
           }
         }
         Spacer(minLength: 0)
       }
-      .padding(.horizontal, 15)
-      .padding(.vertical, 13)
-      .background(
-        RoundedRectangle(cornerRadius: 11, style: .continuous)
-          .fill(CSColor.chromeAccent.opacity(isSelected ? 0.07 : 0))
-          .background(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-              .fill(CSColor.surfaceRaised(isSelected ? 0 : 0.03))
-          )
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 11, style: .continuous)
-          .strokeBorder(
-            isSelected ? CSColor.chromeAccent.opacity(0.28) : CSColor.hairline(0.08),
-            lineWidth: 1
-          )
-      )
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(6)
     }
-    .csFocusRing()
+    .modifier(SetupActionStyle())
+    .accessibilityAddTraits(isSelected ? .isSelected : [])
   }
 }
 
@@ -123,7 +120,7 @@ private struct OnboardingStepNote: View {
 
   var body: some View {
     Text(text)
-      .font(CSFont.mono(11, .medium))
+      .font(.callout)
       .foregroundStyle(CSColor.textFaint)
       .fixedSize(horizontal: false, vertical: true)
       .padding(.top, 4)
@@ -139,8 +136,10 @@ struct ModeStepView: View {
     VStack(alignment: .leading, spacing: 16) {
       OnboardingStepHeader(
         eyebrow: "Operating lane",
-        title: "Basic or Agentic.",
-        blurb: "Choose how codescribe works. You can switch lanes later in Settings.")
+        title: "Where should your words go?",
+        blurb:
+          "Start with dictation, or bring an assistant into the conversation. Change this any time in Settings."
+      )
 
       VStack(spacing: 10) {
         OnboardingChoiceCard(
@@ -151,7 +150,7 @@ struct ModeStepView: View {
 
         OnboardingChoiceCard(
           title: "Agentic — dictation + AI agent",
-          subtitle: "Unlocks the agent chat and MCP tool substrate, "
+          subtitle: "Talk with an AI assistant and connect its tools, "
             + "so your voice can drive an AI assistant, not just type.",
           isSelected: model.onboardingMode == .agentic
         ) { model.selectMode(.agentic) }
@@ -254,9 +253,9 @@ struct AgenticReadinessStepView: View {
       HStack(alignment: .firstTextBaseline, spacing: 10) {
         OnboardingStepHeader(
           eyebrow: "Agentic readiness",
-          title: "Your agentic substrate.",
-          blurb: "Check what the agent lane needs, then optionally install the "
-            + "named live-session bridge for your agent client.")
+          title: "Meet your working companions.",
+          blurb: "Check your connections, then optionally connect a "
+            + "live session to your coding assistant.")
         Spacer(minLength: 0)
       }
 
@@ -279,10 +278,10 @@ struct AgenticReadinessStepView: View {
           .padding(.top, 4)
       }
 
-      OnboardingButton(title: "Refresh", kind: .secondary) {
+      Button("Refresh") {
         model.refreshReadiness()
-      }
-      .padding(.top, 2)
+      }.modifier(SetupActionStyle())
+        .padding(.top, 2)
 
       OnboardingStepNote(
         text:
@@ -302,11 +301,11 @@ struct AgenticReadinessStepView: View {
         .foregroundStyle(CSColor.textFaint)
       Text(model.agentBridgeTitle)
         .font(CSFont.ui(15, .bold))
-        .foregroundStyle(CSColor.textHigh)
+        .foregroundStyle(.primary)
       Text(model.agentBridgeExplanation)
         .font(CSFont.ui(12.5))
         .lineSpacing(3)
-        .foregroundStyle(CSColor.textMutedAlt)
+        .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
 
       VStack(spacing: 8) {
@@ -322,12 +321,12 @@ struct AgenticReadinessStepView: View {
       }
 
       HStack(spacing: 10) {
-        OnboardingButton(title: model.agentBridgeButtonTitle, kind: .primary) {
+        Button(model.agentBridgeButtonTitle) {
           model.installAgentBridge()
-        }
-        .disabled(
-          model.selectedAgentClients.isEmpty || !model.agentBridgeStatus.payloadAvailable
-        )
+        }.modifier(SetupActionStyle(prominent: true))
+          .disabled(
+            model.selectedAgentClients.isEmpty || !model.agentBridgeStatus.payloadAvailable
+          )
         Text(model.agentBridgeStatus.detail)
           .font(CSFont.mono(10.5, .medium))
           .foregroundStyle(CSColor.textFaint)
@@ -382,16 +381,16 @@ struct AgenticReadinessStepView: View {
       )
       .font(CSFont.ui(13))
       .lineSpacing(3)
-      .foregroundStyle(CSColor.textMutedAlt)
+      .foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
       HStack(spacing: 10) {
-        OnboardingButton(title: "Set up MCP servers", kind: .primary) {
+        Button("Set up MCP servers") {
           model.prepareMcpSettingsDeepLink()
           openWindow(id: SettingsView.windowID)
-        }
-        OnboardingButton(title: "Skip for now", kind: .secondary) {
+        }.modifier(SetupActionStyle(prominent: true))
+        Button("Skip for now") {
           model.dismissMcpSetupPrompt()
-        }
+        }.modifier(SetupActionStyle())
       }
     }
     .padding(CSSpace.card)
@@ -433,11 +432,11 @@ struct AgenticReadinessStepView: View {
         HStack(spacing: 12) {
           Text(row.label)
             .font(CSFont.mono(11.5, .medium))
-            .foregroundStyle(CSColor.textMutedAlt)
+            .foregroundStyle(.secondary)
             .frame(width: 150, alignment: .leading)
           Text(row.value)
             .font(CSFont.ui(12, .semibold))
-            .foregroundStyle(CSColor.textHigh)
+            .foregroundStyle(.primary)
             .lineLimit(2)
             .frame(maxWidth: .infinity, alignment: .leading)
           Circle().fill(row.tone.dotColor).frame(width: 7, height: 7)
@@ -475,45 +474,44 @@ struct PermissionStepView: View {
     VStack(alignment: .leading, spacing: 16) {
       EyebrowLabel(text: "Permission · \(kind.rawValue)")
       Text(kind.onboardingTitle)
-        .font(CSFont.ui(26, .bold))
-        .tracking(-0.5)
-        .foregroundStyle(CSColor.textHigh)
+        .font(.title2.weight(.semibold))
+        .foregroundStyle(.primary)
         .fixedSize(horizontal: false, vertical: true)
       Text(kind.onboardingReason)
-        .font(CSFont.ui(14))
+        .font(.body)
         .lineSpacing(3)
-        .foregroundStyle(CSColor.textMutedAlt)
+        .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
 
       statusRow
         .padding(.top, 4)
 
       HStack(spacing: 10) {
-        OnboardingButton(title: primaryTitle, kind: .primary) {
+        Button(primaryTitle) {
           guard !state.isGranted else { return }
           model.grantPermission(for: kind)
-        }
-        OnboardingButton(title: "Refresh status", kind: .secondary) {
+        }.modifier(SetupActionStyle(prominent: true))
+        Button("Refresh status") {
           model.refreshPermissions()
-        }
+        }.modifier(SetupActionStyle())
       }
       .padding(.top, 4)
 
       if kind == .fullDiskAccess {
         Text("Optional — skip it to limit file-aware features only.")
-          .font(CSFont.mono(11, .medium))
+          .font(.callout)
           .foregroundStyle(CSColor.textFaint)
       } else if kind == .speechRecognition {
         Text(
           "Required for Apple live dictation. Without it Codescribe cannot run on-device Speech."
         )
-        .font(CSFont.mono(11, .medium))
+        .font(.callout)
         .foregroundStyle(CSColor.textFaint)
       } else {
         Text(
           "You can continue without granting this, but the matching feature stays off until you do."
         )
-        .font(CSFont.mono(11, .medium))
+        .font(.callout)
         .foregroundStyle(CSColor.textFaint)
       }
     }
@@ -556,17 +554,16 @@ struct ApiKeyStepView: View {
     VStack(alignment: .leading, spacing: 16) {
       EyebrowLabel(text: "AI provider")
       Text("Connect an AI provider.")
-        .font(CSFont.ui(26, .bold))
-        .tracking(-0.5)
-        .foregroundStyle(CSColor.textHigh)
+        .font(.title2.weight(.semibold))
+        .foregroundStyle(.primary)
       Text(
         "Powers AI formatting and the agent lane. Stored in the macOS "
           + "Keychain — write-only, never shown back. Optional: skip and add "
           + "it later in Settings › Keys."
       )
-      .font(CSFont.ui(14))
+      .font(.body)
       .lineSpacing(3)
-      .foregroundStyle(CSColor.textMutedAlt)
+      .foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
 
       providerPicker
@@ -580,7 +577,7 @@ struct ApiKeyStepView: View {
     HStack(spacing: 12) {
       Text("Provider")
         .font(CSFont.mono(12, .medium))
-        .foregroundStyle(CSColor.textMutedAlt)
+        .foregroundStyle(.secondary)
         .frame(width: 72, alignment: .leading)
       Menu {
         ForEach(model.providers, id: \.id) { provider in
@@ -597,7 +594,7 @@ struct ApiKeyStepView: View {
       } label: {
         Text(model.selectedProvider?.displayName ?? model.selectedProviderId)
           .font(CSFont.ui(12.5, .semibold))
-          .foregroundStyle(CSColor.textHigh)
+          .foregroundStyle(.primary)
       }
       .menuStyle(.borderlessButton)
       Spacer(minLength: 0)
@@ -649,7 +646,7 @@ struct ApiKeyStepView: View {
               .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
           )
           .onSubmit { model.saveApiKey() }
-        OnboardingButton(title: "Save key", kind: .primary) { model.saveApiKey() }
+        Button("Save key") { model.saveApiKey() }.modifier(SetupActionStyle(prominent: true))
       }
     }
     .padding(.horizontal, 15)
@@ -679,15 +676,14 @@ struct DoneStepView: View {
     VStack(alignment: .leading, spacing: 16) {
       EyebrowLabel(text: "All set")
       Text("You're ready to talk.")
-        .font(CSFont.ui(28, .bold))
-        .tracking(-0.5)
-        .foregroundStyle(CSColor.textHigh)
+        .font(.title2.weight(.semibold))
+        .foregroundStyle(.primary)
       Text(
         "Press Finish to close setup and start using Codescribe. Anything you skipped is available in Settings."
       )
-      .font(CSFont.ui(14))
+      .font(.body)
       .lineSpacing(3)
-      .foregroundStyle(CSColor.textMutedAlt)
+      .foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
 
       VStack(alignment: .leading, spacing: 8) {

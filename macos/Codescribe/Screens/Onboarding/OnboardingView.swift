@@ -8,40 +8,89 @@ import SwiftUI
 struct OnboardingView: View {
   @ObservedObject var model: OnboardingViewModel
 
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
   var body: some View {
-    VStack(spacing: 0) {
-      header
-      Divider().overlay(CSColor.hairline(0.08))
-      ScrollView {
-        stepBody
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(.horizontal, CSSpace.page)
-          .padding(.vertical, 26)
+    Group {
+      if #available(macOS 26, *) {
+        GlassEffectContainer(spacing: 20) { content }
+      } else {
+        content
       }
-      Divider().overlay(CSColor.hairline(0.08))
-      footer
     }
     .frame(minWidth: 680, minHeight: 560)
-    .background(CSColor.windowWash.ignoresSafeArea())
+    .background {
+      Color(nsColor: .windowBackgroundColor)
+      if !reduceTransparency {
+        LinearGradient(
+          colors: [Color.accentColor.opacity(0.18), .clear, CSColor.terracotta.opacity(0.12)],
+          startPoint: .topLeading, endPoint: .bottomTrailing)
+      }
+    }
+    .controlSize(.regular)
     .onAppear { model.refreshForCurrentStep() }
   }
 
-  // MARK: - Header (brand + progress)
+  private var content: some View {
+    VStack(spacing: 0) {
+      header.padding(.horizontal, 24).padding(.top, 16)
+      ScrollView {
+        stepBody
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(28)
+          .id(model.stepIndex)
+      }
+      .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: model.stepIndex)
+      footer
+    }
+  }
+
+  private var chapter: (title: String, symbol: String, purpose: String) {
+    switch model.step {
+    case .welcome, .mode:
+      return ("Your voice, a new possibility", "waveform", "First, choose what you want to do.")
+    case .permission:
+      return ("Make the connection", "hand.raised", "You decide what Codescribe can access.")
+    case .language, .apiKey, .hotkeyMode:
+      return (
+        "Make it yours", "slider.horizontal.3",
+        "Your language. Your shortcuts. Your way of working."
+      )
+    case .agenticReadiness:
+      return ("Give your voice tools", "sparkles", "Connect the assistants you want to work with.")
+    case .done:
+      return (
+        "Your next thought starts here", "checkmark",
+        "Setup is complete. Your voice takes it from here."
+      )
+    }
+  }
 
   private var header: some View {
-    VStack(alignment: .leading, spacing: 10) {
+    VStack(alignment: .leading, spacing: 18) {
       HStack {
-        EyebrowLabel(text: "codescribe · setup")
+        Wordmark(size: 16)
         Spacer()
-        Text(model.progressLabel)
-          .font(CSFont.mono(11, .medium))
-          .foregroundStyle(CSColor.textFaint)
+        Text(model.progressLabel).font(.callout).foregroundStyle(.secondary)
       }
-      OnboardingProgressBar(current: model.stepIndex, total: model.totalSteps)
+      HStack(spacing: 18) {
+        Image(systemName: chapter.symbol)
+          .font(.system(size: 28, weight: .medium))
+          .frame(width: 52, height: 52)
+          .accessibilityHidden(true)
+        VStack(alignment: .leading, spacing: 5) {
+          Text(chapter.title).font(.title2.weight(.semibold))
+          Text(chapter.purpose).font(.callout).foregroundStyle(.secondary)
+        }
+        Spacer(minLength: 0)
+      }
+      ProgressView(value: Double(model.stepIndex), total: Double(max(1, model.totalSteps - 1)))
+        .controlSize(.small)
+        .accessibilityLabel("Setup progress")
     }
-    .padding(.horizontal, CSSpace.page)
-    .padding(.top, CSSpace.section)
-    .padding(.bottom, 16)
+    .padding(22)
+    .modifier(SetupGlass())
   }
 
   // MARK: - Step dispatch
@@ -72,83 +121,50 @@ struct OnboardingView: View {
   private var footer: some View {
     HStack(spacing: 10) {
       if model.canGoBack {
-        OnboardingButton(title: "Back", kind: .secondary) { model.back() }
+        Button("Back") { model.back() }.modifier(SetupActionStyle())
       }
       Spacer(minLength: 0)
       // The API-key step is skippable — a key can be added later in Settings.
       if case .apiKey = model.step {
-        OnboardingButton(title: "Skip", kind: .secondary) { model.advance() }
+        Button("Skip") { model.advance() }.modifier(SetupActionStyle())
       }
-      OnboardingButton(title: model.primaryLabel, kind: .primary) {
+      Button(model.primaryLabel) {
         model.primaryAction()
-      }
+      }.modifier(SetupActionStyle(prominent: true))
     }
     .padding(.horizontal, CSSpace.page)
-    .padding(.vertical, 16)
+    .padding(.vertical, 18)
   }
 }
 
-// MARK: - Progress bar
+/// Native glass for the wizard's navigation and selection surfaces.
+struct SetupGlass: ViewModifier {
+  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
-struct OnboardingProgressBar: View {
-  let current: Int
-  let total: Int
-
-  private var fraction: CGFloat {
-    guard total > 1 else { return 1 }
-    return CGFloat(current) / CGFloat(total - 1)
-  }
-
-  var body: some View {
-    Capsule()
-      .fill(CSColor.surfaceRaised(0.05))
-      .frame(height: CSSpace.xxs)
-      .overlay(alignment: .leading) {
-        Capsule()
-          .fill(CSColor.chromeAccent.opacity(0.85))
-          .containerRelativeFrame(.horizontal) { length, _ in
-            max(CSSpace.xs, length * fraction)
-          }
-      }
-  }
-}
-
-// MARK: - Buttons
-
-/// Wizard navigation button, matching the Keys panel's accent-on-surface style.
-struct OnboardingButton: View {
-  enum Kind { case primary, secondary }
-  let title: String
-  var kind: Kind = .primary
-  let action: () -> Void
-
-  var body: some View {
-    Button(action: action) {
-      Text(title)
-        .font(CSFont.ui(13, .semibold))
-        .foregroundStyle(foreground)
-        .padding(.horizontal, 18)
-        .padding(.vertical, 9)
-        .background(
-          RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-            .fill(fill)
-        )
-        .overlay(
-          RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-            .strokeBorder(border, lineWidth: 1)
-        )
+  func body(content: Content) -> some View {
+    if reduceTransparency {
+      content.background(Color(nsColor: .controlBackgroundColor), in: .rect(cornerRadius: 24))
+    } else if #available(macOS 26, *) {
+      content.glassEffect(.regular, in: .rect(cornerRadius: 24))
+    } else {
+      content.background(.regularMaterial, in: .rect(cornerRadius: 24))
     }
-    .csFocusRing(cornerRadius: CSRadius.input)
   }
+}
 
-  private var foreground: Color {
-    kind == .primary ? CSColor.chromeAccent : CSColor.textMutedAlt
-  }
-  private var fill: Color {
-    kind == .primary ? CSColor.chromeAccent.opacity(0.16) : CSColor.surfaceRaised(0.03)
-  }
-  private var border: Color {
-    kind == .primary ? CSColor.chromeAccent.opacity(0.30) : CSColor.hairline(0.08)
+struct SetupActionStyle: ViewModifier {
+  var prominent = false
+
+  func body(content: Content) -> some View {
+    if #available(macOS 26, *) {
+      if prominent { content.buttonStyle(.glassProminent) } else { content.buttonStyle(.glass) }
+    } else {
+      if prominent {
+        content.buttonStyle(.borderedProminent)
+      } else {
+        content.buttonStyle(.bordered)
+      }
+    }
   }
 }
 

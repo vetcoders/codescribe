@@ -4,11 +4,6 @@ options:
   deploymentTarget:
     macOS: "14.0"
 packages:
-  # Phosphor Icons — MIT, first-party Swift package. The brand stroke layer
-  # behind the `CSIcon` wrapper (DesignSystem/CSIcon.swift). macOS 10.15+.
-  PhosphorSwift:
-    url: https://github.com/phosphor-icons/swift
-    from: 2.1.0
   # HighlightSwift — MIT, highlight.js via JavaScriptCore. Powers syntax
   # highlighting of finalized agent-chat code blocks. Returns AttributedString
   # from an async actor (tokenize runs off the main thread); we feed it our own
@@ -31,8 +26,6 @@ targets:
     platform: macOS
     sources: [Codescribe]
     dependencies:
-      - package: PhosphorSwift
-        product: PhosphorSwift
       - package: HighlightSwift
         product: HighlightSwift
       - package: Sparkle
