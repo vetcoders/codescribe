@@ -1,5 +1,4 @@
 import AppKit
-import Darwin
 import SwiftUI
 import XCTest
 
@@ -17,15 +16,9 @@ import XCTest
 // The bitmap proves layout, clip, opaque ink, and approximate color. It does
 // not prove Liquid Glass, vibrancy, or system compositor blur.
 //
-// Evidence directory, first hit wins:
-//   1. CODESCRIBE_VISUAL_EVIDENCE_DIR in the test process
-//   2. TEST_RUNNER_CODESCRIBE_VISUAL_EVIDENCE_DIR
-//   3. launch argument --codescribe-visual-evidence-dir <path>
-//   4. the same variable in an ancestor process (xcodebuild does not forward it)
-//   5. a pointer file whose text is the directory:
-//        /tmp/codescribe-visual-evidence-dir
-//        $TMPDIR/codescribe-visual-evidence-dir
-//   6. NSTemporaryDirectory()/codescribe-visual-consistency
+// Artifacts use CODESCRIBE_VISUAL_EVIDENCE_DIR in the test process, otherwise
+// NSTemporaryDirectory()/codescribe-visual-consistency. When launching Xcode,
+// pass TEST_RUNNER_CODESCRIBE_VISUAL_EVIDENCE_DIR to forward that value.
 //
 // Integrator, after sibling surfaces settle and bindings exist:
 //   make test-swift SWIFT_TEST_ARGS='-only-testing:CodescribeTests/VisualConsistencyContactSheetTests'
@@ -560,6 +553,8 @@ private final class SheetRun {
             transaction.disablesAnimations = true
           }
           .frame(width: size.width, height: fitHeight ? nil : size.height)
+          // NSWindow paints this canvas in the app; cacheDisplay captures only its content view.
+          .background(surface == "settings" ? Color(nsColor: .windowBackgroundColor) : .clear)
       )
       rendered.append(cell)
     } catch {
@@ -580,7 +575,8 @@ private final class SheetRun {
       NSAppearance(named: scheme.appearanceName) ?? NSAppearance(named: .aqua)!
     let window = NSWindow(
       contentRect: NSRect(origin: .zero, size: size),
-      styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+      styleMask: surface == "overlay" || surface == "tray"
+        ? [.borderless] : [.titled, .closable, .miniaturizable, .resizable],
       backing: .buffered,
       defer: false
     )
@@ -600,7 +596,8 @@ private final class SheetRun {
     host.appearance = appearance
     // The window owns the size. Hosting constraints on a resizable window chase
     // fittingSize; DictationOverlayWindow keeps sizingOptions empty for that reason.
-    host.sizingOptions = []
+    host.sizingOptions = surface == "tray" ? [.intrinsicContentSize] : []
+    host.safeAreaRegions = []
     host.translatesAutoresizingMaskIntoConstraints = true
     host.frame = NSRect(origin: .zero, size: size)
     host.autoresizingMask = [.width, .height]
@@ -616,6 +613,7 @@ private final class SheetRun {
     }
     if surface == "tray" {
       let fitted = host.fittingSize
+      expect(fitted.height > 160, "\(id) intrinsic tray height was not resolved: \(fitted)")
       let height = min(max(ceil(fitted.height), 160), 900)
       settled = CGSize(width: trayWidth, height: height > 1 ? height : trayProbeHeight)
       fittingNote =
@@ -1262,149 +1260,18 @@ private func colorBounds(
   return (maxX - minX + 1, maxY - minY + 1)
 }
 
-private let evidenceEnvironmentKeys = [
-  "CODESCRIBE_VISUAL_EVIDENCE_DIR",
-  "TEST_RUNNER_CODESCRIBE_VISUAL_EVIDENCE_DIR",
-]
-
 private func resolveEvidenceDirectory() -> EvidenceDirectory {
-  let environment = ProcessInfo.processInfo.environment
-  if let url = firstDirectory(in: environment, keys: evidenceEnvironmentKeys) {
-    return EvidenceDirectory(url: url, source: "process-environment")
-  }
-  if let url = directoryFromLaunchArguments(ProcessInfo.processInfo.arguments) {
-    return EvidenceDirectory(url: url, source: "launch-argument")
-  }
-  if let url = directoryFromAncestorEnvironment() {
-    return EvidenceDirectory(url: url, source: "ancestor-environment")
-  }
-  if let url = directoryFromPointerFile() {
-    return EvidenceDirectory(url: url, source: "pointer-file")
+  if let path = ProcessInfo.processInfo.environment["CODESCRIBE_VISUAL_EVIDENCE_DIR"],
+    !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  {
+    return EvidenceDirectory(
+      url: URL(fileURLWithPath: path, isDirectory: true), source: "process-environment")
   }
   return EvidenceDirectory(
     url: FileManager.default.temporaryDirectory.appendingPathComponent(
       "codescribe-visual-consistency", isDirectory: true),
     source: "temporary-directory"
   )
-}
-
-private func firstDirectory(in environment: [String: String], keys: [String]) -> URL? {
-  for key in keys {
-    if let url = directoryURL(from: environment[key]) {
-      return url
-    }
-  }
-  return nil
-}
-
-private func directoryURL(from raw: String?) -> URL? {
-  guard let raw else { return nil }
-  let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-  guard !trimmed.isEmpty else { return nil }
-  let expanded = (trimmed as NSString).expandingTildeInPath
-  return URL(fileURLWithPath: expanded, isDirectory: true)
-}
-
-private func directoryFromLaunchArguments(_ arguments: [String]) -> URL? {
-  let flag = "--codescribe-visual-evidence-dir"
-  for (index, argument) in arguments.enumerated() {
-    if argument.hasPrefix(flag + "=") {
-      return directoryURL(from: String(argument.dropFirst(flag.count + 1)))
-    }
-    if argument == flag || argument == "-CODESCRIBE_VISUAL_EVIDENCE_DIR",
-      index + 1 < arguments.count
-    {
-      return directoryURL(from: arguments[index + 1])
-    }
-  }
-  return nil
-}
-
-private func directoryFromPointerFile() -> URL? {
-  let paths = [
-    URL(fileURLWithPath: "/tmp/codescribe-visual-evidence-dir"),
-    FileManager.default.temporaryDirectory.appendingPathComponent(
-      "codescribe-visual-evidence-dir"),
-  ]
-  for url in paths {
-    guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
-    if let directory = directoryURL(
-      from: text.split(whereSeparator: \.isNewline).first.map(String.init))
-    {
-      return directory
-    }
-  }
-  return nil
-}
-
-private func directoryFromAncestorEnvironment() -> URL? {
-  var pid = getppid()
-  for _ in 0..<6 {
-    if let url = firstDirectory(
-      in: environmentOfProcess(pid), keys: evidenceEnvironmentKeys)
-    {
-      return url
-    }
-    guard let parent = parentProcessID(of: pid), parent != pid else { return nil }
-    pid = parent
-  }
-  return nil
-}
-
-private func environmentOfProcess(_ pid: Int32) -> [String: String] {
-  var name: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
-  var size = 0
-  let probed = name.withUnsafeMutableBufferPointer { buffer -> Int32 in
-    guard let base = buffer.baseAddress else { return -1 }
-    return sysctl(base, u_int(buffer.count), nil, &size, nil, 0)
-  }
-  guard probed == 0, size > 0, size < 1_048_576 else { return [:] }
-  var data = [UInt8](repeating: 0, count: size)
-  let copied = name.withUnsafeMutableBufferPointer { nameBuffer -> Int32 in
-    guard let base = nameBuffer.baseAddress else { return -1 }
-    return data.withUnsafeMutableBytes { raw -> Int32 in
-      var copiedSize = size
-      return sysctl(base, u_int(nameBuffer.count), raw.baseAddress, &copiedSize, nil, 0)
-    }
-  }
-  guard copied == 0 else { return [:] }
-  return environmentPairs(in: data)
-}
-
-private func environmentPairs(in data: [UInt8]) -> [String: String] {
-  var index = MemoryLayout<Int32>.size
-  var pairs: [String: String] = [:]
-  while index < data.count {
-    while index < data.count, data[index] == 0 { index += 1 }
-    let start = index
-    while index < data.count, data[index] != 0 { index += 1 }
-    if start == index { break }
-    let bytes = data[start..<index]
-    if let text = String(bytes: bytes, encoding: .utf8),
-      let separator = text.firstIndex(of: "=")
-    {
-      let key = String(text[..<separator])
-      let value = String(text[text.index(after: separator)...])
-      if evidenceEnvironmentKeys.contains(key) {
-        pairs[key] = value
-      }
-    }
-    index += 1
-  }
-  return pairs
-}
-
-private func parentProcessID(of pid: Int32) -> Int32? {
-  var info = kinfo_proc()
-  var size = MemoryLayout<kinfo_proc>.stride
-  var name: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
-  let status = name.withUnsafeMutableBufferPointer { buffer -> Int32 in
-    guard let base = buffer.baseAddress else { return -1 }
-    return sysctl(base, u_int(buffer.count), &info, &size, nil, 0)
-  }
-  guard status == 0 else { return nil }
-  let parent = info.kp_eproc.e_ppid
-  return parent > 1 ? parent : nil
 }
 
 @MainActor
