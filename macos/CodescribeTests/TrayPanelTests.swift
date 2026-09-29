@@ -66,4 +66,14 @@ final class TrayPanelTests: XCTestCase {
     XCTAssertNil(panel.contentViewController)
     XCTAssertFalse(panel.isVisible)
   }
+
+  func testKeyboardAppSwitchDismissesWithoutAMouseClick() {
+    let panel = TrayPanel()
+    panel.contentViewController = NSHostingController(rootView: Text("Menu"))
+    var dismissals = 0
+    panel.onDismiss = { dismissals += 1 }
+    NotificationCenter.default.post(name: NSApplication.didResignActiveNotification, object: NSApp)
+    XCTAssertNil(panel.contentViewController)
+    XCTAssertEqual(dismissals, 1)
+  }
 }

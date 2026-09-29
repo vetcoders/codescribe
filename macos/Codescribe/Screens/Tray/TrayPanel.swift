@@ -24,6 +24,9 @@ final class TrayPanel: NSPanel, NSWindowDelegate {
     collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
     delegate = self
     title = "Codescribe menu"
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(applicationDeactivated),
+      name: NSApplication.didResignActiveNotification, object: NSApp)
   }
 
   override var canBecomeKey: Bool { true }
@@ -73,10 +76,17 @@ final class TrayPanel: NSPanel, NSWindowDelegate {
 
   override func cancelOperation(_ sender: Any?) { dismiss() }
   override func close() { dismiss() }
+  @objc private func applicationDeactivated() { dismiss() }
 
   func windowDidResignKey(_ notification: Notification) {
     // The status-button action owns its second-click toggle.
-    if let rect = anchorRect, rect.contains(NSEvent.mouseLocation) { return }
+    if let event = NSApp.currentEvent,
+      event.type == .leftMouseDown || event.type == .leftMouseUp,
+      let anchor, event.window === anchor.window,
+      anchor.bounds.contains(anchor.convert(event.locationInWindow, from: nil))
+    {
+      return
+    }
     if let key = NSApp.keyWindow, key.parent === self { return }
     dismiss()
   }
