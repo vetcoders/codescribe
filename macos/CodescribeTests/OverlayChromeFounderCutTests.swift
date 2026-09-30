@@ -532,6 +532,16 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertEqual(OverlayActionsPresentation().phase, .idle)
   }
 
+  func testActionsHandleUsesPhaseForSymbolLabelAndTooltip() throws {
+    let source = try overlaySource()
+    let handle = try section(of: source, from: "Button {\n                  actions.toggle()", to: "if actions.phase == .open {")
+    XCTAssertTrue(handle.contains("Image(systemName: actions.controlSymbol)"))
+    XCTAssertTrue(handle.contains(".contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))"))
+    XCTAssertTrue(handle.contains(".accessibilityLabel(actions.controlTitle)"))
+    XCTAssertTrue(handle.contains("OverlayMiniTooltip(title: actions.controlTitle"))
+    XCTAssertTrue(handle.contains(".accessibilityIdentifier(\"overlay-tools-handle\")"))
+  }
+
   func testFormatRequiresAnExplicitChoiceAndNeverUsesAPrimaryAction() throws {
     let source = try railSource()
     XCTAssertFalse(source.contains("primaryAction:"))

@@ -381,7 +381,8 @@ struct DictationOverlayView: View {
                   actions.toggle()
                 } label: {
                   HStack(spacing: 4) {
-                    Image(systemName: OverlayControlSymbols.actions)
+                    Image(systemName: actions.controlSymbol)
+                      .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
 
                   }
                   .font(.system(size: 11, weight: .medium))
@@ -407,7 +408,7 @@ struct DictationOverlayView: View {
                 .buttonStyle(.plain)
                 .focusable()
                 .focused($actionsFocused)
-                .accessibilityLabel("Actions")
+                .accessibilityLabel(actions.controlTitle)
                 .accessibilityValue(actions.phase == .open ? "Open" : "Collapsed")
                 .accessibilityHint(
                   state.hasRecoverableSupersededWork
@@ -415,7 +416,7 @@ struct DictationOverlayView: View {
                     : "Show or hide transcript tools"
                 )
                 .accessibilityIdentifier("overlay-tools-handle")
-                .modifier(OverlayMiniTooltip(title: "Actions", palette: palette))
+                .modifier(OverlayMiniTooltip(title: actions.controlTitle, palette: palette))
                 if actions.phase == .open {
                   intentRail
                 }

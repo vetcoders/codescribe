@@ -12,6 +12,10 @@ struct OverlayDockLayout: Equatable {
 struct OverlayActionsPresentation {
   enum Phase: Equatable { case idle, open }
   private(set) var phase: Phase = .idle
+  var controlSymbol: String {
+    phase == .open ? OverlayControlSymbols.closeActions : OverlayControlSymbols.actions
+  }
+  var controlTitle: String { phase == .open ? "Close actions" : "More actions" }
   private(set) var pointerInside = false
   private(set) var panelPresented = false
   private(set) var keyboardFocused = false
@@ -98,6 +102,7 @@ enum OverlayControlSymbols {
   static let history = "clock.arrow.circlepath"
   static let previousTake = "tray.and.arrow.up"
   static let actions = "ellipsis"
+  static let closeActions = "xmark"
   static let placement = "location.viewfinder"
   /// Live-preview toggle: "wolałem dzióbki ^v" (Founder, quoted in the Codex
   /// handoff, Annex A1, 2026-09-29). Expanded

@@ -155,9 +155,11 @@ final class OverlayIntentRailTests: XCTestCase {
 
   func testLongHistoryPopoverStaysWithinViewport() {
     let history = (1...200).map {
-      CsHistoryEntry(
-        path: "take-\($0).txt", timestampMs: Int64($0),
-        preview: "Transcript \($0)", kind: .raw)
+      TranscriptHistoryRecord(
+        entry: CsHistoryEntry(
+          path: "take-\($0).txt", timestampMs: Int64($0),
+          preview: "Transcript \($0)", kind: .raw),
+        characterCount: 1_000 + $0)
     }
     let host = NSHostingView(
       rootView: OverlayTranscriptHistory().historyList(history)
@@ -633,6 +635,22 @@ final class OverlayIntentRailTests: XCTestCase {
     for symbol in symbols {
       XCTAssertNotNil(NSImage(systemSymbolName: symbol, accessibilityDescription: nil), symbol)
     }
+  }
+
+  func testActionsHandleMorphsToCloseOnlyWhileRailIsExpanded() {
+    var actions = OverlayActionsPresentation()
+    XCTAssertEqual(actions.controlSymbol, "ellipsis")
+    XCTAssertEqual(actions.controlTitle, "More actions")
+
+    actions.toggle()
+    XCTAssertEqual(actions.phase, .open)
+    XCTAssertEqual(actions.controlSymbol, "xmark")
+    XCTAssertEqual(actions.controlTitle, "Close actions")
+
+    actions.toggle()
+    XCTAssertEqual(actions.phase, .idle)
+    XCTAssertEqual(actions.controlSymbol, "ellipsis")
+    XCTAssertEqual(actions.controlTitle, "More actions")
   }
 
   /// One formatted take with an uncommitted edit, superseded by a new capture.
