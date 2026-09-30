@@ -19,6 +19,8 @@ pub mod active_names;
 /// Apple SpeechAnalyzer live STT bridge (letter-level canvas; live lane only).
 pub mod apple_stt;
 pub mod lanes;
+/// Shared vocabulary builder; recognizer wiring awaits bias validation.
+pub mod recognizer_vocabulary;
 /// Explicit cloud/loopback STT topic token. Client-owned; never from audio.
 pub mod request_vocabulary;
 /// Layer-1 on-the-go Whisper tail-patch helpers for append-only gap fill.

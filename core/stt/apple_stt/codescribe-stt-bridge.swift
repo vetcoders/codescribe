@@ -853,8 +853,8 @@ private func transcribeLiveBuffered(
 }
 
 /// Defensive mirror of SFSpeech's 100-entry contextualStrings contract. Rust
-/// already emits a deterministic, budgeted list; this keeps direct bridge
-/// callers from smuggling empty or duplicate entries into the recognizer.
+/// callers may omit vocabulary; recognizer wiring is held pending bias validation.
+/// This keeps direct bridge callers from sending empty or duplicate entries.
 private func sanitizedContextualStrings(_ values: [String]?) -> [String] {
     var seen = Set<String>()
     var result: [String] = []
