@@ -930,6 +930,7 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var keyProbeResults: [String: CsApiKeyProbeResult] = [:]
   @Published private(set) var keyProbePending: Set<String> = []
   @Published private(set) var qualityRecords: [CsQualityRecord] = []
+  @Published private(set) var unchangedQualityTakes: UInt64 = 0
   @Published private(set) var customLexiconEntries: [CsLexiconEntry] = []
   @Published private(set) var voiceLabReadError: String?
   @Published private(set) var voiceLabEditPending: Set<String> = []
@@ -1914,11 +1915,14 @@ final class SettingsViewModel: ObservableObject {
   func refreshVoiceLab() {
     guard let engine else { return }
     do {
-      qualityRecords = try engine.loadQualityRecentRecords(limit: 50)
+      let listing = try engine.loadQualityRecentListing(limit: 50)
+      qualityRecords = listing.records
+      unchangedQualityTakes = listing.unchangedTakes
       customLexiconEntries = try engine.loadLexiconCustomEntries()
       voiceLabReadError = nil
     } catch {
       qualityRecords = []
+      unchangedQualityTakes = 0
       customLexiconEntries = []
       voiceLabReadError = String(describing: error)
     }

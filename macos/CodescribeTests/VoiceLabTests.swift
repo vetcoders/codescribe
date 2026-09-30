@@ -119,9 +119,150 @@ final class VoiceLabTests: XCTestCase {
     )
 
     XCTAssertTrue(row.isLowConfidence)
-    XCTAssertTrue(row.confidenceSummary.contains("Whisper logprob -1.40"))
-    XCTAssertTrue(row.confidenceSummary.contains("Silero/VAD speech 72%"))
-    XCTAssertTrue(row.confidenceSummary.contains("possible_hallucination_logprob"))
+    XCTAssertEqual(
+      row.telemetryChips,
+      ["logprob -1.40", "speech 72%", "possible_hallucination_logprob"]
+    )
+    XCTAssertTrue(row.hasTelemetry)
+    XCTAssertTrue(row.hasTextChange)
+  }
+
+  /// (a) A take whose text never changed and that recorded no telemetry is
+  /// not a correction — the list and the counter skip it (Founder 2026-09-30).
+  func testNoOpRecordIsNotACorrection() {
+    let record = CsQualityRecord(
+      id: "take-1",
+      revision: 1,
+      rawText: "to  jest   cały take",
+      variant: "to jest cały take",
+      editedText: "to jest cały take",
+      action: "close-unreviewed",
+      editProvenance: nil,
+      timestampMs: 7,
+      avgLogprob: nil,
+      speechPct: nil,
+      confidenceFlags: []
+    )
+
+    XCTAssertFalse(
+      isQualityCorrection(
+        rawText: record.rawText,
+        deliveredText: record.variant,
+        editedText: record.editedText,
+        avgLogprob: record.avgLogprob,
+        speechPct: record.speechPct,
+        confidenceFlags: record.confidenceFlags
+      ),
+      "whitespace-only differences are not a change"
+    )
+    XCTAssertTrue(qualityCorrectionRows([record]).isEmpty)
+  }
+
+  /// (c) A take with confidence flags but no text delta still belongs on the
+  /// list — the telemetry is the correction evidence.
+  func testTelemetryOnlyRecordStaysOnTheList() {
+    let record = CsQualityRecord(
+      id: "take-2",
+      revision: 1,
+      rawText: "pełny take bez zmian",
+      variant: "pełny take bez zmian",
+      editedText: "pełny take bez zmian",
+      action: "close",
+      editProvenance: nil,
+      timestampMs: 9,
+      avgLogprob: nil,
+      speechPct: nil,
+      confidenceFlags: ["speech_gap"]
+    )
+
+    let rows = qualityCorrectionRows([record])
+    XCTAssertEqual(rows.count, 1)
+    XCTAssertFalse(rows[0].hasTextChange)
+    XCTAssertTrue(rows[0].hasTelemetry)
+    XCTAssertEqual(rows[0].telemetryChips, ["speech_gap"])
+    XCTAssertTrue(correctionDiffExcerpt(raw: rows[0].rawText, edited: rows[0].editedText).isEmpty)
+  }
+
+  /// (b) A real edit yields a word-level diff with the changed span and
+  /// bounded context — Polish diacritics compare as words, never bytes.
+  func testCorrectionDiffShowsChangedSpansWithPolishWords() {
+    let raw = "Zażółć gęślą jaźń potem nagrajemy luks tri mapa jeszcze raz dziś"
+    let edited = "Zażółć gęślą jaźń potem nagrajemy Loctree mapę jeszcze raz dziś"
+
+    let excerpt = correctionDiffExcerpt(raw: raw, edited: edited)
+
+    XCTAssertEqual(
+      excerpt,
+      [
+        .context("Zażółć gęślą jaźń potem nagrajemy"),
+        .change(raw: "luks tri mapa", edited: "Loctree mapę"),
+        .context("jeszcze raz dziś"),
+      ]
+    )
+  }
+
+  /// Long takes collapse to ±5 words of context around each change, with
+  /// ellipses where the transcript was trimmed.
+  func testCorrectionDiffTrimsLongContextAroundChanges() {
+    let rawWords = (1...20).map { "słowo\($0)" }
+    let raw = (rawWords + ["zła", "fraza"]).joined(separator: " ")
+    let edited = (rawWords + ["dobra", "fraza"]).joined(separator: " ")
+
+    let excerpt = correctionDiffExcerpt(raw: raw, edited: edited)
+
+    XCTAssertEqual(
+      excerpt,
+      [
+        .ellipsis,
+        .context(rawWords.suffix(5).joined(separator: " ")),
+        .change(raw: "zła", edited: "dobra"),
+        .context("fraza"),
+      ]
+    )
+  }
+
+  /// (d) The headline counts real corrections, unchanged takes, and rules as
+  /// three separate numbers; missing telemetry is one aggregate list line.
+  func testDictionaryHeadlineCountsCorrectionsUnchangedTakesAndRules() {
+    XCTAssertEqual(
+      dictionaryHeadline(corrections: 0, unchangedTakes: 0, rulesLearned: 0),
+      "0 corrections · 0 unchanged takes · 0 rules in dictionary"
+    )
+    XCTAssertEqual(
+      dictionaryHeadline(corrections: 4, unchangedTakes: 46, rulesLearned: 7),
+      "4 corrections · 46 unchanged takes · 7 rules in dictionary"
+    )
+
+    let withTelemetry = VoiceLabCorrectionRow(
+      id: "a",
+      revision: 1,
+      rawText: "raw",
+      variant: "raw",
+      editedText: "raw",
+      action: "close",
+      timestampMs: 1,
+      avgLogprob: -0.4,
+      speechPct: nil,
+      confidenceFlags: []
+    )
+    let withoutTelemetry = VoiceLabCorrectionRow(
+      id: "b",
+      revision: 1,
+      rawText: "uni agentka",
+      variant: "uni agentka",
+      editedText: "Junie",
+      action: "copy",
+      timestampMs: 2,
+      avgLogprob: nil,
+      speechPct: nil,
+      confidenceFlags: []
+    )
+    XCTAssertEqual(
+      missingTelemetryLine(rows: [withTelemetry, withoutTelemetry]),
+      "No confidence telemetry in 1 of 2"
+    )
+    XCTAssertNil(missingTelemetryLine(rows: [withTelemetry]))
+    XCTAssertNil(missingTelemetryLine(rows: []))
   }
 
   func testArchivedAudioLookupRequiresExactRawTranscript() throws {
@@ -282,14 +423,6 @@ final class VoiceLabTests: XCTestCase {
   }
 
   func testDictionaryHeadlineHonestyForCorrectionSource() {
-    XCTAssertEqual(
-      dictionaryHeadline(correctionsRecorded: 0, rulesLearned: 0),
-      "0 corrections recorded · 0 rules in dictionary"
-    )
-    XCTAssertEqual(
-      dictionaryHeadline(correctionsRecorded: 74, rulesLearned: 3),
-      "74 corrections recorded · 3 rules in dictionary"
-    )
     XCTAssertTrue(
       dictionarySubtitle(
         correctionsRecorded: 74,
@@ -309,7 +442,7 @@ final class VoiceLabTests: XCTestCase {
       "10 corrections on disk · dictionary empty — Teach explicitly promotes eligible store pairs now."
     )
     XCTAssertFalse(
-      dictionaryHeadline(correctionsRecorded: 1, rulesLearned: 0)
+      dictionaryHeadline(corrections: 1, unchangedTakes: 0, rulesLearned: 0)
         .contains("voice taught")
     )
   }
