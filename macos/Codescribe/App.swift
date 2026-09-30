@@ -109,6 +109,46 @@ final class AgentAppActionListener: CsAppActionListener, Sendable {
   }
 }
 
+/// AppKit grants one deferred Quit reply. The injected deadline lets XCTest
+/// exercise both completion orders without launching or terminating NSApp.
+@MainActor
+final class AppTerminationCoordinator {
+  private let deadline: @Sendable () async -> Void
+  private var started = false
+  private var replied = false
+  private var deadlineTask: Task<Void, Never>?
+
+  init(deadline: @escaping @Sendable () async -> Void = {
+    try? await Task.sleep(for: .seconds(10))
+  }) {
+    self.deadline = deadline
+  }
+
+  func begin(
+    cleanup: @escaping @MainActor () async -> Void,
+    reply: @escaping @MainActor () -> Void
+  ) {
+    guard !started else { return }
+    started = true
+    deadlineTask = Task { @MainActor in
+      await deadline()
+      finish(reply: reply)
+    }
+    Task { @MainActor in
+      await cleanup()
+      finish(reply: reply)
+    }
+  }
+
+  private func finish(reply: @MainActor () -> Void) {
+    guard !replied else { return }
+    replied = true
+    deadlineTask?.cancel()
+    deadlineTask = nil
+    reply()
+  }
+}
+
 @main
 struct CodescribeApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
@@ -209,6 +249,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var sleepWakeObserver: SystemSleepWakeObserver?
   private lazy var trayPanel = TrayPanel()
   private var shouldExitForDuplicate = false
+  private let terminationCoordinator = AppTerminationCoordinator()
   // First-run onboarding wizard host. Presented at launch when the core gate
   // (`shouldShowOnboarding`) reports setup is due.
   private lazy var onboarding = OnboardingWindowController(engine: RealOnboardingEngine())
@@ -546,32 +587,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     return harvested
   }
 
-  func applicationWillTerminate(_ notification: Notification) {
-    // Mirrors the launch guards: the test host never started hotkeys, and
-    // touching the lazy handle here would construct the bridge at teardown
-    // purely to stop something that was never running.
-    guard !shouldExitForDuplicate, !Self.isRunningTests else { return }
+  func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+    guard !shouldExitForDuplicate, !Self.isRunningTests else { return .terminateNow }
+    terminationCoordinator.begin(
+      cleanup: { [weak self] in await self?.shutdownForTermination() },
+      reply: { sender.reply(toApplicationShouldTerminate: true) }
+    )
+    return .terminateLater
+  }
+
+  private func shutdownForTermination() async {
+    // The launch guards in applicationShouldTerminate keep the XCTest host
+    // from constructing a bridge here solely to stop it at teardown.
+    let voiceStop = Task { await VoiceLabRuntime.shared.stopOwnedProcess() }
     trayPanel.dismiss()
     model.chat.invalidate()
     appActionListener?.invalidate()
     voiceDeliveryListener?.invalidate()
     trayStatus.invalidate()
-    Task { await VoiceLabRuntime.shared.stopOwnedProcess() }
-    hotkeys.stop()
     sleepWakeObserver?.invalidate()
     sleepWakeObserver = nil
     if let textScaleMonitor { NSEvent.removeMonitor(textScaleMonitor) }
     DistributedNotificationCenter.default().removeObserver(self)
-    do {
-      let runtime = try shutdownApplicationRuntime()
-      appLogger.info(
-        "Application runtime stopped with \(runtime.activeTasks, privacy: .public) owned tasks and \(runtime.stoppedWorkerNames.count, privacy: .public) stopped workers"
-      )
-    } catch {
-      appLogger.error(
-        "Application runtime shutdown failed: \(error.localizedDescription, privacy: .public)"
-      )
+    // UniFFI stop calls are synchronous. Keep them off the main actor so the
+    // ten-second AppKit reply deadline can fire even if a native stop stalls.
+    let hotkeyRuntime = hotkeys
+    let nativeStop = Task.detached { [hotkeyRuntime] in
+      hotkeyRuntime.stop()
+      do {
+        let runtime = try shutdownApplicationRuntime()
+        appLogger.info(
+          "Application runtime stopped with \(runtime.activeTasks, privacy: .public) owned tasks and \(runtime.stoppedWorkerNames.count, privacy: .public) stopped workers"
+        )
+      } catch {
+        appLogger.error(
+          "Application runtime shutdown failed: \(error.localizedDescription, privacy: .public)"
+        )
+      }
     }
+    await nativeStop.value
+    await voiceStop.value
   }
 
   /// Bind the active recorder to the real host power lifecycle.

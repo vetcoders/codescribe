@@ -19,9 +19,24 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 root = Path(sys.argv[1])
 demux = root / "scripts" / "bus-demux.py"
+
+def running_app_pids() -> set[str]:
+    result = subprocess.run(["pgrep", "-x", "Codescribe"], capture_output=True, text=True)
+    if result.returncode not in (0, 1):
+        raise subprocess.SubprocessError(f"pgrep failed: {result.stderr.strip()}")
+    return {pid for pid in result.stdout.split() if pid.isdecimal()}
+
+def wait_for_old_generation(old_pids: set[str]) -> set[str]:
+    deadline = time.monotonic() + 30
+    while True:
+        remaining = old_pids & running_app_pids()
+        if not remaining or time.monotonic() >= deadline:
+            return remaining
+        time.sleep(0.25)
 
 def lock_holders(path: Path) -> str:
     try:
@@ -89,13 +104,51 @@ try:
             raise
         print(
             f"install-if-idle: no live take, no agent turn; app is running (runtime lock held by {lock_holders(interlock_path)}) — "
-            "installing over it (restart required to pick up the new build)"
+            "installing over it, then requesting Quit"
         )
     try:
         completed = subprocess.run(["make", "-C", str(root), "install-app"])
     finally:
         os.close(interlock)
-    raise SystemExit(completed.returncode)
+    if completed.returncode != 0:
+        raise SystemExit(completed.returncode)
+
+    old_pids = running_app_pids()
+    if old_pids:
+        # A take or agent turn may have begun during the build. Never request
+        # Quit unless the bus and turn lease still prove the app is idle.
+        if subprocess.run([sys.executable, str(demux), "--assert-install-idle"]).returncode != 0:
+            print("install-if-idle: restart required; old generation still running pid="
+                  + ",".join(sorted(old_pids)) + " (take active or bus unreadable)")
+            raise SystemExit(0)
+        lease = os.open(lease_path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            try:
+                fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as error:
+                if error.errno in (errno.EACCES, errno.EAGAIN):
+                    print("install-if-idle: restart required; old generation still running pid="
+                          + ",".join(sorted(old_pids)) + " (agent turn active)")
+                    raise SystemExit(0)
+                raise
+        finally:
+            os.close(lease)
+
+        if old_pids & running_app_pids():
+            quit_result = subprocess.run(
+                ["osascript", "-e", 'quit app "Codescribe"'], capture_output=True, text=True
+            )
+            if quit_result.returncode != 0:
+                print(f"install-if-idle: Quit request failed: {quit_result.stderr.strip()}")
+            remaining = wait_for_old_generation(old_pids)
+            if remaining:
+                print("install-if-idle: restart required, old generation still running pid="
+                      + ",".join(sorted(remaining)))
+                raise SystemExit(0)
+        print("install-if-idle: old generation exited; installed app is ready to launch")
+    else:
+        print("install-if-idle: installed app is ready to launch")
+    raise SystemExit(0)
 except (OSError, subprocess.SubprocessError) as error:
     print(f"install-if-idle: refuse — interlock check failed: {error}", file=sys.stderr)
     raise SystemExit(2)
