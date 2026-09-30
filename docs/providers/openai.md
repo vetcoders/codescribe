@@ -20,7 +20,7 @@ This file documents a vendor specification, not installed runtime behavior.
 ## Docs przeczytane
 
 All retrieved 2026-09-07, before code, through official OpenAI developer-docs MCP.
-Read skill: `/Users/maciejgad/.claude/skills/openai-docs/SKILL.md`.
+Read skill: `/Users/tester/.claude/skills/openai-docs/SKILL.md`.
 No callable OpenAI MCP tool was initially exposed. `codex mcp add openaiDeveloperDocs --url https://developers.openai.com/mcp` succeeded.
 Direct HTTP MCP `tools/list`, `search_openai_docs`, `fetch_openai_doc` and
 `get_openapi_spec` succeeded without restarting this headless worker.
