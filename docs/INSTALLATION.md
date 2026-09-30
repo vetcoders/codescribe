@@ -54,6 +54,8 @@ private sibling checkout when present; they are not part of the public
 source path. A machine that already has `settings.json` keeps it.
 Production DMGs do not bake the developer surface.
 
+The single-instance flag (`LSMultipleInstancesProhibited`) is stamped at install time — by `make install-app` (and so `make install-if-idle`) and every DMG lane, before codesign — never in `macos/project.yml`, so the XCTest host and dev builds still launch while the installed app runs.
+
 ### Method 3: DMG Distribution (For End Users)
 
 ```bash

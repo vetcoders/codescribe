@@ -458,6 +458,16 @@ else
   echo "warning: Codescribe.app will build without the bundled helper and use runtime STT fallback resolution." >&2
 fi
 
+# Install/release lanes only (`make install-app`, scripts/build-dmg.sh set
+# CODESCRIBE_INSTALL_LANE=1): the installed app refuses a second generation.
+# Dev builds and the XCTest host (same target, same bundle id) stay
+# launchable while an installed build runs. Stamped here, before stage 7,
+# because an Info.plist edit after codesign breaks the seal.
+INSTALL_LANE="${CODESCRIBE_INSTALL_LANE:-0}"
+if [ "$INSTALL_LANE" = "1" ]; then
+  "$REPO_ROOT/scripts/lib/stamp-single-instance.sh" "$APP"
+fi
+
 # Ad-hoc sign the finished bundle with a STABLE identifier so macOS TCC
 # (Accessibility / Input Monitoring) keeps its grant across rebuilds instead of
 # re-prompting every time an unsigned binary's cdhash changes — the same
@@ -478,6 +488,11 @@ if [ -n "$SIGN_ID" ]; then
 else
   echo "==> [7/7] Ad-hoc signing $SCHEME.app (no stable identity — TCC re-grants per build)"
   codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$APP"
+fi
+if [ "$INSTALL_LANE" = "1" ]; then
+  # The stamped plist must sit inside the seal, not beside it.
+  codesign --verify --deep --strict "$APP"
+  echo "    codesign --verify --deep --strict: ok (single-instance stamp is sealed)"
 fi
 
 echo "==> App built: $APP"

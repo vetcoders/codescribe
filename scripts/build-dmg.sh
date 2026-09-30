@@ -127,8 +127,11 @@ fi
 
 # Assignments must come AFTER every `-u` (see the BSD env note above): once env
 # sees a NAME=VALUE pair it stops parsing options and treats a later `-u` as the
-# utility name. This one is last on purpose.
+# utility name. The assignments below are last on purpose.
 BUILD_ENV+=(CODESCRIBE_BUNDLE_EMBEDDER="$BUNDLE_EMBEDDER")
+# Every DMG is an install artifact: build-app.sh stamps
+# LSMultipleInstancesProhibited into its Info.plist before signing it.
+BUILD_ENV+=(CODESCRIBE_INSTALL_LANE=1)
 
 echo "=== Build DMG ==="
 echo "App: $APP_NAME"
