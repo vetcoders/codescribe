@@ -41,8 +41,8 @@ pub struct CsProjectedAcousticReceipt {
     pub energy_integral: f64,
     pub mean_rms_dbfs: f32,
     pub peak_dbfs: f32,
-    pub vad_open_sample: u64,
-    pub vad_close_sample: u64,
+    pub vad_open_sample: Option<u64>,
+    pub vad_close_sample: Option<u64>,
     pub evidence_calibration_version: String,
     pub word_evidence_receipts: Vec<String>,
     pub layer_decision_receipts: Vec<String>,
@@ -1273,8 +1273,8 @@ mod tests {
                 energy_integral: 37.5,
                 mean_rms_dbfs: -41.0,
                 peak_dbfs: -43.0,
-                vad_open_sample: 47,
-                vad_close_sample: 53,
+                vad_open_sample: Some(47),
+                vad_close_sample: Some(53),
                 evidence_calibration_version: "energy-calibration.v2".to_string(),
                 word_evidence_receipts: vec!["word-receipt".to_string()],
                 layer_decision_receipts: vec!["layer-receipt".to_string()],
@@ -1344,8 +1344,8 @@ mod tests {
                     energy_integral: 37.5,
                     mean_rms_dbfs: -41.0,
                     peak_dbfs: -43.0,
-                    vad_open_sample: 47,
-                    vad_close_sample: 53,
+                    vad_open_sample: Some(47),
+                    vad_close_sample: Some(53),
                     evidence_calibration_version: "energy-calibration.v2".to_string(),
                     word_evidence_receipts: vec!["word-receipt".to_string()],
                     layer_decision_receipts: vec!["layer-receipt".to_string()],
@@ -1382,6 +1382,13 @@ mod tests {
             assert!(projected.terminal && projected.lifecycle_terminal);
             assert_eq!(projected.rendered_text, event.rendered_text);
         }
+        let mut open = event.acoustic_receipts[0].clone();
+        open.vad_close_sample = None;
+        assert_eq!(
+            CsProjectedAcousticReceipt::from_bus_receipt(&open).vad_close_sample,
+            None,
+            "the bridge cannot turn an open live L1 serial into a VAD close"
+        );
     }
 
     #[test]

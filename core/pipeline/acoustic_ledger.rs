@@ -616,6 +616,7 @@ pub struct AcousticLedger {
     answered: Vec<ObservationIdentity>,
     kept_visible: usize,
     evidence: BTreeMap<OccurrenceIdentity, AcousticSerial>,
+    vad_closures: BTreeMap<OccurrenceIdentity, VadClosureReceipt>,
     frontiers: BTreeMap<OccurrenceIdentity, ObservationFrontier>,
     seals: BTreeMap<OccurrenceIdentity, LedgerSealReceipt>,
     terminal_seals: Vec<LedgerSealReceipt>,
@@ -1844,6 +1845,16 @@ impl AcousticLedger {
             return refuse(AdmissionRefusal::VadDidNotOpen);
         }
         let serial = AcousticSerial::mint(evidence);
+        if let Some(existing) = self.evidence.get(&occurrence) {
+            return if existing.version == serial.version && existing.digest == serial.digest {
+                AdmissionReceipt::Qualified {
+                    occurrence,
+                    serial: existing.clone(),
+                }
+            } else {
+                refuse(AdmissionRefusal::ConflictingSerial)
+            };
+        }
         self.evidence.insert(occurrence.clone(), serial.clone());
         AdmissionReceipt::Qualified { occurrence, serial }
     }
@@ -1851,6 +1862,62 @@ impl AcousticLedger {
     /// The serial minted for one occurrence, if it was qualified.
     pub fn serial_of(&self, occurrence: &OccurrenceIdentity) -> Option<&AcousticSerial> {
         self.evidence.get(occurrence)
+    }
+
+    /// Attach a later, measured VAD close to an already-qualified open L1
+    /// subspan without changing the serial its live words cited. The caller
+    /// must supply the same PCM measurement with only the real close added.
+    pub fn record_vad_close(
+        &mut self,
+        closing: &AcousticEvidence,
+        calibration: &EnergyCalibration,
+    ) -> Result<VadClosureReceipt, VadClosureRefusal> {
+        let occurrence = &closing.occurrence;
+        let serial = self
+            .evidence
+            .get(occurrence)
+            .ok_or(VadClosureRefusal::NotQualified)?;
+        if serial.vad_closed() {
+            return Err(VadClosureRefusal::AlreadyClosed);
+        }
+        let close = closing
+            .vad_close_sample
+            .ok_or(VadClosureRefusal::CloseMissing)?;
+        if close < occurrence.sample_end {
+            return Err(VadClosureRefusal::CloseBeforeSpanEnd);
+        }
+        if closing.evidence_calibration_version != calibration.version {
+            return Err(VadClosureRefusal::CalibrationMismatch);
+        }
+        let mut original = closing.clone();
+        original.vad_close_sample = None;
+        let offered = AcousticSerial::mint(&original);
+        if offered.version != serial.version || offered.digest != serial.digest {
+            return Err(VadClosureRefusal::ChangedQualifiedEvidence);
+        }
+        if let Some(existing) = self.vad_closures.get(occurrence) {
+            return if existing.vad_close_sample == close {
+                Ok(existing.clone())
+            } else {
+                Err(VadClosureRefusal::ConflictingClose)
+            };
+        }
+        if self.seals.contains_key(occurrence) {
+            return Err(VadClosureRefusal::AlreadySealed);
+        }
+        let receipt = VadClosureReceipt {
+            occurrence: occurrence.clone(),
+            qualified_serial_digest: serial.digest.clone(),
+            vad_close_sample: close,
+        };
+        self.vad_closures
+            .insert(occurrence.clone(), receipt.clone());
+        Ok(receipt)
+    }
+
+    /// The ledger-issued late VAD boundary for a qualified open subspan.
+    pub fn vad_closure_of(&self, occurrence: &OccurrenceIdentity) -> Option<&VadClosureReceipt> {
+        self.vad_closures.get(occurrence)
     }
 
     /// Whether the occurrence cleared the calibrated existence predicate.
@@ -1975,9 +2042,12 @@ impl AcousticLedger {
             .evidence
             .get(occurrence)
             .ok_or(SealRefusal::NotQualified)?;
-        if !serial.vad_closed() {
-            return Err(SealRefusal::VadDidNotClose);
-        }
+        let closure = self.vad_closures.get(occurrence).cloned();
+        let vad_close_sample = serial
+            .vad_close_sample
+            .filter(|close| *close >= occurrence.sample_end)
+            .or_else(|| closure.as_ref().map(|receipt| receipt.vad_close_sample))
+            .ok_or(SealRefusal::VadDidNotClose)?;
         let frontier = self
             .frontiers
             .get(occurrence)
@@ -2011,7 +2081,8 @@ impl AcousticLedger {
             coverage: occurrence.clone(),
             sealed_occurrences: vec![occurrence.clone()],
             serials: vec![serial.clone()],
-            vad_close_sample: serial.vad_close_sample.unwrap_or(occurrence.sample_end),
+            vad_close_sample,
+            vad_closures: closure.into_iter().collect(),
             frontier: frontier.clone(),
             layer_trail_ordinals: ordinals,
         })
@@ -2075,6 +2146,7 @@ impl AcousticLedger {
             self.seal(occurrence)?;
         }
         let mut serials = Vec::with_capacity(in_epoch.len());
+        let mut vad_closures = Vec::new();
         let mut ordinals = Vec::new();
         let mut vad_close = 0u64;
         for occurrence in &in_epoch {
@@ -2083,6 +2155,7 @@ impl AcousticLedger {
                 .get(occurrence)
                 .ok_or(SealRefusal::OccurrenceStillOpen)?;
             serials.extend(seal.serials.iter().cloned());
+            vad_closures.extend(seal.vad_closures.iter().cloned());
             ordinals.extend(seal.layer_trail_ordinals.iter().copied());
             vad_close = vad_close.max(seal.vad_close_sample);
         }
@@ -2102,6 +2175,7 @@ impl AcousticLedger {
             sealed_occurrences: in_epoch,
             serials,
             vad_close_sample: vad_close,
+            vad_closures,
             frontier,
             layer_trail_ordinals: ordinals,
         };
@@ -2856,6 +2930,9 @@ pub enum AdmissionRefusal {
     /// caller is judging it with. Comparing them would silently change the
     /// meaning of the floor.
     CalibrationMismatch,
+    /// This occurrence already has a different serial. A later VAD close
+    /// cannot rewrite evidence cited by an earlier live document revision.
+    ConflictingSerial,
 }
 
 impl AdmissionRefusal {
@@ -2866,6 +2943,7 @@ impl AdmissionRefusal {
             Self::BelowCalibratedEnergy => "below_calibrated_energy",
             Self::VadDidNotOpen => "vad_did_not_open",
             Self::CalibrationMismatch => "calibration_mismatch",
+            Self::ConflictingSerial => "conflicting_serial",
         }
     }
 }
@@ -2918,6 +2996,29 @@ impl AdmissionReceipt {
             Self::Refused { .. } => "refused",
         }
     }
+}
+
+/// A ledger-owned later VAD edge for one already-qualified open occurrence.
+/// The original serial remains the word's immutable citation; this receipt
+/// accounts for the separate close fact used by a later seal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VadClosureReceipt {
+    pub occurrence: OccurrenceIdentity,
+    pub qualified_serial_digest: String,
+    pub vad_close_sample: u64,
+}
+
+/// Why a later VAD edge cannot close an open serial.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VadClosureRefusal {
+    NotQualified,
+    AlreadyClosed,
+    AlreadySealed,
+    CloseMissing,
+    CloseBeforeSpanEnd,
+    CalibrationMismatch,
+    ChangedQualifiedEvidence,
+    ConflictingClose,
 }
 
 // ---------------------------------------------------------------------------
@@ -3628,6 +3729,9 @@ pub struct LedgerSealReceipt {
     pub serials: Vec<AcousticSerial>,
     /// VAD closing boundary that permitted the seal.
     pub vad_close_sample: u64,
+    /// Later close receipts when a live L1 serial was originally issued open.
+    /// An already-closed serial needs no separate receipt.
+    pub vad_closures: Vec<VadClosureReceipt>,
     /// The frontier as it stood, closed, at seal time.
     pub frontier: ObservationFrontier,
     /// Ordinals of the decision trail entries the seal makes final.
@@ -4200,6 +4304,143 @@ mod tests {
                 sample_end: 16_000,
             }],
         )
+    }
+
+    /// An open L1 subspan may already have published a signed word when the
+    /// larger Silero speech region finally closes. Calling `qualify` again
+    /// must not quietly replace the serial that the earlier composition cited.
+    /// A real-close transition needs its own explicit, auditable receipt.
+    #[test]
+    fn open_l1_close_cannot_silently_replace_cited_acoustic_serial() {
+        let occurrence = occ(0, 16_000);
+        let calibration = EnergyCalibration::new("open-l1", 1.0, 1);
+        let open_evidence = AcousticEvidence {
+            occurrence: occurrence.clone(),
+            duration_ms: 1_000.0,
+            energy_integral: 100.0,
+            mean_rms_dbfs: -20.0,
+            peak_dbfs: -10.0,
+            vad_open_sample: Some(0),
+            vad_close_sample: None,
+            evidence_calibration_version: calibration.version.clone(),
+        };
+        let mut ledger = AcousticLedger::new();
+        assert!(ledger.qualify(&open_evidence, &calibration).is_qualified());
+        ledger.schedule_frontier(occurrence.clone(), [ObservationProducer::Whisper]);
+        assert!(
+            ledger
+                .admit(
+                    &obs(ObservationProducer::Whisper, 0, occurrence.clone()),
+                    "Iwo"
+                )
+                .grants_mutation()
+        );
+        let before = ledger
+            .compose(&occurrence)
+            .expect("the live word is signed");
+        let serial_before = ledger.serial_of(&occurrence).unwrap().clone();
+        assert!(!serial_before.vad_closed());
+        assert_eq!(
+            ledger.qualify(&open_evidence, &calibration).serial(),
+            Some(&serial_before),
+            "repeating identical evidence remains idempotent"
+        );
+
+        let closing_evidence = AcousticEvidence {
+            vad_close_sample: Some(20_000),
+            ..open_evidence
+        };
+        assert_eq!(
+            ledger.qualify(&closing_evidence, &calibration),
+            AdmissionReceipt::Refused {
+                occurrence: occurrence.clone(),
+                reason: AdmissionRefusal::ConflictingSerial,
+            }
+        );
+        assert_eq!(ledger.serial_of(&occurrence), Some(&serial_before));
+        assert_eq!(ledger.compose(&occurrence), Ok(before.clone()));
+
+        assert_eq!(ledger.seal(&occurrence), Err(SealRefusal::VadDidNotClose));
+        assert_eq!(
+            ledger.record_vad_close(
+                &AcousticEvidence {
+                    vad_close_sample: None,
+                    ..closing_evidence.clone()
+                },
+                &calibration,
+            ),
+            Err(VadClosureRefusal::CloseMissing)
+        );
+        assert_eq!(
+            ledger.record_vad_close(
+                &AcousticEvidence {
+                    vad_close_sample: Some(15_999),
+                    ..closing_evidence.clone()
+                },
+                &calibration,
+            ),
+            Err(VadClosureRefusal::CloseBeforeSpanEnd)
+        );
+        assert_eq!(
+            ledger.record_vad_close(
+                &AcousticEvidence {
+                    energy_integral: 101.0,
+                    ..closing_evidence.clone()
+                },
+                &calibration,
+            ),
+            Err(VadClosureRefusal::ChangedQualifiedEvidence)
+        );
+        assert_eq!(
+            ledger.record_vad_close(
+                &AcousticEvidence {
+                    occurrence: occ(16_000, 32_000),
+                    ..closing_evidence.clone()
+                },
+                &calibration,
+            ),
+            Err(VadClosureRefusal::NotQualified)
+        );
+
+        let close = ledger
+            .record_vad_close(&closing_evidence, &calibration)
+            .expect("same PCM with a genuine later VAD boundary may close");
+        assert_eq!(close.occurrence, occurrence);
+        assert_eq!(close.qualified_serial_digest, serial_before.digest);
+        assert_eq!(close.vad_close_sample, 20_000);
+        assert_eq!(ledger.vad_closure_of(&occurrence), Some(&close));
+        assert_eq!(
+            ledger.record_vad_close(&closing_evidence, &calibration),
+            Ok(close.clone()),
+            "a replayed edge is idempotent"
+        );
+        assert_eq!(
+            ledger.record_vad_close(
+                &AcousticEvidence {
+                    vad_close_sample: Some(21_000),
+                    ..closing_evidence.clone()
+                },
+                &calibration,
+            ),
+            Err(VadClosureRefusal::ConflictingClose)
+        );
+        assert_eq!(ledger.serial_of(&occurrence), Some(&serial_before));
+        assert_eq!(ledger.compose(&occurrence), Ok(before));
+        assert_eq!(ledger.seal(&occurrence), Err(SealRefusal::FrontierOpen));
+        ledger.note_frontier_return(&occurrence, ObservationProducer::Whisper);
+        let seal = ledger.seal(&occurrence).unwrap();
+        assert_eq!(seal.vad_close_sample, 20_000);
+        assert_eq!(seal.vad_closures, vec![close.clone()]);
+        assert_eq!(seal.serials, vec![serial_before]);
+        let coverage = ledger.assess_seal_coverage("s1", 1, &debt_speech(), 0);
+        assert!(ledger.record_seal_coverage(coverage));
+        let terminal = ledger.seal_terminal("s1", 1).unwrap();
+        assert_eq!(terminal.vad_closures, vec![close.clone()]);
+        assert_eq!(
+            ledger.record_vad_close(&closing_evidence, &calibration),
+            Ok(close),
+            "a replayed close cannot alter an already-issued seal"
+        );
     }
 
     #[test]
@@ -6061,6 +6302,36 @@ mod tests {
         assert_eq!(ledger.incremental_shapings().len(), 1);
     }
 
+    /// A text-only ledger admission cites its physical occurrence, but does not
+    /// carry individual word pins. The serial is valid evidence for the label;
+    /// copying the occurrence bounds into each token would falsely claim that
+    /// both words have the same measured word-level PCM timing.
+    #[test]
+    fn text_only_admission_does_not_invent_word_sample_ranges() {
+        let (mut ledger, occurrence) = whisper_only_qualified_ledger();
+        let decision = ledger.admit(
+            &obs(ObservationProducer::Whisper, 0, occurrence.clone()),
+            "dobry wieczór",
+        );
+        assert!(decision.is_insert());
+
+        let composition = ledger
+            .compose(&occurrence)
+            .expect("qualified text-only admission has occurrence evidence");
+        assert_eq!(composition.tokens.len(), 2);
+        for token in &composition.tokens {
+            assert!(token.cited_occurrences().any(|cited| cited == &occurrence));
+            assert_eq!(
+                token.token_sample_start, None,
+                "an occurrence boundary is not the first sample of each word"
+            );
+            assert_eq!(
+                token.token_sample_end, None,
+                "an occurrence boundary is not the end sample of each word"
+            );
+        }
+    }
+
     #[test]
     fn clock_lie_span_keeps_its_text_and_cannot_replace_a_neighbour() {
         use crate::quality::supervisor::{
@@ -6386,5 +6657,37 @@ mod tests {
             } if label.contains("pozno")
         ));
         assert_eq!(ledger.text_of(&occurrence), Some("zostaje"));
+    }
+
+    #[test]
+    fn read_only_overlap_cannot_register_clock_lie_veto() {
+        let mut ledger = AcousticLedger::new();
+        ledger.bind_capture_rate(16_000);
+        let host = occ(0, 16_000);
+        let short_overlap = occ(0, 1_600);
+
+        assert!(
+            ledger
+                .admit(&obs(ObservationProducer::Apple, 0, host.clone()), "kot")
+                .is_insert()
+        );
+        assert!(matches!(
+            ledger.admit(
+                &obs(ObservationProducer::Apple, 1, short_overlap.clone()),
+                &"x".repeat(41),
+            ),
+            MutationReceipt::KeepVisibleUnanchored {
+                reason: NoAuthorityReason::OverlapWithoutWordPins,
+                ..
+            }
+        ));
+        // This observation was not admitted as document text. It may be
+        // diagnosed as implausible, but cannot acquire persistent veto
+        // authority over the committed host. Local Word-pin admission is a
+        // separate contract; this test must not demand whole-host replacement.
+        assert!(!ledger.clock_lie_blocks_neighbour_replacement(&host));
+        assert_eq!(ledger.text_of(&short_overlap), None);
+        assert_eq!(ledger.text_of(&host), Some("kot"));
+        assert_eq!(ledger.conservation().residue(), 0);
     }
 }
