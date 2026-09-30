@@ -60,6 +60,15 @@ private final class OverlayStateTestEngine: DictationEngine {
   var onHistoryRead: (() -> Void)?
   var onRestore: (() -> Void)?
   var restoredSelections: [UInt64] = []
+  var rosterSnapshot: [CsChannelRosterState] = []
+  var toggledDigits: [UInt8] = []
+  var toggleFailure: Error?
+
+  func channelRosterSnapshot() async -> [CsChannelRosterState] { rosterSnapshot }
+  func toggleAgentChannel(digit: UInt8) async throws {
+    toggledDigits.append(digit)
+    if let toggleFailure { throw toggleFailure }
+  }
 
   func setListener(_ listener: CsTranscriptionListener) {}
   func startRecording(language: CsLanguage?) async throws {}
@@ -189,6 +198,62 @@ private final class OverlayStateTestClock {
 
 @MainActor
 final class OverlayStateTests: XCTestCase {
+  func testRosterToggleUsesEngineOnceAndRefreshesItsOpenState() async {
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState()
+    state.engine = engine
+    state.applyChannelDelivery([
+      .init(channel: "2", agent: "miron", deliveryID: nil, stage: nil, isOpen: false)
+    ])
+    engine.rosterSnapshot = [
+      .init(channel: "2", audience: "miron", open: true, loud: false,
+            autosealDeadlineUnixMs: nil, followerAlive: true)
+    ]
+
+    await state.toggleAgentChannel(2)
+
+    XCTAssertEqual(engine.toggledDigits, [2])
+    XCTAssertTrue(state.channelHudStates["2"]?.open == true)
+    XCTAssertTrue(state.hasOpenChannel)
+    XCTAssertNil(state.channelToggleError)
+  }
+
+  func testFailedRosterToggleRetainsStateAndReportsError() async {
+    let engine = OverlayStateTestEngine()
+    engine.toggleFailure = NSError(
+      domain: "Channel test", code: 1,
+      userInfo: [NSLocalizedDescriptionKey: "Controller unavailable"])
+    let state = OverlayState()
+    state.engine = engine
+    state.applyChannelDelivery([
+      .init(channel: "3", agent: "roman", deliveryID: nil, stage: nil, isOpen: false)
+    ])
+
+    await state.toggleAgentChannel(3)
+
+    XCTAssertEqual(engine.toggledDigits, [3])
+    XCTAssertFalse(state.hasOpenChannel, "a failed click cannot optimistically open a channel")
+    XCTAssertTrue(state.channelHudStates.isEmpty)
+    XCTAssertEqual(state.channelToggleError, "Controller unavailable")
+  }
+
+  func testRosterSnapshotProjectsDeadAndUnknownFollowersWithoutGuessing() {
+    let state = OverlayState()
+    state.applyChannelRoster([
+      .init(channel: "1", audience: "klaudiusz", open: false, loud: false,
+            autosealDeadlineUnixMs: 1_700_000_000_000, followerAlive: false),
+      .init(channel: "2", audience: "miron", open: false, loud: false,
+            autosealDeadlineUnixMs: nil, followerAlive: nil),
+    ])
+
+    XCTAssertEqual(state.channelHudStates["1"]?.followerAlive, false)
+    XCTAssertNil(state.channelHudStates["2"]?.followerAlive)
+    XCTAssertEqual(
+      state.channelHudStates["1"]?.autosealDeadline,
+      Date(timeIntervalSince1970: 1_700_000_000))
+    XCTAssertNil(state.channelHudStates["2"]?.autosealDeadline)
+  }
+
   func testCompactPaintCannotAdmitCaptureOrMutateDocument() {
     let state = OverlayState()
     let initial = CsCompactProjection(

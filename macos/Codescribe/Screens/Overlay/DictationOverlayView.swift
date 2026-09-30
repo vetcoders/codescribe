@@ -587,7 +587,12 @@ struct DictationOverlayView: View {
         if !state.channelDelivery.isEmpty || state.channelStatusUnavailable {
           OverlayChannelStatusView(
             channels: state.channelDelivery, unavailable: state.channelStatusUnavailable,
-            palette: palette, animates: overlayVisible
+            palette: palette, animates: overlayVisible,
+            hudStates: state.channelHudStates,
+            onToggleChannel: { digit in
+              Task { await state.toggleAgentChannel(digit) }
+            },
+            toggleError: state.channelToggleError
           )
         }
         if let light = state.recordingLight {
