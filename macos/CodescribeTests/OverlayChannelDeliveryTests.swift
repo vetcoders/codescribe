@@ -402,6 +402,35 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     }
   }
 
+  func testRosterPopoverUsesOverlayAppearanceAndReadableTokens() {
+    for palette in [OverlayAppearancePalette.light, .dark] {
+      let popover = ChannelRosterPopoverContent(palette: palette) {
+        Text("Channel receipt")
+      }
+      let style = popover.style
+      XCTAssertEqual(style.surface, palette.desktopBackground)
+      XCTAssertEqual(style.border, palette.border)
+      XCTAssertEqual(style.colorScheme, palette.appearance == .dark ? .dark : .light)
+      XCTAssertEqual(style.primaryText, palette.primaryText)
+      XCTAssertEqual(style.bodyText, palette.bodyText)
+      XCTAssertEqual(style.mutedText, palette.mutedText)
+
+      for (role, foreground, minimum) in [
+        ("channel name", style.primaryText, 4.5),
+        ("receipt and dead follower", style.bodyText, 4.5),
+        ("secondary text", style.mutedText, 3.0),
+        ("open microphone", palette.listeningStatus, 4.5),
+        ("queued receipt", palette.processingStatus, 4.5),
+        ("confirmed receipt", palette.successStatus, 4.5),
+      ] {
+        let ratio = OverlayColorToken.contrastRatio(
+          foreground: foreground, surface: style.surface, background: style.surface)
+        XCTAssertGreaterThanOrEqual(
+          ratio, minimum, "\(palette.appearance) \(role) contrast was \(ratio):1")
+      }
+    }
+  }
+
   private struct Fixture {
     static let leaseID = "0123456789abcdef0123456789abcdef"
     static let firstID = "b67e9660afb01eb53ab2de50"
