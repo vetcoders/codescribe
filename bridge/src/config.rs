@@ -732,8 +732,18 @@ impl CodescribeConfig {
     /// that instance — never a second `Config::load` + `UserSettings::load` +
     /// env-file reconstruct.
     pub fn load_settings(&self) -> CsSettings {
-        let runtime = Config::load_runtime_snapshot()
-            .expect("canonical runtime settings must load for Settings UI projection");
+        let runtime = match Config::load_runtime_snapshot() {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                tracing::warn!(%error, getter = "load_settings", "settings_getter_degraded");
+                Config::runtime_snapshot_from_captured(
+                    codescribe_core::config::CapturedRuntimeInputs::defaults_at(
+                        PathBuf::new(),
+                        0,
+                    ),
+                )
+            }
+        };
         CsSettings::from_runtime_snapshot(&runtime)
     }
 
@@ -778,11 +788,20 @@ impl CodescribeConfig {
 
     /// Read the user-visible pin from the canonical settings snapshot.
     pub fn overlay_keep_visible_between_takes(&self) -> bool {
-        Config::load_runtime_snapshot_without_keychain()
-            .expect("canonical runtime settings must load for overlay pin")
-            .user_settings()
-            .overlay_keep_visible_between_takes
-            .unwrap_or(false)
+        match Config::load_runtime_snapshot_without_keychain() {
+            Ok(runtime) => runtime
+                .user_settings()
+                .overlay_keep_visible_between_takes
+                .unwrap_or(false),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    getter = "overlay_keep_visible_between_takes",
+                    "settings_getter_degraded"
+                );
+                false
+            }
+        }
     }
 
     /// Persist the pin only on a changed user choice.
@@ -846,8 +865,18 @@ impl CodescribeConfig {
     /// populates the Keychain, so it never prompts just because the user opened
     /// the menu. Projects from one keychain-free runtime snapshot.
     pub fn tray_toggles(&self) -> CsTrayToggles {
-        let runtime = Config::load_runtime_snapshot_without_keychain()
-            .expect("canonical runtime settings must load for tray toggles");
+        let runtime = match Config::load_runtime_snapshot_without_keychain() {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                tracing::warn!(%error, getter = "tray_toggles", "settings_getter_degraded");
+                Config::runtime_snapshot_from_captured(
+                    codescribe_core::config::CapturedRuntimeInputs::defaults_at(
+                        PathBuf::new(),
+                        0,
+                    ),
+                )
+            }
+        };
         let config = runtime.values();
         CsTrayToggles {
             show_dock_icon: config.show_dock_icon,
@@ -3734,6 +3763,208 @@ mod settings_snapshot_tests {
             path.is_dir(),
             "The getter must not replace an unreadable source"
         );
+    }
+
+    // GET-1 contract falsifiers, authored under W1 and not executed here.
+    // The pinned core loader currently returns Ok with an unrepairable receipt
+    // for this fixture. The warning assertions expose that contract mismatch;
+    // do not weaken them or reinterpret Ok snapshots in these getters.
+    fn with_getter_warnings<R>(
+        f: impl FnOnce() -> R,
+    ) -> (R, Vec<std::collections::BTreeMap<String, String>>) {
+        use std::collections::BTreeMap;
+        use std::sync::{Arc, Mutex};
+        use tracing::field::{Field, Visit};
+
+        struct Capture(Arc<Mutex<Vec<BTreeMap<String, String>>>>);
+        #[derive(Default)]
+        struct Fields(BTreeMap<String, String>);
+        impl Visit for Fields {
+            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+                self.0.insert(field.name().into(), format!("{value:?}"));
+            }
+            fn record_str(&mut self, field: &Field, value: &str) {
+                self.0.insert(field.name().into(), value.into());
+            }
+        }
+        impl tracing::Subscriber for Capture {
+            fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                tracing::span::Id::from_u64(1)
+            }
+            fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+            fn event(&self, event: &tracing::Event<'_>) {
+                let mut fields = Fields::default();
+                event.record(&mut fields);
+                if event.metadata().level() == &tracing::Level::WARN
+                    && fields
+                        .0
+                        .get("message")
+                        .is_some_and(|message| message.contains("settings_getter_degraded"))
+                {
+                    self.0.lock().unwrap().push(fields.0);
+                }
+            }
+            fn enter(&self, _: &tracing::span::Id) {}
+            fn exit(&self, _: &tracing::span::Id) {}
+        }
+
+        let warnings = Arc::new(Mutex::new(Vec::new()));
+        let result = tracing::subscriber::with_default(Capture(warnings.clone()), f);
+        let warnings = warnings.lock().unwrap().clone();
+        (result, warnings)
+    }
+
+    fn assert_getter_warning(
+        warnings: &[std::collections::BTreeMap<String, String>],
+        getter: &str,
+    ) {
+        assert_eq!(warnings.len(), 1, "one degradation warning per getter call");
+        assert_eq!(warnings[0]["getter"], getter);
+        assert!(warnings[0]["message"].contains("settings_getter_degraded"));
+        assert!(!warnings[0]["error"].is_empty(), "include the load error");
+    }
+
+    #[test]
+    #[serial]
+    fn load_settings_defaults_and_warns_after_settings_load_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", root.path());
+        let _env_path = EnvGuard::set("CODESCRIBE_ENV_PATH", root.path().join("absent.env"));
+        let _keychain = EnvGuard::set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
+        let path = UserSettings::settings_path();
+        fs::create_dir(&path).unwrap();
+        assert!(fs::read_to_string(&path).is_err());
+        let expected = CsSettings::from_runtime_snapshot(&Config::runtime_snapshot_from_captured(
+            codescribe_core::config::CapturedRuntimeInputs::defaults_at(root.path().into(), 0),
+        ));
+
+        let (actual, warnings) = std::panic::catch_unwind(|| {
+            with_getter_warnings(|| CodescribeConfig {}.load_settings())
+        })
+        .expect("settings load failure must not panic across FFI");
+        assert!(path.is_dir(), "preserve the unreadable source");
+        assert_getter_warning(&warnings, "load_settings");
+        macro_rules! assert_default_fields {
+            ($($field:ident),+ $(,)?) => {
+                $(assert_eq!(actual.$field, expected.$field, stringify!($field));)+
+            };
+        }
+        assert_default_fields!(
+            hold_exclusive,
+            hold_arm_modifier,
+            hold_start_delay_ms,
+            double_tap_interval_ms,
+            toggle_silence_sec,
+            whisper_context_window_sec,
+            light_plus_sentence_pause_sec,
+            deferred_insert_shortcut,
+            whisper_language,
+            ai_formatting_enabled,
+            transcript_send_mode,
+            transcript_tagging_enabled,
+            transcript_tag_template,
+            ai_max_tokens,
+            ai_assistive_max_tokens,
+            show_tray_glyph,
+            show_dock_icon,
+            transcription_overlay_enabled,
+            hold_indicator,
+            hold_badge_size,
+            hold_badge_offset_x,
+            hold_badge_offset_y,
+            overlay_position_mode,
+            overlay_custom_x,
+            overlay_custom_y,
+            beep_on_start,
+            sound_name,
+            sound_volume,
+            audio_input_device,
+            history_enabled,
+            quick_notes_enabled,
+            quick_notes_save_only,
+            use_local_stt,
+            local_model,
+            stt_file_endpoint,
+            stt_live_endpoint,
+            restore_clipboard,
+            restore_clipboard_delay_ms,
+            start_at_login,
+            agent_enter_sends,
+            agent_auto_send,
+            dump_audio_logs,
+            llm_formatting_provider,
+            llm_formatting_model,
+            llm_assistive_provider,
+            llm_assistive_model,
+            formatting_level,
+            whisper_model,
+            layered_transcription,
+            agent_workspace_roots,
+            buffer_delay_ms,
+            typing_cps,
+            emit_words_max,
+            buffered_interim_sec,
+            backend_max_upload_mb,
+            asr_mode,
+            cloud_consent,
+            asr_gateway_url,
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn overlay_pin_defaults_and_warns_after_settings_load_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", root.path());
+        let _env_path = EnvGuard::set("CODESCRIBE_ENV_PATH", root.path().join("absent.env"));
+        let path = UserSettings::settings_path();
+        fs::create_dir(&path).unwrap();
+        assert!(fs::read_to_string(&path).is_err());
+
+        let (actual, warnings) = std::panic::catch_unwind(|| {
+            with_getter_warnings(|| CodescribeConfig {}.overlay_keep_visible_between_takes())
+        })
+        .expect("overlay pin load failure must not panic across FFI");
+        assert!(!actual);
+        assert!(path.is_dir(), "preserve the unreadable source");
+        assert_getter_warning(&warnings, "overlay_keep_visible_between_takes");
+    }
+
+    #[test]
+    #[serial]
+    fn tray_toggles_default_and_warn_after_settings_load_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", root.path());
+        let _env_path = EnvGuard::set("CODESCRIBE_ENV_PATH", root.path().join("absent.env"));
+        let path = UserSettings::settings_path();
+        fs::create_dir(&path).unwrap();
+        assert!(fs::read_to_string(&path).is_err());
+        let expected = Config::default();
+
+        let (actual, warnings) = std::panic::catch_unwind(|| {
+            with_getter_warnings(|| CodescribeConfig {}.tray_toggles())
+        })
+        .expect("tray settings load failure must not panic across FFI");
+        assert!(path.is_dir(), "preserve the unreadable source");
+        assert_getter_warning(&warnings, "tray_toggles");
+        assert_eq!(actual.show_dock_icon, expected.show_dock_icon);
+        assert_eq!(
+            actual.transcription_overlay_enabled,
+            expected.transcription_overlay_enabled
+        );
+        assert_eq!(actual.auto_paste_enabled, expected.auto_paste_enabled);
+        assert_eq!(actual.formatting_level, "correction");
+        assert_eq!(actual.start_assistive, expected.tray_start_assistive);
+        assert_eq!(
+            actual.notes_mode_enabled,
+            expected.quick_notes_enabled && expected.quick_notes_save_only
+        );
+        assert_eq!(actual.hold_indicator, expected.hold_indicator);
+        assert_eq!(actual.hold_badge_size, expected.hold_badge_size);
     }
 
     #[test]
