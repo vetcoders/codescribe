@@ -2409,6 +2409,12 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func cancelVoiceTurn(threadId: String)  -> Bool
 
     /**
+     * Roster snapshot for the overlay popover: every bound digit, open or
+     * closed, with follower liveness (fresh lease heartbeat). Display-only.
+     */
+    func channelRosterSnapshot() async  -> [CsChannelRosterState]
+
+    /**
      * Format one exact terminal reducer revision through the production Rust
      * formatter and commit the applied result as a provenance-bearing ledger
      * revision. Failure is returned to Swift without publishing any evidence.
@@ -2595,6 +2601,13 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func setModeBinding(mode: CsWorkMode, binding: CsShortcutBinding) throws
 
     /**
+     * Install the host on-device formatter (bootstrap; re-register replaces).
+     * Selection stays with the engine: the formatter only runs when the
+     * `CODESCRIBE_FORMAT_ON_DEVICE` knob picks the on-device lane.
+     */
+    func setOnDeviceFormatter(formatter: CsOnDeviceFormatter)
+
+    /**
      * Start or replace the process-global hotkey listener.
      */
     func start() async throws
@@ -2647,6 +2660,13 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
      * Stop the active legacy-controller recording flow, if one is live.
      */
     func stopRecording() async throws
+
+    /**
+     * Toggle the per-digit agent channel — the exact engine entry ctrl+N
+     * uses. A roster click is a channel toggle only: it never starts,
+     * resumes, or resurrects an agent session (Founder veto, 2026-09-30).
+     */
+    func toggleAgentChannel(digit: UInt8) async throws
 
     /**
      * Explicit file consumers use `hq:` / `cloud:` prefixes to pick the pass.
@@ -2830,6 +2850,28 @@ open func cancelVoiceTurn(threadId: String) -> Bool  {
         FfiConverterString.lower(threadId),$0
     )
 })
+}
+
+    /**
+     * Roster snapshot for the overlay popover: every bound digit, open or
+     * closed, with follower liveness (fresh lease heartbeat). Display-only.
+     */
+open func channelRosterSnapshot()async  -> [CsChannelRosterState]  {
+    return
+        try!  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_channel_roster_snapshot(
+                    self.uniffiCloneHandle()
+
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypeCsChannelRosterState.lift,
+            errorHandler: nil
+
+        )
 }
 
     /**
@@ -3350,6 +3392,19 @@ open func setModeBinding(mode: CsWorkMode, binding: CsShortcutBinding)throws   {
 }
 
     /**
+     * Install the host on-device formatter (bootstrap; re-register replaces).
+     * Selection stays with the engine: the formatter only runs when the
+     * `CODESCRIBE_FORMAT_ON_DEVICE` knob picks the on-device lane.
+     */
+open func setOnDeviceFormatter(formatter: CsOnDeviceFormatter)  {try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribehotkeys_set_on_device_formatter(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCsOnDeviceFormatter_lower(formatter),$0
+    )
+}
+}
+
+    /**
      * Start or replace the process-global hotkey listener.
      */
 open func start()async throws   {
@@ -3488,6 +3543,28 @@ open func stopRecording()async throws   {
                 uniffi_codescribe_ffi_fn_method_codescribehotkeys_stop_recording(
                     self.uniffiCloneHandle()
 
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_void,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_void,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+
+    /**
+     * Toggle the per-digit agent channel — the exact engine entry ctrl+N
+     * uses. A roster click is a channel toggle only: it never starts,
+     * resumes, or resurrects an agent session (Founder veto, 2026-09-30).
+     */
+open func toggleAgentChannel(digit: UInt8)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_toggle_agent_channel(
+                    self.uniffiCloneHandle(),
+                    FfiConverterUInt8.lower(digit)
                 )
             },
             pollFunc: ffi_codescribe_ffi_rust_future_poll_void,
@@ -5902,6 +5979,201 @@ public func FfiConverterTypeCsAppActionListener_lower(_ value: CsAppActionListen
 
 
 /**
+ * Foreign capability: format `user_message` under the sealed `instructions`
+ * on the device model. Swift receives the sealed prompt VERBATIM as the
+ * session instructions and must not amend it (operator-owned prompt).
+ */
+public protocol CsOnDeviceFormatter: AnyObject, Sendable {
+
+    func format(instructions: String, userMessage: String)  -> CsOnDeviceFormatOutcome
+
+}
+/**
+ * Foreign capability: format `user_message` under the sealed `instructions`
+ * on the device model. Swift receives the sealed prompt VERBATIM as the
+ * session instructions and must not amend it (operator-owned prompt).
+ */
+open class CsOnDeviceFormatterImpl: CsOnDeviceFormatter, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_codescribe_ffi_fn_clone_csondeviceformatter(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        try! rustCall { uniffi_codescribe_ffi_fn_free_csondeviceformatter(handle, $0) }
+    }
+
+
+
+
+open func format(instructions: String, userMessage: String) -> CsOnDeviceFormatOutcome  {
+    return try!  FfiConverterTypeCsOnDeviceFormatOutcome_lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_csondeviceformatter_format(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(instructions),
+        FfiConverterString.lower(userMessage),$0
+    )
+})
+}
+
+
+
+}
+
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceCsOnDeviceFormatter {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // This creates 1-element array, since this seems to be the only way to construct a const
+    // pointer that we can pass to the Rust code.
+    static let vtable: [UniffiVTableCallbackInterfaceCsOnDeviceFormatter] = [UniffiVTableCallbackInterfaceCsOnDeviceFormatter(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterTypeCsOnDeviceFormatter.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface CsOnDeviceFormatter: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterTypeCsOnDeviceFormatter.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface CsOnDeviceFormatter: handle missing in uniffiClone")
+            }
+        },
+        format: { (
+            uniffiHandle: UInt64,
+            instructions: RustBuffer,
+            userMessage: RustBuffer,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> CsOnDeviceFormatOutcome in
+                guard let uniffiObj = try? FfiConverterTypeCsOnDeviceFormatter.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.format(
+                     instructions: try FfiConverterString.lift(instructions),
+                     userMessage: try FfiConverterString.lift(userMessage)
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeCsOnDeviceFormatOutcome_lower($0) }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        }
+    )]
+}
+
+private func uniffiCallbackInitCsOnDeviceFormatter() {
+    uniffi_codescribe_ffi_fn_init_callback_vtable_csondeviceformatter(UniffiCallbackInterfaceCsOnDeviceFormatter.vtable)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsOnDeviceFormatter: FfiConverter {
+    fileprivate static let handleMap = UniffiHandleMap<CsOnDeviceFormatter>()
+
+    typealias FfiType = UInt64
+    typealias SwiftType = CsOnDeviceFormatter
+
+    public static func lift(_ handle: UInt64) throws -> CsOnDeviceFormatter {
+        if ((handle & 1) == 0) {
+            // Rust-generated handle, construct a new class that uses the handle to implement the
+            // interface
+            return CsOnDeviceFormatterImpl(unsafeFromHandle: handle)
+        } else {
+            // Swift-generated handle, get the object from the handle map
+            return try handleMap.remove(handle: handle)
+        }
+    }
+
+    public static func lower(_ value: CsOnDeviceFormatter) -> UInt64 {
+         if let rustImpl = value as? CsOnDeviceFormatterImpl {
+             // Rust-implemented object.  Clone the handle and return it
+            return rustImpl.uniffiCloneHandle()
+         } else {
+            // Swift object, generate a new vtable handle and return that.
+            return handleMap.insert(obj: value)
+         }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsOnDeviceFormatter {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: CsOnDeviceFormatter, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsOnDeviceFormatter_lift(_ handle: UInt64) throws -> CsOnDeviceFormatter {
+    return try FfiConverterTypeCsOnDeviceFormatter.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsOnDeviceFormatter_lower(_ value: CsOnDeviceFormatter) -> UInt64 {
+    return FfiConverterTypeCsOnDeviceFormatter.lower(value)
+}
+
+
+
+
+
+
+/**
  * Foreign callback trait — dictation events forwarded to Swift.
  *
  * `on_transcript_projection` is the sole transcript callback. Raw preview,
@@ -7960,6 +8232,90 @@ public func FfiConverterTypeCsCaptureHandle_lift(_ buf: RustBuffer) throws -> Cs
 #endif
 public func FfiConverterTypeCsCaptureHandle_lower(_ value: CsCaptureHandle) -> RustBuffer {
     return FfiConverterTypeCsCaptureHandle.lower(value)
+}
+
+
+/**
+ * One overlay roster row: per-digit channel state plus follower liveness
+ * from the session bridge. Closed bound digits appear with `open: false`.
+ */
+public struct CsChannelRosterState: Equatable, Hashable {
+    public var channel: String
+    public var audience: String
+    public var `open`: Bool
+    public var loud: Bool
+    /**
+     * Milliseconds since the Unix epoch; `None` when no autoseal is armed.
+     */
+    public var autosealDeadlineUnixMs: Int64?
+    /**
+     * `None` = the snapshot made no liveness claim for this row.
+     */
+    public var followerAlive: Bool?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(channel: String, audience: String, `open`: Bool, loud: Bool,
+        /**
+         * Milliseconds since the Unix epoch; `None` when no autoseal is armed.
+         */autosealDeadlineUnixMs: Int64?,
+        /**
+         * `None` = the snapshot made no liveness claim for this row.
+         */followerAlive: Bool?) {
+        self.channel = channel
+        self.audience = audience
+        self.`open` = `open`
+        self.loud = loud
+        self.autosealDeadlineUnixMs = autosealDeadlineUnixMs
+        self.followerAlive = followerAlive
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsChannelRosterState: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsChannelRosterState: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsChannelRosterState {
+        return
+            try CsChannelRosterState(
+                channel: FfiConverterString.read(from: &buf),
+                audience: FfiConverterString.read(from: &buf),
+                open: FfiConverterBool.read(from: &buf),
+                loud: FfiConverterBool.read(from: &buf),
+                autosealDeadlineUnixMs: FfiConverterOptionInt64.read(from: &buf),
+                followerAlive: FfiConverterOptionBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsChannelRosterState, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.channel, into: &buf)
+        FfiConverterString.write(value.audience, into: &buf)
+        FfiConverterBool.write(value.`open`, into: &buf)
+        FfiConverterBool.write(value.loud, into: &buf)
+        FfiConverterOptionInt64.write(value.autosealDeadlineUnixMs, into: &buf)
+        FfiConverterOptionBool.write(value.followerAlive, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsChannelRosterState_lift(_ buf: RustBuffer) throws -> CsChannelRosterState {
+    return try FfiConverterTypeCsChannelRosterState.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsChannelRosterState_lower(_ value: CsChannelRosterState) -> RustBuffer {
+    return FfiConverterTypeCsChannelRosterState.lower(value)
 }
 
 
@@ -14237,6 +14593,140 @@ public func FfiConverterTypeCsMcpRowTone_lower(_ value: CsMcpRowTone) -> RustBuf
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
+ * Outcome of one host formatting attempt. Error kinds mirror the SDK 27
+ * `LanguageModelError` cases the engine logs distinctly; every error falls
+ * back to the configured cloud lane.
+ */
+
+public enum CsOnDeviceFormatOutcome: Equatable, Hashable {
+
+    /**
+     * The model produced formatted text.
+     */
+    case formatted(text: String
+    )
+    /**
+     * Model or Apple Intelligence unavailable (`availability != available`).
+     */
+    case unavailable(message: String
+    )
+    /**
+     * `unsupportedLanguageOrLocale`.
+     */
+    case unsupportedLanguage(message: String
+    )
+    /**
+     * `refusal` or `guardrailViolation`.
+     */
+    case refused(message: String
+    )
+    /**
+     * `contextSizeExceeded` — the take does not fit the 8k window.
+     */
+    case contextExceeded(message: String
+    )
+    /**
+     * Anything else (timeout, rate limit, unexpected error).
+     */
+    case failed(message: String
+    )
+
+
+
+}
+
+#if compiler(>=6)
+extension CsOnDeviceFormatOutcome: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsOnDeviceFormatOutcome: FfiConverterRustBuffer {
+    typealias SwiftType = CsOnDeviceFormatOutcome
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsOnDeviceFormatOutcome {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .formatted(text: try FfiConverterString.read(from: &buf)
+        )
+
+        case 2: return .unavailable(message: try FfiConverterString.read(from: &buf)
+        )
+
+        case 3: return .unsupportedLanguage(message: try FfiConverterString.read(from: &buf)
+        )
+
+        case 4: return .refused(message: try FfiConverterString.read(from: &buf)
+        )
+
+        case 5: return .contextExceeded(message: try FfiConverterString.read(from: &buf)
+        )
+
+        case 6: return .failed(message: try FfiConverterString.read(from: &buf)
+        )
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CsOnDeviceFormatOutcome, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case let .formatted(text):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(text, into: &buf)
+
+
+        case let .unavailable(message):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(message, into: &buf)
+
+
+        case let .unsupportedLanguage(message):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(message, into: &buf)
+
+
+        case let .refused(message):
+            writeInt(&buf, Int32(4))
+            FfiConverterString.write(message, into: &buf)
+
+
+        case let .contextExceeded(message):
+            writeInt(&buf, Int32(5))
+            FfiConverterString.write(message, into: &buf)
+
+
+        case let .failed(message):
+            writeInt(&buf, Int32(6))
+            FfiConverterString.write(message, into: &buf)
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsOnDeviceFormatOutcome_lift(_ buf: RustBuffer) throws -> CsOnDeviceFormatOutcome {
+    return try FfiConverterTypeCsOnDeviceFormatOutcome.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsOnDeviceFormatOutcome_lower(_ value: CsOnDeviceFormatOutcome) -> RustBuffer {
+    return FfiConverterTypeCsOnDeviceFormatOutcome.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
  * W13-6B highlight kind. Stringly so Swift can switch without another enum
  * reshape if a third kind appears.
  */
@@ -15340,6 +15830,30 @@ fileprivate struct FfiConverterOptionDouble: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionBool: FfiConverterRustBuffer {
+    typealias SwiftType = Bool?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterBool.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterBool.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
     typealias SwiftType = String?
 
@@ -15648,6 +16162,31 @@ fileprivate struct FfiConverterSequenceTypeCsCapabilityRow: FfiConverterRustBuff
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeCsCapabilityRow.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCsChannelRosterState: FfiConverterRustBuffer {
+    typealias SwiftType = [CsChannelRosterState]
+
+    public static func write(_ value: [CsChannelRosterState], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCsChannelRosterState.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CsChannelRosterState] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CsChannelRosterState]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCsChannelRosterState.read(from: &buf))
         }
         return seq
     }
@@ -16935,6 +17474,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_cancel_voice_turn() != 32656) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_channel_roster_snapshot() != 39720) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_commit_formatter_revision() != 59971) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -17022,6 +17564,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_set_mode_binding() != 13711) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_set_on_device_formatter() != 41290) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_start() != 63389) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -17041,6 +17586,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_stop_recording() != 38552) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_toggle_agent_channel() != 29288) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_transcribe_file() != 1637) {
@@ -17196,6 +17744,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_max_approvals_changed() != 29603) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_csondeviceformatter_format() != 2611) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_transcript_projection() != 430) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -17269,6 +17820,7 @@ private let initializationResult: InitializationResult = {
     uniffiCallbackInitCsAgentDeliveryListener()
     uniffiCallbackInitCsAgentListener()
     uniffiCallbackInitCsAppActionListener()
+    uniffiCallbackInitCsOnDeviceFormatter()
     uniffiCallbackInitCsTranscriptionListener()
     uniffiCallbackInitCsTrayStatusListener()
     uniffiCallbackInitCsWhisperDownloadListener()
