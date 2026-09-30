@@ -138,6 +138,24 @@ streams its normalized events into `PresentationEmitter`. A public HTTPS
 socket. A complete audio-file multipart request is allowed for Settings → Test
 and for an explicit file action (Dictionary or Teacher).
 
+**Recognition vocabulary (2026-09-30, builder only).**
+`core/stt/recognizer_vocabulary.rs` builds one source-prioritized list: active
+agent names, user dictionary canonical forms, then `ProtectedTerms` (built-ins
+plus `<config_dir>/protected_terms.txt`). Each source is sorted deterministically;
+Unicode casefold deduplication preserves the highest-priority spelling. The
+Apple view holds at most 100 terms and omits empty context. A build receipt logs
+retained counts per source at info and the list only at debug.
+
+Recognition wiring is intentionally held: commit `a06370a7` records a live A/B
+where a full-file Whisper vocabulary prompt deleted roughly half the content.
+This evidence concerns Whisper file decoding, not Apple live recognition, but
+triggers cut T's explicit builder-only stop condition. The three Apple live
+request paths still omit `contextual_strings`; the builder does not yet change
+recognition behavior. `stt_initial_prompt_enabled` remains OFF by default, and
+full-file Whisper decoding stays prompt-free even with window opt-in. Enabling
+Apple live context requires scoped bias validation; a future Whisper window
+prompt must use the shared builder with a tokenizer-measured token budget.
+
 **Domain token (client-owned, 2026-08-18).** Codescribe names the take
 `vocabulary=programming` on loopback and Libraxis file/live requests
 (multipart field `vocabulary`; JSON alias `request_vocabulary`; live

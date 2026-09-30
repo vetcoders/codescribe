@@ -98,6 +98,7 @@ deunicode = "1.6"
 cap-std = "4"
 security-framework = "3"
 tempfile = "3"
+unicode-casefold = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # MCP stdio client: F_SETNOSIGPIPE on the child's stdin so a dead server's

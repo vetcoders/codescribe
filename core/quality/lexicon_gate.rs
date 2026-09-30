@@ -362,6 +362,11 @@ impl ProtectedTerms {
         self.folded.contains(&fold(term))
     }
 
+    /// Deterministic vocabulary view, shared with recognition-context builders.
+    pub fn terms(&self) -> impl Iterator<Item = &str> {
+        self.folded.iter().map(String::as_str)
+    }
+
     /// How many terms are in force, built-ins included.
     pub fn len(&self) -> usize {
         self.folded.len()
