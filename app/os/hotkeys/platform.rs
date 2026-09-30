@@ -307,6 +307,25 @@ mod macos {
         }
     }
 
+    /// Wait at most `timeout` for a worker to finish. The reaper retains the
+    /// listener slot until the worker has actually exited, even when shutdown
+    /// must continue after the deadline.
+    fn join_worker_bounded<G: Send + 'static>(
+        worker: JoinHandle<()>,
+        guard: G,
+        timeout: Duration,
+    ) -> bool {
+        let (done_tx, done_rx) = mpsc::channel();
+        thread::spawn(move || {
+            if worker.join().is_err() {
+                tracing::warn!("Hotkey worker thread panicked during shutdown");
+            }
+            drop(guard);
+            let _ = done_tx.send(());
+        });
+        done_rx.recv_timeout(timeout).is_ok()
+    }
+
     /// Shared teardown rendezvous between the owning thread, the worker, and
     /// the C callback.
     ///
@@ -512,22 +531,22 @@ mod macos {
             }
         }
 
-        /// Stop the listener and join its thread.
+        /// Stop the listener and wait at most three seconds for its thread.
         ///
         /// Idempotent — `Drop` calls it too, and a second call after an
-        /// explicit shutdown returns immediately. A panicking worker is logged
-        /// rather than propagated, because failing to join must not stop the
-        /// listener slot from being released.
+        /// explicit shutdown returns immediately. A reaper keeps the listener
+        /// slot until a slow worker really exits; quit never waits forever.
         pub fn shutdown(&mut self) {
             if self.worker.is_none() && self.running_guard.is_none() {
                 return;
             }
 
             self.control.request_stop();
-            if let Some(worker) = self.worker.take()
-                && worker.join().is_err()
-            {
-                tracing::warn!("Hotkey worker thread panicked during shutdown");
+            if let Some(worker) = self.worker.take() {
+                let guard = self.running_guard.take();
+                if !join_worker_bounded(worker, guard, Duration::from_secs(3)) {
+                    tracing::warn!("Hotkey worker did not exit within three seconds");
+                }
             }
             self.running_guard.take();
         }
@@ -1002,6 +1021,35 @@ mod macos {
             runtime.shutdown();
 
             assert!(!RUNNING.load(Ordering::SeqCst));
+        }
+
+        #[test]
+        fn bounded_join_returns_on_deadline_and_releases_slot_after_worker_exit() {
+            struct Slot(mpsc::Sender<()>);
+            impl Drop for Slot {
+                fn drop(&mut self) {
+                    let _ = self.0.send(());
+                }
+            }
+
+            let (release_tx, release_rx) = mpsc::channel();
+            let (slot_tx, slot_rx) = mpsc::channel();
+            let worker = thread::spawn(move || {
+                release_rx.recv().expect("release worker");
+            });
+            assert!(!join_worker_bounded(
+                worker,
+                Slot(slot_tx),
+                Duration::from_millis(20)
+            ));
+            assert!(
+                slot_rx.try_recv().is_err(),
+                "slot must stay owned while worker lives"
+            );
+            release_tx.send(()).expect("release worker");
+            slot_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("slot released after worker exit");
         }
 
         #[test]

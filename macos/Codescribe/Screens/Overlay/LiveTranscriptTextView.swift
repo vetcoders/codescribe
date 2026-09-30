@@ -167,6 +167,11 @@ struct LiveTranscriptTextView: NSViewRepresentable {
 
   static func makeTextView() -> LiveTranscriptNativeTextView {
     let textView = LiveTranscriptNativeTextView(usingTextLayoutManager: true)
+    // Build 1487 crashed in NSWritingToolsEditTracker when proofreading raced
+    // a live transcript revision; the reducer alone owns these text changes.
+    if #available(macOS 15.0, *) {
+      textView.writingToolsBehavior = .none
+    }
     textView.isEditable = false
     textView.isSelectable = true
     textView.isRichText = true

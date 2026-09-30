@@ -162,6 +162,11 @@ struct FullTextView: NSViewRepresentable {
     // Explicit TextKit 2 stack (viewport-based layout); the convenience
     // `NSTextView.scrollableTextView()` can still wire up TextKit 1.
     let textView = NSTextView(usingTextLayoutManager: true)
+    // Build 1487's NSWritingToolsEditTracker crash applies to streamed text
+    // here too: proofreading must not rewrite a view updated by the app.
+    if #available(macOS 15.0, *) {
+      textView.writingToolsBehavior = .none
+    }
     textView.isEditable = false
     textView.isSelectable = true
     textView.isRichText = false

@@ -5,6 +5,13 @@ import XCTest
 
 @MainActor
 final class LiveTranscriptTextViewTests: XCTestCase {
+  func testNativeTranscriptDisablesWritingTools() {
+    let textView = LiveTranscriptTextView.makeTextView()
+    if #available(macOS 15.0, *) {
+      XCTAssertEqual(textView.writingToolsBehavior, .none)
+    }
+  }
+
   func testAppendingLiveWordsDoesNotInvalidateTheRecordedPrefix() throws {
     let prefix = String(repeating: "Already recorded words.\n", count: 2_000)
     let textView = LiveTranscriptTextView.makeTextView()

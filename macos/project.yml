@@ -56,6 +56,7 @@ targets:
         CSDeveloperSurface: $(CS_DEVELOPER_SURFACE)
         SUEnableAutomaticChecks: true
         LSUIElement: true
+        LSMultipleInstancesProhibited: true
         NSMicrophoneUsageDescription: "Codescribe transcribes your speech locally with on-device Whisper."
         NSSpeechRecognitionUsageDescription: "Codescribe uses on-device speech recognition (including Polish) to turn your dictation into text without sending audio to the cloud."
         NSAppleEventsUsageDescription: "Codescribe uses Apple Events to bring apps forward and deliver transcribed text into the app you are working in."
