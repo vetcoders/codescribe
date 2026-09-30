@@ -194,6 +194,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   // kill live voice-reply rendering. Held for the app's lifetime.
   private var voiceDeliveryListener: VoiceDeliveryListener?
   private var appActionListener: AgentAppActionListener?
+  private var onDeviceFormatter: OnDeviceFormatterHost?
   private lazy var maxPermissionModel = SettingsViewModel(engine: RealSettingsEngine())
   private lazy var agentSummonAction = AgentSummonAction(
     store: model.chat,
@@ -298,6 +299,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     installStatusItem()
     installTextScaleMonitor()
     registerAppActions()
+    registerOnDeviceFormatter()
     startHotkeys()
     installSystemSleepWakeObserver()
     registerVoiceDelivery()
@@ -804,6 +806,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     )
     appActionListener = listener
     hotkeys.setAppActionListener(listener: listener)
+  }
+
+  private func registerOnDeviceFormatter() {
+    let formatter = OnDeviceFormatterHost()
+    onDeviceFormatter = formatter
+    hotkeys.setOnDeviceFormatter(formatter)
   }
 
   private func startHotkeys() {
