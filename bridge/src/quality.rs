@@ -14,7 +14,7 @@ use codescribe_core::pipeline::highlight::{
 use codescribe_core::quality::overlay_quality::{
     CustomLexiconEntry, DictionaryTeachResult, OverlayCorrectionCommit, OverlayCorrectionInput,
     QualityRecord, VoiceLabSaveOutcome, commit_overlay_correction, custom_lexicon_entries,
-    finalize_voice_lab_correction, recent_quality_records, teach_dictionary_from_store, teach_span,
+    finalize_voice_lab_correction, recent_quality_listing, teach_dictionary_from_store, teach_span,
 };
 
 use crate::CsError;
@@ -213,15 +213,28 @@ pub fn commit_overlay_quality_record(
     })
 }
 
-/// Read the newest persisted corrections, newest first. Missing storage is an
-/// empty list; genuine I/O failures cross the bridge as a quality error.
+/// Dictionary listing over the bridge: real corrections plus the count of
+/// takes that changed nothing and recorded no telemetry (Founder report
+/// 2026-09-30 — whole untouched takes padded the corrections list).
+#[derive(uniffi::Record, Debug, Clone, PartialEq)]
+pub struct CsQualityListing {
+    pub records: Vec<CsQualityRecord>,
+    pub unchanged_takes: u64,
+}
+
+/// Read the newest persisted corrections, newest first, with the
+/// unchanged-take count alongside. Missing storage is an empty listing;
+/// genuine I/O failures cross the bridge as a quality error.
 #[uniffi::export]
-pub fn quality_recent_records(limit: u64) -> Result<Vec<CsQualityRecord>, CsError> {
+pub fn quality_recent_listing(limit: u64) -> Result<CsQualityListing, CsError> {
     let limit = usize::try_from(limit).map_err(|error| CsError::Quality {
         msg: format!("quality record limit is invalid: {error}"),
     })?;
-    recent_quality_records(limit)
-        .map(|records| records.into_iter().map(Into::into).collect())
+    recent_quality_listing(limit)
+        .map(|listing| CsQualityListing {
+            records: listing.corrections.into_iter().map(Into::into).collect(),
+            unchanged_takes: listing.unchanged_takes,
+        })
         .map_err(|error| CsError::Quality {
             msg: format!("quality records read failed: {error}"),
         })
@@ -418,7 +431,9 @@ mod tests {
             speech_pct: Some(0.75),
             confidence_flags: vec!["test_flag".into()],
         });
-        let records = recent_quality_records(10).expect("read committed quality record");
+        let records = recent_quality_listing(10)
+            .expect("read committed quality record")
+            .corrections;
         let lexicon = custom_lexicon_entries().expect("read custom lexicon");
 
         match previous {

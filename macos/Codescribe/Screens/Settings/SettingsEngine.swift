@@ -51,7 +51,7 @@ protocol SettingsEngine {
   func calibrateEnergy(seconds: UInt32) async throws -> CsEnergyCalibrationReport
 
   // Voice Lab quality truth (JSONL stays behind the Rust bridge)
-  func loadQualityRecentRecords(limit: UInt64) throws -> [CsQualityRecord]
+  func loadQualityRecentListing(limit: UInt64) throws -> CsQualityListing
   func loadLexiconCustomEntries() throws -> [CsLexiconEntry]
   func finalizeVoiceLabCorrection(id: String, canonical: String) throws -> CsVoiceLabSaveResult
   func teachDictionaryFromStore() throws -> CsDictionaryTeachResult
@@ -186,8 +186,8 @@ final class RealSettingsEngine: SettingsEngine {
   func calibrateEnergy(seconds: UInt32) async throws -> CsEnergyCalibrationReport {
     try await hotkeys.calibrateEnergy(seconds: seconds)
   }
-  func loadQualityRecentRecords(limit: UInt64) throws -> [CsQualityRecord] {
-    try qualityRecentRecords(limit: limit)
+  func loadQualityRecentListing(limit: UInt64) throws -> CsQualityListing {
+    try qualityRecentListing(limit: limit)
   }
   func loadLexiconCustomEntries() throws -> [CsLexiconEntry] {
     try lexiconCustomEntries()
@@ -313,6 +313,7 @@ struct MockSettingsEngine: SettingsEngine {
   var mode: String? = "agentic"
   var qualityRecords: [CsQualityRecord] = []
   var lexiconEntries: [CsLexiconEntry] = []
+  var unchangedQualityTakes: UInt64 = 0
   var qualityRecordsLoader: (() throws -> [CsQualityRecord])?
   var lexiconEntriesLoader: (() throws -> [CsLexiconEntry])?
   var audioSnapshot: CsAudioInputSnapshot = .sample
@@ -381,9 +382,12 @@ struct MockSettingsEngine: SettingsEngine {
     }
     return calibrationReport
   }
-  func loadQualityRecentRecords(limit: UInt64) throws -> [CsQualityRecord] {
+  func loadQualityRecentListing(limit: UInt64) throws -> CsQualityListing {
     let records = try qualityRecordsLoader?() ?? qualityRecords
-    return Array(records.prefix(Int(clamping: limit)))
+    return CsQualityListing(
+      records: Array(records.prefix(Int(clamping: limit))),
+      unchangedTakes: unchangedQualityTakes
+    )
   }
   func loadLexiconCustomEntries() throws -> [CsLexiconEntry] {
     try lexiconEntriesLoader?() ?? lexiconEntries

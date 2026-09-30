@@ -75,8 +75,8 @@ pub use licensing::{CsLicenseState, CsLicenseStatus};
 pub use on_device_format::{CsOnDeviceFormatOutcome, CsOnDeviceFormatter};
 pub use quality::{
     CsLexiconEntry, CsOverlayHighlight, CsOverlayHighlightKind, CsQualityCommitResult,
-    CsQualityRecord, commit_overlay_quality_record, lexicon_custom_entries,
-    overlay_highlights_enabled, quality_finalize_correction, quality_recent_records,
+    CsQualityListing, CsQualityRecord, commit_overlay_quality_record, lexicon_custom_entries,
+    overlay_highlights_enabled, quality_finalize_correction, quality_recent_listing,
     quality_teach_span,
 };
 pub use recording::{CsCaptureHandle, CsConditionalStop, CsTranscriptDelivery};
