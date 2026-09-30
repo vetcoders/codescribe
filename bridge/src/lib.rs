@@ -18,6 +18,21 @@
 
 uniffi::setup_scaffolding!();
 
+/// Seal the embedding application's state and credential identity before any
+/// config, agent, account or recording handle is constructed.
+#[uniffi::export]
+pub fn configure_embedded_runtime(
+    data_directory: String,
+    keychain_service: String,
+) -> Result<(), CsError> {
+    let host = codescribe_core::config::runtime_host::RuntimeHost::new(
+        data_directory.into(),
+        keychain_service,
+    )?;
+    codescribe_core::config::runtime_host::configure(host)?;
+    Ok(())
+}
+
 /// Streaming agent chat surface (`CodescribeAgent` + listener).
 mod agent;
 /// Agent delivery callbacks into Swift UI.
@@ -28,6 +43,8 @@ mod agent_status;
 mod application_runtime;
 /// Settings, prompts, keychain, and onboarding config.
 mod config;
+/// Live buffer tools supplied by an embedding document editor.
+mod document_agent;
 /// Global hotkey registration and app-action callbacks.
 mod hotkeys;
 /// CSK1 license state exposed to the Swift shell.

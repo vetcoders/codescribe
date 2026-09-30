@@ -737,10 +737,7 @@ impl CodescribeConfig {
             Err(error) => {
                 tracing::warn!(%error, getter = "load_settings", "settings_getter_degraded");
                 Config::runtime_snapshot_from_captured(
-                    codescribe_core::config::CapturedRuntimeInputs::defaults_at(
-                        PathBuf::new(),
-                        0,
-                    ),
+                    codescribe_core::config::CapturedRuntimeInputs::defaults_at(PathBuf::new(), 0),
                 )
             }
         };
@@ -870,10 +867,7 @@ impl CodescribeConfig {
             Err(error) => {
                 tracing::warn!(%error, getter = "tray_toggles", "settings_getter_degraded");
                 Config::runtime_snapshot_from_captured(
-                    codescribe_core::config::CapturedRuntimeInputs::defaults_at(
-                        PathBuf::new(),
-                        0,
-                    ),
+                    codescribe_core::config::CapturedRuntimeInputs::defaults_at(PathBuf::new(), 0),
                 )
             }
         };
@@ -3956,7 +3950,13 @@ mod settings_snapshot_tests {
             actual.transcription_overlay_enabled,
             expected.transcription_overlay_enabled
         );
-        assert_eq!(actual.auto_paste_enabled, expected.auto_paste_enabled);
+        // `auto_paste_enabled` is retired from Config (1162ae90); the tray
+        // keeps it only as the read-only `paste_mode != off` projection.
+        assert_eq!(actual.paste_mode, CsPasteMode::from(expected.paste_mode));
+        assert_eq!(
+            actual.auto_paste_enabled,
+            expected.paste_mode != codescribe_core::config::PasteMode::Off
+        );
         assert_eq!(actual.formatting_level, "correction");
         assert_eq!(actual.start_assistive, expected.tray_start_assistive);
         assert_eq!(

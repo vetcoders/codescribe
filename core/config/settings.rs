@@ -2133,6 +2133,9 @@ impl UserSettings {
     /// Respects `CODESCRIBE_DATA_DIR` for test isolation; otherwise uses
     /// `~/Library/Application Support/Codescribe/`.
     pub fn settings_dir() -> PathBuf {
+        if let Some(host) = super::runtime_host::selected() {
+            return host.data_directory.clone();
+        }
         if let Ok(test_dir) = std::env::var("CODESCRIBE_DATA_DIR") {
             PathBuf::from(test_dir)
         } else {
