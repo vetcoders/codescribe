@@ -79,7 +79,17 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(statuses.first?.stage, .queued)
     try fixture.append(fixture.ack(id))
     try fixture.lease(pending: [])
+    // A restarted reader resumes from the durable cursor instead of replaying
+    // history. The terminal phase repeats at the tail and yields the same
+    // Python-computed identity, so the ack written before the restart lands.
+    try fixture.append([
+      "schema": "codescribe.transcript-evidence.v1", "session_id": "take-a",
+      "audience": "james", "sequence": 15, "document_index": 5,
+      "reducer_revision": 7, "reducer_action": "record_ledger_terminal_seal",
+      "rendered_text": "Iwo Iwo Iwo Iwo Iwo",
+    ])
     statuses = try await OverlayChannelDeliveryReader(root: fixture.root).read()
+    XCTAssertEqual(statuses.first?.deliveryID, id)
     XCTAssertEqual(statuses.first?.stage, .received)
   }
 
@@ -127,7 +137,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(statuses.first?.isOpen, false)
   }
 
-  func testPartialBusLineWaitsForNewlineAndMalformedReceiptFailsRead() async throws {
+  func testPartialBusLineWaitsForNewlineAndCorruptRowIsSkipped() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
     let reader = OverlayChannelDeliveryReader(root: fixture.root)
@@ -139,12 +149,116 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     statuses = try await reader.read()
     XCTAssertEqual(statuses.first?.stage, .sent)
     try fixture.appendBytes(Data("not-json\n".utf8))
-    do {
-      _ = try await reader.read()
-      XCTFail("corrupt status must not be presented as current evidence")
-    } catch {
-      // OverlayState surfaces a read error instead of declaring an empty mailbox.
+    statuses = try await reader.read()
+    XCTAssertEqual(
+      statuses.first?.stage, .sent,
+      "one corrupt row is skipped with a log; it cannot fail or rewind the read")
+  }
+
+  func testCorruptRowIsSkippedAndNeverRewindsTheCursor() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    try fixture.append(fixture.open())
+    try fixture.appendBytes(Data("{\"schema\": broken\n".utf8))
+    try fixture.append(fixture.seal(1))
+    let statuses = try await reader.read()
+    XCTAssertEqual(statuses.first?.isOpen, true)
+    XCTAssertEqual(
+      statuses.first?.stage, .sent, "a corrupt row cannot hide the rows behind it")
+    let consumed = await reader.consumedBytes
+    XCTAssertEqual(
+      consumed, try fixture.busSize(),
+      "the cursor advanced past the corrupt row in one pass")
+    try fixture.append(fixture.ack(Fixture.firstID))
+    let after = try await reader.read()
+    XCTAssertEqual(after.first?.stage, .received, "later reads continue past the corruption")
+  }
+
+  func testRestartResumesFromTheDurableCursorAndReadsOnlyNewBytes() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    try fixture.append(fixture.open())
+    try fixture.append(fixture.seal(1))
+    let first = OverlayChannelDeliveryReader(root: fixture.root)
+    _ = try await first.read()
+    var size = try fixture.busSize()
+    var consumed = await first.consumedBytes
+    XCTAssertEqual(consumed, size, "a bus smaller than the window is read from byte zero")
+
+    let cursorURL = OverlayDeliveryCursorStore.url(root: fixture.root)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: cursorURL.path))
+    let attributes = try FileManager.default.attributesOfItem(atPath: cursorURL.path)
+    let permissions = try XCTUnwrap(attributes[.posixPermissions] as? NSNumber)
+    XCTAssertEqual(permissions.uint16Value & 0o777, 0o600, "the cursor is owner-only")
+
+    try fixture.append(fixture.seal(2))
+    try fixture.append(fixture.ack("d8281fc3cceedc07762ee89e"))
+    let appended = try fixture.busSize() - size
+    size = try fixture.busSize()
+
+    let second = OverlayChannelDeliveryReader(root: fixture.root)
+    let statuses = try await second.read()
+    consumed = await second.consumedBytes
+    XCTAssertEqual(
+      consumed, appended, "the restart consumes only the bytes written since the cursor")
+    XCTAssertEqual(statuses.first?.stage, .received)
+    let offsets = try fixture.cursorOffsets()
+    XCTAssertEqual(Array(offsets.values), [size], "the durable cursor ends at the bus EOF")
+  }
+
+  func testBusRotationResetsToTheTailWindowOfTheNewFile() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    try fixture.append(fixture.open())
+    try fixture.append(fixture.seal(1))
+    var statuses = try await reader.read()
+    XCTAssertEqual(statuses.first?.stage, .sent)
+
+    let window = OverlayChannelDeliveryReader.tailWindow
+    try fixture.replaceBusWithEvidence(bytes: Int(window) + 6_000_000, trailing: [fixture.open()])
+    let before = await reader.consumedBytes
+    statuses = try await reader.read()
+    let after = await reader.consumedBytes
+    let replayed = after - before
+    XCTAssertLessThanOrEqual(
+      replayed, window, "rotation replays the tail window, never the whole file")
+    XCTAssertGreaterThan(replayed, window - 100_000)
+    XCTAssertEqual(
+      statuses.first?.isOpen, true, "the rotated file's tail carries the live session")
+    XCTAssertNil(statuses.first?.stage, "the old file's receipt cannot survive rotation")
+  }
+
+  func testTailWindowReadOnAHundredMegabyteBusStaysFastAndBounded() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    try fixture.fillBusWithEvidence(bytes: 100 << 20)
+    try fixture.append(fixture.open())
+    try fixture.append(fixture.seal(1))
+    let before = Self.residentBytes()
+    let started = Date()
+    let statuses = try await OverlayChannelDeliveryReader(root: fixture.root).read()
+    let elapsed = Date().timeIntervalSince(started)
+    let growth = Int64(bitPattern: Self.residentBytes()) &- Int64(bitPattern: before)
+    print("PERF100MB elapsed=\(elapsed)s rss_delta=\(growth)B")
+    XCTAssertLessThan(elapsed, 1, "the first read parses only the 64 MiB tail window")
+    XCTAssertLessThan(
+      growth, 200 << 20, "the chunked autoreleasepool keeps the peak bounded")
+    XCTAssertEqual(statuses.first?.isOpen, true)
+    XCTAssertEqual(statuses.first?.stage, .sent)
+  }
+
+  private static func residentBytes() -> UInt64 {
+    var info = mach_task_basic_info()
+    var count = mach_msg_type_number_t(
+      MemoryLayout<mach_task_basic_info>.stride / MemoryLayout<integer_t>.stride)
+    let result = withUnsafeMutablePointer(to: &info) { pointer in
+      pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { rebound in
+        task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), rebound, &count)
+      }
     }
+    return result == KERN_SUCCESS ? info.resident_size : 0
   }
 
   func testLoudOpenStateShowsPanelAndRefusesHideWithoutChangingTranscript() throws {
@@ -265,7 +379,8 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       channel: "3", agent: "roman", deliveryID: "delivery-3", stage: .queued, isOpen: true)
     let view = OverlayChannelStatusView(
       channels: [channel], unavailable: false, palette: .dark, animates: false,
-      hudStates: ["3": .init(open: false, loud: false, autosealDeadline: nil, followerAlive: false)])
+      hudStates: ["3": .init(open: false, loud: false, autosealDeadline: nil, followerAlive: false)]
+    )
     XCTAssertFalse(view.isOpen(channel), "controller HUD state wins over older mailbox state")
     XCTAssertTrue(view.hasDeadFollower(channel))
     XCTAssertEqual(view.detail(for: channel), "queued · waiting for receipt · nobody listening")
@@ -321,7 +436,8 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     }
     XCTAssertNil(OverlayAgentGlyph.resolve(channels: [], unavailable: false), "no agent, no slot")
     XCTAssertEqual(OverlayAgentGlyph.resolve(channels: [], unavailable: true), .unavailable)
-    XCTAssertEqual(OverlayAgentGlyph.resolve(channels: [channel("1", nil)], unavailable: false), .attached)
+    XCTAssertEqual(
+      OverlayAgentGlyph.resolve(channels: [channel("1", nil)], unavailable: false), .attached)
     XCTAssertEqual(
       OverlayAgentGlyph.resolve(channels: [channel("1", nil, open: true)], unavailable: false),
       .open)
@@ -331,7 +447,8 @@ final class OverlayChannelDeliveryTests: XCTestCase {
         .awaitingReceipt)
     }
     XCTAssertEqual(
-      OverlayAgentGlyph.resolve(channels: [channel("1", .received, open: true)], unavailable: false),
+      OverlayAgentGlyph.resolve(
+        channels: [channel("1", .received, open: true)], unavailable: false),
       .acknowledged)
     XCTAssertEqual(
       OverlayAgentGlyph.resolve(
@@ -379,11 +496,23 @@ final class OverlayChannelDeliveryTests: XCTestCase {
 
   func testAgentGlyphKeepsOneFixedSlotSoNeighboursNeverMove() {
     let inputs: [(OverlayAgentGlyph, [OverlayChannelDelivery], Bool)] = [
-      (.attached, [.init(channel: "1", agent: "a", deliveryID: nil, stage: nil, isOpen: false)], false),
+      (
+        .attached, [.init(channel: "1", agent: "a", deliveryID: nil, stage: nil, isOpen: false)],
+        false
+      ),
       (.open, [.init(channel: "1", agent: "a", deliveryID: nil, stage: nil, isOpen: true)], false),
-      (.awaitingReceipt, [.init(channel: "1", agent: "a", deliveryID: "d", stage: .queued, isOpen: false)], false),
-      (.acknowledged, [.init(channel: "1", agent: "a", deliveryID: "d", stage: .received, isOpen: false)], false),
-      (.unavailable, [.init(channel: "1", agent: "a", deliveryID: nil, stage: nil, isOpen: false)], true),
+      (
+        .awaitingReceipt,
+        [.init(channel: "1", agent: "a", deliveryID: "d", stage: .queued, isOpen: false)], false
+      ),
+      (
+        .acknowledged,
+        [.init(channel: "1", agent: "a", deliveryID: "d", stage: .received, isOpen: false)], false
+      ),
+      (
+        .unavailable, [.init(channel: "1", agent: "a", deliveryID: nil, stage: nil, isOpen: false)],
+        true
+      ),
     ]
     var sizes: [CGSize] = []
     for (expected, channels, unavailable) in inputs {
@@ -456,6 +585,68 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       defer { try? file.close() }
       try file.seekToEnd()
       try file.write(contentsOf: bytes)
+    }
+    func busSize() throws -> UInt64 {
+      let attributes = try FileManager.default.attributesOfItem(atPath: bus.path)
+      return (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+    }
+    func cursorOffsets() throws -> [String: UInt64] {
+      let data = try Data(contentsOf: OverlayDeliveryCursorStore.url(root: root))
+      guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let buses = object["buses"] as? [String: [String: Any]]
+      else { return [:] }
+      return buses.compactMapValues { ($0["offset"] as? NSNumber)?.uint64Value }
+    }
+    /// Bulk evidence rows with a 30 KB pseudo-random payload each, the same
+    /// shape that filled the Founder's bus, so the tail-window tests measure
+    /// the real parse path instead of toy rows.
+    func fillBusWithEvidence(bytes target: Int) throws {
+      let file = try FileHandle(forWritingTo: bus)
+      defer { try? file.close() }
+      try file.seekToEnd()
+      var total = 0
+      var sequence = 0
+      while total < target {
+        sequence += 1
+        let row = Self.evidenceRow(sequence: sequence)
+        try file.write(contentsOf: row)
+        total += row.count
+      }
+    }
+    /// Atomic write replaces the file (new inode), exactly what a bus rotation does.
+    func replaceBusWithEvidence(bytes target: Int, trailing rows: [[String: Any]]) throws {
+      var data = Data()
+      data.reserveCapacity(target + 1_000_000)
+      var sequence = 0
+      while data.count < target {
+        sequence += 1
+        data.append(Self.evidenceRow(sequence: sequence))
+      }
+      for row in rows {
+        var bytes = try JSONSerialization.data(withJSONObject: row)
+        bytes.append(10)
+        data.append(bytes)
+      }
+      try data.write(to: bus, options: .atomic)
+    }
+    static let evidenceText: String = {
+      let alphabet = Array("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+      var state: UInt64 = 0x243F_6A88_85A3_08D3
+      var text = ""
+      text.reserveCapacity(30_000)
+      while text.count < 30_000 {
+        state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+        text.append(alphabet[Int(state >> 33) % alphabet.count])
+      }
+      return text
+    }()
+    static func evidenceRow(sequence: Int) -> Data {
+      // A multiline literal excludes the line break before its closing
+      // delimiter, so the row's newline is appended explicitly.
+      let row = #"""
+        {"schema":"codescribe.transcript-evidence.v1","session_id":"bulk","audience":"bulk-agent","sequence":\#(sequence),"document_index":0,"reducer_revision":7,"reducer_action":"record_ledger_terminal_seal","rendered_text":"\#(evidenceText)"}
+        """#
+      return Data((row + "\n").utf8)
     }
     func envelope(_ id: String) -> [String: Any] { ["kind": "seal", "delivery_id": id] }
     func seal(_ sequence: Int) -> [String: Any] {
