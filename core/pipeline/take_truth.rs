@@ -377,6 +377,7 @@ mod tests {
             energy_sparkline: Some("▂▅█▅▂".to_string()),
             energy_hop_ms: Some(10),
             segments: vec![TranscriptSegment {
+                confidence: None,
                 text: "cześć".to_string(),
                 start_ts: 0.0,
                 end_ts: 1.5,
@@ -458,6 +459,7 @@ mod tests {
             RawTranscript {
                 text: "tekst".to_string(),
                 segments: vec![TranscriptSegment {
+                    confidence: None,
                     text: "tekst".to_string(),
                     start_ts: 0.0,
                     end_ts: 1.0,
@@ -568,6 +570,7 @@ mod tests {
             energy_sparkline: Some("▂▅█".to_string()),
             energy_hop_ms: Some(10),
             segments: vec![TranscriptSegment {
+                confidence: None,
                 text: "treść".to_string(),
                 start_ts: 0.0,
                 end_ts: 1.0,

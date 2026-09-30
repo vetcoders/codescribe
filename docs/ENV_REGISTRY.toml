@@ -484,12 +484,26 @@ reload = "hot"
 category = "stt"
 description = "Opt-in gate for Candle Whisper runtime-lexicon initial_prompt. Default OFF after W2-F measured a 100% WER regression with the active prompt."
 
-[vars.CODESCRIBE_OVERLAY_HIGHLIGHTS]
-default = "0"
-type = "bool"
-reload = "hot"
+[vars.CODESCRIBE_WORD_CONFIDENCE_WHISPER_LOGPROB]
+default = "-1.0"
+type = "f32"
+reload = "restart"
 category = "stt"
-description = "W13-6B span-based overlay highlight layer (lexicon-corrected words + Silero speech-gap pustki) and one-click send-span-to-Teach. Default OFF. No new permission prompts; consumes ReplaceRange/on_final/VAD data already crossing the bridge after W13-3A."
+description = "A6 per-word uncertainty threshold for Whisper slots: a word paints uncertain when the min of its own subtoken logprobs (d1) falls below this. NOT CALIBRATED — conservative placeholder pending a corpus run (audit section f); treat painted words as candidates, not verdicts."
+
+[vars.CODESCRIBE_WORD_CONFIDENCE_VENDOR_PROBABILITY]
+default = "0.5"
+type = "f32"
+reload = "restart"
+category = "stt"
+description = "A6 per-word uncertainty threshold for vendor cloud / remote-tail slots: a word paints uncertain when its words[].probability falls below this. NOT CALIBRATED — conservative placeholder pending a corpus run; scale is incomparable with Whisper logprob (d2: thresholds stay per-source)."
+
+[vars.CODESCRIBE_WORD_CONFIDENCE_APPLE_CONFIDENCE]
+default = ""
+type = "f32"
+reload = "restart"
+category = "stt"
+description = "A6 per-word uncertainty threshold for Apple segment confidence (0..1, isFinal only; 0.0 on partials means no metric). Unset by default: no Apple threshold exists until the attribute's real pl-PL distribution is measured (d4), so Apple words are never painted from an invented cutoff."
 
 [vars.CODESCRIBE_SILERO_FUSION]
 default = "1"

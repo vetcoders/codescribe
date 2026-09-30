@@ -903,6 +903,9 @@ pub struct FusionWord {
     pub text: String,
     pub sample_start: u64,
     pub sample_end: u64,
+    /// Per-word acoustic confidence from the producer that emitted the word
+    /// (A6). `None` = no metric, never "low".
+    pub confidence: Option<crate::pipeline::word_confidence::WordConfidence>,
 }
 
 impl FusionWord {
@@ -911,6 +914,7 @@ impl FusionWord {
             text: segment.text.clone(),
             sample_start: segment.range.sample_start,
             sample_end: segment.range.sample_end,
+            confidence: segment.confidence,
         }
     }
 
@@ -943,6 +947,7 @@ mod tests {
 
     fn word(text: &str, start: u64, end: u64) -> FusionWord {
         FusionWord {
+            confidence: None,
             text: text.to_string(),
             sample_start: start,
             sample_end: end,

@@ -454,6 +454,54 @@ final class OverlayStateTests: XCTestCase {
 
   // W2 contracts: synthetic projections enter the production boundary; unrun
   // until the integrator restores Swift gates and regenerates the bindings.
+  // A6: a projection carrying one uncertain span surfaces it on OverlayState
+  // verbatim — the overlay classifies nothing itself (renderer is cut 3).
+  func testUncertainSpanFromProjectionReachesOverlayState() {
+    let state = OverlayState()
+    let span = CsUncertainSpan(
+      occurrenceSessionId: "a6-session",
+      occurrenceCaptureEpoch: 1,
+      slotSampleStart: 32_000,
+      slotSampleEnd: 48_000,
+      utf16Start: 8,
+      utf16End: 11,
+      source: "whisper_token_logprob",
+      value: -1.9,
+      surfaceRewritten: false,
+      producer: "whisper"
+    )
+    state.applyTranscriptProjection(
+      transcriptProjection(
+        sequence: 1,
+        emittedAt: "2026-09-30T00:00:00Z",
+        sessionId: "a6-session",
+        renderedText: "Iwo Iwo Iwo Iwo Iwo",
+        phase: "listening",
+        terminal: false,
+        reducerAction: "record_ledger_projection",
+        uncertainSpans: [span]
+      )
+    )
+
+    XCTAssertEqual(state.uncertainSpans.count, 1)
+    XCTAssertEqual(state.uncertainSpans.first, span)
+    XCTAssertEqual(state.formattedText, "Iwo Iwo Iwo Iwo Iwo")
+
+    // A later revision without spans replaces, never accumulates.
+    state.applyTranscriptProjection(
+      transcriptProjection(
+        sequence: 2,
+        emittedAt: "2026-09-30T00:00:01Z",
+        sessionId: "a6-session",
+        renderedText: "Iwo Iwo Iwo Iwo Iwo",
+        phase: "listening",
+        terminal: false,
+        reducerAction: "record_ledger_projection"
+      )
+    )
+    XCTAssertTrue(state.uncertainSpans.isEmpty)
+  }
+
   func testLiveConsultationProjectionPreservesGroupEvidenceWithoutEndingCapture() {
     let state = OverlayState()
     var ended: [String] = []

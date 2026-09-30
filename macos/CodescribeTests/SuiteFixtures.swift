@@ -183,7 +183,8 @@ func transcriptProjection(
   delivery: CsTranscriptDelivery = .unattempted,
   acousticReceipts: [CsProjectedAcousticReceipt] = [],
   sealCoverage: CsProjectedSealCoverageReceipt? = nil,
-  consultationPresentations: [CsProjectedConsultationPresentation] = []
+  consultationPresentations: [CsProjectedConsultationPresentation] = [],
+  uncertainSpans: [CsUncertainSpan] = []
 ) -> CsTranscriptProjectionEvent {
   CsTranscriptProjectionEvent(
     schema: "codescribe.transcript_projection.v1",
@@ -213,6 +214,7 @@ func transcriptProjection(
     delivery: delivery,
     acousticReceipts: acousticReceipts,
     sealCoverage: sealCoverage,
-    consultationPresentations: consultationPresentations
+    consultationPresentations: consultationPresentations,
+    uncertainSpans: uncertainSpans
   )
 }

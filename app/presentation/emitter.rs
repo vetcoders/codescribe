@@ -23,6 +23,9 @@ use codescribe_core::pipeline::contracts::{
     ClosedApplePhrase, DeltaSink, EngineEvent, EventSink, SpeechIntegrity, SpeechIntegrityPhase,
     TranscriptDelta, UnadmittedAppleWord, UnadmittedAppleWordSource,
 };
+use codescribe_core::pipeline::word_confidence::{
+    UncertainSpan, WordConfidence, word_confidence_thresholds,
+};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use tracing::{debug, info};
@@ -108,6 +111,23 @@ pub struct TranscriptDocumentEntry {
     pub manual_edit_receipt: Option<String>,
     /// Presentation provenance, distinct from acoustic and human-edit evidence.
     pub presentation_receipt: Option<IncrementalShapingReceipt>,
+    /// A6 per-word acoustic confidence evidence, in composition-token order.
+    /// Structured so the projection locates uncertain words without reparsing
+    /// receipt strings. Carries only tokens whose producer supplied a metric.
+    pub word_confidence: Vec<WordConfidenceEvidence>,
+}
+
+/// A6: one composition token's acoustic confidence evidence. `token` is a
+/// label used only to locate the word inside its entry's label, in order —
+/// never an identity key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WordConfidenceEvidence {
+    pub token: String,
+    pub token_sample_start: Option<u64>,
+    pub token_sample_end: Option<u64>,
+    pub producer: ObservationProducer,
+    pub confidence: WordConfidence,
+    pub surface_rewritten: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,6 +195,11 @@ pub struct TranscriptRevision {
     pub seal_coverage: Option<SealCoverageReceipt>,
     pub comparison: Option<TranscriptComparisonReceipt>,
     pub consultation_presentations: Vec<ConsultationPresentationReceipt>,
+    /// A6 uncertain-word spans over `rendered_text`, computed by the reducer
+    /// from ledger-pinned per-word confidence (never from text matching).
+    /// Empty for occurrences whose presentation is shaped, consulted, or
+    /// manually revised (d6), and for words with no metric (never "low").
+    pub uncertain_spans: Vec<UncertainSpan>,
     // In-process reducer capability, never deserialized or exported as acoustic
     // evidence. Detects edits to any public snapshot field before publication.
     publication_digest: [u8; 32],
@@ -194,6 +219,7 @@ impl TranscriptRevision {
                     &self.seal_coverage,
                     &self.comparison,
                     &self.consultation_presentations,
+                    &self.uncertain_spans,
                 )
             )
             .as_bytes(),
@@ -651,6 +677,7 @@ impl TranscriptReducer {
             }
         }
         let rendered_text = self.committed_rendered_text();
+        let uncertain_spans = self.uncertain_spans();
         let mut snapshot = TranscriptRevision {
             schema: "codescribe.transcript-revision.v1".to_string(),
             revision: self.revision,
@@ -660,6 +687,7 @@ impl TranscriptReducer {
             seal_coverage: self.latest_seal_coverage.clone(),
             comparison: self.latest_comparison.clone(),
             consultation_presentations: self.consultation_presentations.clone(),
+            uncertain_spans,
             publication_digest: [0; 32],
         };
         snapshot.publication_digest = snapshot.digest();
@@ -1085,6 +1113,20 @@ impl TranscriptReducer {
                         token.token,
                         token.cited_digests().collect::<Vec<_>>().join(","),
                     )
+                })
+                .collect(),
+            word_confidence: composition
+                .tokens
+                .iter()
+                .filter_map(|token| {
+                    token.confidence.map(|confidence| WordConfidenceEvidence {
+                        token: token.token.clone(),
+                        token_sample_start: token.token_sample_start,
+                        token_sample_end: token.token_sample_end,
+                        producer: token.producer,
+                        confidence,
+                        surface_rewritten: token.surface_rewritten,
+                    })
                 })
                 .collect(),
             layer_decision_receipts: trail,
@@ -1696,6 +1738,121 @@ impl TranscriptReducer {
             _ => entry.label.as_str(),
         }
     }
+
+    /// A6 uncertain-word spans over the committed document.
+    ///
+    /// Offsets are built by construction: this walk mirrors
+    /// `rendered_occurrence_span` fragment-for-fragment and then applies the
+    /// shared context-marker rule, so a span is never located by searching
+    /// text. An entry contributes only while its presentation bytes are the
+    /// raw ledger label — shaped (Light+), consultation, and manually revised
+    /// occurrences honestly contribute nothing (d6). Live spans come only
+    /// from Whisper / CloudLive slots (d7); Apple confidence travels into the
+    /// ledger but does not paint live. Each word is its own span (d3).
+    fn uncertain_spans(&self) -> Vec<UncertainSpan> {
+        if self.manual_rendered_text.is_some() {
+            return Vec::new();
+        }
+        let thresholds = word_confidence_thresholds();
+        // (char_start, char_end) into the pre-marker document, plus evidence.
+        let mut char_spans: Vec<(usize, usize, OccurrenceIdentity, WordConfidenceEvidence)> =
+            Vec::new();
+        let mut rendered = String::new();
+        for (occurrence, entry) in &self.document_by_occurrence {
+            let presentation = self.presentation_of(occurrence, entry);
+            let eligible = presentation == entry.label && !entry.word_confidence.is_empty();
+            let fragment_char_start = {
+                append_exact_fragment(&mut rendered, presentation);
+                rendered.chars().count() - presentation.chars().count()
+            };
+            if !eligible {
+                continue;
+            }
+            let label = entry.label.as_str();
+            let mut cursor = 0usize;
+            for evidence in &entry.word_confidence {
+                // Locate every token in composition order, uncertain or not:
+                // the cursor is what keeps five identical words distinct.
+                let Some(relative) = label
+                    .get(cursor..)
+                    .and_then(|tail| tail.find(&evidence.token))
+                else {
+                    continue;
+                };
+                let byte_start = cursor + relative;
+                let byte_end = byte_start + evidence.token.len();
+                cursor = byte_end;
+                // d7: Apple slots carry confidence into the ledger but never
+                // paint live; Lexicon/Formatter/ManualHuman carry none.
+                if !matches!(
+                    evidence.producer,
+                    ObservationProducer::Whisper | ObservationProducer::CloudLive
+                ) || !evidence.confidence.is_uncertain(&thresholds)
+                {
+                    continue;
+                }
+                let char_start = fragment_char_start + label[..byte_start].chars().count();
+                let char_end = fragment_char_start + label[..byte_end].chars().count();
+                char_spans.push((char_start, char_end, occurrence.clone(), evidence.clone()));
+            }
+        }
+        if char_spans.is_empty() {
+            return Vec::new();
+        }
+        // Apply the shared context-marker rule, shifting spans with each
+        // insertion exactly as `render_context_markers` applies them.
+        let mut ordered = self.context_markers.to_vec();
+        ordered.sort_by(|left, right| {
+            right
+                .position
+                .cmp(&left.position)
+                .then_with(|| right.order.cmp(&left.order))
+        });
+        let mut chars: Vec<char> = rendered.chars().collect();
+        for marker in ordered {
+            let (byte_offset, insertion) =
+                context_marker_insertion(&chars, marker.position, &marker.label);
+            let offset = chars.iter().take(marker.position.min(chars.len())).count();
+            debug_assert_eq!(
+                chars
+                    .iter()
+                    .take(offset)
+                    .map(|ch| ch.len_utf8())
+                    .sum::<usize>(),
+                byte_offset
+            );
+            let insertion_chars: Vec<char> = insertion.chars().collect();
+            for (start, end, _, _) in &mut char_spans {
+                if *start >= offset {
+                    *start += insertion_chars.len();
+                    *end += insertion_chars.len();
+                } else if *end > offset {
+                    *end += insertion_chars.len();
+                }
+            }
+            chars.splice(offset..offset, insertion_chars);
+        }
+        // char offsets → UTF-16 code units on the final document.
+        let mut utf16_offsets = Vec::with_capacity(chars.len() + 1);
+        utf16_offsets.push(0u32);
+        for ch in &chars {
+            utf16_offsets.push(utf16_offsets.last().copied().unwrap_or(0) + ch.len_utf16() as u32);
+        }
+        char_spans
+            .into_iter()
+            .map(|(start, end, occurrence, evidence)| UncertainSpan {
+                occurrence,
+                slot_sample_start: evidence.token_sample_start.unwrap_or(0),
+                slot_sample_end: evidence.token_sample_end.unwrap_or(0),
+                utf16_start: utf16_offsets.get(start).copied().unwrap_or(0),
+                utf16_end: utf16_offsets.get(end).copied().unwrap_or(0),
+                producer: evidence.producer,
+                source: evidence.confidence.source,
+                milli_value: evidence.confidence.milli_value,
+                surface_rewritten: evidence.surface_rewritten,
+            })
+            .collect()
+    }
 }
 
 fn render_context_markers(text: &str, markers: &[DocumentContextMarker]) -> String {
@@ -1709,26 +1866,32 @@ fn render_context_markers(text: &str, markers: &[DocumentContextMarker]) -> Stri
     });
     for marker in ordered {
         let chars = rendered.chars().collect::<Vec<_>>();
-        let offset = marker.position.min(chars.len());
-        let previous = offset.checked_sub(1).and_then(|index| chars.get(index));
-        let next = chars.get(offset);
-        let splits_word = previous.is_some_and(|ch| ch.is_alphanumeric())
-            && next.is_some_and(|ch| ch.is_alphanumeric());
-        let leading_space = !splits_word && previous.is_some_and(|ch| !ch.is_whitespace());
-        let trailing_space = !splits_word && next.is_some_and(|ch| !ch.is_whitespace());
-        let insertion = format!(
-            "{}{}{}",
-            if leading_space { " " } else { "" },
-            marker.label,
-            if trailing_space { " " } else { "" }
-        );
-        let byte_offset = rendered
-            .char_indices()
-            .nth(offset)
-            .map_or(rendered.len(), |(index, _)| index);
+        let (byte_offset, insertion) =
+            context_marker_insertion(&chars, marker.position, &marker.label);
         rendered.insert_str(byte_offset, &insertion);
     }
     rendered
+}
+
+/// The single context-marker insertion rule: where the marker lands and what
+/// bytes it carries (with edge spaces). Shared by the document renderer and
+/// the A6 uncertain-span shifter so offsets can never drift apart.
+fn context_marker_insertion(chars: &[char], position: usize, label: &str) -> (usize, String) {
+    let offset = position.min(chars.len());
+    let previous = offset.checked_sub(1).and_then(|index| chars.get(index));
+    let next = chars.get(offset);
+    let splits_word = previous.is_some_and(|ch| ch.is_alphanumeric())
+        && next.is_some_and(|ch| ch.is_alphanumeric());
+    let leading_space = !splits_word && previous.is_some_and(|ch| !ch.is_whitespace());
+    let trailing_space = !splits_word && next.is_some_and(|ch| !ch.is_whitespace());
+    let insertion = format!(
+        "{}{}{}",
+        if leading_space { " " } else { "" },
+        label,
+        if trailing_space { " " } else { "" }
+    );
+    let byte_offset = chars.iter().take(offset).map(|ch| ch.len_utf8()).sum();
+    (byte_offset, insertion)
 }
 
 /// Presentation emitter — the single reducer and ordered delivery writer.
@@ -8360,15 +8523,21 @@ mod tests {
                         // Midpoint 22_000 is covered by this half-open slot.
                         "slot" => ledger.admit_word_slots_for_tests(
                             &observation,
-                            &[(22_000, 23_000, "heard".into())],
+                            &[codescribe_core::pipeline::acoustic_ledger::WordPin::new(
+                                22_000, 23_000, "heard",
+                            )],
                         ),
                         "slot_end" => ledger.admit_word_slots_for_tests(
                             &observation,
-                            &[(20_000, 22_000, "heard".into())],
+                            &[codescribe_core::pipeline::acoustic_ledger::WordPin::new(
+                                20_000, 22_000, "heard",
+                            )],
                         ),
                         "preserved_label" => ledger.admit_word_slots_for_tests(
                             &observation,
-                            &[(21_000, 33_000, "document".into())],
+                            &[codescribe_core::pipeline::acoustic_ledger::WordPin::new(
+                                21_000, 33_000, "document",
+                            )],
                         ),
                         _ => ledger.admit(&observation, "Whisper omitted them"),
                     }
@@ -8819,5 +8988,233 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["ta epoka"]
         );
+    }
+
+    // ── A6: per-word confidence → uncertain spans on the projection ──
+
+    use codescribe_core::pipeline::acoustic_ledger::WordPin;
+    use codescribe_core::pipeline::word_confidence::{WordConfidence, WordConfidenceSource};
+
+    fn whisper_confidence(value: f32) -> WordConfidence {
+        WordConfidence::new(WordConfidenceSource::WhisperTokenLogprob, value, 1)
+    }
+
+    /// Qualify the occurrence and admit the pins as one Whisper word-slot
+    /// observation, mirroring `admitted_mutation`'s authentication path.
+    fn whisper_slot_mutation(
+        ledger: &mut AcousticLedger,
+        occurrence: OccurrenceIdentity,
+        request: u64,
+        pins: &[WordPin],
+    ) -> (ObservationIdentity, MutationReceipt) {
+        let calibration = EnergyCalibration {
+            version: "emitter-test".to_string(),
+            min_energy_integral: 1.0,
+            min_valley_samples: 1,
+        };
+        let evidence = AcousticEvidence {
+            occurrence: occurrence.clone(),
+            duration_ms: 1_000.0,
+            energy_integral: 10.0,
+            mean_rms_dbfs: -12.0,
+            peak_dbfs: -3.0,
+            vad_open_sample: Some(occurrence.sample_start),
+            vad_close_sample: Some(occurrence.sample_end),
+            evidence_calibration_version: calibration.version.clone(),
+        };
+        assert!(ledger.qualify(&evidence, &calibration).is_qualified());
+        let observation =
+            ObservationIdentity::new(ObservationProducer::Whisper, request, 0, occurrence);
+        let receipt = ledger.admit_word_slots_for_tests(&observation, pins);
+        (observation, receipt)
+    }
+
+    /// The Five-Iwo falsifier for confidence: five identical surface words,
+    /// only the third unsure. Text must not be the key — exactly one span,
+    /// on the third pin's PCM and at the third word's UTF-16 range.
+    #[test]
+    fn uncertain_span_tracks_the_third_of_five_identical_words_by_pcm() {
+        let mut ledger = AcousticLedger::new();
+        let mut reducer = TranscriptReducer::default();
+        let occurrence = OccurrenceIdentity::new("confidence-live", 1, 0, 80_000);
+        let pins = (0..5)
+            .map(|index| {
+                let value = if index == 2 { -1.9 } else { -0.2 };
+                WordPin::new(index * 16_000, (index + 1) * 16_000, "Iwo")
+                    .with_confidence(whisper_confidence(value))
+            })
+            .collect::<Vec<_>>();
+        let (observation, receipt) = whisper_slot_mutation(&mut ledger, occurrence, 1, &pins);
+        let revision = reducer
+            .apply_ledger_mutation(&ledger, &observation, &receipt)
+            .unwrap();
+
+        assert_eq!(revision.rendered_text, "Iwo Iwo Iwo Iwo Iwo");
+        assert_eq!(revision.uncertain_spans.len(), 1);
+        let span = &revision.uncertain_spans[0];
+        assert_eq!((span.utf16_start, span.utf16_end), (8, 11));
+        assert_eq!(
+            (span.slot_sample_start, span.slot_sample_end),
+            (32_000, 48_000)
+        );
+        assert_eq!(span.source, WordConfidenceSource::WhisperTokenLogprob);
+        assert!(!span.surface_rewritten);
+        let utf16: Vec<u16> = revision.rendered_text.encode_utf16().collect();
+        let painted: String =
+            String::from_utf16_lossy(&utf16[span.utf16_start as usize..span.utf16_end as usize]);
+        assert_eq!(painted, "Iwo");
+    }
+
+    /// (c) A lexicon-rewritten surface keeps its acoustic confidence; the
+    /// span is marked `surface_rewritten`, not dropped (d5).
+    #[test]
+    fn lexicon_rewritten_word_keeps_its_acoustic_confidence_span() {
+        let mut ledger = AcousticLedger::new();
+        let mut reducer = TranscriptReducer::default();
+        let occurrence = OccurrenceIdentity::new("confidence-live", 1, 0, 32_000);
+        let pins = vec![
+            WordPin::new(0, 16_000, "Żółw")
+                .with_confidence(whisper_confidence(-1.9))
+                .surface_rewritten(),
+            WordPin::new(16_000, 32_000, "stoi").with_confidence(whisper_confidence(-0.1)),
+        ];
+        let (observation, receipt) = whisper_slot_mutation(&mut ledger, occurrence, 1, &pins);
+        let revision = reducer
+            .apply_ledger_mutation(&ledger, &observation, &receipt)
+            .unwrap();
+
+        assert_eq!(revision.rendered_text, "Żółw stoi");
+        assert_eq!(revision.uncertain_spans.len(), 1);
+        let span = &revision.uncertain_spans[0];
+        assert!(span.surface_rewritten);
+        // Polish diacritics stay inside the BMP: UTF-16 offsets track chars.
+        assert_eq!((span.utf16_start, span.utf16_end), (0, 4));
+        assert_eq!(span.value(), -1.9);
+    }
+
+    /// (d) A manual whole-document revision retires every span (d6): the
+    /// ledger has no text→PCM alignment for the rewritten document.
+    #[test]
+    fn manual_revision_retires_uncertain_spans() {
+        let mut ledger = AcousticLedger::new();
+        let mut reducer = TranscriptReducer::default();
+        let occurrence = OccurrenceIdentity::new("confidence-live", 1, 0, 16_000);
+        let pins = vec![WordPin::new(0, 16_000, "Iwo").with_confidence(whisper_confidence(-1.9))];
+        let (observation, receipt) =
+            whisper_slot_mutation(&mut ledger, occurrence.clone(), 1, &pins);
+        let revision = reducer
+            .apply_ledger_mutation(&ledger, &observation, &receipt)
+            .unwrap();
+        assert_eq!(revision.uncertain_spans.len(), 1);
+        // A user edit authenticates against a terminal (sealed) source revision.
+        ledger.schedule_frontier(occurrence.clone(), [ObservationProducer::Whisper]);
+        ledger.note_frontier_return(&occurrence, ObservationProducer::Whisper);
+        let terminal = ledger
+            .seal_terminal("confidence-live", 1)
+            .expect("the epoch seals");
+        let source_revision = reducer
+            .apply_ledger_seal(&terminal)
+            .expect("terminal seal projects")
+            .revision;
+
+        let revised = reducer
+            .apply_user_revision(
+                &mut ledger,
+                &super::UserRevisionIntent {
+                    session_id: "confidence-live".to_string(),
+                    source_revision,
+                    rendered_text: "Iwo poprawione ręcznie".to_string(),
+                    provenance: DocumentRevisionProvenance::UserEdit,
+                },
+            )
+            .expect("manual revision commits");
+        assert_eq!(revised.rendered_text, "Iwo poprawione ręcznie");
+        assert!(revised.uncertain_spans.is_empty());
+    }
+
+    /// (b) at the projection seam: the same numeric value classifies per
+    /// source, and an Apple slot never paints live (d4 + d7).
+    #[test]
+    fn projection_classifies_per_source_and_apple_never_paints_live() {
+        let mut ledger = AcousticLedger::new();
+        let mut reducer = TranscriptReducer::default();
+        let occurrence = OccurrenceIdentity::new("confidence-live", 1, 0, 16_000);
+        let pins = vec![
+            WordPin::new(0, 16_000, "chmura").with_confidence(WordConfidence::new(
+                WordConfidenceSource::VendorWordProbability,
+                0.3,
+                1,
+            )),
+        ];
+        let calibration = EnergyCalibration {
+            version: "emitter-test".to_string(),
+            min_energy_integral: 1.0,
+            min_valley_samples: 1,
+        };
+        let evidence = AcousticEvidence {
+            occurrence: occurrence.clone(),
+            duration_ms: 1_000.0,
+            energy_integral: 10.0,
+            mean_rms_dbfs: -12.0,
+            peak_dbfs: -3.0,
+            vad_open_sample: Some(occurrence.sample_start),
+            vad_close_sample: Some(occurrence.sample_end),
+            evidence_calibration_version: calibration.version.clone(),
+        };
+        assert!(ledger.qualify(&evidence, &calibration).is_qualified());
+        let cloud =
+            ObservationIdentity::new(ObservationProducer::CloudLive, 1, 0, occurrence.clone());
+        let receipt = ledger.admit_word_slots_for_tests(&cloud, &pins);
+        let revision = reducer
+            .apply_ledger_mutation(&ledger, &cloud, &receipt)
+            .unwrap();
+        assert_eq!(revision.uncertain_spans.len(), 1);
+        assert_eq!(
+            revision.uncertain_spans[0].source,
+            WordConfidenceSource::VendorWordProbability
+        );
+    }
+
+    /// The same 0.3 as an Apple segment confidence does not paint: Apple has
+    /// no threshold (d4) and Apple slots do not paint live (d7) — but the
+    /// metric still travels in the ledger slot (producer truth).
+    #[test]
+    fn apple_slot_carries_confidence_without_painting_live() {
+        let mut ledger = AcousticLedger::new();
+        let mut reducer = TranscriptReducer::default();
+        let occurrence = OccurrenceIdentity::new("confidence-live", 1, 0, 16_000);
+        let calibration = EnergyCalibration {
+            version: "emitter-test".to_string(),
+            min_energy_integral: 1.0,
+            min_valley_samples: 1,
+        };
+        let evidence = AcousticEvidence {
+            occurrence: occurrence.clone(),
+            duration_ms: 1_000.0,
+            energy_integral: 10.0,
+            mean_rms_dbfs: -12.0,
+            peak_dbfs: -3.0,
+            vad_open_sample: Some(occurrence.sample_start),
+            vad_close_sample: Some(occurrence.sample_end),
+            evidence_calibration_version: calibration.version.clone(),
+        };
+        assert!(ledger.qualify(&evidence, &calibration).is_qualified());
+        let apple = ObservationIdentity::new(ObservationProducer::Apple, 2, 0, occurrence.clone());
+        let pins = vec![
+            WordPin::new(0, 16_000, "jabłko").with_confidence(WordConfidence::new(
+                WordConfidenceSource::AppleSegmentConfidence,
+                0.3,
+                1,
+            )),
+        ];
+        let receipt = ledger.admit_word_slots_for_tests(&apple, &pins);
+        let revision = reducer
+            .apply_ledger_mutation(&ledger, &apple, &receipt)
+            .unwrap();
+        assert!(revision.uncertain_spans.is_empty());
+        let slots = ledger.slots_of(&occurrence).unwrap();
+        assert!(slots.iter().any(|slot| slot.confidence.is_some_and(
+            |confidence| confidence.source == WordConfidenceSource::AppleSegmentConfidence
+        )));
     }
 }

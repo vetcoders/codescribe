@@ -8,9 +8,6 @@
 //!
 //! Privacy: local disk only.
 
-use codescribe_core::pipeline::highlight::{
-    OverlayHighlight, OverlayHighlightKind, overlay_highlights_enabled as highlights_lane_enabled,
-};
 use codescribe_core::quality::overlay_quality::{
     CustomLexiconEntry, DictionaryTeachResult, OverlayCorrectionCommit, OverlayCorrectionInput,
     QualityRecord, VoiceLabSaveOutcome, commit_overlay_correction, custom_lexicon_entries,
@@ -150,14 +147,6 @@ impl From<CustomLexiconEntry> for CsLexiconEntry {
     }
 }
 
-/// Typed carrier for future per-token confidence (W11-C spike; unused by UI yet).
-/// Wire is present so W12 overlay "yellow words" can land without another bridge reshape.
-#[derive(uniffi::Record, Debug, Clone, PartialEq)]
-pub struct CsTokenConfidence {
-    pub token: String,
-    pub logprob: f32,
-}
-
 /// Persist one overlay correction: the quality record always lands, while lexicon
 /// learning is gated by explicit teach action plus the N-correction threshold.
 ///
@@ -267,62 +256,6 @@ pub fn quality_teach_dictionary_from_store() -> Result<CsDictionaryTeachResult, 
         .map_err(|error| CsError::Quality {
             msg: format!("dictionary teach failed: {error:#}"),
         })
-}
-
-/// W13-6B highlight kind. Stringly so Swift can switch without another enum
-/// reshape if a third kind appears.
-#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CsOverlayHighlightKind {
-    LexiconCorrected,
-    SpeechGap,
-}
-
-impl From<OverlayHighlightKind> for CsOverlayHighlightKind {
-    fn from(kind: OverlayHighlightKind) -> Self {
-        match kind {
-            OverlayHighlightKind::LexiconCorrected => Self::LexiconCorrected,
-            OverlayHighlightKind::SpeechGap => Self::SpeechGap,
-        }
-    }
-}
-
-/// Span-based canvas highlight. Sample fields are the 3A PCM identity;
-/// char offsets are the Swift adapter onto already-committed utterance text.
-#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
-pub struct CsOverlayHighlight {
-    pub kind: CsOverlayHighlightKind,
-    pub utterance_id: u64,
-    pub char_start: u64,
-    pub char_end: u64,
-    pub session: String,
-    pub capture_epoch: u64,
-    pub sample_start: u64,
-    pub sample_end: u64,
-    pub before: String,
-    pub after: String,
-}
-
-impl From<OverlayHighlight> for CsOverlayHighlight {
-    fn from(value: OverlayHighlight) -> Self {
-        Self {
-            kind: value.kind.into(),
-            utterance_id: value.utterance_id,
-            char_start: value.char_start,
-            char_end: value.char_end,
-            session: value.range.session,
-            capture_epoch: value.range.capture_epoch,
-            sample_start: value.range.sample_start,
-            sample_end: value.range.sample_end,
-            before: value.before,
-            after: value.after,
-        }
-    }
-}
-
-/// W13-6B lane flag. Default OFF. Read-only; no permission prompt.
-#[uniffi::export]
-pub fn overlay_highlights_enabled() -> bool {
-    highlights_lane_enabled()
 }
 
 /// One-click Teach from a highlighted span. Reuses the existing quality +

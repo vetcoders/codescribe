@@ -223,6 +223,11 @@ struct BridgeSegment {
     text: String,
     start_ts: f32,
     end_ts: f32,
+    /// `SFTranscriptionSegment.confidence` (0…1) when the bridge supplies it.
+    /// 0.0 is Apple's "no metric" sentinel; SpeechTranscriber results omit the
+    /// attribute entirely (A6, d4: never invented).
+    #[serde(default)]
+    confidence: Option<f32>,
 }
 
 /// Initialize Apple STT backend (platform + bridge + locale readiness).
@@ -679,6 +684,16 @@ fn bridge_segment_to_transcript_segment(seg: BridgeSegment) -> Option<Transcript
         text,
         start_ts: seg.start_ts,
         end_ts: seg.end_ts,
+        confidence: seg
+            .confidence
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .map(|value| {
+                crate::pipeline::word_confidence::WordConfidence::new(
+                    crate::pipeline::word_confidence::WordConfidenceSource::AppleSegmentConfidence,
+                    value,
+                    1,
+                )
+            }),
     })
 }
 

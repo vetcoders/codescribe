@@ -632,3 +632,63 @@ whenever the caller hands the archive a `TakeTruth`. The sidecar is an
 OBSERVER projection of the `TranscriptionVerdict`; no delivery path reads it
 back. `codescribe transcribe --inspect` prints the same truth to stderr under
 one time axis: the segment block, the 32 ms Silero row, and the energy row.
+
+## Word confidence (A6, 2026-09-30)
+
+Every word pin may carry **raw per-word acoustic confidence** from the engine
+that emitted it: `WordConfidence { source, value, token_count }`
+(`core/pipeline/word_confidence.rs`). It is evidence pinned to PCM through
+`WordSlot` / `WordEvidenceReceipt`, never a property of the word's text, and
+never inferred from absence: `None` means the producer supplied no metric and
+is reported as `source_unavailable`, not as a confident word.
+
+Two axes stay separate by construction:
+
+- **Uncertainty** (this section): per-word, from engine metrics only, painted
+  as `uncertain_spans` on the reducer projection. Nothing else creates spans.
+- **Completeness** (pre-existing): take-level `seal_coverage`, `degraded`,
+  `coverage_refused`. A missing seal never creates a span, and spans never
+  raise a take-level alarm.
+
+Producers and scales (thresholds are per-source, d2 — the scales are
+incomparable):
+
+| Source                     | Metric                                                    | Where produced                                                                                                         |
+| -------------------------- | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `whisper_token_logprob`    | min of the word's own subtoken logprobs (d1)              | `core/stt/whisper/engine.rs` decode loop → `align_captured_words`; `None` when the checkpoint has no `alignment_heads` |
+| `apple_segment_confidence` | `SFTranscriptionSegment.confidence` (0…1), `isFinal` only | `core/stt/apple_stt/live_stream.rs`; `0.0` on partials/frozen partials is Apple's "no metric" sentinel → `None`        |
+| `vendor_word_probability`  | `words[].probability` (0…1)                               | remote tail `core/stt/tail_provider.rs`, cloud live `core/asr_session/cloud.rs`                                        |
+
+Classification lives in exactly one function
+(`WordConfidence::is_uncertain`); Swift never thresholds. Env overrides
+(reload: restart, `docs/ENV_REGISTRY.toml`):
+`CODESCRIBE_WORD_CONFIDENCE_WHISPER_LOGPROB` (default −1.0),
+`CODESCRIBE_WORD_CONFIDENCE_VENDOR_PROBABILITY` (default 0.5),
+`CODESCRIBE_WORD_CONFIDENCE_APPLE_CONFIDENCE` (unset by default). **These
+defaults are NOT CALIBRATED** — conservative placeholders pending a corpus
+run; treat painted words as candidates, not verdicts.
+
+Decisions d1–d11 as taken by this cut (accepted by the cut, not by the
+Founder — the audit's recommendation column was adopted unless noted):
+
+| #   | Decision                                         | Taken                                                                                                                                                                                                                                           |
+| --- | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| d1  | Whisper token aggregation                        | min(subtoken logprobs); one unsure subtoken makes the word unsure                                                                                                                                                                               |
+| d2  | Thresholds                                       | per `WordConfidenceSource`, never mixed; defaults marked UNCALIBRATED                                                                                                                                                                           |
+| d3  | Span joining                                     | each word its own span; neighbours stay unpainted                                                                                                                                                                                               |
+| d4  | Apple without a metric                           | nothing is painted; `0.0`-on-partial and missing attribute both → `None`; Apple threshold unset until measured                                                                                                                                  |
+| d5  | Lexicon-rewritten word                           | confidence kept with `surface_rewritten=true`; renderer marks lexicon, not uncertainty                                                                                                                                                          |
+| d6  | Shaped (Light+) / consultation / manual revision | no spans — honest absence, range never widened to the whole occurrence                                                                                                                                                                          |
+| d7  | Live painting                                    | only Whisper / CloudLive slots paint; Apple confidence travels into the ledger but does not paint live                                                                                                                                          |
+| d8  | Style                                            | cut 3 (renderer), not this cut                                                                                                                                                                                                                  |
+| d9  | Bus                                              | spans ride the in-memory projection to the bridge only; the Bus JSONL journal stays span-free until thresholds are calibrated (`#[serde(skip)]`)                                                                                                |
+| d10 | Delivery                                         | clean bytes, no markers                                                                                                                                                                                                                         |
+| d11 | Dead branches                                    | `CsTokenConfidence` removed (text-keyed contract), `highlight.rs` + `CsOverlayHighlight*` + `overlay_highlights_enabled` removed (never wired to Swift; the projection owns spans now), `SkipReasonCode::LowConfidence` removed (never emitted) |
+
+End-to-end path: engine → `TranscriptSegment.confidence` →
+`TimedTailSegment.confidence` → `WordPin` → `WordSlot.confidence` →
+`WordEvidenceReceipt.confidence` → `TranscriptRevision.uncertain_spans`
+(UTF-16 ranges into `rendered_text`, computed by the reducer in the same pass
+that renders the document) → `TranscriptBusEvidenceEvent.uncertain_spans`
+(in-memory only) → `CsTranscriptProjectionEvent.uncertain_spans` →
+`OverlayState.uncertainSpans`. Orange painting is cut 3.
