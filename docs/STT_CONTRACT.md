@@ -146,15 +146,62 @@ Unicode casefold deduplication preserves the highest-priority spelling. The
 Apple view holds at most 100 terms and omits empty context. A build receipt logs
 retained counts per source at info and the list only at debug.
 
-Recognition wiring is intentionally held: commit `a06370a7` records a live A/B
-where a full-file Whisper vocabulary prompt deleted roughly half the content.
-This evidence concerns Whisper file decoding, not Apple live recognition, but
-triggers cut T's explicit builder-only stop condition. The three Apple live
-request paths still omit `contextual_strings`; the builder does not yet change
-recognition behavior. `stt_initial_prompt_enabled` remains OFF by default, and
-full-file Whisper decoding stays prompt-free even with window opt-in. Enabling
-Apple live context requires scoped bias validation; a future Whisper window
-prompt must use the shared builder with a tokenizer-measured token budget.
+**T2 Apple A/B (2026-09-30): blocked, Apple live context still OFF.** The
+integrator authorized Apple independently of the Whisper evidence: enable only
+after 30 valid audio pairs show zero files with word-count loss above 5%, at
+most one inserted vocabulary occurrence, and more canonical term hits. The
+worktree-built bridge attempted both arms on 30 archived WAVs spanning 18 days;
+all 60 requests aborted before returning JSON (`SIGABRT`). A separate probe
+reported Speech authorization `not_determined`; TCC is the likely blocker,
+not a proven cause of the aborts. Recognition
+metrics are unavailable; failed requests do not count as zero insertions or
+proof of non-regression. The three Apple live request paths retain `None`.
+
+`scripts/stt-vocabulary-ab.py` is an opt-in replay tool, outside default gates.
+It selects even quantiles of `(mtime_ns, filename)` among 10–120 second PCM
+WAVs, freezes hashes, alternates arm order, and uses bridge `transcribe_live`
+with downloads disabled. It records only names, hashes, vocabulary terms,
+counts, timings, and safe process status. Dictation text, bridge diagnostics,
+and segments never enter artifacts or stdout. Exact sample replay uses
+`--manifest <previous-metrics.json>` and rejects changed audio. Only complete,
+nonempty SFSpeech pairs can authorize the flip; incomplete runs exit 2.
+
+References pair by exact basename (`.txt` / `.jsonl` with `edited_text`) or an
+explicit session/audio ID in corrections. Timestamp proximity is insufficient.
+All 207 current correction rows lacked such an ID; none of the selected files
+had a matching reference. A new term absent from the baseline and available
+reference is conservatively counted as an insertion occurrence; without a
+reference this is a proxy, not an acoustic verdict or a WER measurement. Same
+basename `.txt` references are explicitly marked as unverified human text.
+
+Repeat from the checkout with an independently authorized built bridge:
+
+```bash
+make target/release/codescribe-stt-bridge
+mkdir -p target/vocabulary-ab/config
+for name in lexicon.custom.jsonl protected_terms.txt; do
+  if [ -f "$HOME/.codescribe/$name" ]; then
+    cp "$HOME/.codescribe/$name" "target/vocabulary-ab/config/$name"
+  fi
+done
+CODESCRIBE_DATA_DIR="$PWD/target/vocabulary-ab/config" \
+  cargo run -q -p codescribe-core --example export_recognizer_vocabulary \
+  > target/vocabulary-ab/vocabulary.json
+python3 scripts/stt-vocabulary-ab.py \
+  --vocabulary target/vocabulary-ab/vocabulary.json \
+  --output target/vocabulary-ab/metrics.json
+python3 -m unittest discover -s scripts/tests -p test_stt_vocabulary_ab.py
+```
+
+The exporter uses the production builder and active-name reader, but requires
+copied config outside `~/.codescribe`: the production dictionary loader cleans
+temporary files. The runner neither requests authorization nor opens a mic.
+
+**Whisper context remains OFF:** commit `a06370a7` records a live A/B where a
+full-file vocabulary prompt deleted roughly half the content.
+`stt_initial_prompt_enabled` remains OFF by default, and full-file decoding
+stays prompt-free even with window opt-in. A future Whisper window prompt needs
+the shared builder with a tokenizer-measured budget and its own WER/insertion A/B.
 
 **Domain token (client-owned, 2026-08-18).** Codescribe names the take
 `vocabulary=programming` on loopback and Libraxis file/live requests
