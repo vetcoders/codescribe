@@ -28,18 +28,25 @@ python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
   --watch --provider <provider> --session <provider-session-id>
 ```
 
-It reads the follower log that `--attach` writes
-(`agent-bridge/runtime/followers/<lease_id>.log`) and prints one JSON line per
+It reads the follower's private, append-only
+`agent-bridge/runtime/followers/<lease_id>.events.jsonl` and prints one JSON line per
 envelope that needs the agent: `kind`, `status`, `coverage`, `sca`
 (`state_change_allowed`), `delivery_id` and `text` (first 500 characters).
 Seals, coverage-refused takes, state-changing envelopes and routing-ambiguity
 notices pass; drafts stay in the mailbox. Each delivery prints once per watch
 process, including replays after a follower restart. Output is line-buffered.
 
+The adjacent `<lease_id>.log` is the readable tail: one line per emitted
+envelope with time, channel and name, full delivery ID, seal or draft label,
+and up to 200 characters of text. Use `--watch --human` to render that format
+from the event file. Never tail `events.jsonl` as a notification bell: its
+transport fields precede the words and may be truncated by the monitor.
+An older session with only a JSON `.log` remains readable by `--watch`.
+
 Run it under the provider's output-notifying monitor (for example the Claude
 Code `Monitor` tool), not as a bare background shell. `--once` prints what the
-log already holds and exits; `--from-start` replays the log before following;
-`--from-file <log>` reads another log. The watch never acknowledges and never
+event file already holds and exits; `--from-start` replays it before following;
+`--from-file <path>` reads another JSON event file or an older JSON log. The watch never acknowledges and never
 moves the lease cursor.
 
 A line with `coverage: "refused"` carries words the ledger would not certify
