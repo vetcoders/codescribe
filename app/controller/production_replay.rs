@@ -270,6 +270,7 @@ mod tests {
                 text: text.to_string(),
                 start_ts,
                 end_ts,
+                confidence: None,
             }],
             vad_speech_pct: None,
             avg_logprob: None,

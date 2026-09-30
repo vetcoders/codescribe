@@ -311,6 +311,10 @@ final class OverlayState {
   private(set) var transcriptMode = "dictation"
   private(set) var mode: OverlayMode = .listening
   var formattedText: String { latestTranscriptProjection?.renderedText ?? "" }
+  /// A6 uncertain-word spans from the reducer projection (UTF-16 ranges into
+  /// `formattedText`). The overlay stays a pure projection: classification
+  /// happened in Rust; the orange renderer itself is cut 3.
+  var uncertainSpans: [CsUncertainSpan] { latestTranscriptProjection?.uncertainSpans ?? [] }
   /// View-local editor payload. It is never delivery or transcript truth; only
   /// `formattedText`, repainted from the Rust projection, feeds downstream
   /// actions. The canvas paints it while the formatted take is under review.
@@ -2914,7 +2918,7 @@ final class OverlayState {
       canFormat: isFormatted,
       canSendToAgent: isFormatted,
       terminal: terminal, lifecycleTerminal: terminal, delivery: .unattempted, acousticReceipts: [],
-      sealCoverage: nil, consultationPresentations: [])
+      sealCoverage: nil, consultationPresentations: [], uncertainSpans: [])
   }
 }
 

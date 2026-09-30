@@ -262,6 +262,34 @@ pub struct CsTranscriptProjectionEvent {
     pub acoustic_receipts: Vec<CsProjectedAcousticReceipt>,
     pub seal_coverage: Option<CsProjectedSealCoverageReceipt>,
     pub consultation_presentations: Vec<CsProjectedConsultationPresentation>,
+    /// A6 uncertain-word spans over `rendered_text` (UTF-16 ranges), computed
+    /// by the reducer from ledger-pinned per-word confidence. Empty until the
+    /// per-source thresholds classify words; never synthesized on Swift.
+    pub uncertain_spans: Vec<CsUncertainSpan>,
+}
+
+/// A6: one uncertain word located in the projected `rendered_text`. Identity
+/// is the physical occurrence + the slot's PCM range, never the word text.
+/// `utf16_start`/`utf16_end` are NSRange-ready against the same revision's
+/// `rendered_text`.
+#[derive(uniffi::Record, Debug, Clone, PartialEq)]
+pub struct CsUncertainSpan {
+    pub occurrence_session_id: String,
+    pub occurrence_capture_epoch: u64,
+    pub slot_sample_start: u64,
+    pub slot_sample_end: u64,
+    pub utf16_start: u32,
+    pub utf16_end: u32,
+    /// `whisper_token_logprob` | `apple_segment_confidence` |
+    /// `vendor_word_probability` — scales are incomparable across sources.
+    pub source: String,
+    /// Raw source-scale value (Whisper: logprob; Apple/vendor: probability).
+    pub value: f32,
+    /// Live lexicon rewrote this word's surface; the value describes the
+    /// heard audio (d5). Renderers mark lexicon, not uncertainty, for these.
+    pub surface_rewritten: bool,
+    /// `whisper` | `cloud_live` (d7: only these producers paint live).
+    pub producer: String,
 }
 
 /// Swift-visible mirror of [`TranscriptDelivery`]. One variant per controller
@@ -460,6 +488,22 @@ impl CsTranscriptProjectionEvent {
                 .acoustic_receipts
                 .iter()
                 .map(CsProjectedAcousticReceipt::from_bus_receipt)
+                .collect(),
+            uncertain_spans: event
+                .uncertain_spans
+                .iter()
+                .map(|span| CsUncertainSpan {
+                    occurrence_session_id: span.occurrence.session.clone(),
+                    occurrence_capture_epoch: span.occurrence.capture_epoch,
+                    slot_sample_start: span.slot_sample_start,
+                    slot_sample_end: span.slot_sample_end,
+                    utf16_start: span.utf16_start,
+                    utf16_end: span.utf16_end,
+                    source: span.source.as_str().to_string(),
+                    value: span.value(),
+                    surface_rewritten: span.surface_rewritten,
+                    producer: span.producer.as_str().to_string(),
+                })
                 .collect(),
         }
     }
@@ -1284,6 +1328,24 @@ mod tests {
             }],
             seal_coverage: None,
             comparison: None,
+            uncertain_spans: vec![
+                codescribe_core::pipeline::word_confidence::UncertainSpan {
+                    occurrence: codescribe_core::pipeline::acoustic_ledger::OccurrenceIdentity {
+                        session: "occurrence-session".to_string(),
+                        capture_epoch: 13,
+                        sample_start: 17,
+                        sample_end: 23,
+                    },
+                    slot_sample_start: 18,
+                    slot_sample_end: 22,
+                    utf16_start: 0,
+                    utf16_end: 3,
+                    producer: codescribe_core::pipeline::acoustic_ledger::ObservationProducer::Whisper,
+                    source: codescribe_core::pipeline::word_confidence::WordConfidenceSource::WhisperTokenLogprob,
+                    milli_value: -1420,
+                    surface_rewritten: true,
+                },
+            ],
         };
 
         let projected = CsTranscriptProjectionEvent::from_bus_event(&event);
@@ -1352,6 +1414,18 @@ mod tests {
                     seal_receipt: Some("seal-receipt".to_string()),
                     manual_edit_receipt: Some("manual-edit-receipt".to_string()),
                     presentation_receipt: None,
+                }],
+                uncertain_spans: vec![CsUncertainSpan {
+                    occurrence_session_id: "occurrence-session".to_string(),
+                    occurrence_capture_epoch: 13,
+                    slot_sample_start: 18,
+                    slot_sample_end: 22,
+                    utf16_start: 0,
+                    utf16_end: 3,
+                    source: "whisper_token_logprob".to_string(),
+                    value: -1.42,
+                    surface_rewritten: true,
+                    producer: "whisper".to_string(),
                 }],
             }
         );

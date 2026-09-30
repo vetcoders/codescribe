@@ -127,6 +127,7 @@ mod retroactive_split_delivery_tests {
 
     fn word(text: &str, start: f32, end: f32) -> TranscriptSegment {
         TranscriptSegment {
+            confidence: None,
             text: text.into(),
             start_ts: start,
             end_ts: end,
@@ -1871,6 +1872,8 @@ struct RoutedPin {
     index: usize,
     pin: OccurrenceIdentity,
     text: String,
+    /// Per-word acoustic confidence carried from the routed segment (A6).
+    confidence: Option<crate::pipeline::word_confidence::WordConfidence>,
 }
 
 /// Exclusive pins for one member, plus whether any other pin blocks the span.
@@ -2497,6 +2500,15 @@ impl AppleSealState {
                     sample_end: word.sample_end,
                 },
                 grain: crate::stt::tail_provider::TailSegmentGrain::Word,
+                // Vendor `words[].probability` survives into the pin (A6);
+                // absence stays `None`.
+                confidence: word.probability.map(|probability| {
+                    crate::pipeline::word_confidence::WordConfidence::new(
+                        crate::pipeline::word_confidence::WordConfidenceSource::VendorWordProbability,
+                        probability,
+                        1,
+                    )
+                }),
             })
             .collect::<Vec<_>>();
         self.admit_cloud_segments(ev_tx, commit, &segments, true);
@@ -2517,6 +2529,8 @@ impl AppleSealState {
                 sample_end: commit.sample_end,
             },
             grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
+            // A whole-phrase cloud commit has no per-word metric (A6).
+            confidence: None,
         }];
         self.admit_cloud_segments(ev_tx, commit, &segments, false);
     }
@@ -3174,6 +3188,7 @@ impl AppleSealState {
                             index,
                             pin: owned_pin,
                             text: text.to_string(),
+                            confidence: segment.confidence,
                         });
                     }
                     OverlapPinClass::Replay => {
@@ -3194,6 +3209,7 @@ impl AppleSealState {
                                 index,
                                 pin: owned_pin,
                                 text: text.to_string(),
+                                confidence: segment.confidence,
                             });
                         }
                         side.push((index, pin, text.to_string(), SidePin::Replay));
@@ -3607,10 +3623,26 @@ impl AppleSealState {
                 let (text, counts) =
                     super::live_lexicon::rewrite(&pin.text, &self.lexicon_custom_path);
                 self.lexicon_entries_custom = counts.custom;
-                if text != pin.text {
+                // d5: a lexicon-rewritten surface keeps its acoustic
+                // confidence; the span is marked, not dropped.
+                let surface_rewritten = text != pin.text;
+                if surface_rewritten {
                     self.lexicon_rewrites = self.lexicon_rewrites.saturating_add(1);
                 }
-                (pin.pin.sample_start, pin.pin.sample_end, text)
+                let word = crate::pipeline::acoustic_ledger::WordPin::new(
+                    pin.pin.sample_start,
+                    pin.pin.sample_end,
+                    text,
+                );
+                let word = match pin.confidence {
+                    Some(confidence) => word.with_confidence(confidence),
+                    None => word,
+                };
+                if surface_rewritten {
+                    word.surface_rewritten()
+                } else {
+                    word
+                }
             })
             .collect::<Vec<_>>();
         let (observation, receipt, label) = {
@@ -4028,6 +4060,7 @@ fn timed_words_to_segments(words: &[TimedTailSegment], sample_rate: u32) -> Vec<
             word.range.sample_end > word.range.sample_start && !word.text.trim().is_empty()
         })
         .map(|word| TranscriptSegment {
+            confidence: None,
             text: word.text.clone(),
             start_ts: word.range.sample_start as f32 / rate,
             end_ts: word.range.sample_end as f32 / rate,
@@ -4057,6 +4090,7 @@ fn apple_segments_on_pcm_clock(
                     sample_start,
                     sample_end,
                 },
+                confidence: segment.confidence,
             }
         })
         .collect()
@@ -4312,14 +4346,21 @@ fn admit_late_apple_words(
         }
         let words = selected
             .into_iter()
-            .map(|word| (word.sample_start, word.sample_end, word.text))
+            .map(|word| {
+                (
+                    word.sample_start,
+                    word.sample_end,
+                    word.text,
+                    word.confidence,
+                )
+            })
             .collect::<Vec<_>>();
         let mut ledger = state
             .acoustic_ledger
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut novel = Vec::new();
-        for (start, end, text) in words {
+        for (start, end, text, confidence) in words {
             let pin =
                 OccurrenceIdentity::new(owner.session.clone(), owner.capture_epoch, start, end);
             let observation =
@@ -4399,7 +4440,11 @@ fn admit_late_apple_words(
                 });
                 continue;
             }
-            novel.push((start, end, text));
+            let word = crate::pipeline::acoustic_ledger::WordPin::new(start, end, text);
+            novel.push(match confidence {
+                Some(confidence) => word.with_confidence(confidence),
+                None => word,
+            });
         }
         if novel.is_empty() {
             continue;
@@ -4677,6 +4722,7 @@ fn reconcile_silero_ledger(
                 text: word.text.clone(),
                 start_ts: word.sample_start as f32 / rate,
                 end_ts: word.sample_end as f32 / rate,
+                confidence: word.confidence,
             })
             .collect::<Vec<_>>();
 
@@ -4845,7 +4891,17 @@ fn reconcile_silero_ledger(
         } else {
             words
                 .iter()
-                .map(|word| (word.sample_start, word.sample_end, word.text.clone()))
+                .map(|word| {
+                    let pin = crate::pipeline::acoustic_ledger::WordPin::new(
+                        word.sample_start,
+                        word.sample_end,
+                        word.text.clone(),
+                    );
+                    match word.confidence {
+                        Some(confidence) => pin.with_confidence(confidence),
+                        None => pin,
+                    }
+                })
                 .collect()
         };
         let apple_admitted = if has_apple_label {
@@ -5018,7 +5074,7 @@ struct LabelAdmission<'a> {
 /// Label-only producers supply no ranges and retain one occurrence-wide slot.
 struct RangedLabelAdmission<'a> {
     admission: LabelAdmission<'a>,
-    words: &'a [(u64, u64, String)],
+    words: &'a [crate::pipeline::acoustic_ledger::WordPin],
 }
 
 impl<'a> From<LabelAdmission<'a>> for RangedLabelAdmission<'a> {
@@ -6143,6 +6199,8 @@ fn seal_utterance_final(
             text: callback_text.clone(),
             start_ts,
             end_ts,
+            // A synthesized window is not a measured segment; no metric (A6).
+            confidence: None,
         });
     }
 
@@ -8295,6 +8353,7 @@ mod c13a_lifecycle_tests {
                 .to_string(),
             segments: vec![
                 TimedTailSegment {
+                    confidence: None,
                     grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                     text: "takie rzeczy są oczywiste w tym przypadku".to_string(),
                     range: TailSampleRange {
@@ -8305,6 +8364,7 @@ mod c13a_lifecycle_tests {
                     },
                 },
                 TimedTailSegment {
+                    confidence: None,
                     grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                     text: "miały jakąś kanwę falsyfikacji".to_string(),
                     range: TailSampleRange {
@@ -8830,6 +8890,7 @@ mod c13a_lifecycle_tests {
         // inside the second member: the positive control owns 16 000..32 000.
         let identity = request.provider_request.identity.clone();
         let straddling = TimedTailSegment {
+            confidence: None,
             grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
             text: "przez granice".to_string(),
             range: TailSampleRange {
@@ -8840,6 +8901,7 @@ mod c13a_lifecycle_tests {
             },
         };
         let pinned = TimedTailSegment {
+            confidence: None,
             grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
             text: "Iwo drugie".to_string(),
             range: TailSampleRange {
@@ -9571,6 +9633,7 @@ mod storm_tests {
     const TEST_SAMPLE_RATE: u32 = 16_000;
     fn segment(text: &str, start_ts: f32, end_ts: f32) -> TranscriptSegment {
         TranscriptSegment {
+            confidence: None,
             text: text.into(),
             start_ts,
             end_ts,
@@ -10277,6 +10340,7 @@ mod rc_w2_acoustic_tests {
             identity: request.identity.clone(),
             text: "Iwo".into(),
             segments: vec![TimedTailSegment {
+                confidence: None,
                 grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 text: "Iwo".into(),
                 range: request.identity.range.clone(),
@@ -11404,6 +11468,7 @@ mod rc_w2_acoustic_tests {
             identity: identity.clone(),
             text: "odzysk".into(),
             segments: vec![TimedTailSegment {
+                confidence: None,
                 grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 text: "odzysk".into(),
                 range: range.clone(),
@@ -11476,11 +11541,13 @@ mod rc_w2_acoustic_tests {
             &state,
             &[
                 TranscriptSegment {
+                    confidence: None,
                     text: "Iwo".into(),
                     start_ts: 0.25,
                     end_ts: 0.75,
                 },
                 TranscriptSegment {
+                    confidence: None,
                     text: "poza".into(),
                     start_ts: 1.5,
                     end_ts: 9.0,
@@ -11666,6 +11733,7 @@ mod rc_w2_acoustic_tests {
             vec![LiveStreamEvent::PhraseFinal {
                 text: "Iwo".into(),
                 segments: vec![TranscriptSegment {
+                    confidence: None,
                     text: "Iwo".into(),
                     start_ts: 0.5,
                     end_ts: 2.0,
@@ -11699,6 +11767,7 @@ mod rc_w2_acoustic_tests {
                 LiveStreamEvent::Partial {
                     text: "Iwo".into(),
                     segments: vec![TranscriptSegment {
+                        confidence: None,
                         text: "Iwo".into(),
                         start_ts: 0.5,
                         end_ts: 2.0,
@@ -11707,6 +11776,7 @@ mod rc_w2_acoustic_tests {
                 LiveStreamEvent::Summary {
                     text: "Iwo wraca".into(),
                     segments: vec![TranscriptSegment {
+                        confidence: None,
                         text: "Iwo wraca".into(),
                         start_ts: 0.5,
                         end_ts: 4.0,
@@ -11744,6 +11814,7 @@ mod rc_w2_acoustic_tests {
 
     fn segment(text: &str, start_ts: f32, end_ts: f32) -> TranscriptSegment {
         TranscriptSegment {
+            confidence: None,
             text: text.into(),
             start_ts,
             end_ts,
@@ -12220,6 +12291,7 @@ mod rc_w2_acoustic_tests {
             text: "znajdz ICX".into(),
             segments: vec![
                 TimedTailSegment {
+                    confidence: None,
                     grain: crate::stt::tail_provider::TailSegmentGrain::Word,
                     text: "znajdz".into(),
                     range: TailSampleRange {
@@ -12230,6 +12302,7 @@ mod rc_w2_acoustic_tests {
                     },
                 },
                 TimedTailSegment {
+                    confidence: None,
                     grain: crate::stt::tail_provider::TailSegmentGrain::Word,
                     text: "ICX".into(),
                     range: TailSampleRange {
@@ -12430,6 +12503,7 @@ mod rc_w2_test_rehab {
 
     fn segment(text: &str, start_ts: f32, end_ts: f32) -> TranscriptSegment {
         TranscriptSegment {
+            confidence: None,
             text: text.into(),
             start_ts,
             end_ts,
@@ -12530,6 +12604,7 @@ mod rc_w2_test_rehab {
     #[test]
     fn apple_self_corrections_keep_only_current_word_per_pcm_slot() {
         let pin = |text: &str, start, end| FusionWord {
+            confidence: None,
             text: text.into(),
             sample_start: start,
             sample_end: end,
@@ -12563,6 +12638,7 @@ mod rc_w2_test_rehab {
         let mut state = state("mirror-revision", 2.0);
         let (tx, mut rx) = mpsc::unbounded_channel();
         state.unmatched_silero_words.push(FusionWord {
+            confidence: None,
             text: "Vite".into(),
             sample_start: sample(0.25),
             sample_end: sample(0.5),
@@ -12570,6 +12646,7 @@ mod rc_w2_test_rehab {
         state.pending_silero_words.insert(
             2,
             vec![FusionWord {
+                confidence: None,
                 text: "Vitae".into(),
                 sample_start: sample(0.25),
                 sample_end: sample(0.5),
@@ -12624,12 +12701,14 @@ mod rc_w2_test_rehab {
         state.pending_silero_words.insert(
             9,
             vec![FusionWord {
+                confidence: None,
                 text: "pending".into(),
                 sample_start: sample(1.0),
                 sample_end: sample(1.5),
             }],
         );
         state.unmatched_silero_words.push(FusionWord {
+            confidence: None,
             text: "unmatched".into(),
             sample_start: sample(2.0),
             sample_end: sample(2.5),
@@ -12966,6 +13045,7 @@ mod rc_w2_test_rehab {
         segments
             .iter()
             .map(|word| FusionWord {
+                confidence: None,
                 text: word.text.clone(),
                 sample_start: sample(word.start_ts),
                 sample_end: sample(word.end_ts),
@@ -13066,11 +13146,14 @@ mod rc_w2_test_rehab {
         let owner = qualify(&mut state, 0.0, 2.0);
         let whisper =
             LedgerObservationIdentity::new(LedgerObservationProducer::Whisper, 1, 0, owner.clone());
-        state
-            .acoustic_ledger
-            .lock()
-            .unwrap()
-            .admit_word_slots(&whisper, &[(sample(0.25), sample(0.5), "heard".into())]);
+        state.acoustic_ledger.lock().unwrap().admit_word_slots(
+            &whisper,
+            &[crate::pipeline::acoustic_ledger::WordPin::new(
+                sample(0.25),
+                sample(0.5),
+                "heard",
+            )],
+        );
         // Less than half overlap passes consumed-span, but any Whisper overlap
         // is refused by the existing Apple slot rule.
         let current = vec![segment("overlap", 0.45, 0.9), segment("novel", 1.0, 1.25)];
@@ -13175,11 +13258,14 @@ mod rc_w2_test_rehab {
         let owner = qualify(&mut state, 0.0, 2.0);
         let whisper =
             LedgerObservationIdentity::new(LedgerObservationProducer::Whisper, 9, 0, owner.clone());
-        let receipt = state
-            .acoustic_ledger
-            .lock()
-            .unwrap()
-            .admit_word_slots(&whisper, &[(sample(1.5), sample(1.75), "other".into())]);
+        let receipt = state.acoustic_ledger.lock().unwrap().admit_word_slots(
+            &whisper,
+            &[crate::pipeline::acoustic_ledger::WordPin::new(
+                sample(1.5),
+                sample(1.75),
+                "other",
+            )],
+        );
         assert!(receipt.grants_mutation());
         assert_eq!(state.unmatched_silero_words.len(), 2);
         state.reconciled_silero.insert(1);
@@ -13192,11 +13278,14 @@ mod rc_w2_test_rehab {
             10,
             &owner,
         );
-        state
-            .acoustic_ledger
-            .lock()
-            .unwrap()
-            .admit_word_slots(&whisper, &[(sample(1.5), sample(1.75), "revised".into())]);
+        state.acoustic_ledger.lock().unwrap().admit_word_slots(
+            &whisper,
+            &[crate::pipeline::acoustic_ledger::WordPin::new(
+                sample(1.5),
+                sample(1.75),
+                "revised",
+            )],
+        );
         let retained_document = document(&state);
         assert_eq!(retained_document, "alpha beta revised");
         assert_eq!(
@@ -13218,6 +13307,7 @@ mod rc_w2_test_rehab {
                 .iter()
                 .enumerate()
                 .map(|(i, text)| FusionWord {
+                    confidence: None,
                     text: (*text).into(),
                     sample_start: sample(i as f32 + 0.25),
                     sample_end: sample(i as f32 + 0.5),
@@ -14463,6 +14553,7 @@ mod rc_w2_test_rehab {
                 };
                 drain(&mut rx);
                 let replay = FusionWord {
+                    confidence: None,
                     text: "uruchom doker".into(),
                     sample_start: 0,
                     sample_end: sample(2.0),
@@ -16180,6 +16271,7 @@ mod rc_w2_test_rehab {
         let _ = qualify(&mut cloud, 0.0, 0.4);
         let _ = qualify(&mut whisper, 0.0, 0.4);
         let pin = TimedTailSegment {
+            confidence: None,
             text: "obok".into(),
             range: TailSampleRange {
                 session: cloud.session_id.clone(),
@@ -16202,6 +16294,7 @@ mod rc_w2_test_rehab {
             LedgerObservationProducer::CloudLive,
         );
         let whisper_pin = TimedTailSegment {
+            confidence: None,
             range: TailSampleRange {
                 session: whisper.session_id.clone(),
                 ..pin.range.clone()
@@ -16706,6 +16799,7 @@ mod live_refinement_admission_tests {
             identity: request.provider_request.identity.clone(),
             text: "hello".into(),
             segments: vec![TimedTailSegment {
+                confidence: None,
                 grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
                 text: "hello".into(),
                 range: TailSampleRange {
@@ -16778,6 +16872,7 @@ mod live_refinement_admission_tests {
                 &events,
                 &physical,
                 &[TranscriptSegment {
+                    confidence: None,
                     text: "partial words".into(),
                     start_ts: 0.0,
                     end_ts: 0.2,
@@ -17044,6 +17139,7 @@ mod live_refinement_admission_tests {
             &events,
             &closed(1),
             &[TranscriptSegment {
+                confidence: None,
                 text: "hello".into(),
                 start_ts: 0.0,
                 end_ts: 0.4,
@@ -17181,6 +17277,7 @@ mod live_refinement_admission_tests {
             &events,
             &ledger,
             &[TranscriptSegment {
+                confidence: None,
                 text: " ".into(),
                 start_ts: 0.0,
                 end_ts: 0.4,
@@ -17192,6 +17289,7 @@ mod live_refinement_admission_tests {
             &events,
             &ledger,
             &[TranscriptSegment {
+                confidence: None,
                 text: "hello".into(),
                 start_ts: 0.0,
                 end_ts: 0.4,
@@ -17230,11 +17328,13 @@ mod live_refinement_admission_tests {
             &closed(1),
             &[
                 TranscriptSegment {
+                    confidence: None,
                     text: "hello".into(),
                     start_ts: 0.0,
                     end_ts: 0.1
                 },
                 TranscriptSegment {
+                    confidence: None,
                     text: "again".into(),
                     start_ts: 0.2,
                     end_ts: 0.4
@@ -17302,6 +17402,7 @@ mod live_refinement_admission_tests {
             &events,
             &closed(1),
             &[TranscriptSegment {
+                confidence: None,
                 text: "late replacement".into(),
                 start_ts: 0.0,
                 end_ts: 0.4,
@@ -17318,6 +17419,7 @@ mod live_refinement_admission_tests {
     fn apple_first_emits_once_only_reducer_receipts_before_stop() {
         let (mut state, events, mut receiver, mut requests) = fixture(1);
         let words = [TranscriptSegment {
+            confidence: None,
             text: "hello".into(),
             start_ts: 0.0,
             end_ts: 0.4,
@@ -17385,6 +17487,7 @@ mod live_refinement_admission_tests {
             &events,
             &physical,
             &[TranscriptSegment {
+                confidence: None,
                 text: "late real words".into(),
                 start_ts: 0.0,
                 end_ts: 0.4,
@@ -17464,6 +17567,7 @@ mod live_refinement_admission_tests {
                 &events,
                 &stale,
                 &[TranscriptSegment {
+                    confidence: None,
                     text: "foreign".into(),
                     start_ts: 0.0,
                     end_ts: 0.4,
@@ -17481,6 +17585,7 @@ mod live_refinement_admission_tests {
                 &events,
                 &closed(1),
                 &[TranscriptSegment {
+                    confidence: None,
                     text: "current".into(),
                     start_ts: 0.0,
                     end_ts: 0.4,
@@ -17551,6 +17656,7 @@ mod live_refinement_admission_tests {
                 &events,
                 &closed(3),
                 &[TranscriptSegment {
+                    confidence: None,
                     text: "recovered".into(),
                     start_ts: id as f32,
                     end_ts: id as f32 + 0.4,
@@ -17593,6 +17699,7 @@ mod live_refinement_admission_tests {
                 &events,
                 &closed(3),
                 &[TranscriptSegment {
+                    confidence: None,
                     text: "recovered".into(),
                     start_ts: id as f32,
                     end_ts: id as f32 + 0.4,
@@ -18415,6 +18522,7 @@ mod relay_l1_overlap_admission_tests {
 
     fn segment(session: &str, text: &str, start: u64, end: u64) -> TimedTailSegment {
         TimedTailSegment {
+            confidence: None,
             grain: crate::stt::tail_provider::TailSegmentGrain::Phrase,
             text: text.to_string(),
             range: crate::stt::tail_provider::TailSampleRange {
@@ -19872,6 +19980,7 @@ mod relay_l1_overlap_admission_tests {
             &owner,
             1,
             &[RoutedPin {
+                confidence: None,
                 index: 0,
                 pin: OccurrenceIdentity::new(session, 1, 44_000, 51_000),
                 text: "szew".into(),
@@ -20475,6 +20584,7 @@ mod tc2_window_contract_tests {
 
     fn pin(text: &str, start: u64, end: u64) -> TimedTailSegment {
         TimedTailSegment {
+            confidence: None,
             grain: TailSegmentGrain::Word,
             text: text.into(),
             range: TailSampleRange {
@@ -20874,6 +20984,7 @@ mod tc2_window_contract_tests {
 
     fn apple_word(text: &str, start: u64, end: u64) -> TranscriptSegment {
         TranscriptSegment {
+            confidence: None,
             text: text.into(),
             start_ts: start as f32 / RATE as f32,
             end_ts: end as f32 / RATE as f32,

@@ -32,6 +32,7 @@ fn fake_payload(request: &TailProviderRequest, text: &str) -> TailProviderPayloa
         identity: request.identity.clone(),
         text: text.to_string(),
         segments: vec![TimedTailSegment {
+            confidence: None,
             grain: TailSegmentGrain::Phrase,
             text: text.to_string(),
             range: request.identity.range.clone(),

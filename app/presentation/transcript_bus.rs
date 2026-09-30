@@ -370,6 +370,13 @@ pub struct TranscriptBusEvidenceEvent {
     pub comparison: Option<ProjectedTranscriptComparisonReceipt>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub consultation_presentations: Vec<ProjectedConsultationPresentation>,
+    /// A6 uncertain-word spans over `rendered_text`, reducer-computed from
+    /// ledger-pinned per-word confidence. Carried in memory to the bridge
+    /// projection only: deliberately NOT journaled into the Bus JSONL (d9 —
+    /// the Bus stays span-free until thresholds are calibrated), so
+    /// `EvidenceRow` consumers never see them.
+    #[serde(skip)]
+    pub uncertain_spans: Vec<codescribe_core::pipeline::word_confidence::UncertainSpan>,
 }
 
 /// One previously published document revision, read from the Bus journal.
@@ -1024,6 +1031,7 @@ impl TranscriptBus {
                     .iter()
                     .map(ProjectedConsultationPresentation::from)
                     .collect(),
+                uncertain_spans: revision.uncertain_spans.clone(),
             };
             let starts_document = channel_quiet
                 && !writer
@@ -1271,6 +1279,7 @@ impl TranscriptBus {
                     consultation_presentations: Vec::new(),
                     seal_coverage: None,
                     comparison: None,
+                    uncertain_spans: Vec::new(),
                 });
         terminal.sequence = writer.sequence;
         terminal.emitted_at = Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true);

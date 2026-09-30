@@ -67,6 +67,9 @@ pub fn extract_segments(
                                 text,
                                 start_ts: start,
                                 end_ts: time,
+                                // Timestamp-window grouping carries no per-word
+                                // metric (A6).
+                                confidence: None,
                             });
                         }
                     }

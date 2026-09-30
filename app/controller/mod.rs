@@ -7325,11 +7325,12 @@ mod refusal_recovery_tests {
             4,
             OccurrenceIdentity::new(TAKE, 7, 0, 16_000),
         );
-        let receipt = take
-            .ledger
-            .lock()
-            .unwrap()
-            .admit_word_slots_for_tests(&observation, &[(9_000, 10_000, "heard".into())]);
+        let receipt = take.ledger.lock().unwrap().admit_word_slots_for_tests(
+            &observation,
+            &[codescribe_core::pipeline::acoustic_ledger::WordPin::new(
+                9_000, 10_000, "heard",
+            )],
+        );
         take.emitter.on_event(&EngineEvent::LedgerMutation {
             observation,
             label: String::new(),

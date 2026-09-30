@@ -289,6 +289,7 @@ mod tests {
             text: text.to_string(),
             start_ts: start,
             end_ts: end,
+            confidence: None,
         }
     }
 

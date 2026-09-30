@@ -484,6 +484,58 @@ pub struct WordSlot {
     pub observation: ObservationIdentity,
     /// Speech witness status for this slot.
     pub witness: SlotWitness,
+    /// Per-word acoustic confidence from the producer that emitted this slot
+    /// (A6). Travels with the slot: when a higher-rank producer replaces the
+    /// slot, its own confidence replaces this one; confidence is never
+    /// transferred between producers. `None` = no metric, never "low".
+    pub confidence: Option<crate::pipeline::word_confidence::WordConfidence>,
+    /// Live lexicon rewrote the surface before admission (d5). The acoustic
+    /// confidence still describes the heard audio, not the rewritten string.
+    pub surface_rewritten: bool,
+}
+
+/// One word pin offered to the ledger: PCM range, surface text, and optional
+/// per-word acoustic confidence (A6). Text is a label, never a key; the
+/// identity of the pin is its PCM range on its owner occurrence.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WordPin {
+    /// First sample attributed to this word.
+    pub sample_start: u64,
+    /// One past the last sample attributed to this word.
+    pub sample_end: u64,
+    /// Surface text (post live-lexicon rewrite, when one applied).
+    pub text: String,
+    /// Producer-supplied per-word confidence. `None` = the producer supplied
+    /// no metric — never "low" (d4).
+    pub confidence: Option<crate::pipeline::word_confidence::WordConfidence>,
+    /// Live lexicon rewrote the surface before admission (d5).
+    pub surface_rewritten: bool,
+}
+
+impl WordPin {
+    /// A pin with no confidence evidence and an unrewritten surface.
+    pub fn new(sample_start: u64, sample_end: u64, text: impl Into<String>) -> Self {
+        Self {
+            sample_start,
+            sample_end,
+            text: text.into(),
+            confidence: None,
+            surface_rewritten: false,
+        }
+    }
+
+    pub fn with_confidence(
+        mut self,
+        confidence: crate::pipeline::word_confidence::WordConfidence,
+    ) -> Self {
+        self.confidence = Some(confidence);
+        self
+    }
+
+    pub fn surface_rewritten(mut self) -> Self {
+        self.surface_rewritten = true;
+        self
+    }
 }
 
 /// Compare two owner-clipped word spans without using text as identity.
@@ -558,6 +610,9 @@ impl CommittedObservation {
                 producer: observation.producer,
                 observation: observation.clone(),
                 witness: SlotWitness::Unwitnessed,
+                // A whole-label slot has no per-word metric (A6).
+                confidence: None,
+                surface_rewritten: false,
             }],
             label: String::new(),
         };
@@ -697,7 +752,7 @@ impl AcousticLedger {
         &mut self,
         observation: &ObservationIdentity,
         label: &str,
-        words: &[(u64, u64, String)],
+        words: &[WordPin],
     ) -> MutationReceipt {
         let occurrence = &observation.occurrence;
         if observation.producer != ObservationProducer::Apple
@@ -707,21 +762,25 @@ impl AcousticLedger {
             return self.admit(observation, label);
         }
         let mut slots = Vec::with_capacity(words.len());
-        for (start, end, text) in words {
-            let midpoint = start.saturating_add(end.saturating_sub(*start) / 2);
-            if end <= start
+        for pin in words {
+            let midpoint = pin
+                .sample_start
+                .saturating_add(pin.sample_end.saturating_sub(pin.sample_start) / 2);
+            if pin.sample_end <= pin.sample_start
                 || midpoint < occurrence.sample_start
                 || midpoint >= occurrence.sample_end
             {
                 return self.admit(observation, label);
             }
             slots.push(WordSlot {
-                sample_start: (*start).max(occurrence.sample_start),
-                sample_end: (*end).min(occurrence.sample_end),
-                text: text.clone(),
+                sample_start: pin.sample_start.max(occurrence.sample_start),
+                sample_end: pin.sample_end.min(occurrence.sample_end),
+                text: pin.text.clone(),
                 producer: observation.producer,
                 observation: observation.clone(),
                 witness: SlotWitness::Unwitnessed,
+                confidence: pin.confidence,
+                surface_rewritten: pin.surface_rewritten,
             });
         }
         slots.sort_by(|a, b| {
@@ -800,7 +859,7 @@ impl AcousticLedger {
     pub fn admit_word_slots_for_tests(
         &mut self,
         observation: &ObservationIdentity,
-        words: &[(u64, u64, String)],
+        words: &[WordPin],
     ) -> MutationReceipt {
         self.admit_word_slots(observation, words)
     }
@@ -814,7 +873,7 @@ impl AcousticLedger {
     pub(crate) fn admit_word_slots(
         &mut self,
         observation: &ObservationIdentity,
-        words: &[(u64, u64, String)],
+        words: &[WordPin],
     ) -> MutationReceipt {
         let owner = &observation.occurrence;
         if self.is_sealed(owner) {
@@ -842,23 +901,34 @@ impl AcousticLedger {
                 }
             });
             let mut labels = prior.into_iter().collect::<Vec<_>>();
-            labels.extend(words.iter().map(|(_, _, text)| text.clone()));
+            labels.extend(words.iter().map(|pin| pin.text.clone()));
             return self.keep_visible_unanchored(observation, &labels.join(" "), reason);
         }
         let mut incoming = Vec::new();
-        for (start, end, text) in words {
-            let midpoint = start.saturating_add(end.saturating_sub(*start) / 2);
-            if end <= start || midpoint < owner.sample_start || midpoint >= owner.sample_end {
-                return self.keep_visible_unanchored(observation, text, NoAuthorityReason::NoRange);
+        for pin in words {
+            let midpoint = pin
+                .sample_start
+                .saturating_add(pin.sample_end.saturating_sub(pin.sample_start) / 2);
+            if pin.sample_end <= pin.sample_start
+                || midpoint < owner.sample_start
+                || midpoint >= owner.sample_end
+            {
+                return self.keep_visible_unanchored(
+                    observation,
+                    &pin.text,
+                    NoAuthorityReason::NoRange,
+                );
             }
-            if !text.trim().is_empty() {
+            if !pin.text.trim().is_empty() {
                 incoming.push(WordSlot {
-                    sample_start: (*start).max(owner.sample_start),
-                    sample_end: (*end).min(owner.sample_end),
-                    text: text.clone(),
+                    sample_start: pin.sample_start.max(owner.sample_start),
+                    sample_end: pin.sample_end.min(owner.sample_end),
+                    text: pin.text.clone(),
                     producer: observation.producer,
                     observation: observation.clone(),
                     witness: SlotWitness::Unwitnessed,
+                    confidence: pin.confidence,
+                    surface_rewritten: pin.surface_rewritten,
                 });
             }
         }
@@ -2606,13 +2676,18 @@ impl AcousticLedger {
                     });
                 let ordinal = &mut observation_ordinals[position].1;
                 for word in slot.text.split_whitespace() {
-                    tokens.push(WordEvidenceReceipt::cite(
+                    let mut receipt = WordEvidenceReceipt::cite(
                         word,
                         *ordinal,
                         &slot.observation,
                         vec![serial.clone()],
                         Some((slot.sample_start, slot.sample_end)),
-                    )?);
+                    )?;
+                    // A6: the slot's acoustic confidence and lexicon-rewrite
+                    // mark travel with every token split out of it.
+                    receipt.confidence = slot.confidence;
+                    receipt.surface_rewritten = slot.surface_rewritten;
+                    tokens.push(receipt);
                     *ordinal += 1;
                 }
             }
@@ -3102,6 +3177,12 @@ pub struct WordEvidenceReceipt {
     /// One past the last sample the producer attributes to this token, when it
     /// provides one.
     pub token_sample_end: Option<u64>,
+    /// Per-word acoustic confidence from the producer that emitted this token
+    /// (A6). `None` = the producer supplied no metric — never "low".
+    pub confidence: Option<crate::pipeline::word_confidence::WordConfidence>,
+    /// Live lexicon rewrote this token's surface before admission (d5); the
+    /// acoustic confidence still describes the heard audio.
+    pub surface_rewritten: bool,
 }
 
 impl WordEvidenceReceipt {
@@ -3138,6 +3219,8 @@ impl WordEvidenceReceipt {
             serials,
             token_sample_start: coverage.map(|(start, _)| start),
             token_sample_end: coverage.map(|(_, end)| end),
+            confidence: None,
+            surface_rewritten: false,
         })
     }
 
@@ -4005,8 +4088,8 @@ mod tests {
                     &observation,
                     "Iwo znowu",
                     &[
-                        (1_000, 5_000, "Iwo".into()),
-                        (8_000, 14_000, "znowu".into())
+                        crate::pipeline::acoustic_ledger::WordPin::new(1_000, 5_000, "Iwo"),
+                        crate::pipeline::acoustic_ledger::WordPin::new(8_000, 14_000, "znowu")
                     ],
                 )
                 .is_insert()
@@ -4093,7 +4176,9 @@ mod tests {
                     .is_insert()
             );
             let observation = obs(producer, 1, newer.clone());
-            let words = [(13_000, 14_000, "newer".into())];
+            let words = [crate::pipeline::acoustic_ledger::WordPin::new(
+                13_000, 14_000, "newer",
+            )];
             let receipt = if producer == ObservationProducer::Apple {
                 ledger.admit_pinned_label(&observation, "newer", &words)
             } else {
@@ -4119,12 +4204,20 @@ mod tests {
     fn invalid_first_label_pins_cannot_bypass_overlap() {
         for words in [
             vec![],
-            vec![(13_000, 13_000, "newer".into())],
-            vec![(1_000, 2_000, "newer".into())],
-            vec![(13_000, 14_000, "different".into())],
+            vec![crate::pipeline::acoustic_ledger::WordPin::new(
+                13_000, 13_000, "newer",
+            )],
+            vec![crate::pipeline::acoustic_ledger::WordPin::new(
+                1_000, 2_000, "newer",
+            )],
+            vec![crate::pipeline::acoustic_ledger::WordPin::new(
+                13_000,
+                14_000,
+                "different",
+            )],
             vec![
-                (13_000, 15_000, "new".into()),
-                (14_000, 16_000, "er".into()),
+                crate::pipeline::acoustic_ledger::WordPin::new(13_000, 15_000, "new"),
+                crate::pipeline::acoustic_ledger::WordPin::new(14_000, 16_000, "er"),
             ],
         ] {
             let mut ledger = AcousticLedger::new();
@@ -4160,14 +4253,26 @@ mod tests {
         let observation = obs(ObservationProducer::Apple, 0, occurrence.clone());
         assert!(
             ledger
-                .admit_pinned_label(&observation, "Iwo", &[(0, 8_000, "inne".into())])
+                .admit_pinned_label(
+                    &observation,
+                    "Iwo",
+                    &[crate::pipeline::acoustic_ledger::WordPin::new(
+                        0, 8_000, "inne"
+                    )]
+                )
                 .is_insert()
         );
         assert_eq!(ledger.text_of(&occurrence), Some("Iwo"));
         assert_eq!(ledger.slots_of(&occurrence).unwrap()[0].sample_end, 16_000);
         let next = ledger.next_word_observation(ObservationProducer::Apple, 0, &occurrence);
         assert!(matches!(
-            ledger.admit_pinned_label(&next, "Iwo", &[(1_000, 8_000, "Iwo".into())]),
+            ledger.admit_pinned_label(
+                &next,
+                "Iwo",
+                &[crate::pipeline::acoustic_ledger::WordPin::new(
+                    1_000, 8_000, "Iwo"
+                )]
+            ),
             MutationReceipt::Preserve { .. }
         ));
         let before = ledger.slots_of(&occurrence).unwrap().to_vec();
@@ -4176,7 +4281,13 @@ mod tests {
         let seal = ledger.seal(&occurrence).unwrap().clone();
         let late = ledger.next_word_observation(ObservationProducer::Apple, 0, &occurrence);
         assert!(matches!(
-            ledger.admit_pinned_label(&late, "Iwo", &[(2_000, 9_000, "Iwo".into())]),
+            ledger.admit_pinned_label(
+                &late,
+                "Iwo",
+                &[crate::pipeline::acoustic_ledger::WordPin::new(
+                    2_000, 9_000, "Iwo"
+                )]
+            ),
             MutationReceipt::Refuse {
                 reason: RefuseReason::SealedReplay,
                 ..
@@ -5195,11 +5306,11 @@ mod tests {
                     &apple,
                     "a b c d e",
                     &[
-                        (0, 48_000, "a".into()),
-                        (48_000, 96_000, "b".into()),
-                        (96_000, 144_000, "c".into()),
-                        (144_000, 192_000, "d".into()),
-                        (192_000, 240_000, "e".into()),
+                        crate::pipeline::acoustic_ledger::WordPin::new(0, 48_000, "a"),
+                        crate::pipeline::acoustic_ledger::WordPin::new(48_000, 96_000, "b"),
+                        crate::pipeline::acoustic_ledger::WordPin::new(96_000, 144_000, "c"),
+                        crate::pipeline::acoustic_ledger::WordPin::new(144_000, 192_000, "d"),
+                        crate::pipeline::acoustic_ledger::WordPin::new(192_000, 240_000, "e"),
                     ]
                 )
                 .is_insert()
@@ -5210,10 +5321,10 @@ mod tests {
                 .admit_word_slots(
                     &whisper,
                     &[
-                        (0, 48_000, "A".into()),
-                        (48_000, 96_000, "B".into()),
-                        (96_000, 144_000, "C".into()),
-                        (144_000, 192_000, "D".into()),
+                        crate::pipeline::acoustic_ledger::WordPin::new(0, 48_000, "A"),
+                        crate::pipeline::acoustic_ledger::WordPin::new(48_000, 96_000, "B"),
+                        crate::pipeline::acoustic_ledger::WordPin::new(96_000, 144_000, "C"),
+                        crate::pipeline::acoustic_ledger::WordPin::new(144_000, 192_000, "D"),
                     ]
                 )
                 .grants_mutation()
@@ -6156,7 +6267,14 @@ mod tests {
                 .saturating_add(u64::from(producer.authority_rank())),
             occurrence.clone(),
         );
-        ledger.admit_word_slots(&observation, &[(start, end, text.to_string())])
+        ledger.admit_word_slots(
+            &observation,
+            &[crate::pipeline::acoustic_ledger::WordPin::new(
+                start,
+                end,
+                text.to_string(),
+            )],
+        )
     }
 
     #[test]
@@ -6256,8 +6374,8 @@ mod tests {
                 .admit_word_slots(
                     &observation,
                     &[
-                        (1_000, 4_000, "dwa".into()),
-                        (8_000, 12_000, "slowa".into())
+                        crate::pipeline::acoustic_ledger::WordPin::new(1_000, 4_000, "dwa"),
+                        crate::pipeline::acoustic_ledger::WordPin::new(8_000, 12_000, "slowa")
                     ],
                 )
                 .is_insert()
@@ -6287,16 +6405,52 @@ mod tests {
         );
     }
 
+    /// A6: pin confidence and the lexicon-rewrite mark travel from admission
+    /// through the slot into the signed composition receipts (d5).
+    #[test]
+    fn word_confidence_travels_from_pin_to_composed_receipt() {
+        use crate::pipeline::word_confidence::{WordConfidence, WordConfidenceSource};
+        let (mut ledger, occurrence) = whisper_only_qualified_ledger();
+        let observation = obs(ObservationProducer::CloudLive, 1, occurrence.clone());
+        let confidence = WordConfidence::new(WordConfidenceSource::VendorWordProbability, 0.42, 1);
+        assert!(
+            ledger
+                .admit_word_slots(
+                    &observation,
+                    &[
+                        crate::pipeline::acoustic_ledger::WordPin::new(1_000, 4_000, "dwa")
+                            .with_confidence(confidence)
+                            .surface_rewritten(),
+                        crate::pipeline::acoustic_ledger::WordPin::new(8_000, 12_000, "slowa"),
+                    ],
+                )
+                .is_insert()
+        );
+        let slots = ledger.slots_of(&occurrence).unwrap();
+        assert_eq!(slots[0].confidence, Some(confidence));
+        assert!(slots[0].surface_rewritten);
+        assert_eq!(slots[1].confidence, None);
+        assert!(!slots[1].surface_rewritten);
+
+        let composed = ledger.compose(&occurrence).expect("qualified words");
+        assert_eq!(composed.tokens.len(), 2);
+        assert_eq!(composed.tokens[0].confidence, Some(confidence));
+        assert!(composed.tokens[0].surface_rewritten);
+        assert_eq!(composed.tokens[0].token_sample_start, Some(1_000));
+        assert_eq!(composed.tokens[1].confidence, None);
+        assert!(!composed.tokens[1].surface_rewritten);
+    }
+
     #[test]
     fn one_pcm_slot_replaces_variant_chain_and_numeric_double() {
         for (first, second, final_word) in [("Vite", "Vita", "Vitae"), ("21.", "21.", "21.")] {
             let (mut ledger, occurrence) = whisper_only_qualified_ledger();
             let apple_first = obs(ObservationProducer::Apple, 0, occurrence.clone());
-            ledger.admit_word_slots(&apple_first, &[(1_000, 4_000, first.into())]);
+            ledger.admit_word_slots(&apple_first, &[WordPin::new(1_000, 4_000, first)]);
             let apple_second = obs(ObservationProducer::Apple, 1, occurrence.clone());
-            ledger.admit_word_slots(&apple_second, &[(1_000, 4_000, second.into())]);
+            ledger.admit_word_slots(&apple_second, &[WordPin::new(1_000, 4_000, second)]);
             let whisper = obs(ObservationProducer::Whisper, 0, occurrence.clone());
-            ledger.admit_word_slots(&whisper, &[(1_000, 4_000, final_word.into())]);
+            ledger.admit_word_slots(&whisper, &[WordPin::new(1_000, 4_000, final_word)]);
 
             assert_eq!(ledger.text_of(&occurrence), Some(final_word));
             let slots = ledger.slots_of(&occurrence).unwrap();
@@ -6321,15 +6475,18 @@ mod tests {
         let apple = obs(ObservationProducer::Apple, 0, occurrence.clone());
         ledger.admit_word_slots(
             &apple,
-            &[(1_000, 2_000, "po".into()), (5_000, 6_000, "w".into())],
+            &[
+                crate::pipeline::acoustic_ledger::WordPin::new(1_000, 2_000, "po"),
+                crate::pipeline::acoustic_ledger::WordPin::new(5_000, 6_000, "w"),
+            ],
         );
         let whisper = obs(ObservationProducer::Whisper, 0, occurrence.clone());
         ledger.admit_word_slots(
             &whisper,
             &[
-                (3_000, 4_000, "poproszę".into()),
-                (7_000, 8_000, "prostu".into()),
-                (9_000, 10_000, "sumie".into()),
+                crate::pipeline::acoustic_ledger::WordPin::new(3_000, 4_000, "poproszę"),
+                crate::pipeline::acoustic_ledger::WordPin::new(7_000, 8_000, "prostu"),
+                crate::pipeline::acoustic_ledger::WordPin::new(9_000, 10_000, "sumie"),
             ],
         );
         assert_eq!(
@@ -6338,7 +6495,12 @@ mod tests {
         );
         let held = ledger.slots_of(&occurrence).unwrap().to_vec();
         let late = obs(ObservationProducer::Whisper, 1, occurrence.clone());
-        ledger.admit_word_slots(&late, &[(7_000, 8_000, "prostu".into())]);
+        ledger.admit_word_slots(
+            &late,
+            &[crate::pipeline::acoustic_ledger::WordPin::new(
+                7_000, 8_000, "prostu",
+            )],
+        );
         assert_eq!(ledger.slots_of(&occurrence).unwrap().len(), held.len());
         assert_eq!(
             ledger.text_of(&occurrence),
@@ -6353,10 +6515,20 @@ mod tests {
         let apple = obs(ObservationProducer::Apple, 0, occurrence.clone());
         ledger.admit_word_slots(
             &apple,
-            &[(1_000, 2_000, "parę".into()), (7_000, 8_000, "słów".into())],
+            &[
+                crate::pipeline::acoustic_ledger::WordPin::new(1_000, 2_000, "parę"),
+                crate::pipeline::acoustic_ledger::WordPin::new(7_000, 8_000, "słów"),
+            ],
         );
         let whisper = obs(ObservationProducer::Whisper, 0, occurrence.clone());
-        ledger.admit_word_slots(&whisper, &[(4_000, 5_000, "korzystając".into())]);
+        ledger.admit_word_slots(
+            &whisper,
+            &[crate::pipeline::acoustic_ledger::WordPin::new(
+                4_000,
+                5_000,
+                "korzystając",
+            )],
+        );
         assert_eq!(ledger.text_of(&occurrence), Some("parę korzystając słów"));
         assert_eq!(ledger.slots_of(&occurrence).unwrap().len(), 3);
         ledger.assert_slot_labels();
@@ -6376,7 +6548,12 @@ mod tests {
         ledger.note_frontier_return(&occurrence, ObservationProducer::Whisper);
         ledger.seal(&occurrence).unwrap();
         let observation = obs(ObservationProducer::CloudLive, 2, occurrence.clone());
-        let receipt = ledger.admit_word_slots(&observation, &[(1_000, 4_000, "pozno".into())]);
+        let receipt = ledger.admit_word_slots(
+            &observation,
+            &[crate::pipeline::acoustic_ledger::WordPin::new(
+                1_000, 4_000, "pozno",
+            )],
+        );
         assert!(matches!(
             receipt,
             MutationReceipt::KeepVisibleUnanchored {

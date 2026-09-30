@@ -10500,94 +10500,6 @@ public func FfiConverterTypeCsOverlayCorrectionInput_lower(_ value: CsOverlayCor
 
 
 /**
- * Span-based canvas highlight. Sample fields are the 3A PCM identity;
- * char offsets are the Swift adapter onto already-committed utterance text.
- */
-public struct CsOverlayHighlight: Equatable, Hashable {
-    public var kind: CsOverlayHighlightKind
-    public var utteranceId: UInt64
-    public var charStart: UInt64
-    public var charEnd: UInt64
-    public var session: String
-    public var captureEpoch: UInt64
-    public var sampleStart: UInt64
-    public var sampleEnd: UInt64
-    public var before: String
-    public var after: String
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(kind: CsOverlayHighlightKind, utteranceId: UInt64, charStart: UInt64, charEnd: UInt64, session: String, captureEpoch: UInt64, sampleStart: UInt64, sampleEnd: UInt64, before: String, after: String) {
-        self.kind = kind
-        self.utteranceId = utteranceId
-        self.charStart = charStart
-        self.charEnd = charEnd
-        self.session = session
-        self.captureEpoch = captureEpoch
-        self.sampleStart = sampleStart
-        self.sampleEnd = sampleEnd
-        self.before = before
-        self.after = after
-    }
-
-
-}
-
-#if compiler(>=6)
-extension CsOverlayHighlight: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeCsOverlayHighlight: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsOverlayHighlight {
-        return
-            try CsOverlayHighlight(
-                kind: FfiConverterTypeCsOverlayHighlightKind.read(from: &buf),
-                utteranceId: FfiConverterUInt64.read(from: &buf),
-                charStart: FfiConverterUInt64.read(from: &buf),
-                charEnd: FfiConverterUInt64.read(from: &buf),
-                session: FfiConverterString.read(from: &buf),
-                captureEpoch: FfiConverterUInt64.read(from: &buf),
-                sampleStart: FfiConverterUInt64.read(from: &buf),
-                sampleEnd: FfiConverterUInt64.read(from: &buf),
-                before: FfiConverterString.read(from: &buf),
-                after: FfiConverterString.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: CsOverlayHighlight, into buf: inout [UInt8]) {
-        FfiConverterTypeCsOverlayHighlightKind.write(value.kind, into: &buf)
-        FfiConverterUInt64.write(value.utteranceId, into: &buf)
-        FfiConverterUInt64.write(value.charStart, into: &buf)
-        FfiConverterUInt64.write(value.charEnd, into: &buf)
-        FfiConverterString.write(value.session, into: &buf)
-        FfiConverterUInt64.write(value.captureEpoch, into: &buf)
-        FfiConverterUInt64.write(value.sampleStart, into: &buf)
-        FfiConverterUInt64.write(value.sampleEnd, into: &buf)
-        FfiConverterString.write(value.before, into: &buf)
-        FfiConverterString.write(value.after, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCsOverlayHighlight_lift(_ buf: RustBuffer) throws -> CsOverlayHighlight {
-    return try FfiConverterTypeCsOverlayHighlight.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCsOverlayHighlight_lower(_ value: CsOverlayHighlight) -> RustBuffer {
-    return FfiConverterTypeCsOverlayHighlight.lower(value)
-}
-
-
-/**
  * Full delivery truth for one overlay Insert, including the app names observed
  * at the exact delivery boundary and the Paste Here shortcut (or the reason it
  * was unavailable), so Swift can explain any degradation instead of guessing.
@@ -12866,62 +12778,6 @@ public func FfiConverterTypeCsThreadSummary_lower(_ value: CsThreadSummary) -> R
 
 
 /**
- * Typed carrier for future per-token confidence (W11-C spike; unused by UI yet).
- * Wire is present so W12 overlay "yellow words" can land without another bridge reshape.
- */
-public struct CsTokenConfidence: Equatable, Hashable {
-    public var token: String
-    public var logprob: Float
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(token: String, logprob: Float) {
-        self.token = token
-        self.logprob = logprob
-    }
-
-
-}
-
-#if compiler(>=6)
-extension CsTokenConfidence: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeCsTokenConfidence: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsTokenConfidence {
-        return
-            try CsTokenConfidence(
-                token: FfiConverterString.read(from: &buf),
-                logprob: FfiConverterFloat.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: CsTokenConfidence, into buf: inout [UInt8]) {
-        FfiConverterString.write(value.token, into: &buf)
-        FfiConverterFloat.write(value.logprob, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCsTokenConfidence_lift(_ buf: RustBuffer) throws -> CsTokenConfidence {
-    return try FfiConverterTypeCsTokenConfidence.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCsTokenConfidence_lower(_ value: CsTokenConfidence) -> RustBuffer {
-    return FfiConverterTypeCsTokenConfidence.lower(value)
-}
-
-
-/**
  * Cumulative token accounting for a thread. Mirrors `TokenUsage`
  * (`thread_store.rs:105`).
  */
@@ -13323,6 +13179,12 @@ public struct CsTranscriptProjectionEvent: Equatable, Hashable {
     public var acousticReceipts: [CsProjectedAcousticReceipt]
     public var sealCoverage: CsProjectedSealCoverageReceipt?
     public var consultationPresentations: [CsProjectedConsultationPresentation]
+    /**
+     * A6 uncertain-word spans over `rendered_text` (UTF-16 ranges), computed
+     * by the reducer from ledger-pinned per-word confidence. Empty until the
+     * per-source thresholds classify words; never synthesized on Swift.
+     */
+    public var uncertainSpans: [CsUncertainSpan]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -13340,7 +13202,12 @@ public struct CsTranscriptProjectionEvent: Equatable, Hashable {
          * Controller-owned delivery disposition, forwarded verbatim. Swift branches
          * on this typed state; the human-facing `label` above stays presentation and
          * never carries control meaning.
-         */delivery: CsTranscriptDelivery, acousticReceipts: [CsProjectedAcousticReceipt], sealCoverage: CsProjectedSealCoverageReceipt?, consultationPresentations: [CsProjectedConsultationPresentation]) {
+         */delivery: CsTranscriptDelivery, acousticReceipts: [CsProjectedAcousticReceipt], sealCoverage: CsProjectedSealCoverageReceipt?, consultationPresentations: [CsProjectedConsultationPresentation],
+        /**
+         * A6 uncertain-word spans over `rendered_text` (UTF-16 ranges), computed
+         * by the reducer from ledger-pinned per-word confidence. Empty until the
+         * per-source thresholds classify words; never synthesized on Swift.
+         */uncertainSpans: [CsUncertainSpan]) {
         self.schema = schema
         self.sequence = sequence
         self.emittedAt = emittedAt
@@ -13369,6 +13236,7 @@ public struct CsTranscriptProjectionEvent: Equatable, Hashable {
         self.acousticReceipts = acousticReceipts
         self.sealCoverage = sealCoverage
         self.consultationPresentations = consultationPresentations
+        self.uncertainSpans = uncertainSpans
     }
 
 
@@ -13412,7 +13280,8 @@ public struct FfiConverterTypeCsTranscriptProjectionEvent: FfiConverterRustBuffe
                 delivery: FfiConverterTypeCsTranscriptDelivery.read(from: &buf),
                 acousticReceipts: FfiConverterSequenceTypeCsProjectedAcousticReceipt.read(from: &buf),
                 sealCoverage: FfiConverterOptionTypeCsProjectedSealCoverageReceipt.read(from: &buf),
-                consultationPresentations: FfiConverterSequenceTypeCsProjectedConsultationPresentation.read(from: &buf)
+                consultationPresentations: FfiConverterSequenceTypeCsProjectedConsultationPresentation.read(from: &buf),
+                uncertainSpans: FfiConverterSequenceTypeCsUncertainSpan.read(from: &buf)
         )
     }
 
@@ -13445,6 +13314,7 @@ public struct FfiConverterTypeCsTranscriptProjectionEvent: FfiConverterRustBuffe
         FfiConverterSequenceTypeCsProjectedAcousticReceipt.write(value.acousticReceipts, into: &buf)
         FfiConverterOptionTypeCsProjectedSealCoverageReceipt.write(value.sealCoverage, into: &buf)
         FfiConverterSequenceTypeCsProjectedConsultationPresentation.write(value.consultationPresentations, into: &buf)
+        FfiConverterSequenceTypeCsUncertainSpan.write(value.uncertainSpans, into: &buf)
     }
 }
 
@@ -13799,6 +13669,124 @@ public func FfiConverterTypeCsUnanchoredEvidence_lift(_ buf: RustBuffer) throws 
 #endif
 public func FfiConverterTypeCsUnanchoredEvidence_lower(_ value: CsUnanchoredEvidence) -> RustBuffer {
     return FfiConverterTypeCsUnanchoredEvidence.lower(value)
+}
+
+
+/**
+ * A6: one uncertain word located in the projected `rendered_text`. Identity
+ * is the physical occurrence + the slot's PCM range, never the word text.
+ * `utf16_start`/`utf16_end` are NSRange-ready against the same revision's
+ * `rendered_text`.
+ */
+public struct CsUncertainSpan: Equatable, Hashable {
+    public var occurrenceSessionId: String
+    public var occurrenceCaptureEpoch: UInt64
+    public var slotSampleStart: UInt64
+    public var slotSampleEnd: UInt64
+    public var utf16Start: UInt32
+    public var utf16End: UInt32
+    /**
+     * `whisper_token_logprob` | `apple_segment_confidence` |
+     * `vendor_word_probability` — scales are incomparable across sources.
+     */
+    public var source: String
+    /**
+     * Raw source-scale value (Whisper: logprob; Apple/vendor: probability).
+     */
+    public var value: Float
+    /**
+     * Live lexicon rewrote this word's surface; the value describes the
+     * heard audio (d5). Renderers mark lexicon, not uncertainty, for these.
+     */
+    public var surfaceRewritten: Bool
+    /**
+     * `whisper` | `cloud_live` (d7: only these producers paint live).
+     */
+    public var producer: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(occurrenceSessionId: String, occurrenceCaptureEpoch: UInt64, slotSampleStart: UInt64, slotSampleEnd: UInt64, utf16Start: UInt32, utf16End: UInt32,
+        /**
+         * `whisper_token_logprob` | `apple_segment_confidence` |
+         * `vendor_word_probability` — scales are incomparable across sources.
+         */source: String,
+        /**
+         * Raw source-scale value (Whisper: logprob; Apple/vendor: probability).
+         */value: Float,
+        /**
+         * Live lexicon rewrote this word's surface; the value describes the
+         * heard audio (d5). Renderers mark lexicon, not uncertainty, for these.
+         */surfaceRewritten: Bool,
+        /**
+         * `whisper` | `cloud_live` (d7: only these producers paint live).
+         */producer: String) {
+        self.occurrenceSessionId = occurrenceSessionId
+        self.occurrenceCaptureEpoch = occurrenceCaptureEpoch
+        self.slotSampleStart = slotSampleStart
+        self.slotSampleEnd = slotSampleEnd
+        self.utf16Start = utf16Start
+        self.utf16End = utf16End
+        self.source = source
+        self.value = value
+        self.surfaceRewritten = surfaceRewritten
+        self.producer = producer
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsUncertainSpan: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsUncertainSpan: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsUncertainSpan {
+        return
+            try CsUncertainSpan(
+                occurrenceSessionId: FfiConverterString.read(from: &buf),
+                occurrenceCaptureEpoch: FfiConverterUInt64.read(from: &buf),
+                slotSampleStart: FfiConverterUInt64.read(from: &buf),
+                slotSampleEnd: FfiConverterUInt64.read(from: &buf),
+                utf16Start: FfiConverterUInt32.read(from: &buf),
+                utf16End: FfiConverterUInt32.read(from: &buf),
+                source: FfiConverterString.read(from: &buf),
+                value: FfiConverterFloat.read(from: &buf),
+                surfaceRewritten: FfiConverterBool.read(from: &buf),
+                producer: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsUncertainSpan, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.occurrenceSessionId, into: &buf)
+        FfiConverterUInt64.write(value.occurrenceCaptureEpoch, into: &buf)
+        FfiConverterUInt64.write(value.slotSampleStart, into: &buf)
+        FfiConverterUInt64.write(value.slotSampleEnd, into: &buf)
+        FfiConverterUInt32.write(value.utf16Start, into: &buf)
+        FfiConverterUInt32.write(value.utf16End, into: &buf)
+        FfiConverterString.write(value.source, into: &buf)
+        FfiConverterFloat.write(value.value, into: &buf)
+        FfiConverterBool.write(value.surfaceRewritten, into: &buf)
+        FfiConverterString.write(value.producer, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsUncertainSpan_lift(_ buf: RustBuffer) throws -> CsUncertainSpan {
+    return try FfiConverterTypeCsUncertainSpan.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsUncertainSpan_lower(_ value: CsUncertainSpan) -> RustBuffer {
+    return FfiConverterTypeCsUncertainSpan.lower(value)
 }
 
 
@@ -15097,75 +15085,6 @@ public func FfiConverterTypeCsOnDeviceFormatOutcome_lift(_ buf: RustBuffer) thro
 #endif
 public func FfiConverterTypeCsOnDeviceFormatOutcome_lower(_ value: CsOnDeviceFormatOutcome) -> RustBuffer {
     return FfiConverterTypeCsOnDeviceFormatOutcome.lower(value)
-}
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-/**
- * W13-6B highlight kind. Stringly so Swift can switch without another enum
- * reshape if a third kind appears.
- */
-
-public enum CsOverlayHighlightKind: Equatable, Hashable {
-
-    case lexiconCorrected
-    case speechGap
-
-
-
-}
-
-#if compiler(>=6)
-extension CsOverlayHighlightKind: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeCsOverlayHighlightKind: FfiConverterRustBuffer {
-    typealias SwiftType = CsOverlayHighlightKind
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsOverlayHighlightKind {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-
-        case 1: return .lexiconCorrected
-
-        case 2: return .speechGap
-
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: CsOverlayHighlightKind, into buf: inout [UInt8]) {
-        switch value {
-
-
-        case .lexiconCorrected:
-            writeInt(&buf, Int32(1))
-
-
-        case .speechGap:
-            writeInt(&buf, Int32(2))
-
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCsOverlayHighlightKind_lift(_ buf: RustBuffer) throws -> CsOverlayHighlightKind {
-    return try FfiConverterTypeCsOverlayHighlightKind.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCsOverlayHighlightKind_lower(_ value: CsOverlayHighlightKind) -> RustBuffer {
-    return FfiConverterTypeCsOverlayHighlightKind.lower(value)
 }
 
 
@@ -17220,6 +17139,31 @@ fileprivate struct FfiConverterSequenceTypeCsUnanchoredEvidence: FfiConverterRus
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeCsUncertainSpan: FfiConverterRustBuffer {
+    typealias SwiftType = [CsUncertainSpan]
+
+    public static func write(_ value: [CsUncertainSpan], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCsUncertainSpan.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CsUncertainSpan] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CsUncertainSpan]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCsUncertainSpan.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeCsLlmLane: FfiConverterRustBuffer {
     typealias SwiftType = [CsLlmLane]
 
@@ -17423,15 +17367,6 @@ public func modelDirectories()throws  -> [CsModelDirectory]  {
 })
 }
 /**
- * W13-6B lane flag. Default OFF. Read-only; no permission prompt.
- */
-public func overlayHighlightsEnabled() -> Bool  {
-    return try!  FfiConverterBool.lift(try! rustCall() {
-    uniffi_codescribe_ffi_fn_func_overlay_highlights_enabled($0
-    )
-})
-}
-/**
  * Finalize one correction: the revision always saves; word-level lexicon
  * pairs are derived and gated individually. `Err` means the SAVE failed.
  */
@@ -17620,9 +17555,6 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_model_directories() != 32805) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_codescribe_ffi_checksum_func_overlay_highlights_enabled() != 21886) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_quality_finalize_correction() != 53355) {

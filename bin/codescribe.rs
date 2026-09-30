@@ -1211,11 +1211,13 @@ mod tests {
                         text: "pierwsze".to_string(),
                         start_ts: 0.0,
                         end_ts: 2.4,
+                        confidence: None,
                     },
                     TranscriptSegment {
                         text: "drugie".to_string(),
                         start_ts: 2.4,
                         end_ts: 12.4,
+                        confidence: None,
                     },
                 ],
                 avg_logprob: Some(-0.2),

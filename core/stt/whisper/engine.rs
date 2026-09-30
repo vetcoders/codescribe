@@ -378,6 +378,10 @@ pub struct LocalWhisperEngine {
     /// clone either.
     capture_word_alignment: bool,
     captured_tokens: Vec<u32>,
+    /// Per-token logprob parallel to `captured_tokens` (no EOT entry), kept
+    /// only for the L1 tail decode so word pins can carry per-word
+    /// confidence (A6).
+    captured_token_logprobs: Vec<f32>,
     captured_encoder: Option<Tensor>,
     captured_sample_len: usize,
 }
@@ -529,6 +533,7 @@ impl LocalWhisperEngine {
             alignment_heads,
             capture_word_alignment: false,
             captured_tokens: Vec::new(),
+            captured_token_logprobs: Vec::new(),
             captured_encoder: None,
             captured_sample_len: 0,
         })
@@ -594,6 +599,7 @@ impl LocalWhisperEngine {
             alignment_heads,
             capture_word_alignment: false,
             captured_tokens: Vec::new(),
+            captured_token_logprobs: Vec::new(),
             captured_encoder: None,
             captured_sample_len: 0,
         })
@@ -1271,6 +1277,7 @@ impl LocalWhisperEngine {
         }
 
         let mut all_tokens = Vec::new();
+        let mut token_logprobs: Vec<f32> = Vec::new();
 
         // Run encoder once
         control.check()?;
@@ -1389,13 +1396,14 @@ impl LocalWhisperEngine {
             };
 
             // Track logprobs (5. Logprob Threshold)
-            {
+            let step_logprob = {
                 let max_val = logits_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
                 let exp_sum: f32 = logits_vec.iter().map(|&x| (x - max_val).exp()).sum();
                 let token_prob = (logits_vec[best_token as usize] - max_val).exp() / exp_sum;
                 sum_logprob += token_prob.ln();
                 token_count += 1;
-            }
+                token_prob.ln()
+            };
 
             if debug_tokens && step < 16 {
                 if let Some(tok) = self.tokenizer.id_to_token(best_token) {
@@ -1416,6 +1424,8 @@ impl LocalWhisperEngine {
 
             tokens.push(best_token);
             all_tokens.push(best_token);
+            // Parallel to `all_tokens`; the EOT step above never lands here.
+            token_logprobs.push(step_logprob);
         }
 
         let (text, segments) = if timestamps_enabled {
@@ -1466,6 +1476,7 @@ impl LocalWhisperEngine {
 
         if self.capture_word_alignment {
             self.captured_tokens = all_tokens;
+            self.captured_token_logprobs = token_logprobs;
             self.captured_encoder = Some(encoder_output);
             self.captured_sample_len = samples_16k.len();
         }
@@ -1521,6 +1532,7 @@ impl LocalWhisperEngine {
             "tail_window_latency"
         );
         self.captured_tokens.clear();
+        self.captured_token_logprobs.clear();
         self.captured_encoder = None;
         self.captured_sample_len = 0;
         Ok((transcript, words))
@@ -1554,6 +1566,22 @@ impl LocalWhisperEngine {
         if text_tokens.is_empty() {
             return Ok(None);
         }
+        // Same `< eot` predicate on the parallel logprob stream, so span
+        // indices address both vectors identically. A length mismatch means
+        // the capture did not record logprobs; absence stays honest (None).
+        let text_logprobs: Option<Vec<f32>> =
+            if self.captured_token_logprobs.len() == self.captured_tokens.len() {
+                Some(
+                    self.captured_tokens
+                        .iter()
+                        .zip(self.captured_token_logprobs.iter())
+                        .filter(|(token, _)| **token < eot)
+                        .map(|(_, logprob)| *logprob)
+                        .collect(),
+                )
+            } else {
+                None
+            };
         let pieces = text_tokens
             .iter()
             .map(|id| self.tokenizer.id_to_token(*id).unwrap_or_default())
@@ -1652,10 +1680,25 @@ impl LocalWhisperEngine {
                 return Ok(None);
             }
             previous_end = end;
+            let confidence = text_logprobs.as_ref().and_then(|logprobs| {
+                crate::pipeline::word_confidence::min_logprob_in_span(
+                    logprobs,
+                    word.token_start,
+                    word.token_len,
+                )
+                .map(|min_logprob| {
+                    crate::pipeline::word_confidence::WordConfidence::new(
+                        crate::pipeline::word_confidence::WordConfidenceSource::WhisperTokenLogprob,
+                        min_logprob,
+                        word.token_len as u16,
+                    )
+                })
+            });
             segments.push(crate::pipeline::contracts::TranscriptSegment {
                 text: word.text,
                 start_ts: start,
                 end_ts: end,
+                confidence,
             });
         }
         tracing::info!(
@@ -2640,6 +2683,7 @@ mod stt_live_first_v2_red {
         let mut out = RawTranscript {
             text: "mówię teraz spokojnie prostymi słowami bez żadnych pułapek".into(),
             segments: vec![TranscriptSegment {
+                confidence: None,
                 text: "mówię teraz spokojnie prostymi słowami bez żadnych pułapek".into(),
                 start_ts: 15.0,
                 end_ts: 24.0,
@@ -2653,11 +2697,13 @@ mod stt_live_first_v2_red {
             text: "Zdanie pierwsze. Zdanie drugie. Whisper, Codescribe i Loctree".into(),
             segments: vec![
                 TranscriptSegment {
+                    confidence: None,
                     text: "Zdanie pierwsze.".into(),
                     start_ts: 20.5,
                     end_ts: 24.0,
                 },
                 TranscriptSegment {
+                    confidence: None,
                     text: "Zdanie drugie. Whisper, Codescribe i Loctree".into(),
                     start_ts: 25.5,
                     end_ts: 33.0,
@@ -2692,6 +2738,7 @@ mod stt_live_first_v2_red {
         let mut out = RawTranscript {
             text: "trusted earlier middle".into(),
             segments: vec![TranscriptSegment {
+                confidence: None,
                 text: "trusted earlier middle".into(),
                 start_ts: 2.0,
                 end_ts: 10.0,
@@ -2703,16 +2750,19 @@ mod stt_live_first_v2_red {
             text: "divergent head boundary bridge clean tail".into(),
             segments: vec![
                 TranscriptSegment {
+                    confidence: None,
                     text: "divergent head".into(),
                     start_ts: 8.0,
                     end_ts: 9.8,
                 },
                 TranscriptSegment {
+                    confidence: None,
                     text: "boundary bridge".into(),
                     start_ts: 9.8,
                     end_ts: 11.0,
                 },
                 TranscriptSegment {
+                    confidence: None,
                     text: "clean tail".into(),
                     start_ts: 11.0,
                     end_ts: 13.0,
@@ -2740,6 +2790,7 @@ mod stt_live_first_v2_red {
         let mut out = RawTranscript {
             text: "one two".into(),
             segments: vec![TranscriptSegment {
+                confidence: None,
                 text: "one two".into(),
                 start_ts: 0.0,
                 end_ts: 2.0,
@@ -2779,6 +2830,7 @@ mod stt_live_first_v2_red {
         let next = RawTranscript {
             text: "two three four".into(),
             segments: vec![TranscriptSegment {
+                confidence: None,
                 text: "four".into(),
                 start_ts: 3.0,
                 end_ts: 4.0,
@@ -2805,6 +2857,7 @@ mod stt_live_first_v2_red {
         let mut out = RawTranscript {
             text: "one two".into(),
             segments: vec![TranscriptSegment {
+                confidence: None,
                 text: "one two".into(),
                 start_ts: 0.0,
                 end_ts: 2.0,
@@ -2821,11 +2874,13 @@ mod stt_live_first_v2_red {
             text: "two replay four five".into(),
             segments: vec![
                 TranscriptSegment {
+                    confidence: None,
                     text: "two replay".into(),
                     start_ts: 1.5,
                     end_ts: 2.0,
                 },
                 TranscriptSegment {
+                    confidence: None,
                     text: "four five".into(),
                     start_ts: 3.0,
                     end_ts: 4.0,
@@ -2912,6 +2967,7 @@ mod local_execution_control_tests {
             alignment_heads: Vec::new(),
             capture_word_alignment: false,
             captured_tokens: Vec::new(),
+            captured_token_logprobs: Vec::new(),
             captured_encoder: None,
             captured_sample_len: 0,
         }
