@@ -1867,8 +1867,14 @@ mod tests {
         let input_sr = 48000u32;
         let callback_size = 1024usize;
         let num_callbacks = 210usize;
+        // Pin the interim cadence: the env-driven default
+        // (`CODESCRIBE_BUFFERED_INTERIM_SEC`) is process-global, and any
+        // `Config::load()` test reading a real settings.json reseeds it for
+        // the whole test process — a cadence above the fed sample count would
+        // silently produce zero interim events (the 2026-09-30 flake).
+        let interim_sec = 1.2f32;
 
-        let mut session = SpeechSession::new_utterance_with_silence(input_sr, 10.0);
+        let mut session = SpeechSession::new_utterance_pinned_for_test(input_sr, interim_sec, 10.0);
         assert_eq!(
             session.gate_mode(),
             VadGateMode::Supervisor,
@@ -1905,9 +1911,16 @@ mod tests {
             }
         }
 
+        let total_raw = num_callbacks * callback_size;
         assert!(
             interim_events > 0,
-            "busy callback run should emit at least one interim utterance before flush"
+            "busy callback run should emit at least one interim utterance before flush \
+             (interim_events={interim_events}, fed_raw={total_raw}, \
+             raw_cursor={}, interim_limit_raw={:?}, vad_current_sample={:?}, \
+             accounted_speech_vad_samples={accounted_speech_vad_samples})",
+            session.raw_cursor(),
+            session.interim_limit_raw_for_test(),
+            session.vad_current_sample(),
         );
 
         let flush = session.flush();
