@@ -59,6 +59,16 @@ protocol DictationEngine: AnyObject {
   func sendAssistiveTranscript(text: String) async throws -> Bool
   func lastSessionAudioPath() -> String?
   func sessionAudioPath(sessionId: String) -> String?
+  /// Export one word's PCM from the retained take audio as a temp WAV clip
+  /// with `padMs` of context on both sides. The sample window is pinned to the
+  /// physical occurrence (session + capture epoch), never to word text.
+  func wordAudioClip(
+    sessionId: String, captureEpoch: UInt64, sampleStart: UInt64, sampleEnd: UInt64,
+    padMs: UInt32
+  ) throws -> String
+  /// One-click Teach from a canvas span through the existing quality path.
+  func teachSpan(variant: String, canonical: String, kind: String) throws
+    -> CsQualityCommitResult
   func transcribeFile(path: String) async throws -> CsTranscription
   func transcribeTake(sessionId: String, path: String) async throws -> CsTranscription
   func channelRosterSnapshot() async -> [CsChannelRosterState]
@@ -81,6 +91,17 @@ extension DictationEngine {
   }
   func lastSessionAudioPath() -> String? { nil }
   func sessionAudioPath(sessionId: String) -> String? { nil }
+  func wordAudioClip(
+    sessionId _: String, captureEpoch _: UInt64, sampleStart _: UInt64, sampleEnd _: UInt64,
+    padMs _: UInt32
+  ) throws -> String {
+    throw NSError(domain: "Word audio unavailable", code: 1)
+  }
+  func teachSpan(variant _: String, canonical _: String, kind _: String) throws
+    -> CsQualityCommitResult
+  {
+    throw NSError(domain: "Teach unavailable", code: 1)
+  }
   func transcribeTake(sessionId _: String, path: String) async throws -> CsTranscription {
     try await transcribeFile(path: path)
   }
@@ -313,7 +334,7 @@ final class OverlayState {
   var formattedText: String { latestTranscriptProjection?.renderedText ?? "" }
   /// A6 uncertain-word spans from the reducer projection (UTF-16 ranges into
   /// `formattedText`). The overlay stays a pure projection: classification
-  /// happened in Rust; the orange renderer itself is cut 3.
+  /// happened in Rust; `canvasUncertainWords` maps them onto the canvas.
   var uncertainSpans: [CsUncertainSpan] { latestTranscriptProjection?.uncertainSpans ?? [] }
   /// View-local editor payload. It is never delivery or transcript truth; only
   /// `formattedText`, repainted from the Rust projection, feeds downstream
@@ -880,6 +901,62 @@ final class OverlayState {
   /// otherwise. Delivery never reads this; it reads `activeText`.
   var canvasText: String {
     isRevisionDraftDirty ? revisionDraft : formattedText
+  }
+
+  /// Uncertain words painted on the canvas. The spans index into
+  /// `formattedText`, so a dirty local draft (or any canvas text that is not
+  /// the projection) invalidates them all — the renderer drops the paint
+  /// rather than color the wrong bytes. `coverage_refused` / `degraded` never
+  /// create spans upstream, so they can never create color here.
+  var canvasUncertainWords: [OverlayUncertainWord] {
+    guard !isRevisionDraftDirty else { return [] }
+    return OverlayUncertainWordProjection.project(spans: uncertainSpans, text: formattedText)
+  }
+
+  // MARK: Uncertain word actions (A6-3)
+
+  /// The word clip currently playing; a new Play stops the previous one.
+  private var uncertainWordSound: NSSound?
+
+  /// Play the word's own PCM: the span pins the occurrence, the bridge cuts
+  /// the clip with ±150 ms of context. Absent retained audio is an honest
+  /// footer notice, never silence.
+  func playUncertainWord(_ word: OverlayUncertainWord) {
+    guard let engine else { return }
+    uncertainWordSound?.stop()
+    uncertainWordSound = nil
+    do {
+      let clip = try engine.wordAudioClip(
+        sessionId: word.occurrenceSessionId,
+        captureEpoch: word.occurrenceCaptureEpoch,
+        sampleStart: word.slotSampleStart,
+        sampleEnd: word.slotSampleEnd,
+        padMs: 150
+      )
+      guard let sound = NSSound(contentsOfFile: clip, byReference: true) else {
+        showFooterNotice("Word audio unavailable")
+        return
+      }
+      uncertainWordSound = sound
+      sound.play()
+    } catch {
+      showFooterNotice("Word audio unavailable")
+    }
+  }
+
+  /// Teach the dictionary through the existing `quality_teach_span` path —
+  /// no parallel mechanism. The acknowledgement comes from the quality core.
+  func teachUncertainWord(_ word: OverlayUncertainWord, canonical: String) {
+    guard let engine else { return }
+    let trimmed = canonical.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    do {
+      let result = try engine.teachSpan(
+        variant: word.word, canonical: trimmed, kind: "lexicon_corrected")
+      showFooterNotice(result.acknowledgement)
+    } catch {
+      showFooterNotice("Could not save the correction")
+    }
   }
 
   /// Read-only words Rust keeps visible without mutation authority — for
@@ -3018,6 +3095,19 @@ final class ControllerDictationEngine: DictationEngine {
   }
   func sessionAudioPath(sessionId: String) -> String? {
     hotkeys.sessionAudioPath(sessionId: sessionId)
+  }
+  func wordAudioClip(
+    sessionId: String, captureEpoch: UInt64, sampleStart: UInt64, sampleEnd: UInt64,
+    padMs: UInt32
+  ) throws -> String {
+    try hotkeys.wordAudioClip(
+      sessionId: sessionId, captureEpoch: captureEpoch, sampleStart: sampleStart,
+      sampleEnd: sampleEnd, padMs: padMs)
+  }
+  func teachSpan(variant: String, canonical: String, kind: String) throws
+    -> CsQualityCommitResult
+  {
+    try qualityTeachSpan(variant: variant, canonical: canonical, kind: kind)
   }
   func commitRetranscribeRevision(
     sessionId: String, sourceRevision: UInt64, renderedText: String
