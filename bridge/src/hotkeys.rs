@@ -1043,6 +1043,25 @@ impl CodescribeHotkeys {
         crate::recording::session_audio_path(&session_id)
     }
 
+    /// Export one word's PCM from the retained take audio as a temp WAV clip
+    /// with `pad_ms` of context on both sides (the overlay plays it back).
+    pub fn word_audio_clip(
+        &self,
+        session_id: String,
+        capture_epoch: u64,
+        sample_start: u64,
+        sample_end: u64,
+        pad_ms: u32,
+    ) -> Result<String, CsError> {
+        crate::recording::word_audio_clip(
+            &session_id,
+            capture_epoch,
+            sample_start,
+            sample_end,
+            pad_ms,
+        )
+    }
+
     /// Stop the active legacy-controller recording flow, if one is live.
     pub async fn stop_recording(&self) -> Result<(), CsError> {
         application_runtime::run(async move {

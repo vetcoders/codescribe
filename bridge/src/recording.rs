@@ -994,6 +994,85 @@ fn session_audio_path_at(session_id: &str, root: &std::path::Path) -> Option<Str
         .then(|| source.to_string_lossy().into_owned())
 }
 
+/// Export one uncertain word's PCM as a standalone temp WAV clip.
+///
+/// The span pins the word to its physical occurrence: `session_id` resolves
+/// the retained take WAV on the same clock the slot's `sample_start` /
+/// `sample_end` were recorded on, and `capture_epoch` is cross-checked against
+/// the occurrence slots journal when that journal exists. `pad_ms` of context
+/// is added on both sides, clamped to the take. Returns the clip path; any
+/// identity or format mismatch is an error, never a silently wrong slice.
+pub(crate) fn word_audio_clip(
+    session_id: &str,
+    capture_epoch: u64,
+    sample_start: u64,
+    sample_end: u64,
+    pad_ms: u32,
+) -> Result<String, CsError> {
+    word_audio_clip_at(
+        &codescribe_core::config::Config::config_dir(),
+        session_id,
+        capture_epoch,
+        sample_start,
+        sample_end,
+        pad_ms,
+    )
+}
+
+fn word_audio_clip_at(
+    root: &std::path::Path,
+    session_id: &str,
+    capture_epoch: u64,
+    sample_start: u64,
+    sample_end: u64,
+    pad_ms: u32,
+) -> Result<String, CsError> {
+    let source = session_audio_path_at(session_id, root).ok_or_else(|| CsError::Recording {
+        msg: format!("no retained audio for session {session_id}"),
+    })?;
+    let journal = root
+        .join("sessions")
+        .join(format!("{session_id}.slots.jsonl"));
+    if journal.is_file() {
+        let pinned = std::fs::read_to_string(&journal)
+            .map_err(|e| CsError::Recording {
+                msg: format!("read occurrence slots journal: {e}"),
+            })?
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .any(|occurrence| {
+                occurrence.get("capture_epoch").and_then(|v| v.as_u64()) == Some(capture_epoch)
+                    && occurrence.get("sample_start").and_then(|v| v.as_u64()) <= Some(sample_start)
+                    && occurrence.get("sample_end").and_then(|v| v.as_u64()) >= Some(sample_end)
+            });
+        if !pinned {
+            return Err(CsError::Recording {
+                msg: format!(
+                    "sample window [{sample_start}, {sample_end}) is not pinned to epoch {capture_epoch} in {session_id}"
+                ),
+            });
+        }
+    }
+    let window = codescribe_core::audio::slice_wav_i16(
+        std::path::Path::new(&source),
+        sample_start,
+        sample_end,
+        pad_ms,
+    )
+    .map_err(|e| CsError::Recording {
+        msg: format!("slice session audio: {e}"),
+    })?;
+    let clip = std::env::temp_dir().join(format!(
+        "codescribe-word-{session_id}-{sample_start}-{sample_end}.wav"
+    ));
+    codescribe_core::audio::write_wav_i16(&clip, &window.samples, window.sample_rate).map_err(
+        |e| CsError::Recording {
+            msg: format!("write word clip: {e}"),
+        },
+    )?;
+    Ok(clip.to_string_lossy().into_owned())
+}
+
 enum RetranscribePass {
     Hq,
     Cloud,
@@ -1081,6 +1160,77 @@ mod retranscribe_tests {
             container.to_str()
         );
         assert!(session_audio_path_at("../escape", temp.path()).is_none());
+    }
+
+    #[test]
+    fn word_audio_clip_maps_sample_window_to_temp_wav() {
+        let temp = tempfile::tempdir().unwrap();
+        let sessions = temp.path().join("sessions");
+        std::fs::create_dir(&sessions).unwrap();
+        let pcm: Vec<i16> = (0..48_000).map(|i| (i % 500) as i16).collect();
+        codescribe_core::audio::write_wav_i16(&sessions.join("session-take-a.wav"), &pcm, 48_000)
+            .unwrap();
+        std::fs::write(
+            sessions.join("session-take-a.slots.jsonl"),
+            concat!(
+                "{\"schema\":\"codescribe.occurrence_slots.v1\",\"session\":\"session-take-a\",",
+                "\"capture_epoch\":3,\"sample_start\":4000,\"sample_end\":30000,",
+                "\"sample_rate_hz\":48000,\"slots\":[]}\n"
+            ),
+        )
+        .unwrap();
+
+        let clip =
+            word_audio_clip_at(temp.path(), "session-take-a", 3, 10_000, 20_000, 150).unwrap();
+        let window =
+            codescribe_core::audio::slice_wav_i16(std::path::Path::new(&clip), 0, 24_400, 0)
+                .unwrap();
+        assert_eq!(window.sample_rate, 48_000);
+        assert_eq!(window.samples.len(), 24_400);
+        assert_eq!(window.samples[0], pcm[2_800]);
+        assert_eq!(*window.samples.last().unwrap(), pcm[27_199]);
+        let _ = std::fs::remove_file(clip);
+    }
+
+    #[test]
+    fn word_audio_clip_refuses_unpinned_or_missing_audio() {
+        let temp = tempfile::tempdir().unwrap();
+        let sessions = temp.path().join("sessions");
+        std::fs::create_dir(&sessions).unwrap();
+        codescribe_core::audio::write_wav_i16(
+            &sessions.join("session-take-a.wav"),
+            &[1i16; 48_000],
+            48_000,
+        )
+        .unwrap();
+        std::fs::write(
+            sessions.join("session-take-a.slots.jsonl"),
+            concat!(
+                "{\"schema\":\"codescribe.occurrence_slots.v1\",\"session\":\"session-take-a\",",
+                "\"capture_epoch\":3,\"sample_start\":4000,\"sample_end\":30000,",
+                "\"sample_rate_hz\":48000,\"slots\":[]}\n"
+            ),
+        )
+        .unwrap();
+
+        // Wrong epoch and a window outside the occurrence are both refused.
+        assert!(word_audio_clip_at(temp.path(), "session-take-a", 9, 10_000, 20_000, 150).is_err());
+        assert!(word_audio_clip_at(temp.path(), "session-take-a", 3, 31_000, 40_000, 150).is_err());
+        // No retained take at all is refused before any slicing.
+        assert!(
+            word_audio_clip_at(temp.path(), "session-take-missing", 3, 10_000, 20_000, 150)
+                .is_err()
+        );
+        // A take without a journal (older retention) still plays.
+        codescribe_core::audio::write_wav_i16(
+            &sessions.join("session-take-b.wav"),
+            &[1i16; 48_000],
+            48_000,
+        )
+        .unwrap();
+        let clip =
+            word_audio_clip_at(temp.path(), "session-take-b", 1, 10_000, 20_000, 150).unwrap();
+        let _ = std::fs::remove_file(clip);
     }
 
     #[test]

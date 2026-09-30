@@ -2717,6 +2717,12 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
      */
     func validateBindings(candidate: [CsModeBinding])  -> [CsHotkeyConflict]
 
+    /**
+     * Export one word's PCM from the retained take audio as a temp WAV clip
+     * with `pad_ms` of context on both sides (the overlay plays it back).
+     */
+    func wordAudioClip(sessionId: String, captureEpoch: UInt64, sampleStart: UInt64, sampleEnd: UInt64, padMs: UInt32) throws  -> String
+
 }
 /**
  * Process-global hotkey runtime owner.
@@ -3657,6 +3663,23 @@ open func validateBindings(candidate: [CsModeBinding]) -> [CsHotkeyConflict]  {
     uniffi_codescribe_ffi_fn_method_codescribehotkeys_validate_bindings(
             self.uniffiCloneHandle(),
         FfiConverterSequenceTypeCsModeBinding.lower(candidate),$0
+    )
+})
+}
+
+    /**
+     * Export one word's PCM from the retained take audio as a temp WAV clip
+     * with `pad_ms` of context on both sides (the overlay plays it back).
+     */
+open func wordAudioClip(sessionId: String, captureEpoch: UInt64, sampleStart: UInt64, sampleEnd: UInt64, padMs: UInt32)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_method_codescribehotkeys_word_audio_clip(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(sessionId),
+        FfiConverterUInt64.lower(captureEpoch),
+        FfiConverterUInt64.lower(sampleStart),
+        FfiConverterUInt64.lower(sampleEnd),
+        FfiConverterUInt32.lower(padMs),$0
     )
 })
 }
@@ -17948,6 +17971,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_validate_bindings() != 29971) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_word_audio_clip() != 51086) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_add_server() != 12098) {
