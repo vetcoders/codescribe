@@ -72,6 +72,7 @@ symphonia = { version = "0.6", features = ["all", "mp3", "pcm", "isomp4", "alac"
 
 # Text/embeddings
 regex = "1"
+unicode-normalization = "0.1"
 unicode-segmentation = "1"
 
 # Config/paths
