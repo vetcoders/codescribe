@@ -4015,6 +4015,16 @@ mod runtime_snapshot_cache_tests {
                     unsafe {
                         if key == "CODESCRIBE_DATA_DIR" {
                             std::env::set_var(key, dir.path());
+                        } else if key == "CODESCRIBE_ENV_PATH" {
+                            // Pin the .env path to a nonexistent file inside the
+                            // sandbox. Removing the key instead would let loads
+                            // fall back to the real ~/.codescribe/.env, whose
+                            // legacy keys (e.g. AGENT_WORKSPACE_ROOTS) make any
+                            // concurrent non-serial config load run migration
+                            // writes against whatever settings.json
+                            // CODESCRIBE_DATA_DIR currently names — ours
+                            // (the 2026-09-30 double-build flake).
+                            std::env::set_var(key, dir.path().join("isolated.env"));
                         } else if key == "CODESCRIBE_DISABLE_KEYCHAIN" {
                             // A private data directory does not disable Keychain.
                             // Dependency builds must opt out explicitly, including
@@ -4176,7 +4186,12 @@ mod runtime_snapshot_cache_tests {
         assert_eq!(
             super::RUNTIME_SNAPSHOT_BUILDS.load(std::sync::atomic::Ordering::SeqCst),
             1,
-            "fifty reads without a credential mutation rebuild the snapshot once"
+            "fifty reads without a credential mutation rebuild the snapshot once \
+             (path={}, mtime_at_start={mtime:?}, mtime_now={:?}; an mtime move means \
+             a concurrent non-serial load wrote this settings.json through the shared \
+             CODESCRIBE_DATA_DIR/CODESCRIBE_ENV_PATH process state)",
+            path.display(),
+            fs::metadata(&path).and_then(|m| m.modified()).ok(),
         );
         assert_eq!(
             mtime,
