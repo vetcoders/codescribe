@@ -811,7 +811,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private func registerOnDeviceFormatter() {
     let formatter = OnDeviceFormatterHost()
     onDeviceFormatter = formatter
-    hotkeys.setOnDeviceFormatter(formatter)
+    hotkeys.setOnDeviceFormatter(formatter: formatter)
   }
 
   private func startHotkeys() {
