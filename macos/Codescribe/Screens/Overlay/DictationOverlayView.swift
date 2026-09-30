@@ -4,7 +4,7 @@ import SwiftUI
 // Slim evidence-first dictation overlay.
 //
 // Layout (top → bottom):
-//   header   brand · compact waveform · agent glyph · light · timer · Stop and
+//   header   brand · compact waveform · agent glyph · timer · status mic/Stop and
 //            live-preview controls. Paste mode lives in Settings and the tray,
 //            never here: the waveform keeps the width (Founder direction as
 //            relayed in the Codex handoff, Annex A2, 2026-09-29).
@@ -43,21 +43,58 @@ struct OverlayBottomChromeSlots: Equatable {
 
 struct OverlayRecordingControls: View {
   @Environment(\.displayScale) private var displayScale
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   let canFinish: Bool
+  let recordingLight: OverlayRecordingLight?
+  let animates: Bool
+  let isFinalizing: Bool
   let isPreviewCollapsed: Bool
   let compact: Bool
   let palette: OverlayAppearancePalette
   let onIntent: (OverlayIntent) -> Void
   let onPreviewToggle: () -> Void
 
-  /// Stop and the preview chevron are one family: the same hairline circle,
-  /// the same height as every other header control. Stop carries no word —
-  /// the red square is the whole signal, and the width it no longer takes
-  /// goes to the waveform (Founder, 2026-09-29: "ten stop jest olbrzymi").
+  /// Recording and preview keep fixed hairline circles, leaving the remaining
+  /// width to the waveform (Founder, 2026-09-29: "ten stop jest olbrzymi").
   static let controlDiameter: CGFloat = 22
 
+  init(
+    canFinish: Bool, isPreviewCollapsed: Bool, compact: Bool,
+    palette: OverlayAppearancePalette, onIntent: @escaping (OverlayIntent) -> Void,
+    onPreviewToggle: @escaping () -> Void, isFinalizing: Bool = false,
+    recordingLight: OverlayRecordingLight? = nil, animates: Bool = true
+  ) {
+    self.canFinish = canFinish
+    self.recordingLight = recordingLight
+    self.animates = animates
+    self.isFinalizing = isFinalizing
+    self.isPreviewCollapsed = isPreviewCollapsed
+    self.compact = compact
+    self.palette = palette
+    self.onIntent = onIntent
+    self.onPreviewToggle = onPreviewToggle
+  }
+
+  var recordingDisabled: Bool {
+    recordingLight == .processing || (isFinalizing && !canFinish)
+  }
+  var recordingTint: Color {
+    switch recordingLight {
+    case .holdToTalk, .handsFree: palette.errorStatus.color
+    case .silence: OverlayRecordingLight.silence.color
+    case .processing: OverlayRecordingLight.processing.color
+    case .agent: OverlayRecordingLight.agent.color
+    case nil: canFinish || isFinalizing ? palette.errorStatus.color : palette.listeningStatus.color
+    }
+  }
+  var recordingStatusValue: String { recordingLight?.name ?? (isFinalizing ? "Transcribing" : "Ready") }
   var showsStop: Bool { canFinish }
+  var recordingSymbol: String { canFinish || isFinalizing ? "stop.fill" : "mic.fill" }
+  var recordingLabel: String { canFinish || isFinalizing ? "Stop recording" : "Start dictation" }
+  var recordingIdentifier: String {
+    canFinish || isFinalizing ? "overlay-stop-recording" : "overlay-start-recording"
+  }
   var previewAccessibilityLabel: String {
     isPreviewCollapsed ? "Show live preview" : "Hide live preview"
   }
@@ -69,9 +106,7 @@ struct OverlayRecordingControls: View {
 
   var body: some View {
     HStack(spacing: compact ? 4 : 7) {
-      if showsStop {
-        stopButton
-      }
+      recordingButton
       previewButton
     }
     .fixedSize()
@@ -82,6 +117,13 @@ struct OverlayRecordingControls: View {
   func finishRecording() {
     guard showsStop else { return }
     onIntent(.finish)
+  }
+
+  func activateRecordingControl() {
+    guard !recordingDisabled else { return }
+    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
+      if canFinish { finishRecording() } else { onIntent(.startRecording) }
+    }
   }
 
   func togglePreview() {
@@ -96,27 +138,30 @@ struct OverlayRecordingControls: View {
     projectedIntents.filter { $0 != .finish }
   }
 
-  private var stopButton: some View {
-    Button(action: finishRecording) {
-      Image(systemName: "stop.fill")
-        .font(.system(size: 9, weight: .semibold))
-        .foregroundStyle(palette.errorStatus.color)
-        .frame(width: Self.controlDiameter, height: Self.controlDiameter)
-        .contentShape(Circle())
-        .overlay {
-          Circle()
-            .strokeBorder(
-              palette.errorStatus.color.opacity(0.42),
-              lineWidth: 1 / max(displayScale, 1)
-            )
-            .accessibilityHidden(true)
+  private var recordingButton: some View {
+    Button(action: activateRecordingControl) {
+      Group {
+        if recordingLight?.pulses == true && animates && !reduceMotion {
+          TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+            recordingGlyph.opacity(
+              OverlayRecordingLight.pulseOpacity(at: timeline.date.timeIntervalSinceReferenceDate))
+          }
+        } else {
+          recordingGlyph
         }
+      }
+      .frame(width: Self.controlDiameter, height: Self.controlDiameter)
+      .contentShape(Circle())
     }
     .buttonStyle(.plain)
+    .disabled(recordingDisabled)
+    .opacity(recordingDisabled ? 0.45 : 1)
+    .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: recordingSymbol)
     .csFocusOutline()
-    .help("Stop recording")
-    .accessibilityLabel("Stop recording")
-    .accessibilityIdentifier("overlay-stop-recording")
+    .help(recordingLabel + (recordingLight.map { ". " + $0.tooltip } ?? ""))
+    .accessibilityLabel(recordingLabel)
+    .accessibilityValue(recordingStatusValue)
+    .accessibilityIdentifier(recordingIdentifier)
     .background {
       GeometryReader { geometry in
         Color.clear.preference(
@@ -129,6 +174,19 @@ struct OverlayRecordingControls: View {
       .allowsHitTesting(false)
       .accessibilityHidden(true)
     }
+  }
+
+  private var recordingGlyph: some View {
+    Image(systemName: recordingSymbol)
+      .font(.system(size: 9, weight: .semibold))
+      .foregroundStyle(recordingTint)
+      .frame(width: Self.controlDiameter, height: Self.controlDiameter)
+      .background { Circle().fill(recordingTint.opacity(0.12)) }
+      .overlay {
+        Circle()
+          .strokeBorder(recordingTint.opacity(0.42), lineWidth: 1 / max(displayScale, 1))
+          .accessibilityHidden(true)
+      }
   }
 
   private var previewButton: some View {
@@ -590,19 +648,20 @@ struct DictationOverlayView: View {
             palette: palette, animates: overlayVisible
           )
         }
-        if let light = state.recordingLight {
-          OverlayRecordingLightView(light: light, palette: palette, animates: overlayVisible)
-        }
         sessionTimer
           .allowsHitTesting(false)
         OverlayPlacementMenu(state: state, palette: palette)
         OverlayRecordingControls(
-          canFinish: OverlayRecordingControls.showsStop(for: projectedIntents),
+          canFinish: state.recording && !state.transcribing,
           isPreviewCollapsed: state.isCollapsed,
           compact: compact,
           palette: palette,
           onIntent: state.relayIntent,
-          onPreviewToggle: { state.toggleCollapsed() }
+          onPreviewToggle: { state.toggleCollapsed() },
+          isFinalizing: !state.terminal
+            && (state.transcribing || state.mode == .finalizing
+              || (!state.recording && state.showsSessionTimer)),
+          recordingLight: state.recordingLight, animates: overlayVisible
         )
       }
       .fixedSize()

@@ -337,6 +337,7 @@ struct OverlayIntentRail: View {
 extension OverlayIntent {
   var accessibilityLabel: String {
     switch self {
+    case .startRecording: "Start dictation"
     case .finish: "Finish recording"
     case .commitRevision: "Commit transcript revision"
     case .discardRevision: "Discard transcript draft"
@@ -354,6 +355,7 @@ extension OverlayIntent {
 
   var accessibilityHint: String {
     switch self {
+    case .startRecording: "Starts a new take in the current dictation mode"
     case .finish: "Stops capture and requests the final projection"
     case .commitRevision: "Commits this draft through the transcript ledger"
     case .discardRevision: "Restores the latest projected transcript"
@@ -372,6 +374,7 @@ extension OverlayIntent {
 
   var systemImage: String {
     switch self {
+    case .startRecording: "mic.fill"
     case .finish: "stop.circle"
     case .commitRevision: "checkmark.circle"
     case .discardRevision: "arrow.uturn.backward.circle"

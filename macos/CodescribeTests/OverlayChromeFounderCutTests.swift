@@ -888,9 +888,10 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       XCTAssertFalse(overlay.contains(gone), "overlay view still carries \(gone)")
     }
     // The microphone mark belongs to recording only; the header spends its
-    // width on the waveform, the recording light and one agent glyph.
+    // width on the waveform, the recording control and one agent glyph.
     XCTAssertTrue(header.contains("chromeWaveform(barCount:"))
-    XCTAssertTrue(header.contains("OverlayRecordingLightView("))
+    XCTAssertFalse(header.contains("OverlayRecordingLightView("))
+    XCTAssertTrue(header.contains("recordingLight: state.recordingLight"))
     XCTAssertTrue(header.contains("OverlayChannelStatusView("))
     XCTAssertTrue(header.contains("OverlayRecordingControls("))
 
@@ -928,6 +929,33 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertFalse(overlay.contains("\"eye"), "no eye pictogram on the preview toggle")
     XCTAssertTrue(overlay.contains("Image(systemName: previewSymbol)"))
     XCTAssertTrue(overlay.contains(".accessibilityIdentifier(\"overlay-live-preview-toggle\")"))
+  }
+
+  func testRecordingControlMorphsBetweenIdleLiveAndFinalizing() throws {
+    let source = try overlaySource()
+    XCTAssertTrue(source.contains("HStack(spacing: compact ? 4 : 7) {\n      recordingButton"))
+    XCTAssertTrue(source.contains("Image(systemName: recordingSymbol)"))
+    XCTAssertTrue(source.contains(".accessibilityIdentifier(recordingIdentifier)"))
+    XCTAssertTrue(source.contains(".disabled(recordingDisabled)"))
+    XCTAssertTrue(source.contains("canFinish: state.recording && !state.transcribing"))
+    XCTAssertTrue(source.contains("|| (!state.recording && state.showsSessionTimer)"))
+
+    for state in [OverlayState(), OverlayState.previewFormatted()] {
+      XCTAssertFalse(state.recording)
+      let control = OverlayRecordingControls(
+        canFinish: false, isPreviewCollapsed: state.isCollapsed, compact: false,
+        palette: .dark, onIntent: { _ in }, onPreviewToggle: {})
+      XCTAssertEqual(control.recordingSymbol, "mic.fill")
+      XCTAssertEqual(control.recordingIdentifier, "overlay-start-recording")
+    }
+    let live = OverlayState.previewListening()
+    live.handleRecordingPreparing()
+    XCTAssertTrue(live.recording)
+    let stop = OverlayRecordingControls(
+      canFinish: live.recording, isPreviewCollapsed: false, compact: false,
+      palette: .dark, onIntent: { _ in }, onPreviewToggle: {})
+    XCTAssertEqual(stop.recordingSymbol, "stop.fill")
+    XCTAssertEqual(stop.recordingIdentifier, "overlay-stop-recording")
   }
 
   private func withPanel(
@@ -1024,7 +1052,8 @@ private final class OverlayChromePolicyEngine: DictationEngine {
     return true
   }
   func setListener(_ listener: CsTranscriptionListener) {}
-  func startRecording(language: CsLanguage?) async throws {}
+  func startsInAssistiveMode() -> Bool { false }
+  func startRecording(assistive: Bool, language: CsLanguage?) async throws {}
   func stopRecording() async throws -> String { "" }
   func isRecording() async -> Bool { false }
   func initModel() async throws {}

@@ -17,9 +17,16 @@ private final class OverlayIntentBoundaryEngine: DictationEngine {
     [(sessionId: String, sourceRevision: UInt64, level: FormattingPolicyOption?)] = []
   var formatterFailure: Error?
   var policy = OverlayPolicySnapshot(autoFormatLevel: .correction)
+  var assistiveMode = false
+  var startModes: [Bool] = []
+  var onStart: (() -> Void)?
 
   func setListener(_ listener: CsTranscriptionListener) {}
-  func startRecording(language: CsLanguage?) async throws {}
+  func startsInAssistiveMode() -> Bool { assistiveMode }
+  func startRecording(assistive: Bool, language: CsLanguage?) async throws {
+    startModes.append(assistive)
+    onStart?()
+  }
   func stopRecording() async throws -> String { "" }
   func commitUserRevision(
     sessionId: String, sourceRevision: UInt64, renderedText: String
@@ -97,6 +104,55 @@ private struct OverlayHeaderControlFramesCapture: View {
 
 @MainActor
 final class OverlayIntentRailTests: XCTestCase {
+  func testIdleRecordingControlStartsOnceWithCurrentTrayMode() async {
+    for assistive in [false, true] {
+      let engine = OverlayIntentBoundaryEngine()
+      engine.assistiveMode = assistive
+      let started = expectation(description: "controller start in mode \(assistive)")
+      engine.onStart = { started.fulfill() }
+      let state = OverlayState(micAccessProvider: { true })
+      state.engine = engine
+
+      let control = OverlayRecordingControls(
+        canFinish: false, isPreviewCollapsed: false, compact: false, palette: .dark,
+        onIntent: state.relayIntent, onPreviewToggle: {})
+      XCTAssertEqual(control.recordingSymbol, "mic.fill")
+      XCTAssertEqual(control.recordingIdentifier, "overlay-start-recording")
+      XCTAssertEqual(control.recordingLabel, "Start dictation")
+      control.activateRecordingControl()
+      state.relayIntent(.startRecording)
+      await fulfillment(of: [started], timeout: 2)
+      XCTAssertEqual(engine.startModes, [assistive])
+      XCTAssertTrue(state.recording)
+    }
+  }
+
+  func testFinalizingRecordingControlCannotStart() {
+    var intents: [OverlayIntent] = []
+    let control = OverlayRecordingControls(
+      canFinish: false, isPreviewCollapsed: false, compact: false, palette: .dark,
+      onIntent: { intents.append($0) }, onPreviewToggle: {}, isFinalizing: true)
+    XCTAssertEqual(control.recordingSymbol, "stop.fill")
+    XCTAssertEqual(control.recordingIdentifier, "overlay-stop-recording")
+    control.activateRecordingControl()
+    XCTAssertTrue(intents.isEmpty)
+
+    let finalizing = OverlayState.previewTranscribing()
+    let engine = OverlayIntentBoundaryEngine()
+    finalizing.engine = engine
+    finalizing.relayIntent(.startRecording)
+    XCTAssertTrue(engine.startModes.isEmpty)
+    XCTAssertFalse(finalizing.recording)
+
+    let awaitingProjection = OverlayState.previewListening()
+    awaitingProjection.engine = engine
+    awaitingProjection.handleRecordingPreparing()
+    awaitingProjection.finishControllerRecording()
+    awaitingProjection.relayIntent(.startRecording)
+    XCTAssertTrue(engine.startModes.isEmpty)
+    XCTAssertFalse(awaitingProjection.recording)
+  }
+
   func testLongHistoryPopoverStaysWithinViewport() {
     let history = (1...200).map {
       CsHistoryEntry(

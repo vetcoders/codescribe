@@ -199,10 +199,43 @@ final class OverlayRecordingLightTests: XCTestCase {
     XCTAssertTrue(source.contains(".help(OverlayWarningCopy.liveTranscriptBehind.sentence)"))
     XCTAssertTrue(
       source.contains(".accessibilityLabel(OverlayWarningCopy.liveTranscriptBehind.sentence)"))
-    XCTAssertTrue(source.contains("OverlayRecordingLightView(light: light"))
+    XCTAssertFalse(source.contains("OverlayRecordingLightView("))
+    XCTAssertTrue(source.contains("recordingLight: state.recordingLight"))
   }
 
   // MARK: Helpers
+
+  func testHeaderControlCarriesEveryLightWithoutASeparateDot() throws {
+    let source = try String(
+      contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Codescribe/Screens/Overlay/DictationOverlayView.swift"),
+      encoding: .utf8)
+    let start = try XCTUnwrap(source.range(of: "private func justifiedHeader"))
+    let end = try XCTUnwrap(source.range(of: "private func chromeWaveform"))
+    let header = String(source[start.lowerBound..<end.lowerBound])
+    XCTAssertFalse(header.contains("OverlayRecordingLightView("))
+    XCTAssertEqual(header.components(separatedBy: "OverlayRecordingControls(").count - 1, 1)
+    XCTAssertTrue(header.contains("recordingLight: state.recordingLight, animates: overlayVisible"))
+    XCTAssertTrue(source.contains("recordingLight?.pulses == true && animates && !reduceMotion"))
+    XCTAssertTrue(source.contains("OverlayRecordingLight.pulseOpacity(at:"))
+    XCTAssertTrue(source.contains(".accessibilityValue(recordingStatusValue)"))
+    for light in OverlayRecordingLight.allCases {
+      var intents: [OverlayIntent] = []
+      let control = OverlayRecordingControls(
+        canFinish: light != .processing, isPreviewCollapsed: false, compact: false,
+        palette: .dark, onIntent: { intents.append($0) }, onPreviewToggle: {},
+        isFinalizing: light == .processing, recordingLight: light)
+      XCTAssertEqual(control.recordingSymbol, "stop.fill", "\(light)")
+      XCTAssertEqual(control.recordingStatusValue, light.name)
+      XCTAssertEqual(control.recordingDisabled, light == .processing)
+      XCTAssertEqual(control.recordingTint,
+        light == .holdToTalk || light == .handsFree ? OverlayAppearancePalette.dark.errorStatus.color : light.color)
+      control.activateRecordingControl()
+      XCTAssertEqual(intents, light == .processing ? [] : [.finish])
+      XCTAssertEqual(OverlayRecordingControls.controlDiameter, 22)
+    }
+  }
 
   private func rms(_ db: Double) -> Float {
     Float(pow(10, db / 20))

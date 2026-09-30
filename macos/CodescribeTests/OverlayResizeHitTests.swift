@@ -1,8 +1,69 @@
+import AppKit
+import SwiftUI
 import XCTest
 
 @testable import Codescribe
 
+@MainActor
+private final class MicrophoneFrameRecorder {
+  var frames = OverlayHeaderControlFrames()
+}
+
+@MainActor
+private struct MicrophoneFrameCapture: View {
+  let state: OverlayState
+  let recorder: MicrophoneFrameRecorder
+
+  var body: some View {
+    DictationOverlayView(state: state)
+      .onPreferenceChange(OverlayHeaderControlFramesPreferenceKey.self) {
+        recorder.frames = $0
+      }
+  }
+}
+
 final class OverlayResizeHitTests: XCTestCase {
+  @MainActor
+  func testMicrophoneHitRegionSurvivesBothHeaderWidths() throws {
+    for width: CGFloat in [470, 320] {
+      let state = OverlayState()
+      let panel = try XCTUnwrap(
+        DictationOverlayWindow.make(
+          state: state,
+          textScale: TextScaleController(key: "OverlayResizeHitTests.mic.\(width)"))
+          as? FloatingOverlayPanel)
+      defer {
+        panel.orderOut(nil)
+        panel.invalidatePresence()
+      }
+      panel.setContentSize(NSSize(width: width, height: 280))
+      panel.orderFrontRegardless()
+      let root = try XCTUnwrap(panel.contentView)
+      root.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+      root.layoutSubtreeIfNeeded()
+
+      let recorder = MicrophoneFrameRecorder()
+      let host = NSHostingView(
+        rootView: MicrophoneFrameCapture(state: state, recorder: recorder)
+          .frame(width: width, height: 280)
+          .preferredColorScheme(.dark))
+      host.frame = CGRect(x: 0, y: 0, width: width, height: 280)
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+      let controlFrame = try XCTUnwrap(recorder.frames.stop)
+      XCTAssertEqual(controlFrame.width, OverlayRecordingControls.controlDiameter, accuracy: 1)
+      let header = try XCTUnwrap(descendant(identifier: "overlay-header-drag-region", in: root))
+      let headerFrame = root.convert(header.bounds, from: header)
+      let point = NSPoint(x: controlFrame.midX, y: headerFrame.midY)
+      let hit = try XCTUnwrap(root.hitTest(point))
+      XCTAssertNil(OverlayResizeHit.edge(at: point, in: root.bounds))
+      XCTAssertFalse(
+        panel.isWindowDragHit(at: point),
+        "width \(width): microphone routed to drag: \(hitChain(from: hit))")
+    }
+  }
+
   @MainActor
   func testOverlayYieldsToMissionControlAcrossPresenceLevels() {
     let panel = DictationOverlayWindow.make(
