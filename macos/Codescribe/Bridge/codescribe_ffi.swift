@@ -11595,6 +11595,63 @@ public func FfiConverterTypeCsQualityCommitResult_lower(_ value: CsQualityCommit
 
 
 /**
+ * Dictionary listing over the bridge: real corrections plus the count of
+ * takes that changed nothing and recorded no telemetry (Founder report
+ * 2026-09-30 — whole untouched takes padded the corrections list).
+ */
+public struct CsQualityListing: Equatable, Hashable {
+    public var records: [CsQualityRecord]
+    public var unchangedTakes: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(records: [CsQualityRecord], unchangedTakes: UInt64) {
+        self.records = records
+        self.unchangedTakes = unchangedTakes
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsQualityListing: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsQualityListing: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsQualityListing {
+        return
+            try CsQualityListing(
+                records: FfiConverterSequenceTypeCsQualityRecord.read(from: &buf),
+                unchangedTakes: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsQualityListing, into buf: inout [UInt8]) {
+        FfiConverterSequenceTypeCsQualityRecord.write(value.records, into: &buf)
+        FfiConverterUInt64.write(value.unchangedTakes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsQualityListing_lift(_ buf: RustBuffer) throws -> CsQualityListing {
+    return try FfiConverterTypeCsQualityListing.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsQualityListing_lower(_ value: CsQualityListing) -> RustBuffer {
+    return FfiConverterTypeCsQualityListing.lower(value)
+}
+
+
+/**
  * UI-safe projection of a persisted overlay correction.
  */
 public struct CsQualityRecord: Equatable, Hashable {
@@ -17387,12 +17444,13 @@ public func qualityFinalizeCorrection(correctionId: String, canonical: String)th
 })
 }
 /**
- * Read the newest persisted corrections, newest first. Missing storage is an
- * empty list; genuine I/O failures cross the bridge as a quality error.
+ * Read the newest persisted corrections, newest first, with the
+ * unchanged-take count alongside. Missing storage is an empty listing;
+ * genuine I/O failures cross the bridge as a quality error.
  */
-public func qualityRecentRecords(limit: UInt64)throws  -> [CsQualityRecord]  {
-    return try  FfiConverterSequenceTypeCsQualityRecord.lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
-    uniffi_codescribe_ffi_fn_func_quality_recent_records(
+public func qualityRecentListing(limit: UInt64)throws  -> CsQualityListing  {
+    return try  FfiConverterTypeCsQualityListing_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_func_quality_recent_listing(
         FfiConverterUInt64.lower(limit),$0
     )
 })
@@ -17570,7 +17628,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_quality_finalize_correction() != 53355) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_func_quality_recent_records() != 51586) {
+    if (uniffi_codescribe_ffi_checksum_func_quality_recent_listing() != 34225) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_quality_teach_dictionary_from_store() != 46244) {
