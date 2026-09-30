@@ -584,10 +584,15 @@ struct DictationOverlayView: View {
             .accessibilityLabel(error)
             .accessibilityIdentifier("overlay-preference-save-error")
         }
-        if !state.channelDelivery.isEmpty || state.channelStatusUnavailable {
+        if !state.visibleChannelRows.isEmpty || state.channelStatusUnavailable {
           OverlayChannelStatusView(
-            channels: state.channelDelivery, unavailable: state.channelStatusUnavailable,
-            palette: palette, animates: overlayVisible
+            channels: state.visibleChannelRows, unavailable: state.channelStatusUnavailable,
+            palette: palette, animates: overlayVisible,
+            hudStates: state.channelHudStates,
+            onToggleChannel: { digit in
+              Task { await state.toggleAgentChannel(digit) }
+            },
+            toggleError: state.channelToggleError
           )
         }
         if let light = state.recordingLight {

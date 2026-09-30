@@ -422,6 +422,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
         ("open microphone", palette.listeningStatus, 4.5),
         ("queued receipt", palette.processingStatus, 4.5),
         ("confirmed receipt", palette.successStatus, 4.5),
+        ("toggle failure", palette.errorStatus, 4.5),
       ] {
         let ratio = OverlayColorToken.contrastRatio(
           foreground: foreground, surface: style.surface, background: style.surface)

@@ -896,6 +896,13 @@ reload = "hot"
 category = "llm"
 description = "Normalized formatting policy: off, correction, smart, or max; legacy aliases raw, medium, and creative migrate to off, correction, and max"
 
+[vars.CODESCRIBE_FORMAT_ON_DEVICE]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "llm"
+description = "Opt-in power knob: 1/true/yes/on routes the non-assistive formatting lane to the host-registered Apple on-device model first; any on-device failure, or no registered host formatter, falls back to the configured cloud provider inside the same attempt. Off by default because Polish is contractually unsupported by the system model. Read from the process environment, so a .env change takes effect on restart."
+
 [vars.LLM_FORMATTING_AUTH_MODE]
 default = "api-key"
 type = "string"

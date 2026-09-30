@@ -60,6 +60,8 @@ protocol DictationEngine: AnyObject {
   func sessionAudioPath(sessionId: String) -> String?
   func transcribeFile(path: String) async throws -> CsTranscription
   func transcribeTake(sessionId: String, path: String) async throws -> CsTranscription
+  func channelRosterSnapshot() async -> [CsChannelRosterState]
+  func toggleAgentChannel(digit: UInt8) async throws
 }
 
 extension DictationEngine {
@@ -85,6 +87,10 @@ extension DictationEngine {
   func setOverlayExpandedByDefault(_ enabled: Bool) -> Bool { false }
   func overlayKeepVisibleBetweenTakes() -> Bool { false }
   func setOverlayKeepVisibleBetweenTakes(_ enabled: Bool) -> Bool { false }
+  func channelRosterSnapshot() async -> [CsChannelRosterState] { [] }
+  func toggleAgentChannel(digit _: UInt8) async throws {
+    throw NSError(domain: "Agent channel unavailable", code: 1)
+  }
 }
 
 /// Paste mode is not part of it: Settings › Shortcuts and the tray cycle own
@@ -667,7 +673,26 @@ final class OverlayState {
 
   private(set) var channelDelivery: [OverlayChannelDelivery] = []
   private(set) var channelStatusUnavailable = false
-  var hasOpenChannel: Bool { channelDelivery.contains(where: \.isOpen) }
+  private(set) var channelHudStates: [String: OverlayChannelHudProjection] = [:]
+  private(set) var channelRosterNames: [String: String] = [:]
+  private(set) var channelToggleError: String?
+  var visibleChannelRows: [OverlayChannelDelivery] {
+    let deliveredDigits = Set(channelDelivery.map(\.channel))
+    let boundWithoutDelivery = channelRosterNames.keys.sorted().compactMap { digit -> OverlayChannelDelivery? in
+      guard !deliveredDigits.contains(digit), let audience = channelRosterNames[digit] else {
+        return nil
+      }
+      return OverlayChannelDelivery(
+        channel: digit, agent: audience, deliveryID: nil, stage: nil,
+        isOpen: channelHudStates[digit]?.open ?? false)
+    }
+    return (channelDelivery + boundWithoutDelivery).sorted { $0.channel < $1.channel }
+  }
+  var hasOpenChannel: Bool {
+    visibleChannelRows.contains { channel in
+      channelHudStates[channel.channel]?.open ?? channel.isOpen
+    }
+  }
   @ObservationIgnored var onChannelPresentationChanged: (() -> Void)?
   @ObservationIgnored private var channelObservationTask: Task<Void, Never>?
 
@@ -675,6 +700,10 @@ final class OverlayState {
     channelObservationTask?.cancel()
     channelObservationTask = Task { @MainActor [weak self] in
       while !Task.isCancelled {
+        if let snapshot = await self?.engine?.channelRosterSnapshot() {
+          guard !Task.isCancelled, let self else { return }
+          self.applyChannelRoster(snapshot)
+        }
         do {
           let snapshot = try await reader.read()
           guard !Task.isCancelled, self != nil else { return }
@@ -688,6 +717,44 @@ final class OverlayState {
         }
         do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
       }
+    }
+  }
+
+  func applyChannelRoster(_ snapshot: [CsChannelRosterState]) {
+    let names = Dictionary(
+      snapshot.map { ($0.channel, $0.audience) }, uniquingKeysWith: { _, latest in latest })
+    let projected = Dictionary(
+      snapshot.map { row in
+        (
+          row.channel,
+          OverlayChannelHudProjection(
+            open: row.open, loud: row.loud,
+            autosealDeadline: row.autosealDeadlineUnixMs.map {
+              Date(timeIntervalSince1970: Double($0) / 1_000)
+            },
+            followerAlive: row.followerAlive)
+        )
+      }, uniquingKeysWith: { _, latest in latest })
+    guard projected != channelHudStates || names != channelRosterNames else { return }
+    let wasOpen = hasOpenChannel
+    channelHudStates = projected
+    channelRosterNames = names
+    if hasOpenChannel {
+      cancelAutoHide()
+    } else if wasOpen && terminal {
+      restartAutoHideCountdown()
+    }
+    onChannelPresentationChanged?()
+  }
+
+  func toggleAgentChannel(_ digit: UInt8) async {
+    guard (1...9).contains(digit), let engine else { return }
+    do {
+      try await engine.toggleAgentChannel(digit: digit)
+      channelToggleError = nil
+      applyChannelRoster(await engine.channelRosterSnapshot())
+    } catch {
+      channelToggleError = error.localizedDescription
     }
   }
 
@@ -2947,5 +3014,11 @@ final class ControllerDictationEngine: DictationEngine {
   }
   func transcribeTake(sessionId: String, path: String) async throws -> CsTranscription {
     try await hotkeys.transcribeTake(sessionId: sessionId, path: path)
+  }
+  func channelRosterSnapshot() async -> [CsChannelRosterState] {
+    await hotkeys.channelRosterSnapshot()
+  }
+  func toggleAgentChannel(digit: UInt8) async throws {
+    try await hotkeys.toggleAgentChannel(digit: digit)
   }
 }

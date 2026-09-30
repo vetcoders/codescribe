@@ -53,6 +53,8 @@ mod licensing;
 mod mcp_admin;
 /// Notes surface bridged for agent tools / UI.
 mod notes;
+/// Host on-device formatting (Apple FoundationModels) registration (W6).
+mod on_device_format;
 /// Overlay quality records and lexicon commit helpers.
 mod quality;
 /// Dictation / STT streaming into the Swift app.
@@ -70,6 +72,7 @@ pub use application_runtime::CsApplicationRuntimeSnapshot;
 pub use hotkeys::CodescribeHotkeys;
 pub use hotkeys::CsAppActionListener;
 pub use licensing::{CsLicenseState, CsLicenseStatus};
+pub use on_device_format::{CsOnDeviceFormatOutcome, CsOnDeviceFormatter};
 pub use quality::{
     CsLexiconEntry, CsOverlayHighlight, CsOverlayHighlightKind, CsQualityCommitResult,
     CsQualityRecord, commit_overlay_quality_record, lexicon_custom_entries,

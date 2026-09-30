@@ -75,13 +75,13 @@ enum OverlayAgentGlyph: CaseIterable, Equatable, Sendable {
   static let slotSize = CGSize(width: 18, height: 22)
 }
 
-/// Display-only projection of the controller's per-digit HUD state. The bridge
-/// supplies this independently of the delivery mailbox once it is exposed.
+/// Display-only projection of the controller's per-digit roster snapshot.
 struct OverlayChannelHudProjection: Equatable {
   let open: Bool
   let loud: Bool
   let autosealDeadline: Date?
-  let followerAlive: Bool
+  /// Nil means the controller made no liveness claim.
+  let followerAlive: Bool?
 }
 
 /// A quiet header affordance. Delivery details belong to its popover, not the transcript.
@@ -96,12 +96,14 @@ struct OverlayChannelStatusView: View {
   let animates: Bool
   let hudStates: [String: OverlayChannelHudProjection]
   let onToggleChannel: ((UInt8) -> Void)?
+  let toggleError: String?
 
   init(
     channels: [OverlayChannelDelivery], unavailable: Bool,
     palette: OverlayAppearancePalette, animates: Bool,
     hudStates: [String: OverlayChannelHudProjection] = [:],
-    onToggleChannel: ((UInt8) -> Void)? = nil
+    onToggleChannel: ((UInt8) -> Void)? = nil,
+    toggleError: String? = nil
   ) {
     self.channels = channels
     self.unavailable = unavailable
@@ -109,6 +111,7 @@ struct OverlayChannelStatusView: View {
     self.animates = animates
     self.hudStates = hudStates
     self.onToggleChannel = onToggleChannel
+    self.toggleError = toggleError
   }
 
   static func toggleDigit(for channel: String) -> UInt8? {
@@ -221,6 +224,13 @@ struct OverlayChannelStatusView: View {
           .font(.system(size: 11, weight: .medium))
           .foregroundStyle(palette.processingStatus.color)
           .accessibilityIdentifier("overlay-channel-status-unavailable")
+      }
+      if let toggleError {
+        // A refused toggle is an error, not a pending state (N roster palette).
+        Text("Channel toggle failed: \(toggleError)")
+          .font(.system(size: 11, weight: .medium))
+          .foregroundStyle(palette.errorStatus.color)
+          .accessibilityIdentifier("overlay-channel-toggle-error")
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)

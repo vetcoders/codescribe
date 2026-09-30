@@ -15,6 +15,8 @@ pub mod inline_format;
 pub mod key_liveness;
 /// Live `/models` discovery for Settings pickers with last-good cache.
 pub mod model_discovery;
+/// Host-owned on-device formatting (Apple FoundationModels), opt-in knob.
+pub mod on_device;
 /// Provider identity, wire families, and per-model capability policy.
 pub mod provider;
 /// Shared reader for a Responses `output` array (JSON body and terminal SSE).
