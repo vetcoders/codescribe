@@ -159,9 +159,9 @@ struct OverlayChannelStatusView: View {
     .accessibilityHint("Shows agent channel details")
     .accessibilityIdentifier("overlay-agent-glyph")
     .popover(isPresented: $showsDetails, arrowEdge: .bottom) {
-      details
-        .padding(16)
-        .frame(width: 300)
+      ChannelRosterPopoverContent(palette: palette) {
+        details
+      }
     }
   }
 
@@ -170,6 +170,10 @@ struct OverlayChannelStatusView: View {
       .font(.system(size: 13, weight: .medium, design: .monospaced))
       .foregroundStyle(glyph.tone(in: palette).color)
       .fixedSize()
+  }
+
+  private var rosterStyle: ChannelRosterPopoverStyle {
+    ChannelRosterPopoverStyle(palette: palette)
   }
 
   private var details: some View {
@@ -189,6 +193,8 @@ struct OverlayChannelStatusView: View {
             Text("\(channel.channel) · \(channel.agent)")
               .lineLimit(1)
               .truncationMode(.middle)
+              .foregroundStyle(
+                (hasDeadFollower(channel) ? rosterStyle.bodyText : rosterStyle.primaryText).color)
             Spacer(minLength: 4)
             let rowGlyph =
               OverlayAgentGlyph.resolve(channels: [channel], unavailable: unavailable) ?? .attached
@@ -197,6 +203,7 @@ struct OverlayChannelStatusView: View {
               .foregroundStyle(rowGlyph.tone(in: palette).color)
               .accessibilityHidden(true)
             Text(detail(for: channel))
+              .foregroundStyle(rosterStyle.bodyText.color)
               .accessibilityIdentifier("overlay-channel-delivery-\(channel.channel)")
           }
           .contentShape(Rectangle())
@@ -204,8 +211,6 @@ struct OverlayChannelStatusView: View {
         .buttonStyle(.plain)
         .disabled(onToggleChannel == nil || Self.toggleDigit(for: channel.channel) == nil)
         .font(.system(size: 11, weight: .medium))
-        .foregroundStyle(palette.mutedText.color)
-        .opacity(hasDeadFollower(channel) ? 0.55 : 1)
         .accessibilityLabel("\(channel.channel) · \(channel.agent), \(detail(for: channel))")
         .accessibilityHint(isOpen(channel) ? "Hang up channel" : "Open channel")
         .accessibilityIdentifier("overlay-channel-toggle-\(channel.channel)")
@@ -231,5 +236,46 @@ struct OverlayChannelStatusView: View {
     case .received: delivery = "receipt confirmed by the agent"
     }
     return hasDeadFollower(channel) ? "\(delivery) · nobody listening" : delivery
+  }
+}
+
+/// A popover is hosted in its own presentation, so the overlay's palette must
+/// explicitly supply both its native appearance and its opaque content surface.
+struct ChannelRosterPopoverStyle: Equatable {
+  let surface: OverlayColorToken
+  let border: OverlayColorToken
+  let primaryText: OverlayColorToken
+  let bodyText: OverlayColorToken
+  let mutedText: OverlayColorToken
+  let colorScheme: ColorScheme
+
+  init(palette: OverlayAppearancePalette) {
+    surface = palette.desktopBackground
+    border = palette.border
+    primaryText = palette.primaryText
+    bodyText = palette.bodyText
+    mutedText = palette.mutedText
+    colorScheme = palette.appearance == .dark ? .dark : .light
+  }
+}
+
+struct ChannelRosterPopoverContent<Content: View>: View {
+  let palette: OverlayAppearancePalette
+  @ViewBuilder let content: Content
+
+  var style: ChannelRosterPopoverStyle { ChannelRosterPopoverStyle(palette: palette) }
+
+  var body: some View {
+    content
+      .padding(16)
+      .frame(width: 300)
+      .background(style.surface.color)
+      .overlay {
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+          .strokeBorder(style.border.color, lineWidth: 1)
+          .allowsHitTesting(false)
+      }
+      .presentationBackground(style.surface.color)
+      .preferredColorScheme(style.colorScheme)
   }
 }
