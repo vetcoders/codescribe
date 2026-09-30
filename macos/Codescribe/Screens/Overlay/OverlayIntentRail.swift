@@ -12,6 +12,10 @@ struct OverlayDockLayout: Equatable {
 struct OverlayActionsPresentation {
   enum Phase: Equatable { case idle, open }
   private(set) var phase: Phase = .idle
+  var controlSymbol: String {
+    phase == .open ? OverlayControlSymbols.closeActions : OverlayControlSymbols.actions
+  }
+  var controlTitle: String { phase == .open ? "Close actions" : "More actions" }
   private(set) var pointerInside = false
   private(set) var panelPresented = false
   private(set) var keyboardFocused = false
@@ -98,6 +102,7 @@ enum OverlayControlSymbols {
   static let history = "clock.arrow.circlepath"
   static let previousTake = "tray.and.arrow.up"
   static let actions = "ellipsis"
+  static let closeActions = "xmark"
   static let placement = "location.viewfinder"
   /// Live-preview toggle: "wolałem dzióbki ^v" (Founder, quoted in the Codex
   /// handoff, Annex A1, 2026-09-29). Expanded
@@ -337,6 +342,7 @@ struct OverlayIntentRail: View {
 extension OverlayIntent {
   var accessibilityLabel: String {
     switch self {
+    case .startRecording: "Start dictation"
     case .finish: "Finish recording"
     case .commitRevision: "Commit transcript revision"
     case .discardRevision: "Discard transcript draft"
@@ -354,6 +360,7 @@ extension OverlayIntent {
 
   var accessibilityHint: String {
     switch self {
+    case .startRecording: "Starts a new take in the current dictation mode"
     case .finish: "Stops capture and requests the final projection"
     case .commitRevision: "Commits this draft through the transcript ledger"
     case .discardRevision: "Restores the latest projected transcript"
@@ -372,6 +379,7 @@ extension OverlayIntent {
 
   var systemImage: String {
     switch self {
+    case .startRecording: "mic.fill"
     case .finish: "stop.circle"
     case .commitRevision: "checkmark.circle"
     case .discardRevision: "arrow.uturn.backward.circle"

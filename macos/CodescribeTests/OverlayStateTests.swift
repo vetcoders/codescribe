@@ -71,7 +71,8 @@ private final class OverlayStateTestEngine: DictationEngine {
   }
 
   func setListener(_ listener: CsTranscriptionListener) {}
-  func startRecording(language: CsLanguage?) async throws {}
+  func startsInAssistiveMode() -> Bool { false }
+  func startRecording(assistive: Bool, language: CsLanguage?) async throws {}
   func stopRecording() async throws -> String {
     onStopRecording?()
     return ""
