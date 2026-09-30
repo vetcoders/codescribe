@@ -14,7 +14,9 @@ use serde::Deserialize;
 
 const LEASE_SCHEMA: &str = "codescribe.agent-bridge.lease.v1";
 const BRIDGE_HOME_ENV: &str = "CODESCRIBE_AGENT_BRIDGE_HOME";
-const LEASE_TTL_SECONDS: f64 = 120.0;
+/// Shared follower-liveness window: a heartbeat older than this is dead.
+/// Mirrors the helper's `DEFAULT_LEASE_TTL_SECONDS`.
+pub const LEASE_TTL_SECONDS: f64 = 120.0;
 const MAX_LEASE_FILES: usize = 64;
 const MAX_LEASE_BYTES: u64 = 16 * 1024;
 const MAX_ACTIVE_NAMES: usize = 16;
@@ -26,6 +28,10 @@ struct SessionLease {
     name: Option<String>,
     active: bool,
     heartbeat_unix: f64,
+    #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
+    provider_session_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -104,9 +110,39 @@ fn canonical_name(value: &str) -> Option<String> {
     )
 }
 
-fn read_active_names_at(root: &Path, now: f64, ttl_seconds: f64) -> Vec<String> {
+/// Provider sessions whose follower is live right now: lease schema, `active`,
+/// and a heartbeat no older than the shared TTL — the same convention the
+/// helper's `--status` reports. Pairs are `(provider, provider_session_id)`
+/// with the provider casefolded, matching what the lease writer stores.
+pub fn live_follower_sessions_at(
+    root: &Path,
+    now: f64,
+    ttl_seconds: f64,
+) -> HashSet<(String, String)> {
+    let mut sessions = HashSet::new();
+    for_each_fresh_lease(root, now, ttl_seconds, |lease| {
+        if let (Some(provider), Some(session)) = (
+            lease.provider.as_deref().map(str::trim),
+            lease.provider_session_id.as_deref().map(str::trim),
+        ) && !provider.is_empty()
+            && !session.is_empty()
+        {
+            sessions.insert((provider.to_lowercase(), session.to_string()));
+        }
+    });
+    sessions
+}
+
+/// Bounded scan of the lease directory, invoking `visit` for every lease that
+/// is well-formed, active, and heartbeat-fresh. Everything else fails open.
+fn for_each_fresh_lease(
+    root: &Path,
+    now: f64,
+    ttl_seconds: f64,
+    mut visit: impl FnMut(&SessionLease),
+) {
     let Ok(entries) = fs::read_dir(root.join("leases")) else {
-        return Vec::new();
+        return;
     };
     let mut paths = entries
         .filter_map(Result::ok)
@@ -118,9 +154,6 @@ fn read_active_names_at(root: &Path, now: f64, ttl_seconds: f64) -> Vec<String> 
         .collect::<Vec<_>>();
     paths.sort();
     paths.truncate(MAX_LEASE_FILES);
-
-    let mut seen = HashSet::new();
-    let mut names = Vec::new();
     for path in paths {
         let Ok(metadata) = fs::metadata(&path) else {
             continue;
@@ -143,16 +176,24 @@ fn read_active_names_at(root: &Path, now: f64, ttl_seconds: f64) -> Vec<String> 
         {
             continue;
         }
+        visit(&lease);
+    }
+}
+
+fn read_active_names_at(root: &Path, now: f64, ttl_seconds: f64) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut names = Vec::new();
+    for_each_fresh_lease(root, now, ttl_seconds, |lease| {
+        if names.len() == MAX_ACTIVE_NAMES {
+            return;
+        }
         let Some(name) = lease.name.as_deref().and_then(canonical_name) else {
-            continue;
+            return;
         };
         if seen.insert(name.to_lowercase()) {
             names.push(name);
-            if names.len() == MAX_ACTIVE_NAMES {
-                break;
-            }
         }
-    }
+    });
     names
 }
 
@@ -186,6 +227,54 @@ mod tests {
         write_lease(temp.path(), "e.json", "piwo trzy", true, 999.0);
 
         assert_eq!(read_active_names_at(temp.path(), 1_000.0, 120.0), ["Iwo"]);
+    }
+
+    fn write_session_lease(
+        root: &Path,
+        file: &str,
+        provider: &str,
+        session: &str,
+        active: bool,
+        heartbeat: f64,
+    ) {
+        let dir = root.join("leases");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(file),
+            serde_json::to_vec(&serde_json::json!({
+                "schema": LEASE_SCHEMA,
+                "name": "iwo",
+                "active": active,
+                "heartbeat_unix": heartbeat,
+                "provider": provider,
+                "provider_session_id": session,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_live_follower_session_is_reported_and_a_stale_one_is_not() {
+        let temp = tempfile::tempdir().unwrap();
+        write_session_lease(
+            temp.path(),
+            "live.json",
+            "Claude-Code",
+            "sess-1",
+            true,
+            990.0,
+        );
+        write_session_lease(temp.path(), "stale.json", "codex", "sess-2", true, 800.0);
+        write_session_lease(temp.path(), "closed.json", "codex", "sess-3", false, 999.0);
+        // A lease without provider fields (pre-W2 shape) is skipped, not an error.
+        write_lease(temp.path(), "nameless.json", "iwo", true, 999.0);
+
+        let live = live_follower_sessions_at(temp.path(), 1_000.0, 120.0);
+        assert_eq!(
+            live,
+            HashSet::from([("claude-code".to_string(), "sess-1".to_string())])
+        );
     }
 
     #[test]

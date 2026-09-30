@@ -156,6 +156,9 @@ pub struct ChannelHudState {
     pub utterance_silence_ms: u32,
     pub provider: Option<String>,
     pub provider_session_id: Option<String>,
+    /// Whether the bound provider session has a live bridge follower
+    /// (fresh lease heartbeat). `None` = the snapshot made no liveness claim.
+    pub follower_alive: Option<bool>,
 }
 
 fn utterance_silence_ms(seconds: f32) -> u32 {
@@ -915,9 +918,81 @@ impl RecordingController {
                     utterance_silence_ms: utterance_silence_ms(open.silence_sec),
                     provider: open.provider.clone(),
                     provider_session_id: open.provider_session_id.clone(),
+                    follower_alive: None,
                 })
             })
             .collect()
+    }
+
+    /// Roster truth for the overlay popover: every bound digit — open or not —
+    /// with follower liveness read from the session-bridge leases (fresh
+    /// heartbeat, same convention as the helper's `--status`). Open channels
+    /// keep their full HUD fields; a bound-but-closed digit carries
+    /// `open: false` and `UNIX_EPOCH` in `opened_at`, which no consumer reads
+    /// for closed rows. A roster row never starts anything — display only.
+    pub async fn channel_roster_states(&self) -> Vec<ChannelHudState> {
+        let bridge = codescribe_core::stt::active_names::bridge_home();
+        self.channel_roster_states_at(&binding_path(), &bridge)
+            .await
+    }
+
+    pub(crate) async fn channel_roster_states_at(
+        &self,
+        binding: &Path,
+        bridge_home: &Path,
+    ) -> Vec<ChannelHudState> {
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|duration| duration.as_secs_f64())
+            .unwrap_or(0.0);
+        let live = codescribe_core::stt::active_names::live_follower_sessions_at(
+            bridge_home,
+            now,
+            codescribe_core::stt::active_names::LEASE_TTL_SECONDS,
+        );
+        let alive = |provider: &Option<String>, session: &Option<String>| -> Option<bool> {
+            match (provider.as_deref(), session.as_deref()) {
+                (Some(provider), Some(session)) => {
+                    Some(live.contains(&(provider.to_lowercase(), session.to_string())))
+                }
+                _ => None,
+            }
+        };
+        let mut states = self.channel_hud_states().await;
+        for state in &mut states {
+            state.follower_alive = alive(&state.provider, &state.provider_session_id);
+        }
+        let Ok(file) = load_binding(binding) else {
+            return states;
+        };
+        for (digit, entry) in &file.bindings {
+            if digit.len() != 1 || !digit.chars().all(|c| ('1'..='9').contains(&c)) {
+                continue;
+            }
+            if states.iter().any(|state| &state.channel == digit) {
+                continue;
+            }
+            let provider = Some(entry.provider.trim().to_string()).filter(|s| !s.is_empty());
+            let session =
+                Some(entry.provider_session_id.trim().to_string()).filter(|s| !s.is_empty());
+            states.push(ChannelHudState {
+                open: false,
+                loud: false,
+                channel: digit.clone(),
+                audience: entry.audience.trim().to_string(),
+                label: String::new(),
+                autoseal_secs: 0,
+                autoseal_deadline: None,
+                tts_ducking: false,
+                opened_at: SystemTime::UNIX_EPOCH,
+                utterance_silence_ms: 0,
+                follower_alive: alive(&provider, &session),
+                provider,
+                provider_session_id: session,
+            });
+        }
+        states.sort_by(|a, b| a.channel.cmp(&b.channel));
+        states
     }
 
     /// Conversation and energy calibration stay exclusive owners.
@@ -1530,6 +1605,50 @@ mod tests {
             .await;
         assert!(later.is_empty());
         assert_eq!(bus_rows(&channel_bus).len(), 1);
+    }
+
+    /// The roster names every bound digit and says who is actually listening:
+    /// a fresh lease heartbeat marks the follower alive, a missing lease marks
+    /// it dead, and a bound-but-closed digit still appears with `open: false`.
+    #[tokio::test]
+    async fn a_roster_row_carries_follower_liveness_for_bound_closed_channels() {
+        let dir = tempfile::tempdir().expect("temp");
+        let binding = dir.path().join("binding.json");
+        std::fs::write(
+            &binding,
+            r#"{"schema":"vc.agent-audience-binding.v1","bindings":{"1":{"audience":"Ada","provider":"claude-code","provider_session_id":"ada-session"},"3":{"audience":"Leon","provider":"codex","provider_session_id":"leon-session"}}}"#,
+        )
+        .expect("binding");
+        let bridge = dir.path().join("bridge");
+        std::fs::create_dir_all(bridge.join("leases")).expect("leases dir");
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs_f64();
+        std::fs::write(
+            bridge.join("leases/ada.json"),
+            format!(
+                r#"{{"schema":"codescribe.agent-bridge.lease.v1","lease_id":"ada","name":"ada","active":true,"heartbeat_unix":{now},"provider":"claude-code","provider_session_id":"ada-session"}}"#,
+            ),
+        )
+        .expect("lease");
+
+        let controller = RecordingController::new_without_keychain();
+        let roster = controller.channel_roster_states_at(&binding, &bridge).await;
+
+        assert_eq!(roster.len(), 2, "{roster:?}");
+        assert_eq!(roster[0].channel, "1");
+        assert_eq!(roster[0].audience, "Ada");
+        assert!(!roster[0].open);
+        assert_eq!(roster[0].follower_alive, Some(true));
+        assert_eq!(roster[1].channel, "3");
+        assert_eq!(roster[1].audience, "Leon");
+        assert!(!roster[1].open);
+        assert_eq!(
+            roster[1].follower_alive,
+            Some(false),
+            "no lease means nobody is listening"
+        );
     }
 
     /// One closing throne: a session sealed by silence is never sealed again
