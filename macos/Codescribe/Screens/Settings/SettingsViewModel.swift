@@ -932,6 +932,7 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var qualityRecords: [CsQualityRecord] = []
   @Published private(set) var unchangedQualityTakes: UInt64 = 0
   @Published private(set) var customLexiconEntries: [CsLexiconEntry] = []
+  @Published private(set) var ruleCandidates: [CsRuleCandidate] = []
   @Published private(set) var voiceLabReadError: String?
   @Published private(set) var voiceLabEditPending: Set<String> = []
   @Published private(set) var voiceLabEditErrors: [String: String] = [:]
@@ -1919,12 +1920,36 @@ final class SettingsViewModel: ObservableObject {
       qualityRecords = listing.records
       unchangedQualityTakes = listing.unchangedTakes
       customLexiconEntries = try engine.loadLexiconCustomEntries()
+      ruleCandidates = try engine.loadRuleCandidates(minOccurrences: 2)
       voiceLabReadError = nil
     } catch {
       qualityRecords = []
       unchangedQualityTakes = 0
       customLexiconEntries = []
+      ruleCandidates = []
       voiceLabReadError = String(describing: error)
+    }
+  }
+
+  /// Teach one rule candidate (variant → canonical) into the live custom
+  /// dictionary. Updates the candidate list on success.
+  func teachRuleCandidate(target: String, variant: String) {
+    guard let engine, !voiceLabTeachPending else { return }
+    voiceLabTeachPending = true
+    voiceLabTeachMessage = nil
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      do {
+        let result = try engine.teachSpan(variant: variant, canonical: target, kind: "vocabulary")
+        self.voiceLabTeachPending = false
+        self.voiceLabTeachMessage = result.acknowledgement
+        self.refreshVoiceLab()
+      } catch {
+        self.voiceLabTeachPending = false
+        let message = String(describing: error)
+        self.voiceLabTeachMessage = "Teach failed: \(message)"
+        self.lastError = message
+      }
     }
   }
 

@@ -74,9 +74,10 @@ pub use hotkeys::CsAppActionListener;
 pub use licensing::{CsLicenseState, CsLicenseStatus};
 pub use on_device_format::{CsOnDeviceFormatOutcome, CsOnDeviceFormatter};
 pub use quality::{
-    CsLexiconEntry, CsQualityCommitResult, CsQualityListing, CsQualityRecord,
-    commit_overlay_quality_record, lexicon_custom_entries, quality_finalize_correction,
-    quality_recent_listing, quality_teach_span,
+    CsDiffSpan, CsDiffTier, CsLexiconEntry, CsQualityCommitResult, CsQualityListing,
+    CsQualityRecord, CsRuleCandidate, commit_overlay_quality_record, lexicon_custom_entries,
+    quality_diff_spans, quality_finalize_correction, quality_recent_listing,
+    quality_rule_candidates, quality_teach_span,
 };
 pub use recording::{CsCaptureHandle, CsConditionalStop, CsTranscriptDelivery};
 pub use speech::{CsSpeechResult, speak_text, speech_availability, stop_speaking};

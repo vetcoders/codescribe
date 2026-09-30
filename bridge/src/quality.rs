@@ -8,6 +8,10 @@
 //!
 //! Privacy: local disk only.
 
+use codescribe_core::quality::diff::{
+    DiffSpan as CoreDiffSpan, DiffTier as CoreDiffTier, RuleCandidate as CoreRuleCandidate,
+    diff_spans as core_diff_spans, rule_candidates as core_rule_candidates,
+};
 use codescribe_core::quality::overlay_quality::{
     CustomLexiconEntry, DictionaryTeachResult, OverlayCorrectionCommit, OverlayCorrectionInput,
     QualityRecord, VoiceLabSaveOutcome, commit_overlay_correction, custom_lexicon_entries,
@@ -87,6 +91,73 @@ impl From<QualityRecord> for CsQualityRecord {
             avg_logprob: record.avg_logprob,
             speech_pct: record.speech_pct,
             confidence_flags: record.confidence_flags,
+        }
+    }
+}
+
+/// Classification of one changed span.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsDiffTier {
+    Vocabulary,
+    Casing,
+    Punctuation,
+    Insert,
+    Delete,
+}
+
+impl From<CoreDiffTier> for CsDiffTier {
+    fn from(tier: CoreDiffTier) -> Self {
+        match tier {
+            CoreDiffTier::Vocabulary => Self::Vocabulary,
+            CoreDiffTier::Casing => Self::Casing,
+            CoreDiffTier::Punctuation => Self::Punctuation,
+            CoreDiffTier::Insert => Self::Insert,
+            CoreDiffTier::Delete => Self::Delete,
+        }
+    }
+}
+
+/// One content change between the raw STT text and the human-edited text.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsDiffSpan {
+    pub raw: String,
+    pub edited: String,
+    pub tier: CsDiffTier,
+    pub context_before: String,
+    pub context_after: String,
+    /// PCM occurrence identity pinned to this span's words — `None` until cut
+    /// A6/T attaches per-word PCM identity to quality records.
+    pub occurrence_ref: Option<String>,
+}
+
+impl From<CoreDiffSpan> for CsDiffSpan {
+    fn from(span: CoreDiffSpan) -> Self {
+        Self {
+            raw: span.raw,
+            edited: span.edited,
+            tier: span.tier.into(),
+            context_before: span.context_before,
+            context_after: span.context_after,
+            occurrence_ref: span.occurrence_ref,
+        }
+    }
+}
+
+/// A target canonical term the user may want to teach, backed by repeated raw
+/// variants across corrections.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsRuleCandidate {
+    pub target: String,
+    pub variants: Vec<String>,
+    pub occurrences: u64,
+}
+
+impl From<CoreRuleCandidate> for CsRuleCandidate {
+    fn from(candidate: CoreRuleCandidate) -> Self {
+        Self {
+            target: candidate.target,
+            variants: candidate.variants,
+            occurrences: candidate.occurrences,
         }
     }
 }
@@ -237,6 +308,33 @@ pub fn lexicon_custom_entries() -> Result<Vec<CsLexiconEntry>, CsError> {
         .map_err(|error| CsError::Quality {
             msg: format!("custom lexicon read failed: {error}"),
         })
+}
+
+/// Tiered word-level diff between the raw STT text and the human-edited text.
+#[uniffi::export]
+pub fn quality_diff_spans(raw: String, edited: String) -> Vec<CsDiffSpan> {
+    core_diff_spans(&raw, &edited)
+        .into_iter()
+        .map(Into::into)
+        .collect()
+}
+
+/// Mine repeated vocabulary corrections into dictionary-rule candidates.
+/// Targets already present in the dictionary are excluded.
+#[uniffi::export]
+pub fn quality_rule_candidates(min_occurrences: u64) -> Result<Vec<CsRuleCandidate>, CsError> {
+    let records = recent_quality_listing(0)
+        .map_err(|error| CsError::Quality {
+            msg: format!("quality rule candidates read failed: {error}"),
+        })?
+        .corrections;
+    let dictionary = custom_lexicon_entries().map_err(|error| CsError::Quality {
+        msg: format!("custom lexicon read failed: {error}"),
+    })?;
+    Ok(core_rule_candidates(&records, &dictionary, min_occurrences)
+        .into_iter()
+        .map(Into::into)
+        .collect())
 }
 
 /// Result of Dictionary "Teach" — promote corrections + proposed into live lexicon.

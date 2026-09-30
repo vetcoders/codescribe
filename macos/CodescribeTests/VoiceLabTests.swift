@@ -180,7 +180,7 @@ final class VoiceLabTests: XCTestCase {
     XCTAssertFalse(rows[0].hasTextChange)
     XCTAssertTrue(rows[0].hasTelemetry)
     XCTAssertEqual(rows[0].telemetryChips, ["speech_gap"])
-    XCTAssertTrue(correctionDiffExcerpt(raw: rows[0].rawText, edited: rows[0].editedText).isEmpty)
+    XCTAssertTrue(voiceLabDiffSpans(raw: rows[0].rawText, edited: rows[0].editedText).isEmpty)
   }
 
   /// (b) A real edit yields a word-level diff with the changed span and
@@ -189,48 +189,59 @@ final class VoiceLabTests: XCTestCase {
     let raw = "Zażółć gęślą jaźń potem nagrajemy luks tri mapa jeszcze raz dziś"
     let edited = "Zażółć gęślą jaźń potem nagrajemy Loctree mapę jeszcze raz dziś"
 
-    let excerpt = correctionDiffExcerpt(raw: raw, edited: edited)
+    let spans = voiceLabDiffSpans(raw: raw, edited: edited)
 
-    XCTAssertEqual(
-      excerpt,
-      [
-        .context("Zażółć gęślą jaźń potem nagrajemy"),
-        .change(raw: "luks tri mapa", edited: "Loctree mapę"),
-        .context("jeszcze raz dziś"),
-      ]
-    )
+    XCTAssertEqual(spans.count, 1)
+    XCTAssertEqual(spans[0].raw, "luks tri mapa")
+    XCTAssertEqual(spans[0].edited, "Loctree mapę")
+    XCTAssertEqual(spans[0].tier, .vocabulary)
+    XCTAssertEqual(spans[0].contextBefore, "Zażółć gęślą jaźń potem nagrajemy")
+    XCTAssertEqual(spans[0].contextAfter, "jeszcze raz dziś")
   }
 
-  /// Long takes collapse to ±5 words of context around each change, with
-  /// ellipses where the transcript was trimmed.
-  func testCorrectionDiffTrimsLongContextAroundChanges() {
-    let rawWords = (1...20).map { "słowo\($0)" }
-    let raw = (rawWords + ["zła", "fraza"]).joined(separator: " ")
-    let edited = (rawWords + ["dobra", "fraza"]).joined(separator: " ")
+  /// Casing-only and punctuation-only edits surface as minor tiers.
+  func testCorrectionDiffClassifiesMinorTiers() {
+    let casingSpans = voiceLabDiffSpans(raw: "jako", edited: "Jako")
+    XCTAssertEqual(casingSpans.count, 1)
+    XCTAssertEqual(casingSpans[0].tier, .casing)
 
-    let excerpt = correctionDiffExcerpt(raw: raw, edited: edited)
-
-    XCTAssertEqual(
-      excerpt,
-      [
-        .ellipsis,
-        .context(rawWords.suffix(5).joined(separator: " ")),
-        .change(raw: "zła", edited: "dobra"),
-        .context("fraza"),
-      ]
-    )
+    let punctuationSpans = voiceLabDiffSpans(raw: "ciebie", edited: "ciebie,")
+    XCTAssertEqual(punctuationSpans.count, 1)
+    XCTAssertEqual(punctuationSpans[0].tier, .punctuation)
   }
 
-  /// (d) The headline counts real corrections, unchanged takes, and rules as
-  /// three separate numbers; missing telemetry is one aggregate list line.
+  /// (d) The card renders major tiers inline and collapses casing/punctuation
+  /// spans under one dimmed "+N minor" line.
+  func testCorrectionCardCollapsesMinorTiers() {
+    let spans = voiceLabDiffSpans(
+      raw: "wajprawter wykrył jako potem ciebie",
+      edited: "Vibecrafted wykrył Jako potem ciebie,"
+    )
+
+    let major = majorDiffSpans(spans)
+    let minor = minorDiffSpans(spans)
+
+    XCTAssertEqual(major.count, 1)
+    XCTAssertEqual(major[0].tier, .vocabulary)
+    XCTAssertEqual(major[0].edited, "Vibecrafted")
+    XCTAssertEqual(minor.count, 2)
+    XCTAssertEqual(minor.map(\.tier), [.casing, .punctuation])
+    XCTAssertEqual(minorAdjustmentsSummary(minor), "+2 minor (punctuation, casing)")
+  }
+
+  /// (e) The headline counts real corrections, vocabulary corrections,
+  /// unchanged takes, and rules as separate numbers; missing telemetry is one
+  /// aggregate list line.
   func testDictionaryHeadlineCountsCorrectionsUnchangedTakesAndRules() {
     XCTAssertEqual(
-      dictionaryHeadline(corrections: 0, unchangedTakes: 0, rulesLearned: 0),
-      "0 corrections · 0 unchanged takes · 0 rules in dictionary"
+      dictionaryHeadline(
+        corrections: 0, vocabularyCorrections: 0, unchangedTakes: 0, rulesLearned: 0),
+      "0 corrections (0 vocabulary) · 0 unchanged takes · 0 rules in dictionary"
     )
     XCTAssertEqual(
-      dictionaryHeadline(corrections: 4, unchangedTakes: 46, rulesLearned: 7),
-      "4 corrections · 46 unchanged takes · 7 rules in dictionary"
+      dictionaryHeadline(
+        corrections: 4, vocabularyCorrections: 3, unchangedTakes: 46, rulesLearned: 7),
+      "4 corrections (3 vocabulary) · 46 unchanged takes · 7 rules in dictionary"
     )
 
     let withTelemetry = VoiceLabCorrectionRow(
@@ -442,7 +453,7 @@ final class VoiceLabTests: XCTestCase {
       "10 corrections on disk · dictionary empty — Teach explicitly promotes eligible store pairs now."
     )
     XCTAssertFalse(
-      dictionaryHeadline(corrections: 1, unchangedTakes: 0, rulesLearned: 0)
+      dictionaryHeadline(corrections: 1, vocabularyCorrections: 0, unchangedTakes: 0, rulesLearned: 0)
         .contains("voice taught")
     )
   }
@@ -467,5 +478,80 @@ final class VoiceLabTests: XCTestCase {
     let msg = try XCTUnwrap(model.voiceLabTeachMessage)
     XCTAssertTrue(msg.contains("live rules"), "expected live-rules count, got: \(msg)")
     XCTAssertTrue(msg.hasPrefix("Taught"), "expected Taught status, got: \(msg)")
+  }
+
+  func testVoiceLabRefreshLoadsRuleCandidates() {
+    let candidate = CsRuleCandidate(
+      target: "Vibecrafted",
+      variants: ["wajprawter", "WipeRapted"],
+      occurrences: 3
+    )
+    let engine = MockSettingsEngine(
+      qualityRecords: [],
+      lexiconEntries: [],
+      ruleCandidates: [candidate]
+    )
+    let model = SettingsViewModel(engine: engine)
+
+    model.refreshVoiceLab()
+
+    XCTAssertEqual(model.ruleCandidates, [candidate])
+  }
+
+  /// (f) With zero candidates the Suggested rules section disappears entirely.
+  func testSuggestedRulesSectionHiddenAtZeroCandidates() {
+    XCTAssertFalse(ruleCandidatesSectionVisible([]))
+
+    let candidate = CsRuleCandidate(
+      target: "Vibecrafted",
+      variants: ["wajprawter"],
+      occurrences: 2
+    )
+    XCTAssertTrue(ruleCandidatesSectionVisible([candidate]))
+
+    let engine = MockSettingsEngine(qualityRecords: [], lexiconEntries: [])
+    let model = SettingsViewModel(engine: engine)
+    model.refreshVoiceLab()
+    XCTAssertTrue(model.ruleCandidates.isEmpty)
+    XCTAssertFalse(ruleCandidatesSectionVisible(model.ruleCandidates))
+  }
+
+  func testTeachRuleCandidateCallsEngineAndRefreshes() throws {
+    let candidate = CsRuleCandidate(
+      target: "Vibecrafted",
+      variants: ["wajprawter"],
+      occurrences: 3
+    )
+    var taught: [(String, String, String)] = []
+    let engine = MockSettingsEngine(
+      qualityRecords: [],
+      lexiconEntries: [],
+      ruleCandidates: [candidate],
+      teachSpanObserver: { variant, canonical, kind in
+        taught.append((variant, canonical, kind))
+        return CsQualityCommitResult(
+          pairsLearned: 1,
+          evidenceOnly: false,
+          acknowledgement: "Saved — 1 rule learned",
+          teachSeen: nil,
+          teachRequired: nil
+        )
+      }
+    )
+    let model = SettingsViewModel(engine: engine)
+    model.refreshVoiceLab()
+
+    model.teachRuleCandidate(target: candidate.target, variant: candidate.variants[0])
+
+    let deadline = Date().addingTimeInterval(2)
+    while model.voiceLabTeachMessage == nil, Date() < deadline {
+      RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+    }
+    XCTAssertEqual(taught.count, 1)
+    XCTAssertEqual(taught[0].0, candidate.variants[0])
+    XCTAssertEqual(taught[0].1, candidate.target)
+    XCTAssertEqual(taught[0].2, "vocabulary")
+    let msg = try XCTUnwrap(model.voiceLabTeachMessage)
+    XCTAssertEqual(msg, "Saved — 1 rule learned")
   }
 }

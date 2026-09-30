@@ -8888,6 +8888,85 @@ public func FfiConverterTypeCsDictionaryTeachResult_lower(_ value: CsDictionaryT
 }
 
 
+/**
+ * One content change between the raw STT text and the human-edited text.
+ */
+public struct CsDiffSpan: Equatable, Hashable {
+    public var raw: String
+    public var edited: String
+    public var tier: CsDiffTier
+    public var contextBefore: String
+    public var contextAfter: String
+    /**
+     * PCM occurrence identity pinned to this span's words — `None` until cut
+     * A6/T attaches per-word PCM identity to quality records.
+     */
+    public var occurrenceRef: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(raw: String, edited: String, tier: CsDiffTier, contextBefore: String, contextAfter: String,
+        /**
+         * PCM occurrence identity pinned to this span's words — `None` until cut
+         * A6/T attaches per-word PCM identity to quality records.
+         */occurrenceRef: String?) {
+        self.raw = raw
+        self.edited = edited
+        self.tier = tier
+        self.contextBefore = contextBefore
+        self.contextAfter = contextAfter
+        self.occurrenceRef = occurrenceRef
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsDiffSpan: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsDiffSpan: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsDiffSpan {
+        return
+            try CsDiffSpan(
+                raw: FfiConverterString.read(from: &buf),
+                edited: FfiConverterString.read(from: &buf),
+                tier: FfiConverterTypeCsDiffTier.read(from: &buf),
+                contextBefore: FfiConverterString.read(from: &buf),
+                contextAfter: FfiConverterString.read(from: &buf),
+                occurrenceRef: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsDiffSpan, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.raw, into: &buf)
+        FfiConverterString.write(value.edited, into: &buf)
+        FfiConverterTypeCsDiffTier.write(value.tier, into: &buf)
+        FfiConverterString.write(value.contextBefore, into: &buf)
+        FfiConverterString.write(value.contextAfter, into: &buf)
+        FfiConverterOptionString.write(value.occurrenceRef, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDiffSpan_lift(_ buf: RustBuffer) throws -> CsDiffSpan {
+    return try FfiConverterTypeCsDiffSpan.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDiffSpan_lower(_ value: CsDiffSpan) -> RustBuffer {
+    return FfiConverterTypeCsDiffSpan.lower(value)
+}
+
+
 public struct CsDocumentHistoryEntry: Equatable, Hashable {
     public var revision: UInt64
     public var renderedText: String
@@ -11719,6 +11798,66 @@ public func FfiConverterTypeCsResetPreview_lower(_ value: CsResetPreview) -> Rus
 
 
 /**
+ * A target canonical term the user may want to teach, backed by repeated raw
+ * variants across corrections.
+ */
+public struct CsRuleCandidate: Equatable, Hashable {
+    public var target: String
+    public var variants: [String]
+    public var occurrences: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(target: String, variants: [String], occurrences: UInt64) {
+        self.target = target
+        self.variants = variants
+        self.occurrences = occurrences
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsRuleCandidate: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsRuleCandidate: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsRuleCandidate {
+        return
+            try CsRuleCandidate(
+                target: FfiConverterString.read(from: &buf),
+                variants: FfiConverterSequenceString.read(from: &buf),
+                occurrences: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsRuleCandidate, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.target, into: &buf)
+        FfiConverterSequenceString.write(value.variants, into: &buf)
+        FfiConverterUInt64.write(value.occurrences, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsRuleCandidate_lift(_ buf: RustBuffer) throws -> CsRuleCandidate {
+    return try FfiConverterTypeCsRuleCandidate.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsRuleCandidate_lower(_ value: CsRuleCandidate) -> RustBuffer {
+    return FfiConverterTypeCsRuleCandidate.lower(value)
+}
+
+
+/**
  * Complete canonical projection for one sealed LLM lane. Credentials never cross the
  * bridge: only the owning account name and presence/auth booleans are exposed.
  */
@@ -14322,6 +14461,95 @@ public func FfiConverterTypeCsCoverageUnavailableReason_lower(_ value: CsCoverag
 }
 
 
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * Classification of one changed span.
+ */
+
+public enum CsDiffTier: Equatable, Hashable {
+
+    case vocabulary
+    case casing
+    case punctuation
+    case insert
+    case delete
+
+
+
+}
+
+#if compiler(>=6)
+extension CsDiffTier: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsDiffTier: FfiConverterRustBuffer {
+    typealias SwiftType = CsDiffTier
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsDiffTier {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .vocabulary
+
+        case 2: return .casing
+
+        case 3: return .punctuation
+
+        case 4: return .insert
+
+        case 5: return .delete
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CsDiffTier, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .vocabulary:
+            writeInt(&buf, Int32(1))
+
+
+        case .casing:
+            writeInt(&buf, Int32(2))
+
+
+        case .punctuation:
+            writeInt(&buf, Int32(3))
+
+
+        case .insert:
+            writeInt(&buf, Int32(4))
+
+
+        case .delete:
+            writeInt(&buf, Int32(5))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDiffTier_lift(_ buf: RustBuffer) throws -> CsDiffTier {
+    return try FfiConverterTypeCsDiffTier.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDiffTier_lower(_ value: CsDiffTier) -> RustBuffer {
+    return FfiConverterTypeCsDiffTier.lower(value)
+}
+
+
 
 /**
  * Error surfaced across the FFI boundary. One enum for every slice:
@@ -16539,6 +16767,31 @@ fileprivate struct FfiConverterSequenceTypeCsConfigEntry: FfiConverterRustBuffer
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeCsDiffSpan: FfiConverterRustBuffer {
+    typealias SwiftType = [CsDiffSpan]
+
+    public static func write(_ value: [CsDiffSpan], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCsDiffSpan.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CsDiffSpan] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CsDiffSpan]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCsDiffSpan.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeCsDocumentHistoryEntry: FfiConverterRustBuffer {
     typealias SwiftType = [CsDocumentHistoryEntry]
 
@@ -16931,6 +17184,31 @@ fileprivate struct FfiConverterSequenceTypeCsQualityRecord: FfiConverterRustBuff
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeCsQualityRecord.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCsRuleCandidate: FfiConverterRustBuffer {
+    typealias SwiftType = [CsRuleCandidate]
+
+    public static func write(_ value: [CsRuleCandidate], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCsRuleCandidate.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CsRuleCandidate] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CsRuleCandidate]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCsRuleCandidate.read(from: &buf))
         }
         return seq
     }
@@ -17367,6 +17645,17 @@ public func modelDirectories()throws  -> [CsModelDirectory]  {
 })
 }
 /**
+ * Tiered word-level diff between the raw STT text and the human-edited text.
+ */
+public func qualityDiffSpans(raw: String, edited: String) -> [CsDiffSpan]  {
+    return try!  FfiConverterSequenceTypeCsDiffSpan.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_func_quality_diff_spans(
+        FfiConverterString.lower(raw),
+        FfiConverterString.lower(edited),$0
+    )
+})
+}
+/**
  * Finalize one correction: the revision always saves; word-level lexicon
  * pairs are derived and gated individually. `Err` means the SAVE failed.
  */
@@ -17387,6 +17676,17 @@ public func qualityRecentListing(limit: UInt64)throws  -> CsQualityListing  {
     return try  FfiConverterTypeCsQualityListing_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_func_quality_recent_listing(
         FfiConverterUInt64.lower(limit),$0
+    )
+})
+}
+/**
+ * Mine repeated vocabulary corrections into dictionary-rule candidates.
+ * Targets already present in the dictionary are excluded.
+ */
+public func qualityRuleCandidates(minOccurrences: UInt64)throws  -> [CsRuleCandidate]  {
+    return try  FfiConverterSequenceTypeCsRuleCandidate.lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_func_quality_rule_candidates(
+        FfiConverterUInt64.lower(minOccurrences),$0
     )
 })
 }
@@ -17557,10 +17857,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_model_directories() != 32805) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_func_quality_diff_spans() != 11032) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_func_quality_finalize_correction() != 53355) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_quality_recent_listing() != 34225) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_quality_rule_candidates() != 65230) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_quality_teach_dictionary_from_store() != 46244) {
