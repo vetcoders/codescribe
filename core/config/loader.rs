@@ -1906,6 +1906,9 @@ impl Config {
     ///
     /// Can be overridden with `CODESCRIBE_DATA_DIR` environment variable.
     pub fn config_dir() -> PathBuf {
+        if let Some(host) = super::runtime_host::selected() {
+            return host.data_directory.clone();
+        }
         // Helper to canonicalize if path exists (resolves macOS /var → /private/var)
         let maybe_canonicalize = |p: PathBuf| -> PathBuf { p.canonicalize().unwrap_or(p) };
 
@@ -1922,6 +1925,9 @@ impl Config {
 
     /// Get the full path to the .env file.
     pub fn env_path() -> PathBuf {
+        if let Some(host) = super::runtime_host::selected() {
+            return host.data_directory.join(".env");
+        }
         if let Ok(custom) = std::env::var("CODESCRIBE_ENV_PATH") {
             return PathBuf::from(shellexpand::tilde(&custom).into_owned());
         }

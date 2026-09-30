@@ -42,6 +42,9 @@ pub struct AgentTurnLease {
 /// `CODESCRIBE_DATA_DIR` to relocate it would let the installer and runtime
 /// lock different files.
 pub fn install_interlock_path() -> PathBuf {
+    if let Some(host) = super::runtime_host::selected() {
+        return host.data_directory.join(INSTALL_INTERLOCK_FILE_NAME);
+    }
     BaseDirs::new()
         .map(|dirs| {
             dirs.home_dir()
