@@ -1284,7 +1284,48 @@ async fn format_text_with_status_channels_for_policy(
             inter_chunk_timeout: request_timing.inter_chunk_timeout(),
         };
         let mut retryable_error = true;
-        let result_opt = if should_stream {
+        // On-device lane (opt-in knob, W6): one host attempt first. Any
+        // failure falls back to the cloud wire below inside the same retry
+        // budget, so refusal detection, `AiNoop` handling and the retry
+        // policy apply to both engines identically.
+        let on_device_output = if !assistive
+            && crate::llm::on_device::on_device_formatting_selected()
+        {
+            match crate::llm::on_device::on_device_formatter() {
+                Some(formatter) => match formatter.format(&system_prompt, &user_message).await {
+                    Ok(assistant_text) => {
+                        if let Some(callback) = stream_context.callbacks.assistant.as_ref() {
+                            callback(&assistant_text);
+                        }
+                        info!(
+                            "Formatted on-device ({} -> {} chars)",
+                            user_message.len(),
+                            assistant_text.len()
+                        );
+                        Some(ProviderOutput {
+                            assistant_text,
+                            reasoning_text: None,
+                        })
+                    }
+                    Err(error) => {
+                        warn!(%error, "on-device formatter failed; falling back to the cloud lane");
+                        None
+                    }
+                },
+                None => {
+                    warn!(
+                        "on-device formatting selected but no host formatter is registered; \
+                         using the cloud lane"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let result_opt = if on_device_output.is_some() {
+            on_device_output
+        } else if should_stream {
             match call_provider_once(
                 wire_family,
                 &user_message,
