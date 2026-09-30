@@ -702,12 +702,27 @@ pub struct CleanTranscriptEvent {
     pub source: Option<String>,
 }
 
+/// Persistence failure reported to the bus's diagnostic sink before it is
+/// logged. Text-free by construction: the committed document has no field
+/// here, so no observer can ever receive it.
+pub(crate) struct PersistenceDiagnostic<'a> {
+    pub session_id: &'a str,
+    pub file: &'a str,
+    pub error: &'a io::Error,
+}
+
+/// Injectable observer for persistence failures. Production installs a no-op;
+/// tests install a recording sink so assertions never depend on tracing's
+/// process-global callsite state.
+pub(crate) type PersistenceDiagnosticSink = Arc<dyn Fn(&PersistenceDiagnostic<'_>) + Send + Sync>;
+
 /// Synchronous low-frequency observer. Each lifecycle or authenticated ledger
 /// projection attempts a flush; persistence loss cannot suppress live text.
 pub struct TranscriptBus {
     session: TranscriptSession,
     path: PathBuf,
     writer: Mutex<TranscriptBusWriter>,
+    persistence_diagnostic_sink: PersistenceDiagnosticSink,
 }
 
 /// One lock orders live lifecycle and projections. Sequence is in-process
@@ -1099,7 +1114,15 @@ impl TranscriptBus {
                 last_projection: None,
                 announced_documents: HashSet::new(),
             }),
+            persistence_diagnostic_sink: Arc::new(|_| {}),
         }
+    }
+
+    /// Test seam: observe persistence failures directly, without a tracing
+    /// subscriber. Production logging in `log_write_error` is unchanged.
+    #[cfg(test)]
+    fn set_persistence_diagnostic_sink(&mut self, sink: PersistenceDiagnosticSink) {
+        self.persistence_diagnostic_sink = sink;
     }
 
     /// Open an explicit path. Kept public for deterministic pipeline tests and
@@ -1401,7 +1424,13 @@ impl TranscriptBus {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("transcript-events.jsonl");
-        tracing::warn!(%error, file, session_id = %self.session.session_id, persistence = "disabled_for_session", "clean transcript persistence unavailable; live projection continues without append proof");
+        let diagnostic = PersistenceDiagnostic {
+            session_id: &self.session.session_id,
+            file,
+            error: &error,
+        };
+        (self.persistence_diagnostic_sink)(&diagnostic);
+        tracing::warn!(error = %diagnostic.error, file = diagnostic.file, session_id = %diagnostic.session_id, persistence = "disabled_for_session", "clean transcript persistence unavailable; live projection continues without append proof");
     }
 }
 
@@ -1456,6 +1485,23 @@ mod tests {
         ObservationProducer, OccurrenceIdentity,
     };
     use std::sync::Arc;
+
+    /// Serializes tests that emit the persistence-failure `warn!` callsite.
+    /// tracing caches each callsite's `Interest` process-globally and
+    /// `DefaultCallsite::set_interest` is a plain last-writer-wins store: a
+    /// sibling test's first hit of the callsite with no subscriber computes
+    /// `Interest::never` from an empty dispatcher registry and can store it
+    /// *after* the capturing test rebuilt the cache for its scoped
+    /// subscriber, silently disabling the callsite on the capturing thread as
+    /// well. Holding this lock for the whole body of every test that can emit
+    /// the callsite removes that cross-thread dependency.
+    static PERSISTENCE_LOG_SERIAL: Mutex<()> = Mutex::new(());
+
+    fn persistence_log_serial() -> std::sync::MutexGuard<'static, ()> {
+        PERSISTENCE_LOG_SERIAL
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
 
     #[test]
     fn history_lists_three_revisions_of_one_take_with_provenance() {
@@ -2191,6 +2237,7 @@ mod tests {
 
     #[test]
     fn open_failure_keeps_the_production_bus_and_exact_terminal_text() {
+        let _serial = persistence_log_serial();
         let temp = tempfile::tempdir().unwrap();
         // Opening a directory as a file fails without touching user permissions.
         let bus = TranscriptBus::open_with_path(session("open-fault"), temp.path().to_path_buf());
@@ -2207,6 +2254,11 @@ mod tests {
 
     #[test]
     fn persistence_failure_is_logged_without_logging_the_committed_document() {
+        // End-to-end proof that the production `warn!` still fires with the
+        // exact contract content. The serial guard keeps sibling tests from
+        // hitting the same callsite while this scoped subscriber's interest
+        // is cached (see `PERSISTENCE_LOG_SERIAL`).
+        let _serial = persistence_log_serial();
         let temp = tempfile::tempdir().unwrap();
         let log_path = temp.path().join("diagnostics.log");
         let log_file = std::fs::File::create(&log_path).unwrap();
@@ -2217,12 +2269,9 @@ mod tests {
             .with_writer(move || log_file.try_clone().unwrap())
             .finish();
         tracing::subscriber::with_default(subscriber, || {
-            // Sibling tests hit the same warn callsites with no subscriber. A
-            // first hit racing this scoped subscriber's registration can cache
-            // `Interest::never` for the callsite (it registers after the rebuild
-            // but computed its interest before this dispatcher existed). Recompute
-            // interest now that this dispatcher is registered, so the capture
-            // does not depend on parallel test scheduling.
+            // This test is the only one running that can hit the warn
+            // callsite, so recomputing interest with this dispatcher
+            // registered settles the cache deterministically.
             tracing::callsite::rebuild_interest_cache();
             let bus = TranscriptBus::open_with_path(
                 session("diagnostic-fault"),
@@ -2241,7 +2290,46 @@ mod tests {
     }
 
     #[test]
+    fn persistence_failure_reaches_the_diagnostic_sink_without_the_document() {
+        // The deterministic twin of the tracing capture above: the production
+        // failure report is observed through the injected sink, so the
+        // assertion cannot depend on tracing's process-global callsite state.
+        let _serial = persistence_log_serial();
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("events.jsonl");
+        let mut bus = TranscriptBus::open_at(session("sink-fault"), path.clone(), None).unwrap();
+        let diagnostics = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&diagnostics);
+        bus.set_persistence_diagnostic_sink(Arc::new(move |diagnostic| {
+            observed.lock().unwrap().push((
+                diagnostic.session_id.to_string(),
+                diagnostic.file.to_string(),
+                diagnostic.error.to_string(),
+            ));
+        }));
+        let fault = inject_fault(&bus);
+        fault.lock().unwrap().remaining = Some(0);
+        bus.publish_started();
+        let (ledger, _, revision) = committed_fixture("sink-fault");
+        let events = bus.publish_revision(&revision, &ledger);
+        assert_committed(&events, &revision, "sink-fault");
+        end_once(&bus, &revision.rendered_text);
+        // The first failed append disables persistence for the session, so
+        // exactly one diagnostic is reported.
+        let diagnostics = diagnostics.lock().unwrap();
+        assert_eq!(diagnostics.len(), 1, "diagnostics: {diagnostics:?}");
+        let (session_id, file, error) = &diagnostics[0];
+        assert_eq!(session_id, "sink-fault");
+        assert_eq!(file, "events.jsonl");
+        assert!(error.contains("controlled append failure"));
+        for payload in [session_id, file, error] {
+            assert!(!payload.contains("Zażółć"));
+        }
+    }
+
+    #[test]
     fn failed_start_and_revision_writes_do_not_suppress_committed_entries() {
+        let _serial = persistence_log_serial();
         for fail_start in [true, false] {
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("events.jsonl");
@@ -2269,6 +2357,7 @@ mod tests {
 
     #[test]
     fn terminal_write_and_flush_failures_keep_one_delivery_obligation() {
+        let _serial = persistence_log_serial();
         for flush in [false, true] {
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("events.jsonl");
@@ -2296,6 +2385,7 @@ mod tests {
 
     #[test]
     fn prefix_failure_is_not_retried_and_new_sessions_do_not_append_to_it() {
+        let _serial = persistence_log_serial();
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("events.jsonl");
         let bus = TranscriptBus::open_at(session("prefix"), path.clone(), None).unwrap();
@@ -2354,6 +2444,7 @@ mod tests {
 
     #[test]
     fn uncertain_flush_is_not_replayed_when_sink_recovers() {
+        let _serial = persistence_log_serial();
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("events.jsonl");
         let bus = TranscriptBus::open_at(session("flush"), path.clone(), None).unwrap();
@@ -2393,6 +2484,7 @@ mod tests {
 
     #[test]
     fn terminal_user_revision_survives_failure_without_reopening_delivery() {
+        let _serial = persistence_log_serial();
         for failing in [false, true] {
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("events.jsonl");
