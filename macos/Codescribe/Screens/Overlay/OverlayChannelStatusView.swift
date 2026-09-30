@@ -75,6 +75,15 @@ enum OverlayAgentGlyph: CaseIterable, Equatable, Sendable {
   static let slotSize = CGSize(width: 18, height: 22)
 }
 
+/// Display-only projection of the controller's per-digit HUD state. The bridge
+/// supplies this independently of the delivery mailbox once it is exposed.
+struct OverlayChannelHudProjection: Equatable {
+  let open: Bool
+  let loud: Bool
+  let autosealDeadline: Date?
+  let followerAlive: Bool
+}
+
 /// A quiet header affordance. Delivery details belong to its popover, not the transcript.
 struct OverlayChannelStatusView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -85,6 +94,40 @@ struct OverlayChannelStatusView: View {
   /// False while the panel is hidden or occluded: the waiting pulse must not
   /// keep the render loop awake.
   let animates: Bool
+  let hudStates: [String: OverlayChannelHudProjection]
+  let onToggleChannel: ((UInt8) -> Void)?
+
+  init(
+    channels: [OverlayChannelDelivery], unavailable: Bool,
+    palette: OverlayAppearancePalette, animates: Bool,
+    hudStates: [String: OverlayChannelHudProjection] = [:],
+    onToggleChannel: ((UInt8) -> Void)? = nil
+  ) {
+    self.channels = channels
+    self.unavailable = unavailable
+    self.palette = palette
+    self.animates = animates
+    self.hudStates = hudStates
+    self.onToggleChannel = onToggleChannel
+  }
+
+  static func toggleDigit(for channel: String) -> UInt8? {
+    guard let digit = UInt8(channel), (1...9).contains(digit) else { return nil }
+    return digit
+  }
+
+  func toggle(_ channel: OverlayChannelDelivery) {
+    guard let digit = Self.toggleDigit(for: channel.channel) else { return }
+    onToggleChannel?(digit)
+  }
+
+  func isOpen(_ channel: OverlayChannelDelivery) -> Bool {
+    hudStates[channel.channel]?.open ?? channel.isOpen
+  }
+
+  func hasDeadFollower(_ channel: OverlayChannelDelivery) -> Bool {
+    hudStates[channel.channel]?.followerAlive == false
+  }
 
   @State private var showsDetails = false
 
@@ -132,29 +175,40 @@ struct OverlayChannelStatusView: View {
   private var details: some View {
     VStack(alignment: .leading, spacing: 4) {
       ForEach(channels) { channel in
-        if channel.isOpen {
+        if isOpen(channel) {
           Label("Microphone active · channel \(channel.channel)", systemImage: "mic.fill")
             .font(.system(size: 11, weight: .medium))
             .foregroundStyle(palette.listeningStatus.color)
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityIdentifier("overlay-channel-open-\(channel.channel)")
         }
-        HStack(spacing: 6) {
-          Text("\(channel.channel) · \(channel.agent)")
-            .lineLimit(1)
-            .truncationMode(.middle)
-          Spacer(minLength: 4)
-          let rowGlyph =
-            OverlayAgentGlyph.resolve(channels: [channel], unavailable: unavailable) ?? .attached
-          Text(rowGlyph.character)
-            .font(.system(size: 11, weight: .medium, design: .monospaced))
-            .foregroundStyle(rowGlyph.tone(in: palette).color)
-            .accessibilityHidden(true)
-          Text(detail(for: channel))
-            .accessibilityIdentifier("overlay-channel-delivery-\(channel.channel)")
+        Button {
+          toggle(channel)
+        } label: {
+          HStack(spacing: 6) {
+            Text("\(channel.channel) · \(channel.agent)")
+              .lineLimit(1)
+              .truncationMode(.middle)
+            Spacer(minLength: 4)
+            let rowGlyph =
+              OverlayAgentGlyph.resolve(channels: [channel], unavailable: unavailable) ?? .attached
+            Text(rowGlyph.character)
+              .font(.system(size: 11, weight: .medium, design: .monospaced))
+              .foregroundStyle(rowGlyph.tone(in: palette).color)
+              .accessibilityHidden(true)
+            Text(detail(for: channel))
+              .accessibilityIdentifier("overlay-channel-delivery-\(channel.channel)")
+          }
+          .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .disabled(onToggleChannel == nil || Self.toggleDigit(for: channel.channel) == nil)
         .font(.system(size: 11, weight: .medium))
         .foregroundStyle(palette.mutedText.color)
+        .opacity(hasDeadFollower(channel) ? 0.55 : 1)
+        .accessibilityLabel("\(channel.channel) · \(channel.agent), \(detail(for: channel))")
+        .accessibilityHint(isOpen(channel) ? "Hang up channel" : "Open channel")
+        .accessibilityIdentifier("overlay-channel-toggle-\(channel.channel)")
         .accessibilityElement(children: .combine)
       }
       if unavailable {
@@ -167,13 +221,15 @@ struct OverlayChannelStatusView: View {
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
-  private func detail(for channel: OverlayChannelDelivery) -> String {
+  func detail(for channel: OverlayChannelDelivery) -> String {
     if unavailable { return "status unavailable" }
+    let delivery: String
     switch channel.stage {
-    case nil: return "no sealed utterance"
-    case .sent: return "sent · waiting for receipt"
-    case .queued: return "queued · waiting for receipt"
-    case .received: return "receipt confirmed by the agent"
+    case nil: delivery = "no sealed utterance"
+    case .sent: delivery = "sent · waiting for receipt"
+    case .queued: delivery = "queued · waiting for receipt"
+    case .received: delivery = "receipt confirmed by the agent"
     }
+    return hasDeadFollower(channel) ? "\(delivery) · nobody listening" : delivery
   }
 }

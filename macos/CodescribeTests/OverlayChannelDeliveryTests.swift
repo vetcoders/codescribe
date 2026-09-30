@@ -229,6 +229,65 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(status.components(separatedBy: "showsDetails.toggle()").count - 1, 1)
   }
 
+  func testRosterToggleAcceptsOnlyChannelDigitsAndForwardsEachClickOnce() {
+    XCTAssertEqual(OverlayChannelStatusView.toggleDigit(for: "1"), 1)
+    XCTAssertEqual(OverlayChannelStatusView.toggleDigit(for: "9"), 9)
+    for invalid in ["0", "10", "agent-1", ""] {
+      XCTAssertNil(OverlayChannelStatusView.toggleDigit(for: invalid))
+    }
+
+    var calls: [UInt8] = []
+    let view = OverlayChannelStatusView(
+      channels: [], unavailable: false, palette: .dark, animates: false,
+      onToggleChannel: { calls.append($0) })
+    let closed = OverlayChannelDelivery(
+      channel: "1", agent: "klaudiusz", deliveryID: nil, stage: nil, isOpen: false)
+    let open = OverlayChannelDelivery(
+      channel: "3", agent: "roman", deliveryID: nil, stage: nil, isOpen: true)
+    view.toggle(closed)
+    view.toggle(open)
+    view.toggle(.init(channel: "10", agent: "invalid", deliveryID: nil, stage: nil, isOpen: false))
+    XCTAssertEqual(calls, [1, 3], "both directions use the same per-digit toggle intent")
+  }
+
+  func testRosterClickWithoutBridgeActionDoesNotStartAnyAgent() {
+    let channel = OverlayChannelDelivery(
+      channel: "2", agent: "miron", deliveryID: nil, stage: nil, isOpen: false)
+    let view = OverlayChannelStatusView(
+      channels: [channel], unavailable: false, palette: .light, animates: false)
+    XCTAssertNil(view.onToggleChannel)
+    view.toggle(channel)
+    XCTAssertFalse(view.isOpen(channel), "a click cannot optimistically open the channel")
+  }
+
+  func testDeadFollowerIsVisibleWithoutRewritingDeliveryOrOpenState() {
+    let channel = OverlayChannelDelivery(
+      channel: "3", agent: "roman", deliveryID: "delivery-3", stage: .queued, isOpen: true)
+    let view = OverlayChannelStatusView(
+      channels: [channel], unavailable: false, palette: .dark, animates: false,
+      hudStates: ["3": .init(open: false, loud: false, autosealDeadline: nil, followerAlive: false)])
+    XCTAssertFalse(view.isOpen(channel), "controller HUD state wins over older mailbox state")
+    XCTAssertTrue(view.hasDeadFollower(channel))
+    XCTAssertEqual(view.detail(for: channel), "queued · waiting for receipt · nobody listening")
+    XCTAssertEqual(channel.stage, .queued, "liveness does not reinterpret delivery evidence")
+  }
+
+  func testLiveAndUnknownFollowerKeepTheExistingDeliveryCopy() {
+    let channel = OverlayChannelDelivery(
+      channel: "1", agent: "klaudiusz", deliveryID: "delivery-1", stage: .received,
+      isOpen: false)
+    let live = OverlayChannelStatusView(
+      channels: [channel], unavailable: false, palette: .light, animates: false,
+      hudStates: ["1": .init(open: true, loud: true, autosealDeadline: nil, followerAlive: true)])
+    let unknown = OverlayChannelStatusView(
+      channels: [channel], unavailable: false, palette: .light, animates: false)
+    XCTAssertTrue(live.isOpen(channel))
+    XCTAssertFalse(live.hasDeadFollower(channel))
+    XCTAssertEqual(live.detail(for: channel), "receipt confirmed by the agent")
+    XCTAssertFalse(unknown.hasDeadFollower(channel), "missing HUD evidence must not claim death")
+    XCTAssertEqual(unknown.detail(for: channel), "receipt confirmed by the agent")
+  }
+
   // MARK: Agent glyph (Annex A3/A4 — the state table is the Codex root's proposal)
 
   func testAgentGlyphIsOneCharacterWithOneLabelPerState() {
