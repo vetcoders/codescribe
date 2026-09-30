@@ -804,15 +804,19 @@ struct DictationOverlayView: View {
     VStack(alignment: .leading, spacing: 0) {
       LiveTranscriptTextView(
         text: state.canvasText,
+        uncertainWords: state.canvasUncertainWords,
         isEditable: state.isTranscriptEditable,
         appearance: palette.appearance,
+        showsDiagnostics: showsDiagnostics,
         contentInsets: NSEdgeInsets(
           top: headerHeight + 4, left: 0, bottom: footerHeight + 10, right: 0),
         onEditingChanged: { editing in
           if editing { state.beginTranscriptEdit() } else { state.endTranscriptEdit() }
         },
         onTextChange: { state.updateRevisionDraft($0) },
-        onCancelEdit: { state.discardRevisionDraft() }
+        onCancelEdit: { state.discardRevisionDraft() },
+        onPlayUncertainWord: { state.playUncertainWord($0) },
+        onTeachUncertainWord: { state.teachUncertainWord($0, canonical: $1) }
       )
       .modifier(OverlayScrollEdgeEffects())
       .overlay(alignment: .bottomTrailing) {

@@ -63,6 +63,44 @@ private final class OverlayStateTestEngine: DictationEngine {
   var rosterSnapshot: [CsChannelRosterState] = []
   var toggledDigits: [UInt8] = []
   var toggleFailure: Error?
+  struct WordClipRequest: Equatable {
+    let sessionId: String
+    let captureEpoch: UInt64
+    let sampleStart: UInt64
+    let sampleEnd: UInt64
+    let padMs: UInt32
+  }
+  struct TeachRequest: Equatable {
+    let variant: String
+    let canonical: String
+    let kind: String
+  }
+  var wordClipRequests: [WordClipRequest] = []
+  var wordClipPath: String?
+  var teachRequests: [TeachRequest] = []
+  var teachAcknowledgement = "Saved as evidence — 1/3 manual confirmations"
+
+  func wordAudioClip(
+    sessionId: String, captureEpoch: UInt64, sampleStart: UInt64, sampleEnd: UInt64,
+    padMs: UInt32
+  ) throws -> String {
+    wordClipRequests.append(
+      WordClipRequest(
+        sessionId: sessionId, captureEpoch: captureEpoch, sampleStart: sampleStart,
+        sampleEnd: sampleEnd, padMs: padMs))
+    guard let wordClipPath else {
+      throw NSError(domain: "OverlayStateTestWordClip", code: 1)
+    }
+    return wordClipPath
+  }
+  func teachSpan(variant: String, canonical: String, kind: String) throws
+    -> CsQualityCommitResult
+  {
+    teachRequests.append(TeachRequest(variant: variant, canonical: canonical, kind: kind))
+    return CsQualityCommitResult(
+      pairsLearned: 0, evidenceOnly: true, acknowledgement: teachAcknowledgement,
+      teachSeen: 1, teachRequired: 3)
+  }
 
   func channelRosterSnapshot() async -> [CsChannelRosterState] { rosterSnapshot }
   func toggleAgentChannel(digit: UInt8) async throws {
@@ -500,6 +538,150 @@ final class OverlayStateTests: XCTestCase {
       )
     )
     XCTAssertTrue(state.uncertainSpans.isEmpty)
+  }
+
+  // A6-3: canvas projection of the spans — the renderer's input contract.
+  private func a6Span(utf16Start: UInt32, utf16End: UInt32, rewritten: Bool = false)
+    -> CsUncertainSpan
+  {
+    CsUncertainSpan(
+      occurrenceSessionId: "a6-session",
+      occurrenceCaptureEpoch: 1,
+      slotSampleStart: 32_000,
+      slotSampleEnd: 48_000,
+      utf16Start: utf16Start,
+      utf16End: utf16End,
+      source: "whisper_token_logprob",
+      value: -1.9,
+      surfaceRewritten: rewritten,
+      producer: "whisper"
+    )
+  }
+
+  func testCanvasUncertainWordsPaintExactlyTheThirdIwo() {
+    let state = OverlayState()
+    state.applyTranscriptProjection(
+      transcriptProjection(
+        sequence: 1,
+        emittedAt: "2026-09-30T00:00:00Z",
+        sessionId: "a6-session",
+        renderedText: "Iwo Iwo Iwo Iwo Iwo",
+        phase: "listening",
+        terminal: false,
+        reducerAction: "record_ledger_projection",
+        uncertainSpans: [a6Span(utf16Start: 8, utf16End: 11)]
+      )
+    )
+
+    let words = state.canvasUncertainWords
+    XCTAssertEqual(words.count, 1)
+    XCTAssertEqual(words.first?.range, NSRange(location: 8, length: 3))
+    XCTAssertEqual(words.first?.word, "Iwo")
+    XCTAssertEqual(words.first?.occurrenceSessionId, "a6-session")
+    XCTAssertEqual(words.first?.slotSampleStart, 32_000)
+  }
+
+  func testDirtyRevisionDraftDropsAllUncertainPaint() {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    state.engine = engine
+    state.applyTranscriptProjection(
+      transcriptProjection(
+        sequence: 1,
+        emittedAt: "2026-09-30T00:00:00Z",
+        sessionId: "a6-session",
+        renderedText: "Iwo Iwo Iwo",
+        phase: "formatted",
+        terminal: true,
+        reducerAction: "apply_ledger_decision",
+        uncertainSpans: [a6Span(utf16Start: 0, utf16End: 3)]
+      )
+    )
+    XCTAssertEqual(state.canvasUncertainWords.count, 1)
+
+    state.beginTranscriptEdit()
+    state.updateRevisionDraft("Iwo Iwo changed")
+
+    XCTAssertTrue(state.isRevisionDraftDirty)
+    XCTAssertTrue(
+      state.canvasUncertainWords.isEmpty,
+      "a dirty draft invalidates every span — never paint the wrong bytes")
+  }
+
+  func testCoverageRefusedWithoutSpansHasNoUncertainPaint() {
+    let state = OverlayState()
+    state.applyTranscriptProjection(
+      transcriptProjection(
+        sequence: 1,
+        emittedAt: "2026-09-30T00:00:00Z",
+        sessionId: "a6-session",
+        renderedText: "Tekst zachowany",
+        phase: "coverage_refused",
+        terminal: true,
+        reducerAction: "record_coverage_refusal"
+      )
+    )
+    XCTAssertTrue(
+      state.canvasUncertainWords.isEmpty,
+      "coverage_refused is the completeness axis; it never creates word paint")
+  }
+
+  func testPlayUncertainWordRequestsThePinnedClipWithPadding() {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    state.engine = engine
+    let word = OverlayUncertainWord(
+      range: NSRange(location: 8, length: 3),
+      word: "Iwo",
+      source: "whisper_token_logprob",
+      value: -1.9,
+      surfaceRewritten: false,
+      producer: "whisper",
+      occurrenceSessionId: "a6-session",
+      occurrenceCaptureEpoch: 1,
+      slotSampleStart: 32_000,
+      slotSampleEnd: 48_000
+    )
+
+    state.playUncertainWord(word)
+
+    XCTAssertEqual(
+      engine.wordClipRequests,
+      [
+        OverlayStateTestEngine.WordClipRequest(
+          sessionId: "a6-session", captureEpoch: 1, sampleStart: 32_000,
+          sampleEnd: 48_000, padMs: 150)
+      ])
+    XCTAssertEqual(state.toast, "Word audio unavailable", "a missing clip is an honest notice")
+  }
+
+  func testTeachUncertainWordUsesTheExistingQualityPath() {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    state.engine = engine
+    let word = OverlayUncertainWord(
+      range: NSRange(location: 8, length: 3),
+      word: "iwo",
+      source: "whisper_token_logprob",
+      value: -1.9,
+      surfaceRewritten: false,
+      producer: "whisper",
+      occurrenceSessionId: "a6-session",
+      occurrenceCaptureEpoch: 1,
+      slotSampleStart: 32_000,
+      slotSampleEnd: 48_000
+    )
+
+    state.teachUncertainWord(word, canonical: "Iwo")
+
+    XCTAssertEqual(
+      engine.teachRequests,
+      [OverlayStateTestEngine.TeachRequest(variant: "iwo", canonical: "Iwo", kind: "lexicon_corrected")]
+    )
+    XCTAssertEqual(state.toast, "Saved as evidence — 1/3 manual confirmations")
+
+    state.teachUncertainWord(word, canonical: "   ")
+    XCTAssertEqual(engine.teachRequests.count, 1, "an empty correction teaches nothing")
   }
 
   func testLiveConsultationProjectionPreservesGroupEvidenceWithoutEndingCapture() {

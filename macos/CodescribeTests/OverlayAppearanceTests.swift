@@ -27,9 +27,19 @@ final class OverlayAppearanceTests: XCTestCase {
         ("processing", palette.processingStatus),
         ("success", palette.successStatus),
         ("error", palette.errorStatus),
+        ("uncertainWord", palette.uncertainWord),
+        ("lexiconMarker", palette.lexiconMarker),
       ] {
         assertContrast(token, on: palette, minimum: 4.5, role: role)
       }
+    }
+  }
+
+  func testUncertainWordStaysDistinctFromPhaseStatusTokens() {
+    for palette in [OverlayAppearancePalette.light, .dark] {
+      XCTAssertNotEqual(palette.uncertainWord, palette.processingStatus)
+      XCTAssertNotEqual(palette.uncertainWord, palette.errorStatus)
+      XCTAssertNotEqual(palette.uncertainWord, palette.lexiconMarker)
     }
   }
 
