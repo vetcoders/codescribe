@@ -396,6 +396,29 @@ impl SpeechSession {
         )
     }
 
+    /// Test-only constructor with the interim cadence pinned by the caller.
+    ///
+    /// `new_utterance*` resolves the cadence from the process-global
+    /// `CODESCRIBE_BUFFERED_INTERIM_SEC` env var. Under `cfg(test)` the config
+    /// loader's seeding window never closes (`can_seed_process_env`), so any
+    /// parallel or merely earlier `Config::load()` test that reads a real
+    /// settings.json reseeds that var for the rest of the process — a cadence
+    /// above the fed audio length then silently yields zero interim events.
+    /// Tests whose assertions depend on the cadence must pin it here instead
+    /// of inheriting ambient process state.
+    #[cfg(test)]
+    pub(crate) fn new_utterance_pinned_for_test(
+        sample_rate: u32,
+        interim_sec: f32,
+        max_silence_sec: f32,
+    ) -> Self {
+        Self::new_utterance_with_interim_and_silence(
+            sample_rate,
+            interim_sec,
+            Some(max_silence_sec),
+        )
+    }
+
     /// Shared constructor behind both buffered entry points. Resolves the tuned
     /// gate config, derives every sample-domain bound from it, and loads Silero.
     /// A VAD that fails to load is not fatal — the session runs with `vad: None`
@@ -1306,6 +1329,16 @@ impl SpeechSession {
     #[cfg(test)]
     pub fn raw_cursor(&self) -> usize {
         self.raw_cursor
+    }
+
+    /// Interim emission cadence in raw samples (test-only diagnostic), so a
+    /// failing busy-path assertion can name the cadence the session resolved.
+    #[cfg(test)]
+    pub(crate) fn interim_limit_raw_for_test(&self) -> Option<usize> {
+        match self.mode {
+            SpeechMode::Utterance { interim_limit, .. } => Some(interim_limit),
+            SpeechMode::Stream { .. } => None,
+        }
     }
 
     /// Current gate mode (test-only accessor).
