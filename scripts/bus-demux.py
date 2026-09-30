@@ -654,6 +654,64 @@ def emit(payload: dict[str, Any]) -> None:
     sys.stdout.flush()
 
 
+FOLLOWER_TEXT_LIMIT = 200
+
+
+def follower_paths(root: Path, lease_id: str) -> tuple[Path, Path]:
+    base = root / "runtime" / "followers" / lease_id
+    return base.with_suffix(".log"), base.with_suffix(".events.jsonl")
+
+
+def human_line(payload: dict[str, Any], channel: str | None = None) -> str:
+    stamp = str(payload.get("emitted_at") or utc_now())
+    try:
+        clock = datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone()
+        when = clock.strftime("%H:%M:%S")
+    except ValueError:
+        when = datetime.datetime.now().strftime("%H:%M:%S")
+    kind = str(payload.get("kind") or "notice")
+    audience = str(payload.get("audience") or payload.get("name") or "*")
+    who = f"{channel}·{audience}" if channel else audience
+    if kind == "attach":
+        return f"{when} attach {who} cursor={payload.get('cursor')} follower={payload.get('follower_pid')}"
+    if kind == "routing_ambiguity":
+        kind = "routing?"
+    elif payload.get("coverage") == COVERAGE_REFUSED:
+        kind = "refused"
+    elif kind == "revised":
+        kind = "draft"
+    delivery = payload.get("delivery_id")
+    identity = f" id={delivery}" if delivery else ""
+    revision = payload.get("reducer_revision")
+    revision_label = f" (rev {revision})" if kind == "draft" and revision is not None else ""
+    words = " ".join(str(payload.get("text") or "").split())[:FOLLOWER_TEXT_LIMIT]
+    return f"{when} {kind:<7} {who}{identity}{revision_label} {json.dumps(words, ensure_ascii=False)}"
+
+
+def emit_follower(
+    payload: dict[str, Any], events_path: Path | None, channel: str | None,
+    *, human_output: bool = True,
+) -> None:
+    if events_path is None:
+        emit(payload)
+        return
+    encoded = (json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
+    descriptor = os.open(events_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        remaining = memoryview(encoded)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written == 0:
+                raise OSError("follower event write made no progress")
+            remaining = remaining[written:]
+    finally:
+        os.close(descriptor)
+    if human_output:
+        sys.stdout.write(human_line(payload, channel) + "\n")
+        sys.stdout.flush()
+
+
 def consider(
     event: dict[str, Any],
     *,
@@ -1193,6 +1251,7 @@ class SessionLease:
             "cursor": self.cursor,
             "resumed": self.resumed,
             "active_names": names,
+            "follower_pid": os.getpid(),
         }
 
     def close(self) -> None:
@@ -1302,6 +1361,8 @@ def run(args: argparse.Namespace) -> int:
         return 2
 
     lease: SessionLease | None = None
+    events_path: Path | None = getattr(args, "follower_events", None)
+    follower_channel: str | None = getattr(args, "follower_channel", None)
     if args.provider:
         try:
             lease = SessionLease(
@@ -1321,7 +1382,7 @@ def run(args: argparse.Namespace) -> int:
         if lease.name:
             name = lease.name
             hear_all = False
-        emit(lease.attach_receipt())
+        emit_follower(lease.attach_receipt(), events_path, follower_channel)
 
     # One normalizer for the whole run: the evidence grain is stateful (it
     # remembers each session's document and whether its seal was reported), and
@@ -1330,6 +1391,28 @@ def run(args: argparse.Namespace) -> int:
     event_trigger: BusEventTrigger | None = None
     deferred: tuple[list[dict[str, Any]], int | None] | None = None
     recipients: set[str] | None = None
+    human_drafts: dict[tuple[Any, Any], dict[str, Any]] = {}
+
+    def draft_key(payload: dict[str, Any]) -> tuple[Any, Any]:
+        return payload.get("session_id"), payload.get("document_index")
+
+    def flush_human_drafts(key: tuple[Any, Any] | None = None) -> None:
+        keys = [key] if key is not None else list(human_drafts)
+        for current in keys:
+            draft = human_drafts.pop(current, None)
+            if draft is not None:
+                sys.stdout.write(human_line(draft, follower_channel) + "\n")
+        sys.stdout.flush()
+
+    def publish(payload: dict[str, Any]) -> None:
+        if events_path is not None and lease and lease.coalesce:
+            key = draft_key(payload)
+            if payload.get("kind") in ("draft", "revised"):
+                emit_follower(payload, events_path, follower_channel, human_output=False)
+                human_drafts[key] = payload
+                return
+            flush_human_drafts(key)
+        emit_follower(payload, events_path, follower_channel)
 
     def deliver(payloads: list[dict[str, Any]], next_cursor: int | None) -> None:
         nonlocal deferred
@@ -1338,7 +1421,7 @@ def run(args: argparse.Namespace) -> int:
             while remaining:
                 payload = remaining[0]
                 if not lease or lease.queue_delivery(payload):
-                    emit(payload)
+                    publish(payload)
                     if args.on_seal and payload.get("kind") == "seal":
                         fire_seal_hook(args.on_seal, payload)
                 remaining.pop(0)
@@ -1401,7 +1484,8 @@ def run(args: argparse.Namespace) -> int:
         if lease:
             lease.collect_acknowledgments()
             for payload in lease.pending.values():
-                emit(payload)
+                publish(payload)
+            flush_human_drafts()
         if args.once:
             last = None
             recipients = registered_recipients(args.bridge_home, path)
@@ -1426,7 +1510,8 @@ def run(args: argparse.Namespace) -> int:
             if lease:
                 lease.enrich(last)
             if not lease or lease.queue_delivery(last):
-                emit(last)
+                publish(last)
+            flush_human_drafts()
             return 0
 
         if lease:
@@ -1463,6 +1548,7 @@ def run(args: argparse.Namespace) -> int:
                     recipients = registered_recipients(args.bridge_home, path)
                 for raw, next_cursor in entries:
                     handle(raw, next_cursor)
+                flush_human_drafts()
                 if lease and not entries and offset != previous_offset:
                     lease.persist(active=True, cursor=offset)
             except BufferError:
@@ -2065,7 +2151,8 @@ def attach_command(args: argparse.Namespace) -> int:
         lease_state["active"] = False
         atomic_json(lease_path, lease_state)
     spawned = False
-    log_path = root / "runtime" / "followers" / f"{lease_id}.log"
+    log_path, events_path = follower_paths(root, lease_id)
+    errors_path = log_path.with_suffix(".errors.log")
     if pid is None:
         command = [
             sys.executable,
@@ -2083,16 +2170,24 @@ def attach_command(args: argparse.Namespace) -> int:
             "--drafts",
             "--follow",
             "--coalesce",
+            "--follower-events",
+            str(events_path),
+            "--follower-channel",
+            str(args.channel),
         ]
         if args.on_seal:
             command += ["--on-seal", args.on_seal]
         log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        with open(log_path, "ab") as log:
+        log_descriptor = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        os.fchmod(log_descriptor, 0o600)
+        errors_descriptor = os.open(errors_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        os.fchmod(errors_descriptor, 0o600)
+        with os.fdopen(log_descriptor, "ab") as log, os.fdopen(errors_descriptor, "ab") as errors:
             child = subprocess.Popen(
                 command,
                 stdin=subprocess.DEVNULL,
                 stdout=log,
-                stderr=log,
+                stderr=errors,
                 start_new_session=True,
             )
         atomic_json(
@@ -2108,12 +2203,13 @@ def attach_command(args: argparse.Namespace) -> int:
                 state
                 and state.get("schema") == LEASE_SCHEMA
                 and state.get("pid") == pid
+                and events_path.exists()
             ):
                 break
             if not process_is_alive(pid):
                 sys.stderr.write(
                     "bus-demux: attach failed: follower exited during startup; "
-                    f"see {log_path}\n"
+                    f"see {errors_path}\n"
                 )
                 return 3
             time.sleep(0.1)
@@ -2131,7 +2227,8 @@ def attach_command(args: argparse.Namespace) -> int:
             "resumed": resumed,
             "follower_pid": pid,
             "follower_spawned": spawned,
-            "follower_log": str(log_path) if spawned else None,
+            "follower_log": str(log_path),
+            "follower_events": str(events_path),
             "coalesce_requested": True,
             "on_seal_hook": bool(args.on_seal),
             "voice": voice_profile(root, name),
@@ -2154,6 +2251,7 @@ def status_command(args: argparse.Namespace) -> int:
     """
     root: Path = args.bridge_home
     lease_id = lease_identifier(args.provider, args.session)
+    log_path, events_path = follower_paths(root, lease_id)
     state = read_json(root / "leases" / f"{lease_id}.json")
     pending = state.get("pending") if isinstance(state, dict) else None
     if not isinstance(pending, list):
@@ -2199,6 +2297,8 @@ def status_command(args: argparse.Namespace) -> int:
             "schema": STATUS_SCHEMA,
             "kind": "status",
             "lease_id": lease_id,
+            "follower_log": str(log_path),
+            "follower_events": str(events_path),
             "attached": state is not None,
             "channel": channel,
             "name": name,
@@ -2258,7 +2358,7 @@ def watch_line(payload: Any, lease_id: str | None) -> dict[str, Any] | None:
 def watch_command(args: argparse.Namespace) -> int:
     """Compact, line-buffered monitor of one session's follower output.
 
-    Reads the follower log that ``--attach`` writes (or ``--from-file``) and
+    Reads the follower events that ``--attach`` writes (or ``--from-file``) and
     prints one JSON line per notable envelope, each delivery once. It never
     touches the lease, cursor or acknowledgments: the watch observes, the
     conversation acknowledges with ``--ack`` after it accepted the words.
@@ -2266,25 +2366,69 @@ def watch_command(args: argparse.Namespace) -> int:
     lease_id = (
         lease_identifier(args.provider, args.session) if args.provider else None
     )
-    source: Path = args.from_file or (
-        args.bridge_home / "runtime" / "followers" / f"{lease_id}.log"
-    )
+    if args.from_file is not None:
+        source = args.from_file
+    else:
+        old_log, events_path = follower_paths(args.bridge_home, lease_id)
+        source = events_path
+        if not events_path.exists() and old_log.is_file():
+            # A pre-sidecar follower still writes JSON to .log. An empty or
+            # human .log belongs to the new writer, whose sidecar may not yet
+            # exist when the monitor starts.
+            with old_log.open(encoding="utf-8", errors="replace") as old:
+                if any(line.lstrip().startswith("{") for _, line in zip(range(8), old)):
+                    source = old_log
+    channel = None
+    bindings = (read_json(args.bridge_home / AUDIENCE_BINDING_FILENAME) or {}).get("bindings")
+    if isinstance(bindings, dict):
+        for slot, binding in bindings.items():
+            if (
+                isinstance(binding, dict)
+                and binding.get("provider") == (args.provider or "").casefold()
+                and binding.get("provider_session_id") == args.session
+            ):
+                channel = str(slot)
+                break
     seen: set[str] = set()
 
     def pump(entries: list[tuple[str, int]]) -> None:
+        drafts: dict[tuple[Any, Any], dict[str, Any]] = {}
+
+        def flush(key: tuple[Any, Any] | None = None) -> None:
+            keys = [key] if key is not None else list(drafts)
+            for current in keys:
+                draft = drafts.pop(current, None)
+                if draft is not None:
+                    print(human_line(draft, channel), flush=True)
+
         for raw, _cursor in entries:
             try:
                 payload = json.loads(raw)
             except json.JSONDecodeError:
-                continue  # follower stderr shares the log
+                continue  # older logs can contain diagnostics
             line = watch_line(payload, lease_id)
-            if line is None:
+            if args.human:
+                if not isinstance(payload, dict) or payload.get("schema") not in (EVENT_SCHEMA, ATTACH_SCHEMA):
+                    continue
+                if lease_id and payload.get("lease_id") not in (None, lease_id):
+                    continue
+            elif line is None:
                 continue
-            identity = str(line["delivery_id"] or payload.get("source_event_id") or raw)
+            identity = str(payload.get("delivery_id") or payload.get("source_event_id") or raw)
             if identity in seen:
                 continue  # a restarted follower replays its pending mailbox
             seen.add(identity)
-            emit(line)
+            if args.human:
+                key = (payload.get("session_id"), payload.get("document_index"))
+                if payload.get("kind") in ("draft", "revised"):
+                    drafts[key] = payload
+                    continue
+                flush(key)
+                print(human_line(payload, channel), flush=True)
+            else:
+                emit(line)
+        if args.human:
+            flush()
 
     if args.once:
         if not source.is_file():
@@ -2388,16 +2532,19 @@ def main() -> int:
         "--watch",
         action="store_true",
         help="print one compact JSON line per seal, refused take, state-changing "
-        "or routing-ambiguity envelope from this session's follower log "
-        "(line-buffered; --once reads the log and exits)",
+        "or routing-ambiguity envelope from this session's follower events "
+        "(line-buffered; --once reads the events and exits)",
     )
+    parser.add_argument("--human", action="store_true", help="--watch as readable one-line envelopes")
     parser.add_argument(
         "--from-file",
         dest="from_file",
         type=Path,
         default=None,
-        help="--watch source instead of the session's follower log",
+        help="--watch source instead of the session's follower events",
     )
+    parser.add_argument("--follower-events", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--follower-channel", help=argparse.SUPPRESS)
     parser.add_argument(
         "--provider", help="client id, for example codex or claude-code"
     )
@@ -2480,6 +2627,8 @@ def main() -> int:
         parser.error("--speed must be positive")
     if args.voice is not None and not args.voice.strip():
         parser.error("--voice needs a voice id")
+    if args.human and not args.watch:
+        parser.error("--human travels with --watch")
     if args.watch or args.from_file is not None:
         if not args.watch:
             parser.error("--from-file travels with --watch")
