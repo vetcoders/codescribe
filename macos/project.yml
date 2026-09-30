@@ -56,6 +56,10 @@ targets:
         CSDeveloperSurface: $(CS_DEVELOPER_SURFACE)
         SUEnableAutomaticChecks: true
         LSUIElement: true
+        # LSMultipleInstancesProhibited is NOT set here: this target is also the
+        # CodescribeTests TEST_HOST, and a flagged host with the installed app's
+        # bundle id cannot launch while that app runs. Install/release lanes
+        # stamp it (scripts/lib/stamp-single-instance.sh, before codesign).
         NSMicrophoneUsageDescription: "Codescribe transcribes your speech locally with on-device Whisper."
         NSSpeechRecognitionUsageDescription: "Codescribe uses on-device speech recognition (including Polish) to turn your dictation into text without sending audio to the cloud."
         NSAppleEventsUsageDescription: "Codescribe uses Apple Events to bring apps forward and deliver transcribed text into the app you are working in."

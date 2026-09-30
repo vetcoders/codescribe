@@ -1635,7 +1635,7 @@ assert sorted(profiles) == [f"agent{i}" for i in range(8)], profiles
 PY
 
 # --watch: one compact line per notable envelope from the session's follower
-# log. Drafts, attach receipts and stderr noise stay out; a replayed delivery
+# events. Drafts, attach receipts and stderr noise stay out; a replayed delivery
 # prints once; another lease's envelope is not this session's; text is capped.
 WATCH_HOME="$WORKDIR/watch-bridge"
 python3 - "$DEMUX" "$WATCH_HOME" <<'PY'
@@ -1741,6 +1741,109 @@ bare = {key: value for key, value in env.items() if key != "CLAUDE_CODE_SESSION_
 unset = subprocess.run(base + ["--provider", "claude-code"], env=bare,
                        capture_output=True, text=True)
 assert unset.returncode == 2, unset
+PY
+
+# Spawned follower output is readable while full envelopes remain available
+# for --watch and recovery. The fixture uses isolated bridge roots only.
+python3 - "$DEMUX" "$WORKDIR/follower-human" <<'PY'
+import importlib.util, json, os, re, signal, stat, subprocess, sys, time
+from pathlib import Path
+
+demux, base = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("follower_human_test", demux)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+for drafts in (False, True):
+    root = Path(base, "drafts" if drafts else "seals")
+    root.mkdir(parents=True)
+    bus = root / "bus.jsonl"
+    rows = []
+    for sequence, status, words in (
+        (1, "utterance_revised", "James, projekt jeszcze trwa."),
+        (2, "utterance_revised", "James, projekt prawie gotowy."),
+        (3, "transcript_sealed", "James, tekst końcowy."),
+    ):
+        rows.append({"schema": module.CLEAN_SCHEMA, "sequence": sequence,
+                     "session_id": "test-session", "utterance_id": f"utterance-{sequence}",
+                     "emitted_at": "2026-09-30T15:42:39Z", "status": status,
+                     "audience": "james", "text": words, "source": "test_fixture"})
+    bus.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows))
+    lease = module.lease_identifier("codex", "human-session")
+    log, events = module.follower_paths(root, lease)
+    log.parent.mkdir(parents=True)
+    command = ["python3", demux, "--bus", str(bus), "--bridge-home", str(root),
+               "--provider", "codex", "--session", "human-session", "--name", "james",
+               "--from-start", "--coalesce", "--follower-events", str(events),
+               "--follower-channel", "2"]
+    if drafts:
+        command.append("--drafts")
+    with log.open("w", encoding="utf-8") as output:
+        subprocess.run(command, stdout=output, stderr=subprocess.PIPE, text=True, check=True)
+    lines = log.read_text().splitlines()
+    assert len(lines) == 2 + int(drafts), lines  # attach + seal + optional draft
+    assert sum(" seal " in line for line in lines) == 1, lines
+    assert sum(" draft " in line for line in lines) == int(drafts), lines
+    assert all("delivery_owner" not in line and "capture_epoch" not in line for line in lines)
+    assert any(re.search(r"seal\s+2·james id=[0-9a-f]{24}.*tekst końcowy", line) for line in lines)
+    envelopes = [json.loads(line) for line in events.read_text().splitlines()]
+    assert len(envelopes) == 2 + 2 * int(drafts), envelopes
+    assert envelopes[-1]["delivery_owner"]["rail"] == "native_bus_demux"
+    assert stat.S_IMODE(events.stat().st_mode) == 0o600
+    status = json.loads(subprocess.run(command[:2] + ["--bridge-home", str(root),
+        "--provider", "codex", "--session", "human-session", "--status"],
+        capture_output=True, text=True, check=True).stdout)
+    assert status["follower_log"] == str(log) and status["follower_events"] == str(events)
+    watch = ["python3", demux, "--bridge-home", str(root), "--provider", "codex",
+             "--session", "human-session", "--watch", "--once"]
+    compact = subprocess.run(watch, capture_output=True, text=True, check=True)
+    compact_rows = [json.loads(line) for line in compact.stdout.splitlines()]
+    assert len(compact_rows) == 1 and compact_rows[0]["text"] == "James, tekst końcowy."
+    human = subprocess.run(watch + ["--human"], capture_output=True, text=True, check=True)
+    assert len(human.stdout.splitlines()) == len(lines), human.stdout
+    assert "tekst końcowy" in human.stdout
+    assert ("projekt prawie gotowy" in human.stdout) == drafts
+    assert "projekt jeszcze trwa" not in human.stdout
+    # An old JSON follower log remains a valid explicit watch source.
+    old = subprocess.run(watch + ["--from-file", str(events)], capture_output=True, text=True, check=True)
+    assert old.stdout == compact.stdout
+
+line = module.human_line({"kind": "seal", "audience": "james", "text": "a" * 300,
+                          "delivery_id": "f" * 24, "emitted_at": "2026-09-30T15:42:39Z"}, "2")
+assert len(json.loads(line.split(" id=", 1)[1].split(" ", 1)[1])) == 200, line
+assert "\n" not in line and "2·james" in line
+
+# Exercise the public attach path, including startup handoff to --watch.
+root = Path(base, "attached")
+root.mkdir()
+bus = root / "bus.jsonl"
+bus.write_text("")
+attached = subprocess.run(["python3", demux, "--bus", str(bus), "--bridge-home", str(root),
+                           "--attach", "--channel", "2", "--name", "james",
+                           "--provider", "codex", "--session", "attached-session"],
+                          capture_output=True, text=True, check=True)
+receipt = json.loads(attached.stdout)
+pid = receipt["follower_pid"]
+try:
+    log = Path(receipt["follower_log"])
+    events = Path(receipt["follower_events"])
+    assert log.exists() and events.exists(), receipt
+    assert " attach 2·james " in log.read_text(), log.read_text()
+    with bus.open("a") as output:
+        output.write(json.dumps({"schema": module.CLEAN_SCHEMA, "sequence": 1,
+            "session_id": "test-session", "utterance_id": "attached-seal",
+            "emitted_at": "2026-09-30T15:46:01Z", "status": "transcript_sealed",
+            "audience": "james", "text": "James, słyszę cię."}, ensure_ascii=False) + "\n")
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and "słyszę cię" not in log.read_text():
+        time.sleep(0.05)
+    assert " seal " in log.read_text() and "słyszę cię" in log.read_text()
+    assert any(json.loads(row).get("text") == "James, słyszę cię." for row in events.read_text().splitlines())
+    watch = subprocess.run(["python3", demux, "--bridge-home", str(root), "--watch",
+                            "--once", "--provider", "codex", "--session", "attached-session"],
+                           capture_output=True, text=True, check=True)
+    assert json.loads(watch.stdout)["text"] == "James, słyszę cię."
+finally:
+    os.kill(pid, signal.SIGTERM)
 PY
 
 echo "bus-demux: ok"

@@ -20,10 +20,17 @@ struct ArchivedTranscriptHistory: TranscriptHistoryReading {
   }
 }
 
+struct TranscriptHistoryRecord {
+  let entry: CsHistoryEntry
+  let characterCount: Int?
+
+  var path: String { entry.path }
+}
+
 /// Read-only archive browser. Selecting an old take never revises the active take.
 @MainActor @Observable
 final class OverlayTranscriptHistoryModel {
-  private(set) var entries: [CsHistoryEntry] = []
+  private(set) var entries: [TranscriptHistoryRecord] = []
   private(set) var selected: CsHistoryEntry?
   private(set) var text: String?
   private(set) var error: String?
@@ -39,8 +46,27 @@ final class OverlayTranscriptHistoryModel {
   func load() async {
     guard !loading else { return }
     loading = true
-    entries = await reader.entries().filter { $0.kind.isCopyableTranscript }
+    let archives = await reader.entries().filter { $0.kind.isCopyableTranscript }
+    var records: [TranscriptHistoryRecord] = []
+    for entry in archives {
+      let text = try? await reader.text(at: entry.path)
+      records.append(TranscriptHistoryRecord(entry: entry, characterCount: text?.count))
+    }
+    entries = records
     loading = false
+  }
+
+  static func formattedCharacterCount(_ count: Int?, locale: Locale) -> String {
+    guard let count else { return "Length unavailable" }
+    let formatter = NumberFormatter()
+    formatter.numberStyle = .decimal
+    formatter.locale = locale
+    let formatted = formatter.string(from: NSNumber(value: count)) ?? String(count)
+    let separator = formatter.groupingSeparator ?? " "
+    if (1_000...9_999).contains(count) && !formatted.contains(separator) {
+      return "\(formatted.prefix(1))\(separator)\(formatted.dropFirst()) chars"
+    }
+    return "\(formatted) chars"
   }
 
   func select(_ entry: CsHistoryEntry) async {

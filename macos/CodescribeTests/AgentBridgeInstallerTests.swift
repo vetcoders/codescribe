@@ -523,7 +523,172 @@ final class AgentBridgeInstallerTests: XCTestCase {
     }
   }
 
-  private func makePayload() throws -> URL {
+  func testInstallPreservesRuntimeStateByteForByteAtTheSamePath() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("state-preserved")
+    let runtime = home.appendingPathComponent(".codescribe/agent-bridge/runtime", isDirectory: true)
+    let followers = runtime.appendingPathComponent("followers", isDirectory: true)
+    try FileManager.default.createDirectory(at: followers, withIntermediateDirectories: true)
+    let log = followers.appendingPathComponent("filip.log")
+    let logBytes = Data("follower filip attached\n".utf8)
+    try logBytes.write(to: log)
+    let cursor = runtime.appendingPathComponent("agent-ack-cursor.json")
+    let cursorBytes = Data("{\"cursor\": 41}\n".utf8)
+    try cursorBytes.write(to: cursor)
+    let overlayCursor = runtime.appendingPathComponent("overlay-delivery-cursor.v1.json")
+    let overlayBytes = Data("{\"sealed\": 7}\n".utf8)
+    try overlayBytes.write(to: overlayCursor)
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, environment: [:])
+
+    _ = try installer.install(selectedClients: [.codex])
+
+    XCTAssertEqual(try Data(contentsOf: log), logBytes)
+    XCTAssertEqual(try Data(contentsOf: cursor), cursorBytes)
+    XCTAssertEqual(try Data(contentsOf: overlayCursor), overlayBytes)
+    XCTAssertTrue(
+      FileManager.default.fileExists(
+        atPath: runtime.appendingPathComponent("bin/bus-demux.py").path))
+    let receipt = try jsonObject(
+      home.appendingPathComponent(".codescribe/agent-bridge/receipt.json"))
+    let preserved = try XCTUnwrap(receipt["preserved_entries"] as? [String])
+    XCTAssertTrue(preserved.contains("followers"), preserved.joined(separator: ","))
+    XCTAssertTrue(preserved.contains("followers/filip.log"), preserved.joined(separator: ","))
+    XCTAssertTrue(preserved.contains("agent-ack-cursor.json"), preserved.joined(separator: ","))
+    XCTAssertTrue(
+      preserved.contains("overlay-delivery-cursor.v1.json"), preserved.joined(separator: ","))
+
+    // A content-identical reinstall preserves the same state again.
+    _ = try installer.install(selectedClients: [.codex])
+    XCTAssertEqual(try Data(contentsOf: log), logBytes)
+    XCTAssertEqual(try Data(contentsOf: cursor), cursorBytes)
+    XCTAssertEqual(try Data(contentsOf: overlayCursor), overlayBytes)
+  }
+
+  func testOpenFollowerLogKeepsItsInodeAndStaysWritableAcrossInstall() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("state-inode")
+    let followers = home.appendingPathComponent(
+      ".codescribe/agent-bridge/runtime/followers", isDirectory: true)
+    try FileManager.default.createDirectory(at: followers, withIntermediateDirectories: true)
+    let log = followers.appendingPathComponent("ksawery.log")
+    try Data("before install\n".utf8).write(to: log)
+    // The incident: a running follower holds this descriptor across the update.
+    let handle = try FileHandle(forUpdating: log)
+    defer { try? handle.close() }
+    var descriptorBefore = stat()
+    XCTAssertEqual(Darwin.fstat(handle.fileDescriptor, &descriptorBefore), 0)
+    let pathInodeBefore = try XCTUnwrap(
+      FileManager.default.attributesOfItem(atPath: log.path)[.systemFileNumber] as? NSNumber)
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, environment: [:])
+
+    _ = try installer.install(selectedClients: [.codex])
+
+    var descriptorAfter = stat()
+    XCTAssertEqual(Darwin.fstat(handle.fileDescriptor, &descriptorAfter), 0)
+    XCTAssertEqual(descriptorBefore.st_ino, descriptorAfter.st_ino)
+    let pathInodeAfter = try XCTUnwrap(
+      FileManager.default.attributesOfItem(atPath: log.path)[.systemFileNumber] as? NSNumber)
+    XCTAssertEqual(pathInodeBefore, pathInodeAfter)
+    XCTAssertEqual(descriptorAfter.st_ino, pathInodeAfter.uint64Value)
+    _ = try handle.seekToEnd()
+    try handle.write(contentsOf: Data("after install\n".utf8))
+    try handle.synchronize()
+    XCTAssertEqual(
+      try String(contentsOf: log, encoding: .utf8),
+      "before install\nafter install\n")
+  }
+
+  func testRollbackAfterSyntheticFailureLeavesRuntimeStateUntouched() throws {
+    let helperV1 = "#!/usr/bin/env python3\nprint('v1')\n"
+    let payloadV1 = try makePayload(bundleVersion: "9.8.7", helperContent: helperV1)
+    let home = scratch.appendingPathComponent("state-rollback")
+    let installerV1 = RealAgentBridgeInstaller(
+      resourceRoot: payloadV1, homeDirectory: home, environment: [:])
+    _ = try installerV1.install(selectedClients: [.codex])
+    let runtime = home.appendingPathComponent(".codescribe/agent-bridge/runtime", isDirectory: true)
+    let followers = runtime.appendingPathComponent("followers", isDirectory: true)
+    try FileManager.default.createDirectory(at: followers, withIntermediateDirectories: true)
+    let log = followers.appendingPathComponent("filip.log")
+    let logBytes = Data("follower mid-session\n".utf8)
+    try logBytes.write(to: log)
+    let cursor = runtime.appendingPathComponent("agent-ack-cursor.json")
+    let cursorBytes = Data("{\"cursor\": 42}\n".utf8)
+    try cursorBytes.write(to: cursor)
+
+    let payloadV2 = try makePayload(
+      bundleVersion: "9.8.8",
+      helperContent: "#!/usr/bin/env python3\nprint('v2')\n")
+    let installerV2 = RealAgentBridgeInstaller(
+      resourceRoot: payloadV2, homeDirectory: home, environment: [:])
+    // A directory at the receipt path forces the commit write to fail after
+    // every replacement, exercising the full rollback path.
+    let receiptURL = home.appendingPathComponent(".codescribe/agent-bridge/receipt.json")
+    try FileManager.default.removeItem(at: receiptURL)
+    try FileManager.default.createDirectory(at: receiptURL, withIntermediateDirectories: true)
+
+    XCTAssertThrowsError(try installerV2.install(selectedClients: [.codex]))
+
+    XCTAssertEqual(try Data(contentsOf: log), logBytes)
+    XCTAssertEqual(try Data(contentsOf: cursor), cursorBytes)
+    XCTAssertEqual(
+      try Data(contentsOf: runtime.appendingPathComponent("bin/bus-demux.py")),
+      Data(helperV1.utf8))
+    XCTAssertTrue(
+      FileManager.default.fileExists(
+        atPath: runtime.appendingPathComponent("skills/codescribe/SKILL.md").path))
+    let leftovers = try FileManager.default.contentsOfDirectory(
+      atPath: home.appendingPathComponent(".codescribe/agent-bridge").path
+    ).filter { $0.hasPrefix(".runtime-stage") || $0.contains(".backup-") }
+    XCTAssertTrue(leftovers.isEmpty, leftovers.joined(separator: ","))
+  }
+
+  func testStalePayloadFromPreviousManifestIsRemovedButStateIsNot() throws {
+    let payloadV1 = try makePayload(extraFiles: ["docs/legacy.txt": "legacy docs\n"])
+    let home = scratch.appendingPathComponent("state-stale")
+    let installerV1 = RealAgentBridgeInstaller(
+      resourceRoot: payloadV1, homeDirectory: home, environment: [:])
+    _ = try installerV1.install(selectedClients: [.codex])
+    let runtime = home.appendingPathComponent(".codescribe/agent-bridge/runtime", isDirectory: true)
+    XCTAssertTrue(
+      FileManager.default.fileExists(
+        atPath: runtime.appendingPathComponent("docs/legacy.txt").path))
+    let followers = runtime.appendingPathComponent("followers", isDirectory: true)
+    try FileManager.default.createDirectory(at: followers, withIntermediateDirectories: true)
+    let log = followers.appendingPathComponent("filip.log")
+    let logBytes = Data("still attached\n".utf8)
+    try logBytes.write(to: log)
+
+    let payloadV2 = try makePayload(bundleVersion: "9.8.8")
+    let installerV2 = RealAgentBridgeInstaller(
+      resourceRoot: payloadV2, homeDirectory: home, environment: [:])
+    _ = try installerV2.install(selectedClients: [.codex])
+
+    XCTAssertFalse(
+      FileManager.default.fileExists(
+        atPath: runtime.appendingPathComponent("docs/legacy.txt").path),
+      "stale payload committed by the previous receipt must be removed")
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: runtime.appendingPathComponent("docs").path),
+      "payload directories left empty by stale removal are pruned")
+    XCTAssertEqual(try Data(contentsOf: log), logBytes)
+    XCTAssertTrue(
+      FileManager.default.fileExists(
+        atPath: runtime.appendingPathComponent("bin/bus-demux.py").path))
+    let receipt = try jsonObject(
+      home.appendingPathComponent(".codescribe/agent-bridge/receipt.json"))
+    let preserved = try XCTUnwrap(receipt["preserved_entries"] as? [String])
+    XCTAssertTrue(preserved.contains("followers/filip.log"), preserved.joined(separator: ","))
+    let payloadPaths = try XCTUnwrap(receipt["payload_files"] as? [[String: Any]])
+    XCTAssertFalse(payloadPaths.contains { $0["path"] as? String == "docs/legacy.txt" })
+  }
+
+  private func makePayload(
+    bundleVersion: String = "9.8.7",
+    helperContent: String = "#!/usr/bin/env python3\nprint('bridge')\n",
+    extraFiles: [String: String] = [:]
+  ) throws -> URL {
     let payload = scratch.appendingPathComponent("payload-\(UUID().uuidString)", isDirectory: true)
     let helper = payload.appendingPathComponent("bin/bus-demux.py")
     let skill = payload.appendingPathComponent("skills/codescribe", isDirectory: true)
@@ -532,18 +697,27 @@ final class AgentBridgeInstallerTests: XCTestCase {
       withIntermediateDirectories: true
     )
     try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
-    try Data("#!/usr/bin/env python3\nprint('bridge')\n".utf8).write(to: helper)
+    try Data(helperContent.utf8).write(to: helper)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
     try Data("---\nname: codescribe\n---\n".utf8).write(
       to: skill.appendingPathComponent("SKILL.md")
     )
     try Data("reference\n".utf8).write(to: skill.appendingPathComponent("README.md"))
 
-    let relativeFiles = [
+    var relativeFiles = [
       "bin/bus-demux.py",
       "skills/codescribe/README.md",
       "skills/codescribe/SKILL.md",
     ]
+    for (path, content) in extraFiles {
+      let url = payload.appendingPathComponent(path)
+      try FileManager.default.createDirectory(
+        at: url.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+      )
+      try Data(content.utf8).write(to: url)
+      relativeFiles.append(path)
+    }
     let files: [[String: Any]] = try relativeFiles.map { relative in
       let url = payload.appendingPathComponent(relative)
       let data = try Data(contentsOf: url)
@@ -559,7 +733,7 @@ final class AgentBridgeInstallerTests: XCTestCase {
     }
     let manifest: [String: Any] = [
       "schema": "codescribe.agent-bridge.bundle.v1",
-      "bundle_version": "9.8.7",
+      "bundle_version": bundleVersion,
       "helper": "bin/bus-demux.py",
       "skill": "skills/codescribe",
       "files": files,

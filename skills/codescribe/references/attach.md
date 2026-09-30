@@ -17,9 +17,10 @@ This holds for every command below.
 
 It atomically writes the channel's entry in
 `~/.codescribe/agent-bridge/vc.agent-audience-binding.v1.json`, ensures exactly
-one live follower for the session's lease (pidfile and log under
+one live follower for the session's lease (pidfile and readable log under
 `agent-bridge/runtime/followers/`), and prints an attach receipt: `lease_id`,
-`cursor`, `resumed`, `follower_pid`, `follower_spawned`, `follower_log`, and
+`cursor`, `resumed`, `follower_pid`, `follower_spawned`, `follower_log`,
+`follower_events`, and
 the `voice` profile from `voices.json`. A second attach with a live follower
 reuses it (`follower_spawned: false`). The spawned follower always coalesces
 (`--coalesce`): the newest draft/revision replaces its predecessors per
@@ -48,7 +49,11 @@ python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
   --status --provider <provider> --session <provider-session-id>
 ```
 
-`backlog` there is pending minus acknowledgment markers; the raw `pending`
+`--status` reports both `follower_log` (`<lease_id>.log`, human one-line
+envelopes) and `follower_events` (`<lease_id>.events.jsonl`, private full JSON).
+Tail the `.log` for readable words; never tail `events.jsonl` as a notification
+bell. Use `--watch` for compact JSON notifications or `--watch --human` for
+readable notifications. `backlog` is pending minus acknowledgment markers; the raw `pending`
 length of the lease file overstates it, because acknowledged envelopes stay
 in the file until the follower's next sweep. The receipt never proves
 listening — verify with a fresh named take before claiming it. Feed the

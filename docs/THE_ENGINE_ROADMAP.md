@@ -583,4 +583,4 @@ de-risk recon with file:line evidence), the triple-agent feasibility
 study `rese-260813-190311-53919`, and the operator's engine doctrine as
 recorded in the session registry._
 
-𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders (c)2024-2026 LibraxisAI
+𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI

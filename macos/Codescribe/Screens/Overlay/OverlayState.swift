@@ -27,7 +27,8 @@ import SwiftUI
 @MainActor
 protocol DictationEngine: AnyObject {
   func setListener(_ listener: CsTranscriptionListener)
-  func startRecording(language: CsLanguage?) async throws
+  func startRecording(assistive: Bool, language: CsLanguage?) async throws
+  func startsInAssistiveMode() -> Bool
   func stopRecording() async throws -> String
   func commitUserRevision(
     sessionId: String, sourceRevision: UInt64, renderedText: String
@@ -209,6 +210,7 @@ enum OverlayRetranscribePass: String, CaseIterable, Identifiable {
 }
 
 enum OverlayIntent: String, Equatable, Hashable, CaseIterable {
+  case startRecording = "start-recording"
   case finish
   case commitRevision = "commit-revision"
   case discardRevision = "discard-revision"
@@ -641,18 +643,21 @@ final class OverlayState {
   private var isPointerHovering = false
   private let nowProvider: () -> TimeInterval
   private let autoSendEnabled: () -> Bool
+  private let micAccessProvider: () -> Bool
   /// Terminal countdown for non-Agent outcomes and opted-in Agent delivery.
   static let autoHideDelaySeconds: TimeInterval = 5
 
   init(
     nowProvider: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
-    autoSendEnabled: @escaping () -> Bool = { CodescribeConfig().loadSettings().agentAutoSend }
+    autoSendEnabled: @escaping () -> Bool = { CodescribeConfig().loadSettings().agentAutoSend },
+    micAccessProvider: @escaping () -> Bool = { micPermissionGranted() || requestMicPermission() }
   ) {
     let channel = AsyncStream<OverlayListenerEvent>.makeStream()
     eventStream = channel.stream
     listener = DictationListener(continuation: channel.continuation)
     self.nowProvider = nowProvider
     self.autoSendEnabled = autoSendEnabled
+    self.micAccessProvider = micAccessProvider
     eventTask = Task { @MainActor [weak self, eventStream] in
       for await event in eventStream {
         guard let self else { return }
@@ -920,12 +925,17 @@ final class OverlayState {
 
   // MARK: Recording lifecycle (engine-backed; no-op when engine is absent)
 
-  /// Start mic dictation. Gated on `micPermissionGranted()`; requests access
-  /// once when undetermined. Fires the async bridge work in a Task so the view
-  /// can call it from a synchronous context (onAppear / hotkey).
+  /// Start through the same controller and current mode snapshot as the tray.
+  /// Preparing synchronously reserves this take against a second click.
   func start(language: CsLanguage? = nil) {
-    guard engine != nil, !recording else { return }
-    Task { @MainActor in await self.runStart(language: language) }
+    guard let engine, !recording,
+      terminal || (!transcribing && mode != .finalizing && captureStartedAtUptime == nil)
+    else {
+      return
+    }
+    let assistive = engine.startsInAssistiveMode()
+    prepareForExternalStart()
+    Task { @MainActor in await self.runStart(assistive: assistive, language: language) }
   }
 
   /// Whole seconds of capture for the open session; nil before any capture.
@@ -964,9 +974,9 @@ final class OverlayState {
     Task { @MainActor in await self.runStop() }
   }
 
-  private func runStart(language: CsLanguage?) async {
+  private func runStart(assistive: Bool, language: CsLanguage?) async {
     guard let engine else { return }
-    guard micPermissionGranted() || requestMicPermission() else {
+    guard micAccessProvider() else {
       presentTerminalError(
         message:
           "Microphone access is off for Codescribe. Enable it in System Settings › Privacy & Security › Microphone.",
@@ -975,11 +985,6 @@ final class OverlayState {
       return
     }
     engine.setListener(listener)
-    warmingUp = true
-    resetTranscript()
-    errorMessage = nil
-    beginCaptureClock()
-    recording = true
     do {
       // Whisper is optional gap-fill when Apple is live. initModel soft-fails
       // in the bridge for that path; never treat a missing Whisper model as
@@ -993,9 +998,9 @@ final class OverlayState {
           NSLog("codescribe: optional Whisper warm skipped: \(error)")
         }
       }
-      try await engine.startRecording(language: language)
+      try await engine.startRecording(assistive: assistive, language: language)
     } catch {
-      await handleStartFailure(error, language: language)
+      await handleStartFailure(error, assistive: assistive, language: language)
     }
   }
 
@@ -1005,14 +1010,15 @@ final class OverlayState {
   /// and retry the start once when authorized. Every other failure — and a
   /// declined dialog — funnels into the terminal error path, where
   /// `speechAuthNotice` rewrites raw `speech_auth_*` markers.
-  private func handleStartFailure(_ error: Error, language: CsLanguage?) async {
+  private func handleStartFailure(_ error: Error, assistive: Bool, language: CsLanguage?) async {
     let described = "\(error)"
     if described.contains("speech_auth_not_determined"), !speechAuthRequestAttempted {
       speechAuthRequestAttempted = true
       abortRecordingSession()
       let state = await SpeechRecognitionPermission.request()
       if state == .granted {
-        await runStart(language: language)
+        prepareForExternalStart()
+        await runStart(assistive: assistive, language: language)
         return
       }
     }
@@ -1045,11 +1051,12 @@ final class OverlayState {
 
   // MARK: Action row
 
-  /// Thin relay from the projection-driven rail into existing controller
-  /// routes. No branch here changes phase, text, or availability optimistically;
-  /// those fields move only when the next Rust projection arrives.
+  /// Thin relay from overlay controls into the controller routes. Start reserves
+  /// capture locally; transcript phase and text still come from Rust projections.
   func relayIntent(_ intent: OverlayIntent) {
     switch intent {
+    case .startRecording:
+      start()
     case .finish:
       stop()
     case .commitRevision:
@@ -2921,9 +2928,14 @@ final class ControllerDictationEngine: DictationEngine {
   func setListener(_ listener: CsTranscriptionListener) {
     hotkeys.setListener(listener: listener)
   }
-  func startRecording(language: CsLanguage?) async throws {
-    try await hotkeys.startRecording()
+  func startRecording(assistive: Bool, language: CsLanguage?) async throws {
+    if assistive {
+      try await hotkeys.startAssistiveRecording()
+    } else {
+      try await hotkeys.startRecording()
+    }
   }
+  func startsInAssistiveMode() -> Bool { config.trayToggles().startAssistive }
   func stopRecording() async throws -> String {
     try await hotkeys.stopRecording()
     return ""

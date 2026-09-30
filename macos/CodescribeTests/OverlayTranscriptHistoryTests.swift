@@ -17,6 +17,30 @@ final class OverlayTranscriptHistoryTests: XCTestCase {
     XCTAssertNil(model.text)
   }
 
+  func testHistoryCountUsesFullUnicodeTextRatherThanPreviewOrBytes() async throws {
+    let item = entry("polish-emoji.txt", timestamp: 1, preview: "Zażółć…")
+    let fullText = "Zażółć gęślą jaźń 👩‍⚕️🇵🇱"
+    let model = OverlayTranscriptHistoryModel(
+      reader: HistoryReader(entries: [item], texts: [item.path: fullText]))
+    await model.load()
+    let record = try XCTUnwrap(model.entries.first)
+    XCTAssertEqual(record.characterCount, fullText.count)
+    XCTAssertNotEqual(record.characterCount, item.preview.count)
+    XCTAssertNotEqual(record.characterCount, fullText.utf8.count)
+  }
+
+  func testCharacterCountUsesLocaleGroupingWithoutAbbreviation() {
+    XCTAssertEqual(
+      OverlayTranscriptHistoryModel.formattedCharacterCount(1_284, locale: Locale(identifier: "pl_PL")),
+      "1\u{00A0}284 chars")
+    XCTAssertEqual(
+      OverlayTranscriptHistoryModel.formattedCharacterCount(1_284, locale: Locale(identifier: "en_US")),
+      "1,284 chars")
+    XCTAssertEqual(
+      OverlayTranscriptHistoryModel.formattedCharacterCount(12_345, locale: Locale(identifier: "en_US")),
+      "12,345 chars")
+  }
+
   func testSelectingAnArchiveLoadsItsFullTextNotItsPreview() async {
     let item = entry("take.txt", timestamp: 1, preview: "First words")
     let reader = HistoryReader(entries: [item], texts: [item.path: "First words\nWhole recording."])

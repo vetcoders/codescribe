@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// The overlay's status light: one state, one colour, one name. The header dot,
+/// The recording control's status: one state, one colour, one name. Its tint,
 /// its tooltip and its VoiceOver text all read this table, so no colour can
 /// appear on screen without a name the user can hover for.
 ///
@@ -104,53 +104,5 @@ enum OverlayRecordingLight: CaseIterable, Equatable, Sendable {
   /// with a 1.2 s period, computed from the clock so a paused timeline stops it.
   static func pulseOpacity(at time: TimeInterval) -> Double {
     0.725 + 0.275 * cos(time * 2 * .pi / 1.2)
-  }
-}
-
-/// Paints the status light. Colour, pulse, tooltip and VoiceOver text come from
-/// `OverlayRecordingLight`; this view adds geometry only.
-struct OverlayRecordingLightView: View {
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @Environment(\.csTextScale) private var textScale
-  @Environment(\.displayScale) private var displayScale
-
-  let light: OverlayRecordingLight
-  let palette: OverlayAppearancePalette
-  /// False while the panel is hidden or occluded: a pulse nobody sees must not
-  /// keep the render loop awake.
-  let animates: Bool
-
-  var body: some View {
-    let diameter = OverlayRecordingLight.diameter(textScale: textScale)
-    Group {
-      if light.pulses && animates && !reduceMotion {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-          dot.opacity(
-            OverlayRecordingLight.pulseOpacity(
-              at: timeline.date.timeIntervalSinceReferenceDate))
-        }
-      } else {
-        dot
-      }
-    }
-    .frame(width: diameter, height: diameter)
-    .padding(4)
-    .contentShape(Rectangle())
-    .help(light.tooltip)
-    .accessibilityElement(children: .ignore)
-    .accessibilityLabel(light.name)
-    .accessibilityHint(light.meaning)
-    .accessibilityIdentifier("overlay-recording-light")
-  }
-
-  /// Hairline ring keeps the yellow and orange hues legible on paper glass.
-  private var dot: some View {
-    Circle()
-      .fill(light.color)
-      .overlay {
-        Circle()
-          .strokeBorder(palette.border.color, lineWidth: 1 / max(displayScale, 1))
-          .accessibilityHidden(true)
-      }
   }
 }

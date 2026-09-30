@@ -211,6 +211,7 @@ install-app: install-voice-lab
 	SPARKLE=$$(tr -d '[:space:]' < "$(CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE)" 2>/dev/null || true); \
 	CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$$LICENSE" \
 	  CODESCRIBE_DEVELOPER_SURFACE=1 \
+	  CODESCRIBE_INSTALL_LANE=1 \
 	  SPARKLE_ED_PUBLIC_KEY="$$SPARKLE" \
 	  $(MAKE) --no-print-directory app PROFILE=local-release
 	@APP_SRC="macos/build/Build/Products/Release/Codescribe.app"; \
@@ -232,6 +233,8 @@ install-app: install-voice-lab
 	fi
 	@echo "Codesign summary:"
 	@codesign --display --verbose=2 /Applications/$(CODESCRIBE_APP_NAME).app 2>&1 | sed -n '1,12p' || true
+	@codesign --verify --deep --strict /Applications/$(CODESCRIBE_APP_NAME).app
+	@echo "Seal: codesign --verify --deep --strict ok; LSMultipleInstancesProhibited=$$(/usr/libexec/PlistBuddy -c 'Print :LSMultipleInstancesProhibited' /Applications/$(CODESCRIBE_APP_NAME).app/Contents/Info.plist)"
 	@echo "Installed: /Applications/$(CODESCRIBE_APP_NAME).app"
 
 # ============================================================================
@@ -1087,6 +1090,8 @@ verify:
 	python3 -m unittest scripts/tests/test_sessions_dedupe.py; \
 	python3 -m unittest scripts/tests/test_bus_demux_speech.py; \
 	bash scripts/validate-envs.sh; \
+	echo "=== Verify (install-lane single-instance stamp) ==="; \
+	bash scripts/tests/single-instance-stamp-test.sh; \
 	echo "=== Verify (gate ledger) ==="; \
 	bash scripts/validate-gates.sh; \
 	bash scripts/tests/validate-gates-test.sh; \

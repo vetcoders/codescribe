@@ -690,6 +690,13 @@ public protocol CodescribeAgentProtocol: AnyObject, Sendable {
     func resolveToolApproval(sessionId: String, threadId: String, callId: String, approved: Bool, remember: Bool)  -> Bool
 
     /**
+     * Run the same agent loop against the embedding editor's live document.
+     * Requires an explicit host identity; cannot inherit the desktop app's
+     * documents, credentials, tools, or conversation directory.
+     */
+    func streamDocument(text: String, threadId: String, document: CsDocumentToolHost, provider: CsDocumentProvider?, listener: CsAgentListener) async throws  -> String
+
+    /**
      * Stream one agent reply for `text` on the conversation identified by
      * `thread_id`, forwarding token/reasoning/tool events to `listener` as they
      * arrive. Returns the final assembled assistant text.
@@ -911,6 +918,28 @@ open func resolveToolApproval(sessionId: String, threadId: String, callId: Strin
         FfiConverterBool.lower(remember),$0
     )
 })
+}
+
+    /**
+     * Run the same agent loop against the embedding editor's live document.
+     * Requires an explicit host identity; cannot inherit the desktop app's
+     * documents, credentials, tools, or conversation directory.
+     */
+open func streamDocument(text: String, threadId: String, document: CsDocumentToolHost, provider: CsDocumentProvider?, listener: CsAgentListener)async throws  -> String  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribeagent_stream_document(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(text),FfiConverterString.lower(threadId),FfiConverterTypeCsDocumentToolHost_lower(document),FfiConverterOptionTypeCsDocumentProvider.lower(provider),FfiConverterTypeCsAgentListener_lower(listener)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterString.lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
 }
 
     /**
@@ -5979,6 +6008,232 @@ public func FfiConverterTypeCsAppActionListener_lower(_ value: CsAppActionListen
 
 
 /**
+ * The embedding editor owns buffer identity, revision checks and undo. No
+ * filesystem or desktop focus is used to discover the document being edited.
+ */
+public protocol CsDocumentToolHost: AnyObject, Sendable {
+
+    func isActive()  -> Bool
+
+    func execute(name: String, argumentsJson: String) throws  -> String
+
+}
+/**
+ * The embedding editor owns buffer identity, revision checks and undo. No
+ * filesystem or desktop focus is used to discover the document being edited.
+ */
+open class CsDocumentToolHostImpl: CsDocumentToolHost, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_codescribe_ffi_fn_clone_csdocumenttoolhost(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        try! rustCall { uniffi_codescribe_ffi_fn_free_csdocumenttoolhost(handle, $0) }
+    }
+
+
+
+
+open func isActive() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_csdocumenttoolhost_is_active(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+open func execute(name: String, argumentsJson: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_method_csdocumenttoolhost_execute(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(name),
+        FfiConverterString.lower(argumentsJson),$0
+    )
+})
+}
+
+
+
+}
+
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceCsDocumentToolHost {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // This creates 1-element array, since this seems to be the only way to construct a const
+    // pointer that we can pass to the Rust code.
+    static let vtable: [UniffiVTableCallbackInterfaceCsDocumentToolHost] = [UniffiVTableCallbackInterfaceCsDocumentToolHost(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterTypeCsDocumentToolHost.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface CsDocumentToolHost: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterTypeCsDocumentToolHost.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface CsDocumentToolHost: handle missing in uniffiClone")
+            }
+        },
+        isActive: { (
+            uniffiHandle: UInt64,
+            uniffiOutReturn: UnsafeMutablePointer<Int8>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> Bool in
+                guard let uniffiObj = try? FfiConverterTypeCsDocumentToolHost.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.isActive(
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterBool.lower($0) }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        execute: { (
+            uniffiHandle: UInt64,
+            name: RustBuffer,
+            argumentsJson: RustBuffer,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> String in
+                guard let uniffiObj = try? FfiConverterTypeCsDocumentToolHost.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try uniffiObj.execute(
+                     name: try FfiConverterString.lift(name),
+                     argumentsJson: try FfiConverterString.lift(argumentsJson)
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterString.lower($0) }
+            uniffiTraitInterfaceCallWithError(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeCsError_lower
+            )
+        }
+    )]
+}
+
+private func uniffiCallbackInitCsDocumentToolHost() {
+    uniffi_codescribe_ffi_fn_init_callback_vtable_csdocumenttoolhost(UniffiCallbackInterfaceCsDocumentToolHost.vtable)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsDocumentToolHost: FfiConverter {
+    fileprivate static let handleMap = UniffiHandleMap<CsDocumentToolHost>()
+
+    typealias FfiType = UInt64
+    typealias SwiftType = CsDocumentToolHost
+
+    public static func lift(_ handle: UInt64) throws -> CsDocumentToolHost {
+        if ((handle & 1) == 0) {
+            // Rust-generated handle, construct a new class that uses the handle to implement the
+            // interface
+            return CsDocumentToolHostImpl(unsafeFromHandle: handle)
+        } else {
+            // Swift-generated handle, get the object from the handle map
+            return try handleMap.remove(handle: handle)
+        }
+    }
+
+    public static func lower(_ value: CsDocumentToolHost) -> UInt64 {
+         if let rustImpl = value as? CsDocumentToolHostImpl {
+             // Rust-implemented object.  Clone the handle and return it
+            return rustImpl.uniffiCloneHandle()
+         } else {
+            // Swift object, generate a new vtable handle and return that.
+            return handleMap.insert(obj: value)
+         }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsDocumentToolHost {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: CsDocumentToolHost, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDocumentToolHost_lift(_ handle: UInt64) throws -> CsDocumentToolHost {
+    return try FfiConverterTypeCsDocumentToolHost.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDocumentToolHost_lower(_ value: CsDocumentToolHost) -> UInt64 {
+    return FfiConverterTypeCsDocumentToolHost.lower(value)
+}
+
+
+
+
+
+
+/**
  * Foreign capability: format `user_message` under the sealed `instructions`
  * on the device model. Swift receives the sealed prompt VERBATIM as the
  * session instructions and must not amend it (operator-owned prompt).
@@ -8690,6 +8945,70 @@ public func FfiConverterTypeCsDocumentHistoryEntry_lift(_ buf: RustBuffer) throw
 #endif
 public func FfiConverterTypeCsDocumentHistoryEntry_lower(_ value: CsDocumentHistoryEntry) -> RustBuffer {
     return FfiConverterTypeCsDocumentHistoryEntry.lower(value)
+}
+
+
+/**
+ * Explicit API configuration owned by the embedding application. Omit it only
+ * when using an account authenticated in that application's runtime profile.
+ */
+public struct CsDocumentProvider: Equatable, Hashable {
+    public var wire: String
+    public var endpoint: String
+    public var model: String
+    public var apiKey: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(wire: String, endpoint: String, model: String, apiKey: String) {
+        self.wire = wire
+        self.endpoint = endpoint
+        self.model = model
+        self.apiKey = apiKey
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsDocumentProvider: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsDocumentProvider: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsDocumentProvider {
+        return
+            try CsDocumentProvider(
+                wire: FfiConverterString.read(from: &buf),
+                endpoint: FfiConverterString.read(from: &buf),
+                model: FfiConverterString.read(from: &buf),
+                apiKey: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsDocumentProvider, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.wire, into: &buf)
+        FfiConverterString.write(value.endpoint, into: &buf)
+        FfiConverterString.write(value.model, into: &buf)
+        FfiConverterString.write(value.apiKey, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDocumentProvider_lift(_ buf: RustBuffer) throws -> CsDocumentProvider {
+    return try FfiConverterTypeCsDocumentProvider.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDocumentProvider_lower(_ value: CsDocumentProvider) -> RustBuffer {
+    return FfiConverterTypeCsDocumentProvider.lower(value)
 }
 
 
@@ -15902,6 +16221,30 @@ fileprivate struct FfiConverterOptionTypeCsWhisperDownloadListener: FfiConverter
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeCsDocumentProvider: FfiConverterRustBuffer {
+    typealias SwiftType = CsDocumentProvider?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCsDocumentProvider.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCsDocumentProvider.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeCsLastServingVerdict: FfiConverterRustBuffer {
     typealias SwiftType = CsLastServingVerdict?
 
@@ -16935,6 +17278,17 @@ public func configRepairSummary() -> String?  {
 })
 }
 /**
+ * Seal the embedding application's state and credential identity before any
+ * config, agent, account or recording handle is constructed.
+ */
+public func configureEmbeddedRuntime(dataDirectory: String, keychainService: String)throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_func_configure_embedded_runtime(
+        FfiConverterString.lower(dataDirectory),
+        FfiConverterString.lower(keychainService),$0
+    )
+}
+}
+/**
  * Snapshot the last serving verdict, if any stop completed in this process.
  * `None` renders as "Not yet served" Swift-side.
  */
@@ -17186,6 +17540,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_config_repair_summary() != 26554) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_func_configure_embedded_runtime() != 38648) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_func_current_serving_verdict() != 14135) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -17268,6 +17625,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_resolve_tool_approval() != 55035) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeagent_stream_document() != 12706) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_stream_reply() != 57150) {
@@ -17744,6 +18104,12 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_max_approvals_changed() != 29603) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_csdocumenttoolhost_is_active() != 53329) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_csdocumenttoolhost_execute() != 56439) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_csondeviceformatter_format() != 2611) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -17820,6 +18186,7 @@ private let initializationResult: InitializationResult = {
     uniffiCallbackInitCsAgentDeliveryListener()
     uniffiCallbackInitCsAgentListener()
     uniffiCallbackInitCsAppActionListener()
+    uniffiCallbackInitCsDocumentToolHost()
     uniffiCallbackInitCsOnDeviceFormatter()
     uniffiCallbackInitCsTranscriptionListener()
     uniffiCallbackInitCsTrayStatusListener()
