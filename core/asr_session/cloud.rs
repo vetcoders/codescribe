@@ -3034,11 +3034,17 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
         let (report_tx, report_rx) = std::sync::mpsc::channel::<(bool, bool, u64, Vec<i16>)>();
+        // Rendezvous, not a sleep: the WebSocket handshake stays incomplete
+        // until the test has queued every frame, so the buffering window is
+        // exact and thread scheduling cannot spend the connect budget.
+        let (handshake_tx, handshake_rx) = std::sync::mpsc::channel::<()>();
         std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(500));
             let Ok((stream, _)) = listener.accept() else {
                 return;
             };
+            if handshake_rx.recv().is_err() {
+                return;
+            }
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .expect("read timeout");
@@ -3086,9 +3092,20 @@ mod tests {
                 markers.push(marker);
             }
             let _ = report_tx.send((vad_off, timestamps_on, sample_rate, markers));
+            // Stay connected until the client hangs up: exiting here would
+            // close the socket mid-session, and a server-initiated close is
+            // correctly reported as a transport fault, racing the session
+            // drain below whenever scheduling favors the runtime thread.
+            socket
+                .get_mut()
+                .set_read_timeout(None)
+                .expect("clear read timeout");
+            while socket.read().is_ok() {}
         });
 
-        let limits = wide_limits(480, 8, Duration::from_secs(2));
+        // Production-sized budget: with the rendezvous above it can only be
+        // spent on genuine thread starvation, never on a raced sleep.
+        let limits = wide_limits(480, 8, Duration::from_secs(10));
         let connection = GatewayConnection::new(loopback_endpoint(addr), "").expect("endpoint");
         let transport = GatewayWebSocketTransport::new(connection, limits).expect("transport");
         let mut session =
@@ -3104,8 +3121,13 @@ mod tests {
                 .expect("handshake frame is accepted");
         }
 
+        handshake_tx
+            .send(())
+            .expect("fake server awaits the handshake rendezvous");
+        // Liveness bound only: after the rendezvous the remaining exchange is
+        // local and immediate, so this timeout guards hangs, not scheduling.
         let (vad_off, timestamps_on, sample_rate, markers) = report_rx
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(Duration::from_secs(30))
             .expect("server saw the buffered frames");
         assert!(vad_off, "set must carry vad:false");
         assert!(timestamps_on, "set must carry include_timestamps:true");
@@ -3116,11 +3138,12 @@ mod tests {
         );
         assert_eq!(session.telemetry().frames_queued, 50);
         assert_eq!(session.telemetry().backpressure_events, 0);
+        let events = session.drain();
         assert!(
-            session
-                .drain()
+            events
                 .iter()
-                .all(|event| !matches!(event, AsrSessionEvent::Error(_)))
+                .all(|event| !matches!(event, AsrSessionEvent::Error(_))),
+            "handshake session must not report errors, drained: {events:?}"
         );
     }
 
