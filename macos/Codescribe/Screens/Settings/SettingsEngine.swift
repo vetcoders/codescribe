@@ -53,9 +53,11 @@ protocol SettingsEngine {
   // Voice Lab quality truth (JSONL stays behind the Rust bridge)
   func loadQualityRecentListing(limit: UInt64) throws -> CsQualityListing
   func loadLexiconCustomEntries() throws -> [CsLexiconEntry]
+  func loadRuleCandidates(minOccurrences: UInt64) throws -> [CsRuleCandidate]
   func finalizeVoiceLabCorrection(id: String, canonical: String) throws -> CsVoiceLabSaveResult
   func teachDictionaryFromStore() throws -> CsDictionaryTeachResult
   func teachDictionaryFromStoreAsync() async throws -> CsDictionaryTeachResult
+  func teachSpan(variant: String, canonical: String, kind: String) throws -> CsQualityCommitResult
 
   // Keychain-backed API keys — presence booleans only, secrets never read back
   func keyStatus() -> CsKeyStatus
@@ -192,6 +194,9 @@ final class RealSettingsEngine: SettingsEngine {
   func loadLexiconCustomEntries() throws -> [CsLexiconEntry] {
     try lexiconCustomEntries()
   }
+  func loadRuleCandidates(minOccurrences: UInt64) throws -> [CsRuleCandidate] {
+    try qualityRuleCandidates(minOccurrences: minOccurrences)
+  }
   func finalizeVoiceLabCorrection(id: String, canonical: String) throws -> CsVoiceLabSaveResult {
     try qualityFinalizeCorrection(correctionId: id, canonical: canonical)
   }
@@ -202,6 +207,9 @@ final class RealSettingsEngine: SettingsEngine {
     try await Task.detached(priority: .userInitiated) {
       try qualityTeachDictionaryFromStore()
     }.value
+  }
+  func teachSpan(variant: String, canonical: String, kind: String) throws -> CsQualityCommitResult {
+    try qualityTeachSpan(variant: variant, canonical: canonical, kind: kind)
   }
 
   func keyStatus() -> CsKeyStatus { config.keyStatus() }
@@ -338,6 +346,9 @@ struct MockSettingsEngine: SettingsEngine {
   var updateConfigManyObserver: (([CsConfigEntry]) throws -> Void)?
   var resetAudioInputDeviceObserver: (() throws -> Void)?
   var voiceLabEditObserver: ((String, String) throws -> CsVoiceLabSaveResult)?
+  var ruleCandidates: [CsRuleCandidate] = []
+  var ruleCandidatesLoader: (() throws -> [CsRuleCandidate])?
+  var teachSpanObserver: ((String, String, String) throws -> CsQualityCommitResult)?
   // Keep the long-standing config observer last so existing trailing-closure
   // call sites continue to bind to config writes, not Voice Lab edits.
   var updateConfigObserver: ((String, String) throws -> Void)?
@@ -392,6 +403,9 @@ struct MockSettingsEngine: SettingsEngine {
   func loadLexiconCustomEntries() throws -> [CsLexiconEntry] {
     try lexiconEntriesLoader?() ?? lexiconEntries
   }
+  func loadRuleCandidates(minOccurrences: UInt64) throws -> [CsRuleCandidate] {
+    try ruleCandidatesLoader?() ?? ruleCandidates
+  }
   func finalizeVoiceLabCorrection(id: String, canonical: String) throws -> CsVoiceLabSaveResult {
     if let voiceLabEditObserver {
       return try voiceLabEditObserver(id, canonical)
@@ -426,6 +440,18 @@ struct MockSettingsEngine: SettingsEngine {
       fromProposed: 0,
       totalRules: total,
       rulesFromCorrectionSource: fromCorrection
+    )
+  }
+  func teachSpan(variant: String, canonical: String, kind: String) throws -> CsQualityCommitResult {
+    if let teachSpanObserver {
+      return try teachSpanObserver(variant, canonical, kind)
+    }
+    return CsQualityCommitResult(
+      pairsLearned: 1,
+      evidenceOnly: false,
+      acknowledgement: "Saved — 1 rule learned",
+      teachSeen: nil,
+      teachRequired: nil
     )
   }
 

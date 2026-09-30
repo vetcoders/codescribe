@@ -129,163 +129,70 @@ func qualityCorrectionRows(_ records: [CsQualityRecord]) -> [VoiceLabCorrectionR
   }
 }
 
-/// Word-level diff of one correction. Words compare as Swift strings, so
-/// Polish diacritics match by canonical equivalence, never by bytes.
-enum CorrectionDiffBlock: Equatable {
-  case same([String])
-  case change(raw: [String], edited: [String])
+/// Tiered word-level diff for one correction. Delegates to the Rust engine so
+/// Swift only renders; Polish diacritics compare as words, never bytes.
+func voiceLabDiffSpans(raw: String, edited: String) -> [CsDiffSpan] {
+  qualityDiffSpans(raw: raw, edited: edited)
 }
 
-func correctionDiffBlocks(raw: String, edited: String) -> [CorrectionDiffBlock] {
-  let rawWords = raw.split(whereSeparator: \.isWhitespace).map(String.init)
-  let editedWords = edited.split(whereSeparator: \.isWhitespace).map(String.init)
-
-  var prefix = 0
-  while prefix < rawWords.count, prefix < editedWords.count, rawWords[prefix] == editedWords[prefix]
-  {
-    prefix += 1
+extension CsDiffTier {
+  var isMajor: Bool {
+    switch self {
+    case .vocabulary, .insert, .delete: return true
+    case .casing, .punctuation: return false
+    }
   }
-  var suffix = 0
-  while suffix < rawWords.count - prefix, suffix < editedWords.count - prefix,
-    rawWords[rawWords.count - 1 - suffix] == editedWords[editedWords.count - 1 - suffix]
-  {
-    suffix += 1
-  }
-
-  var blocks: [CorrectionDiffBlock] = []
-  if prefix > 0 { blocks.append(.same(Array(rawWords[..<prefix]))) }
-  blocks.append(
-    contentsOf: correctionMiddleBlocks(
-      raw: Array(rawWords[prefix..<(rawWords.count - suffix)]),
-      edited: Array(editedWords[prefix..<(editedWords.count - suffix)])
-    )
-  )
-  if suffix > 0 { blocks.append(.same(Array(rawWords[(rawWords.count - suffix)...]))) }
-  return blocks
 }
 
-/// LCS over the differing middle. A middle too large for the quadratic table
-/// (whole-take rewrites) is honestly one replacement block.
-private func correctionMiddleBlocks(raw: [String], edited: [String]) -> [CorrectionDiffBlock] {
-  if raw.isEmpty, edited.isEmpty { return [] }
-  guard raw.count * edited.count <= 40_000 else {
-    return [.change(raw: raw, edited: edited)]
-  }
-
-  let rawCount = raw.count
-  let editedCount = edited.count
-  var lcs = [[Int]](repeating: [Int](repeating: 0, count: editedCount + 1), count: rawCount + 1)
-  if rawCount > 0, editedCount > 0 {
-    for i in stride(from: rawCount - 1, through: 0, by: -1) {
-      for j in stride(from: editedCount - 1, through: 0, by: -1) {
-        lcs[i][j] =
-          raw[i] == edited[j]
-          ? lcs[i + 1][j + 1] + 1
-          : max(lcs[i + 1][j], lcs[i][j + 1])
-      }
-    }
-  }
-
-  var blocks: [CorrectionDiffBlock] = []
-  var i = 0
-  var j = 0
-  var pendingRaw: [String] = []
-  var pendingEdited: [String] = []
-  func flushChange() {
-    if !pendingRaw.isEmpty || !pendingEdited.isEmpty {
-      blocks.append(.change(raw: pendingRaw, edited: pendingEdited))
-      pendingRaw = []
-      pendingEdited = []
-    }
-  }
-  while i < rawCount, j < editedCount {
-    if raw[i] == edited[j] {
-      flushChange()
-      var run = [raw[i]]
-      i += 1
-      j += 1
-      while i < rawCount, j < editedCount, raw[i] == edited[j] {
-        run.append(raw[i])
-        i += 1
-        j += 1
-      }
-      blocks.append(.same(run))
-    } else if lcs[i + 1][j] >= lcs[i][j + 1] {
-      pendingRaw.append(raw[i])
-      i += 1
-    } else {
-      pendingEdited.append(edited[j])
-      j += 1
-    }
-  }
-  if i < rawCount { pendingRaw.append(contentsOf: raw[i...]) }
-  if j < editedCount { pendingEdited.append(contentsOf: edited[j...]) }
-  flushChange()
-  return blocks
+/// Major tiers are real content changes; minor tiers (casing/punctuation) are
+/// collapsed in the correction card summary.
+func majorDiffSpans(_ spans: [CsDiffSpan]) -> [CsDiffSpan] {
+  spans.filter { $0.tier.isMajor }
 }
 
-/// Display-ready diff excerpt: changed spans with ±`contextWords` of context,
-/// ellipses where the take was trimmed. Empty when there is no text change.
-enum CorrectionDiffItem: Equatable {
-  case context(String)
-  case ellipsis
-  case change(raw: String, edited: String)
+func minorDiffSpans(_ spans: [CsDiffSpan]) -> [CsDiffSpan] {
+  spans.filter { !$0.tier.isMajor }
 }
 
-func correctionDiffExcerpt(raw: String, edited: String, contextWords: Int = 5)
-  -> [CorrectionDiffItem]
-{
-  let blocks = correctionDiffBlocks(raw: raw, edited: edited)
-  guard blocks.contains(where: {
-    if case .change = $0 { return true }
-    return false
-  }) else { return [] }
+/// The Suggested rules section is shown only when the engine mined at least
+/// one candidate; at zero it disappears entirely instead of showing an empty box.
+func ruleCandidatesSectionVisible(_ candidates: [CsRuleCandidate]) -> Bool {
+  !candidates.isEmpty
+}
 
-  var items: [CorrectionDiffItem] = []
-  var pendingContext: [String] = []
-  var sawChange = false
-  for block in blocks {
-    switch block {
-    case .same(let words):
-      pendingContext.append(contentsOf: words)
-    case .change(let rawWords, let editedWords):
-      if !pendingContext.isEmpty {
-        if !sawChange {
-          // Leading context: keep only the tail before the first change.
-          if pendingContext.count > contextWords {
-            items.append(.ellipsis)
-            items.append(.context(pendingContext.suffix(contextWords).joined(separator: " ")))
-          } else {
-            items.append(.context(pendingContext.joined(separator: " ")))
-          }
-        } else if pendingContext.count > 2 * contextWords {
-          // Gap between changes: keep both edges, elide the middle.
-          items.append(.context(pendingContext.prefix(contextWords).joined(separator: " ")))
-          items.append(.ellipsis)
-          items.append(.context(pendingContext.suffix(contextWords).joined(separator: " ")))
-        } else {
-          items.append(.context(pendingContext.joined(separator: " ")))
-        }
-        pendingContext = []
-      }
-      items.append(
-        .change(
-          raw: rawWords.joined(separator: " "),
-          edited: editedWords.joined(separator: " ")
-        )
-      )
-      sawChange = true
-    }
+/// One-line summary of collapsed minor (casing/punctuation) adjustments.
+func minorAdjustmentsSummary(_ minor: [CsDiffSpan]) -> String {
+  "+\(minor.count) minor (punctuation, casing)"
+}
+
+/// One flowing line: context in secondary, removed words struck through,
+/// corrected words emphasized. Word wrapping comes free from Text.
+private func diffSpanText(_ span: CsDiffSpan) -> Text {
+  var result = Text("")
+  if !span.contextBefore.isEmpty {
+    result = result + Text(span.contextBefore + " ").foregroundStyle(Color.secondary)
   }
-  if !pendingContext.isEmpty {
-    if pendingContext.count > contextWords {
-      items.append(.context(pendingContext.prefix(contextWords).joined(separator: " ")))
-      items.append(.ellipsis)
-    } else {
-      items.append(.context(pendingContext.joined(separator: " ")))
-    }
+  if !span.raw.isEmpty {
+    result =
+      result
+      + Text(span.raw).strikethrough().foregroundStyle(CSColor.terracotta)
+      + Text(" ")
   }
-  return items
+  if !span.edited.isEmpty {
+    if !span.raw.isEmpty {
+      result = result + Text("→ ").foregroundStyle(CSColor.chromeAccent)
+    }
+    result =
+      result
+      + Text(span.edited).fontWeight(.semibold).foregroundStyle(Color.primary)
+      + Text(" ")
+  } else if !span.raw.isEmpty {
+    result = result + Text("(removed) ").foregroundStyle(Color.secondary)
+  }
+  if !span.contextAfter.isEmpty {
+    result = result + Text(span.contextAfter).foregroundStyle(Color.secondary)
+  }
+  return result
 }
 
 /// One aggregate line replaces the old per-card "No confidence telemetry was
@@ -366,8 +273,10 @@ func archivedAudioCandidates(from transcriptURL: URL) -> [URL] {
 /// Honest Dictionary headline.
 /// Every custom lexicon variant→canonical is a **live rule** the engine applies.
 /// Corrections are real diffs; takes that changed nothing are counted apart.
-func dictionaryHeadline(corrections: Int, unchangedTakes: Int, rulesLearned: Int) -> String {
-  "\(corrections) corrections · \(unchangedTakes) unchanged takes · \(rulesLearned) rules in dictionary"
+func dictionaryHeadline(
+  corrections: Int, vocabularyCorrections: Int, unchangedTakes: Int, rulesLearned: Int
+) -> String {
+  "\(corrections) corrections (\(vocabularyCorrections) vocabulary) · \(unchangedTakes) unchanged takes · \(rulesLearned) rules in dictionary"
 }
 
 func dictionarySubtitle(
@@ -405,6 +314,7 @@ struct VoiceLabPanel: View {
   @FocusState private var focusedCorrectionID: String?
   @State private var correctionIndex = 0
   @State private var lexiconIndex = 0
+  @State private var ruleCandidateIndex = 0
   @State private var showFullText = false
   @State private var playbackSound: NSSound?
   @State private var playbackMessage: String?
@@ -432,6 +342,14 @@ struct VoiceLabPanel: View {
     corrections.count
   }
 
+  /// Corrections that contain at least one vocabulary-tier span.
+  private var vocabularyCorrectionsCount: Int {
+    corrections.lazy.filter { row in
+      voiceLabDiffSpans(raw: row.rawText, edited: row.editedText)
+        .contains { $0.tier == .vocabulary }
+    }.count
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       HStack(alignment: .top, spacing: 12) {
@@ -439,6 +357,7 @@ struct VoiceLabPanel: View {
           SettingsPageHeader(
             dictionaryHeadline(
               corrections: correctionsRecordedCount,
+              vocabularyCorrections: vocabularyCorrectionsCount,
               unchangedTakes: Int(clamping: model.unchangedQualityTakes),
               rulesLearned: rulesLearnedCount
             ),
@@ -474,6 +393,13 @@ struct VoiceLabPanel: View {
           .csFocusRing()
           .accessibilityLabel("Refresh \(SettingsSection.voiceLab.title) data")
         }
+      }
+
+      if ruleCandidatesSectionVisible(model.ruleCandidates) {
+        SettingsSectionLabel("Suggested rules · \(model.ruleCandidates.count)")
+          .padding(.top, CSSpace.section)
+        ruleCandidatesSection
+          .padding(.top, CSSpace.control)
       }
 
       SettingsSectionLabel("Recent corrections · \(corrections.count)")
@@ -576,22 +502,46 @@ struct VoiceLabPanel: View {
             }
           }
           if row.hasTextChange {
+            let spans = voiceLabDiffSpans(raw: row.rawText, edited: row.editedText)
+            let major = majorDiffSpans(spans)
+            let minor = minorDiffSpans(spans)
             VStack(alignment: .leading, spacing: 5) {
               Text("CHANGED")
                 .font(CSFont.mono(10, .semibold))
                 .foregroundStyle(Color.secondary)
-              correctionDiffText(correctionDiffExcerpt(raw: row.rawText, edited: row.editedText))
-                .font(CSFont.ui(13, .medium))
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(11)
-                .background(
-                  RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                    .fill(
-                      (row.isLowConfidence ? CSColor.terracotta : Color.primary.opacity(0.08))
-                        .opacity(row.isLowConfidence ? 0.12 : 1)
-                    )
-                )
+              VStack(alignment: .leading, spacing: 8) {
+                ForEach(Array(major.enumerated()), id: \.offset) { _, span in
+                  diffSpanText(span)
+                    .font(CSFont.ui(13, .medium))
+                    .textSelection(.enabled)
+                }
+                if !minor.isEmpty {
+                  DisclosureGroup {
+                    VStack(alignment: .leading, spacing: 6) {
+                      ForEach(Array(minor.enumerated()), id: \.offset) { _, span in
+                        diffSpanText(span)
+                          .font(CSFont.ui(12, .medium))
+                          .foregroundStyle(Color.secondary)
+                          .textSelection(.enabled)
+                      }
+                    }
+                    .padding(.top, 4)
+                  } label: {
+                    Text(minorAdjustmentsSummary(minor))
+                      .font(CSFont.mono(10, .medium))
+                      .foregroundStyle(Color.secondary)
+                  }
+                }
+              }
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .padding(11)
+              .background(
+                RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                  .fill(
+                    (row.isLowConfidence ? CSColor.terracotta : Color.primary.opacity(0.08))
+                      .opacity(row.isLowConfidence ? 0.12 : 1)
+                  )
+              )
             }
           } else {
             Text("No text change — kept for its confidence telemetry.")
@@ -856,6 +806,62 @@ struct VoiceLabPanel: View {
     }
   }
 
+  @ViewBuilder
+  private var ruleCandidatesSection: some View {
+    if let error = model.voiceLabReadError {
+      readError(error)
+    } else if !model.ruleCandidates.isEmpty {
+      VStack(spacing: 8) {
+        let safeIndex = min(ruleCandidateIndex, model.ruleCandidates.count - 1)
+        let candidate = model.ruleCandidates[safeIndex]
+        VStack(alignment: .leading, spacing: 10) {
+          HStack(spacing: 10) {
+            Text(candidate.target)
+              .font(CSFont.mono(11.5, .semibold))
+              .foregroundStyle(Color.primary)
+              .textSelection(.enabled)
+            Spacer(minLength: 0)
+            Text("\(candidate.occurrences) occurrences")
+              .font(CSFont.mono(10, .medium))
+              .foregroundStyle(Color.secondary)
+          }
+          VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(candidate.variants.enumerated()), id: \.offset) { _, variant in
+              HStack(spacing: 8) {
+                Text(variant)
+                  .font(CSFont.mono(11, .medium))
+                  .foregroundStyle(Color.secondary)
+                  .textSelection(.enabled)
+                Spacer(minLength: 0)
+                Button("Teach") {
+                  model.teachRuleCandidate(target: candidate.target, variant: variant)
+                }
+                .font(CSFont.mono(10.5, .semibold))
+                .controlSize(.small)
+                .disabled(model.voiceLabTeachPending)
+              }
+            }
+          }
+        }
+        .settingsGroupedInset()
+        .accessibilityLabel("Suggested rule for \(candidate.target) from \(candidate.variants.count) variants")
+        HStack {
+          Button("Previous") { ruleCandidateIndex = max(0, safeIndex - 1) }
+            .disabled(safeIndex == 0)
+          Spacer()
+          Text("\(safeIndex + 1) of \(model.ruleCandidates.count)")
+            .font(CSFont.mono(10.5, .medium))
+            .foregroundStyle(Color.secondary)
+          Spacer()
+          Button("Next") {
+            ruleCandidateIndex = min(model.ruleCandidates.count - 1, safeIndex + 1)
+          }
+          .disabled(safeIndex == model.ruleCandidates.count - 1)
+        }
+      }
+    }
+  }
+
   private func emptyState(_ message: String) -> some View {
     Text(message)
       .font(CSFont.ui(12.5))
@@ -876,39 +882,6 @@ struct VoiceLabPanel: View {
   private func timestampLabel(_ timestampMs: UInt64) -> String {
     Date(timeIntervalSince1970: Double(timestampMs) / 1000.0)
       .formatted(date: .abbreviated, time: .shortened)
-  }
-
-  /// One flowing line: context in secondary, removed words struck through,
-  /// corrected words emphasized. Word wrapping comes free from Text.
-  private func correctionDiffText(_ items: [CorrectionDiffItem]) -> Text {
-    var result = Text("")
-    for item in items {
-      switch item {
-      case .context(let words):
-        result = result + Text(words + " ").foregroundStyle(Color.secondary)
-      case .ellipsis:
-        result = result + Text("… ").foregroundStyle(Color.secondary)
-      case .change(let raw, let edited):
-        if !raw.isEmpty {
-          result =
-            result
-            + Text(raw).strikethrough().foregroundStyle(CSColor.terracotta)
-            + Text(" ")
-        }
-        if !edited.isEmpty {
-          if !raw.isEmpty {
-            result = result + Text("→ ").foregroundStyle(CSColor.chromeAccent)
-          }
-          result =
-            result
-            + Text(edited).fontWeight(.semibold).foregroundStyle(Color.primary)
-            + Text(" ")
-        } else if !raw.isEmpty {
-          result = result + Text("(removed) ").foregroundStyle(Color.secondary)
-        }
-      }
-    }
-    return result
   }
 
   private func fullTextBlock(_ title: String, text: String) -> some View {
