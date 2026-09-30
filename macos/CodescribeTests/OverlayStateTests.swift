@@ -252,6 +252,15 @@ final class OverlayStateTests: XCTestCase {
       state.channelHudStates["1"]?.autosealDeadline,
       Date(timeIntervalSince1970: 1_700_000_000))
     XCTAssertNil(state.channelHudStates["2"]?.autosealDeadline)
+    XCTAssertTrue(state.channelDelivery.isEmpty, "there is no lease-backed mailbox row")
+    XCTAssertEqual(state.visibleChannelRows.map(\.channel), ["1", "2"])
+    XCTAssertEqual(state.visibleChannelRows.first?.agent, "klaudiusz")
+    XCTAssertNil(state.visibleChannelRows.first?.stage, "the roster must not invent delivery evidence")
+    let view = OverlayChannelStatusView(
+      channels: state.visibleChannelRows, unavailable: false, palette: .dark, animates: false,
+      hudStates: state.channelHudStates)
+    XCTAssertTrue(view.hasDeadFollower(state.visibleChannelRows[0]))
+    XCTAssertFalse(view.hasDeadFollower(state.visibleChannelRows[1]))
   }
 
   func testCompactPaintCannotAdmitCaptureOrMutateDocument() {

@@ -674,9 +674,22 @@ final class OverlayState {
   private(set) var channelDelivery: [OverlayChannelDelivery] = []
   private(set) var channelStatusUnavailable = false
   private(set) var channelHudStates: [String: OverlayChannelHudProjection] = [:]
+  private(set) var channelRosterNames: [String: String] = [:]
   private(set) var channelToggleError: String?
+  var visibleChannelRows: [OverlayChannelDelivery] {
+    let deliveredDigits = Set(channelDelivery.map(\.channel))
+    let boundWithoutDelivery = channelRosterNames.keys.sorted().compactMap { digit -> OverlayChannelDelivery? in
+      guard !deliveredDigits.contains(digit), let audience = channelRosterNames[digit] else {
+        return nil
+      }
+      return OverlayChannelDelivery(
+        channel: digit, agent: audience, deliveryID: nil, stage: nil,
+        isOpen: channelHudStates[digit]?.open ?? false)
+    }
+    return (channelDelivery + boundWithoutDelivery).sorted { $0.channel < $1.channel }
+  }
   var hasOpenChannel: Bool {
-    channelDelivery.contains { channel in
+    visibleChannelRows.contains { channel in
       channelHudStates[channel.channel]?.open ?? channel.isOpen
     }
   }
@@ -708,6 +721,8 @@ final class OverlayState {
   }
 
   func applyChannelRoster(_ snapshot: [CsChannelRosterState]) {
+    let names = Dictionary(
+      snapshot.map { ($0.channel, $0.audience) }, uniquingKeysWith: { _, latest in latest })
     let projected = Dictionary(
       snapshot.map { row in
         (
@@ -720,9 +735,10 @@ final class OverlayState {
             followerAlive: row.followerAlive)
         )
       }, uniquingKeysWith: { _, latest in latest })
-    guard projected != channelHudStates else { return }
+    guard projected != channelHudStates || names != channelRosterNames else { return }
     let wasOpen = hasOpenChannel
     channelHudStates = projected
+    channelRosterNames = names
     if hasOpenChannel {
       cancelAutoHide()
     } else if wasOpen && terminal {
