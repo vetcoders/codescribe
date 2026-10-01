@@ -398,15 +398,10 @@ fn is_test_env() -> bool {
     if cfg!(test) {
         return true;
     }
-    if let Ok(exe_path) = std::env::current_exe() {
-        let exe = exe_path.to_string_lossy();
-        if exe.contains("/target/debug/deps/")
-            || exe.contains("/target/release/deps/")
-            || exe.contains("\\target\\debug\\deps\\")
-            || exe.contains("\\target\\release\\deps\\")
-        {
-            return true;
-        }
+    if let Ok(exe_path) = std::env::current_exe()
+        && is_cargo_test_executable(&exe_path)
+    {
+        return true;
     }
     // app/* tests link codescribe-core as a dependency, so cfg!(test) is false there.
     // libtest sets RUST_TEST_THREADS for the harness process; use it as a
@@ -422,6 +417,21 @@ fn is_test_env() -> bool {
         std::env::var_os("CODESCRIBE_DATA_DIR").is_some(),
         std::env::var_os("CI").is_some(),
     )
+}
+
+/// True when `exe` is a cargo test binary: it sits in `<profile>/deps/`, the layout
+/// cargo writes for every test harness, whatever the target directory is called.
+///
+/// The fence used to require a literal `/target/debug/deps/`. On 2026-10-01 four
+/// worker worktrees shared `CARGO_TARGET_DIR=…/_shared-target`; the path then read
+/// `-target/debug/deps/`, an `app/*` test reached the real Keychain item and macOS
+/// asked the Founder for the login password on behalf of `codescribe-<hash>`.
+fn is_cargo_test_executable(exe: &std::path::Path) -> bool {
+    let mut parents = exe.ancestors().skip(1);
+    let deps = parents.next().and_then(|p| p.file_name());
+    let profile = parents.next().and_then(|p| p.file_name());
+    deps == Some(std::ffi::OsStr::new("deps"))
+        && profile.is_some_and(|name| name == "debug" || name == "release")
 }
 
 /// Pure Keychain-skip policy over explicit environment signals.
@@ -728,6 +738,33 @@ fn seed_bundle_env(bundle: &KeychainBundle, seed_process_env: bool) {
 /// Keychain bypass and runtime-key priority regressions (no live Keychain I/O).
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cargo_test_binaries_are_recognised_whatever_the_target_dir_is_called() {
+        use std::path::Path;
+        for test_binary in [
+            "/repo/target/debug/deps/codescribe-8f05f1ac863abf47",
+            "/w/2026_1001/_shared-target/debug/deps/codescribe-8f05f1ac863abf47",
+            "/w/target-integrate/release/deps/codescribe_core-0123",
+            "/w/target/aarch64-apple-darwin/debug/deps/codescribe-0123",
+        ] {
+            assert!(
+                super::is_cargo_test_executable(Path::new(test_binary)),
+                "{test_binary} is a cargo test binary"
+            );
+        }
+        for shipped in [
+            "/Applications/Codescribe.app/Contents/MacOS/Codescribe",
+            "/repo/target/debug/codescribe",
+            "/usr/local/bin/codescribe",
+            "/repo/deps/codescribe",
+        ] {
+            assert!(
+                !super::is_cargo_test_executable(Path::new(shipped)),
+                "{shipped} is not a test binary"
+            );
+        }
+    }
+
     #[test]
     #[serial_test::serial]
     fn failed_fan_out_write_preserves_source_and_existing_destinations() {
