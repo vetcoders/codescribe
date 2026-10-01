@@ -171,6 +171,7 @@ def installation_idle(
     *,
     sealed_is_idle: bool = True,
     cursor: dict[str, Any] | None = None,
+    bridge_root: Path | None = None,
 ) -> bool:
     """True when no current take is in flight.
 
@@ -189,76 +190,172 @@ def installation_idle(
     it must not refuse installs forever. An unpaired CLI start whose
     ``emitted_at`` is missing or unparseable stays live: abandonment must
     be proven, not presumed.
+    Channel buses from the binding file and ``buses/channel-*.jsonl`` share
+    this guard. Only ``open`` holds a channel; any other lifecycle state or
+    a successor session on that channel ends it, as in the channel consumer.
+    Silence alone does not release it. An open channel with no receipt for
+    six hours uses the CLI abandonment threshold; unknown timestamps keep
+    blocking. Evidence rows refresh the session's last known activity.
     """
-    if not path.exists():
-        return True
-    if not path.is_file():
-        return False
-    open_cli: dict[str, str | None] = {}
-    live_app: str | None = None
+    root = bridge_root if bridge_root is not None else bridge_home()
+    cursors = cursor if cursor is not None else {}
+    channel_cursors = cursors.setdefault("channel_buses", {})
     try:
-        with path.open(encoding="utf-8", errors="strict") as handle:
-            stat = os.fstat(handle.fileno())
-            identity = (stat.st_dev, stat.st_ino, sealed_is_idle)
-            if (
-                cursor
-                and cursor.get("identity") == identity
-                and cursor["offset"] <= stat.st_size
+        paths = {path, *channel_cursors}
+        paths.update((root / "buses").glob("channel-*.jsonl"))
+        binding_path = root / AUDIENCE_BINDING_FILENAME
+        try:
+            binding = json.loads(binding_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            binding = {"schema": AUDIENCE_BINDING_SCHEMA, "bindings": {}}
+        if (
+            not isinstance(binding, dict)
+            or binding.get("schema") != AUDIENCE_BINDING_SCHEMA
+            or not isinstance(binding.get("bindings"), dict)
+        ):
+            return False
+        for entry in binding["bindings"].values():
+            if not isinstance(entry, dict):
+                return False
+            raw_bus = entry.get("bus")
+            if raw_bus is not None:
+                if not isinstance(raw_bus, str) or not raw_bus.strip():
+                    return False
+                paths.add(Path(os.path.expanduser(raw_bus.strip())))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    idle = True
+    for source in sorted(paths):
+        state = cursors if source == path else channel_cursors.setdefault(source, {})
+        if not source.exists():
+            # A disappearing known bus is no terminal receipt. Preserve its
+            # open channels until their timestamp proves abandonment.
+            if any(
+                not _cli_session_abandoned(activity, time.time())
+                for _, activity in state.get("open_channels", {}).values()
             ):
-                handle.seek(cursor["offset"])
-                open_cli = dict(cursor["open_cli"])
-                live_app = cursor["live_app"]
-            # readline keeps tell() usable: playback can consume only the new
-            # tail after its initial scan, instead of rescanning a large bus.
-            for raw in iter(handle.readline, ""):
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
+                idle = False
+            continue
+        if not source.is_file():
+            return False
+        open_cli: dict[str, str | None] = {}
+        open_channels: dict[str, tuple[str, str | None]] = {}
+        live_app: str | None = None
+        try:
+            with source.open(encoding="utf-8", errors="strict") as handle:
+                stat = os.fstat(handle.fileno())
+                identity = (stat.st_dev, stat.st_ino, sealed_is_idle)
+                if (
+                    state
+                    and state.get("identity") == identity
+                    and state["offset"] <= stat.st_size
+                ):
+                    handle.seek(state["offset"])
+                    open_cli = dict(state["open_cli"])
+                    live_app = state["live_app"]
+                    open_channels = dict(state["open_channels"])
+                # readline keeps tell() usable: playback can consume only the new
+                # tail after its initial scan, instead of rescanning a large bus.
+                while True:
+                    offset = handle.tell()
+                    raw = handle.readline()
+                    if not raw:
+                        break
+                    if not raw.endswith("\n"):
+                        raise ValueError("incomplete bus row")
+                    raw = raw.strip()
+                    if not raw:
+                        continue
                     event = json.loads(raw)
-                except json.JSONDecodeError:
-                    return False
-                if not isinstance(event, dict):
-                    return False
-                status = event.get("status")
-                # Speech must wait for session_ended: a channel can seal an
-                # utterance while the microphone keeps capturing the room.
-                if status == SEALED and not sealed_is_idle:
-                    continue
-                if status not in ("session_started", "session_ended", SEALED):
-                    continue
-                session_id = event.get("session_id")
-                if not isinstance(session_id, str) or not session_id:
-                    return False
-                is_cli = event.get("source") == CLI_FILE_VERDICT_SOURCE
-                if status == "session_started":
-                    if is_cli:
+                    if not isinstance(event, dict):
+                        raise ValueError("bus row is not an object")
+                    session_id = event.get("session_id")
+                    if event.get("schema") == CHANNEL_SESSION_SCHEMA:
+                        channel = str(event.get("channel") or "")
+                        if (
+                            not channel
+                            or not isinstance(session_id, str)
+                            or not session_id
+                        ):
+                            raise ValueError("channel row has no identity")
+                        # A newer session on this channel supersedes its old open
+                        # receipt, matching _consume_channel_row and orphan seals.
+                        open_channels = {
+                            sid: value
+                            for sid, value in open_channels.items()
+                            if value[0] != channel
+                        }
+                        if str(event.get("state") or "") == "open":
+                            emitted = event.get("emitted_at") or event.get("opened_at")
+                            open_channels[session_id] = (
+                                channel, emitted if isinstance(emitted, str) else None
+                            )
+                        continue
+                    if (
+                        event.get("schema") == EVIDENCE_SCHEMA
+                        and isinstance(session_id, str)
+                        and session_id in open_channels
+                    ):
+                        channel, _ = open_channels[session_id]
                         emitted = event.get("emitted_at")
-                        open_cli[session_id] = (
-                            emitted if isinstance(emitted, str) else None
-                        )
-                    else:
-                        live_app = session_id
-                elif is_cli:
-                    open_cli.pop(session_id, None)
-                elif session_id == live_app:
-                    live_app = None
-            if cursor is not None:
-                cursor.update(
+                        # Missing or invalid activity never proves abandonment.
+                        if isinstance(emitted, str):
+                            open_channels[session_id] = (channel, emitted)
+                    status = event.get("status")
+                    # Speech must wait for session_ended: a channel can seal an
+                    # utterance while the microphone keeps capturing the room.
+                    if status == SEALED and not sealed_is_idle:
+                        continue
+                    if status not in ("session_started", "session_ended", SEALED):
+                        continue
+                    if not isinstance(session_id, str) or not session_id:
+                        raise ValueError("lifecycle row has no session")
+                    is_cli = event.get("source") == CLI_FILE_VERDICT_SOURCE
+                    if status == "session_started":
+                        if is_cli:
+                            emitted = event.get("emitted_at")
+                            open_cli[session_id] = (
+                                emitted if isinstance(emitted, str) else None
+                            )
+                        else:
+                            live_app = session_id
+                    elif is_cli:
+                        open_cli.pop(session_id, None)
+                    elif session_id == live_app:
+                        live_app = None
+                state.update(
                     identity=identity,
                     offset=handle.tell(),
                     open_cli=open_cli,
                     live_app=live_app,
+                    open_channels=open_channels,
                 )
-    except (OSError, UnicodeDecodeError):
-        return False
-    now = time.time()
-    live_cli = [
-        session_id
-        for session_id, emitted_at in open_cli.items()
-        if not _cli_session_abandoned(emitted_at, now)
-    ]
-    return live_app is None and not live_cli
+        except ValueError:
+            # Retry the offending row, without replaying the valid prefix of
+            # a multi-gigabyte bus while its writer finishes a partial tail.
+            state.update(
+                identity=identity,
+                offset=offset,
+                open_cli=open_cli,
+                live_app=live_app,
+                open_channels=open_channels,
+            )
+            return False
+        except (OSError, UnicodeDecodeError):
+            return False
+        now = time.time()
+        live_cli = [
+            session_id
+            for session_id, emitted_at in open_cli.items()
+            if not _cli_session_abandoned(emitted_at, now)
+        ]
+        live_channels = any(
+            not _cli_session_abandoned(activity, now)
+            for _, activity in open_channels.values()
+        )
+        if live_app is not None or live_cli or live_channels:
+            idle = False
+    return idle
 
 
 # A CLI file transcription is bounded by its audio; six hours is generous.
@@ -1932,9 +2029,13 @@ def _acquire_playback_lock(descriptor: int) -> bool:
             time.sleep(min(0.05, remaining))
 
 
-def _wait_for_take_end(bus: Path, cursor: dict[str, Any]) -> bool:
+def _wait_for_take_end(
+    bus: Path, cursor: dict[str, Any], *, bridge_root: Path | None = None
+) -> bool:
     deadline = time.monotonic() + TAKE_WAIT_SECONDS
-    while not installation_idle(bus, sealed_is_idle=False, cursor=cursor):
+    while not installation_idle(
+        bus, sealed_is_idle=False, cursor=cursor, bridge_root=bridge_root
+    ):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return False
@@ -1975,9 +2076,8 @@ def _play_pcm_24k(
                 sink.setsampwidth(2)
                 sink.setframerate(24000)
                 sink.writeframes(pcm)
-        runtime = (
-            playback_root if playback_root is not None else bridge_home()
-        ) / "runtime"
+        root = playback_root if playback_root is not None else bridge_home()
+        runtime = root / "runtime"
         runtime.mkdir(parents=True, exist_ok=True)
         # Never unlink this file: all current and waiting processes must share
         # the same inode even when the runtime payload is replaced.
@@ -1989,13 +2089,15 @@ def _play_pcm_24k(
         # A take may have started during synthesis or the lock wait.
         speech_bus = bus if bus is not None else bus_path()
         cursor: dict[str, Any] = {}
-        if not _wait_for_take_end(speech_bus, cursor):
+        if not _wait_for_take_end(speech_bus, cursor, bridge_root=root):
             return False, "live take wait timed out", "take_live"
         player = subprocess.Popen(
             ["afplay", wav_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
         while True:
-            if not installation_idle(speech_bus, sealed_is_idle=False, cursor=cursor):
+            if not installation_idle(
+                speech_bus, sealed_is_idle=False, cursor=cursor, bridge_root=root
+            ):
                 _stop_playback(player)
                 return False, "take started during playback", "take_started"
             result = player.poll()
@@ -2734,10 +2836,10 @@ def main() -> int:
     if args.print_agent_turn_lease_path:
         print(agent_turn_lease_path())
         return 0
-    if args.assert_install_idle:
-        return 0 if installation_idle(args.bus) else 2
     if args.bridge_home is None:
         args.bridge_home = bridge_home()
+    if args.assert_install_idle:
+        return 0 if installation_idle(args.bus, bridge_root=args.bridge_home) else 2
     if args.provider and not args.session:
         args.session = provider_session_from_env(args.provider)
     if bool(args.provider) != bool(args.session):
