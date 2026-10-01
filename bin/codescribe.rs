@@ -42,6 +42,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Inspect per-PCM-pin decision history (engine hypotheses are diagnostic)
+    Trace {
+        /// Session ID, or an explicit .trail.jsonl file for offline inspection
+        session: String,
+        #[arg(long)]
+        word: Option<String>,
+    },
     /// Transcribe files or follow the app-owned live transcript bus
     ///
     /// stdout carries the payload and nothing else: transcript text in file
@@ -277,6 +284,16 @@ fn dispatch(cli: Cli) -> anyhow::Result<std::process::ExitCode> {
             }
         }
         .map(|()| success),
+        Command::Trace { session, word } => {
+            let path = if session.ends_with(".trail.jsonl") {
+                std::path::PathBuf::from(&session)
+            } else {
+                codescribe_core::pipeline::trail::trail_path(&codescribe_core::config::Config::config_dir(), &session)?
+            };
+            let records = codescribe_core::pipeline::trail::read_trail(&path)?;
+            print!("{}", codescribe_core::pipeline::trail::render_trace(&records, word.as_deref()));
+            Ok(success)
+        }
         Command::Bus { action } => run_bus(action).map(|()| success),
         Command::Lexicon { action } => run_lexicon(action).map(|()| success),
         Command::Report(args) => {
