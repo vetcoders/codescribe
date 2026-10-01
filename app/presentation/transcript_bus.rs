@@ -2144,6 +2144,70 @@ mod tests {
         );
     }
 
+    /// Integrator (2026-10-01, take agent-channel-0-b351ea82): Fn+0 rows
+    /// reached only the shared bus while every follower read its channel bus.
+    #[test]
+    fn integrator_broadcast_bus_writes_every_row_to_every_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("transcript-events.jsonl");
+        let one = dir.path().join("buses/channel-1.jsonl");
+        let three = dir.path().join("buses/channel-3.jsonl");
+        let mut broadcast = session("agent-channel-0-fanout");
+        broadcast.audience = Some("*".to_string());
+        broadcast.badge_only = true;
+        let bus = TranscriptBus::open_with_paths(
+            broadcast,
+            shared.clone(),
+            vec![one.clone(), three.clone(), one.clone(), shared.clone()],
+        );
+        bus.publish_started();
+        let (ledger, _, revision) = committed_fixture("agent-channel-0-fanout");
+        bus.publish_revision(&revision, &ledger);
+        bus.record_channel_receipt(&serde_json::json!({
+            "schema": "codescribe.channel-session.v1",
+            "kind": "channel_session",
+            "state": "sealed",
+            "channel": "0",
+            "session_id": "agent-channel-0-fanout",
+        }));
+        let read = |path: &Path| std::fs::read_to_string(path).unwrap_or_default();
+        let shared_rows = read(&shared);
+        assert!(shared_rows.lines().count() >= 2, "{shared_rows}");
+        assert_eq!(read(&one), shared_rows, "channel 1 gets the same rows once");
+        assert_eq!(
+            read(&three),
+            shared_rows,
+            "channel 3 gets the same rows once"
+        );
+        assert!(shared_rows.contains("\"audience\":\"*\""), "{shared_rows}");
+        assert!(shared_rows.contains("codescribe.channel-session.v1"));
+    }
+
+    #[test]
+    fn integrator_broken_broadcast_destination_leaves_the_others_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("transcript-events.jsonl");
+        let blocker = dir.path().join("not-a-dir");
+        std::fs::write(&blocker, b"file").unwrap();
+        let broken = blocker.join("channel-2.jsonl");
+        let good = dir.path().join("buses/channel-1.jsonl");
+        let mut broadcast = session("agent-channel-0-broken");
+        broadcast.audience = Some("*".to_string());
+        broadcast.badge_only = true;
+        let bus = TranscriptBus::open_with_paths(
+            broadcast,
+            shared.clone(),
+            vec![broken.clone(), good.clone()],
+        );
+        bus.publish_started();
+        let (ledger, _, revision) = committed_fixture("agent-channel-0-broken");
+        bus.publish_revision(&revision, &ledger);
+        let shared_rows = std::fs::read_to_string(&shared).unwrap();
+        assert!(!shared_rows.is_empty());
+        assert_eq!(std::fs::read_to_string(&good).unwrap(), shared_rows);
+        assert!(!broken.exists());
+    }
+
     /// Quiet delivery contract (Founder seal cc6c8248): between one start row
     /// per document and the terminal seal, channel revisions stay off disk.
     #[test]
