@@ -3373,10 +3373,33 @@ impl AppleSealState {
                         pin_intersects(&pin, owner)
                             && ledger.slots_of(owner).is_some_and(|slots| {
                                 slots.iter().any(|slot| {
+                                    // Keep an internal partition together for
+                                    // ledger admission, including its held
+                                    // token. Replay filtering cannot remove the
+                                    // lexical witness needed by a broad Split.
+                                    let internal_partition = segments
+                                        .iter()
+                                        .filter(|other| {
+                                            let range = &other.range;
+                                            let midpoint = range.sample_start
+                                                + range.sample_end
+                                                    .saturating_sub(range.sample_start)
+                                                    / 2;
+                                            !other.text.trim().is_empty()
+                                                && range.session == owner.session
+                                                && range.capture_epoch == owner.capture_epoch
+                                                && range.sample_end > range.sample_start
+                                                && midpoint >= slot.sample_start
+                                                && midpoint < slot.sample_end
+                                        })
+                                        .take(2)
+                                        .count()
+                                        == 2;
                                     (slot.producer == LedgerObservationProducer::Whisper
                                         || (producer == LedgerObservationProducer::CloudLive
                                             && slot.producer
                                                 == LedgerObservationProducer::CloudLive))
+                                        && !internal_partition
                                         && crate::pipeline::acoustic_ledger::same_word_pin(
                                             pin.sample_start,
                                             pin.sample_end,
@@ -3760,11 +3783,11 @@ impl AppleSealState {
         for (index, ((member_id, occurrence), route)) in owners.iter().zip(&routes).enumerate() {
             if word_grain {
                 if !route.exclusive.is_empty() {
-                    mutation_admitted |= self.admit_routed_words(
+                    mutation_admitted |= self.admit_routed_words_with_decode_start(
                         ev_tx,
                         *member_id,
                         occurrence,
-                        request_id,
+                        (request_id, Some(job.request_identity.range.sample_start)),
                         RoutedWords {
                             pins: &route.exclusive,
                             neighbours: &neighbour_pin_assignments(
@@ -4002,6 +4025,26 @@ impl AppleSealState {
         batch: RoutedWords<'_>,
         producer: LedgerObservationProducer,
     ) -> bool {
+        self.admit_routed_words_with_decode_start(
+            ev_tx,
+            id,
+            owner,
+            (request, None),
+            batch,
+            producer,
+        )
+    }
+
+    fn admit_routed_words_with_decode_start(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        id: u64,
+        owner: &OccurrenceIdentity,
+        request_window: (u64, Option<u64>),
+        batch: RoutedWords<'_>,
+        producer: LedgerObservationProducer,
+    ) -> bool {
+        let (request, decode_sample_start) = request_window;
         let RoutedWords { pins, neighbours } = batch;
         let words = pins
             .iter()
@@ -4020,6 +4063,10 @@ impl AppleSealState {
                     pin.pin.sample_end,
                     text,
                 );
+                let word = match decode_sample_start {
+                    Some(start) => word.with_decode_start(start),
+                    None => word,
+                };
                 let word = match pin.confidence {
                     Some(confidence) => word.with_confidence(confidence),
                     None => word,
