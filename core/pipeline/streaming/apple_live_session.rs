@@ -3369,7 +3369,7 @@ impl AppleSealState {
                     word_grain,
                 );
                 let same_word_replay = word_grain
-                    && open_members.iter().any(|owner| {
+                    && (open_members.iter().any(|owner| {
                         pin_intersects(&pin, owner)
                             && ledger.slots_of(owner).is_some_and(|slots| {
                                 slots.iter().any(|slot| {
@@ -3387,20 +3387,18 @@ impl AppleSealState {
                                         )
                                 })
                             })
-                    })
-                    || (word_grain
-                        && routes.iter().any(|route| {
-                            route.exclusive.iter().any(|prior| {
-                                crate::pipeline::acoustic_ledger::same_word_pin(
-                                    pin.sample_start,
-                                    pin.sample_end,
-                                    text,
-                                    prior.pin.sample_start,
-                                    prior.pin.sample_end,
-                                    &prior.text,
-                                )
-                            })
-                        }));
+                    }) || routes.iter().any(|route| {
+                        route.exclusive.iter().any(|prior| {
+                            crate::pipeline::acoustic_ledger::same_word_pin(
+                                pin.sample_start,
+                                pin.sample_end,
+                                text,
+                                prior.pin.sample_start,
+                                prior.pin.sample_end,
+                                &prior.text,
+                            )
+                        })
+                    }));
                 if same_word_replay {
                     class = OverlapPinClass::Replay;
                 }
