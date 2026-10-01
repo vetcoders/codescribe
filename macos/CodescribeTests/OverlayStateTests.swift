@@ -4339,7 +4339,7 @@ final class OverlayStateTests: XCTestCase {
       XCTAssertEqual(state.statusText, "unsealed transcript")
       XCTAssertEqual(
         state.coverageRefusalNotice,
-        "The engine measured full coverage but did not finish sealing this take, so the text is kept unsealed."
+        "Speech coverage was measured as complete, but this take has no terminal seal."
       )
       XCTAssertEqual(
         state.coverageRefusalDetail,
@@ -4360,7 +4360,7 @@ final class OverlayStateTests: XCTestCase {
 
   func testTypedCoverageExplainsIncompleteAndEveryUnavailableReasonWithoutChangingBytes() {
     let cases: [(CsProjectedSealCoverageReceipt, String, String)] = [
-      (coverage(.incomplete), "incomplete coverage", "no words for 50% of the speech"),
+      (coverage(.incomplete), "incomplete coverage", "no recognizer turned into words"),
       (
         coverage(.unavailable, reason: .notObserved), "measurement unavailable",
         "no acoustic measurement was taken"
@@ -4381,7 +4381,7 @@ final class OverlayStateTests: XCTestCase {
         coverage(.unavailable, reason: .unknown), "measurement unavailable",
         "measurement was unavailable"
       ),
-      (coverage(.unknown), "unverified coverage", "no coverage measurement"),
+      (coverage(.unknown), "unverified coverage", "No coverage measurement"),
     ]
     for (receipt, status, explanation) in cases {
       let state = OverlayState()

@@ -128,42 +128,74 @@ final class OverlayRecordingLightTests: XCTestCase {
 
   // MARK: Warnings say whose fact it is
 
-  func testRefusedSealIsTheEnginesFactAndNeverSendsTheUserToCalibration() {
-    let cases: [CsProjectedSealCoverageReceipt?] = [
-      nil,
-      coverage(.incomplete, speech: 32_000, covered: 29_440),
-      coverage(.unavailable, reason: .notObserved),
-      coverage(.complete, speech: 32_000, covered: 32_000),
-      coverage(.unknown),
+  /// Founder 2026-10-01: say what happened, not "engine missed … text kept".
+  func testSealCoverageDescribesTheObservationWithoutBlameOrDeliveryClaims() {
+    let cases: [(CsProjectedSealCoverageReceipt?, String, String)] = [
+      (
+        nil, "No coverage measurement for this take",
+        "No coverage measurement was recorded for this take."
+      ),
+      (
+        coverage(.incomplete, speech: 32_000, covered: 29_440), "Speech had no words",
+        "Codescribe detected speech that no recognizer turned into words; its timing is unavailable for this take."
+      ),
+      (
+        coverage(.unavailable, reason: .notObserved), "Speech coverage not measured",
+        "Speech coverage was not measured because no acoustic measurement was taken."
+      ),
+      (
+        coverage(.complete, speech: 32_000, covered: 32_000), "Take not sealed yet",
+        "Speech coverage was measured as complete, but this take has no terminal seal."
+      ),
+      (
+        coverage(.unknown), "No coverage measurement for this take",
+        "No coverage measurement was recorded for this take."
+      ),
     ]
-    for receipt in cases {
+    for (receipt, chip, sentence) in cases {
       let copy = OverlayWarningCopy.sealRefused(receipt)
-      XCTAssertEqual(copy.owner, .engine)
-      XCTAssertTrue(copy.sentence.hasPrefix("The engine"), copy.sentence)
-      XCTAssertTrue(copy.chip.hasPrefix("Engine"), copy.chip)
-      XCTAssertFalse(copy.sentence.localizedCaseInsensitiveContains("calibration"))
-      XCTAssertFalse(copy.sentence.localizedCaseInsensitiveContains("quality"))
+      XCTAssertEqual(copy.owner, .coverage)
+      XCTAssertEqual(copy.chip, chip)
+      XCTAssertEqual(copy.sentence, sentence)
+      for text in [copy.chip, copy.sentence] {
+        for blame in ["engine", "missed", "kept", "calibration", "quality"] {
+          XCTAssertFalse(text.localizedCaseInsensitiveContains(blame), text)
+        }
+      }
     }
-    let incomplete = OverlayWarningCopy.sealRefused(
-      coverage(.incomplete, speech: 32_000, covered: 29_440))
-    XCTAssertEqual(incomplete.chip, "Engine missed 8% of your speech — text kept")
+  }
+
+  func testUncoveredSpeechIsPlacedOnlyWithTheMeasuredClock() {
+    func gaps(_ ranges: [(UInt64, UInt64)]) -> CsProjectedSealCoverageReceipt {
+      var receipt = coverage(.incomplete, speech: 1_000_000, covered: 900_000)
+      receipt.uncoveredSpeechRanges = ranges.map {
+        CsProjectedSealCoverageRange(sampleStart: $0.0, sampleEnd: $0.1)
+      }
+      return receipt
+    }
+    let one = OverlayWarningCopy.sealRefused(gaps([(576_000, 638_400)]), sampleRateHz: 48_000)
+    XCTAssertEqual(one.chip, "1.3 s of speech had no words · 0:12")
     XCTAssertEqual(
-      incomplete.sentence,
-      "The engine found no words for 8% of the speech it detected, so it kept this text without sealing the take."
+      one.sentence,
+      "Codescribe heard speech at 0:12–0:14 that no recognizer turned into words — it may have been cut off, noise or the microphone."
     )
+    let two = OverlayWarningCopy.sealRefused(
+      gaps([(928_000, 939_200), (192_000, 208_000)]), sampleRateHz: 16_000)
+    XCTAssertEqual(two.chip, "1.7 s of speech had no words · 0:12, 0:58")
+    let long = OverlayWarningCopy.sealRefused(gaps([(1_040_000, 1_056_000)]), sampleRateHz: 16_000)
+    XCTAssertEqual(long.chip, "1.0 s of speech had no words · 1:05")
+    let tiny = OverlayWarningCopy.sealRefused(gaps([(0, 1_000)]), sampleRateHz: 48_000)
+    XCTAssertEqual(tiny.chip, "under 0.1 s of speech had no words · 0:00")
+    for rate in [nil, UInt32(0)] {
+      XCTAssertEqual(
+        OverlayWarningCopy.sealRefused(gaps([(0, 16_000)]), sampleRateHz: rate).chip,
+        "Speech had no words", "no clock, no invented position")
+    }
+    XCTAssertEqual(
+      OverlayWarningCopy.sealRefused(gaps([]), sampleRateHz: 16_000).chip, "Speech had no words")
   }
 
-  func testMissedShareIsHonestAtTheEdges() {
-    XCTAssertEqual(
-      OverlayWarningCopy.missedShare(coverage(.incomplete, speech: 100_000, covered: 99_900)),
-      "under 1%")
-    XCTAssertEqual(
-      OverlayWarningCopy.missedShare(coverage(.incomplete, speech: 0, covered: 0)), "part")
-    XCTAssertEqual(
-      OverlayWarningCopy.missedShare(coverage(.incomplete, speech: 1_000, covered: 2_000)), "part")
-  }
-
-  func testRefusedTakeShowsTheEngineSentenceNotAMicrophoneHint() {
+  func testRefusedTakeShowsTheCoverageSentenceNotAMicrophoneHint() {
     let state = OverlayState()
     let receipt = coverage(.incomplete, speech: 32_000, covered: 16_000)
     let acoustic = projectedAcousticReceipt(
