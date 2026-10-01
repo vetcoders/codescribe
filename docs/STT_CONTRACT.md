@@ -166,6 +166,36 @@ and segments never enter artifacts or stdout. Exact sample replay uses
 `--manifest <previous-metrics.json>` and rejects changed audio. Only complete,
 nonempty SFSpeech pairs can authorize the flip; incomplete runs exit 2.
 
+The developer app also exposes the **Lab-gated** in-app replay (cut Z):
+
+```bash
+open "codescribe://lab/vocabulary-ab?sample=30"
+```
+
+Enable the existing Lab mode on a developer/power bundle first. Production
+bundles refuse the route. Only `sample` (2–100, default 30) is accepted;
+unknown parameters are ignored and duplicate/invalid sample values are refused.
+One job runs at a time off the UI thread, using the exact T2 runner embedded in
+Rust. The bundled Apple bridge runs as an app descendant under the app's Speech
+grant. The runner requires local on-device recognition and disables downloads.
+The Lab command `transcribe_vocabulary_lab` requires an existing Speech grant
+and forces the SFSpeech buffer engine in both arms, including on locales where
+SpeechTranscriber is installed (that engine ignores contextual strings).
+It opens no microphone, changes no settings or dictionary, and writes only
+`~/.codescribe/lab/vocabulary-ab/<UTC timestamp>.json`. Symlinked output
+components are refused. Python 3 at `/usr/bin/python3` and the bundled Apple
+bridge are required; unavailable prerequisites refuse the run.
+
+Results retain the T2 schema, sample manifest, bridge/vocabulary SHA256,
+canonical terms, counts, safe status, and timings; no transcript, reference
+text, segments, or child diagnostics are persisted. Completion emits one
+numeric `Vocabulary A/B finished` info event. Inspect `summary.measurement_status`
+and all 30 valid pairs before interpreting the metrics. The integrator's
+recommendation for the Founder remains: zero files with omission above 5%,
+insertion at most 1/30, and more canonical hits. This is a recommendation,
+never an automatic configuration change; the Founder decides whether to enable
+Apple context. Insertion without paired references remains a proxy.
+
 References pair by exact basename (`.txt` / `.jsonl` with `edited_text`) or an
 explicit session/audio ID in corrections. Timestamp proximity is insufficient.
 All 207 current correction rows lacked such an ID; none of the selected files

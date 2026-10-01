@@ -258,6 +258,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   // duplicate-instance/test-host guard) so the XCTest host never starts a
   // scheduled updater alongside the live app.
   private var updater: UpdaterService?
+  private let vocabularyAB = VocabularyABAction()
 
   /// True when the process is the XCTest host, not a user launch. The unit-test
   /// runner reuses this app as its host: without this gate the duplicate-instance
@@ -276,6 +277,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       deliverImmediately: true
     )
     NSApp.terminate(nil)
+  }
+
+  func application(_ application: NSApplication, open urls: [URL]) {
+    guard !Self.isRunningTests, !shouldExitForDuplicate else { return }
+    for url in urls {
+      vocabularyAB.receive(url, labEnabled: DictationOverlayGate.isLabModeOn())
+    }
   }
 
   func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool { false }

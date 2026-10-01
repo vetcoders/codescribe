@@ -311,6 +311,26 @@ private func handle(request: BridgeRequest) async throws -> BridgeResponse {
             error: nil,
             speechAuth: speechAuthLabel(SFSpeechRecognizer.authorizationStatus())
         )
+    case "transcribe_vocabulary_lab":
+        // Explicit SF-only replay: never route to an engine that ignores context.
+        // The app must already hold the grant; this command never requests one.
+        guard SFSpeechRecognizer.authorizationStatus() == .authorized else {
+            throw BridgeError.runtime("lab: Speech Recognition grant required")
+        }
+        guard let audioPath = request.audioPath, !audioPath.isEmpty else {
+            throw BridgeError.missingAudioPath
+        }
+        let transcription = try await transcribeWithSfSpeechAudioBuffer(
+            audioPath: audioPath,
+            locale: locale,
+            contextualStrings: request.contextualStrings
+        )
+        return BridgeResponse(
+            ok: true, status: "ok", text: transcription.text,
+            segments: transcription.segments, localeSupported: true,
+            localeInstalled: true, backend: transcription.backend.rawValue,
+            error: nil, speechAuth: speechAuthLabel(SFSpeechRecognizer.authorizationStatus())
+        )
     case "transcribe_live":
         // Live / virtual-mic: may select SpeechTranscriber (buffer/file) or
         // SFSpeechAudioBufferRecognitionRequest. Speech TCC only on SF entry.

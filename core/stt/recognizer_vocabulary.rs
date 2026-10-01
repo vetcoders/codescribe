@@ -7,7 +7,7 @@ use unicode_casefold::UnicodeCaseFold;
 
 use crate::config::Config;
 use crate::quality::lexicon_gate::ProtectedTerms;
-use crate::quality::overlay_quality::custom_lexicon_entries;
+use crate::quality::overlay_quality::{custom_lexicon_entries, custom_lexicon_entries_read_only};
 
 /// SFSpeech contextualStrings ceiling, applied after source-priority deduplication.
 pub const APPLE_VOCABULARY_LIMIT: usize = 100;
@@ -31,8 +31,19 @@ impl RecognizerVocabulary {
     /// Read the existing production sources. Tests use `from_sources` instead.
     /// Loading this snapshot does not enable recognition bias.
     pub fn load() -> Self {
+        Self::with_dictionary(custom_lexicon_entries())
+    }
+
+    /// Lab snapshot: no dictionary cleanup or configuration writes.
+    pub fn load_read_only() -> Self {
+        Self::with_dictionary(custom_lexicon_entries_read_only())
+    }
+
+    fn with_dictionary(
+        entries: anyhow::Result<Vec<crate::quality::overlay_quality::CustomLexiconEntry>>,
+    ) -> Self {
         let names = super::active_names::active_names();
-        let canonicals = match custom_lexicon_entries() {
+        let canonicals = match entries {
             Ok(entries) => entries.into_iter().map(|entry| entry.canonical).collect(),
             Err(error) => {
                 tracing::warn!(%error, "recognizer vocabulary: custom dictionary unavailable");

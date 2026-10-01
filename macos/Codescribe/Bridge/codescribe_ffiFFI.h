@@ -1891,6 +1891,11 @@ int8_t uniffi_codescribe_ffi_fn_func_request_mic_permission(RustCallStatus *_Non
 
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_RUN_VOCABULARY_AB
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_RUN_VOCABULARY_AB
+RustBuffer uniffi_codescribe_ffi_fn_func_run_vocabulary_ab(uint32_t sample, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_RUNTIME_LLM_LANE
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_RUNTIME_LLM_LANE
 RustBuffer uniffi_codescribe_ffi_fn_func_runtime_llm_lane(RustBuffer lane, RustCallStatus *_Nonnull out_status
@@ -2314,6 +2319,12 @@ uint16_t uniffi_codescribe_ffi_checksum_func_remove_model_directory(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_REQUEST_MIC_PERMISSION
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_REQUEST_MIC_PERMISSION
 uint16_t uniffi_codescribe_ffi_checksum_func_request_mic_permission(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_RUN_VOCABULARY_AB
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_RUN_VOCABULARY_AB
+uint16_t uniffi_codescribe_ffi_checksum_func_run_vocabulary_ab(void
 
 );
 #endif
