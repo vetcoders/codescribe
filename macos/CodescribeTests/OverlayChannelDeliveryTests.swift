@@ -405,25 +405,56 @@ final class OverlayChannelDeliveryTests: XCTestCase {
 
   // MARK: Agent glyph (Annex A3/A4 — the state table is the Codex root's proposal)
 
-  func testAgentGlyphIsOneCharacterWithOneLabelPerState() {
-    let table: [(OverlayAgentGlyph, String, String)] = [
+  func testAgentGlyphUsesSpinnerOrOneCharacterWithOneLabelPerState() {
+    let table: [(OverlayAgentGlyph, String?, String)] = [
       (.attached, "\u{2756}", "Agent attached"),
       (.open, "\u{2756}", "Agent channel open"),
-      (.awaitingReceipt, "\u{28F8}", "Waiting for the agent to confirm receipt"),
+      (.awaitingReceipt, nil, "Waiting for the agent to confirm receipt"),
       (.acknowledged, "\u{2406}", "Agent confirmed receipt"),
       (.unavailable, "\u{26A0}\u{FE0E}", "Agent channel status unavailable"),
     ]
     XCTAssertEqual(table.map(\.0), OverlayAgentGlyph.allCases, "every state is named once")
     for (glyph, character, label) in table {
       XCTAssertEqual(glyph.character, character)
-      XCTAssertEqual(glyph.character.count, 1, "\(glyph) spends exactly one character")
+      XCTAssertEqual(
+        glyph.character?.count, character == nil ? nil : 1, "\(glyph) spends exactly one character")
       XCTAssertEqual(glyph.label, label)
     }
     XCTAssertEqual(Set(table.map(\.2)).count, table.count, "labels tell every state apart")
     XCTAssertEqual(
-      OverlayAgentGlyph.unavailable.character.unicodeScalars.last, "\u{FE0E}",
+      OverlayAgentGlyph.unavailable.character?.unicodeScalars.last, "\u{FE0E}",
       "the warning sign is the monochrome text form, never the colour emoji")
-    XCTAssertEqual(OverlayAgentGlyph.allCases.filter(\.pulses), [.awaitingReceipt])
+    XCTAssertNil(OverlayAgentGlyph.awaitingReceipt.character)
+  }
+
+  func testWaitingSpinnerRotatesContinuouslyUnlessMotionIsReducedOrHidden() {
+    for glyph in OverlayAgentGlyph.allCases {
+      for animates in [true, false] {
+        for reduceMotion in [true, false] {
+          let mark = OverlayAgentStatusMark(
+            reduceMotion: reduceMotion, glyph: glyph, palette: .dark, animates: animates,
+            fontSize: 13)
+          let shouldRotate = glyph == .awaitingReceipt && animates && !reduceMotion
+          XCTAssertEqual(mark.showsSpinner, glyph == .awaitingReceipt)
+          XCTAssertEqual(mark.rotates, shouldRotate)
+          XCTAssertEqual(mark.rotation(at: 0.25).degrees, shouldRotate ? 90 : 0)
+          XCTAssertEqual(mark.rotation(at: 0.75).degrees, shouldRotate ? 270 : 0)
+        }
+      }
+    }
+  }
+
+  func testRosterSpinnerKeepsItsSlotWithReduceMotion() {
+    for reduceMotion in [true, false] {
+      for glyph in OverlayAgentGlyph.allCases {
+        let mark = OverlayAgentStatusMark(
+          reduceMotion: reduceMotion, glyph: glyph, palette: .light, animates: true, fontSize: 11)
+        let host = NSHostingView(rootView: mark)
+        host.layoutSubtreeIfNeeded()
+        XCTAssertEqual(host.fittingSize.width, 18, accuracy: 0.5)
+        XCTAssertEqual(host.fittingSize.height, 22, accuracy: 0.5)
+      }
+    }
   }
 
   func testAgentGlyphResolvesWorstNewsFirstFromProjectionOnly() {

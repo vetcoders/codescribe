@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The agent channel in one header character.
+/// The agent channel in one fixed header slot.
 ///
 /// Budget: "to ma być 1 char budżetu" (Founder, quoted in the Codex handoff,
 /// Annex A3/A4, 2026-09-29). The state → glyph table below is the Codex root's
@@ -18,7 +18,7 @@ enum OverlayAgentGlyph: CaseIterable, Equatable, Sendable {
   case attached
   /// ❖ in the listening hue: the microphone feeds this agent's channel now.
   case open
-  /// ⣸ a sealed utterance is out and no receipt names it yet.
+  /// A rotating spinner: a sealed utterance is out and no receipt names it yet.
   case awaitingReceipt
   /// ␆ the agent confirmed receipt of the newest delivery.
   case acknowledged
@@ -38,10 +38,10 @@ enum OverlayAgentGlyph: CaseIterable, Equatable, Sendable {
     return channels.contains(where: \.isOpen) ? .open : .attached
   }
 
-  var character: String {
+  var character: String? {
     switch self {
     case .attached, .open: "\u{2756}"
-    case .awaitingReceipt: "\u{28F8}"
+    case .awaitingReceipt: nil
     case .acknowledged: "\u{2406}"
     // U+FE0E pins the text presentation: a monochrome sign, never the emoji.
     case .unavailable: "\u{26A0}\u{FE0E}"
@@ -58,8 +58,6 @@ enum OverlayAgentGlyph: CaseIterable, Equatable, Sendable {
     case .unavailable: "Agent channel status unavailable"
     }
   }
-
-  var pulses: Bool { self == .awaitingReceipt }
 
   func tone(in palette: OverlayAppearancePalette) -> OverlayColorToken {
     switch self {
@@ -84,6 +82,56 @@ struct OverlayChannelHudProjection: Equatable {
   let followerAlive: Bool?
 }
 
+/// Shared by the header and roster; animation never owns delivery state.
+struct OverlayAgentStatusMark: View {
+  let reduceMotion: Bool
+  let glyph: OverlayAgentGlyph
+  let palette: OverlayAppearancePalette
+  let animates: Bool
+  let fontSize: CGFloat
+
+  var showsSpinner: Bool { glyph == .awaitingReceipt }
+
+  var rotates: Bool {
+    showsSpinner && animates && !reduceMotion
+  }
+
+  func rotation(at time: TimeInterval) -> Angle {
+    .degrees(
+      rotates ? time.truncatingRemainder(dividingBy: 1) * 360 : 0)
+  }
+
+  var body: some View {
+    Group {
+      if showsSpinner {
+        if rotates {
+          TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+            spinner.rotationEffect(
+              rotation(at: timeline.date.timeIntervalSinceReferenceDate)
+            )
+          }
+        } else {
+          spinner
+        }
+      } else if let character = glyph.character {
+        Text(character)
+          .font(.system(size: fontSize, weight: .medium, design: .monospaced))
+          .fixedSize()
+      }
+    }
+    .foregroundStyle(glyph.tone(in: palette).color)
+    .frame(width: OverlayAgentGlyph.slotSize.width, height: OverlayAgentGlyph.slotSize.height)
+  }
+
+  private var spinner: some View {
+    Circle()
+      .trim(from: 0.08, to: 0.82)
+      .stroke(style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+      .frame(width: fontSize, height: fontSize)
+      .accessibilityIdentifier("overlay-agent-spinner")
+  }
+}
+
 /// A quiet header affordance. Delivery details belong to its popover, not the transcript.
 struct OverlayChannelStatusView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -91,7 +139,7 @@ struct OverlayChannelStatusView: View {
   let channels: [OverlayChannelDelivery]
   let unavailable: Bool
   let palette: OverlayAppearancePalette
-  /// False while the panel is hidden or occluded: the waiting pulse must not
+  /// False while the panel is hidden or occluded: the waiting spinner must not
   /// keep the render loop awake.
   let animates: Bool
   let hudStates: [String: OverlayChannelHudProjection]
@@ -142,18 +190,9 @@ struct OverlayChannelStatusView: View {
     Button {
       showsDetails.toggle()
     } label: {
-      Group {
-        if glyph.pulses && animates && !reduceMotion {
-          TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-            mark.opacity(
-              OverlayRecordingLight.pulseOpacity(
-                at: timeline.date.timeIntervalSinceReferenceDate))
-          }
-        } else {
-          mark
-        }
-      }
-      .frame(width: OverlayAgentGlyph.slotSize.width, height: OverlayAgentGlyph.slotSize.height)
+      OverlayAgentStatusMark(
+        reduceMotion: reduceMotion, glyph: glyph, palette: palette, animates: animates, fontSize: 13
+      )
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
@@ -166,13 +205,6 @@ struct OverlayChannelStatusView: View {
         details
       }
     }
-  }
-
-  private var mark: some View {
-    Text(glyph.character)
-      .font(.system(size: 13, weight: .medium, design: .monospaced))
-      .foregroundStyle(glyph.tone(in: palette).color)
-      .fixedSize()
   }
 
   private var rosterStyle: ChannelRosterPopoverStyle {
@@ -201,10 +233,11 @@ struct OverlayChannelStatusView: View {
             Spacer(minLength: 4)
             let rowGlyph =
               OverlayAgentGlyph.resolve(channels: [channel], unavailable: unavailable) ?? .attached
-            Text(rowGlyph.character)
-              .font(.system(size: 11, weight: .medium, design: .monospaced))
-              .foregroundStyle(rowGlyph.tone(in: palette).color)
-              .accessibilityHidden(true)
+            OverlayAgentStatusMark(
+              reduceMotion: reduceMotion, glyph: rowGlyph, palette: palette, animates: animates,
+              fontSize: 11
+            )
+            .accessibilityHidden(true)
             Text(detail(for: channel))
               .foregroundStyle(rosterStyle.bodyText.color)
               .accessibilityIdentifier("overlay-channel-delivery-\(channel.channel)")
