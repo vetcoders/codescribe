@@ -527,6 +527,9 @@ pub struct WordPin {
     pub confidence: Option<crate::pipeline::word_confidence::WordConfidence>,
     /// Live lexicon rewrote the surface before admission (d5).
     pub surface_rewritten: bool,
+    /// Actual left fence of the PCM decoded for this candidate, before routing.
+    /// Missing evidence does not imply that the window began at the word pin.
+    pub decode_sample_start: Option<u64>,
 }
 
 impl WordPin {
@@ -538,6 +541,7 @@ impl WordPin {
             text: text.into(),
             confidence: None,
             surface_rewritten: false,
+            decode_sample_start: None,
         }
     }
 
@@ -551,6 +555,11 @@ impl WordPin {
 
     pub fn surface_rewritten(mut self) -> Self {
         self.surface_rewritten = true;
+        self
+    }
+
+    pub fn with_decode_start(mut self, sample_start: u64) -> Self {
+        self.decode_sample_start = Some(sample_start);
         self
     }
 }
@@ -1119,6 +1128,38 @@ impl AcousticLedger {
             );
         }
         let mut slots = self.slots_of(owner).unwrap_or(&[]).to_vec();
+        // A later window cannot correct PCM it did not hear from the left.
+        // Fence before every mutation path, including group refinement and
+        // connected resegmentation; text similarity has no authority here.
+        if observation.producer != ObservationProducer::ManualHuman {
+            incoming.retain(|word| {
+                let clipped_sources = slots
+                    .iter()
+                    .filter(|source| {
+                        source.sample_start < word.sample_end
+                            && word.sample_start < source.sample_end
+                            && words.iter().any(|pin| {
+                                pin.sample_start.max(owner.sample_start) == word.sample_start
+                                    && pin.sample_end.min(owner.sample_end) == word.sample_end
+                                    && pin.decode_sample_start.is_some_and(|start| {
+                                        source.sample_start < start
+                                    })
+                            })
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if clipped_sources.is_empty() {
+                    return true;
+                }
+                self.retain_slot_alternative(
+                    observation,
+                    &word.text,
+                    clipped_sources,
+                    "window_start_clipped",
+                );
+                false
+            });
+        }
         // An occurrence-wide label has no word geometry yet. An acoustic
         // producer refines it only with lexical accounting or exact coverage
         // of measured speech by owned pins. The operation retains its source.

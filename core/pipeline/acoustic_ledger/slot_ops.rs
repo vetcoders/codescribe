@@ -369,14 +369,22 @@ impl AcousticLedger {
                 .map(|index| pins[*index].clone())
                 .collect::<Vec<_>>();
             outputs.sort_by_key(|word| (word.sample_start, word.sample_end));
-            // A replayed single word plus its short neighbour is not a split.
-            // Keep the word's identity and admit the neighbour independently.
-            if sources.len() == 1
+            // Distinguish a broad pin partitioned internally from a replay
+            // plus a neighbour on separate PCM. Only the former needs Split.
+            let replayed_word = sources.len() == 1
                 && sources[0].text.split_whitespace().count() == 1
                 && outputs.iter().any(|word| {
                     normalize_word_token(&word.text) == normalize_word_token(&sources[0].text)
-                })
-            {
+                });
+            let held_pin_split = sources.len() == 1
+                && sources[0].text.split_whitespace().count() == 1
+                && outputs.len() > 1
+                && outputs.iter().all(|word| {
+                    let midpoint = word.sample_start
+                        + word.sample_end.saturating_sub(word.sample_start) / 2;
+                    midpoint >= sources[0].sample_start && midpoint < sources[0].sample_end
+                });
+            if replayed_word && !held_pin_split {
                 continue;
             }
             let source_start = sources.iter().map(|word| word.sample_start).min().unwrap();
@@ -420,7 +428,9 @@ impl AcousticLedger {
                     .is_some_and(|end| end >= source_end)
             });
             consumed.extend(word_indices.iter().copied());
-            if coverage.is_none() && (!accounted || measured) {
+            if (held_pin_split && (!accounted || coverage.is_none()))
+                || (coverage.is_none() && (!accounted || measured))
+            {
                 self.retain_slot_alternative(
                     observation,
                     &candidate,

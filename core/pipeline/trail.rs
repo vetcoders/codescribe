@@ -66,6 +66,8 @@ pub struct TrailWordPin {
     pub text: String,
     pub confidence: Option<super::word_confidence::WordConfidence>,
     pub surface_rewritten: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decode_sample_start: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -411,6 +413,7 @@ fn saved_pins(pins: &[WordPin]) -> Vec<TrailWordPin> {
             text: pin.text.clone(),
             confidence: pin.confidence,
             surface_rewritten: pin.surface_rewritten,
+            decode_sample_start: pin.decode_sample_start,
         })
         .collect()
 }
@@ -424,6 +427,7 @@ fn word_pins(slots: &[TrailWordPin]) -> Vec<WordPin> {
             text: slot.text.clone(),
             confidence: slot.confidence,
             surface_rewritten: slot.surface_rewritten,
+            decode_sample_start: slot.decode_sample_start,
         })
         .collect()
 }
