@@ -98,6 +98,8 @@ pub struct CsSettings {
     /// `WHISPER_CONTEXT_WINDOW_SEC`. Seconds of PCM each Layer 1 window covers.
     pub whisper_context_window_sec: f32,
     pub whisper_adaptive_buffer: bool,
+    /// `CODESCRIBE_FORMAT_ON_DEVICE`: Apple system model formats first.
+    pub format_on_device: bool,
     pub light_plus_sentence_pause_sec: f32,
     /// Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
     /// from the canonical merged config snapshot. `"disabled"` is the
@@ -217,6 +219,7 @@ impl CsSettings {
             toggle_silence_sec: config.toggle_silence_sec,
             whisper_context_window_sec: config.whisper_context_window_sec,
             whisper_adaptive_buffer: config.whisper_adaptive_buffer,
+            format_on_device: config.format_on_device,
             light_plus_sentence_pause_sec: config.light_plus_sentence_pause_sec,
             deferred_insert_shortcut: config.deferred_insert_shortcut.wire_id().to_string(),
             channel_modifier: config.channel_modifier.as_str().to_string(),
