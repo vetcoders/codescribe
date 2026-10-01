@@ -3608,6 +3608,81 @@ impl AppleSealState {
         }
     }
 
+    /// Use the existing Silero observer and retained PCM, on each exact word
+    /// range. A missing window or unresolved sound leaves the label untouched.
+    fn adjudicate_current_word_slots(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        owner: &OccurrenceIdentity,
+        request: u64,
+    ) {
+        use crate::pipeline::acoustic_ledger::SlotTarget;
+        use crate::pipeline::acoustic_ledger::word_verdict::{WordVerdict, adjudicate_word_pcm};
+
+        let Some(fusion) = self.fusion.as_ref() else {
+            return;
+        };
+        let speech = fusion.acoustic_speech_evidence();
+        let slots = self
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .slots_of(owner)
+            .unwrap_or(&[])
+            .to_vec();
+        for slot in slots {
+            if slot.producer == LedgerObservationProducer::ManualHuman {
+                continue;
+            }
+            let ranges = self
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .slot_source_ranges(&slot);
+            // Disjoint merge sources require separate evidence; the bounding
+            // box is not this word's PCM and cannot authorize its deletion.
+            let [range] = ranges.as_slice() else {
+                continue;
+            };
+            let Some(window) = self.window_by_samples(range.sample_start, range.sample_end) else {
+                continue;
+            };
+            let pcm_range = OccurrenceIdentity::new(
+                &self.session_id,
+                self.capture_epoch,
+                window.sample_start,
+                window.sample_end,
+            );
+            let verdict = adjudicate_word_pcm(range, &pcm_range, &window.samples, &speech);
+            if verdict.verdict() != WordVerdict::ConfirmedNoSpeech {
+                continue;
+            }
+            let mut ledger = self
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let observation =
+                ledger.next_word_observation(LedgerObservationProducer::Whisper, request, owner);
+            if ledger
+                .remove_word_with_verdict(&observation, &SlotTarget::from(&slot), &verdict)
+                .is_ok()
+            {
+                let receipt = ledger
+                    .layer_trail()
+                    .last()
+                    .expect("word deletion decision")
+                    .decision
+                    .clone();
+                let label = ledger.text_of(owner).unwrap_or("").to_string();
+                let _ = ev_tx.send(EngineEvent::LedgerMutation {
+                    observation,
+                    label,
+                    receipt,
+                });
+            }
+        }
+    }
+
     fn admit_routed_words(
         &mut self,
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
@@ -3673,6 +3748,7 @@ impl AppleSealState {
             label,
             receipt,
         });
+        self.adjudicate_current_word_slots(ev_tx, owner, request);
         self.refresh_pending_label(id, owner);
         self.refinement_receipt(owner, "completed");
         admitted
@@ -5226,12 +5302,71 @@ fn admit_ledger_label<'a>(
     {
         state.cloud_uncommitted.insert(occurrence.clone());
     }
-    let receipt = ledger.admit_pinned_label(&observation, label, words);
+    let receipt = if producer == LedgerObservationProducer::Lexicon
+        && !ledger.is_sealed(&occurrence)
+    {
+        use crate::pipeline::acoustic_ledger::{DictionarySlotRule, SlotTarget};
+        let rewrites = ledger
+            .slots_of(&occurrence)
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|source| {
+                let canonical =
+                    super::live_lexicon::rewrite(&source.text, &state.lexicon_custom_path).0;
+                (canonical != source.text
+                    && source.producer != LedgerObservationProducer::ManualHuman)
+                    .then(|| {
+                        (
+                            SlotTarget::from(source),
+                            DictionarySlotRule {
+                                id: format!("registered-lexicon/v1/{}=>{}", source.text, canonical),
+                                input: vec![source.text.clone()],
+                                canonical,
+                            },
+                        )
+                    })
+            })
+            .collect::<Vec<_>>();
+        if rewrites.is_empty() {
+            ledger.admit_pinned_label(&observation, label, words)
+        } else {
+            ledger
+                .rewrite_dictionary_slots(&observation, &rewrites)
+                .unwrap_or_else(|_| ledger.admit(&observation, label))
+        }
+    } else if producer == LedgerObservationProducer::Whisper
+        && words.is_empty()
+        && ledger.slots_of(&occurrence).is_some_and(|slots| {
+            slots.len() == 1
+                && slots[0].sample_start == occurrence.sample_start
+                && slots[0].sample_end == occurrence.sample_end
+                && slots[0].text.split_whitespace().count() > 1
+                && label.split_whitespace().count() >= slots[0].text.split_whitespace().count()
+        })
+    {
+        // Phrase evidence corrects this exact group, with group accuracy.
+        // It neither guesses child boundaries nor replaces several words.
+        let group = crate::pipeline::acoustic_ledger::WordPin::new(
+            occurrence.sample_start,
+            occurrence.sample_end,
+            label,
+        );
+        ledger.admit_word_slots(&observation, &[group])
+    } else {
+        ledger.admit_pinned_label(&observation, label, words)
+    };
+    let request = observation.request;
     let _ = ev_tx.send(EngineEvent::LedgerMutation {
         observation,
         label: label.to_string(),
         receipt: receipt.clone(),
     });
+    drop(ledger);
+    state.adjudicate_current_word_slots(ev_tx, &occurrence, request);
+    let mut ledger = state
+        .acoustic_ledger
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if matches!(
         producer,
         LedgerObservationProducer::Whisper | LedgerObservationProducer::CloudLive
@@ -10510,7 +10645,8 @@ mod rc_w2_acoustic_tests {
                 &tx,
                 start,
                 start + at(2.0),
-                &format!("apple {index}"),
+                // The ordinal identifies the fixture, not another spoken word.
+                &format!("apple{index}"),
             ));
         }
         (state, occurrences)
@@ -16828,7 +16964,7 @@ mod live_refinement_admission_tests {
     /// Synthetic boundary-driven integration witness, not a microphone proof.
     /// Exercise production reconciliation and admission with partial Apple text.
     #[test]
-    fn synthetic_silero_guardian_recovers_whole_occurrence_or_keeps_explicit_debt() {
+    fn synthetic_silero_guardian_keeps_debt_for_phrase_without_exact_word_targets() {
         use super::super::silero_fusion::SileroIngress;
         use crate::audio::chunker::{VadBoundaryEvidence, VadBoundaryKind};
         for (succeeds, resumes) in [(false, false), (true, false), (false, true), (true, true)] {
@@ -16915,48 +17051,43 @@ mod live_refinement_admission_tests {
             state.complete_whisper_window(&events, completion, 20.0);
             state.close_admission_horizon(&events, 2_600);
             let mut ledger = state.acoustic_ledger.lock().unwrap();
-            assert_eq!(ledger.text_recovery_pending(&occurrence), !succeeds);
-            assert_eq!(ledger.is_sealed(&occurrence), succeeds);
-            assert_eq!(
-                ledger.text_of(&occurrence),
-                Some(if succeeds {
-                    "partial words and the recovered remainder"
-                } else {
-                    "partial words"
-                })
-            );
-            let coverage = ledger.assess_seal_coverage("live-admission", 7, &speech, 250);
-            assert_eq!(
-                coverage.coverage_ratio(),
-                Some(if succeeds { 1.0 } else { 0.0 })
-            );
-            assert!(ledger.record_seal_coverage(coverage));
+            assert!(ledger.text_recovery_pending(&occurrence));
+            assert!(!ledger.is_sealed(&occurrence));
+            // A phrase covering the owner does not locate its new words on
+            // the already pinned partial group. Retain text and recovery debt.
+            assert_eq!(ledger.text_of(&occurrence), Some("partial words"));
             if succeeds {
-                assert!(ledger.seal_terminal("live-admission", 7).is_ok());
-            } else {
-                assert_eq!(
-                    ledger.seal_terminal("live-admission", 7),
-                    Err(SealRefusal::TextRecoveryPending)
+                assert!(
+                    ledger
+                        .slot_alternatives()
+                        .iter()
+                        .any(|candidate| candidate.candidate
+                            == "partial words and the recovered remainder")
                 );
             }
-            drop(ledger);
+            let coverage = ledger.assess_seal_coverage("live-admission", 7, &speech, 250);
+            assert_eq!(coverage.coverage_ratio(), Some(0.0));
+            assert!(ledger.record_seal_coverage(coverage));
             assert_eq!(
+                ledger.seal_terminal("live-admission", 7),
+                Err(SealRefusal::TextRecoveryPending)
+            );
+            drop(ledger);
+            assert!(
                 state
                     .speech_progress
-                    .occurrence_has_debt(&occurrence, &speech, RATE),
-                !succeeds,
+                    .occurrence_has_debt(&occurrence, &speech, RATE)
             );
             let emitted = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
-            assert_eq!(emitted.iter().any(|event| matches!(event,
+            assert!(!emitted.iter().any(|event| matches!(event,
                 EngineEvent::LedgerMutation { observation, receipt: MutationReceipt::Correct { .. }, label }
                     if observation.producer == LedgerObservationProducer::Whisper
                     && label == "partial words and the recovered remainder"
-            )), succeeds);
-            assert_eq!(
-                emitted
+            )));
+            assert!(
+                !emitted
                     .iter()
-                    .any(|event| matches!(event, EngineEvent::LedgerSeal { .. })),
-                succeeds
+                    .any(|event| matches!(event, EngineEvent::LedgerSeal { .. }))
             );
             assert!(requests.try_recv().is_err());
         }
@@ -19004,7 +19135,8 @@ mod relay_l1_overlap_admission_tests {
     #[test]
     fn three_windows_admit_words_independently() {
         let mut lane = open("relay-three-exclusive");
-        let (occurrence, requests) = launch_long(&mut lane, "cale zdanie");
+        // One provisional lexical position can be corrected by one timed word.
+        let (occurrence, requests) = launch_long(&mut lane, "cale");
         let session = "relay-three-exclusive";
         let windows = [
             vec![word_pin(session, "raz", 8_000, 40_000)],
@@ -21809,5 +21941,76 @@ mod channel_epoch_gate {
             gate.feed_pcm(&speech, seen + 160, true),
             EpochDecision::Wake { .. }
         ));
+    }
+}
+
+#[cfg(test)]
+mod word_no_speech_tests {
+    use super::*;
+    use crate::pipeline::acoustic_ledger::WordPin;
+
+    #[test]
+    fn live_word_adjudication_uses_existing_silero_and_publishes_deletion() {
+        let mut state = AppleSealState::new_for_session(16_000, "word-no-speech".into(), 1);
+        state.lexicon_custom_path = PathBuf::from("/nonexistent/codescribe-word-lexicon.jsonl");
+        state.audio.push(&vec![0.0; 16_000]);
+        let mut fusion = SileroIngress::new(16_000, "word-no-speech", 1);
+        assert!(
+            fusion.vad_available(),
+            "fixture requires the bundled Silero model"
+        );
+        fusion.note_observed_pcm(16_000, 16_000);
+        state.fusion = Some(fusion);
+        let owner = OccurrenceIdentity::new("word-no-speech", 1, 0, 16_000);
+        let observation =
+            LedgerObservationIdentity::new(LedgerObservationProducer::Apple, 1, 0, owner.clone());
+        state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .admit_word_slots(&observation, &[WordPin::new(0, 1_000, "phantom")]);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        state.adjudicate_current_word_slots(&tx, &owner, 7);
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&owner), Some(""));
+        assert_eq!(ledger.word_deletions().len(), 1);
+        assert!(
+            matches!(rx.try_recv().unwrap(), EngineEvent::LedgerMutation {
+            receipt: MutationReceipt::Correct { .. }, label, ..
+        } if label.is_empty())
+        );
+    }
+
+    #[test]
+    fn live_word_adjudication_retains_quiet_audio_and_missing_pcm() {
+        for (samples, epoch) in [
+            (vec![0.000_001; 16_000], 1),
+            (vec![], 1),
+            (vec![0.0; 16_000], 2),
+        ] {
+            let mut state = AppleSealState::new_for_session(16_000, "word-no-speech".into(), 1);
+            state.lexicon_custom_path = PathBuf::from("/nonexistent/codescribe-word-lexicon.jsonl");
+            state.audio.push(&samples);
+            let mut fusion = SileroIngress::new(16_000, "word-no-speech", epoch);
+            fusion.note_observed_pcm(16_000, 16_000);
+            state.fusion = Some(fusion);
+            let owner = OccurrenceIdentity::new("word-no-speech", 1, 0, 16_000);
+            let observation = LedgerObservationIdentity::new(
+                LedgerObservationProducer::Apple,
+                1,
+                0,
+                owner.clone(),
+            );
+            state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .admit_word_slots(&observation, &[WordPin::new(0, 1_000, "plan")]);
+            let (tx, _rx) = mpsc::unbounded_channel();
+            state.adjudicate_current_word_slots(&tx, &owner, 7);
+            let ledger = state.acoustic_ledger.lock().unwrap();
+            assert_eq!(ledger.text_of(&owner), Some("plan"));
+            assert!(ledger.word_deletions().is_empty());
+        }
     }
 }
