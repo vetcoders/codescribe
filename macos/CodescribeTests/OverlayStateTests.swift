@@ -4310,7 +4310,7 @@ final class OverlayStateTests: XCTestCase {
     reason: CsCoverageUnavailableReason? = nil
   ) -> CsProjectedSealCoverageReceipt {
     CsProjectedSealCoverageReceipt(
-      status: status, unavailableReason: reason, speechSamples: status == .incomplete ? 32_000 : 0,
+      status: status, sampleRateHz: nil, unavailableReason: reason, speechSamples: status == .incomplete ? 32_000 : 0,
       coveredSamples: status == .incomplete ? 16_000 : 0, uncoveredSpeechRanges: [],
       maxUncoveredSamples: status == .incomplete ? 16_000 : 0, incompleteThresholdSamples: 4_000,
       speechProducer: "capture_energy",
@@ -4327,7 +4327,7 @@ final class OverlayStateTests: XCTestCase {
       state.onSuccessfulDictation = { successes += 1 }
       state.onSendToAgent = { _ in sends += 1 }
       let receipt = CsProjectedSealCoverageReceipt(
-        status: .complete, unavailableReason: nil, speechSamples: 32_000,
+        status: .complete, sampleRateHz: nil, unavailableReason: nil, speechSamples: 32_000,
         coveredSamples: 32_000, uncoveredSpeechRanges: [], maxUncoveredSamples: 0,
         incompleteThresholdSamples: 4_000, speechProducer: "capture_energy",
         availability: "observed", observedSamples: 64_000, coverageRatio: 1.0)

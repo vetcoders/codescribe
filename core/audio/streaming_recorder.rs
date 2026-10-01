@@ -2181,6 +2181,7 @@ mod terminal_seal_refusal_tests {
 
     fn refusal(audio_path: Option<std::path::PathBuf>) -> TerminalSealRefused {
         let receipt = SealCoverageReceipt {
+            sample_rate_hz: None,
             session_id: "e4060d87-fe0f-49fd-bbd5-eaea7e89ca17".to_string(),
             capture_epoch: 0,
             speech_samples: 2_696_704,
@@ -2483,6 +2484,7 @@ mod capture_stop_failure_tests {
         let mut recorder = recorder();
         let mut ledger = AcousticLedger::new();
         let receipt = SealCoverageReceipt {
+            sample_rate_hz: None,
             session_id: "capture-owner".into(),
             capture_epoch: 7,
             speech_samples: 4,
@@ -2551,6 +2553,7 @@ mod capture_stop_failure_tests {
         assert_eq!(stopped, (String::new(), None));
         let mut ledger = AcousticLedger::new();
         assert!(ledger.record_seal_coverage(SealCoverageReceipt {
+            sample_rate_hz: None,
             session_id: "capture-owner".into(),
             capture_epoch: 7,
             speech_samples: 100,
@@ -2779,6 +2782,7 @@ mod capture_stop_failure_tests {
         *recorder.transcript_buffer.lock().await = "słowa które przetrwały".to_string();
         let mut ledger = AcousticLedger::new();
         let receipt = SealCoverageReceipt {
+            sample_rate_hz: None,
             session_id: "capture-owner".into(),
             capture_epoch: 7,
             speech_samples: 0,

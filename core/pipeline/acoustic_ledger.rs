@@ -1781,6 +1781,7 @@ impl AcousticLedger {
         let refuse = |gap: AcousticEvidenceGap| SealCoverageReceipt {
             session_id: session.to_string(),
             capture_epoch,
+            sample_rate_hz: self.capture_rate_hz,
             speech_samples: 0,
             covered_samples: 0,
             uncovered_speech_ranges: Vec::new(),
@@ -1934,6 +1935,7 @@ impl AcousticLedger {
         SealCoverageReceipt {
             session_id: session.to_string(),
             capture_epoch,
+            sample_rate_hz: self.capture_rate_hz,
             speech_samples,
             covered_samples: speech_samples.saturating_sub(uncovered_samples),
             uncovered_speech_ranges: uncovered,
@@ -4682,6 +4684,8 @@ impl SealCoverageStatus {
 pub struct SealCoverageReceipt {
     pub session_id: String,
     pub capture_epoch: u64,
+    /// Bound capture clock for this take; absent when no clock was bound.
+    pub sample_rate_hz: Option<u32>,
     pub speech_samples: u64,
     pub covered_samples: u64,
     pub uncovered_speech_ranges: Vec<TailSampleRange>,

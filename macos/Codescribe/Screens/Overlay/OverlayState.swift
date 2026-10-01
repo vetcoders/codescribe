@@ -571,7 +571,9 @@ final class OverlayState {
   /// The notice is the observation sentence the footer chip also shows.
   private var coverageRefusalCopy: (status: String, notice: String) {
     let coverage = latestTranscriptProjection?.sealCoverage
-    let notice = OverlayWarningCopy.sealRefused(coverage).sentence
+    let notice = OverlayWarningCopy.sealRefused(
+      coverage, sampleRateHz: coverage?.sampleRateHz
+    ).sentence
     switch coverage?.status {
     case .incomplete: return ("incomplete coverage", notice)
     case .unavailable: return ("measurement unavailable", notice)
@@ -584,7 +586,8 @@ final class OverlayState {
   /// Nil when neither applies.
   var footerWarning: OverlayWarningCopy? {
     if mode == .coverageRefused {
-      return .sealRefused(latestTranscriptProjection?.sealCoverage)
+      let coverage = latestTranscriptProjection?.sealCoverage
+      return .sealRefused(coverage, sampleRateHz: coverage?.sampleRateHz)
     }
     if mode == .listening && levelMeter.hasLowInputSignal { return .quietInput }
     return nil

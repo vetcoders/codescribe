@@ -195,6 +195,29 @@ final class OverlayRecordingLightTests: XCTestCase {
       OverlayWarningCopy.sealRefused(gaps([]), sampleRateHz: 16_000).chip, "Speech had no words")
   }
 
+  /// The live chip reads the take's own clock from the receipt it shows.
+  func testRefusedTakeChipPlacesSpeechWithTheReceiptClock() {
+    let state = OverlayState()
+    var receipt = coverage(.incomplete, speech: 96_000, covered: 33_600)
+    receipt.sampleRateHz = 48_000
+    receipt.uncoveredSpeechRanges = [
+      CsProjectedSealCoverageRange(sampleStart: 576_000, sampleEnd: 638_400)
+    ]
+    let acoustic = projectedAcousticReceipt(
+      serial: "light-clock-1", sessionId: "light-clock", sampleStart: 0,
+      sampleEnd: 16_000, wordEvidence: ["light-clock-word"],
+      layerDecisions: ["light-clock-layer"])
+    let projection = transcriptProjection(
+      sequence: 1, emittedAt: "2026-10-01T00:00:00Z", sessionId: "light-clock",
+      renderedText: "kept words", phase: "coverage_refused", terminal: true,
+      reducerAction: "session_ended", canCopy: true, acousticReceipts: [acoustic],
+      sealCoverage: receipt)
+    state.applyTranscriptProjection(projection)
+    XCTAssertEqual(state.footerWarning?.chip, "1.3 s of speech had no words · 0:12")
+    XCTAssertEqual(state.coverageRefusalNotice, state.footerWarning?.sentence)
+    XCTAssertTrue(state.coverageRefusalNotice?.contains("0:12–0:14") == true)
+  }
+
   func testRefusedTakeShowsTheCoverageSentenceNotAMicrophoneHint() {
     let state = OverlayState()
     let receipt = coverage(.incomplete, speech: 32_000, covered: 16_000)
@@ -286,7 +309,7 @@ final class OverlayRecordingLightTests: XCTestCase {
     covered: UInt64 = 0
   ) -> CsProjectedSealCoverageReceipt {
     CsProjectedSealCoverageReceipt(
-      status: status, unavailableReason: reason, speechSamples: speech,
+      status: status, sampleRateHz: nil, unavailableReason: reason, speechSamples: speech,
       coveredSamples: covered, uncoveredSpeechRanges: [],
       maxUncoveredSamples: speech > covered ? speech - covered : 0,
       incompleteThresholdSamples: 4_000, speechProducer: "capture_energy",

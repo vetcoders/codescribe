@@ -21190,6 +21190,15 @@ mod relay_l1_overlap_admission_tests {
         }
     }
 
+    // Integrator (2026-10-01): the terminal coverage receipt carries the
+    // take's bound capture clock, so the overlay can place uncovered speech.
+    #[test]
+    fn integrator_terminal_coverage_receipt_carries_the_capture_clock() {
+        let (lane, _owner, _requests) = forensic_lane("integrator-coverage-clock", &[]);
+        let receipt = publish_terminal_coverage(&lane.state, &lane.tx);
+        assert_eq!(receipt.sample_rate_hz, Some(RATE));
+    }
+
     #[test]
     fn forensic_window_stub_is_accounted_at_seal() {
         window_stub_is_accounted_at_seal(BufferMode::Windows);

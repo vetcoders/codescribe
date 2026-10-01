@@ -228,6 +228,9 @@ pub struct ProjectedSealCoverageRange {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectedSealCoverageReceipt {
     pub status: String,
+    /// Capture clock carried by the ledger receipt, never inferred by the Bus.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_rate_hz: Option<u32>,
     /// Typed reason the measurement was missing. Present only when
     /// `status == "unavailable"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -255,6 +258,7 @@ impl From<&SealCoverageReceipt> for ProjectedSealCoverageReceipt {
     fn from(receipt: &SealCoverageReceipt) -> Self {
         Self {
             status: receipt.status.as_str().to_string(),
+            sample_rate_hz: receipt.sample_rate_hz,
             unavailable_reason: receipt
                 .status
                 .unavailable_reason()
@@ -2417,6 +2421,48 @@ mod tests {
     /// The projection carries the typed availability reason, an explicitly
     /// absent ratio, and survives a JSON round-trip byte-for-byte — including
     /// the exact-receipt equality the recovery guard depends on.
+    /// Integrator (2026-10-01): the overlay places speech without words only
+    /// with the take's own clock; receipts written before the field read as no
+    /// clock, never as a guessed rate.
+    #[test]
+    fn integrator_coverage_projection_carries_the_capture_clock_and_reads_old_rows() {
+        use codescribe_core::pipeline::acoustic_ledger::{SealCoverageReceipt, SealCoverageStatus};
+
+        let receipt = SealCoverageReceipt {
+            sample_rate_hz: Some(48_000),
+            session_id: "clock".into(),
+            capture_epoch: 1,
+            speech_samples: 96_000,
+            covered_samples: 33_600,
+            uncovered_speech_ranges: Vec::new(),
+            max_uncovered_samples: 62_400,
+            incomplete_threshold_samples: 4_000,
+            status: SealCoverageStatus::Incomplete,
+            speech_producer: "capture_energy".into(),
+            availability: "observed".into(),
+            observed_samples: Some(96_000),
+        };
+        let projected = ProjectedSealCoverageReceipt::from(&receipt);
+        assert_eq!(projected.sample_rate_hz, Some(48_000));
+        let json = serde_json::to_string(&projected).unwrap();
+        assert!(json.contains("\"sample_rate_hz\":48000"), "{json}");
+        assert_eq!(
+            serde_json::from_str::<ProjectedSealCoverageReceipt>(&json).unwrap(),
+            projected
+        );
+
+        let mut old = projected.clone();
+        old.sample_rate_hz = None;
+        let old_row = serde_json::to_string(&old).unwrap();
+        assert!(!old_row.contains("sample_rate_hz"), "{old_row}");
+        assert_eq!(
+            serde_json::from_str::<ProjectedSealCoverageReceipt>(&old_row)
+                .unwrap()
+                .sample_rate_hz,
+            None
+        );
+    }
+
     #[test]
     fn coverage_projection_round_trips_missing_ratio_and_exact_receipt_equality() {
         use codescribe_core::pipeline::acoustic_ledger::{
@@ -2424,6 +2470,7 @@ mod tests {
         };
 
         let unavailable = SealCoverageReceipt {
+            sample_rate_hz: None,
             session_id: "round-trip".into(),
             capture_epoch: 7,
             speech_samples: 0,
@@ -2554,6 +2601,7 @@ mod tests {
             bus.publish_started();
             if measured {
                 let coverage = SealCoverageReceipt {
+                    sample_rate_hz: None,
                     session_id: id.into(),
                     capture_epoch: 7,
                     speech_samples: 32_000,
