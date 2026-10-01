@@ -1056,14 +1056,27 @@ fn bridge_binary() -> PathBuf {
 }
 
 /// Resolution order: explicit env override → bridge bundled beside the `.app`
-/// executable → bare command name left for `PATH` lookup at spawn time.
+/// executable → PATH → installed Codescribe.app (standalone CLI fallback).
 /// Testable seam: `current_exe` is injected rather than read from the process.
 fn bridge_binary_for_current_exe(current_exe: Option<&Path>) -> PathBuf {
+    bridge_binary_with_installed_app(
+        current_exe,
+        Path::new("/Applications/Codescribe.app/Contents/MacOS/Codescribe"),
+    )
+}
+
+fn bridge_binary_with_installed_app(current_exe: Option<&Path>, installed_exe: &Path) -> PathBuf {
     if let Some(override_bin) = bridge_override_binary() {
         return override_bin;
     }
-
-    bundled_bridge_binary_for_exe(current_exe).unwrap_or_else(|| PathBuf::from(DEFAULT_BRIDGE_BIN))
+    if let Some(bundled) = bundled_bridge_binary_for_exe(current_exe) {
+        return bundled;
+    }
+    if which_in_path(DEFAULT_BRIDGE_BIN).is_some() {
+        return PathBuf::from(DEFAULT_BRIDGE_BIN);
+    }
+    bundled_bridge_binary_for_exe(Some(installed_exe))
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_BRIDGE_BIN))
 }
 
 /// The `CODESCRIBE_APPLE_STT_BRIDGE` override, if set to a non-blank value.
@@ -1100,8 +1113,8 @@ fn bundled_bridge_binary_for_exe(current_exe: Option<&Path>) -> Option<PathBuf> 
 /// Cheap, process-cached check that the Apple STT bridge binary can actually be
 /// launched: an explicit `CODESCRIBE_APPLE_STT_BRIDGE` path wins first, then a
 /// bridge bundled beside the current `.app` executable, then the default bare
-/// command name on `PATH`. Automatic router selection gates on this so it
-/// never advertises Apple on a host where the bridge is absent.
+/// command name on `PATH`, then the installed Codescribe.app. Automatic router
+/// selection gates on this so it never advertises Apple with no bridge.
 pub(crate) fn is_bridge_resolvable() -> bool {
     /// Cached answer to "can we launch the bridge binary" for AUTO engine selection.
     static RESOLVABLE: OnceLock<bool> = OnceLock::new();
@@ -1118,14 +1131,7 @@ fn bridge_binary_resolvable() -> bool {
 /// exist" instead of "what would we spawn". An explicit override is checked as
 /// a real file: a broken override must fail here rather than at spawn time.
 fn bridge_binary_resolvable_for_current_exe(current_exe: Option<&Path>) -> bool {
-    if let Some(override_bin) = bridge_override_binary() {
-        return bridge_candidate_resolvable(&override_bin);
-    }
-    if bundled_bridge_binary_for_exe(current_exe).is_some() {
-        return true;
-    }
-
-    which_in_path(DEFAULT_BRIDGE_BIN).is_some()
+    bridge_candidate_resolvable(&bridge_binary_for_current_exe(current_exe))
 }
 
 /// A path-like candidate must exist as a file; a bare command name is looked
@@ -1478,6 +1484,34 @@ mod tests {
             }
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[serial]
+    fn standalone_cli_can_use_installed_bridge_without_overriding_a_broken_explicit_path() {
+        let _bridge = crate::test_isolation::EnvGuard::capture(ENV_STT_BRIDGE);
+        let _path = crate::test_isolation::EnvGuard::capture("PATH");
+        let root = tempfile::tempdir().unwrap();
+        let installed_exe = root.path().join("Codescribe.app/Contents/MacOS/Codescribe");
+        let installed_bridge = installed_exe.with_file_name(DEFAULT_BRIDGE_BIN);
+        std::fs::create_dir_all(installed_exe.parent().unwrap()).unwrap();
+        std::fs::write(&installed_bridge, b"bridge").unwrap();
+        // SAFETY: serialized; guards restore both variables.
+        unsafe {
+            std::env::remove_var(ENV_STT_BRIDGE);
+            std::env::set_var("PATH", root.path());
+        }
+        assert_eq!(
+            bridge_binary_with_installed_app(None, &installed_exe),
+            installed_bridge
+        );
+        let missing = root.path().join("explicit-missing");
+        unsafe { std::env::set_var(ENV_STT_BRIDGE, &missing) };
+        assert_eq!(
+            bridge_binary_with_installed_app(None, &installed_exe),
+            missing
+        );
+        assert!(!bridge_candidate_resolvable(&missing));
     }
 
     /// Short language codes expand to the product default region (pl→pl-PL, en→en-US).
