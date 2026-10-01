@@ -20059,7 +20059,7 @@ mod relay_l1_overlap_admission_tests {
     #[test]
     fn distinct_pad_words_are_admitted_to_their_owner() {
         let mut lane = open("relay-word-join");
-        let (occurrence, requests) = launch_long(&mut lane, "cale zdanie");
+        let (occurrence, requests) = launch_long(&mut lane, "ras stary");
         let session = "relay-word-join";
         let windows = [
             vec![
@@ -21032,12 +21032,12 @@ mod relay_l1_overlap_admission_tests {
             192_768,
             &[(96_768, 126_720), (132_000, 152_000), (160_000, 188_000)],
         );
-        stage(&mut lane, 1, occurrence.clone(), "apple floor");
+        stage(&mut lane, 1, occurrence.clone(), "tak pozza");
         assert!(
             lane.state
-                .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, "apple floor"),)
+                .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, "tak pozza"),)
         );
-        close_lexicon(&mut lane, 1, &occurrence, "apple floor");
+        close_lexicon(&mut lane, 1, &occurrence, "tak pozza");
         let _ = drain(&mut lane.rx);
         let requests = take_requests(&mut lane.tail_rx);
         assert_eq!(requests.len(), 2);
@@ -21079,8 +21079,8 @@ mod relay_l1_overlap_admission_tests {
             96_000,
             &[(8_000, 20_000), (62_000, 64_000), (64_000, 76_000)],
         );
-        stage(&mut lane, 1, first.clone(), "apple first");
-        stage(&mut lane, 2, second.clone(), "apple second");
+        stage(&mut lane, 1, first.clone(), "frst");
+        stage(&mut lane, 2, second.clone(), "secnd");
         let routes = lane.state.route_overlap_pins(
             &lane.tx,
             AdmitWindow {
@@ -21296,7 +21296,7 @@ mod relay_l1_overlap_admission_tests {
                 (100_000, 140_000),
             ],
         );
-        let (occurrence, requests) = launch_long_span(&mut lane, Some("cale zdanie"));
+        let (occurrence, requests) = launch_long_span(&mut lane, Some("ras echo"));
         let events = play_long_words(&mut lane, &requests, session);
         let warnings = warning_lines(&events);
         assert!(
@@ -21322,7 +21322,7 @@ mod relay_l1_overlap_admission_tests {
             Some("raz krawedz dwa trzy cztery")
         );
         assert_eq!(held_count(&lane), 1);
-        assert_replaced_slot_evidence(&lane, &occurrence, &["cale zdanie", "echo"]);
+        assert_replaced_slot_evidence(&lane, &occurrence, &["ras echo", "echo"]);
         assert_conserved(&lane, Some("replayed_range_identity"));
     }
 
@@ -21432,7 +21432,7 @@ mod relay_l1_overlap_admission_tests {
     fn recovery_words_refuse_overlapping_higher_rank_lexicon_slot() {
         let mut lane = open("relay-recovery-lexicon");
         let occurrence = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, 32_000);
-        stage(&mut lane, 1, occurrence.clone(), "apple tekst");
+        stage(&mut lane, 1, occurrence.clone(), "lexikon trzymac");
         assert!(
             lane.state
                 .acoustic_ledger

@@ -70,7 +70,8 @@ use crate::stt::tail_provider::TailSampleRange;
 #[path = "acoustic_ledger/slot_ops.rs"]
 mod slot_ops;
 pub use slot_ops::{
-    DictionarySlotRule, SlotOperationKind, SlotOperationReceipt, SlotOperationRefusal, SlotTarget,
+    DictionarySlotRule, GroupSpeechCoverageReceipt, SlotOperationKind, SlotOperationReceipt,
+    SlotOperationRefusal, SlotTarget, SpeechPinCoverage,
 };
 #[path = "acoustic_ledger/word_verdict.rs"]
 pub mod word_verdict;
@@ -703,6 +704,9 @@ pub struct AcousticLedger {
     committed: BTreeMap<OccurrenceIdentity, CommittedObservation>,
     slot_alternatives: Vec<SlotAlternative>,
     slot_operations: Vec<SlotOperationReceipt>,
+    speech_evidence: Option<AcousticSpeechEvidence>,
+    assigned_word_pins: Option<slot_ops::AssignedWordPinBatch>,
+    group_speech_coverages: Vec<GroupSpeechCoverageReceipt>,
     word_deletions: Vec<WordDeletionReceipt>,
     /// Provenance only: label-wide slots do not prove individual word pins.
     word_pin_observations: std::collections::HashSet<ObservationIdentity>,
@@ -819,12 +823,10 @@ impl AcousticLedger {
     ) -> MutationReceipt {
         let occurrence = &observation.occurrence;
         // With no child boundaries, acoustic evidence can correct this exact
-        // group. The slot path keeps a shorter candidate as an alternative;
+        // group. The slot path aligns and retains omitted source tokens;
         // several pinned sources still require individual word targets.
-        if matches!(
-            observation.producer,
-            ObservationProducer::Whisper | ObservationProducer::CloudLive
-        ) && words.is_empty()
+        if observation.producer != ObservationProducer::ManualHuman
+            && words.is_empty()
             && !label.trim().is_empty()
             && !self.is_sealed(occurrence)
             && !self.answered.contains(observation)
@@ -833,12 +835,16 @@ impl AcousticLedger {
                     && slots[0].sample_start == occurrence.sample_start
                     && slots[0].sample_end == occurrence.sample_end
                     && slots[0].producer != ObservationProducer::ManualHuman
-                    && (self.word_pin_observations.contains(&slots[0].observation)
-                        || label.split_whitespace().count()
-                            >= slots[0].text.split_whitespace().count())
             })
         {
-            return self.admit_word_slots(
+            // A no-op keeps its original author; it supplies no new slot evidence.
+            if self.text_of(occurrence) == Some(label) {
+                return self.admit(observation, label);
+            }
+            let had_word_pins = self
+                .word_pin_observations
+                .contains(&self.slots_of(occurrence).unwrap()[0].observation);
+            let receipt = self.admit_word_slots(
                 observation,
                 &[WordPin::new(
                     occurrence.sample_start,
@@ -846,6 +852,11 @@ impl AcousticLedger {
                     label,
                 )],
             );
+            if !had_word_pins {
+                // A synthetic group target does not supply child word geometry.
+                self.word_pin_observations.remove(observation);
+            }
+            return receipt;
         }
         if observation.producer != ObservationProducer::Apple
             || self.is_sealed(occurrence)
@@ -1001,6 +1012,15 @@ impl AcousticLedger {
                 self,
             );
         }
+        // Replay is fenced before alignment can emit a retention operation.
+        if self.answered.contains(observation) {
+            let candidate = words
+                .iter()
+                .map(|pin| pin.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            return self.refuse_replacement(observation, &candidate, RefuseReason::BatchDuplicate);
+        }
         let mut incoming = Vec::new();
         let mut no_speech_refused = Vec::new();
         for pin in words {
@@ -1057,27 +1077,76 @@ impl AcousticLedger {
         }
         let mut slots = self.slots_of(owner).unwrap_or(&[]).to_vec();
         // An occurrence-wide label has no word geometry yet. An acoustic
-        // producer can refine that group into real pins without dropping any
-        // of its lexical positions. The operation retains the group source.
-        if slots.len() == 1
-            && !self.word_pin_observations.contains(&slots[0].observation)
+        // producer refines it only with lexical accounting or exact coverage
+        // of measured speech by owned pins. The operation retains its source.
+        let group_refinement = slots.len() == 1
+            && (incoming.len() > 1
+                || incoming.first().is_some_and(|word| {
+                    word.sample_start != slots[0].sample_start
+                        || word.sample_end != slots[0].sample_end
+                }))
+            && (!self.word_pin_observations.contains(&slots[0].observation)
+                || (slots[0].text.trim().contains(char::is_whitespace)
+                    && self.slot_source_ranges(&slots[0]).len() == 1))
             && matches!(
                 observation.producer,
                 ObservationProducer::Whisper | ObservationProducer::CloudLive
             )
-            && observation.producer.authority_rank() > slots[0].producer.authority_rank()
+            && (observation.producer.authority_rank() > slots[0].producer.authority_rank()
+                || (observation.producer == slots[0].producer
+                    && observation.generation > slots[0].observation.generation))
             && !self.answered.contains(observation)
-            && incoming
-                .iter()
-                .map(|word| word.text.split_whitespace().count())
-                .sum::<usize>()
-                >= slots[0].text.split_whitespace().count()
             && incoming.iter().enumerate().all(|(index, word)| {
                 incoming[index + 1..]
                     .iter()
                     .all(|other| !same_pcm_slot(word, other))
-            })
-        {
+            });
+        let mut speech_coverage = None;
+        if group_refinement {
+            let source = &slots[0];
+            let candidate = compose_label(&incoming);
+            let alignment = slot_ops::preserve_group_content(&source.text, &candidate);
+            let accounted = alignment
+                .as_ref()
+                .is_ok_and(|(label, retained)| !retained && label == &candidate);
+            let atomic = !source.text.trim().contains(char::is_whitespace)
+                && !source.text.contains('[')
+                && !source
+                    .text
+                    .trim_matches(|ch: char| !ch.is_alphanumeric())
+                    .eq_ignore_ascii_case("yyy");
+            if !accounted && !atomic {
+                speech_coverage = self.group_speech_coverage(observation, source, &incoming);
+                if speech_coverage.is_none() {
+                    self.retain_slot_alternative(
+                        observation,
+                        &candidate,
+                        vec![source.clone()],
+                        alignment
+                            .as_ref()
+                            .err()
+                            .copied()
+                            .unwrap_or("held_token_retained"),
+                    );
+                    self.slot_operations.push(SlotOperationReceipt {
+                        observation: observation.clone(),
+                        kind: SlotOperationKind::Correct,
+                        sources: vec![source.clone()],
+                        outputs: vec![source.clone()],
+                        source_ranges: self.slot_source_ranges(source),
+                        rule_id: "group_alignment/held_token_retained/v1".into(),
+                    });
+                    let label = self.text_of(owner).unwrap_or("").to_string();
+                    let recovery_pending = self.text_recovery_pending(owner);
+                    let receipt = self.admit(observation, &label);
+                    if recovery_pending {
+                        self.pending_text_recovery.insert(owner.clone());
+                    }
+                    return receipt;
+                }
+            }
+        }
+        if group_refinement {
             let source = slots.remove(0);
             let from = source.producer;
             let same_label = source.text == compose_label(&incoming);
@@ -1094,8 +1163,22 @@ impl AcousticLedger {
                 source_ranges: self.slot_source_ranges(&source),
                 sources: vec![source.clone()],
                 outputs: incoming,
-                rule_id: "acoustic_group_refinement/v1".to_string(),
+                rule_id: if speech_coverage.is_some() {
+                    "acoustic_group_refinement/speech-coverage/v1"
+                } else {
+                    "acoustic_group_refinement/v1"
+                }
+                .to_string(),
             };
+            if let Some((speech, coverage)) = speech_coverage {
+                self.group_speech_coverages
+                    .push(GroupSpeechCoverageReceipt {
+                        operation: receipt.clone(),
+                        speech,
+                        coverage,
+                        rule_version: "group-speech-coverage/v1",
+                    });
+            }
             self.commit_slot_operation(receipt);
             self.pending_text_recovery.remove(owner);
             self.refuse_replacement(
@@ -1125,6 +1208,7 @@ impl AcousticLedger {
         }
         let mut removed = Vec::new();
         let mut refused = Vec::new();
+        let mut group_rules = Vec::new();
         // Match the complete batch before editing. Two candidates for one
         // source, or one candidate for two sources, cannot pick a repetition.
         let prior = slots.clone();
@@ -1147,11 +1231,7 @@ impl AcousticLedger {
                     .count()
                     != 1
             });
-            let compresses_group = conflicts.iter().any(|&index| {
-                word.text.split_whitespace().count() < prior[index].text.split_whitespace().count()
-            });
-            let ambiguous =
-                conflicts.len() > 1 || compresses_group || competing || intersects.len() > 1;
+            let ambiguous = conflicts.len() > 1 || competing || intersects.len() > 1;
             let blocked = word.producer == ObservationProducer::Formatter
                 || (conflicts.is_empty()
                     && !matches!(
@@ -1186,6 +1266,56 @@ impl AcousticLedger {
             }
             if let Some(&index) = conflicts.first() {
                 let source = &prior[index];
+                if word.producer != ObservationProducer::ManualHuman {
+                    let candidate = word.text.clone();
+                    let alignment = slot_ops::preserve_group_content(&source.text, &candidate);
+                    let (label, retained) = match alignment {
+                        Ok(alignment) => alignment,
+                        Err(reason) => {
+                            self.retain_slot_alternative(
+                                observation,
+                                &candidate,
+                                vec![source.clone()],
+                                reason,
+                            );
+                            // The unchanged source is an explicit retention decision.
+                            self.slot_operations.push(SlotOperationReceipt {
+                                observation: observation.clone(),
+                                kind: SlotOperationKind::Correct,
+                                sources: vec![source.clone()],
+                                outputs: vec![source.clone()],
+                                source_ranges: self.slot_source_ranges(source),
+                                rule_id: "group_alignment_ambiguous/held_token_retained/v1".into(),
+                            });
+                            refused.push(word);
+                            continue;
+                        }
+                    };
+                    if retained {
+                        self.retain_slot_alternative(
+                            observation,
+                            &candidate,
+                            vec![source.clone()],
+                            "held_token_retained",
+                        );
+                        self.slot_operations.push(SlotOperationReceipt {
+                            observation: observation.clone(),
+                            kind: SlotOperationKind::Correct,
+                            sources: vec![source.clone()],
+                            outputs: vec![source.clone()],
+                            source_ranges: self.slot_source_ranges(source),
+                            rule_id: "group_alignment/held_token_retained/v1".into(),
+                        });
+                        refused.push(word);
+                        continue;
+                    }
+                    word.text = label;
+                    group_rules.push((
+                        source.sample_start,
+                        source.sample_end,
+                        "group_alignment/v1",
+                    ));
+                }
                 // Window jitter does not mint a new identity for a correction.
                 word.sample_start = source.sample_start;
                 word.sample_end = source.sample_end;
@@ -1237,7 +1367,18 @@ impl AcousticLedger {
             return trace.finish(receipt, self);
         }
         let label = compose_label(&slots);
+        let operation_start = self.slot_operations.len();
         let receipt = self.admit_with_slots(observation, &label, Some(slots), true);
+        for operation in &mut self.slot_operations[operation_start..] {
+            if let Some((_, _, rule_id)) = group_rules.iter().find(|(start, end, _)| {
+                operation
+                    .outputs
+                    .iter()
+                    .any(|output| output.sample_start == *start && output.sample_end == *end)
+            }) {
+                operation.rule_id = (*rule_id).into();
+            }
+        }
         if receipt.grants_mutation() || matches!(receipt, MutationReceipt::Preserve { .. }) {
             let reason = match observation.producer {
                 ObservationProducer::Whisper => Some(RefuseReason::ReplacedByWhisper),
