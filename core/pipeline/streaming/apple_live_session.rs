@@ -7606,7 +7606,10 @@ fn apple_stream_worker(
     if adaptive_buffer {
         state.layer1_coalesce = Layer1Coalesce::adaptive();
     }
-    tracing::info!(adaptive_buffer, "Whisper observation buffer selected for take");
+    tracing::info!(
+        adaptive_buffer,
+        "Whisper observation buffer selected for take"
+    );
     // The session's ONE Silero. Both consumers of speech edges read it: the
     // utterance ledger (identity, ranges) and the engine lifecycle (wake/sleep).
     // It is built whenever either consumer wants it — the fusion flag decides

@@ -413,12 +413,7 @@ pub(crate) fn try_transcribe_long_with_segments(
 
 /// Convenience helper for batch/offline file transcription.
 pub fn transcribe_file(path: &Path, language: Option<&str>) -> Result<RawTranscript> {
-    Ok(transcribe_file_with_backend(
-        path,
-        language,
-        AppleDeadlinePolicy::WholeFile,
-    )?
-    .0)
+    Ok(transcribe_file_with_backend(path, language, AppleDeadlinePolicy::WholeFile)?.0)
 }
 
 /// Whole-file transcription with Apple backend provenance.

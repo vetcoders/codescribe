@@ -11993,6 +11993,7 @@ public struct CsSettings: Equatable, Hashable {
      * `WHISPER_CONTEXT_WINDOW_SEC`. Seconds of PCM each Layer 1 window covers.
      */
     public var whisperContextWindowSec: Float
+    public var whisperAdaptiveBuffer: Bool
     public var lightPlusSentencePauseSec: Float
     /**
      * Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
@@ -12110,7 +12111,7 @@ public struct CsSettings: Equatable, Hashable {
          */holdArmModifier: String, holdStartDelayMs: UInt64, doubleTapIntervalMs: UInt64, toggleSilenceSec: Float,
         /**
          * `WHISPER_CONTEXT_WINDOW_SEC`. Seconds of PCM each Layer 1 window covers.
-         */whisperContextWindowSec: Float, lightPlusSentencePauseSec: Float,
+         */whisperContextWindowSec: Float, whisperAdaptiveBuffer: Bool, lightPlusSentencePauseSec: Float,
         /**
          * Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
          * from the canonical merged config snapshot. `"disabled"` is the
@@ -12169,6 +12170,7 @@ public struct CsSettings: Equatable, Hashable {
         self.doubleTapIntervalMs = doubleTapIntervalMs
         self.toggleSilenceSec = toggleSilenceSec
         self.whisperContextWindowSec = whisperContextWindowSec
+        self.whisperAdaptiveBuffer = whisperAdaptiveBuffer
         self.lightPlusSentencePauseSec = lightPlusSentencePauseSec
         self.deferredInsertShortcut = deferredInsertShortcut
         self.channelModifier = channelModifier
@@ -12247,6 +12249,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 doubleTapIntervalMs: FfiConverterUInt64.read(from: &buf),
                 toggleSilenceSec: FfiConverterFloat.read(from: &buf),
                 whisperContextWindowSec: FfiConverterFloat.read(from: &buf),
+                whisperAdaptiveBuffer: FfiConverterBool.read(from: &buf),
                 lightPlusSentencePauseSec: FfiConverterFloat.read(from: &buf),
                 deferredInsertShortcut: FfiConverterString.read(from: &buf),
                 channelModifier: FfiConverterString.read(from: &buf),
@@ -12313,6 +12316,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterUInt64.write(value.doubleTapIntervalMs, into: &buf)
         FfiConverterFloat.write(value.toggleSilenceSec, into: &buf)
         FfiConverterFloat.write(value.whisperContextWindowSec, into: &buf)
+        FfiConverterBool.write(value.whisperAdaptiveBuffer, into: &buf)
         FfiConverterFloat.write(value.lightPlusSentencePauseSec, into: &buf)
         FfiConverterString.write(value.deferredInsertShortcut, into: &buf)
         FfiConverterString.write(value.channelModifier, into: &buf)
