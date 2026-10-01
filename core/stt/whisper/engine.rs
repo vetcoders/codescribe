@@ -19,7 +19,7 @@ use flate2::write::GzEncoder;
 use rand::RngExt;
 
 use candle_core::safetensors::Load;
-use candle_core::{DType, Device, IndexOp, Tensor};
+use candle_core::{DType, Device, Tensor};
 use candle_transformers::models::whisper::{self as whisper, Config};
 use ndarray::Array2;
 use ndarray_npy::ReadNpyExt;
@@ -1116,7 +1116,8 @@ impl LocalWhisperEngine {
                 mel_len / self.config.num_mel_bins,
             ),
             &self.device,
-        )?;
+        )?
+        .to_dtype(self.model.decoder.dtype())?;
 
         control.check()?;
         let encoder_output = self.model.encoder.forward(&mel, true)?;
@@ -1128,13 +1129,11 @@ impl LocalWhisperEngine {
             .ok_or_else(|| anyhow!("Tokenizer missing <|startoftranscript|>"))?;
 
         let token_tensor = Tensor::new(&[start_token], &self.device)?.unsqueeze(0)?;
-        let hidden = self
+        let last_logits = self
             .model
             .decoder
-            .forward(&token_tensor, &encoder_output, true)?;
-        let logits = self.model.decoder.final_linear(&hidden)?;
-        let (_b, seq_len, _vocab) = logits.dims3()?;
-        let last_logits = logits.i((.., seq_len - 1, ..))?.squeeze(0)?;
+            .next_token_logits(&token_tensor, &encoder_output, true)?
+            .squeeze(0)?;
         let logits_vec = last_logits.to_vec1::<f32>()?;
         control.check()?;
 
@@ -1201,7 +1200,8 @@ impl LocalWhisperEngine {
                 mel_len / self.config.num_mel_bins,
             ),
             &self.device,
-        )?;
+        )?
+        .to_dtype(self.model.decoder.dtype())?;
 
         // Decode
         let start_token = self
@@ -1310,15 +1310,11 @@ impl LocalWhisperEngine {
                 break;
             }
             let token_tensor = Tensor::new(tokens.as_slice(), &self.device)?.unsqueeze(0)?;
-            let hidden = self
+            let last_logits = self
                 .model
                 .decoder
-                .forward(&token_tensor, &encoder_output, true)?;
-            let logits = self.model.decoder.final_linear(&hidden)?;
-
-            // Get logits for last position
-            let (_b, seq_len, _vocab) = logits.dims3()?;
-            let last_logits = logits.i((.., seq_len - 1, ..))?.squeeze(0)?;
+                .next_token_logits(&token_tensor, &encoder_output, step == 0)?
+                .squeeze(0)?;
             let mut logits_vec = last_logits.to_vec1::<f32>()?;
             control.check()?;
 
@@ -1856,6 +1852,12 @@ fn build_varbuilder_from_tensors(
         raw_tensors.keys().map(String::as_str),
     )?;
     let mut tensor_map = HashMap::new();
+    // Keep unquantized half weights on Metal. CPU retains single precision.
+    let dtype = if device.is_metal() {
+        DType::F16
+    } else {
+        DType::F32
+    };
 
     // alignment_heads is integer metadata used by upstream timestamp tooling,
     // not a model weight consumed by Candle's Whisper loader.
@@ -1865,8 +1867,8 @@ fn build_varbuilder_from_tensors(
         }
         let mapped_name = crate::whisper_weights::map_whisper_tensor_name(name);
         let mut t = tensor.clone();
-        if t.dtype() != DType::F32 {
-            t = t.to_dtype(DType::F32)?;
+        if t.dtype() != dtype {
+            t = t.to_dtype(dtype)?;
         }
 
         // Fix shape for conv weights (MLX [out, kernel, in] -> Candle [out, in, kernel])
@@ -1882,9 +1884,7 @@ fn build_varbuilder_from_tensors(
     }
 
     Ok(candle_nn::VarBuilder::from_tensors(
-        tensor_map,
-        DType::F32,
-        device,
+        tensor_map, dtype, device,
     ))
 }
 
@@ -1893,6 +1893,24 @@ mod model_payload_tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn tensor_builder_keeps_half_weights_on_metal() -> Result<()> {
+        let device = Device::new_metal(0)?;
+        let mut tensors = HashMap::new();
+        tensors.insert(
+            "decoder.token_embedding.weight".to_string(),
+            Tensor::from_vec(vec![0.25_f32; 8], (2, 4), &Device::Cpu)?.to_dtype(DType::F16)?,
+        );
+        let vb = build_varbuilder_from_tensors(tensors, &device)?;
+        assert_eq!(vb.dtype(), DType::F16);
+        assert_eq!(
+            vb.get((2, 4), "model.decoder.embed_tokens.weight")?.dtype(),
+            DType::F16
+        );
+        Ok(())
+    }
 
     fn decode_hex(raw: &str) -> Vec<u8> {
         let digits: String = raw.chars().filter(|ch| !ch.is_whitespace()).collect();
