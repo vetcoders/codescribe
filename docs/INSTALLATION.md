@@ -56,6 +56,59 @@ Production DMGs do not bake the developer surface.
 
 The single-instance flag (`LSMultipleInstancesProhibited`) is stamped at install time — by `make install-app` (and so `make install-if-idle`) and every DMG lane, before codesign — never in `macos/project.yml`, so the XCTest host and dev builds still launch while the installed app runs.
 
+### Agent launch and test-host identity
+
+`macos/project.yml` assigns Debug (including the XCTest host) the bundle ID
+`com.vetcoders.codescribe.dev`; Release keeps `com.vetcoders.codescribe`.
+Debug has its own LaunchServices registration, standard `UserDefaults` domain,
+and TCC grants (Microphone, Speech Recognition, Accessibility and Input
+Monitoring). Grant permissions separately when manually using a Debug app;
+the XCTest host skips application runtime startup. No permission migration is
+needed for the installed Release app.
+
+There are no App Group or Keychain access-group entitlements, sandbox containers,
+registered URL schemes, or bundle-ID-based LaunchAgents in this app target.
+The explicit Keychain service names (`com.vetcoders.codescribe` for core secrets,
+`com.vetcoders.codescribe.license` for licenses) remain shared; existing item
+access controls still apply and may prompt for a manually launched Debug build.
+Filesystem configuration is also shared by ordinary app launches; the test
+runner supplies an isolated data directory. A distinct bundle ID does not
+isolate every application resource.
+
+Agents must verify the running executable belongs to `/Applications` before
+activating it. Never quit or restart the Founder's app for this check. The
+following receipt refuses when the installed app is absent at preflight and
+verifies the original PID/path after activation:
+
+```bash
+(
+  installed_pid="$(swift - <<'SWIFT'
+import AppKit
+let expected = "/Applications/Codescribe.app/Contents/MacOS/Codescribe"
+let matches = NSRunningApplication.runningApplications(
+  withBundleIdentifier: "com.vetcoders.codescribe"
+).filter { !$0.isTerminated && $0.executableURL?.path == expected }
+guard matches.count == 1 else {
+  fputs("Expected one running installed Codescribe; refusing activation.\n", stderr)
+  exit(1)
+}
+print(matches[0].processIdentifier)
+SWIFT
+  )" || exit 1
+  open /Applications/Codescribe.app || exit 1
+  executable="$(ps -p "$installed_pid" -o comm=)" || exit 1
+  test "$executable" = /Applications/Codescribe.app/Contents/MacOS/Codescribe || exit 1
+  printf 'Installed PID: %s; executable: %s\n' "$installed_pid" "$executable"
+)
+```
+
+For the collision regression, leave the installed app running, run
+`make app-bindings && make test-swift`, and repeat this receipt while the Debug
+host is alive. Also exercise `open -a /Applications/Codescribe.app` and confirm
+the same installed PID/path survives. Record both process paths and the host's
+`CFBundleIdentifier`; a successful `open` exit alone is not evidence. Never
+quit, restart, or reinstall the Founder's running app for this check.
+
 ### Method 3: DMG Distribution (For End Users)
 
 ```bash

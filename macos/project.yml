@@ -79,8 +79,6 @@ targets:
         # release pipeline overrides this via scripts/build-app.sh.
         SPARKLE_ED_PUBLIC_KEY: ""
         CS_DEVELOPER_SURFACE: "0"
-        # Stable dev identity → own TCC/keychain slot across rebuilds.
-        PRODUCT_BUNDLE_IDENTIFIER: com.vetcoders.codescribe
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "Codescribe Dev"
         ENABLE_HARDENED_RUNTIME: NO
@@ -102,8 +100,12 @@ targets:
         # (and vice versa) — the base value used to hardcode target/debug, which
         # made every Release build fail with `ld: library 'codescribe_ffi' not found`.
         Debug:
+          # XCTest reuses this app. Its LaunchServices/TCC identity must never
+          # compete with the installed Release application.
+          PRODUCT_BUNDLE_IDENTIFIER: com.vetcoders.codescribe.dev
           LIBRARY_SEARCH_PATHS: "$(SRCROOT)/../target/debug"
         Release:
+          PRODUCT_BUNDLE_IDENTIFIER: com.vetcoders.codescribe
           LIBRARY_SEARCH_PATHS: "$(SRCROOT)/../target/release"
   CodescribeTests:
     type: bundle.unit-test

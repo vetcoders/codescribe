@@ -98,7 +98,11 @@ elif name == "xcodebuild":
     config = "Debug" if profile == "debug" else "Release"
     assert args[args.index("-configuration") + 1] == config
     assert args[args.index("-derivedDataPath") + 1] == str(repo / "macos/build")
-    (repo / "macos/build/Build/Products" / config / "Codescribe.app/Contents").mkdir(parents=True)
+    contents = repo / "macos/build/Build/Products" / config / "Codescribe.app/Contents"
+    contents.mkdir(parents=True)
+    import plistlib
+    bundle_id = "com.vetcoders.codescribe.dev" if config == "Debug" else "com.vetcoders.codescribe"
+    (contents / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": bundle_id}))
 elif name == "cp":
     import subprocess
     assert len(args) == 2, args
@@ -112,7 +116,8 @@ elif name == "swiftc":
     assert dest == out / "codescribe-stt-bridge", args
     dest.write_bytes(b"fresh:codescribe-stt-bridge")
 elif name == "codesign":
-    assert args[:6] == ["--force", "--deep", "--sign", "fixture-identity", "--identifier", "com.vetcoders.codescribe"]
+    expected_id = "com.vetcoders.codescribe.dev" if profile == "debug" else "com.vetcoders.codescribe"
+    assert args[:6] == ["--force", "--deep", "--sign", "fixture-identity", "--identifier", expected_id]
     app = Path(args[-1])
     for folder, filename in [("Frameworks", "libcodescribe_ffi.dylib"), ("MacOS", "codescribe-stt-sidecar"), ("MacOS", "codescribe-stt-bridge")]:
         copied = app / "Contents" / folder / filename

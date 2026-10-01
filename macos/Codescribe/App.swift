@@ -905,8 +905,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       NSRunningApplication
       .runningApplications(withBundleIdentifier: bundleIdentifier)
       .contains { app in
-        app.processIdentifier != currentPID && !app.isTerminated
+        isOtherInstance(
+          bundleIdentifier: bundleIdentifier, currentPID: currentPID,
+          candidateBundleIdentifier: app.bundleIdentifier,
+          candidatePID: app.processIdentifier, isTerminated: app.isTerminated
+        )
       }
+  }
+
+  static func isOtherInstance(
+    bundleIdentifier: String, currentPID: pid_t,
+    candidateBundleIdentifier: String?, candidatePID: pid_t, isTerminated: Bool
+  ) -> Bool {
+    candidateBundleIdentifier == bundleIdentifier && candidatePID != currentPID && !isTerminated
   }
 }
 
