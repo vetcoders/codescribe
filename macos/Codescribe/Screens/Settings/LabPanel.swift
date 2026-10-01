@@ -19,16 +19,37 @@ struct LabPanel: View {
         .toggleStyle(.switch)
         .font(.body)
 
-      Picker("Whisper buffering", selection: Binding(
-        get: { model.settings.whisperAdaptiveBuffer },
-        set: { model.setWhisperAdaptiveBuffer($0) }
-      )) {
+      Picker(
+        "Whisper buffering",
+        selection: Binding(
+          get: { model.settings.whisperAdaptiveBuffer },
+          set: { model.setWhisperAdaptiveBuffer($0) }
+        )
+      ) {
         Text("Fixed windows").tag(false)
         Text("Adaptive buffer (experimental)").tag(true)
       }
-      Text("Applies to the next recording. Adaptive buffering preserves phrase boundaries within bounded audio and wait limits.")
-        .font(.caption)
-        .foregroundStyle(.secondary)
+      Text(
+        "Applies to the next recording. Adaptive buffering preserves phrase boundaries within bounded audio and wait limits."
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
+
+      Picker(
+        "Text formatting",
+        selection: Binding(
+          get: { model.settings.formatOnDevice },
+          set: { model.setFormatOnDevice($0) }
+        )
+      ) {
+        Text("Cloud provider").tag(false)
+        Text("Apple on-device (experimental)").tag(true)
+      }
+      Text(
+        "Applies to the next formatting pass. The on-device model runs first; any failure falls back to the cloud provider. A .env value overrides this toggle."
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
 
       Button("Open Voice Lab") {
         Task { await VoiceLabRuntime.shared.openConsole() }

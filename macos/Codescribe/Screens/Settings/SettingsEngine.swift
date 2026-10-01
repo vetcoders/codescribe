@@ -787,6 +787,7 @@ extension CsSettings {
     toggleSilenceSec: 1.5,
     whisperContextWindowSec: 8,
     whisperAdaptiveBuffer: false,
+    formatOnDevice: false,
     lightPlusSentencePauseSec: 0.7,
     deferredInsertShortcut: "disabled",
     channelModifier: "ctrl",
