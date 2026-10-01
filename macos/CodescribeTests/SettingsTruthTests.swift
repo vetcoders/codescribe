@@ -1283,7 +1283,7 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(model.resetPreview.audioFiles, 5_000)
     XCTAssertEqual(
       model.resetImpactDescription(includeKeys: false, includePrompts: false),
-      "Moves 5000 recordings from 42 days, 17 threads (512.0 MB) to Trash. "
+      "Moves 5,000 recordings from 42 days, 17 threads (512.0 MB) to Trash. "
         + "Your assistive.txt and three formatting prompt files will be preserved. "
         + "Codescribe will relaunch as a fresh install."
     )
@@ -1544,6 +1544,13 @@ final class SettingsTruthTests: XCTestCase {
     )
     XCTAssertEqual(model.activeSTT, "Apple")
     XCTAssertFalse(model.activeSTT.contains("Smart final pass"))
+
+    let labels = ["streaming_whisper": "Streaming Whisper", "cloud_stt": "Cloud"]
+    for (engine, label) in labels {
+      let verdict = LastServingVerdict(
+        engine: engine, routingMode: "smart", disposition: nil, fallbackUsed: false)
+      XCTAssertEqual(formatActiveSTT(lastServing: verdict), label)
+    }
     XCTAssertFalse(model.activeSTT.contains("Not yet served"))
   }
 

@@ -543,7 +543,7 @@ shortcut and no disabled animation.
 
 One seam is not closable inside the receiver. `CsTrayStatusPayload`
 (`bridge/src/tray_status.rs`) carries `kind`, `tone`, `indicator_mode`,
-`assistive`, `tooltip`, `menu_label` and a monotonic tray `generation`, but no
+`assistive` and a monotonic tray `generation`, but no
 session or capture identity. `TrayStatusStore` already refuses non-monotonic
 ticks, so ordering is sound; what the payload cannot express is whether a current
 `assistive` reading belongs to the live capture or to a different route. The

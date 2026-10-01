@@ -48,37 +48,45 @@ enum OverlayRecordingLight: CaseIterable, Equatable, Sendable {
 
   var name: String {
     switch self {
-    case .holdToTalk: "Recording"
-    case .handsFree: "Recording hands-free"
-    case .silence: "Silence"
-    case .processing: "Transcribing"
-    case .agent: "Recording for the agent"
+    case .holdToTalk: String(localized: "Recording", comment: "Recording light state")
+    case .handsFree: String(localized: "Recording hands-free", comment: "Recording light state")
+    case .silence: String(localized: "Silence", comment: "Recording light state")
+    case .processing: String(localized: "Transcribing", comment: "Recording light state")
+    case .agent:
+      String(localized: "Recording for the agent", comment: "Recording light state")
     }
   }
 
   var colorName: String {
     switch self {
-    case .holdToTalk: "Red"
-    case .handsFree: "Pulsing red"
-    case .silence: "Yellow"
-    case .processing: "Orange"
-    case .agent: "Violet"
+    case .holdToTalk: String(localized: "Red", comment: "Recording light colour")
+    case .handsFree: String(localized: "Pulsing red", comment: "Recording light colour")
+    case .silence: String(localized: "Yellow", comment: "Recording light colour")
+    case .processing: String(localized: "Orange", comment: "Recording light colour")
+    case .agent: String(localized: "Violet", comment: "Recording light colour")
     }
   }
 
   /// One sentence: what the colour means right now.
   var meaning: String {
     switch self {
-    case .holdToTalk: "Capture is live while the shortcut is held."
-    case .handsFree: "Capture stays live until you stop it."
+    case .holdToTalk: String(localized: "Capture is live while the shortcut is held.")
+    case .handsFree: String(localized: "Capture stays live until you stop it.")
     case .silence:
-      "Capture is live, but nothing has reached speaking level for over a second."
-    case .processing: "Capture has ended and the engine is transcribing the take."
-    case .agent: "Capture is live and the words go to the agent."
+      String(
+        localized: "Capture is live, but nothing has reached speaking level for over a second.")
+    case .processing:
+      String(localized: "Capture has ended and the engine is transcribing the take.")
+    case .agent: String(localized: "Capture is live and the words go to the agent.")
     }
   }
 
-  var tooltip: String { "\(colorName) — \(name). \(meaning)" }
+  var tooltip: String {
+    String(
+      localized: "overlay.recordingLight.tooltip",
+      defaultValue: "\(colorName) — \(name). \(meaning)",
+      comment: "Recording light tooltip: colour name, state name, then one sentence of meaning")
+  }
 
   /// Hold and hands-free share the recording red; the pulse tells them apart,
   /// exactly as the cursor badge does.

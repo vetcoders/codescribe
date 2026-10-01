@@ -11,7 +11,7 @@ struct DictationWhisperModelTab: View {
     let status = model.localWhisperStatus
     VStack(alignment: .leading, spacing: 10) {
       SettingsControlRow(
-        title: "Install state",
+        title: String(localized: "Install state"),
         subtitle: whisperInstallSubtitle(status)
       ) {
         Text(whisperInstallLabel(status))
@@ -29,14 +29,14 @@ struct DictationWhisperModelTab: View {
             ProgressView()
               .controlSize(.small)
           }
-          Text(model.whisperDownloadDetail ?? "Downloading…")
+          Text(model.whisperDownloadDetail ?? String(localized: "Downloading…"))
             .font(CSFont.mono(10.5, .medium))
             .foregroundStyle(Color.secondary)
             .lineLimit(2)
         }
       } else if !status.available {
         SettingsControlRow(
-          title: "Download Whisper",
+          title: String(localized: "Download Whisper"),
           subtitle: whisperDownloadSubtitle(status)
         ) {
           Button("Download", action: model.startWhisperDownload)
@@ -47,7 +47,7 @@ struct DictationWhisperModelTab: View {
       } else if !status.embedded {
         // On-disk / cache — offer re-check, not re-download spam.
         SettingsControlRow(
-          title: "Local path",
+          title: String(localized: "Local path"),
           subtitle: status.path ?? status.modelId
         ) {
           Button("Recheck", action: model.refreshWhisperModelStatus)
@@ -60,12 +60,11 @@ struct DictationWhisperModelTab: View {
           .foregroundStyle(Color.secondary)
       }
 
-      SettingsSectionLabel("Data footprint")
+      SettingsSectionLabel(String(localized: "Data footprint"))
       ForEach(storedModels, id: \.name) { directory in
         SettingsControlRow(
           title: directory.name,
-          subtitle:
-            "\(directory.status) · \(ByteCountFormatter.string(fromByteCount: Int64(directory.bytesOnDisk), countStyle: .file))\(directory.duplicateTokenizerWith.map { " · identical tokenizer: \($0)" } ?? "")"
+          subtitle: modelFootprint(directory)
         ) {
           Button("Remove") {
             do {
@@ -103,33 +102,54 @@ struct DictationWhisperModelTab: View {
     status != "active"
   }
 
+  /// Storage row subtitle: state, size on disk, and a model sharing the same
+  /// tokenizer. The state and the size are machine values, so only the
+  /// tokenizer note is copy.
+  private func modelFootprint(_ directory: CsModelDirectory) -> String {
+    let size = ByteCountFormatter.string(
+      fromByteCount: Int64(directory.bytesOnDisk), countStyle: .file)
+    guard let duplicate = directory.duplicateTokenizerWith else {
+      return "\(directory.status) · \(size)"
+    }
+    return String(
+      localized: "\(directory.status) · \(size) · identical tokenizer: \(duplicate)",
+      comment: "Placeholders: storage state, size on disk, name of the twin model"
+    )
+  }
+
   private func whisperInstallLabel(_ status: CsWhisperModelStatus) -> String {
     if status.embedded {
-      "Embedded"
+      String(localized: "Embedded")
     } else if status.available {
-      "Installed"
+      String(localized: "Installed")
     } else {
-      "Not installed"
+      String(localized: "Not installed")
     }
   }
 
   private func whisperInstallSubtitle(_ status: CsWhisperModelStatus) -> String {
     if status.embedded {
-      "Baked into this fat build · \(status.modelId)"
+      String(localized: "Baked into this fat build · \(status.modelId)")
     } else if status.available {
-      "Ready for Whisper engine · \(status.modelId)"
+      String(localized: "Ready for Whisper engine · \(status.modelId)")
     } else if model.asrModeId == "local_power" {
-      "Missing or invalid FP16 bundle · Local power is not ready"
+      String(localized: "Missing or invalid FP16 bundle · Local power is not ready")
     } else {
-      "Required by the direct Whisper engine or Local power live refinement"
+      String(localized: "Required by the direct Whisper engine or Local power live refinement")
     }
   }
 
   private func whisperDownloadSubtitle(_ status: CsWhisperModelStatus) -> String {
     if model.asrModeId == "local_power" {
-      "Required local FP16 model (\(status.sizeHint)). Missing or invalid weights keep Local power not ready."
+      String(
+        localized:
+          "Required local FP16 model (\(status.sizeHint)). Missing or invalid weights keep Local power not ready."
+      )
     } else {
-      "Local FP16 model (\(status.sizeHint)) for direct Whisper or Local power refinement."
+      String(
+        localized:
+          "Local FP16 model (\(status.sizeHint)) for direct Whisper or Local power refinement."
+      )
     }
   }
 }

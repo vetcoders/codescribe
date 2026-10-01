@@ -57,16 +57,19 @@ final class OverlayTranscriptHistoryModel {
   }
 
   static func formattedCharacterCount(_ count: Int?, locale: Locale) -> String {
-    guard let count else { return "Length unavailable" }
+    guard let count else { return String(localized: "Length unavailable") }
     let formatter = NumberFormatter()
     formatter.numberStyle = .decimal
     formatter.locale = locale
     let formatted = formatter.string(from: NSNumber(value: count)) ?? String(count)
     let separator = formatter.groupingSeparator ?? " "
-    if (1_000...9_999).contains(count) && !formatted.contains(separator) {
-      return "\(formatted.prefix(1))\(separator)\(formatted.dropFirst()) chars"
-    }
-    return "\(formatted) chars"
+    let grouped =
+      (1_000...9_999).contains(count) && !formatted.contains(separator)
+      ? "\(formatted.prefix(1))\(separator)\(formatted.dropFirst())"
+      : formatted
+    return String(
+      localized: "\(grouped) chars",
+      comment: "Length of an archived take; the placeholder is an already formatted number")
   }
 
   func select(_ entry: CsHistoryEntry) async {
@@ -82,7 +85,7 @@ final class OverlayTranscriptHistoryModel {
       text = value
     } catch {
       guard generation == readGeneration else { return }
-      self.error = "Could not open this transcript."
+      self.error = String(localized: "Could not open this transcript.")
     }
     reading = false
   }

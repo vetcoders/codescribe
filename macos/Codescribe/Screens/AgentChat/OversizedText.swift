@@ -118,8 +118,10 @@ struct OversizedMessageBody<Head: View>: View {
         )
         Text(
           showFull
-            ? "Collapse"
-            : "Show full text · \(OversizedBubblePolicy.byteSummary(fullText))"
+            ? String(localized: "Collapse", comment: "Fold the message back to its head")
+            : String(
+              localized: "Show full text · \(OversizedBubblePolicy.byteSummary(fullText))",
+              comment: "The placeholder is a size, e.g. 142 KB")
         )
         .font(CSFont.mono(10.5, .medium))
         .foregroundStyle(Color.secondary)
@@ -129,8 +131,8 @@ struct OversizedMessageBody<Head: View>: View {
     .csFocusRing()
     .help(
       showFull
-        ? "Fold this message back to its head"
-        : "Open the full text in a scrollable, selectable view")
+        ? String(localized: "Fold this message back to its head")
+        : String(localized: "Open the full text in a scrollable, selectable view"))
   }
 }
 
@@ -141,7 +143,8 @@ struct StreamWindowNote: View {
 
   var body: some View {
     Text(
-      "live view shows the newest output · full text kept (\(OversizedBubblePolicy.byteSummary(fullText)))"
+      "live view shows the newest output · full text kept (\(OversizedBubblePolicy.byteSummary(fullText)))",
+      comment: "The placeholder is a size, e.g. 142 KB"
     )
     .font(CSFont.mono(9.5, .medium))
     .foregroundStyle(CSColor.textTertiary)

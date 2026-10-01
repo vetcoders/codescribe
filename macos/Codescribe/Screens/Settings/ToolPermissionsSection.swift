@@ -21,11 +21,10 @@ struct ToolPermissionsSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      SettingsSectionLabel("Tool permissions")
+      SettingsSectionLabel(String(localized: "Tool permissions"))
 
       Text(
-        "Allow · Ask · Deny. Defaults: read-only allow, side-effectful ask. "
-          + "\"Always allow\" from the approval card writes the same identity key."
+        "Allow · Ask · Deny. Defaults: read-only allow, side-effectful ask. \"Always allow\" from the approval card writes the same identity key."
       )
       .font(CSFont.mono(11, .medium))
       .foregroundStyle(Color.secondary)
@@ -38,8 +37,10 @@ struct ToolPermissionsSection: View {
         emptyCapabilities
           .padding(.top, 12)
       } else {
-        SettingsSectionLabel("Tool overrides · \(model.toolCapabilities.count)")
-          .padding(.top, CSSpace.section)
+        SettingsSectionLabel(
+          String(localized: "Tool overrides · \(model.toolCapabilities.count)")
+        )
+        .padding(.top, CSSpace.section)
         ToolOverridesBrowser(
           model: model,
           groups: grouped,
@@ -76,15 +77,15 @@ struct ToolPermissionsSection: View {
     )
   }
 
-  private func defaultPicker(title: String, selection: Binding<String>) -> some View {
+  private func defaultPicker(title: LocalizedStringKey, selection: Binding<String>) -> some View {
     VStack(alignment: .leading, spacing: 4) {
       Text(title)
         .font(CSFont.mono(10, .medium))
         .foregroundStyle(Color.secondary)
       Picker(title, selection: selection) {
-        Text("Allow").tag("allow")
-        Text("Ask").tag("ask")
-        Text("Deny").tag("deny")
+        Text("Allow", comment: "Tool permission level").tag("allow")
+        Text("Ask", comment: "Tool permission level").tag("ask")
+        Text("Deny", comment: "Tool permission level").tag("deny")
       }
       .labelsHidden()
       .pickerStyle(.segmented)
@@ -209,15 +210,15 @@ struct ToolCapabilityRow: View {
           .font(CSFont.mono(10, .medium))
           .foregroundStyle(Color.secondary)
           .lineLimit(1)
-        Text("\(item.origin) · \(item.risk)")
+        Text(verbatim: "\(item.origin) · \(item.risk)")
           .font(CSFont.mono(10, .medium))
           .foregroundStyle(Color.secondary)
       }
       Spacer(minLength: 8)
       Picker("Permission for \(item.name)", selection: $level) {
-        Text("Allow").tag("allow")
-        Text("Ask").tag("ask")
-        Text("Deny").tag("deny")
+        Text("Allow", comment: "Tool permission level").tag("allow")
+        Text("Ask", comment: "Tool permission level").tag("ask")
+        Text("Deny", comment: "Tool permission level").tag("deny")
       }
       .labelsHidden()
       .pickerStyle(.segmented)

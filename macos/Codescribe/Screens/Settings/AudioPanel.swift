@@ -50,14 +50,16 @@ func audioReadinessSteps(
   case .notDetermined:
     microphone = AudioInputDisplayState(
       tone: .fallback,
-      title: "Allow microphone access",
-      detail: "macOS has not granted Codescribe access to the selected input yet."
+      title: String(localized: "Allow microphone access"),
+      detail: String(
+        localized: "macOS has not granted Codescribe access to the selected input yet.")
     )
   case .denied:
     microphone = AudioInputDisplayState(
       tone: .unavailable,
-      title: "Microphone access is off",
-      detail: "Enable Codescribe in System Settings › Privacy & Security › Microphone."
+      title: String(localized: "Microphone access is off"),
+      detail: String(
+        localized: "Enable Codescribe in System Settings › Privacy & Security › Microphone.")
     )
   }
 
@@ -66,31 +68,32 @@ func audioReadinessSteps(
     calibration = AudioReadinessStep(
       id: .calibration,
       tone: .fallback,
-      title: "Calibration waits for microphone access",
-      detail: "Complete step 1 before measuring this input."
+      title: String(localized: "Calibration waits for microphone access"),
+      detail: String(localized: "Complete step 1 before measuring this input.")
     )
   } else if let admission {
     if let version = admission.calibrationVersion, admission.calibrationStatus == "sealed" {
       calibration = AudioReadinessStep(
         id: .calibration,
         tone: .healthy,
-        title: "Microphone calibrated",
+        title: String(localized: "Microphone calibrated"),
         detail: version
       )
     } else {
       calibration = AudioReadinessStep(
         id: .calibration,
         tone: .unavailable,
-        title: "Calibration required",
-        detail: "Measure about 10 seconds of normal speech on the current microphone."
+        title: String(localized: "Calibration required"),
+        detail: String(
+          localized: "Measure about 10 seconds of normal speech on the current microphone.")
       )
     }
   } else {
     calibration = AudioReadinessStep(
       id: .calibration,
       tone: .fallback,
-      title: "Checking calibration…",
-      detail: "Reading the controller's measured profile."
+      title: String(localized: "Checking calibration…"),
+      detail: String(localized: "Reading the controller's measured profile.")
     )
   }
 
@@ -99,26 +102,30 @@ func audioReadinessSteps(
     sealLane = AudioReadinessStep(
       id: .sealLane,
       tone: .fallback,
-      title: "Seal check waits for microphone access",
-      detail: "Complete step 1 before validating the acoustic lane."
+      title: String(localized: "Seal check waits for microphone access"),
+      detail: String(localized: "Complete step 1 before validating the acoustic lane.")
     )
   } else if let admission {
     let source =
       admission.sealLaneSource == "env_override"
-      ? "Controlled by \(admission.sealLaneEnv) override."
-      : "Controlled by the product setting below."
+      ? String(
+        localized: "Controlled by \(admission.sealLaneEnv) override.",
+        comment: "The placeholder is an environment variable name")
+      : String(localized: "Controlled by the product setting below.")
     if admission.code == "admission_seal_vad_unavailable" {
       sealLane = AudioReadinessStep(
         id: .sealLane,
         tone: .unavailable,
-        title: "Silero VAD did not load",
+        title: String(localized: "Silero VAD did not load"),
         detail: admission.message
       )
     } else {
       sealLane = AudioReadinessStep(
         id: .sealLane,
         tone: admission.sealLaneArmed ? .healthy : .unavailable,
-        title: admission.sealLaneArmed ? "Seal lane armed" : "Seal lane must be enabled",
+        title: admission.sealLaneArmed
+          ? String(localized: "Seal lane armed")
+          : String(localized: "Seal lane must be enabled"),
         detail: source
       )
     }
@@ -126,8 +133,8 @@ func audioReadinessSteps(
     sealLane = AudioReadinessStep(
       id: .sealLane,
       tone: .fallback,
-      title: "Checking seal lane…",
-      detail: "Reading the effective product setting and override."
+      title: String(localized: "Checking seal lane…"),
+      detail: String(localized: "Reading the effective product setting and override.")
     )
   }
 
@@ -136,24 +143,28 @@ func audioReadinessSteps(
     recording = AudioReadinessStep(
       id: .recording,
       tone: .unavailable,
-      title: "Grant microphone access first",
-      detail: "Recording stays disabled until step 1 is complete."
+      title: String(localized: "Grant microphone access first"),
+      detail: String(localized: "Recording stays disabled until step 1 is complete.")
     )
   } else if let admission {
     recording = AudioReadinessStep(
       id: .recording,
       tone: admission.ready ? .healthy : .unavailable,
-      title: admission.ready ? "Ready to record" : "Finish setup above",
+      title: admission.ready
+        ? String(localized: "Ready to record")
+        : String(localized: "Finish setup above"),
       detail: admission.ready
-        ? "Use \(dictationShortcut) or choose Start recording."
+        ? String(
+          localized: "Use \(dictationShortcut) or choose Start recording.",
+          comment: "The placeholder is the configured dictation gesture")
         : admission.message
     )
   } else {
     recording = AudioReadinessStep(
       id: .recording,
       tone: .fallback,
-      title: "Checking recording readiness…",
-      detail: "Waiting for the controller's admission verdict."
+      title: String(localized: "Checking recording readiness…"),
+      detail: String(localized: "Waiting for the controller's admission verdict.")
     )
   }
 
@@ -178,22 +189,30 @@ func sealLaneControlState(_ readiness: CsAdmissionReadiness?) -> SealLaneControl
     return SealLaneControlState(
       isOn: true,
       isEnabled: false,
-      detail: "Reading the product setting and any power-user override."
+      detail: String(localized: "Reading the product setting and any power-user override.")
     )
   }
   guard readiness.sealLaneSource == "env_override" else {
     return SealLaneControlState(
       isOn: readiness.sealLaneSettingArmed,
       isEnabled: true,
-      detail: "Required for committed utterances; stored in Settings."
+      detail: String(localized: "Required for committed utterances; stored in Settings.")
     )
   }
-  let state = readiness.sealLaneArmed ? "armed" : "disarmed"
+  let detail =
+    readiness.sealLaneArmed
+    ? String(
+      localized:
+        "Product setting is read-only while \(readiness.sealLaneEnv) keeps the lane armed. Remove the power-user override to edit here.",
+      comment: "The placeholder is an environment variable name")
+    : String(
+      localized:
+        "Product setting is read-only while \(readiness.sealLaneEnv) keeps the lane disarmed. Remove the power-user override to edit here.",
+      comment: "The placeholder is an environment variable name")
   return SealLaneControlState(
     isOn: readiness.sealLaneSettingArmed,
     isEnabled: false,
-    detail:
-      "Product setting is read-only while \(readiness.sealLaneEnv) keeps the lane \(state). Remove the power-user override to edit here."
+    detail: detail
   )
 }
 
@@ -204,38 +223,44 @@ func admissionDisplayState(_ readiness: CsAdmissionReadiness?) -> AudioInputDisp
   guard let readiness else {
     return AudioInputDisplayState(
       tone: .fallback,
-      title: "Checking acoustic admission…",
-      detail: "Reading the controller's calibration and seal-lane verdict."
+      title: String(localized: "Checking acoustic admission…"),
+      detail: String(localized: "Reading the controller's calibration and seal-lane verdict.")
     )
   }
   if readiness.ready {
-    let device = readiness.deviceName ?? "input device"
-    let version = readiness.calibrationVersion ?? "measured profile"
+    let device = readiness.deviceName ?? String(localized: "input device")
+    let version = readiness.calibrationVersion ?? String(localized: "measured profile")
     return AudioInputDisplayState(
       tone: .healthy,
-      title: "Ready to record on \(device)",
-      detail: "Calibration \(version); seal lane armed."
+      title: String(
+        localized: "Ready to record on \(device)",
+        comment: "The placeholder is an input device name"),
+      detail: String(
+        localized: "Calibration \(version); seal lane armed.",
+        comment: "The placeholder is a calibration profile version")
     )
   }
   let title: String
   switch readiness.code {
   case "admission_calibration_missing":
-    title = "Microphone not calibrated yet"
+    title = String(localized: "Microphone not calibrated yet")
   case "admission_calibration_no_profile":
-    title = "No calibration for the current microphone"
+    title = String(localized: "No calibration for the current microphone")
   case "admission_calibration_refused", "admission_calibration_unusable":
-    title = "Stored calibration cannot be used"
+    title = String(localized: "Stored calibration cannot be used")
   case "admission_seal_lane_disarmed":
     title =
       readiness.sealLaneSource == "env_override"
-      ? "Seal lane is disarmed by \(readiness.sealLaneEnv) override"
-      : "Seal lane is off in Settings › Audio"
+      ? String(
+        localized: "Seal lane is disarmed by \(readiness.sealLaneEnv) override",
+        comment: "The placeholder is an environment variable name")
+      : String(localized: "Seal lane is off in Settings › Audio")
   case "admission_seal_vad_unavailable":
-    title = "Silero VAD did not load"
+    title = String(localized: "Silero VAD did not load")
   case "admission_capture_device_unavailable":
-    title = "No input device available"
+    title = String(localized: "No input device available")
   default:
-    title = "Recording cannot start"
+    title = String(localized: "Recording cannot start")
   }
   return AudioInputDisplayState(tone: .unavailable, title: title, detail: readiness.message)
 }
@@ -246,42 +271,54 @@ func audioInputDisplayState(_ snapshot: CsAudioInputSnapshot) -> AudioInputDispl
   guard let runtimeDevice = snapshot.runtimeDevice, !runtimeDevice.isEmpty else {
     return AudioInputDisplayState(
       tone: .unavailable,
-      title: "No input device available",
-      detail: "Connect a microphone and refresh Audio settings."
+      title: String(localized: "No input device available"),
+      detail: String(localized: "Connect a microphone and refresh Audio settings.")
     )
   }
 
   if !snapshot.runtimeConfigurationMatches {
-    let saved = snapshot.configuredDevice ?? "System default"
+    let saved = snapshot.configuredDevice ?? String(localized: "System default")
     return AudioInputDisplayState(
       tone: .fallback,
-      title: "Currently using: \(runtimeDevice)",
-      detail:
-        "Saved: \(saved). Restart Codescribe to apply it; an explicit AUDIO_INPUT_DEVICE launch override can keep a different runtime input active."
+      title: String(
+        localized: "Currently using: \(runtimeDevice)",
+        comment: "The placeholder is an input device name"),
+      detail: String(
+        localized:
+          "Saved: \(saved). Restart Codescribe to apply it; an explicit AUDIO_INPUT_DEVICE launch override can keep a different runtime input active.",
+        comment: "The placeholder is the saved input device name")
     )
   }
 
   if snapshot.fallbackToDefault {
-    let missing = snapshot.configuredDevice ?? "The configured input"
+    let missing = snapshot.configuredDevice ?? String(localized: "The configured input")
     return AudioInputDisplayState(
       tone: .fallback,
-      title: "Using system fallback: \(runtimeDevice)",
-      detail: "\(missing) is unavailable. Recording continues on the live default input."
+      title: String(
+        localized: "Using system fallback: \(runtimeDevice)",
+        comment: "The placeholder is an input device name"),
+      detail: String(
+        localized: "\(missing) is unavailable. Recording continues on the live default input.",
+        comment: "The placeholder is the configured input device name")
     )
   }
 
   if snapshot.configuredDevice == nil {
     return AudioInputDisplayState(
       tone: .healthy,
-      title: "System default: \(runtimeDevice)",
-      detail: "The recorder resolves this device from Core Audio at runtime."
+      title: String(
+        localized: "System default: \(runtimeDevice)",
+        comment: "The placeholder is an input device name"),
+      detail: String(localized: "The recorder resolves this device from Core Audio at runtime.")
     )
   }
 
   return AudioInputDisplayState(
     tone: .healthy,
-    title: "Runtime input: \(runtimeDevice)",
-    detail: "The configured device is present and selected by the recorder."
+    title: String(
+      localized: "Runtime input: \(runtimeDevice)",
+      comment: "The placeholder is an input device name"),
+    detail: String(localized: "The configured device is present and selected by the recorder.")
   )
 }
 
@@ -295,8 +332,9 @@ struct AudioPanel: View {
       HStack(alignment: .top, spacing: 12) {
         VStack(alignment: .leading, spacing: 0) {
           SettingsPageHeader(
-            "Hear the real input.",
-            blurb: "Device choice and sound feedback use the live recorder config."
+            String(localized: "Hear the real input."),
+            blurb: String(
+              localized: "Device choice and sound feedback use the live recorder config.")
           )
         }
         Spacer(minLength: 0)
@@ -309,20 +347,20 @@ struct AudioPanel: View {
         .accessibilityLabel("Refresh audio input devices")
       }
 
-      SettingsSectionLabel("Input device")
+      SettingsSectionLabel(String(localized: "Input device"))
         .padding(.top, CSSpace.section)
         .id(SettingsAnchor.audioInput)
       inputDeviceSection
         .padding(.top, CSSpace.control)
 
-      SettingsSectionLabel("Recording readiness")
+      SettingsSectionLabel(String(localized: "Recording readiness"))
         .padding(.top, CSSpace.section)
         .id(SettingsAnchor.audioReadiness)
       admissionSection
         .padding(.top, CSSpace.control)
         .task { await model.refreshAdmission() }
 
-      SettingsSectionLabel("Sound feedback")
+      SettingsSectionLabel(String(localized: "Sound feedback"))
         .padding(.top, CSSpace.section)
       feedbackSection
         .padding(.top, CSSpace.control)
@@ -334,8 +372,9 @@ struct AudioPanel: View {
   private var inputDeviceSection: some View {
     VStack(alignment: .leading, spacing: 14) {
       SettingsControlRow(
-        title: "Microphone",
-        subtitle: "Saved in settings.json; runtime falls back safely if it disappears"
+        title: String(localized: "Microphone"),
+        subtitle: String(
+          localized: "Saved in settings.json; runtime falls back safely if it disappears")
       ) {
         Picker("Input device", selection: inputDeviceBinding) {
           Text("System default").tag(Self.systemDefaultChoice)
@@ -433,7 +472,7 @@ struct AudioPanel: View {
             .font(.system(size: 10, weight: .bold))
             .foregroundStyle(statusColor(step.tone))
         } else {
-          Text("\(step.id.rawValue + 1)")
+          Text(verbatim: "\(step.id.rawValue + 1)")
             .font(CSFont.mono(10, .semibold))
             .foregroundStyle(statusColor(step.tone))
         }
@@ -514,7 +553,7 @@ struct AudioPanel: View {
         .accessibilityValue(sealLaneAccessibilityValue(sealLane))
         .accessibilityHint(
           sealLane.isEnabled
-            ? "Controls whether committed utterances can be sealed."
+            ? String(localized: "Controls whether committed utterances can be sealed.")
             : sealLane.detail
         )
     case .recording:
@@ -535,11 +574,14 @@ struct AudioPanel: View {
   }
 
   private var dictationShortcutLabel: String {
-    model.modeBindings.first { $0.mode == .dictation }?.bindingLabel ?? "your Dictation shortcut"
+    model.modeBindings.first { $0.mode == .dictation }?.bindingLabel
+      ?? String(localized: "your Dictation shortcut")
   }
 
   private var microphonePermissionActionTitle: String {
-    model.permissions.microphone == .notDetermined ? "Allow" : "System Settings"
+    model.permissions.microphone == .notDetermined
+      ? String(localized: "Allow", comment: "Button: grant the microphone permission now")
+      : String(localized: "System Settings", comment: "Button: open the System Settings pane")
   }
 
   private func resolveMicrophonePermission() {
@@ -557,8 +599,8 @@ struct AudioPanel: View {
   private var feedbackSection: some View {
     VStack(alignment: .leading, spacing: 14) {
       SettingsControlRow(
-        title: "Start sound",
-        subtitle: "Play the recorder's live start confirmation"
+        title: String(localized: "Start sound"),
+        subtitle: String(localized: "Play the recorder's live start confirmation")
       ) {
         Toggle("", isOn: soundFeedbackBinding)
           .toggleStyle(.switch)
@@ -574,7 +616,7 @@ struct AudioPanel: View {
             .font(CSFont.ui(12.5, .medium))
             .foregroundStyle(Color.secondary)
           Spacer(minLength: 0)
-          Text("\(Int((model.settings.soundVolume * 100).rounded()))%")
+          Text(verbatim: "\(Int((model.settings.soundVolume * 100).rounded()))%")
             .font(CSFont.mono(10.5, .semibold))
             .foregroundStyle(Color.primary)
         }
@@ -636,15 +678,22 @@ struct AudioPanel: View {
   }
 
   private var inputDeviceAccessibilityValue: String {
-    model.settings.audioInputDevice ?? "System default"
+    model.settings.audioInputDevice ?? String(localized: "System default")
   }
 
   private func sealLaneAccessibilityValue(_ state: SealLaneControlState) -> String {
-    let value = state.isOn ? "On" : "Off"
-    return state.isEnabled ? value : "\(value), overridden"
+    let value =
+      state.isOn
+      ? String(localized: "On", comment: "Toggle state")
+      : String(localized: "Off", comment: "Toggle state")
+    return state.isEnabled
+      ? value
+      : String(
+        localized: "\(value), overridden",
+        comment: "VoiceOver value: a toggle state frozen by an override")
   }
 
-  private func statusRow(color: Color, title: String, detail: String) -> some View {
+  private func statusRow(color: Color, title: LocalizedStringKey, detail: String) -> some View {
     HStack(alignment: .top, spacing: 9) {
       Circle().fill(color).frame(width: 7, height: 7).padding(.top, 4)
       VStack(alignment: .leading, spacing: 3) {

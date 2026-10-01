@@ -75,12 +75,21 @@ struct OverlayPlacementMenu: View {
     .fixedSize()
     .help("Position overlay")
     .accessibilityLabel("Position overlay")
-    .accessibilityValue(
-      (state.keepVisibleBetweenTakes ? "Pinned, " : "")
-        + (state.freeMotion ? "Free motion" : state.placementAnchor.label)
-    )
+    .accessibilityValue(placementValue)
     .accessibilityHint("Choose a screen anchor or allow free dragging")
     .accessibilityIdentifier("overlay-placement-menu")
+  }
+
+  /// One sentence, so word order stays the translation's business.
+  private var placementValue: String {
+    let placement =
+      state.freeMotion
+      ? String(localized: "Free motion", comment: "Overlay placement mode: the user drags freely")
+      : state.placementAnchor.label
+    guard state.keepVisibleBetweenTakes else { return placement }
+    return String(
+      localized: "Pinned, \(placement)",
+      comment: "VoiceOver value; the placeholder is a screen anchor or “Free motion”")
   }
 
   private func menuImage(for anchor: OverlayAnchor) -> String {

@@ -75,11 +75,13 @@ struct OverlayTranscriptHistory: View {
               HStack(spacing: 4) {
                 Text(date(entry.entry), format: .dateTime.month(.abbreviated).day().hour().minute())
                   .foregroundStyle(.secondary)
-                Text("· \(Self.characterCountLabel(entry.characterCount, locale: locale))")
-                  .foregroundStyle(OverlayAppearancePalette.resolve(colorScheme).mutedText.color)
+                Text(
+                  verbatim: "· \(Self.characterCountLabel(entry.characterCount, locale: locale))"
+                )
+                .foregroundStyle(OverlayAppearancePalette.resolve(colorScheme).mutedText.color)
               }
               .font(.caption)
-              Text(entry.entry.preview.isEmpty ? "Untitled transcript" : entry.entry.preview)
+              Text(entry.entry.preview.isEmpty ? Self.untitledLabel : entry.entry.preview)
                 .lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -90,7 +92,7 @@ struct OverlayTranscriptHistory: View {
           .accessibilityLabel(
             "\(date(entry.entry).formatted(.dateTime.month(.abbreviated).day().hour().minute().locale(locale))), "
               + "\(Self.characterCountLabel(entry.characterCount, locale: locale)), "
-              + (entry.entry.preview.isEmpty ? "Untitled transcript" : entry.entry.preview))
+              + (entry.entry.preview.isEmpty ? Self.untitledLabel : entry.entry.preview))
           Divider()
         }
       }
@@ -100,6 +102,11 @@ struct OverlayTranscriptHistory: View {
 
   static func characterCountLabel(_ count: Int?, locale: Locale) -> String {
     OverlayTranscriptHistoryModel.formattedCharacterCount(count, locale: locale)
+  }
+
+  /// Stand-in for an archived take whose preview is empty.
+  static var untitledLabel: String {
+    String(localized: "Untitled transcript", comment: "Archived take with no preview text")
   }
 
   private func date(_ entry: CsHistoryEntry) -> Date {

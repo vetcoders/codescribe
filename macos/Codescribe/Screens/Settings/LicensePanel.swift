@@ -3,30 +3,38 @@ import SwiftUI
 
 struct LicensePanel: View {
   @ObservedObject var model: SettingsViewModel
+  /// Sample key shape, not copy: identical in every language.
+  private static let keyPlaceholder = "CSK1.…"
+
   @State private var key = ""
   @FocusState private var keyFocused: Bool
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       SettingsPageHeader(
-        "Basic stays free.",
-        blurb:
-          "A signed CSK1 key unlocks the Agentic lane. Validation is local and the key stays in the macOS Keychain."
+        String(localized: "Basic stays free."),
+        blurb: String(
+          localized:
+            "A signed CSK1 key unlocks the Agentic lane. Validation is local and the key stays in the macOS Keychain."
+        )
       )
 
-      SettingsSectionLabel("License status")
+      SettingsSectionLabel(String(localized: "License status"))
         .padding(.top, CSSpace.section)
       VStack(spacing: 0) {
         RuntimeRow(
-          key: "State", value: stateLabel, tint: model.licenseStatus.agenticEntitled,
+          key: String(localized: "State"), value: stateLabel,
+          tint: model.licenseStatus.agenticEntitled,
           trailing: .none)
         divider
         RuntimeRow(
-          key: "SKU", value: model.licenseStatus.sku ?? "Basic", tint: false, mono: true,
+          key: String(localized: "SKU"), value: model.licenseStatus.sku ?? "Basic", tint: false,
+          mono: true,
           trailing: .none)
         divider
         RuntimeRow(
-          key: "Updates through", value: model.licenseStatus.updatesUntil ?? "—", tint: false,
+          key: String(localized: "Updates through"),
+          value: model.licenseStatus.updatesUntil ?? "—", tint: false,
           mono: true, trailing: .none)
       }
       .padding(.top, CSSpace.control)
@@ -36,9 +44,9 @@ struct LicensePanel: View {
           .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
       )
 
-      SettingsSectionLabel("Enter or restore key")
+      SettingsSectionLabel(String(localized: "Enter or restore key"))
         .padding(.top, CSSpace.section)
-      SecureField("CSK1.…", text: $key)
+      SecureField(Self.keyPlaceholder, text: $key)
         .font(CSFont.mono(11.5, .regular))
         .textFieldStyle(.plain)
         .focused($keyFocused)
@@ -108,11 +116,13 @@ struct LicensePanel: View {
 
   private var stateLabel: String {
     switch model.licenseStatus.state {
-    case .unlicensed: return "Unlicensed · Basic"
-    case .active: return "Active · Agentic unlocked"
+    case .unlicensed: return String(localized: "Unlicensed · Basic")
+    case .active: return String(localized: "Active · Agentic unlocked")
     case .graceOffline:
-      return "Offline grace · \(model.licenseStatus.daysLeft ?? 0) days left"
-    case .expiredUpdates: return "Updates expired · installed app remains active"
+      let daysLeft = Int(model.licenseStatus.daysLeft ?? 0)
+      return String(localized: "Offline grace · \(daysLeft) days left")
+    case .expiredUpdates:
+      return String(localized: "Updates expired · installed app remains active")
     }
   }
 

@@ -37,7 +37,13 @@ struct OverlayEvidenceChip: View {
       }
       .buttonStyle(.plain)
       .contentShape(Capsule())
-      .modifier(OverlayMiniTooltip(title: "Also heard · not committed", palette: palette))
+      .modifier(
+        OverlayMiniTooltip(
+          title: String(
+            localized: "Also heard · not committed",
+            comment: "Tooltip over the unanchored-evidence chip"),
+          palette: palette)
+      )
       .onExitCommand { selected = false }
       .onChange(of: actionsOpen) { _, open in if open { selected = false } }
       .accessibilityElement(children: .ignore)

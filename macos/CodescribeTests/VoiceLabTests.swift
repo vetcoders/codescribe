@@ -453,8 +453,10 @@ final class VoiceLabTests: XCTestCase {
       "10 corrections on disk · dictionary empty — Teach explicitly promotes eligible store pairs now."
     )
     XCTAssertFalse(
-      dictionaryHeadline(corrections: 1, vocabularyCorrections: 0, unchangedTakes: 0, rulesLearned: 0)
-        .contains("voice taught")
+      dictionaryHeadline(
+        corrections: 1, vocabularyCorrections: 0, unchangedTakes: 0, rulesLearned: 0
+      )
+      .contains("voice taught")
     )
   }
 
@@ -476,7 +478,7 @@ final class VoiceLabTests: XCTestCase {
       RunLoop.main.run(until: Date().addingTimeInterval(0.01))
     }
     let msg = try XCTUnwrap(model.voiceLabTeachMessage)
-    XCTAssertTrue(msg.contains("live rules"), "expected live-rules count, got: \(msg)")
+    XCTAssertTrue(msg.contains("1 live rule "), "expected live-rules count, got: \(msg)")
     XCTAssertTrue(msg.hasPrefix("Taught"), "expected Taught status, got: \(msg)")
   }
 

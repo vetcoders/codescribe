@@ -51,11 +51,11 @@ enum OverlayAgentGlyph: CaseIterable, Equatable, Sendable {
   /// VoiceOver label and tooltip lead; one sentence per state.
   var label: String {
     switch self {
-    case .attached: "Agent attached"
-    case .open: "Agent channel open"
-    case .awaitingReceipt: "Waiting for the agent to confirm receipt"
-    case .acknowledged: "Agent confirmed receipt"
-    case .unavailable: "Agent channel status unavailable"
+    case .attached: String(localized: "Agent attached")
+    case .open: String(localized: "Agent channel open")
+    case .awaitingReceipt: String(localized: "Waiting for the agent to confirm receipt")
+    case .acknowledged: String(localized: "Agent confirmed receipt")
+    case .unavailable: String(localized: "Agent channel status unavailable")
     }
   }
 
@@ -157,7 +157,11 @@ struct OverlayChannelStatusView: View {
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    .help(glyph.label + " — show details")
+    .help(
+      Text(
+        "\(glyph.label) — show details",
+        comment: "Agent glyph tooltip; the placeholder is the channel state label")
+    )
     .accessibilityLabel(glyph.label)
     .accessibilityHint("Shows agent channel details")
     .accessibilityIdentifier("overlay-agent-glyph")
@@ -193,7 +197,7 @@ struct OverlayChannelStatusView: View {
           toggle(channel)
         } label: {
           HStack(spacing: 6) {
-            Text("\(channel.channel) · \(channel.agent)")
+            Text(verbatim: "\(channel.channel) · \(channel.agent)")
               .lineLimit(1)
               .truncationMode(.middle)
               .foregroundStyle(
@@ -214,7 +218,9 @@ struct OverlayChannelStatusView: View {
         .buttonStyle(.plain)
         .disabled(onToggleChannel == nil || Self.toggleDigit(for: channel.channel) == nil)
         .font(.system(size: 11, weight: .medium))
-        .accessibilityLabel("\(channel.channel) · \(channel.agent), \(detail(for: channel))")
+        .accessibilityLabel(
+          Text(verbatim: "\(channel.channel) · \(channel.agent), \(detail(for: channel))")
+        )
         .accessibilityHint(isOpen(channel) ? "Hang up channel" : "Open channel")
         .accessibilityIdentifier("overlay-channel-toggle-\(channel.channel)")
         .accessibilityElement(children: .combine)
@@ -237,15 +243,18 @@ struct OverlayChannelStatusView: View {
   }
 
   func detail(for channel: OverlayChannelDelivery) -> String {
-    if unavailable { return "status unavailable" }
+    if unavailable { return String(localized: "status unavailable") }
     let delivery: String
     switch channel.stage {
-    case nil: delivery = "no sealed utterance"
-    case .sent: delivery = "sent · waiting for receipt"
-    case .queued: delivery = "queued · waiting for receipt"
-    case .received: delivery = "receipt confirmed by the agent"
+    case nil: delivery = String(localized: "no sealed utterance")
+    case .sent: delivery = String(localized: "sent · waiting for receipt")
+    case .queued: delivery = String(localized: "queued · waiting for receipt")
+    case .received: delivery = String(localized: "receipt confirmed by the agent")
     }
-    return hasDeadFollower(channel) ? "\(delivery) · nobody listening" : delivery
+    guard hasDeadFollower(channel) else { return delivery }
+    return String(
+      localized: "\(delivery) · nobody listening",
+      comment: "Channel row; the placeholder is the delivery state of that channel")
   }
 }
 

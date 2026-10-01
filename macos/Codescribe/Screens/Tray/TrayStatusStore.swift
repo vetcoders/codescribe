@@ -94,8 +94,69 @@ final class TrayStatusStore: ObservableObject {
     listener = nil
   }
 
+  /// Short status phrase for the header pill.
+  ///
+  /// Derived from the payload's machine-readable `kind` plus the `assistive`
+  /// lane flag. Rust sends no wording: every `(kind, assistive)` pair maps to
+  /// exactly one phrase here.
   var compactLabel: String {
-    status.menuLabel.replacingOccurrences(of: "Status: ", with: "")
+    switch status.kind {
+    case .starting:
+      return String(localized: "Starting...", comment: "Tray status: the runtime is still booting")
+    case .idle:
+      return String(localized: "Idle", comment: "Tray status: ready, not recording")
+    case .listening:
+      return status.assistive
+        ? String(
+          localized: "Agent listening...",
+          comment: "Tray status: the assistive (agent) lane is recording")
+        : String(localized: "Recording...", comment: "Tray status: dictation is recording")
+    case .processing:
+      return String(localized: "Processing...", comment: "Tray status: transcribing")
+    case .success:
+      return String(localized: "Done!", comment: "Tray status: the last session finished")
+    case .error:
+      return String(localized: "Error", comment: "Tray status: the backend is unavailable")
+    case .thermal:
+      return String(
+        localized: "Thermal throttling",
+        comment: "Tray status: the host is too hot to run speech-to-text at full speed")
+    case .hotkeyConflict:
+      return String(
+        localized: "Hotkey conflict",
+        comment: "Tray status: a recording shortcut was detected but blocked")
+    }
+  }
+
+  /// Full status line for the detail row under the pill.
+  var detailLabel: String {
+    String(
+      localized: "Status: \(compactLabel)",
+      comment: "Tray detail row; %@ is a status phrase such as Error or Hotkey conflict"
+    )
+  }
+
+  /// Menu bar tooltip.
+  var tooltip: String {
+    String(
+      localized: "Codescribe - \(tooltipPhrase)",
+      comment: "Menu bar tooltip; Codescribe is the product name, %@ is a status phrase"
+    )
+  }
+
+  /// The tooltip reads differently from the pill for two kinds: it says what the
+  /// app can do ("Ready") and what actually broke ("Backend unavailable!").
+  private var tooltipPhrase: String {
+    switch status.kind {
+    case .idle:
+      return String(localized: "Ready", comment: "Menu bar tooltip: ready to record")
+    case .error:
+      return String(
+        localized: "Backend unavailable!",
+        comment: "Menu bar tooltip: the Codescribe core is not running")
+    case .starting, .listening, .processing, .success, .thermal, .hotkeyConflict:
+      return compactLabel
+    }
   }
 
   var color: Color {
@@ -193,8 +254,7 @@ final class TrayStatusStore: ObservableObject {
       kind: CsTrayStatusKind = .idle,
       tone: CsTrayStatusTone = .neutral,
       indicatorMode: CsIndicatorMode = .hold,
-      assistive: Bool = false,
-      label: String = "Status: Idle"
+      assistive: Bool = false
     ) -> TrayStatusStore {
       TrayStatusStore(
         status: CsTrayStatusPayload(
@@ -202,8 +262,6 @@ final class TrayStatusStore: ObservableObject {
           tone: tone,
           indicatorMode: indicatorMode,
           assistive: assistive,
-          tooltip: "Codescribe - \(label.replacingOccurrences(of: "Status: ", with: ""))",
-          menuLabel: label,
           generation: 0
         ))
     }

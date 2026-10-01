@@ -13,15 +13,13 @@ import SwiftUI
 struct WelcomeStepView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      EyebrowLabel(text: "Welcome")
+      EyebrowLabel(text: String(localized: "Welcome", comment: "Setup step eyebrow"))
       Text("Think it. Say it. Keep your flow.")
         .font(.title2.weight(.semibold))
         .foregroundStyle(.primary)
         .fixedSize(horizontal: false, vertical: true)
       Text(
-        "Bring your words into the apps you already use. We’ll connect your microphone, "
-          + "choose your language and shortcuts, and optionally add an AI "
-          + "assistant. Every choice can be changed later in Settings."
+        "Bring your words into the apps you already use. We’ll connect your microphone, choose your language and shortcuts, and optionally add an AI assistant. Every choice can be changed later in Settings."
       )
       .font(.body)
       .lineSpacing(3)
@@ -41,7 +39,11 @@ struct WelcomeStepView: View {
     }
   }
 
-  private func invitation(_ title: String, symbol: String, detail: String) -> some View {
+  private func invitation(
+    _ title: LocalizedStringKey,
+    symbol: String,
+    detail: LocalizedStringKey
+  ) -> some View {
     VStack(alignment: .leading, spacing: 12) {
       Image(systemName: symbol)
         .font(.system(size: 26, weight: .medium))
@@ -135,30 +137,42 @@ struct ModeStepView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
       OnboardingStepHeader(
-        eyebrow: "Operating lane",
-        title: "Where should your words go?",
-        blurb:
-          "Start with dictation, or bring an assistant into the conversation. Change this any time in Settings."
+        eyebrow: String(localized: "Operating lane", comment: "Setup step eyebrow"),
+        title: String(localized: "Where should your words go?", comment: "Setup step heading"),
+        blurb: String(
+          localized:
+            "Start with dictation, or bring an assistant into the conversation. Change this any time in Settings.",
+          comment: "Setup step blurb")
       )
 
       VStack(spacing: 10) {
         OnboardingChoiceCard(
-          title: "Basic — dictation only",
-          subtitle: "Voice-to-text anywhere. The simplest, fastest setup.",
+          title: String(
+            localized: "Basic — dictation only",
+            comment: "Operating lane choice; Basic is the lane name"),
+          subtitle: String(
+            localized: "Voice-to-text anywhere. The simplest, fastest setup.",
+            comment: "Operating lane choice detail"),
           isSelected: model.onboardingMode == .basic
         ) { model.selectMode(.basic) }
 
         OnboardingChoiceCard(
-          title: "Agentic — dictation + AI agent",
-          subtitle: "Talk with an AI assistant and connect its tools, "
-            + "so your voice can drive an AI assistant, not just type.",
+          title: String(
+            localized: "Agentic — dictation + AI agent",
+            comment: "Operating lane choice; Agentic is the lane name"),
+          subtitle: String(
+            localized:
+              "Talk with an AI assistant and connect its tools, so your voice can drive an AI assistant, not just type.",
+            comment: "Operating lane choice detail"),
           isSelected: model.onboardingMode == .agentic
         ) { model.selectMode(.agentic) }
       }
       .padding(.top, 4)
 
       OnboardingStepNote(
-        text: "Agentic adds one more setup step (readiness check). Basic skips it.")
+        text: String(
+          localized: "Agentic adds one more setup step (readiness check). Basic skips it.",
+          comment: "Setup step footnote; Agentic and Basic are the two lane names"))
     }
   }
 }
@@ -173,10 +187,12 @@ struct LanguageStepView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
       OnboardingStepHeader(
-        eyebrow: "Language",
-        title: "Pick your dictation language.",
-        blurb: "Sets the transcription language. Auto-detect handles mixed or "
-          + "multilingual speech. Change it any time in Settings.")
+        eyebrow: String(localized: "Language", comment: "Setup step eyebrow"),
+        title: String(localized: "Pick your dictation language.", comment: "Setup step heading"),
+        blurb: String(
+          localized:
+            "Sets the transcription language. Auto-detect handles mixed or multilingual speech. Change it any time in Settings.",
+          comment: "Setup step blurb; Auto-detect is the name of the first language choice"))
 
       VStack(spacing: 10) {
         ForEach(choices, id: \.self) { language in
@@ -193,15 +209,23 @@ struct LanguageStepView: View {
 
   private func languageTitle(_ language: CsLanguage) -> String {
     switch language {
-    case .auto: return "Auto-detect"
-    case .english: return "English"
-    case .polish: return "Polish"
+    case .auto:
+      return String(
+        localized: "Auto-detect",
+        comment: "Dictation language choice: let the engine detect the language")
+    case .english:
+      return String(localized: "English", comment: "Dictation language choice")
+    case .polish:
+      return String(localized: "Polish", comment: "Dictation language choice")
     }
   }
 
   private func languageSubtitle(_ language: CsLanguage) -> String? {
     switch language {
-    case .auto: return "Multilingual — detects the language as you speak."
+    case .auto:
+      return String(
+        localized: "Multilingual — detects the language as you speak.",
+        comment: "Detail under the Auto-detect dictation language choice")
     default: return nil
     }
   }
@@ -215,10 +239,12 @@ struct HotkeyModeStepView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
       OnboardingStepHeader(
-        eyebrow: "Hotkeys",
-        title: "How do you trigger recording?",
-        blurb: "Pick a starting preset. This sets the Dictation, Formatting, "
-          + "and Assistive shortcuts for you.")
+        eyebrow: String(localized: "Hotkeys", comment: "Setup step eyebrow"),
+        title: String(localized: "How do you trigger recording?", comment: "Setup step heading"),
+        blurb: String(
+          localized:
+            "Pick a starting preset. This sets the Dictation, Formatting, and Assistive shortcuts for you.",
+          comment: "Setup step blurb; Dictation, Formatting and Assistive are the three modes"))
 
       VStack(spacing: 10) {
         ForEach(HotkeyModeChoice.allCases, id: \.self) { mode in
@@ -232,7 +258,9 @@ struct HotkeyModeStepView: View {
       .padding(.top, 4)
 
       OnboardingStepNote(
-        text: "Fine-tune the exact keys later in Settings › Shortcuts.")
+        text: String(
+          localized: "Fine-tune the exact keys later in Settings › Shortcuts.",
+          comment: "Setup step footnote; Settings › Shortcuts is a navigation path in the app"))
     }
   }
 }
@@ -273,11 +301,10 @@ struct AgenticReadinessStepView: View {
       }
 
       Text(
-        "MCP connects your assistant to additional tools. "
-          + "You can add servers later in Settings."
+        "MCP connects your assistant to additional tools. You can add servers later in Settings."
       )
-        .font(.callout)
-        .foregroundStyle(.secondary)
+      .font(.callout)
+      .foregroundStyle(.secondary)
       Button("MCP settings…") {
         model.prepareMcpSettingsDeepLink()
         openWindow(id: SettingsView.windowID)
@@ -285,8 +312,9 @@ struct AgenticReadinessStepView: View {
         .accessibilityIdentifier("onboarding-mcp-settings")
 
       OnboardingStepNote(
-        text:
-          "This connection is optional. You can continue and set it up later.")
+        text: String(
+          localized: "This connection is optional. You can continue and set it up later.",
+          comment: "Setup step footnote on the agent-readiness step"))
     }
   }
 
@@ -315,7 +343,9 @@ struct AgenticReadinessStepView: View {
         ForEach(AgentBridgeClient.allCases) { client in
           OnboardingChoiceCard(
             title: client.displayName,
-            subtitle: "Connect a live coding session",
+            subtitle: String(
+              localized: "Connect a live coding session",
+              comment: "Detail under a coding-assistant checkbox"),
             isSelected: model.selectedAgentClients.contains(client)
           ) { model.toggleAgentClient(client) }
         }
@@ -396,14 +426,21 @@ struct PermissionStepView: View {
   /// (when the scope supports it), System Settings deep-link once determined.
   private var primaryTitle: String {
     if state == .notDetermined, kind.supportsInAppPermissionRequest {
-      return "Allow \(kind.rawValue)"
+      return String(
+        localized: "Allow \(kind.displayName)",
+        comment: "Button on a permission step; %@ is a privacy scope such as Microphone")
     }
-    return "Open System Settings"
+    return String(
+      localized: "Open System Settings",
+      comment: "Button that deep-links into the macOS System Settings privacy pane")
   }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      EyebrowLabel(text: "Permission · \(kind.rawValue)")
+      EyebrowLabel(
+        text: String(
+          localized: "Permission · \(kind.displayName)",
+          comment: "Eyebrow on a permission step; %@ is a privacy scope such as Microphone"))
       Text(kind.onboardingTitle)
         .font(.title2.weight(.semibold))
         .foregroundStyle(.primary)
@@ -475,14 +512,12 @@ struct ApiKeyStepView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      EyebrowLabel(text: "AI provider")
+      EyebrowLabel(text: String(localized: "AI provider", comment: "Setup step eyebrow"))
       Text("Connect an AI provider.")
         .font(.title2.weight(.semibold))
         .foregroundStyle(.primary)
       Text(
-        "Powers AI formatting and the agent lane. Stored in the macOS "
-          + "Keychain — write-only, never shown back. Optional: skip and add "
-          + "it later in Settings › Keys."
+        "Powers AI formatting and the agent lane. Stored in the macOS Keychain — write-only, never shown back. Optional: skip and add it later in Settings › Keys."
       )
       .font(.body)
       .lineSpacing(3)
@@ -574,7 +609,7 @@ struct DoneStepView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      EyebrowLabel(text: "All set")
+      EyebrowLabel(text: String(localized: "All set", comment: "Setup step eyebrow"))
       Text("You're ready to talk.")
         .font(.title2.weight(.semibold))
         .foregroundStyle(.primary)
@@ -588,9 +623,13 @@ struct DoneStepView: View {
 
       VStack(alignment: .leading, spacing: 8) {
         ForEach(summaryOrder) { kind in
-          summaryRow(kind.rawValue, granted: model.permissions.state(kind).isGranted)
+          summaryRow(kind.displayName, granted: model.permissions.state(kind).isGranted)
         }
-        summaryRow("AI provider key", granted: model.selectedProviderKeySet)
+        summaryRow(
+          String(
+            localized: "AI provider key",
+            comment: "Summary row: whether an API key is stored for the chosen AI provider"),
+          granted: model.selectedProviderKeySet)
       }
       .padding(.top, 6)
     }
@@ -621,12 +660,18 @@ extension PermissionKind {
   /// Wizard heading, mirroring the excised AppKit `PermissionKind::title`.
   var onboardingTitle: String {
     switch self {
-    case .microphone: return "Microphone Access"
-    case .accessibility: return "Accessibility Access"
-    case .inputMonitoring: return "Input Monitoring Access"
-    case .screenRecording: return "Screen Recording Access"
-    case .speechRecognition: return "Speech Recognition Access"
-    case .fullDiskAccess: return "Full Disk Access"
+    case .microphone:
+      return String(localized: "Microphone Access", comment: "Permission step heading")
+    case .accessibility:
+      return String(localized: "Accessibility Access", comment: "Permission step heading")
+    case .inputMonitoring:
+      return String(localized: "Input Monitoring Access", comment: "Permission step heading")
+    case .screenRecording:
+      return String(localized: "Screen Recording Access", comment: "Permission step heading")
+    case .speechRecognition:
+      return String(localized: "Speech Recognition Access", comment: "Permission step heading")
+    case .fullDiskAccess:
+      return String(localized: "Full Disk Access", comment: "Permission step heading")
     }
   }
 
@@ -634,18 +679,31 @@ extension PermissionKind {
   var onboardingReason: String {
     switch self {
     case .microphone:
-      return "Transcribe your voice into text. Audio is processed locally on your Mac."
+      return String(
+        localized: "Transcribe your voice into text. Audio is processed locally on your Mac.",
+        comment: "Why the app asks for the Microphone scope")
     case .accessibility:
-      return "Type transcribed text into any application and control text insertion."
+      return String(
+        localized: "Type transcribed text into any application and control text insertion.",
+        comment: "Why the app asks for the Accessibility scope")
     case .inputMonitoring:
-      return "Detect keyboard shortcuts to start and stop voice recording."
+      return String(
+        localized: "Detect keyboard shortcuts to start and stop voice recording.",
+        comment: "Why the app asks for the Input Monitoring scope")
     case .screenRecording:
-      return
-        "Capture screen context to give the AI assistant visual awareness of what you're working on."
+      return String(
+        localized:
+          "Capture screen context to give the AI assistant visual awareness of what you're working on.",
+        comment: "Why the app asks for the Screen Recording scope")
     case .speechRecognition:
-      return "Power Apple live dictation on-device. Speech never leaves your Mac."
+      return String(
+        localized: "Power Apple live dictation on-device. Speech never leaves your Mac.",
+        comment: "Why the app asks for the Speech Recognition scope")
     case .fullDiskAccess:
-      return "Read project files for AI context. Optional — limits file-aware features if skipped."
+      return String(
+        localized:
+          "Read project files for AI context. Optional — limits file-aware features if skipped.",
+        comment: "Why the app asks for the Full Disk Access scope")
     }
   }
 }

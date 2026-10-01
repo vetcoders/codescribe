@@ -23,7 +23,10 @@ final class TrayPanel: NSPanel, NSWindowDelegate {
     level = .popUpMenu
     collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
     delegate = self
-    title = "Codescribe menu"
+    title = String(
+      localized: "Codescribe menu",
+      comment: "Accessibility title of the menu bar panel; Codescribe is the product name"
+    )
     NotificationCenter.default.addObserver(
       self, selector: #selector(applicationDeactivated),
       name: NSApplication.didResignActiveNotification, object: NSApp)

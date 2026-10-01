@@ -16,7 +16,7 @@ final class OverlayChromeV3Tests: XCTestCase {
     let header = try XCTUnwrap(source.range(of: "private func justifiedHeader(compact: Bool)"))
     let tail = String(source[header.lowerBound...])
     let button = try XCTUnwrap(tail.range(of: "Button {\n          state.relayIntent(.close)"))
-    let wordmark = try XCTUnwrap(tail.range(of: "Text(\"codescribe\")"))
+    let wordmark = try XCTUnwrap(tail.range(of: "Text(verbatim: \"codescribe\")"))
     XCTAssertLessThan(button.lowerBound, wordmark.lowerBound)
     let close = String(tail[button.lowerBound..<wordmark.lowerBound])
     XCTAssertTrue(close.contains("ModeDot("))

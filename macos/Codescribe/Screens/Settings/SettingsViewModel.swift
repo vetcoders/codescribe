@@ -32,7 +32,10 @@ func transcriptTagTemplatePreview(
 func transcriptTagTemplateAppendWarning(_ template: String) -> String? {
   template.contains("{text}")
     ? nil
-    : "Missing {text}; delivered transcript will be appended after the template."
+    : String(
+      localized: "Missing {text}; delivered transcript will be appended after the template.",
+      comment: "{text} is a template token the user types — keep it verbatim"
+    )
 }
 
 /// Runtime serving truth for the Active STT row (not configured preference).
@@ -45,21 +48,38 @@ struct LastServingVerdict: Equatable {
 
 /// Format Active STT from the last serving verdict. Config projection is forbidden.
 /// Live Apple is `local_apple` → `Apple`. Do not append the dead Smart-final-pass token.
+/// `Apple` and `Whisper` are proper names and stay verbatim; every other word is copy.
 func formatActiveSTT(lastServing: LastServingVerdict?) -> String {
   guard let verdict = lastServing else {
-    return "Not yet served"
+    return String(
+      localized: "Not yet served",
+      comment: "Active STT row before the first transcription of this launch"
+    )
   }
   switch verdict.engine {
   case "local_apple":
     return "Apple"
   case "local_whisper":
-    return verdict.fallbackUsed ? "Whisper (fallback)" : "Whisper"
+    return verdict.fallbackUsed
+      ? String(
+        localized: "Whisper (fallback)",
+        comment: "Whisper is a product name; the parenthesis says it was not the chosen engine"
+      )
+      : "Whisper"
   case "streaming_whisper":
-    return "Streaming Whisper"
+    return String(
+      localized: "Streaming Whisper",
+      comment: "Active STT row. Whisper is a product name; Streaming says it transcribed live"
+    )
   case "cloud_stt":
-    return "Cloud"
+    return String(
+      localized: "Cloud",
+      comment: "Active STT row: the cloud engine served the last transcription"
+    )
   default:
-    return verdict.engine.isEmpty ? "Unknown" : verdict.engine
+    return verdict.engine.isEmpty
+      ? String(localized: "Unknown", comment: "Active STT row: the engine id was empty")
+      : verdict.engine
   }
 }
 
@@ -96,7 +116,19 @@ enum FormattingPolicyOption: String, CaseIterable, Identifiable {
   case max
 
   var id: String { rawValue }
-  var visibleName: String { rawValue.capitalized }
+
+  /// Display name of the formatting level. `rawValue` stays the identity that
+  /// `update_config` persists, so the label never derives from it.
+  var visibleName: String {
+    switch self {
+    case .off: return String(localized: "Off", comment: "Formatting level: no AI formatting")
+    case .correction:
+      return String(localized: "Correction", comment: "Formatting level: fix-ups only")
+    case .smart:
+      return String(localized: "Smart", comment: "Formatting level: balanced editing")
+    case .max: return String(localized: "Max", comment: "Formatting level: maximum prose polish")
+    }
+  }
 
   init?(storedValue: String?) {
     switch storedValue {
@@ -124,9 +156,15 @@ enum HoldBadgeOption: CaseIterable, Identifiable, Equatable {
   case eight
   case twelve
 
-  var id: String { visibleName }
+  /// Identity is the pixel size, never the shown label.
+  var id: String {
+    guard let size else { return "off" }
+    return "px-\(size)"
+  }
   var visibleName: String {
-    guard let size else { return "Off" }
+    guard let size else {
+      return String(localized: "Off", comment: "Hold badge size: the badge is disabled")
+    }
     return "\(size)px"
   }
   var size: UInt32? {
@@ -184,7 +222,8 @@ enum DeferredInsertShortcutOption: String, CaseIterable, Identifiable, Equatable
   /// Chord rendered with macOS modifier glyphs (matches the Rust `label()`).
   var visibleName: String {
     switch self {
-    case .disabled: return "Disabled"
+    case .disabled:
+      return String(localized: "Disabled", comment: "Deferred-insert chord: no chord is bound")
     case .commandOptionV: return "⌘⌥V"
     case .commandShiftV: return "⌘⇧V"
     case .commandControlV: return "⌘⌃V"
@@ -209,9 +248,10 @@ extension CsPasteMode {
 
   var visibleName: String {
     switch self {
-    case .safe: return "Safe"
-    case .comfort: return "Comfort"
-    case .off: return "Off"
+    case .safe: return String(localized: "Safe", comment: "Paste policy: cautious destinations")
+    case .comfort:
+      return String(localized: "Comfort", comment: "Paste policy: paste wherever the caret is")
+    case .off: return String(localized: "Off", comment: "Paste policy: never paste automatically")
     }
   }
 
@@ -219,11 +259,17 @@ extension CsPasteMode {
   var blurb: String {
     switch self {
     case .safe:
-      return "Pastes only into a text field; terminals only when it doesn't look like a command."
+      return String(
+        localized:
+          "Pastes only into a text field; terminals only when it doesn't look like a command."
+      )
     case .comfort:
-      return "Pastes wherever the caret is, terminals too; commands and password fields are held."
+      return String(
+        localized:
+          "Pastes wherever the caret is, terminals too; commands and password fields are held."
+      )
     case .off:
-      return "Never pastes automatically; the transcript stays on the overlay."
+      return String(localized: "Never pastes automatically; the transcript stays on the overlay.")
     }
   }
 
@@ -281,16 +327,20 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 
   var title: String {
     switch self {
-    case .creator: return "Creator"
-    case .shortcuts: return "Hotkeys"
-    case .keys: return "Providers"
-    case .agent: return "Agent"
-    case .engine: return "Dictation"
-    case .audio: return "Audio"
-    case .voiceLab: return "Dictionary"
-    case .lab: return "Lab"
-    case .license: return "License"
-    case .user: return "User"
+    case .creator:
+      return String(localized: "Creator", comment: "Settings section: first-run setup and basics")
+    case .shortcuts: return String(localized: "Hotkeys", comment: "Settings section")
+    case .keys:
+      return String(localized: "Providers", comment: "Settings section: AI provider accounts")
+    case .agent: return String(localized: "Agent", comment: "Settings section")
+    case .engine: return String(localized: "Dictation", comment: "Settings section")
+    case .audio: return String(localized: "Audio", comment: "Settings section")
+    case .voiceLab:
+      return String(localized: "Dictionary", comment: "Settings section: custom vocabulary")
+    case .lab:
+      return String(localized: "Lab", comment: "Settings section: developer experiments")
+    case .license: return String(localized: "License", comment: "Settings section")
+    case .user: return String(localized: "User", comment: "Settings section: account profile")
     }
   }
 
@@ -350,20 +400,87 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 
   /// Extra terms the settings search matches beyond the visible title, so the
   /// user can look for what a panel DOES ("api key", "mikrofon") instead of
-  /// having to guess the tab name.
+  /// having to guess the tab name. Shape: `settingsSearchTerms(fixed:localized:)`.
   var searchKeywords: [String] {
     switch self {
-    case .creator: return ["setup", "onboarding", "permissions", "quick start", "language"]
-    case .shortcuts: return ["hotkey", "keyboard", "shortcut", "trigger", "hold", "toggle"]
-    case .keys: return ["api key", "provider", "openai", "anthropic", "endpoint", "model", "token"]
-    case .agent: return ["mcp", "tools", "workspace", "permissions", "server", "auto-send"]
+    case .creator:
+      settingsSearchTerms(
+        localized: String(
+          localized: "settings.search.section.creator",
+          defaultValue: "setup, onboarding, permissions, quick start, language",
+          comment:
+            "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
+        ))
+    case .shortcuts:
+      settingsSearchTerms(
+        localized: String(
+          localized: "settings.search.section.shortcuts",
+          defaultValue: "hotkey, keyboard, shortcut, trigger, hold, toggle",
+          comment:
+            "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
+        ))
+    case .keys:
+      settingsSearchTerms(
+        fixed: ["openai", "anthropic"],
+        localized: String(
+          localized: "settings.search.section.keys",
+          defaultValue: "api key, provider, endpoint, model, token",
+          comment:
+            "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
+        ))
+    case .agent:
+      settingsSearchTerms(
+        fixed: ["mcp"],
+        localized: String(
+          localized: "settings.search.section.agent",
+          defaultValue: "tools, workspace, permissions, server, auto-send",
+          comment:
+            "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
+        ))
     case .engine:
-      return ["stt", "whisper", "apple", "speech", "transcription", "asr", "cloud", "consent"]
-    case .audio: return ["microphone", "mikrofon", "input", "device", "levels"]
-    case .voiceLab: return ["lexicon", "dictionary", "vocabulary", "corrections", "słownik"]
-    case .lab: return ["lab", "voice lab", "three-judge", "seismograph"]
-    case .license: return ["subscription", "activation", "trial", "billing"]
-    case .user: return ["account", "profile", "sign in", "identity"]
+      settingsSearchTerms(
+        fixed: ["stt", "whisper", "apple", "asr"],
+        localized: String(
+          localized: "settings.search.section.engine",
+          defaultValue: "speech, transcription, cloud, consent",
+          comment:
+            "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
+        ))
+    case .audio:
+      settingsSearchTerms(
+        localized: String(
+          localized: "settings.search.section.audio",
+          defaultValue: "microphone, mikrofon, input, device, levels",
+          comment:
+            "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
+        ))
+    case .voiceLab:
+      settingsSearchTerms(
+        localized: String(
+          localized: "settings.search.section.voiceLab",
+          defaultValue: "lexicon, dictionary, vocabulary, corrections, słownik",
+          comment:
+            "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
+        ))
+    case .lab:
+      // Developer surface: its names are not interface copy.
+      settingsSearchTerms(fixed: ["lab", "voice lab", "three-judge", "seismograph"])
+    case .license:
+      settingsSearchTerms(
+        localized: String(
+          localized: "settings.search.section.license",
+          defaultValue: "subscription, activation, trial, billing",
+          comment:
+            "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
+        ))
+    case .user:
+      settingsSearchTerms(
+        localized: String(
+          localized: "settings.search.section.user",
+          defaultValue: "account, profile, sign in, identity",
+          comment:
+            "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
+        ))
     }
   }
 
@@ -391,9 +508,11 @@ enum SettingsSectionGroup: String, CaseIterable, Identifiable {
 
   var title: String {
     switch self {
-    case .setup: return "Setup"
-    case .intelligence: return "Intelligence"
-    case .account: return "Account"
+    case .setup: return String(localized: "Setup", comment: "Sidebar group of settings sections")
+    case .intelligence:
+      return String(localized: "Intelligence", comment: "Sidebar group of settings sections")
+    case .account:
+      return String(localized: "Account", comment: "Sidebar group of settings sections")
     }
   }
 }
@@ -429,41 +548,61 @@ func healthState(
   if stt == false {
     return SettingsHealthState(
       level: .offline,
-      message: "speech engine: unavailable",
+      message: String(
+        localized: "speech engine: unavailable",
+        comment: "Settings health footer, lower case"
+      ),
       targetSection: .engine
     )
   }
   if recording == false {
     return SettingsHealthState(
       level: .offline,
-      message: "recording setup: action needed",
+      message: String(
+        localized: "recording setup: action needed",
+        comment: "Settings health footer, lower case"
+      ),
       targetSection: .audio
     )
   }
   if keys == .missing {
     return SettingsHealthState(
       level: .degraded,
-      message: "assistive lane: no key",
+      message: String(
+        localized: "assistive lane: no key",
+        comment: "Settings health footer, lower case: no API key for the assistive lane"
+      ),
       targetSection: .keys
     )
   }
   if agent == false {
     return SettingsHealthState(
       level: .offline,
-      message: "assistive lane: not ready",
+      message: String(
+        localized: "assistive lane: not ready",
+        comment: "Settings health footer, lower case"
+      ),
       targetSection: .engine
     )
   }
   if stt == nil || recording == nil || keys == .unknown || agent == nil {
     return SettingsHealthState(
       level: .unknown,
-      message: recording == nil ? "recording setup: checking" : "system health: unknown",
+      message: recording == nil
+        ? String(
+          localized: "recording setup: checking",
+          comment: "Settings health footer, lower case"
+        )
+        : String(
+          localized: "system health: unknown",
+          comment: "Settings health footer, lower case"
+        ),
       targetSection: recording == nil ? .audio : .engine
     )
   }
   return SettingsHealthState(
     level: .healthy,
-    message: "systems ready",
+    message: String(localized: "systems ready", comment: "Settings health footer, lower case"),
     targetSection: nil
   )
 }
@@ -485,12 +624,18 @@ struct AppBuildInfo: Equatable {
   }
 }
 
+/// The words a person types to confirm a reset. They are compared, not read as
+/// copy, so they stay the same in every interface language; sentences that
+/// name them take them as an argument.
+let resetConfirmationWord = "RESET"
+let resetAgentConfirmationWord = "RESET AGENT"
+
 func resetConfirmationMatches(_ text: String) -> Bool {
-  text == "RESET"
+  text == resetConfirmationWord
 }
 
 func resetAgentConfirmationMatches(_ text: String) -> Bool {
-  text == "RESET AGENT"
+  text == resetAgentConfirmationWord
 }
 
 /// Rust marks failures that occurred after the first irreversible data move.
@@ -504,13 +649,17 @@ func agentResetFailureRequiresRelaunch(_ description: String) -> Bool {
   description.contains("CODESCRIBE_AGENT_RESET_RELAUNCH_REQUIRED")
 }
 
+/// Three independent counts: the catalog carries one plural variation per
+/// argument. The megabyte figure is pre-formatted, so it stays a plain string.
 func resetImpactSummary(_ preview: CsResetPreview) -> String {
-  let recordings = preview.audioFiles == 1 ? "recording" : "recordings"
-  let days = preview.transcriptDays == 1 ? "day" : "days"
-  let threads = preview.threads == 1 ? "thread" : "threads"
-  let megabytes = Double(preview.totalBytes) / 1_048_576.0
-  return "\(preview.audioFiles) \(recordings) from \(preview.transcriptDays) \(days), "
-    + "\(preview.threads) \(threads) (\(String(format: "%.1f", megabytes)) MB)"
+  let recordings = Int(preview.audioFiles)
+  let days = Int(preview.transcriptDays)
+  let threads = Int(preview.threads)
+  let megabytes = String(format: "%.1f", Double(preview.totalBytes) / 1_048_576.0)
+  return String(
+    localized: "\(recordings) recordings from \(days) days, \(threads) threads (\(megabytes) MB)",
+    comment: "Reset impact; each count needs its own plural variation"
+  )
 }
 
 enum SettingsAnchor: String, Hashable {
@@ -591,11 +740,16 @@ enum LLMLane: String, CaseIterable, Identifiable, Hashable {
 
   var bridgeLane: CsLlmLane { self == .assistive ? .assistive : .formatting }
 
-  var title: String { self == .assistive ? "Assistive" : "Formatting" }
+  var title: String {
+    self == .assistive
+      ? String(localized: "Assistive", comment: "Request lane: agent and voice assistant")
+      : String(localized: "Formatting", comment: "Request lane: transcript cleanup")
+  }
 
   var subtitle: String {
     self == .assistive
-      ? "Agent and voice-assistant requests" : "Transcript cleanup and formatting"
+      ? String(localized: "Agent and voice-assistant requests")
+      : String(localized: "Transcript cleanup and formatting")
   }
 
   var providerKey: String {
@@ -632,11 +786,19 @@ struct LLMLaneModel {
   /// field stays beside it either way (custom hosts may publish no list).
   var usesDiscoveredPicker: Bool { !modelOptions.isEmpty && discovery.status == "fresh" }
 
+  /// `unavailableReason` arrives from the core and cannot be localized here.
   var availabilityDescription: String {
-    if !runtime.available { return runtime.unavailableReason ?? "unavailable" }
-    if runtime.accountAuth { return "account" }
-    if runtime.keyPresent { return "API key" }
-    return "no key required"
+    if !runtime.available {
+      return runtime.unavailableReason
+        ?? String(localized: "unavailable", comment: "Lane availability, lower case")
+    }
+    if runtime.accountAuth {
+      return String(localized: "account", comment: "Lane auth: signed-in account, lower case")
+    }
+    if runtime.keyPresent {
+      return String(localized: "API key", comment: "Lane auth: an API key is stored")
+    }
+    return String(localized: "no key required", comment: "Lane auth, lower case")
   }
 
   var availabilityTint: Color {
@@ -648,20 +810,29 @@ struct LLMLaneModel {
     case "fresh":
       let count = modelOptions.count
       return count == 0
-        ? "no models returned by provider"
-        : "\(count) \(count == 1 ? "model" : "models") discovered from provider"
+        ? String(localized: "no models returned by provider", comment: "Model discovery status")
+        : String(
+          localized: "\(count) models discovered from provider",
+          comment: "Model discovery status; needs a plural variation"
+        )
     case "cached":
       if let message = discovery.message, !message.isEmpty {
-        return "using cached models — \(message)"
+        return String(
+          localized: "using cached models — \(message)",
+          comment: "The placeholder is a status message from the core"
+        )
       }
-      return "using cached models"
-    case "no_key": return "Add API key to discover models"
-    case "loading": return "discovering models…"
+      return String(localized: "using cached models", comment: "Model discovery status")
+    case "no_key": return String(localized: "Add API key to discover models")
+    case "loading": return String(localized: "discovering models…", comment: "In-progress status")
     default:
       if let message = discovery.message, !message.isEmpty {
-        return "model discovery failed — \(message)"
+        return String(
+          localized: "model discovery failed — \(message)",
+          comment: "The placeholder is a status message from the core"
+        )
       }
-      return "model discovery failed"
+      return String(localized: "model discovery failed", comment: "Model discovery status")
     }
   }
 }
@@ -1086,9 +1257,11 @@ final class SettingsViewModel: ObservableObject {
     do {
       let clients = Set(current.installedClients).union([client])
       creatorAgentBridgeStatus = try creatorAgentBridge.install(selectedClients: clients)
-      creatorAgentBridgeNotice =
-        "Skill installed from this app. Reload skills in your agent client, then invoke /codescribe. "
-        + "Installation does not attach a listener or verify voice delivery."
+      creatorAgentBridgeNotice = String(
+        localized:
+          "Skill installed from this app. Reload skills in your agent client, then invoke /codescribe. Installation does not attach a listener or verify voice delivery.",
+        comment: "/codescribe is a command the user types — keep it verbatim"
+      )
     } catch {
       creatorAgentBridgeError = error.userFacingMessage
       creatorAgentBridgeStatus = creatorAgentBridge.status()
@@ -1102,10 +1275,13 @@ final class SettingsViewModel: ObservableObject {
     do {
       let result = try creatorAgentBridge.adoptManualSkill(client: client)
       creatorAgentBridgeStatus = result.status
-      creatorAgentBridgeNotice =
-        "Installed from this app. Original folder preserved at:\n"
-        + result.backupPaths.joined(separator: "\n")
-        + "\nReload your agent client's skills, then invoke /codescribe. Voice delivery is not yet verified."
+      let preserved = result.backupPaths.joined(separator: "\n")
+      creatorAgentBridgeNotice = String(
+        localized:
+          "Installed from this app. Original folder preserved at:\n\(preserved)\nReload your agent client's skills, then invoke /codescribe. Voice delivery is not yet verified.",
+        comment:
+          "The placeholder is a newline-separated path list; /codescribe is a command — keep it verbatim"
+      )
     } catch {
       creatorAgentBridgeError = error.userFacingMessage
       creatorAgentBridgeStatus = creatorAgentBridge.status()
@@ -1172,7 +1348,7 @@ final class SettingsViewModel: ObservableObject {
     guard engine != nil else { return }
     guard !whisperDownloadInFlight else { return }
     whisperDownloadInFlight = true
-    whisperDownloadDetail = "Starting download…"
+    whisperDownloadDetail = String(localized: "Starting download…")
     whisperDownloadFraction = nil
     lastError = nil
     let channel = AsyncStream<WhisperDownloadEvent>.makeStream()
@@ -1185,7 +1361,13 @@ final class SettingsViewModel: ObservableObject {
         case .progress(let detail, let fraction):
           self.applyWhisperDownloadProgress(detail: detail, fraction: fraction)
         case .complete(let path):
-          self.applyWhisperDownloadProgress(detail: "Saved · \(path)", fraction: 1.0)
+          self.applyWhisperDownloadProgress(
+            detail: String(
+              localized: "Saved · \(path)",
+              comment: "Download finished; the placeholder is a file path"
+            ),
+            fraction: 1.0
+          )
         }
       }
     }
@@ -1194,14 +1376,18 @@ final class SettingsViewModel: ObservableObject {
       do {
         let status = try await downloadWhisperModel(listener: sink)
         self.localWhisperStatus = status
+        let location = status.path ?? status.modelId
         self.whisperDownloadDetail =
           status.available
-          ? "Ready · \(status.path ?? status.modelId)"
-          : "Download finished but model still unavailable"
+          ? String(
+            localized: "Ready · \(location)",
+            comment: "The placeholder is a model path or model id"
+          )
+          : String(localized: "Download finished but model still unavailable")
         self.whisperDownloadFraction = status.available ? 1.0 : nil
       } catch {
         self.lastError = String(describing: error)
-        self.whisperDownloadDetail = "Download failed"
+        self.whisperDownloadDetail = String(localized: "Download failed")
         self.whisperDownloadFraction = nil
       }
       sink.finish()
@@ -1478,17 +1664,34 @@ final class SettingsViewModel: ObservableObject {
     resetPreview = engine.resetPreview()
   }
 
+  /// Composed sentence by sentence: the impact summary is its own key, and each
+  /// following sentence is localized whole so a translation can be reordered.
   func resetImpactDescription(includeKeys: Bool, includePrompts: Bool) -> String {
-    var message = "Moves \(resetImpactSummary(resetPreview)) to Trash."
+    let impact = resetImpactSummary(resetPreview)
+    var message = String(
+      localized: "Moves \(impact) to Trash.",
+      comment: "The placeholder is the counted reset impact"
+    )
     if includePrompts {
-      message += " Your assistive.txt and three formatting prompt files will also move to Trash."
+      message += " "
+      message += String(
+        localized: "Your assistive.txt and three formatting prompt files will also move to Trash.",
+        comment: "assistive.txt is a file name — keep it verbatim"
+      )
     } else {
-      message += " Your assistive.txt and three formatting prompt files will be preserved."
+      message += " "
+      message += String(
+        localized: "Your assistive.txt and three formatting prompt files will be preserved.",
+        comment: "assistive.txt is a file name — keep it verbatim"
+      )
     }
     if includeKeys {
-      message += " API keys will also be removed from Keychain and are not recoverable from Trash."
+      message += " "
+      message += String(
+        localized: "API keys will also be removed from Keychain and are not recoverable from Trash."
+      )
     }
-    return message + " Codescribe will relaunch as a fresh install."
+    return message + " " + String(localized: "Codescribe will relaunch as a fresh install.")
   }
 
   /// Move all local app data to Trash through the Rust bridge, clear the app's
@@ -1519,18 +1722,28 @@ final class SettingsViewModel: ObservableObject {
     agentResetPreview = engine.resetAgentPreview()
   }
 
+  /// Two independent counts in the first sentence: the catalog carries one
+  /// plural variation per argument. The following sentences are whole keys.
   func resetAgentImpactDescription() -> String {
     let preview = agentResetPreview
-    let threadWord = preview.threads == 1 ? "thread" : "threads"
-    let fileWord = preview.files == 1 ? "file" : "files"
+    let threads = Int(preview.threads)
+    let files = Int(preview.files)
     let secretState =
       preview.secretsPresent
-      ? "Agent provider and MCP connector secrets are present and will be deleted permanently."
-      : "No Agent provider or MCP connector secrets are currently stored."
-    return
-      "Moves \(preview.threads) Agent \(threadWord) and \(preview.files) Agent \(fileWord) to Trash. "
-      + secretState
-      + " Recordings, transcriptions, dictionary and lexicon data, quality corpus and reports, prompts, audio, hotkeys, dictation settings, license, and macOS permissions stay unchanged."
+      ? String(
+        localized:
+          "Agent provider and MCP connector secrets are present and will be deleted permanently."
+      )
+      : String(localized: "No Agent provider or MCP connector secrets are currently stored.")
+    let moved = String(
+      localized: "Moves \(threads) Agent threads and \(files) Agent files to Trash.",
+      comment: "Agent reset impact; each count needs its own plural variation"
+    )
+    let unchanged = String(
+      localized:
+        "Recordings, transcriptions, dictionary and lexicon data, quality corpus and reports, prompts, audio, hotkeys, dictation settings, license, and macOS permissions stay unchanged."
+    )
+    return moved + " " + secretState + " " + unchanged
   }
 
   func resetAgentData() {
@@ -1599,7 +1812,9 @@ final class SettingsViewModel: ObservableObject {
 
   var sttModelDescription: String {
     let preference = settings.whisperModel ?? settings.localModel
-    return preference.isEmpty ? "unset" : preference
+    return preference.isEmpty
+      ? String(localized: "unset", comment: "Model row: no model preference stored, lower case")
+      : preference
   }
 
   private var assistiveKeyState: SettingsKeyState {
@@ -1669,7 +1884,7 @@ final class SettingsViewModel: ObservableObject {
   var formattingDescription: String {
     guard settings.aiFormattingEnabled else { return "disabled · compatibility gate" }
     return FormattingPolicyOption(storedValue: settings.formattingLevel)?.visibleName
-      ?? "invalid policy"
+      ?? String(localized: "invalid policy", comment: "Formatting status: stored level is unknown")
   }
 
   // MARK: - Creator mutations (write through the core router)
@@ -1691,7 +1906,7 @@ final class SettingsViewModel: ObservableObject {
         maxToolApprovals = try await engine.pendingMaxToolApprovals()
         maxApprovalError = nil
       } catch {
-        maxApprovalError = error.localizedDescription
+        maxApprovalError = error.userFacingMessage
       }
     } while maxApprovalRefreshRequested
   }
@@ -1707,10 +1922,11 @@ final class SettingsViewModel: ObservableObject {
       let resolved = try await engine.resolveMaxToolApproval(
         request, approved: approved, remember: remember
       )
-      maxApprovalError = resolved ? nil : "This permission request is no longer active."
+      maxApprovalError =
+        resolved ? nil : String(localized: "This permission request is no longer active.")
       maxToolApprovals = try await engine.pendingMaxToolApprovals()
     } catch {
-      maxApprovalError = error.localizedDescription
+      maxApprovalError = error.userFacingMessage
     }
     maxApprovalBusy = false
     if maxApprovalRefreshRequested {
@@ -1721,7 +1937,7 @@ final class SettingsViewModel: ObservableObject {
   func beginNewMaxConsultation() async {
     guard maxConsultationEnabled, !newMaxConsultationPending else { return }
     guard let engine else {
-      maxConsultationNotice = "Consultation reset is unavailable."
+      maxConsultationNotice = String(localized: "Consultation reset is unavailable.")
       return
     }
     newMaxConsultationPending = true
@@ -1729,9 +1945,14 @@ final class SettingsViewModel: ObservableObject {
     defer { newMaxConsultationPending = false }
     do {
       _ = try await engine.beginNewMaxConsultation()
-      maxConsultationNotice = "New consultation started. Previous history is preserved."
+      maxConsultationNotice = String(
+        localized: "New consultation started. Previous history is preserved."
+      )
     } catch {
-      maxConsultationNotice = "Could not start a new consultation: \(error.localizedDescription)"
+      maxConsultationNotice = String(
+        localized: "Could not start a new consultation: \(error.userFacingMessage)",
+        comment: "The placeholder is a system error message"
+      )
     }
   }
 
@@ -1751,7 +1972,10 @@ final class SettingsViewModel: ObservableObject {
 
   func setFormattingLevel(_ level: String) {
     guard let policy = FormattingPolicyOption(storedValue: level) else {
-      lastError = "Unknown formatting policy: \(level)"
+      lastError = String(
+        localized: "Unknown formatting policy: \(level)",
+        comment: "The placeholder is a stored policy identifier"
+      )
       return
     }
     settings.formattingLevel = policy.rawValue
@@ -1859,7 +2083,11 @@ final class SettingsViewModel: ObservableObject {
         seconds: Self.calibrationCaptureSeconds)
       calibrationNotice = Self.calibrationSummary(report)
     } catch {
-      calibrationNotice = "Calibration refused: \(error)"
+      let failure = String(describing: error)
+      calibrationNotice = String(
+        localized: "Calibration refused: \(failure)",
+        comment: "The placeholder is a technical failure description"
+      )
     }
     await refreshAdmission()
   }
@@ -1870,8 +2098,13 @@ final class SettingsViewModel: ObservableObject {
     let peak = String(format: "%.1f", report.peakDbfs)
     let floor = String(format: "%.1f", report.existenceThresholdDbfs)
     let seconds = String(format: "%.1f", report.measuredSeconds)
-    return
-      "Calibrated \(report.deviceName): speech \(speech) dBFS, peak \(peak) dBFS over \(seconds) s → existence floor \(floor) dBFS"
+    let device = report.deviceName
+    return String(
+      localized:
+        "Calibrated \(device): speech \(speech) dBFS, peak \(peak) dBFS over \(seconds) s → existence floor \(floor) dBFS",
+      comment:
+        "First placeholder is a device name; the rest are pre-formatted numbers. dBFS is a unit"
+    )
   }
 
   func resetAudioInputDevice() {
@@ -1947,7 +2180,10 @@ final class SettingsViewModel: ObservableObject {
       } catch {
         self.voiceLabTeachPending = false
         let message = String(describing: error)
-        self.voiceLabTeachMessage = "Teach failed: \(message)"
+        self.voiceLabTeachMessage = String(
+          localized: "Teach failed: \(message)",
+          comment: "The placeholder is a technical failure description"
+        )
         self.lastError = message
       }
     }
@@ -1968,13 +2204,23 @@ final class SettingsViewModel: ObservableObject {
       do {
         let result = try await engine.teachDictionaryFromStoreAsync()
         self.voiceLabTeachPending = false
-        self.voiceLabTeachMessage =
-          "Taught +\(result.fromCorrections) from corrections, +\(result.fromProposed) from proposed → \(result.totalRules) live rules (\(result.rulesFromCorrectionSource) correction-sourced)."
+        let fromCorrections = Int(result.fromCorrections)
+        let fromProposed = Int(result.fromProposed)
+        let totalRules = Int(result.totalRules)
+        let correctionSourced = Int(result.rulesFromCorrectionSource)
+        self.voiceLabTeachMessage = String(
+          localized:
+            "Taught +\(fromCorrections) from corrections, +\(fromProposed) from proposed → \(totalRules) live rules (\(correctionSourced) correction-sourced).",
+          comment: "Counted teach summary; the live-rules count needs a plural variation"
+        )
         self.refreshVoiceLab()
       } catch {
         self.voiceLabTeachPending = false
         let message = String(describing: error)
-        self.voiceLabTeachMessage = "Teach failed: \(message)"
+        self.voiceLabTeachMessage = String(
+          localized: "Teach failed: \(message)",
+          comment: "The placeholder is a technical failure description"
+        )
         self.lastError = message
       }
     }
@@ -2007,13 +2253,19 @@ final class SettingsViewModel: ObservableObject {
   /// tells the truth about what the dictionary derived from the edit.
   static func voiceLabSaveNote(_ outcome: CsVoiceLabSaveResult) -> String {
     if let lexiconError = outcome.lexiconError {
-      return "Saved — dictionary learning failed: \(lexiconError)"
+      return String(
+        localized: "Saved — dictionary learning failed: \(lexiconError)",
+        comment: "The placeholder is a technical failure description"
+      )
     }
-    switch outcome.pairsLearned {
-    case 0: return "Saved; no dictionary rule derived"
-    case 1: return "Saved — 1 rule learned"
-    default: return "Saved — \(outcome.pairsLearned) rules learned"
+    if outcome.pairsLearned == 0 {
+      return String(localized: "Saved; no dictionary rule derived")
     }
+    let rules = Int(outcome.pairsLearned)
+    return String(
+      localized: "Saved — \(rules) rules learned",
+      comment: "Needs a plural variation: one rule learned / N rules learned"
+    )
   }
 
   var previewTimingConfiguration: PreviewTimingConfiguration {
@@ -2103,9 +2355,11 @@ final class SettingsViewModel: ObservableObject {
 
   var asrModeLabel: String {
     switch asrModeId {
-    case "local_power": return "Local power"
-    case "cloud": return "Cloud"
-    default: return "Apple only"
+    case "local_power":
+      return String(localized: "Local power", comment: "Dictation lane: local model weights")
+    case "cloud": return String(localized: "Cloud", comment: "Dictation lane: cloud refinement")
+    default:
+      return String(localized: "Apple only", comment: "Dictation lane: on-device Apple Speech")
     }
   }
 
@@ -2332,13 +2586,20 @@ final class SettingsViewModel: ObservableObject {
   /// Labels for the static Keychain accounts; custom rows render "API key" on their card.
   static func keyLabel(for account: String) -> String {
     switch account {
-    case "LLM_LIBRAXIS_API_KEY": return "Libraxis API key"
-    case "LLM_OPENAI_API_KEY": return "OpenAI API key"
-    case "LLM_XAI_API_KEY": return "xAI (Grok) API key"
-    case "LLM_ANTHROPIC_API_KEY": return "Anthropic API key"
-    case "STT_FILE_API_KEY": return "File transcription key"
-    case "STT_LIVE_API_KEY": return "Live transcript key"
-    case "GITHUB_TOKEN": return "GitHub token"
+    case "LLM_LIBRAXIS_API_KEY":
+      return String(localized: "Libraxis API key", comment: "Libraxis is a company name")
+    case "LLM_OPENAI_API_KEY":
+      return String(localized: "OpenAI API key", comment: "OpenAI is a company name")
+    case "LLM_XAI_API_KEY":
+      return String(localized: "xAI (Grok) API key", comment: "xAI and Grok are product names")
+    case "LLM_ANTHROPIC_API_KEY":
+      return String(localized: "Anthropic API key", comment: "Anthropic is a company name")
+    case "STT_FILE_API_KEY":
+      return String(localized: "File transcription key", comment: "Stored secret label")
+    case "STT_LIVE_API_KEY":
+      return String(localized: "Live transcript key", comment: "Stored secret label")
+    case "GITHUB_TOKEN":
+      return String(localized: "GitHub token", comment: "GitHub is a product name")
     default: return account
     }
   }
@@ -2388,10 +2649,23 @@ final class SettingsViewModel: ObservableObject {
       let lanes = removal.lanesReset.map { lane in
         LLMLane.allCases.first { $0.bridgeLane == lane }?.title ?? "\(lane)"
       }
-      laneResetNotice =
-        lanes.isEmpty
-        ? nil
-        : "\(lanes.joined(separator: " and ")) lane\(lanes.count == 1 ? "" : "s") reset to the default vendor — the custom provider was removed"
+      if lanes.isEmpty {
+        laneResetNotice = nil
+      } else {
+        let joined = lanes.formatted(.list(type: .and))
+        laneResetNotice =
+          lanes.count == 1
+          ? String(
+            localized:
+              "\(joined) lane reset to the default vendor — the custom provider was removed",
+            comment: "The placeholder is one lane name"
+          )
+          : String(
+            localized:
+              "\(joined) lanes reset to the default vendor — the custom provider was removed",
+            comment: "The placeholder is a localized list of lane names"
+          )
+      }
       refreshModelDiscoveries(providerIds: LLMLane.allCases.map { llmLane($0).providerId })
     } catch {
       lastError = String(describing: error)
@@ -2536,7 +2810,10 @@ final class SettingsViewModel: ObservableObject {
     case "xai-responses":
       settingKey = "LLM_XAI_OAUTH_CLIENT_ID"
     default:
-      lastError = "No OAuth client-id setting for provider \(providerId)"
+      lastError = String(
+        localized: "No OAuth client-id setting for provider \(providerId)",
+        comment: "The placeholder is a provider identifier"
+      )
       return
     }
     persist(settingKey, value.trimmingCharacters(in: .whitespacesAndNewlines))

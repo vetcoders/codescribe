@@ -18,7 +18,7 @@ struct AgentStatusSection: View {
       statusCard(rows: model.agentReadiness.rows)
         .padding(.top, CSSpace.control)
 
-      SettingsSectionLabel("Capability matrix")
+      SettingsSectionLabel(String(localized: "Capability matrix"))
         .padding(.top, CSSpace.section)
       Text("Native substrate vs enrichment providers (IntelliJ optional).")
         .font(CSFont.ui(11.5))
@@ -27,7 +27,7 @@ struct AgentStatusSection: View {
       capabilityMatrixCard
         .padding(.top, 8)
 
-      SettingsSectionLabel("MCP servers")
+      SettingsSectionLabel(String(localized: "MCP servers"))
         .padding(.top, CSSpace.section)
       Text(model.mcpStatus.configPathDisplay)
         .font(CSFont.mono(10, .medium))
@@ -43,7 +43,7 @@ struct AgentStatusSection: View {
       // readiness verdict above. Shown whole — the Capabilities tab has room.
       if !model.mcpServers.isEmpty {
         HStack(spacing: 10) {
-          SettingsSectionLabel("Per-server probe")
+          SettingsSectionLabel(String(localized: "Per-server probe"))
           Spacer(minLength: 0)
           Text("\(model.mcpServers.count) configured")
             .font(CSFont.mono(10, .medium))
@@ -64,17 +64,24 @@ struct AgentStatusSection: View {
   private var probeRows: [CsMcpStatusRow] {
     model.mcpServers.map { server in
       if model.mcpTestPending.contains(server.name) {
-        return CsMcpStatusRow(label: server.name, value: "testing…", tone: .warn)
+        return CsMcpStatusRow(
+          label: server.name, value: String(localized: "testing…"), tone: .warn)
       }
       guard let result = model.mcpTestResults[server.name] else {
-        return CsMcpStatusRow(label: server.name, value: "not tested", tone: .neutral)
+        return CsMcpStatusRow(
+          label: server.name, value: String(localized: "not tested"), tone: .neutral)
       }
       if result.ok {
-        var value = "ok — \(result.toolCount) tool(s)"
+        var value = String(localized: "ok — \(Int(result.toolCount)) tools")
         if !result.serverVersion.isEmpty { value += " · v\(result.serverVersion)" }
         return CsMcpStatusRow(label: server.name, value: value, tone: .good)
       }
-      return CsMcpStatusRow(label: server.name, value: "fail: \(result.error)", tone: .bad)
+      return CsMcpStatusRow(
+        label: server.name,
+        value: String(
+          localized: "fail: \(result.error)",
+          comment: "The placeholder is an error message composed by the MCP probe"),
+        tone: .bad)
     }
   }
 
@@ -82,7 +89,7 @@ struct AgentStatusSection: View {
 
   private var header: some View {
     HStack(spacing: 10) {
-      SettingsSectionLabel("Agent readiness")
+      SettingsSectionLabel(String(localized: "Agent readiness"))
       readinessPill
       Spacer(minLength: 0)
       Button {
@@ -136,7 +143,7 @@ struct AgentStatusSection: View {
         AgentStatusRow(
           row: CsMcpStatusRow(
             label: "matrix",
-            value: "no capability rows (refresh or start agent substrate)",
+            value: String(localized: "no capability rows (refresh or start agent substrate)"),
             tone: .neutral
           )
         )
@@ -231,12 +238,12 @@ private struct CapabilityMatrixRow: View {
           .foregroundStyle(Color.primary)
           .lineLimit(2)
         if !row.nativeTool.isEmpty {
-          Text("tool: \(row.nativeTool) · provider: \(row.provider)")
+          Text(verbatim: "tool: \(row.nativeTool) · provider: \(row.provider)")
             .font(CSFont.mono(10, .medium))
             .foregroundStyle(Color.secondary)
             .lineLimit(1)
         } else if !row.provider.isEmpty {
-          Text("provider: \(row.provider)")
+          Text(verbatim: "provider: \(row.provider)")
             .font(CSFont.mono(10, .medium))
             .foregroundStyle(Color.secondary)
             .lineLimit(1)
@@ -248,7 +255,7 @@ private struct CapabilityMatrixRow: View {
     .padding(.horizontal, 16)
     .padding(.vertical, 12)
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(row.op), \(row.tier)")
+    .accessibilityLabel(Text(verbatim: "\(row.op), \(row.tier)"))
     .accessibilityValue(row.reason)
   }
 

@@ -264,7 +264,10 @@ private struct ThreadRow: View {
         Button("Rename") {
           onBeginRename()
         }
-        Button(thread.isFavorite ? "Unfavorite" : "Favorite") {
+        Button(
+          thread.isFavorite
+            ? String(localized: "Unfavorite") : String(localized: "Favorite")
+        ) {
           onToggleFavorite()
         }
         Divider()
@@ -314,7 +317,10 @@ private struct ThreadRow: View {
           Button(action: onToggleFavorite) { favoriteLabel }
             .csFocusRing()
             .opacity(thread.isFavorite || isActive ? 1 : 0.38)
-            .help(thread.isFavorite ? "Unfavorite thread" : "Favorite thread")
+            .help(
+              thread.isFavorite
+                ? String(localized: "Unfavorite thread")
+                : String(localized: "Favorite thread"))
         }
       }
       HStack(spacing: 6) {
@@ -380,11 +386,12 @@ enum ThreadSection: CaseIterable, Hashable {
 
   var title: String {
     switch self {
-    case .today: "Today"
-    case .yesterday: "Yesterday"
-    case .thisWeek: "This week"
-    case .older: "Older"
-    case .maxConsultations: "Max consultations"
+    case .today: String(localized: "Today", comment: "Thread rail section")
+    case .yesterday: String(localized: "Yesterday", comment: "Thread rail section")
+    case .thisWeek: String(localized: "This week", comment: "Thread rail section")
+    case .older: String(localized: "Older", comment: "Thread rail section")
+    case .maxConsultations:
+      String(localized: "Max consultations", comment: "Thread rail section")
     }
   }
 
@@ -433,7 +440,9 @@ enum ThreadRailMeta {
     now: Date = Date(),
     calendar: Calendar = .current
   ) -> String {
-    guard let updatedAt else { return "Untitled thread" }
+    guard let updatedAt else {
+      return String(localized: "Untitled thread", comment: "Thread with no title")
+    }
     let relative = relativeTime(updatedAt, now: now, calendar: calendar)
     return relative.prefix(1).uppercased() + relative.dropFirst()
   }
@@ -487,7 +496,7 @@ enum ThreadRailMeta {
   private static func relativeTime(_ date: Date, now: Date, calendar: Calendar) -> String {
     switch ThreadSection.section(for: date, now: now, calendar: calendar) {
     case .yesterday:
-      return "yesterday"
+      return String(localized: "yesterday", comment: "Thread rail row: updated yesterday")
     case .today:
       return string(from: date, via: todayFormatter, calendar: calendar)
     case .thisWeek, .older, .maxConsultations:

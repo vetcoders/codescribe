@@ -83,7 +83,8 @@ final class RealThreadsEngine: BackgroundThreadListing {
   static func thread(from summary: CsThreadSummary) -> ChatThread {
     let updatedAt = Date(timeIntervalSince1970: Double(summary.updatedAtMs) / 1000.0)
     var thread = ChatThread(
-      title: summary.title.isEmpty ? "Untitled" : summary.title,
+      title: summary.title.isEmpty
+        ? String(localized: "Untitled", comment: "Thread that carries no title") : summary.title,
       meta: ThreadRailMeta.drawerSubtitle(
         model: summary.model,
         tokens: summary.totalTokens,
@@ -114,7 +115,9 @@ final class RealThreadsEngine: BackgroundThreadListing {
     var message = ChatMessage(
       role: .tool, timestamp: timeString(timestampMs: timestampMs), text: "")
     let n = lines.count
-    message.toolTitle = "What I checked · \(n) tool\(n == 1 ? "" : "s")"
+    message.toolTitle = String(
+      localized: "What I checked · \(n) tools",
+      comment: "Tool activity header: how many tool calls the model made")
     message.toolLines = lines
     return message
   }

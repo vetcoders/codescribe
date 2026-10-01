@@ -42,7 +42,7 @@ extension View {
 
 /// Accent "Save": dimmed until there is something to save.
 struct SettingsSaveButton: View {
-  var title: String = "Save"
+  var title: LocalizedStringKey = "Save"
   let enabled: Bool
   let action: () -> Void
 
@@ -94,7 +94,10 @@ struct SettingsChipButton<Label: View>: View {
 
 extension SettingsChipButton where Label == Text {
   /// Text-only chip.
-  init(_ title: String, tint: Color, enabled: Bool = true, action: @escaping () -> Void) {
+  init(
+    _ title: LocalizedStringKey, tint: Color, enabled: Bool = true,
+    action: @escaping () -> Void
+  ) {
     self.init(enabled: enabled, action: action) {
       Text(title)
         .font(CSFont.ui(11.5, .semibold))
@@ -115,7 +118,7 @@ struct SettingsUrlRow: View {
   let current: String
   let placeholder: String
   let help: String
-  var unsetLabel: String = "unset"
+  var unsetLabel: String = String(localized: "unset", comment: "Status chip: no value stored")
   let onSave: (String) -> Void
 
   @State private var draft: String = ""
@@ -136,9 +139,13 @@ struct SettingsUrlRow: View {
           .font(CSFont.mono(10, .medium))
           .foregroundStyle(Color.secondary)
         Spacer(minLength: 0)
-        Text(isSet ? "set" : unsetLabel)
-          .font(CSFont.mono(10, .semibold))
-          .foregroundStyle(isSet ? CSColor.oliveLight : Color.secondary)
+        Text(
+          isSet
+            ? String(localized: "set", comment: "Status chip: a value is stored")
+            : unsetLabel
+        )
+        .font(CSFont.mono(10, .semibold))
+        .foregroundStyle(isSet ? CSColor.oliveLight : Color.secondary)
       }
 
       HStack(spacing: 8) {
@@ -225,7 +232,8 @@ struct KeyRow: View {
             if probePending {
               ProgressView().controlSize(.small).scaleEffect(0.62).frame(width: 20, height: 14)
             } else {
-              Text("Test").font(CSFont.ui(12, .semibold))
+              Text("Test", comment: "Button label: run a connection test")
+                .font(CSFont.ui(12, .semibold))
             }
           }
           .frame(width: 26, height: 18)
@@ -286,14 +294,14 @@ struct KeyProbeChip: View {
   private var label: String {
     let verdict: String
     switch result.status {
-    case .ok: verdict = "Key OK"
-    case .invalid: verdict = "Invalid key"
-    case .noQuota: verdict = "No credits (check billing)"
-    case .network: verdict = "Network error"
-    case .missing: verdict = "Not set"
+    case .ok: verdict = String(localized: "Key OK")
+    case .invalid: verdict = String(localized: "Invalid key")
+    case .noQuota: verdict = String(localized: "No credits (check billing)")
+    case .network: verdict = String(localized: "Network error")
+    case .missing: verdict = String(localized: "Not set")
     // "Unsupported" read as "bad key" — it only means this provider ships no
     // cheap liveness probe. The key itself is stored and used normally.
-    case .unsupported: verdict = "Saved — no test for this key"
+    case .unsupported: verdict = String(localized: "Saved — no test for this key")
     }
     guard let endpoint = result.probedEndpoint,
       let host = URL(string: endpoint)?.host,
@@ -322,7 +330,9 @@ struct KeyProbeChip: View {
       .overlay(Capsule().strokeBorder(tint.opacity(0.24), lineWidth: 1))
       .help(
         result.probedEndpoint.map {
-          "\(result.message)\nEndpoint: \($0)"
+          String(
+            localized: "\(result.message)\nEndpoint: \($0)",
+            comment: "Tooltip: probe message, then the endpoint that was probed")
         } ?? result.message
       )
   }
@@ -361,7 +371,7 @@ struct AccountLoginRow: View {
     VStack(alignment: .leading, spacing: 8) {
       HStack(spacing: 10) {
         Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
-        Text("\(accountBrand) account")
+        Text("\(accountBrand) account", comment: "The placeholder is a vendor brand, e.g. ChatGPT")
           .font(CSFont.ui(12.5, .semibold))
           .foregroundStyle(Color.primary)
         // "signed in as <email>" / "not signed in" / "awaiting app registration".
@@ -419,7 +429,8 @@ struct AccountLoginRow: View {
         .popover(isPresented: $editingClientId, arrowEdge: .bottom) {
           OAuthClientIdEditor(
             accountBrand: accountBrand,
-            placeholder: provider.oauthClientId ?? "Override OAuth client id…",
+            placeholder: provider.oauthClientId
+              ?? String(localized: "Override OAuth client id…"),
             savedClientId: provider.oauthClientId ?? "",
             draft: $clientIdDraft,
             onSave: saveClientId

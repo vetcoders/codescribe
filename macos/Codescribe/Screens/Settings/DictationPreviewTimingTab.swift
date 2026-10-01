@@ -11,7 +11,7 @@ struct DictationPreviewTimingTab: View {
     VStack(alignment: .leading, spacing: 10) {
       Picker("Preview timing preset", selection: $model.previewPresetPicker) {
         ForEach(PreviewTimingPreset.allCases) { preset in
-          Text(preset.rawValue).tag(preset)
+          Text(preset.displayName).tag(preset)
         }
       }
       .pickerStyle(.segmented)
@@ -62,7 +62,7 @@ struct DictationPreviewTimingTab: View {
 
   private func previewSummary(_ values: PreviewTimingValues) -> String {
     guard model.previewTimingConfiguration.overlayEnabled else {
-      return "Preview off · committed transcripts are unchanged"
+      return String(localized: "Preview off · committed transcripts are unchanged")
     }
     return "\(values.bufferDelayMs) ms · \(values.typingCps.formatted(Self.oneDecimal)) cps · "
       + "\(values.emitWordsMax) words · \(values.interimSeconds.formatted(Self.oneDecimal)) s interim"
@@ -70,4 +70,17 @@ struct DictationPreviewTimingTab: View {
 
   private static let oneDecimal = FloatingPointFormatStyle<Float>.number
     .precision(.fractionLength(1))
+}
+
+extension PreviewTimingPreset {
+  /// Display name for the preset picker; `rawValue` stays the persisted identity.
+  var displayName: String {
+    switch self {
+    case .smooth: String(localized: "Smooth")
+    case .snappy: String(localized: "Snappy")
+    case .relaxed: String(localized: "Relaxed")
+    case .off: String(localized: "Off")
+    case .custom: String(localized: "Custom")
+    }
+  }
 }

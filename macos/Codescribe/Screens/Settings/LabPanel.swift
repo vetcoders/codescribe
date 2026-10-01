@@ -8,10 +8,12 @@ struct LabPanel: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
       SettingsPageHeader(
-        "Voice Lab",
+        String(localized: "Voice Lab"),
         blurb: labMode
-          ? "Lab mode is on. Overlay follows the tray toggle — Lab does not steal it."
-          : "Open the loopback Voice Lab. Production builds never show this panel."
+          ? String(
+            localized: "Lab mode is on. Overlay follows the tray toggle — Lab does not steal it.")
+          : String(
+            localized: "Open the loopback Voice Lab. Production builds never show this panel.")
       )
 
       Toggle("Lab mode", isOn: $labMode)

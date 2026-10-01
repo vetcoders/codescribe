@@ -204,7 +204,7 @@ struct LiveTranscriptTextView: NSViewRepresentable {
       height: CGFloat.greatestFiniteMagnitude
     )
     textView.setAccessibilityIdentifier("overlay-transcript-live")
-    textView.setAccessibilityLabel("Live transcript")
+    textView.setAccessibilityLabel(String(localized: "Live transcript"))
     return textView
   }
 
@@ -328,14 +328,22 @@ struct LiveTranscriptTextView: NSViewRepresentable {
         .foregroundColor: palette.lexiconMarker.nsColor,
         .underlineStyle: NSUnderlineStyle.single.rawValue,
         .underlineColor: palette.lexiconMarker.nsColor,
-        .accessibilityCustomText: ["rewritten by your dictionary"],
+        .accessibilityCustomText: [
+          String(
+            localized: "rewritten by your dictionary",
+            comment: "VoiceOver marker spoken on a word the user's dictionary replaced")
+        ],
       ]
     }
     return [
       .foregroundColor: palette.uncertainWord.nsColor,
       .underlineStyle: NSUnderlineStyle([.single, .patternDot]).rawValue,
       .underlineColor: palette.uncertainWord.nsColor,
-      .accessibilityCustomText: ["uncertain"],
+      .accessibilityCustomText: [
+        String(
+          localized: "uncertain",
+          comment: "VoiceOver marker spoken on a word the engine was unsure of")
+      ],
     ]
   }
 
@@ -492,9 +500,10 @@ struct LiveTranscriptTextView: NSViewRepresentable {
         let textView = notification.object as? NSTextView
       else { return }
       let scrollView = textView.enclosingScrollView
-      let viewportAtLiveEdge = scrollView.flatMap { scrollView in
-        scrollView.documentView.map { isAtLiveEdge(documentView: $0, in: scrollView) }
-      } ?? false
+      let viewportAtLiveEdge =
+        scrollView.flatMap { scrollView in
+          scrollView.documentView.map { isAtLiveEdge(documentView: $0, in: scrollView) }
+        } ?? false
       scrollFollowState.selectionChanged(
         textView.selectedRange(),
         textLength: (textView.string as NSString).length,
@@ -517,8 +526,9 @@ struct LiveTranscriptTextView: NSViewRepresentable {
       characterIndex: Int,
       in textView: LiveTranscriptNativeTextView
     ) {
-      guard let word = OverlayUncertainWordProjection.hit(
-        at: characterIndex, in: uncertainWords)
+      guard
+        let word = OverlayUncertainWordProjection.hit(
+          at: characterIndex, in: uncertainWords)
       else {
         uncertainWordPopover.dismiss()
         return

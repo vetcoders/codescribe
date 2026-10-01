@@ -3,6 +3,10 @@ options:
   bundleIdPrefix: com.vetcoders
   deploymentTarget:
     macOS: "14.0"
+  # Localization: English is the source/development language. Every other
+  # language lives only as a column in the String Catalogs under
+  # Codescribe/Resources/Localization — see docs/LOCALIZATION.md.
+  developmentLanguage: en
 packages:
   # HighlightSwift — MIT, highlight.js via JavaScriptCore. Powers syntax
   # highlighting of finalized agent-chat code blocks. Returns AttributedString
@@ -82,6 +86,11 @@ targets:
         # release pipeline overrides this via scripts/build-app.sh.
         SPARKLE_ED_PUBLIC_KEY: ""
         CS_DEVELOPER_SURFACE: "0"
+        # String Catalog extraction: the Swift compiler emits one .stringsdata
+        # per source file; `make l10n-sync` folds them into Localizable.xcstrings
+        # (CLI builds never update the catalog on their own).
+        SWIFT_EMIT_LOC_STRINGS: YES
+        LOCALIZATION_PREFERS_STRING_CATALOGS: YES
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "Codescribe Dev"
         ENABLE_HARDENED_RUNTIME: NO
@@ -136,5 +145,8 @@ schemes:
       targets:
         Codescribe: all
     test:
+      # Interface copy is asserted in English; pin the test host's language so
+      # the suite reads the same on any machine and after languages are added.
+      language: en
       targets:
         - CodescribeTests

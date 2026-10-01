@@ -10,11 +10,12 @@ struct AgentLanesTab: View {
     VStack(alignment: .leading, spacing: 0) {
       LLMLanesSection(model: model)
 
-      SettingsSectionLabel("Transcript delivery")
+      SettingsSectionLabel(String(localized: "Transcript delivery"))
         .padding(.top, CSSpace.section)
       SettingsControlRow(
-        title: "Auto-send to Agent",
-        subtitle: "Send an untouched transcript 5 seconds after the take ends."
+        title: String(localized: "Auto-send to Agent"),
+        subtitle: String(
+          localized: "Send an untouched transcript 5 seconds after the take ends.")
       ) {
         Toggle(
           "",
@@ -28,12 +29,12 @@ struct AgentLanesTab: View {
         .tint(CSColor.chromeAccent)
       }
 
-      SettingsSectionLabel("Resolved runtime truth")
+      SettingsSectionLabel(String(localized: "Resolved runtime truth"))
         .padding(.top, CSSpace.section)
 
       VStack(spacing: 0) {
         RuntimeRow(
-          key: "AI formatting",
+          key: String(localized: "AI formatting"),
           value: model.formattingDescription,
           tint: true,
           trailing: .none
@@ -42,14 +43,14 @@ struct AgentLanesTab: View {
           let laneModel = model.llmLane(lane)
           divider
           RuntimeRow(
-            key: "\(lane.title) provider",
+            key: String(localized: "\(lane.title) provider"),
             value: laneModel.providerDisplayName,
             tint: false,
             trailing: .dot(laneModel.availabilityTint)
           )
           divider
           RuntimeRow(
-            key: "\(lane.title) endpoint",
+            key: String(localized: "\(lane.title) endpoint"),
             value: laneModel.resolvedEndpoint,
             tint: false,
             mono: true,
@@ -57,7 +58,7 @@ struct AgentLanesTab: View {
           )
           divider
           RuntimeRow(
-            key: "\(lane.title) model",
+            key: String(localized: "\(lane.title) model"),
             value: laneModel.resolvedModel,
             tint: true,
             mono: true,

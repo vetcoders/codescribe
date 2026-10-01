@@ -18,7 +18,7 @@ struct DictationHandsFreeTab: View {
           .foregroundStyle(Color.secondary)
         }
         Spacer(minLength: 12)
-        Text("\(model.settings.toggleSilenceSec, format: Self.oneDecimal) s")
+        Text(verbatim: "\(model.settings.toggleSilenceSec.formatted(Self.oneDecimal)) s")
           .font(CSFont.mono(11, .semibold))
           .foregroundStyle(Color.primary)
       }
@@ -40,9 +40,12 @@ struct DictationHandsFreeTab: View {
           .foregroundStyle(Color.secondary)
         }
         Spacer(minLength: 12)
-        Text("\(model.settings.whisperContextWindowSec, format: Self.oneDecimal) s")
-          .font(CSFont.mono(11, .semibold))
-          .foregroundStyle(Color.primary)
+        Text(
+          verbatim:
+            "\(model.settings.whisperContextWindowSec.formatted(Self.oneDecimal)) s"
+        )
+        .font(CSFont.mono(11, .semibold))
+        .foregroundStyle(Color.primary)
       }
       Slider(value: $model.whisperContextWindowSlider, in: 0.5...10, step: 0.5)
         .tint(CSColor.chromeAccent)
@@ -60,9 +63,12 @@ struct DictationHandsFreeTab: View {
             .foregroundStyle(Color.secondary)
         }
         Spacer(minLength: 12)
-        Text("\(model.settings.lightPlusSentencePauseSec, format: Self.oneDecimal) s")
-          .font(CSFont.mono(11, .semibold))
-          .foregroundStyle(Color.primary)
+        Text(
+          verbatim:
+            "\(model.settings.lightPlusSentencePauseSec.formatted(Self.oneDecimal)) s"
+        )
+        .font(CSFont.mono(11, .semibold))
+        .foregroundStyle(Color.primary)
       }
       Slider(value: $model.lightPlusSentencePauseSlider, in: 0.3...2.0, step: 0.1)
         .tint(CSColor.chromeAccent)

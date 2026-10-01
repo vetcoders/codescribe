@@ -27,9 +27,15 @@ enum PermissionState: Equatable {
   /// Short mono label shown on the right of a permission row.
   var label: String {
     switch self {
-    case .granted: return "granted"
-    case .denied: return "denied"
-    case .notDetermined: return "not determined"
+    case .granted:
+      return String(localized: "granted", comment: "Permission row status, lower case")
+    case .denied:
+      return String(localized: "denied", comment: "Permission row status, lower case")
+    case .notDetermined:
+      return String(
+        localized: "not determined",
+        comment: "Permission row status, lower case: the user has not decided yet"
+      )
     }
   }
 }
@@ -50,6 +56,19 @@ enum PermissionKind: String, CaseIterable, Identifiable {
   case fullDiskAccess = "Full Disk Access"
 
   var id: String { rawValue }
+
+  /// Display name for the privacy scope. The identity (`rawValue`) is the
+  /// System Settings pane name and must never reach the screen directly.
+  var displayName: String {
+    switch self {
+    case .microphone: String(localized: "Microphone")
+    case .accessibility: String(localized: "Accessibility")
+    case .inputMonitoring: String(localized: "Input Monitoring")
+    case .screenRecording: String(localized: "Screen Recording")
+    case .speechRecognition: String(localized: "Speech Recognition")
+    case .fullDiskAccess: String(localized: "Full Disk Access")
+    }
+  }
 
   /// Deep-link into the matching System Settings privacy pane.
   var settingsURL: URL? {

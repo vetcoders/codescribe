@@ -98,8 +98,12 @@ final class TrayViewModel: ObservableObject {
 
   /// Olive "Idle" when stopped, terracotta "Recording" when live.
   var statusText: String {
-    if isStartingDictation { return "Starting" }
-    return isRecording ? "Recording" : "Idle"
+    if isStartingDictation {
+      return String(localized: "Starting", comment: "Tray status: a recording start is in flight")
+    }
+    return isRecording
+      ? String(localized: "Recording", comment: "Tray status: a recording is live")
+      : String(localized: "Idle", comment: "Tray status: ready, not recording")
   }
 
   /// Pull prompt-free runtime flags from the engine (call on appear).
@@ -276,7 +280,7 @@ final class TrayViewModel: ObservableObject {
     guard let text = engine?.transcriptText(forPath: path) else { return }
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(text, forType: .string)
-    showCopyStatus("Copied")
+    showCopyStatus(String(localized: "Copied", comment: "Tray banner: the transcript was copied"))
   }
 
   /// Reveal the folder holding the most recent transcript in Finder.
@@ -291,7 +295,7 @@ final class TrayViewModel: ObservableObject {
     guard let text = engine?.latestTranscriptText() else { return }
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(text, forType: .string)
-    showCopyStatus("Copied")
+    showCopyStatus(String(localized: "Copied", comment: "Tray banner: the transcript was copied"))
   }
 
   /// Flash a transient "Copied" banner beside the copy actions, then auto-clear

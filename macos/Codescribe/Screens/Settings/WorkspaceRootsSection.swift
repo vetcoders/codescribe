@@ -8,6 +8,9 @@ import SwiftUI
 struct WorkspaceRootsSection: View {
   @ObservedObject var model: SettingsViewModel
 
+  /// Sample path, not copy: it must read the same in every language.
+  private static let rootPlaceholder = "/path/to/checkouts"
+
   @State private var rows: [String] = []
   @State private var loaded = false
   @FocusState private var focusedRoot: Int?
@@ -18,7 +21,7 @@ struct WorkspaceRootsSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      SettingsSectionLabel("Agent workspace roots")
+      SettingsSectionLabel(String(localized: "Agent workspace roots"))
 
       Text(
         "Directories the assistant scans for git checkouts to resolve a project name to a path (list_projects). Recursive, a few levels deep; build and hidden folders are skipped."
@@ -71,7 +74,7 @@ struct WorkspaceRootsSection: View {
     HStack(spacing: 10) {
       existsDot(for: rows[index])
       TextField(
-        "/path/to/checkouts",
+        Self.rootPlaceholder,
         text: Binding(
           get: { index < rows.count ? rows[index] : "" },
           set: { if index < rows.count { rows[index] = $0 } }
