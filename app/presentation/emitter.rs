@@ -662,6 +662,7 @@ impl TranscriptReducer {
     }
 
     fn revision_for_action(&mut self, action: ReducerAction) -> TranscriptRevision {
+        let revision_before = self.revision;
         self.revision = self.revision.saturating_add(1);
         let mut entries = self
             .document_by_occurrence
@@ -691,6 +692,33 @@ impl TranscriptReducer {
             publication_digest: [0; 32],
         };
         snapshot.publication_digest = snapshot.digest();
+        if let Some(first) = snapshot.entries.first() {
+            let (action, receipts) = match &snapshot.action {
+                ReducerAction::ApplyLedgerDecision { entry } => (
+                    "ledger",
+                    entry
+                        .layer_decision_receipts
+                        .last()
+                        .cloned()
+                        .into_iter()
+                        .collect(),
+                ),
+                ReducerAction::ApplyUserRevision { .. } => ("document_revision", Vec::new()),
+                ReducerAction::ApplyConsultationPresentation { .. } => ("consultation", Vec::new()),
+                ReducerAction::ApplyManualEdit { .. } => ("manual_edit", Vec::new()),
+                ReducerAction::ApplyIncrementalShaping { .. } => ("light_plus", Vec::new()),
+                ReducerAction::RecordLedgerSeal { .. } => ("seal", Vec::new()),
+                ReducerAction::RecordSealCoverage { .. } => ("coverage", Vec::new()),
+                ReducerAction::RecordContextMarker { .. } => ("context", Vec::new()),
+            };
+            codescribe_core::pipeline::trail::record_projection(
+                &first.occurrence,
+                revision_before,
+                self.revision,
+                action,
+                receipts,
+            );
+        }
         snapshot
     }
 
@@ -9216,5 +9244,185 @@ mod tests {
         assert!(slots.iter().any(|slot| slot.confidence.is_some_and(
             |confidence| confidence.source == WordConfidenceSource::AppleSegmentConfidence
         )));
+    }
+    #[test]
+    #[ignore = "W-0 falsifier: closes in L2/L4"]
+    fn w0_falsifier_live_formatter_cannot_drop_a_word() {
+        let (mut ledger, mut reducer, occurrence) = open_formatter_frontier();
+        let whisper =
+            ObservationIdentity::new(ObservationProducer::Whisper, 2, 1, occurrence.clone());
+        let receipt = ledger.admit(&whisper, "Iwo plan");
+        reducer.apply_ledger_mutation(&ledger, &whisper, &receipt);
+        assert_eq!(reducer.committed_rendered_text(), "Iwo plan");
+        let proposal = OccurrenceLabelProposal::for_existing_occurrence(
+            occurrence.session.clone(),
+            occurrence.capture_epoch,
+            occurrence.sample_start,
+            occurrence.sample_end,
+            "Iwo",
+            LabelProposalDisposition::Propose,
+        );
+        reducer.apply_occurrence_label_proposal(&mut ledger, &proposal);
+        assert!(
+            reducer.committed_rendered_text().contains("plan"),
+            "live formatter removed a word"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "W-0 falsifier: closes in L4"]
+    async fn w0_falsifier_smart_cannot_replace_raw_projection() {
+        let mut take = live_take("w0-smart-raw");
+        let occurrence = OccurrenceIdentity::new("w0-smart-raw", 19, 0, 16_000);
+        take.admit(&occurrence, 1, "Iwo plan");
+        take.seal(&occurrence);
+        take.emitter.on_event(&EngineEvent::SessionFinalised {
+            session_id: occurrence.session.clone(),
+            layer_summary: LayerSummary::default(),
+        });
+        let source = take.emitter.terminal_formatter_request().unwrap();
+        let before = take
+            .ledger
+            .lock()
+            .unwrap()
+            .slots_of(&occurrence)
+            .unwrap()
+            .to_vec();
+        take.emitter
+            .apply_formatter_revision(
+                source.session_id,
+                source.source_revision,
+                AiFormatResult {
+                    text: "Smart result".into(),
+                    reasoning_text: None,
+                    status: AiFormatStatus::Applied,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            take.ledger.lock().unwrap().slots_of(&occurrence).unwrap(),
+            before
+        );
+        assert_eq!(
+            take.emitter
+                .session_state
+                .lock()
+                .unwrap()
+                .committed_rendered_text(),
+            source.source_text,
+            "Smart changed the common Raw projection despite unchanged slots"
+        );
+        take.emitter.finish().await;
+    }
+    #[test]
+    fn w0_saved_decisions_replay_through_production_ledger_and_reducer() {
+        use codescribe_core::pipeline::trail::{
+            TrailAdmission, TrailDecision, TrailEvent, TrailRecord,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let mut ledger = AcousticLedger::new();
+        let mut original = TranscriptReducer::default();
+        let mut rows = Vec::new();
+        let wrap = |event| TrailRecord {
+            schema: "codescribe.decision-trail.v1".into(),
+            session: "w0-replay-iwo".into(),
+            capture_epoch: 7,
+            observed_ns: 0,
+            event,
+        };
+        rows.push(wrap(TrailEvent::Start {
+            sample_clock: "capture_samples".into(),
+        }));
+        for index in 0..5 {
+            let occurrence =
+                OccurrenceIdentity::new("w0-replay-iwo", 7, index * 4000, index * 4000 + 3000);
+            let calibration = EnergyCalibration::new("w0-replay", 1.0, 1);
+            let evidence = AcousticEvidence {
+                occurrence: occurrence.clone(),
+                duration_ms: 187.5,
+                energy_integral: 10.0,
+                mean_rms_dbfs: -12.0,
+                peak_dbfs: -3.0,
+                vad_open_sample: Some(occurrence.sample_start),
+                vad_close_sample: Some(occurrence.sample_end),
+                evidence_calibration_version: calibration.version.clone(),
+            };
+            assert!(ledger.qualify(&evidence, &calibration).is_qualified());
+            rows.push(wrap(TrailEvent::Qualification {
+                evidence,
+                calibration,
+            }));
+            let observation =
+                ObservationIdentity::new(ObservationProducer::Apple, index, 0, occurrence.clone());
+            let verdict = ledger.admit(&observation, "Iwo");
+            original.apply_ledger_mutation(&ledger, &observation, &verdict);
+            let receipt = ledger.layer_trail().last().unwrap();
+            rows.push(wrap(TrailEvent::Decision {
+                decision: Box::new(TrailDecision {
+                    ordinal: receipt.ordinal,
+                    receipt_id: receipt.receipt_id.clone(),
+                    producer: "apple".into(),
+                    layer: "apple".into(),
+                    observation,
+                    candidate_label: "Iwo".into(),
+                    candidate_tokens: vec!["Iwo".into()],
+                    verdict,
+                    predecessor_ordinal: None,
+                    input: Some(TrailAdmission {
+                        source_slots: vec![],
+                        offered_slots: None,
+                        slot_revision: false,
+                        capture_rate_hz: None,
+                    }),
+                    result_slots: ledger.slots_of(&occurrence).unwrap().to_vec(),
+                    revision_before: None,
+                    revision_after: None,
+                    scheduled_ns: None,
+                    returned_ns: None,
+                    transferred_ns: None,
+                }),
+            }));
+        }
+        rows.push(wrap(TrailEvent::End {
+            dropped_records: 0,
+            persistence_complete: true,
+            evidence_complete: false,
+        }));
+        let path = dir.path().join("synthetic.trail.jsonl");
+        let bytes = rows
+            .iter()
+            .map(|row| serde_json::to_string(row).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&path, bytes).unwrap();
+        let saved = codescribe_core::pipeline::trail::read_trail(&path).unwrap();
+        let mut replayed = TranscriptReducer::default();
+        let replay_ledger = codescribe_core::pipeline::trail::replay_decisions(
+            &saved,
+            |ledger, observation, receipt| {
+                replayed.apply_ledger_mutation(ledger, observation, receipt);
+            },
+        )
+        .unwrap();
+        assert_eq!(replay_ledger.len(), 5);
+        assert_eq!(replayed.document_by_occurrence.len(), 5);
+        assert_eq!(
+            replayed.committed_rendered_text(),
+            original.committed_rendered_text()
+        );
+        assert_eq!(
+            replayed
+                .committed_rendered_text()
+                .split_whitespace()
+                .count(),
+            5
+        );
+        assert_eq!(
+            codescribe_core::pipeline::trail::render_trace(&saved, Some("Iwo"))
+                .lines()
+                .filter(|line| line.contains(" introduced:"))
+                .count(),
+            5
+        );
     }
 }

@@ -529,4 +529,13 @@ mod tests {
         // Light+ gate mints nothing on top of it.
         assert_eq!(apply(&document), document);
     }
+    #[test]
+    #[ignore = "W-0 falsifier: closes in L2"]
+    fn w0_falsifier_light_plus_preserves_yyy_in_raw() {
+        let shaped = apply("Iwo yyy wraca");
+        assert!(
+            shaped.split_whitespace().any(|word| word == "yyy"),
+            "Raw lost its hesitation"
+        );
+    }
 }
