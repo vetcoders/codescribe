@@ -10,6 +10,7 @@
 use std::{collections::BTreeMap, io::Write as _, sync::Arc};
 
 use codescribe_core::agent::consultation::ConsultationGroupAnswer;
+use codescribe_core::config::FormattingPolicy;
 use codescribe_core::llm::ai_formatting::{AiFormatResult, AiFormatStatus};
 use codescribe_core::llm::inline_format::{LabelProposalDisposition, OccurrenceLabelProposal};
 use codescribe_core::pipeline::acoustic_ledger::{
@@ -390,6 +391,44 @@ pub struct UserRevisionCommit {
     pub provenance_receipt: String,
 }
 
+/// A reducer-owned version derived from Raw. Its counter is independent from
+/// the Raw document revision, and it never grants acoustic mutation authority.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct DerivedTranscriptProjection {
+    pub schema: String,
+    pub session_id: String,
+    pub revision: u64,
+    pub source_raw_revision: u64,
+    pub source_raw_text: String,
+    pub source_state: String,
+    pub requested_mode: String,
+    pub delivered_mode: String,
+    pub rendered_text: String,
+    pub status: String,
+    pub receipt_id: String,
+    pub source_pcm: Option<(u64, u64, u64)>,
+    pub source_observation_id: Option<(String, u64, u64)>,
+    #[serde(skip)]
+    source_observation: Option<ObservationIdentity>,
+    #[serde(skip)]
+    publication_digest: [u8; 32],
+}
+
+impl DerivedTranscriptProjection {
+    fn digest(&self) -> [u8; 32] {
+        let mut digest = Sha256::new();
+        digest.update(
+            serde_json::to_vec(self).expect("derived receipt contains only serializable values"),
+        );
+        digest.update(format!("{:?}", self.source_observation).as_bytes());
+        digest.finalize().into()
+    }
+
+    pub(crate) fn authenticates_publication(&self) -> bool {
+        self.publication_digest == self.digest()
+    }
+}
+
 /// Typed refusal reasons for a stale or unauthenticated revision request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UserRevisionRefusal {
@@ -562,6 +601,10 @@ pub struct MissingVisibleWord {
 /// contributes to paint and stop delivery without entering the Transcript Bus.
 #[derive(Debug, Default)]
 pub struct TranscriptReducer {
+    derived_projections: Vec<DerivedTranscriptProjection>,
+    delivery_selection: Option<DerivedTranscriptProjection>,
+    raw_revision_by_observation: std::collections::HashMap<ObservationIdentity, u64>,
+    raw_human_revision: bool,
     /// Canonical document ordered by the PCM-backed occurrence key. W2 alone
     /// connects authenticated ledger actions and emits revisions from it.
     document_by_occurrence: BTreeMap<OccurrenceIdentity, TranscriptDocumentEntry>,
@@ -649,6 +692,75 @@ fn append_exact_fragment(rendered: &mut String, fragment: &str) {
 }
 
 impl TranscriptReducer {
+    fn mint_derived_projection(
+        &mut self,
+        session_id: String,
+        source_raw_revision: u64,
+        source_raw_text: String,
+        policy: FormattingPolicy,
+        result: AiFormatResult,
+        source_observation: Option<ObservationIdentity>,
+    ) -> DerivedTranscriptProjection {
+        let mut status = if result.status == AiFormatStatus::Applied {
+            "applied"
+        } else {
+            "unavailable"
+        };
+        let mut delivered = policy;
+        let mut text = result.text;
+        if policy == FormattingPolicy::Correction
+            && !codescribe_core::ai_formatting::corrections_word_receipt(&source_raw_text, &text)
+                .preserves_words()
+        {
+            status = "corrections_words_rejected";
+            text = codescribe_core::ai_formatting::corrections_floor(&source_raw_text);
+        } else if result.status != AiFormatStatus::Applied {
+            text = codescribe_core::ai_formatting::corrections_floor(&source_raw_text);
+            delivered = FormattingPolicy::Correction;
+        }
+        let revision = self.derived_projections.len() as u64 + 1;
+        let mut projection = DerivedTranscriptProjection {
+            schema: "codescribe.derived-transcript.v1".into(),
+            session_id: session_id.clone(),
+            revision,
+            source_raw_revision,
+            source_raw_text,
+            source_state: if source_observation.is_some() {
+                "admitted_occurrence"
+            } else {
+                "raw_document"
+            }
+            .into(),
+            requested_mode: policy.as_str().into(),
+            delivered_mode: delivered.as_str().into(),
+            rendered_text: text,
+            status: status.into(),
+            receipt_id: format!("formatter-derived-{session_id}-{source_raw_revision}-{revision}"),
+            source_pcm: source_observation.as_ref().map(|source| {
+                (
+                    source.occurrence.capture_epoch,
+                    source.occurrence.sample_start,
+                    source.occurrence.sample_end,
+                )
+            }),
+            source_observation_id: source_observation.as_ref().map(|source| {
+                (
+                    source.producer.as_str().into(),
+                    source.request,
+                    source.generation,
+                )
+            }),
+            source_observation,
+            publication_digest: [0; 32],
+        };
+        projection.publication_digest = projection.digest();
+        self.derived_projections.push(projection.clone());
+        projection
+    }
+
+    pub fn derived_projections(&self) -> &[DerivedTranscriptProjection] {
+        &self.derived_projections
+    }
     fn encode_serial(serial: &AcousticSerial) -> String {
         format!(
             "v{}:{}:{}:{}:{}:{}",
@@ -1170,7 +1282,10 @@ impl TranscriptReducer {
             ReducerAction::ApplyLedgerDecision { entry }
         };
         self.applied_observations.push(observation.clone());
-        Some(self.revision_for_action(action))
+        let revision = self.revision_for_action(action);
+        self.raw_revision_by_observation
+            .insert(observation.clone(), revision.revision);
+        Some(revision)
     }
 
     /// Project ledger-owned finality; the reducer does not decide whether the
@@ -1254,6 +1369,7 @@ impl TranscriptReducer {
                 intent.provenance,
             )
             .map_err(UserRevisionRefusal::LedgerRefusal)?;
+        self.raw_human_revision |= intent.provenance != DocumentRevisionProvenance::LightPlus;
         self.manual_rendered_text = Some(intent.rendered_text.clone());
         self.consultation_presentations.clear();
         self.shaped_by_occurrence.clear();
@@ -1572,12 +1688,10 @@ impl TranscriptReducer {
         })
     }
 
-    /// The sole automatic author may relabel only an occurrence the ledger
-    /// already holds. The producer must have launched and scheduled its
-    /// exact occurrence before this return arrives; the reducer never turns an
-    /// unsolicited proposal into its own authority. Only the ledger receipt
-    /// reaches the document. The boolean is true only when this call returned
-    /// that exact open Formatter slot; the event handler may seal only then.
+    /// Return the exact scheduled Formatter frontier and retain a source-bound
+    /// derived version. This corridor never admits a Formatter word observation,
+    /// changes Raw revision or relabels a ledger slot. Stale output stays refused
+    /// in derived history; only the existing acoustic frontier may issue a seal.
     pub fn apply_occurrence_label_proposal(
         &mut self,
         ledger: &mut AcousticLedger,
@@ -1603,28 +1717,57 @@ impl TranscriptReducer {
         if !formatter_is_open {
             return (false, None);
         }
-        if proposal.disposition != LabelProposalDisposition::Propose {
-            let _ = ledger.note_frontier_return(&occurrence, ObservationProducer::Formatter);
-            return (true, None);
-        }
         let candidate_label = proposal.proposed_label.trim();
-        if candidate_label.is_empty() {
-            let _ = ledger.note_frontier_return(&occurrence, ObservationProducer::Formatter);
-            return (true, None);
+        let source_current = proposal.source_observation.as_ref().is_some_and(|source| {
+            source.occurrence == occurrence
+                && ledger
+                    .layer_trail_for(&occurrence)
+                    .filter(|decision| decision.decision.grants_mutation())
+                    .last()
+                    .is_some_and(|decision| decision.observation == *source)
+                && ledger.text_of(&occurrence) == Some(proposal.source_text.as_str())
+                && self
+                    .document_by_occurrence
+                    .get(&occurrence)
+                    .is_some_and(|entry| entry.label == proposal.source_text)
+        });
+        if proposal.source_observation.is_some() {
+            let source_revision = proposal
+                .source_observation
+                .as_ref()
+                .and_then(|source| self.raw_revision_by_observation.get(source))
+                .copied()
+                .unwrap_or(0);
+            let applied = proposal.disposition == LabelProposalDisposition::Propose
+                && !candidate_label.is_empty();
+            let projection = self.mint_derived_projection(
+                proposal.session.clone(),
+                source_revision,
+                proposal.source_text.clone(),
+                proposal.policy,
+                AiFormatResult {
+                    text: candidate_label.into(),
+                    reasoning_text: None,
+                    status: if applied {
+                        AiFormatStatus::Applied
+                    } else {
+                        AiFormatStatus::Failed
+                    },
+                },
+                proposal.source_observation.clone(),
+            );
+            if !source_current {
+                let mut rejected = projection;
+                rejected.status = "stale_source".into();
+                rejected.publication_digest = rejected.digest();
+                *self
+                    .derived_projections
+                    .last_mut()
+                    .expect("minted derived projection") = rejected;
+            }
         }
-        let observation = ObservationIdentity::new(
-            ObservationProducer::Formatter,
-            self.revision.saturating_add(1),
-            self.revision.saturating_add(1),
-            occurrence,
-        );
-        let receipt = ledger.admit(&observation, candidate_label);
-        let _ =
-            ledger.note_frontier_return(&observation.occurrence, ObservationProducer::Formatter);
-        (
-            true,
-            self.apply_ledger_mutation(ledger, &observation, &receipt),
-        )
+        let _ = ledger.note_frontier_return(&occurrence, ObservationProducer::Formatter);
+        (true, None)
     }
 
     /// Record one controller-authenticated context reference. The captured
@@ -2932,6 +3075,136 @@ impl PresentationEmitter {
             provenance: DocumentRevisionProvenance::Formatter,
         })
     }
+
+    /// Choose one whole-take version. An incomplete Smart set yields a single
+    /// Corrections floor over all Raw; late versions never trigger delivery.
+    pub fn delivery_projection(
+        &self,
+        policy: FormattingPolicy,
+        raw_at_handoff: &str,
+    ) -> Option<DerivedTranscriptProjection> {
+        let mut reducer = self
+            .session_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(selected) = &reducer.delivery_selection {
+            return Some(selected.clone());
+        }
+        let session_id = reducer
+            .document_by_occurrence
+            .keys()
+            .next()?
+            .session
+            .clone();
+        let exact_raw = reducer.committed_rendered_text() == raw_at_handoff;
+        let request = TerminalFormatterRequest {
+            session_id,
+            source_revision: if exact_raw { reducer.revision } else { 0 },
+            source_text: raw_at_handoff.to_string(),
+        };
+        let mut text = String::new();
+        let mut complete = policy != FormattingPolicy::Off
+            && reducer.committed_rendered_text() == raw_at_handoff
+            && reducer
+                .document_by_occurrence
+                .values()
+                .all(|entry| entry.seal_receipt.is_some())
+            && !reducer.raw_human_revision
+            && reducer.context_markers.is_empty();
+        if let Some(whole) = reducer
+            .derived_projections
+            .iter()
+            .rev()
+            .find(|projection| {
+                projection.source_observation.is_none()
+                    && projection.source_raw_revision == request.source_revision
+                    && projection.requested_mode == policy.as_str()
+                    && projection.source_raw_text == raw_at_handoff
+            })
+            .cloned()
+        {
+            reducer.delivery_selection = Some(whole.clone());
+            return Some(whole);
+        }
+        for entry in reducer.document_by_occurrence.values() {
+            let projection = reducer.derived_projections.iter().rev().find(|projection| {
+                projection.requested_mode == policy.as_str()
+                    && projection
+                        .source_observation
+                        .as_ref()
+                        .is_some_and(|source| {
+                            source.occurrence == entry.occurrence
+                                && projection.source_raw_text == entry.label
+                                && entry.manual_edit_receipt.is_none()
+                                && entry.observation_receipt.starts_with(&format!(
+                                    "{}:{}:{}:",
+                                    source.producer.as_str(),
+                                    source.request,
+                                    source.generation
+                                ))
+                        })
+            });
+            match projection {
+                Some(projection) if projection.status == "applied" => {
+                    append_exact_fragment(&mut text, &projection.rendered_text)
+                }
+                _ => {
+                    complete = false;
+                    break;
+                }
+            }
+        }
+        let result = AiFormatResult {
+            text: if policy == FormattingPolicy::Off {
+                request.source_text.clone()
+            } else if complete {
+                text
+            } else {
+                codescribe_core::ai_formatting::corrections_floor(&request.source_text)
+            },
+            reasoning_text: None,
+            status: if complete || policy == FormattingPolicy::Off {
+                AiFormatStatus::Applied
+            } else {
+                AiFormatStatus::Failed
+            },
+        };
+        let mut projection = reducer.mint_derived_projection(
+            request.session_id,
+            request.source_revision,
+            request.source_text,
+            policy,
+            result,
+            None,
+        );
+        if !exact_raw {
+            projection.source_state = "stop_canvas_unsettled".into();
+            projection.publication_digest = projection.digest();
+            *reducer
+                .derived_projections
+                .last_mut()
+                .expect("minted selection") = projection.clone();
+        }
+        if let Some(bus) = &self.transcript_bus {
+            bus.record_derived_projection(&projection);
+        }
+        reducer.delivery_selection = Some(projection.clone());
+        Some(projection)
+    }
+
+    pub(crate) fn record_projection_delivery(
+        &self,
+        payload: &str,
+        disposition: super::transcript_bus::TranscriptDelivery,
+    ) {
+        let reducer = self
+            .session_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let (Some(bus), Some(selection)) = (&self.transcript_bus, &reducer.delivery_selection) {
+            bus.record_projection_delivery(selection, payload, disposition);
+        }
+    }
 }
 
 impl Drop for PresentationEmitter {
@@ -3178,12 +3451,13 @@ impl EventSink for PresentationEmitter {
                     proposal.sample_end,
                 );
                 let mut ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
-                let (proposal_revision, seal_revision, evidence_closed) = {
+                let (proposal_revision, seal_revision, evidence_closed, derived_projection) = {
                     let mut reducer = self
                         .session_state
                         .lock()
                         .unwrap_or_else(|error| error.into_inner());
                     let before = reducer.unanchored_evidence.len();
+                    let derived_before = reducer.derived_projections.len();
                     let (formatter_returned, proposal_revision) =
                         reducer.apply_occurrence_label_proposal(&mut ledger, proposal);
                     let seal_revision = formatter_returned
@@ -3191,8 +3465,14 @@ impl EventSink for PresentationEmitter {
                         .flatten()
                         .and_then(|receipt| reducer.apply_ledger_seal(&receipt));
                     let evidence_closed = reducer.unanchored_evidence.len() != before;
-                    (proposal_revision, seal_revision, evidence_closed)
+                    let derived = (reducer.derived_projections.len() > derived_before)
+                        .then(|| reducer.derived_projections.last().cloned())
+                        .flatten();
+                    (proposal_revision, seal_revision, evidence_closed, derived)
                 };
+                if let (Some(bus), Some(projection)) = (&self.transcript_bus, derived_projection) {
+                    bus.record_derived_projection(&projection);
+                }
                 if evidence_closed {
                     self.repaint_cursor();
                 }
@@ -3221,9 +3501,8 @@ impl EventSink for PresentationEmitter {
                         self.send_committed_paint(revision.rendered_text);
                     }
                 }
-                // The proposal corridor can admit a new committed label.
-                // Retry presentation; the reducer refuses an already-shaped
-                // occurrence, so the same words mint at most one revision.
+                // Closing the formatter frontier can permit Raw shaping. This
+                // deterministic shape still describes the unchanged acoustic label.
                 self.mint_incremental_light_plus(&mut ledger, std::slice::from_ref(&occurrence));
             }
             EngineEvent::VadStart { .. } | EngineEvent::VadEnd { .. } => {}
@@ -3430,6 +3709,7 @@ mod tests {
         TranscriptProjectionPhase, TranscriptSession, TranscriptSessionEndReason,
     };
     use crate::presentation::transcript_projection::TranscriptProjectionReader;
+    use codescribe_core::config::FormattingPolicy;
     use codescribe_core::llm::ai_formatting::{AiFormatResult, AiFormatStatus};
     use codescribe_core::llm::inline_format::{LabelProposalDisposition, OccurrenceLabelProposal};
     use codescribe_core::pipeline::acoustic_ledger::{
@@ -7313,8 +7593,16 @@ mod tests {
     }
 
     #[test]
-    fn formatter_proposal_can_only_relabel_one_existing_open_occurrence_once() {
+    fn formatter_proposal_derives_without_relabeling_any_occurrence() {
         let (mut ledger, mut reducer, occurrence) = open_formatter_frontier();
+        let raw_revision = reducer.revision;
+        let source = ledger
+            .layer_trail_for(&occurrence)
+            .filter(|decision| decision.decision.grants_mutation())
+            .last()
+            .unwrap()
+            .observation
+            .clone();
         let qualified_before = ledger.qualified_occurrences().count();
         let proposal = OccurrenceLabelProposal::for_existing_occurrence(
             occurrence.session.clone(),
@@ -7323,13 +7611,22 @@ mod tests {
             occurrence.sample_end,
             "Iwo!",
             LabelProposalDisposition::Propose,
-        );
+        )
+        .with_source(source, "Iwo".into(), FormattingPolicy::Smart);
 
         let (formatter_returned, revision) =
             reducer.apply_occurrence_label_proposal(&mut ledger, &proposal);
         assert!(formatter_returned);
-        assert!(revision.is_some());
-        assert_eq!(ledger.text_of(&occurrence), Some("Iwo!"));
+        assert!(revision.is_none());
+        assert_eq!(reducer.revision, raw_revision);
+        assert_eq!(reducer.derived_projections()[0].rendered_text, "Iwo!");
+        assert_eq!(reducer.committed_rendered_text(), "Iwo");
+        assert!(
+            ledger
+                .layer_trail_for(&occurrence)
+                .all(|decision| decision.observation.producer != ObservationProducer::Formatter)
+        );
+        assert_eq!(ledger.text_of(&occurrence), Some("Iwo"));
         assert_eq!(ledger.qualified_occurrences().count(), qualified_before);
         assert_eq!(reducer.document_by_occurrence.len(), 1);
         assert!(ledger.seal(&occurrence).is_ok());
@@ -7343,9 +7640,158 @@ mod tests {
             ledger.layer_trail_for(&occurrence).count(),
             trail_after_seal
         );
-        assert_eq!(ledger.text_of(&occurrence), Some("Iwo!"));
+        assert_eq!(ledger.text_of(&occurrence), Some("Iwo"));
         assert_eq!(ledger.qualified_occurrences().count(), qualified_before);
         assert_eq!(reducer.document_by_occurrence.len(), 1);
+    }
+
+    #[test]
+    fn corrections_losing_a_word_mints_a_floor_without_changing_raw() {
+        let (mut ledger, mut reducer, occurrence) = open_formatter_frontier();
+        let raw_revision = reducer.revision;
+        let pins = ledger.committed_word_pin_ranges(&occurrence);
+        let source = ledger
+            .layer_trail_for(&occurrence)
+            .filter(|decision| decision.decision.grants_mutation())
+            .last()
+            .unwrap()
+            .observation
+            .clone();
+        let proposal = OccurrenceLabelProposal::for_existing_occurrence(
+            occurrence.session.clone(),
+            occurrence.capture_epoch,
+            occurrence.sample_start,
+            occurrence.sample_end,
+            "Different word",
+            LabelProposalDisposition::Propose,
+        )
+        .with_source(source, "Iwo".into(), FormattingPolicy::Correction);
+        assert_eq!(
+            reducer.apply_occurrence_label_proposal(&mut ledger, &proposal),
+            (true, None)
+        );
+        let derived = &reducer.derived_projections()[0];
+        assert_eq!(derived.status, "corrections_words_rejected");
+        assert_eq!(derived.rendered_text, "Iwo.");
+        assert_eq!(derived.source_raw_revision, raw_revision);
+        assert_eq!(reducer.revision, raw_revision);
+        assert_eq!(reducer.committed_rendered_text(), "Iwo");
+        assert_eq!(ledger.committed_word_pin_ranges(&occurrence), pins);
+        assert!(
+            ledger
+                .layer_trail_for(&occurrence)
+                .all(|decision| decision.observation.producer != ObservationProducer::Formatter)
+        );
+    }
+
+    #[test]
+    fn old_smart_source_is_kept_as_refused_history_without_overwriting_correction() {
+        let (mut ledger, mut reducer, occurrence) = open_formatter_frontier();
+        let source = ledger
+            .layer_trail_for(&occurrence)
+            .filter(|decision| decision.decision.grants_mutation())
+            .last()
+            .unwrap()
+            .observation
+            .clone();
+        let proposal = OccurrenceLabelProposal::for_existing_occurrence(
+            occurrence.session.clone(),
+            occurrence.capture_epoch,
+            occurrence.sample_start,
+            occurrence.sample_end,
+            "Old smart text",
+            LabelProposalDisposition::Propose,
+        )
+        .with_source(source, "Iwo".into(), FormattingPolicy::Smart);
+        let correction =
+            ObservationIdentity::new(ObservationProducer::Whisper, 2, 2, occurrence.clone());
+        let receipt = ledger.admit(&correction, "Iwona");
+        reducer
+            .apply_ledger_mutation(&ledger, &correction, &receipt)
+            .unwrap();
+        let corrected_revision = reducer.revision;
+        reducer.apply_occurrence_label_proposal(&mut ledger, &proposal);
+        assert_eq!(reducer.derived_projections()[0].status, "stale_source");
+        assert_eq!(reducer.revision, corrected_revision);
+        assert_eq!(reducer.committed_rendered_text(), "Iwona");
+        assert_eq!(ledger.text_of(&occurrence), Some("Iwona"));
+    }
+
+    #[tokio::test]
+    async fn smart_deadline_delivers_one_whole_corrections_version_and_keeps_raw() {
+        let mut take = live_take("smart-deadline");
+        let first = OccurrenceIdentity::new("smart-deadline", 21, 0, 16_000);
+        let second = OccurrenceIdentity::new("smart-deadline", 21, 16_000, 32_000);
+        take.admit(&first, 1, "pierwsze zdanie");
+        take.admit(&second, 2, "drugie zdanie");
+        take.seal(&first);
+        take.seal(&second);
+        take.emitter.on_event(&EngineEvent::SessionFinalised {
+            session_id: "smart-deadline".into(),
+            layer_summary: LayerSummary::default(),
+        });
+        let raw = take.emitter.terminal_formatter_request().unwrap();
+        // Only one span returned Smart; the other exhausted its deadline.
+        {
+            let source = take
+                .ledger
+                .lock()
+                .unwrap()
+                .layer_trail_for(&first)
+                .filter(|decision| decision.decision.grants_mutation())
+                .last()
+                .unwrap()
+                .observation
+                .clone();
+            let mut reducer = take.emitter.session_state.lock().unwrap();
+            reducer.mint_derived_projection(
+                "smart-deadline".into(),
+                raw.source_revision,
+                "pierwsze zdanie".into(),
+                FormattingPolicy::Smart,
+                AiFormatResult {
+                    text: "Smart-only fragment".into(),
+                    reasoning_text: None,
+                    status: AiFormatStatus::Applied,
+                },
+                Some(source),
+            );
+        }
+        let selected = take
+            .emitter
+            .delivery_projection(FormattingPolicy::Smart, &raw.source_text)
+            .unwrap();
+        assert_eq!(selected.delivered_mode, "correction");
+        assert_eq!(
+            selected.rendered_text,
+            codescribe_core::ai_formatting::corrections_floor(&raw.source_text)
+        );
+        assert!(!selected.rendered_text.contains("Smart-only"));
+        assert_eq!(
+            take.emitter
+                .delivery_projection(FormattingPolicy::Smart, &raw.source_text)
+                .unwrap(),
+            selected
+        );
+        assert_eq!(take.emitter.terminal_formatter_request().unwrap(), raw);
+        let payload = format!("[dictation] {}", selected.rendered_text);
+        take.emitter
+            .record_projection_delivery(&payload, TranscriptDelivery::CopiedToClipboard);
+        let rows: Vec<serde_json::Value> = std::fs::read_to_string(&take.bus_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .filter(|row: &serde_json::Value| row["schema"] == "codescribe.projection-delivery.v1")
+            .collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["source_raw_revision"], raw.source_revision);
+        assert_eq!(rows[0]["source_raw_text"], raw.source_text);
+        assert_eq!(rows[0]["requested_mode"], "smart");
+        assert_eq!(rows[0]["selected_mode"], "correction");
+        assert_eq!(rows[0]["payload_utf8"], payload);
+        assert_eq!(rows[0]["disposition"], "copied_to_clipboard");
+        take.emitter.finish().await;
+        assert_eq!(*take.delivery.lock().await, raw.source_text);
     }
 
     /// Acceptance: both emitter request/acknowledgement types keep the derives

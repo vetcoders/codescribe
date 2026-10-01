@@ -599,6 +599,8 @@ struct TailPatchInFlight {
 struct FormatterRequest {
     occurrence: OccurrenceIdentity,
     existing_label: String,
+    source_observation: Option<LedgerObservationIdentity>,
+    policy: FormattingPolicy,
 }
 
 /// Provider outcome bound to one request. The worker receives it as a
@@ -623,7 +625,7 @@ impl FormatterCompletion {
             }
         };
         let occurrence = request.occurrence;
-        let proposal = OccurrenceLabelProposal::for_existing_occurrence(
+        let mut proposal = OccurrenceLabelProposal::for_existing_occurrence(
             occurrence.session.clone(),
             occurrence.capture_epoch,
             occurrence.sample_start,
@@ -631,6 +633,9 @@ impl FormatterCompletion {
             proposed_label,
             disposition,
         );
+        if let Some(source) = request.source_observation {
+            proposal = proposal.with_source(source, request.existing_label, request.policy);
+        }
         Self {
             occurrence,
             proposal,
@@ -643,6 +648,37 @@ impl FormatterCompletion {
             && self.proposal.sample_start == self.occurrence.sample_start
             && self.proposal.sample_end == self.occurrence.sample_end
             && self.proposal.binds_real_samples()
+    }
+}
+
+async fn bound_formatter_reply(
+    raw: &str,
+    deadline: Duration,
+    reply: impl std::future::Future<Output = AiFormatResult>,
+) -> AiFormatResult {
+    tokio::time::timeout(deadline, reply)
+        .await
+        .unwrap_or_else(|_| AiFormatResult {
+            text: raw.to_string(),
+            reasoning_text: None,
+            status: AiFormatStatus::Failed,
+        })
+}
+
+#[cfg(test)]
+mod formatter_deadline_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn formatter_deadline_cancels_a_pending_reply_and_preserves_raw() {
+        let result = bound_formatter_reply(
+            "Iwo Iwo Iwo",
+            Duration::from_millis(2),
+            std::future::pending(),
+        )
+        .await;
+        assert_eq!(result.status, AiFormatStatus::Failed);
+        assert_eq!(result.text, "Iwo Iwo Iwo");
     }
 }
 
@@ -1448,7 +1484,7 @@ pub(crate) async fn apple_stream_transcription_session(
                     );
                 }
             }
-            Some(request) = formatter_rx.recv(), if formatter_jobs.len() < FORMATTER_QUEUE_CAP => {
+            Some(mut request) = formatter_rx.recv(), if formatter_jobs.len() < FORMATTER_QUEUE_CAP => {
                 // The request channel is independent from `ev_rx`. Drain every
                 // already-enqueued ledger observation before provider work can
                 // complete, so a fast formatter cannot overtake the reducer
@@ -1462,13 +1498,15 @@ pub(crate) async fn apple_stream_transcription_session(
                 }
                 let runtime_settings = Arc::clone(&formatter_runtime_settings);
                 let language = formatter_language.clone();
+                request.policy = runtime_settings.formatting_policy();
                 formatter_jobs.push_back(Box::pin(async move {
-                    let result = format_text_with_status_for_policy(
+                    let deadline = runtime_settings.ai_execution().request_timing().attempt_timeout();
+                    let result = bound_formatter_reply(&request.existing_label, deadline, format_text_with_status_for_policy(
                         &request.existing_label,
                         language.as_deref(),
                         runtime_settings.as_ref(),
                         None,
-                    )
+                    ))
                     .await;
                     FormatterCompletion::from_result(request, result)
                 }));
@@ -6323,6 +6361,13 @@ fn schedule_formatter_after_terminal_label(
     permit.send(FormatterRequest {
         occurrence: occurrence.clone(),
         existing_label,
+        source_observation: ledger
+            .layer_trail_for(occurrence)
+            .filter(|decision| decision.decision.grants_mutation())
+            .last()
+            .map(|decision| decision.observation.clone()),
+        // The selected immutable generation supplies the policy before execution.
+        policy: FormattingPolicy::Off,
     });
     true
 }
@@ -8741,6 +8786,8 @@ mod c13a_lifecycle_tests {
                 FormatterRequest {
                     occurrence: occurrence.clone(),
                     existing_label: "Iwo".to_string(),
+                    source_observation: None,
+                    policy: FormattingPolicy::Smart,
                 },
                 ai_result(status, text),
             );
@@ -8886,6 +8933,8 @@ mod c13a_lifecycle_tests {
             FormatterRequest {
                 occurrence: wrong_occurrence,
                 existing_label: "Iwo".to_string(),
+                source_observation: None,
+                policy: FormattingPolicy::Smart,
             },
             ai_result(AiFormatStatus::AiNoop, "Iwo"),
         );
