@@ -1,6 +1,7 @@
 """Fixed-origin speech transport; no credentials, network or speaker access."""
 
 import contextlib
+import datetime
 import http.client
 import importlib.util
 import io
@@ -622,6 +623,119 @@ class PlaybackQueueTests(unittest.TestCase):
         self.assertTrue(
             DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor)
         )
+
+    # Integrator (2026-10-01): two replies played into the Founder's open
+    # channel 1 because the guard read only the shared bus. Since W5 a channel
+    # take lives on its dedicated bus as channel-session rows.
+    def channel_row(self, bus, session, state):
+        bus.parent.mkdir(parents=True, exist_ok=True)
+        row = {
+            "schema": "codescribe.channel-session.v1",
+            "channel": session.split("-")[2],
+            "session_id": session,
+            "state": state,
+            "emitted_at": datetime.datetime.now(datetime.timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z"),
+        }
+        if state != "open":
+            row["reason"] = "silence"
+        with bus.open("a") as stream:
+            stream.write(json.dumps(row) + "\n")
+        return bus
+
+    def test_open_channel_on_its_dedicated_bus_blocks_speech(self):
+        channel = self.home / "buses" / "channel-1.jsonl"
+        self.channel_row(channel, "agent-channel-1-live", "open")
+        child, (_, waiting, playing) = self.start_say("filip")
+        self.assertTrue(waiting.wait(5))
+        self.join(child)
+        self.assertFalse(playing.is_set(), "an open channel microphone is a live take")
+        (reply,) = self.replies()
+        self.assertFalse(reply["spoken"])
+        self.assertEqual(reply["reason"], "take_live")
+
+    def test_open_broadcast_channel_on_the_shared_bus_blocks_speech(self):
+        # 19:31:44Z: Fn+0 wrote its channel-session rows to the shared bus.
+        self.channel_row(self.bus, "agent-channel-0-live", "open")
+        child, (_, waiting, playing) = self.start_say("filip")
+        self.assertTrue(waiting.wait(5))
+        self.join(child)
+        self.assertFalse(playing.is_set())
+        (reply,) = self.replies()
+        self.assertEqual(reply["reason"], "take_live")
+
+    def test_open_channel_on_a_bus_the_binding_names_blocks_speech(self):
+        elsewhere = Path(self.tmp.name) / "elsewhere" / "channel-4.jsonl"
+        self.channel_row(elsewhere, "agent-channel-4-live", "open")
+        binding = {
+            "schema": "vc.agent-audience-binding.v1",
+            "bindings": {
+                "4": {
+                    "audience": "leon",
+                    "provider": "codex",
+                    "provider_session_id": "leon",
+                    "bus": str(elsewhere),
+                }
+            },
+        }
+        (self.home / "vc.agent-audience-binding.v1.json").write_text(
+            json.dumps(binding)
+        )
+        child, (_, waiting, playing) = self.start_say("filip")
+        self.assertTrue(waiting.wait(5))
+        self.join(child)
+        self.assertFalse(playing.is_set())
+        (reply,) = self.replies()
+        self.assertEqual(reply["reason"], "take_live")
+
+    def test_channel_opening_during_playback_stops_the_player(self):
+        channel = self.home / "buses" / "channel-1.jsonl"
+        self.channel_row(channel, "agent-channel-1-old", "open")
+        self.channel_row(channel, "agent-channel-1-old", "sealed")
+        release = self.context.Event()
+        child, (_, _, playing) = self.start_say("filip", release)
+        self.assertTrue(playing.wait(5))
+        self.channel_row(channel, "agent-channel-1-new", "open")
+        self.join(child)
+        (reply,) = self.replies()
+        self.assertFalse(reply["spoken"])
+        self.assertEqual(reply["reason"], "take_started")
+
+    def test_sealed_channel_lets_speech_play(self):
+        channel = self.home / "buses" / "channel-2.jsonl"
+        self.channel_row(channel, "agent-channel-2-done", "open")
+        self.channel_row(channel, "agent-channel-2-done", "sealed")
+        child, (_, _, playing) = self.start_say("filip")
+        self.join(child)
+        self.assertTrue(playing.is_set())
+        (reply,) = self.replies()
+        self.assertTrue(reply["spoken"])
+
+    def test_assert_install_idle_refuses_while_a_channel_is_open(self):
+        channel = self.home / "buses" / "channel-3.jsonl"
+        self.channel_row(channel, "agent-channel-3-live", "open")
+        argv = [
+            "bus-demux.py",
+            "--assert-install-idle",
+            "--bridge-home",
+            str(self.home),
+            "--bus",
+            str(self.bus),
+        ]
+        with (
+            patch.object(sys, "argv", argv),
+            patch.object(DEMUX, "bridge_home", return_value=self.home),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertNotEqual(DEMUX.main(), 0)
+        self.channel_row(channel, "agent-channel-3-live", "sealed")
+        with (
+            patch.object(sys, "argv", argv),
+            patch.object(DEMUX, "bridge_home", return_value=self.home),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(DEMUX.main(), 0)
 
     def test_player_failure_releases_lock_and_removes_wav(self):
         paths = []
