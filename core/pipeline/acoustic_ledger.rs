@@ -968,6 +968,7 @@ impl AcousticLedger {
         observation: &ObservationIdentity,
         words: &[WordPin],
     ) -> MutationReceipt {
+        let trace = super::trail::SlotTrace::words(self, observation, words, self.capture_rate_hz);
         let owner = &observation.occurrence;
         if self.is_sealed(owner) && observation.producer != ObservationProducer::ManualHuman {
             let reason = match observation.producer {
@@ -995,7 +996,10 @@ impl AcousticLedger {
             });
             let mut labels = prior.into_iter().collect::<Vec<_>>();
             labels.extend(words.iter().map(|pin| pin.text.clone()));
-            return self.keep_visible_unanchored(observation, &labels.join(" "), reason);
+            return trace.finish(
+                self.keep_visible_unanchored(observation, &labels.join(" "), reason),
+                self,
+            );
         }
         let mut incoming = Vec::new();
         let mut no_speech_refused = Vec::new();
@@ -1007,10 +1011,13 @@ impl AcousticLedger {
                 || midpoint < owner.sample_start
                 || midpoint >= owner.sample_end
             {
-                return self.keep_visible_unanchored(
-                    observation,
-                    &pin.text,
-                    NoAuthorityReason::NoRange,
+                return trace.finish(
+                    self.keep_visible_unanchored(
+                        observation,
+                        &pin.text,
+                        NoAuthorityReason::NoRange,
+                    ),
+                    self,
                 );
             }
             if !pin.text.trim().is_empty() {
@@ -1043,10 +1050,9 @@ impl AcousticLedger {
                 .map(|pin| pin.text.as_str())
                 .collect::<Vec<_>>()
                 .join(" ");
-            return self.refuse_replacement(
-                observation,
-                &candidate,
-                RefuseReason::ConfirmedNoSpeech,
+            return trace.finish(
+                self.refuse_replacement(observation, &candidate, RefuseReason::ConfirmedNoSpeech),
+                self,
             );
         }
         let mut slots = self.slots_of(owner).unwrap_or(&[]).to_vec();
@@ -1101,18 +1107,21 @@ impl AcousticLedger {
                     RefuseReason::ReplacedByCloudLive
                 },
             );
-            return if same_label {
-                MutationReceipt::Preserve {
-                    occurrence: owner.clone(),
-                    held_by: observation.producer,
-                }
-            } else {
-                MutationReceipt::Correct {
-                    occurrence: owner.clone(),
-                    from,
-                    to: observation.producer,
-                }
-            };
+            return trace.finish(
+                if same_label {
+                    MutationReceipt::Preserve {
+                        occurrence: owner.clone(),
+                        held_by: observation.producer,
+                    }
+                } else {
+                    MutationReceipt::Correct {
+                        occurrence: owner.clone(),
+                        from,
+                        to: observation.producer,
+                    }
+                },
+                self,
+            );
         }
         let mut removed = Vec::new();
         let mut refused = Vec::new();
@@ -1225,7 +1234,7 @@ impl AcousticLedger {
                     self.next_word_observation(observation.producer, observation.request, owner);
                 self.refuse_replacement(&rejected, &pin.text, RefuseReason::ConfirmedNoSpeech);
             }
-            return receipt;
+            return trace.finish(receipt, self);
         }
         let label = compose_label(&slots);
         let receipt = self.admit_with_slots(observation, &label, Some(slots), true);
@@ -1256,7 +1265,7 @@ impl AcousticLedger {
                 self.next_word_observation(observation.producer, observation.request, owner);
             self.refuse_replacement(&rejected, &pin.text, RefuseReason::ConfirmedNoSpeech);
         }
-        receipt
+        trace.finish(receipt, self)
     }
 
     #[cfg(test)]
