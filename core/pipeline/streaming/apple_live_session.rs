@@ -7618,6 +7618,12 @@ fn apple_stream_worker(
     let (cloud_commit, cloud_notice) = cloud.map(|lane| (lane.commit, lane.notice)).unzip();
     state.cloud_commit_tx = cloud_commit;
     state.whisper_context_window_sec = runtime_settings.values().whisper_context_window_sec;
+    let adaptive_buffer = option_env!("CODESCRIBE_DEVELOPER_SURFACE") == Some("1")
+        && runtime_settings.values().whisper_adaptive_buffer;
+    if adaptive_buffer {
+        state.layer1_coalesce = Layer1Coalesce::adaptive();
+    }
+    tracing::info!(adaptive_buffer, "Whisper observation buffer selected for take");
     // The session's ONE Silero. Both consumers of speech edges read it: the
     // utterance ledger (identity, ranges) and the engine lifecycle (wake/sleep).
     // It is built whenever either consumer wants it — the fusion flag decides

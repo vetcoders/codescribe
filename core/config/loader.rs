@@ -1076,6 +1076,7 @@ impl Config {
         env_parse!("HOLD_START_DELAY_MS", self.hold_start_delay_ms);
         env_parse!("DOUBLE_TAP_INTERVAL_MS", self.double_tap_interval_ms);
         env_parse!("TOGGLE_SILENCE_SEC", self.toggle_silence_sec);
+        env_flag!("WHISPER_ADAPTIVE_BUFFER", self.whisper_adaptive_buffer);
         env_parse!(
             "WHISPER_CONTEXT_WINDOW_SEC",
             self.whisper_context_window_sec
@@ -1296,6 +1297,11 @@ impl Config {
             "TOGGLE_SILENCE_SEC",
             self.toggle_silence_sec,
             settings.toggle_silence_sec
+        );
+        apply_copy!(
+            "WHISPER_ADAPTIVE_BUFFER",
+            self.whisper_adaptive_buffer,
+            settings.whisper_adaptive_buffer
         );
         apply_copy!(
             "WHISPER_CONTEXT_WINDOW_SEC",

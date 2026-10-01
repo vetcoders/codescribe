@@ -164,7 +164,7 @@ struct SettingsView: View {
     case .creator:
       CreatorPanel(model: model)
     case .lab:
-      LabPanel()
+      LabPanel(model: model)
     case .dictation, .agent:
       EmptyView()
     }

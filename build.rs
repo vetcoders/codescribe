@@ -12,6 +12,13 @@ use std::process::Command;
 /// with no `.git` still has to compile. Re-runs are pinned to `.git/HEAD`, so
 /// ordinary edits do not force a rebuild of the whole crate.
 fn main() {
+    println!("cargo:rerun-if-env-changed=CODESCRIBE_DEVELOPER_SURFACE");
+    let developer =
+        std::env::var("CODESCRIBE_DEVELOPER_SURFACE").is_ok_and(|value| value == "1");
+    println!(
+        "cargo:rustc-env=CODESCRIBE_DEVELOPER_SURFACE={}",
+        u8::from(developer)
+    );
     // Git commit hash (8 chars — build identity for the About dialog + log telemetry)
     let commit = Command::new("git")
         .args(["rev-parse", "--short=8", "HEAD"])

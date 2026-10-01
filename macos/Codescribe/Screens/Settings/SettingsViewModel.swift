@@ -2296,6 +2296,11 @@ final class SettingsViewModel: ObservableObject {
     if let engine { sttLanes = engine.sttLanes() }
   }
 
+  func setWhisperAdaptiveBuffer(_ enabled: Bool) {
+    guard DeveloperSurface.isEnabled() else { return }
+    persist("WHISPER_ADAPTIVE_BUFFER", enabled ? "1" : "0")
+  }
+
   private func persist(_ key: String, _ value: String) {
     guard let engine else { return }
     do {

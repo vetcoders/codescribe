@@ -95,7 +95,7 @@ resolve_src() {
     echo "${CODESCRIBE_VOICE_LAB_SRC}"
     return
   fi
-  if [[ -d "${SIBLING}/.git" ]] && looks_like_voice_lab "$SIBLING"; then
+  if [[ -e "${SIBLING}/.git" ]] && looks_like_voice_lab "$SIBLING"; then
     echo "$SIBLING"
     return
   fi
@@ -106,12 +106,27 @@ need_git() {
   command -v git >/dev/null 2>&1 || fail "git is required to fetch the org Voice Lab repo"
 }
 
+# A directory shape or a public key is not proof of private repository access.
+# Read-only preflight is shared by the installer and developer build gate.
+verify_checkout_access() {
+  local src="$1" origin top
+  need_git
+  looks_like_voice_lab "$src" || fail "missing Voice Lab checkout at ${src}"
+  top="$(git -C "$src" rev-parse --show-toplevel 2>/dev/null)" || fail "Voice Lab must be a Git checkout"
+  [[ "$(cd "$src" && pwd -P)" == "$(cd "$top" && pwd -P)" ]] || fail "Voice Lab must be the checkout root"
+  origin="$(git -C "$src" remote get-url origin 2>/dev/null)" || fail "Voice Lab has no origin"
+  remote_is_voice_lab "$origin" || fail "Voice Lab origin must be vetcoders/voice-lab"
+  GIT_TERMINAL_PROMPT=0 git ls-remote "$origin" HEAD >/dev/null 2>&1 ||
+    fail "private Voice Lab access could not be verified"
+}
+
 ensure_checkout() {
   local src="$1"
   local cand origin probed=""
 
   if looks_like_voice_lab "$src"; then
-    if [[ -d "${src}/.git" && "$src" == "$CACHE" ]]; then
+    verify_checkout_access "$src"
+    if [[ -e "${src}/.git" && "$src" == "$CACHE" ]]; then
       echo "==> updating ${src}"
       origin="$(git -C "$src" remote get-url origin 2>/dev/null || true)"
       [[ -n "$origin" ]] || fail "${src} has no origin"
@@ -136,7 +151,7 @@ ensure_checkout() {
     remote_is_voice_lab "$cand" || fail "VOICE_LAB_REPO_URL must point at the org voice-lab repo (got ${cand})"
     echo "==> probing ${cand}"
     probed="${probed}${probed:+, }${cand}"
-    if git ls-remote "$cand" HEAD >/dev/null 2>&1; then
+    if GIT_TERMINAL_PROMPT=0 git ls-remote "$cand" HEAD >/dev/null 2>&1; then
       REPO_URL="$cand"
       break
     fi
@@ -189,4 +204,8 @@ main() {
   verify_runtime
 }
 
-main "$@"
+if [[ "${1:-}" == "--verify-access" ]]; then
+  verify_checkout_access "$(resolve_src)"
+else
+  main "$@"
+fi

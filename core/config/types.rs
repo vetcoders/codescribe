@@ -550,6 +550,10 @@ pub struct Config {
     #[serde(default = "default_whisper_context_window_sec")]
     pub whisper_context_window_sec: f32,
 
+    /// Developer experiment; sampled once at take start.
+    #[serde(default)]
+    pub whisper_adaptive_buffer: bool,
+
     #[serde(default = "default_light_plus_sentence_pause_sec")]
     pub light_plus_sentence_pause_sec: f32,
 
@@ -760,6 +764,7 @@ impl Default for Config {
             double_tap_interval_ms: default_double_tap_interval_ms(),
             toggle_silence_sec: default_toggle_silence_sec(),
             whisper_context_window_sec: default_whisper_context_window_sec(),
+            whisper_adaptive_buffer: false,
             light_plus_sentence_pause_sec: default_light_plus_sentence_pause_sec(),
             deferred_insert_shortcut: DeferredInsertShortcut::default(),
             channel_modifier: ChannelModifier::default(),

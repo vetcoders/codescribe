@@ -456,6 +456,13 @@ reload = "hot"
 category = "stt"
 description = "Whisper transcription language hint. auto leaves detection to Whisper and applies on the next capture."
 
+[vars.WHISPER_ADAPTIVE_BUFFER]
+default = "false"
+type = "bool"
+reload = "hot"
+category = "stt"
+description = "Developer-build experiment, next take only: preserve sealed phrase boundaries in a bounded 8 s coalescer, retain 1 s overlap and 1.2 s oldest-member wait. Production ignores this setting. Both modes share decode/admit PCM geometry and ledger admission."
+
 [vars.WHISPER_CONTEXT_WINDOW_SEC]
 default = "8.0"
 type = "f32"
@@ -1781,3 +1788,10 @@ type = "bool"
 reload = "restart"
 category = "transcript"
 description = "Opt-in switch for the transcript delivery tagging lane; unset/empty keeps tagging off."
+
+[vars.CODESCRIBE_DEVELOPER_SURFACE]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "build"
+description = "Build-time developer surface bit shared by Rust and Swift. The supported app build verifies private Voice Lab access and its public-key pack before accepting 1. Distribution release forces 0. Runtime environment cannot enable a production binary."

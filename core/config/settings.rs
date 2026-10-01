@@ -213,6 +213,8 @@ pub struct UserSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub whisper_context_window_sec: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub whisper_adaptive_buffer: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub light_plus_sentence_pause_sec: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_formatting_enabled: Option<bool>,
@@ -1463,6 +1465,8 @@ struct SpeechEngineV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     whisper_context_window_sec: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    whisper_adaptive_buffer: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     light_plus_sentence_pause_sec: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     initial_prompt_enabled: Option<bool>,
@@ -1638,6 +1642,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "DOUBLE_TAP_INTERVAL_MS",
     "TOGGLE_SILENCE_SEC",
     "WHISPER_CONTEXT_WINDOW_SEC",
+    "WHISPER_ADAPTIVE_BUFFER",
     "LIGHT_PLUS_SENTENCE_PAUSE_SEC",
     "HOLD_EXCLUSIVE",
     "HOLD_ARM_MODIFIER",
@@ -1756,6 +1761,7 @@ typed_setting_writes! {
         "FN_TAP_TOGGLES_DICTATION" => fn_tap_toggles_dictation,
         "MIDDLE_MOUSE_ACTS_AS_FN" => middle_mouse_acts_as_fn,
         "USE_LOCAL_STT" => use_local_stt,
+        "WHISPER_ADAPTIVE_BUFFER" => whisper_adaptive_buffer,
         SILERO_FUSION_ENV => seal_lane_armed,
         "HISTORY_ENABLED" => history_enabled,
         "QUICK_NOTES_ENABLED" => quick_notes_enabled,
@@ -1828,6 +1834,7 @@ impl UserSettings {
                     cloud_refine_endpoint: Some(self.cloud_refine_endpoint_or_default()),
                     cloud_max_upload_mb: self.backend_max_upload_mb,
                     whisper_model: self.whisper_model.clone(),
+                    whisper_adaptive_buffer: self.whisper_adaptive_buffer,
                     whisper_context_window_sec: Some(
                         self.whisper_context_window_sec
                             .unwrap_or_else(super::default_whisper_context_window_sec),
@@ -2041,6 +2048,7 @@ impl UserSettings {
             buffered_interim_sec: copy!(v2.speech, emission, interim_cadence_sec),
             whisper_model: cloned!(v2.speech, engine, whisper_model),
             whisper_context_window_sec: copy!(v2.speech, engine, whisper_context_window_sec),
+            whisper_adaptive_buffer: copy!(v2.speech, engine, whisper_adaptive_buffer),
             light_plus_sentence_pause_sec: copy!(v2.speech, engine, light_plus_sentence_pause_sec),
             backend_max_upload_mb: copy!(v2.speech, engine, cloud_max_upload_mb),
             stt_initial_prompt_enabled: copy!(v2.speech, engine, initial_prompt_enabled),

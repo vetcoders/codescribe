@@ -197,7 +197,7 @@ install-app: install-voice-lab
 	@echo "Building $(CODESCRIBE_APP_NAME).app (SwiftUI, optimized local profile) via scripts/build-app.sh ..."
 	@BIT=$$(./scripts/developer-surface-gate.sh); \
 	if [ "$$BIT" != "1" ]; then \
-		echo "Developer surface stayed off after the Voice Lab pack — Sparkle/Ed public keys did not resolve."; \
+		echo "Developer surface stayed off — private Voice Lab access or public keys did not resolve."; \
 		echo "  need: ~/.codescribe/config/dev/keys/{sparkle-public.b64,license-public.hex}"; \
 		echo "  or:   ~/.vibecrafted/secrets/codescribe/{sparkle-public.b64,license-public.hex}"; \
 		exit 1; \
