@@ -1938,6 +1938,36 @@ struct MemberPinRoute {
     blocked: bool,
 }
 
+/// One member's routed words, with the original geometry of the pins the same
+/// batch gave its neighbours: those may cover a group's speech, never its text.
+#[derive(Clone, Copy)]
+struct RoutedWords<'a> {
+    pins: &'a [RoutedPin],
+    neighbours: &'a [(OccurrenceIdentity, OccurrenceIdentity)],
+}
+
+/// `(owner, unclipped pin)` for every pin this batch routed to another member.
+fn neighbour_pin_assignments(
+    owners: &[(u64, OccurrenceIdentity)],
+    routes: &[MemberPinRoute],
+    segments: &[TimedTailSegment],
+    current: usize,
+) -> Vec<(OccurrenceIdentity, OccurrenceIdentity)> {
+    owners
+        .iter()
+        .zip(routes)
+        .enumerate()
+        .filter(|(index, _)| *index != current)
+        .flat_map(|(_, ((_, owner), route))| {
+            route.exclusive.iter().filter_map(move |pin| {
+                segments
+                    .get(pin.index)
+                    .map(|segment| (owner.clone(), OccurrenceIdentity::from(&segment.range)))
+            })
+        })
+        .collect()
+}
+
 fn exclusive_label(pins: &[RoutedPin]) -> String {
     let mut ordered = pins.to_vec();
     ordered.sort_by_key(|pin| pin.pin.sample_start);
@@ -2611,7 +2641,7 @@ impl AppleSealState {
             segments,
             LedgerObservationProducer::CloudLive,
         );
-        for ((member_id, occurrence), route) in owners.iter().zip(&routes) {
+        for (index, ((member_id, occurrence), route)) in owners.iter().zip(&routes).enumerate() {
             if word_grain {
                 if route.exclusive.is_empty() {
                     continue;
@@ -2627,7 +2657,10 @@ impl AppleSealState {
                     *member_id,
                     occurrence,
                     commit.sample_start,
-                    &route.exclusive,
+                    RoutedWords {
+                        pins: &route.exclusive,
+                        neighbours: &neighbour_pin_assignments(&owners, &routes, segments, index),
+                    },
                     LedgerObservationProducer::CloudLive,
                 );
                 if admitted {
@@ -3696,7 +3729,7 @@ impl AppleSealState {
             LedgerObservationProducer::Whisper,
         );
         let mut mutation_admitted = false;
-        for ((member_id, occurrence), route) in owners.iter().zip(&routes) {
+        for (index, ((member_id, occurrence), route)) in owners.iter().zip(&routes).enumerate() {
             if word_grain {
                 if !route.exclusive.is_empty() {
                     mutation_admitted |= self.admit_routed_words(
@@ -3704,7 +3737,12 @@ impl AppleSealState {
                         *member_id,
                         occurrence,
                         request_id,
-                        &route.exclusive,
+                        RoutedWords {
+                            pins: &route.exclusive,
+                            neighbours: &neighbour_pin_assignments(
+                                &owners, &routes, segments, index,
+                            ),
+                        },
                         LedgerObservationProducer::Whisper,
                     );
                 }
@@ -3928,9 +3966,10 @@ impl AppleSealState {
         id: u64,
         owner: &OccurrenceIdentity,
         request: u64,
-        pins: &[RoutedPin],
+        batch: RoutedWords<'_>,
         producer: LedgerObservationProducer,
     ) -> bool {
+        let RoutedWords { pins, neighbours } = batch;
         let words = pins
             .iter()
             .map(|pin| {
@@ -3959,12 +3998,17 @@ impl AppleSealState {
                 }
             })
             .collect::<Vec<_>>();
+        // A measured group refinement needs the capture's own speech ranges and
+        // this batch's neighbour geometry; without them the group is kept.
+        let speech = coverage_speech_evidence(self);
         let (observation, receipt, label) = {
             let mut ledger = self
                 .acoustic_ledger
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let observation = ledger.next_word_observation(producer, request, owner);
+            ledger.record_speech_evidence(&speech);
+            ledger.record_assigned_word_pins(&observation, neighbours);
             let receipt = ledger.admit_word_slots(&observation, &words);
             let label = match &receipt {
                 MutationReceipt::KeepVisibleUnanchored { label, .. } => label.clone(),
@@ -6095,14 +6139,22 @@ fn admit_debt_occurrence_recovery(
             &payload.segments,
             LedgerObservationProducer::Whisper,
         );
-        for ((id, owner), route) in owners.iter().zip(&routes) {
+        for (index, ((id, owner), route)) in owners.iter().zip(&routes).enumerate() {
             if !route.exclusive.is_empty() {
                 state.admit_routed_words(
                     ev_tx,
                     *id,
                     owner,
                     payload.identity.request_id,
-                    &route.exclusive,
+                    RoutedWords {
+                        pins: &route.exclusive,
+                        neighbours: &neighbour_pin_assignments(
+                            &owners,
+                            &routes,
+                            &payload.segments,
+                            index,
+                        ),
+                    },
                     LedgerObservationProducer::Whisper,
                 );
             }
@@ -20997,12 +21049,15 @@ mod relay_l1_overlap_admission_tests {
             1,
             &owner,
             1,
-            &[RoutedPin {
-                confidence: None,
-                index: 0,
-                pin: OccurrenceIdentity::new(session, 1, 44_000, 51_000),
-                text: "szew".into(),
-            }],
+            RoutedWords {
+                pins: &[RoutedPin {
+                    confidence: None,
+                    index: 0,
+                    pin: OccurrenceIdentity::new(session, 1, 44_000, 51_000),
+                    text: "szew".into(),
+                }],
+                neighbours: &[],
+            },
             LedgerObservationProducer::Whisper,
         );
         let routes = lane.state.route_overlap_pins(
@@ -21066,6 +21121,68 @@ mod relay_l1_overlap_admission_tests {
             "{warnings}"
         );
         assert_conserved(&lane, Some("replayed_range_identity"));
+    }
+
+    /// The live Whisper path hands the capture's own speech ranges to the
+    /// ledger: measured words replace an unpaired Apple group only when they
+    /// cover all of its speech; an uncovered voiced span keeps the group.
+    #[test]
+    fn measured_whisper_words_replace_a_coarse_group_only_over_covered_speech() {
+        for covered in [true, false] {
+            let session = if covered {
+                "group-speech-covered"
+            } else {
+                "group-speech-gap"
+            };
+            let mut lane = open(session);
+            let occurrence = OccurrenceIdentity::new(session, 1, 96_768, 192_768);
+            let mut voiced = vec![(96_768, 126_720), (132_000, 152_000)];
+            if !covered {
+                voiced.push((160_000, 188_000));
+            }
+            record_voiced_spans(&lane, 192_768, &voiced);
+            stage(&mut lane, 1, occurrence.clone(), "apple floor");
+            assert!(
+                lane.state
+                    .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, "apple floor"))
+            );
+            close_lexicon(&mut lane, 1, &occurrence, "apple floor");
+            let _ = drain(&mut lane.rx);
+            let requests = take_requests(&mut lane.tail_rx);
+            lane.state.complete_whisper_window(
+                &lane.tx,
+                completion(
+                    &requests[0],
+                    vec![
+                        word_pin(session, "tak", 96_000, 127_000),
+                        word_pin(session, "poza", 132_000, 152_000),
+                    ],
+                ),
+                9.0,
+            );
+            let warnings = warning_lines(&drain(&mut lane.rx));
+            let ledger = lane.state.acoustic_ledger.lock().unwrap();
+            if covered {
+                assert_eq!(ledger.text_of(&occurrence), Some("tak poza"), "{warnings}");
+                assert_eq!(ledger.group_speech_coverages().len(), 1, "{warnings}");
+            } else {
+                assert_eq!(
+                    ledger.text_of(&occurrence),
+                    Some("apple floor"),
+                    "{warnings}"
+                );
+                assert!(ledger.group_speech_coverages().is_empty());
+                assert!(
+                    ledger
+                        .slot_alternatives()
+                        .iter()
+                        .any(|alternative| alternative.candidate == "tak poza"),
+                    "{warnings}"
+                );
+            }
+            assert!(ledger.word_deletions().is_empty());
+            assert_eq!(ledger.conservation().residue(), 0);
+        }
     }
 
     #[test]
