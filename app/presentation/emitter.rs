@@ -207,6 +207,36 @@ pub struct TranscriptRevision {
 }
 
 impl TranscriptRevision {
+    fn record_trail(&self) {
+        if let Some(first) = self.entries.first() {
+            let (action, receipts) = match &self.action {
+                ReducerAction::ApplyLedgerDecision { entry } => (
+                    "ledger",
+                    entry
+                        .layer_decision_receipts
+                        .last()
+                        .cloned()
+                        .into_iter()
+                        .collect(),
+                ),
+                ReducerAction::ApplyUserRevision { .. } => ("document_revision", Vec::new()),
+                ReducerAction::ApplyConsultationPresentation { .. } => ("consultation", Vec::new()),
+                ReducerAction::ApplyManualEdit { .. } => ("manual_edit", Vec::new()),
+                ReducerAction::ApplyIncrementalShaping { .. } => ("light_plus", Vec::new()),
+                ReducerAction::RecordLedgerSeal { .. } => ("seal", Vec::new()),
+                ReducerAction::RecordSealCoverage { .. } => ("coverage", Vec::new()),
+                ReducerAction::RecordContextMarker { .. } => ("context", Vec::new()),
+            };
+            codescribe_core::pipeline::trail::record_projection(
+                &first.occurrence,
+                self.revision.saturating_sub(1),
+                self.revision,
+                action,
+                receipts,
+            );
+        }
+    }
+
     fn digest(&self) -> [u8; 32] {
         Sha256::digest(
             format!(
@@ -396,6 +426,7 @@ pub struct UserRevisionCommit {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct DerivedTranscriptProjection {
     pub schema: String,
+    pub emitted_at: String,
     pub session_id: String,
     pub revision: u64,
     pub source_raw_revision: u64,
@@ -599,8 +630,9 @@ pub struct MissingVisibleWord {
 /// Only `document_by_occurrence` can produce a committed revision. The Apple
 /// mirror is a full worker-owned snapshot, with no occurrence authority; it
 /// contributes to paint and stop delivery without entering the Transcript Bus.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct TranscriptReducer {
+    preparing_light_plus: bool,
     derived_projections: Vec<DerivedTranscriptProjection>,
     delivery_selection: Option<DerivedTranscriptProjection>,
     raw_revision_by_observation: std::collections::HashMap<ObservationIdentity, u64>,
@@ -713,14 +745,17 @@ impl TranscriptReducer {
                 .preserves_words()
         {
             status = "corrections_words_rejected";
-            text = codescribe_core::ai_formatting::corrections_floor(&source_raw_text);
+            text = source_raw_text.clone();
         } else if result.status != AiFormatStatus::Applied {
-            text = codescribe_core::ai_formatting::corrections_floor(&source_raw_text);
+            text = source_raw_text.clone();
             delivered = FormattingPolicy::Correction;
         }
-        let revision = self.derived_projections.len() as u64 + 1;
+        // The high bit identifies the derived history namespace; Raw retains
+        // its own monotonic counter and every CAS continues to use it.
+        let revision = (1_u64 << 63) | (self.derived_projections.len() as u64 + 1);
         let mut projection = DerivedTranscriptProjection {
             schema: "codescribe.derived-transcript.v1".into(),
+            emitted_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
             session_id: session_id.clone(),
             revision,
             source_raw_revision,
@@ -774,7 +809,6 @@ impl TranscriptReducer {
     }
 
     fn revision_for_action(&mut self, action: ReducerAction) -> TranscriptRevision {
-        let revision_before = self.revision;
         self.revision = self.revision.saturating_add(1);
         let mut entries = self
             .document_by_occurrence
@@ -799,37 +833,13 @@ impl TranscriptReducer {
             rendered_text,
             seal_coverage: self.latest_seal_coverage.clone(),
             comparison: self.latest_comparison.clone(),
-            consultation_presentations: self.consultation_presentations.clone(),
+            consultation_presentations: Vec::new(),
             uncertain_spans,
             publication_digest: [0; 32],
         };
         snapshot.publication_digest = snapshot.digest();
-        if let Some(first) = snapshot.entries.first() {
-            let (action, receipts) = match &snapshot.action {
-                ReducerAction::ApplyLedgerDecision { entry } => (
-                    "ledger",
-                    entry
-                        .layer_decision_receipts
-                        .last()
-                        .cloned()
-                        .into_iter()
-                        .collect(),
-                ),
-                ReducerAction::ApplyUserRevision { .. } => ("document_revision", Vec::new()),
-                ReducerAction::ApplyConsultationPresentation { .. } => ("consultation", Vec::new()),
-                ReducerAction::ApplyManualEdit { .. } => ("manual_edit", Vec::new()),
-                ReducerAction::ApplyIncrementalShaping { .. } => ("light_plus", Vec::new()),
-                ReducerAction::RecordLedgerSeal { .. } => ("seal", Vec::new()),
-                ReducerAction::RecordSealCoverage { .. } => ("coverage", Vec::new()),
-                ReducerAction::RecordContextMarker { .. } => ("context", Vec::new()),
-            };
-            codescribe_core::pipeline::trail::record_projection(
-                &first.occurrence,
-                revision_before,
-                self.revision,
-                action,
-                receipts,
-            );
+        if !self.preparing_light_plus {
+            snapshot.record_trail();
         }
         snapshot
     }
@@ -867,20 +877,9 @@ impl TranscriptReducer {
             .collect::<Vec<_>>();
         let source_for = |range: &OccurrenceIdentity, entry: &TranscriptDocumentEntry| {
             let presentation = self
-                .consultation_presentations
-                .iter()
-                .find(|receipt| {
-                    receipt
-                        .members
-                        .iter()
-                        .any(|member| &member.occurrence == range)
-                })
-                .map(|receipt| receipt.receipt_id.clone())
-                .or_else(|| {
-                    self.shaped_by_occurrence
-                        .get(range)
-                        .map(|receipt| receipt.receipt_id.clone())
-                });
+                .shaped_by_occurrence
+                .get(range)
+                .map(|receipt| receipt.receipt_id.clone());
             CommittedPaintSource {
                 occurrence: range.clone(),
                 observation_receipt: entry.observation_receipt.clone(),
@@ -909,29 +908,7 @@ impl TranscriptReducer {
             fragments.push((0, self.committed_rendered_text(), source, false));
         } else {
             for (range, entry) in &self.document_by_occurrence {
-                let source = self
-                    .consultation_presentations
-                    .iter()
-                    .find(|receipt| {
-                        receipt
-                            .members
-                            .first()
-                            .is_some_and(|member| &member.occurrence == range)
-                    })
-                    .map(|receipt| VisibleWordSource::DocumentRevision {
-                        receipt: Some(receipt.receipt_id.clone()),
-                        members: receipt
-                            .members
-                            .iter()
-                            .filter_map(|member| {
-                                self.document_by_occurrence
-                                    .get(&member.occurrence)
-                                    .map(|entry| source_for(&member.occurrence, entry))
-                            })
-                            .collect(),
-                        markers: 0,
-                    })
-                    .unwrap_or_else(|| VisibleWordSource::Committed(source_for(range, entry)));
+                let source = VisibleWordSource::Committed(source_for(range, entry));
                 fragments.push((
                     range.sample_start,
                     self.presentation_of(range, entry).to_string(),
@@ -1372,6 +1349,11 @@ impl TranscriptReducer {
         ledger: &mut AcousticLedger,
         intent: &UserRevisionIntent,
     ) -> Result<TranscriptRevision, UserRevisionRefusal> {
+        if intent.provenance == DocumentRevisionProvenance::Formatter {
+            return Err(UserRevisionRefusal::LedgerRefusal(
+                "formatter_requires_derived_projection",
+            ));
+        }
         if intent.rendered_text.trim().is_empty() {
             return Err(UserRevisionRefusal::EmptyText);
         }
@@ -1399,19 +1381,21 @@ impl TranscriptReducer {
             .map_err(UserRevisionRefusal::LedgerRefusal)?;
         self.raw_human_revision |= intent.provenance != DocumentRevisionProvenance::LightPlus;
         self.manual_rendered_text = Some(intent.rendered_text.clone());
-        self.consultation_presentations.clear();
+        if intent.provenance != DocumentRevisionProvenance::LightPlus {
+            self.consultation_presentations.clear();
+        }
         self.shaped_by_occurrence.clear();
         self.manual_document_revision_receipt = Some(receipt.receipt_id.clone());
         Ok(self.revision_for_action(ReducerAction::ApplyUserRevision { receipt }))
     }
 
-    /// Replace only the admitted sealed group. Later suffix revisions do not
-    /// invalidate its unchanged members; whole-document edits do.
+    /// Derive a Max version from the admitted sealed group. Later suffix
+    /// revisions leave its unchanged members valid; human document edits do not.
     pub fn apply_consultation_presentation(
         &mut self,
         ledger: &mut AcousticLedger,
         input: ConsultationPresentationInput<'_>,
-    ) -> Result<TranscriptRevision, UserRevisionRefusal> {
+    ) -> Result<DerivedTranscriptProjection, UserRevisionRefusal> {
         if self.terminal || self.terminal_sealed {
             return Err(UserRevisionRefusal::LedgerRefusal(
                 "consultation_capture_already_terminal",
@@ -1459,8 +1443,28 @@ impl TranscriptReducer {
             })
             .map_err(UserRevisionRefusal::LedgerRefusal)?;
         self.consultation_presentations.push(receipt.clone());
-        self.invalidate_stale_shapes();
-        Ok(self.revision_for_action(ReducerAction::ApplyConsultationPresentation { receipt }))
+        let source_text = self.committed_rendered_text();
+        let text = self.consulted_rendered_text();
+        let mut projection = self.mint_derived_projection(
+            first.occurrence.session.clone(),
+            self.revision,
+            source_text,
+            FormattingPolicy::Max,
+            AiFormatResult {
+                text,
+                reasoning_text: None,
+                status: AiFormatStatus::Applied,
+            },
+            None,
+        );
+        projection.source_state = "sealed_group".into();
+        projection.receipt_id = format!("formatter-max-{}", receipt.receipt_id);
+        projection.publication_digest = projection.digest();
+        *self
+            .derived_projections
+            .last_mut()
+            .expect("minted Max projection") = projection.clone();
+        Ok(projection)
     }
 
     fn authenticated_revision_occurrences(
@@ -1525,19 +1529,11 @@ impl TranscriptReducer {
         occurrence: &OccurrenceIdentity,
         sentence_pause_sec: f32,
     ) -> Result<TranscriptRevision, IncrementalShapingRefusal> {
-        // A whole-document revision (user edit, formatter, terminal Light+)
+        // A whole-document revision (user edit or terminal Light+)
         // already owns every visible byte. A per-occurrence shape must not
         // fight it for the same document.
         if self.manual_rendered_text.is_some() {
             return Err(IncrementalShapingRefusal::DocumentRevisionOwnsPresentation);
-        }
-        if self.consultation_presentations.iter().any(|receipt| {
-            receipt
-                .members
-                .iter()
-                .any(|member| &member.occurrence == occurrence)
-        }) {
-            return Err(IncrementalShapingRefusal::AlreadyShaped);
         }
         let source_label = self
             .document_by_occurrence
@@ -1860,18 +1856,6 @@ impl TranscriptReducer {
             .retain(|receipt| group_matches_entries(receipt, self.document_by_occurrence.values()));
         let mut left = String::new();
         for (occurrence, entry) in &self.document_by_occurrence {
-            if let Some(group) = self.consultation_presentations.iter().find(|receipt| {
-                receipt
-                    .members
-                    .iter()
-                    .any(|member| &member.occurrence == occurrence)
-            }) {
-                self.shaped_by_occurrence.remove(occurrence);
-                if &group.members[0].occurrence == occurrence {
-                    append_exact_fragment(&mut left, &group.rendered_text);
-                }
-                continue;
-            }
             if self
                 .shaped_by_occurrence
                 .get(occurrence)
@@ -1892,23 +1876,36 @@ impl TranscriptReducer {
 
     /// The presentation bytes for one entry: its committed shape while that
     /// shape still matches the ledger label, otherwise the label itself.
+    fn consulted_rendered_text(&self) -> String {
+        let mut text = String::new();
+        for (occurrence, entry) in &self.document_by_occurrence {
+            let group = self
+                .consultation_presentations
+                .iter()
+                .rev()
+                .find(|receipt| {
+                    group_matches_entries(receipt, self.document_by_occurrence.values())
+                        && receipt
+                            .members
+                            .iter()
+                            .any(|member| &member.occurrence == occurrence)
+                });
+            if let Some(group) = group {
+                if &group.members[0].occurrence == occurrence {
+                    append_exact_fragment(&mut text, &group.rendered_text);
+                }
+            } else {
+                append_exact_fragment(&mut text, self.presentation_of(occurrence, entry));
+            }
+        }
+        text
+    }
+
     fn presentation_of<'entry>(
         &'entry self,
         occurrence: &OccurrenceIdentity,
         entry: &'entry TranscriptDocumentEntry,
     ) -> &'entry str {
-        if let Some(group) = self.consultation_presentations.iter().find(|receipt| {
-            receipt
-                .members
-                .iter()
-                .any(|member| &member.occurrence == occurrence)
-        }) {
-            return if &group.members[0].occurrence == occurrence {
-                &group.rendered_text
-            } else {
-                ""
-            };
-        }
         match self.shaped_by_occurrence.get(occurrence) {
             Some(shaped) if shaped.source_label == entry.label => shaped.shaped_text.as_str(),
             _ => entry.label.as_str(),
@@ -2102,8 +2099,7 @@ pub struct VisibleCanvasSnapshot {
     /// (phrase id, zero-based arrival position), including later timed re-seals.
     pub untimed_final_phrases: Vec<(u64, usize)>,
     closed_phrases: BTreeMap<u64, ClosedApplePhrase>,
-    /// Provenance from the same paint, including consultation members whose
-    /// text is rendered together under the group's first occurrence.
+    /// Acoustic provenance from this Raw paint.
     committed_sources: BTreeMap<OccurrenceIdentity, CommittedPaintSource>,
 }
 
@@ -2334,6 +2330,7 @@ pub struct PresentationEmitter {
     /// A terminal diagnostic cannot erase visible words before stop snapshots them.
     stop_snapshot_pending: std::sync::atomic::AtomicBool,
     sentence_pause_sec: f32,
+    tick_clock: Arc<dyn Fn() -> std::time::Duration + Send + Sync>,
     #[cfg(test)]
     paint_commands: std::sync::Mutex<Vec<String>>,
 }
@@ -2443,16 +2440,29 @@ impl PresentationEmitter {
         {
             return Ok(frozen);
         }
-        let shaped = codescribe_core::pipeline::light_plus::apply(&frozen.text);
-        if shaped.is_empty() || shaped == frozen.text {
-            return Ok(frozen);
+        let budget = self.schedule_light_plus();
+        let authority = self
+            .acoustic_ledger
+            .as_ref()
+            .ok_or(UserRevisionRefusal::AuthorityUnavailable)?;
+        let mut ledger = authority.lock().unwrap_or_else(|error| error.into_inner());
+        {
+            let state = self
+                .session_state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            state.authenticated_presentation_occurrences(&frozen.session_id, frozen.revision)?;
+            if state.committed_rendered_text() != frozen.text {
+                return Err(UserRevisionRefusal::StaleRevision {
+                    expected: state.revision,
+                    actual: frozen.revision,
+                });
+            }
         }
-        let commit = self.apply_user_revision(UserRevisionIntent {
-            session_id: frozen.session_id.clone(),
-            source_revision: frozen.revision,
-            rendered_text: shaped,
-            provenance: DocumentRevisionProvenance::LightPlus,
-        })?;
+        let Some(commit) = self.run_light_plus_tick(&mut ledger, &budget, true) else {
+            return Ok(frozen);
+        };
+        drop(ledger);
         // The accepted revision rewrites this frozen document's presentation.
         // Carry its receipt with the pasted bytes, without sampling later paint.
         let mut committed_sources = frozen.committed_sources.clone();
@@ -2581,6 +2591,10 @@ impl PresentationEmitter {
             literal_delivery: std::sync::atomic::AtomicBool::new(false),
             stop_snapshot_pending: std::sync::atomic::AtomicBool::new(false),
             sentence_pause_sec: 0.7,
+            tick_clock: {
+                let origin = std::time::Instant::now();
+                Arc::new(move || origin.elapsed())
+            },
             refinement_warnings: None,
             cursor_observer: None,
             cursor_capture: std::sync::OnceLock::new(),
@@ -2865,41 +2879,36 @@ impl PresentationEmitter {
                     rendered_text: &answer.text,
                 },
             )?;
-        if !self.authenticates_revision(&revision, &ledger) {
-            return Err(UserRevisionRefusal::LedgerRefusal(
-                "publication_authentication_failed",
-            ));
-        }
-        if let Some(bus) = &self.transcript_bus {
-            let events = bus.publish_revision(&revision, &ledger);
-            if events.is_empty() {
-                return Err(UserRevisionRefusal::LedgerRefusal(
-                    "bus_publication_refused",
-                ));
-            }
-            if let Some(callback) = &self.projection_callback {
-                for event in &events {
-                    self.with_active_presentation(|| callback(event));
-                }
-            }
-        }
-        self.send_committed_paint(revision.rendered_text.clone());
-        let ReducerAction::ApplyConsultationPresentation { receipt } = &revision.action else {
-            unreachable!("group admission must mint a group action")
-        };
+        drop(ledger);
+        self.publish_derived_paint(&revision);
         Ok(UserRevisionCommit {
-            session_id: receipt.members[0].occurrence.session.clone(),
-            source_revision: receipt.source_revision,
+            session_id: revision.session_id.clone(),
+            source_revision: revision.source_raw_revision,
             revision: revision.revision,
             rendered_text: revision.rendered_text.clone(),
-            provenance_receipt: receipt.receipt_id.clone(),
+            provenance_receipt: revision.receipt_id.clone(),
         })
+    }
+
+    fn publish_derived_paint(&self, projection: &DerivedTranscriptProjection) {
+        if let Some(bus) = &self.transcript_bus {
+            bus.record_derived_projection(projection);
+            if let (Some(callback), Some(event)) = (
+                &self.projection_callback,
+                bus.derived_presentation_event(projection),
+            ) {
+                self.with_active_presentation(|| callback(&event));
+            }
+        }
+        self.send_cmd(EmitterCmd::PaintEphemeralPreview(
+            projection.rendered_text.clone(),
+        ));
     }
 
     /// The one whole-document revision corridor: reducer mints the revision
     /// against the ledger, the Bus observes it, the delivery buffer follows.
-    /// User edits, formatter results, and the terminal Light+ pass all enter
-    /// here; only the provenance differs.
+    /// User edits and the terminal Light+ pass enter here. Formatter and Max
+    /// results enter the independent derived projection corridor.
     fn commit_document_revision(
         &self,
         ledger: &mut AcousticLedger,
@@ -2948,107 +2957,184 @@ impl PresentationEmitter {
     /// Bus, the delivery buffer, and the formatter CAS all see the same bytes.
     /// It runs for every lane except the literal contract and never touches
     /// an occurrence label: the ledger stays the sole author of the words.
-    fn mint_light_plus_revision(&self, ledger: &mut AcousticLedger) {
-        if self.literal_delivery() {
-            return;
-        }
-        let tick_started = std::time::Instant::now();
-        let intent = self
-            .session_state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .light_plus_intent();
-        let Some(intent) = intent else {
-            return;
-        };
-        if tick_started.elapsed() >= std::time::Duration::from_secs(2) {
-            self.on_event(&EngineEvent::Warning {
-                code: "light_plus_tick_deadline".into(),
-                message:
-                    "Light+ tick exceeded its separate 2 s budget; previous coherent Raw retained."
-                        .into(),
-            });
-            return;
-        }
-        match self.commit_document_revision(ledger, intent) {
-            Ok(commit) => debug!(
-                elapsed_ms = tick_started.elapsed().as_millis(),
-                revision = commit.revision,
-                receipt = %commit.provenance_receipt,
-                "Light+ terminal revision committed"
-            ),
-            Err(UserRevisionRefusal::Unchanged) => {}
-            Err(refusal) => debug!(%refusal, "Light+ terminal revision refused"),
-        }
+    fn schedule_light_plus(&self) -> codescribe_core::pipeline::light_plus::TickBudget {
+        codescribe_core::pipeline::light_plus::TickBudget::schedule(self.tick_clock.clone())
     }
 
-    /// The live half of the Light+ floor. Every occurrence with admitted text
-    /// gains its deterministic presentation immediately, so a long
-    /// take reads as sentences while it is still being spoken instead of
-    /// waiting for Stop.
-    ///
-    /// It publishes through the ordinary committed corridor — Bus projection,
-    /// projection callback, delivery buffer — and deliberately not through the
-    /// lifecycle one: no `session_ended`, no terminal flag, no delivery
-    /// acknowledgment. The reducer stays non-terminal, so the terminal user
-    /// edit and the paid formatter keep their existing terminal-only law.
-    ///
-    /// The literal contract (`force_raw`) skips this exactly as it skips the
-    /// terminal pass: a raw take is delivered word-for-word.
+    fn light_plus_deadline_receipt(
+        &self,
+        budget: &codescribe_core::pipeline::light_plus::TickBudget,
+    ) {
+        if let Some(bus) = &self.transcript_bus
+            && let Some(event) = bus.light_plus_deadline_event(budget.elapsed().as_millis())
+            && let Some(callback) = &self.projection_callback
+        {
+            self.with_active_presentation(|| callback(&event));
+        }
+        self.on_event(&EngineEvent::Warning {
+            code: "light_plus_tick_deadline".into(),
+            message: format!(
+                "Light+ skipped after {} ms from scheduling; delivered unchanged Raw.",
+                budget.elapsed().as_millis()
+            ),
+        });
+    }
+
+    /// Prepare all work, including ledger receipts and authenticated rendering,
+    /// against private candidates. Only this thread can admit them. Queue wait,
+    /// locks, computation and final admission share the scheduled deadline.
+    fn run_light_plus_tick(
+        &self,
+        ledger: &mut AcousticLedger,
+        budget: &codescribe_core::pipeline::light_plus::TickBudget,
+        terminal: bool,
+    ) -> Option<UserRevisionCommit> {
+        if self.literal_delivery() {
+            return None;
+        }
+        if budget.expired() {
+            self.light_plus_deadline_receipt(budget);
+            return None;
+        }
+        let state = self
+            .session_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        // Delivery has already selected its bytes: no tick may replace them.
+        if state.delivery_selection.is_some() {
+            return None;
+        }
+        let source_revision = state.revision;
+        let source_derived_count = state.derived_projections.len();
+        let mut candidate = state.clone();
+        candidate.preparing_light_plus = true;
+        drop(state);
+        let mut candidate_ledger = ledger.clone();
+        let pause = self.sentence_pause_sec;
+        let prepared = budget.prepare(move |worker_budget| {
+            let mut revisions = Vec::new();
+            if terminal {
+                if let Some(intent) = candidate.light_plus_intent() {
+                    if worker_budget.expired() {
+                        return None;
+                    }
+                    match candidate.apply_user_revision(&mut candidate_ledger, &intent) {
+                        Ok(revision) => revisions.push(revision),
+                        Err(_) => return None,
+                    }
+                }
+            } else {
+                let occurrences = candidate
+                    .document_by_occurrence
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                for occurrence in occurrences {
+                    if worker_budget.expired() {
+                        return None;
+                    }
+                    if let Ok(revision) = candidate.apply_incremental_shaping_with_pause(
+                        &mut candidate_ledger,
+                        &occurrence,
+                        pause,
+                    ) {
+                        revisions.push(revision);
+                    }
+                }
+            }
+            if worker_budget.expired() {
+                return None;
+            }
+            if revisions.iter().any(|revision| {
+                revision.entries.first().is_none_or(|entry| {
+                    !revision
+                        .authenticates_publication(&candidate_ledger, &entry.occurrence.session)
+                })
+            }) {
+                return None;
+            }
+            Some((candidate, candidate_ledger, revisions))
+        });
+        let Some(Some((mut candidate, candidate_ledger, revisions))) = prepared else {
+            if budget.expired() {
+                self.light_plus_deadline_receipt(budget);
+            }
+            return None;
+        };
+        if revisions.is_empty() {
+            return None;
+        }
+        let mut state = self
+            .session_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if state.revision != source_revision
+            || state.derived_projections.len() != source_derived_count
+            || state.delivery_selection.is_some()
+        {
+            return None;
+        }
+        if budget.expired() {
+            drop(state);
+            self.light_plus_deadline_receipt(budget);
+            return None;
+        }
+        candidate.preparing_light_plus = false;
+        let previous_state = std::mem::replace(&mut *state, candidate);
+        let previous_ledger = std::mem::replace(ledger, candidate_ledger);
+        // The deadline includes the actual admission, not just calculation.
+        // No observer has seen a candidate yet, so an expired commit rolls back.
+        if budget.expired() {
+            *state = previous_state;
+            *ledger = previous_ledger;
+            drop(state);
+            self.light_plus_deadline_receipt(budget);
+            return None;
+        }
+        drop(state);
+        let commit = revisions.last().and_then(|revision| {
+            if let ReducerAction::ApplyUserRevision { receipt } = &revision.action {
+                Some(UserRevisionCommit {
+                    session_id: receipt.session_id.clone(),
+                    source_revision: receipt.source_revision,
+                    revision: revision.revision,
+                    rendered_text: revision.rendered_text.clone(),
+                    provenance_receipt: receipt.receipt_id.clone(),
+                })
+            } else {
+                None
+            }
+        });
+        for revision in revisions {
+            revision.record_trail();
+            if let Some(bus) = &self.transcript_bus {
+                let events = bus.publish_revision(&revision, ledger);
+                if let Some(callback) = &self.projection_callback {
+                    for event in &events {
+                        self.with_active_presentation(|| callback(event));
+                    }
+                }
+            }
+            self.send_committed_paint(revision.rendered_text);
+        }
+        commit
+    }
+
+    fn mint_light_plus_revision(
+        &self,
+        ledger: &mut AcousticLedger,
+        budget: &codescribe_core::pipeline::light_plus::TickBudget,
+    ) {
+        self.run_light_plus_tick(ledger, budget, true);
+    }
+
     fn mint_incremental_light_plus(
         &self,
         ledger: &mut AcousticLedger,
         _occurrences: &[OccurrenceIdentity],
+        budget: &codescribe_core::pipeline::light_plus::TickBudget,
     ) {
-        if self.literal_delivery() {
-            return;
-        }
-        let occurrences = self
-            .session_state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .document_by_occurrence
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>();
-        for occurrence in &occurrences {
-            let shaped = {
-                let mut reducer = self
-                    .session_state
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner());
-                reducer.apply_incremental_shaping_with_pause(
-                    ledger,
-                    occurrence,
-                    self.sentence_pause_sec,
-                )
-            };
-            match shaped {
-                Ok(revision) => {
-                    if !self.authenticates_revision(&revision, ledger) {
-                        continue;
-                    }
-                    if let Some(bus) = &self.transcript_bus {
-                        let events = bus.publish_revision(&revision, ledger);
-                        if events.is_empty() {
-                            continue;
-                        }
-                        if let Some(callback) = &self.projection_callback {
-                            for event in &events {
-                                self.with_active_presentation(|| callback(event));
-                            }
-                        }
-                    }
-                    self.send_committed_paint(revision.rendered_text);
-                }
-                // A repeated seal observation and a shape that changes nothing
-                // are both healthy no-ops, not failures.
-                Err(
-                    IncrementalShapingRefusal::AlreadyShaped | IncrementalShapingRefusal::Unchanged,
-                ) => {}
-                Err(refusal) => debug!(%refusal, "live Light+ shaping refused"),
-            }
-        }
+        self.run_light_plus_tick(ledger, budget, false);
     }
 
     /// Authenticate formatter input without mutating reducer, ledger, Bus, or
@@ -3081,26 +3167,46 @@ impl PresentationEmitter {
             .terminal_formatter_request()
     }
 
-    /// Admit only a successful formatter result into the existing revision
-    /// corridor. Failure, skipped policy, and healthy no-op are visible
+    /// Admit only a successful formatter result as a source-bound derived
+    /// version. Failure, skipped policy, and healthy no-op are visible
     /// refusals and therefore mint no ledger/history/Copy-last evidence.
     pub fn apply_formatter_revision(
         &self,
         session_id: String,
         source_revision: u64,
+        policy: FormattingPolicy,
         result: AiFormatResult,
     ) -> Result<UserRevisionCommit, UserRevisionRefusal> {
-        let rendered_text = match result.status {
-            AiFormatStatus::Applied => result.text,
+        match result.status {
+            AiFormatStatus::Applied => {}
             AiFormatStatus::Failed => return Err(UserRevisionRefusal::FormatterFailed),
             AiFormatStatus::Skipped => return Err(UserRevisionRefusal::FormatterUnavailable),
             AiFormatStatus::AiNoop => return Err(UserRevisionRefusal::FormatterNoop),
-        };
-        self.apply_user_revision(UserRevisionIntent {
+        }
+        let mut reducer = self
+            .session_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let source = reducer.terminal_revision_source(&session_id, source_revision)?;
+        if source == result.text {
+            return Err(UserRevisionRefusal::Unchanged);
+        }
+        let projection = reducer.mint_derived_projection(
             session_id,
             source_revision,
-            rendered_text,
-            provenance: DocumentRevisionProvenance::Formatter,
+            source,
+            policy,
+            result,
+            None,
+        );
+        drop(reducer);
+        self.publish_derived_paint(&projection);
+        Ok(UserRevisionCommit {
+            session_id: projection.session_id.clone(),
+            source_revision: projection.source_raw_revision,
+            revision: projection.revision,
+            rendered_text: projection.rendered_text.clone(),
+            provenance_receipt: projection.receipt_id.clone(),
         })
     }
 
@@ -3145,6 +3251,7 @@ impl PresentationEmitter {
             .rev()
             .find(|projection| {
                 projection.source_observation.is_none()
+                    && projection.source_state == "raw_document"
                     && projection.source_raw_revision == request.source_revision
                     && projection.requested_mode == policy.as_str()
                     && projection.source_raw_text == raw_at_handoff
@@ -3152,33 +3259,44 @@ impl PresentationEmitter {
             .cloned()
         {
             reducer.delivery_selection = Some(whole.clone());
+            drop(reducer);
+            self.publish_derived_paint(&whole);
             return Some(whole);
         }
-        for entry in reducer.document_by_occurrence.values() {
-            let projection = reducer.derived_projections.iter().rev().find(|projection| {
-                projection.requested_mode == policy.as_str()
-                    && projection
-                        .source_observation
-                        .as_ref()
-                        .is_some_and(|source| {
-                            source.occurrence == entry.occurrence
-                                && projection.source_raw_text == entry.label
-                                && entry.manual_edit_receipt.is_none()
-                                && entry.observation_receipt.starts_with(&format!(
-                                    "{}:{}:{}:",
-                                    source.producer.as_str(),
-                                    source.request,
-                                    source.generation
-                                ))
-                        })
-            });
-            match projection {
-                Some(projection) if projection.status == "applied" => {
-                    append_exact_fragment(&mut text, &projection.rendered_text)
-                }
-                _ => {
-                    complete = false;
-                    break;
+        if policy == FormattingPolicy::Max
+            && exact_raw
+            && !reducer.raw_human_revision
+            && !reducer.consultation_presentations.is_empty()
+        {
+            text = reducer.consulted_rendered_text();
+            complete = true;
+        } else {
+            for entry in reducer.document_by_occurrence.values() {
+                let projection = reducer.derived_projections.iter().rev().find(|projection| {
+                    projection.requested_mode == policy.as_str()
+                        && projection
+                            .source_observation
+                            .as_ref()
+                            .is_some_and(|source| {
+                                source.occurrence == entry.occurrence
+                                    && projection.source_raw_text == entry.label
+                                    && entry.manual_edit_receipt.is_none()
+                                    && entry.observation_receipt.starts_with(&format!(
+                                        "{}:{}:{}:",
+                                        source.producer.as_str(),
+                                        source.request,
+                                        source.generation
+                                    ))
+                            })
+                });
+                match projection {
+                    Some(projection) if projection.status == "applied" => {
+                        append_exact_fragment(&mut text, &projection.rendered_text)
+                    }
+                    _ => {
+                        complete = false;
+                        break;
+                    }
                 }
             }
         }
@@ -3188,7 +3306,7 @@ impl PresentationEmitter {
             } else if complete {
                 text
             } else {
-                codescribe_core::ai_formatting::corrections_floor(&request.source_text)
+                request.source_text.clone()
             },
             reasoning_text: None,
             status: if complete || policy == FormattingPolicy::Off {
@@ -3213,10 +3331,9 @@ impl PresentationEmitter {
                 .last_mut()
                 .expect("minted selection") = projection.clone();
         }
-        if let Some(bus) = &self.transcript_bus {
-            bus.record_derived_projection(&projection);
-        }
         reducer.delivery_selection = Some(projection.clone());
+        drop(reducer);
+        self.publish_derived_paint(&projection);
         Some(projection)
     }
 
@@ -3283,6 +3400,7 @@ impl EventSink for PresentationEmitter {
 
     /// Route an `EngineEvent` into reducer state and ordered delta delivery.
     fn on_event(&self, event: &EngineEvent) {
+        let tick_budget = self.schedule_light_plus();
         match event {
             EngineEvent::SpeechIntegrity { evidence } => {
                 if !self.cursor_capture.get().is_some_and(|(session, epoch)| {
@@ -3360,9 +3478,9 @@ impl EventSink for PresentationEmitter {
                         delivery: revision.rendered_text,
                     });
                     if was_stop_revision {
-                        self.mint_light_plus_revision(&mut ledger);
+                        self.mint_light_plus_revision(&mut ledger, &tick_budget);
                     } else {
-                        self.mint_incremental_light_plus(&mut ledger, &[]);
+                        self.mint_incremental_light_plus(&mut ledger, &[], &tick_budget);
                     }
                 }
             }
@@ -3391,7 +3509,7 @@ impl EventSink for PresentationEmitter {
                         .lock()
                         .unwrap_or_else(|error| error.into_inner())
                         .mark_terminal_lifecycle();
-                    self.mint_light_plus_revision(&mut ledger);
+                    self.mint_light_plus_revision(&mut ledger, &tick_budget);
                 }
                 let (revision, evidence_closed) = {
                     let mut state = self
@@ -3433,12 +3551,16 @@ impl EventSink for PresentationEmitter {
                 // publishes `session_ended`, so the terminal projection Swift
                 // holds already carries the shaped bytes and revision number.
                 if terminal {
-                    self.mint_light_plus_revision(&mut ledger);
+                    self.mint_light_plus_revision(&mut ledger, &tick_budget);
                 } else {
                     // An occurrence seal closes exactly those words and nothing
                     // else. Retry presentation for any committed span that was
                     // not shaped at admission; the lifecycle stays open.
-                    self.mint_incremental_light_plus(&mut ledger, &receipt.sealed_occurrences);
+                    self.mint_incremental_light_plus(
+                        &mut ledger,
+                        &receipt.sealed_occurrences,
+                        &tick_budget,
+                    );
                 }
             }
             EngineEvent::SealCoverage {
@@ -3531,7 +3653,11 @@ impl EventSink for PresentationEmitter {
                 }
                 // Closing the formatter frontier can permit Raw shaping. This
                 // deterministic shape still describes the unchanged acoustic label.
-                self.mint_incremental_light_plus(&mut ledger, std::slice::from_ref(&occurrence));
+                self.mint_incremental_light_plus(
+                    &mut ledger,
+                    std::slice::from_ref(&occurrence),
+                    &tick_budget,
+                );
             }
             EngineEvent::VadStart { .. } | EngineEvent::VadEnd { .. } => {}
             EngineEvent::SidebandEvidence { evidence } => {
@@ -3702,7 +3828,7 @@ impl EventSink for PresentationEmitter {
                         .mark_terminal_lifecycle();
                     if let Some(ledger) = &self.acoustic_ledger {
                         let mut ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
-                        self.mint_light_plus_revision(&mut ledger);
+                        self.mint_light_plus_revision(&mut ledger, &tick_budget);
                     }
                     return;
                 }
@@ -3717,7 +3843,7 @@ impl EventSink for PresentationEmitter {
                 // seal already shaped yields no second intent.
                 if let Some(ledger) = &self.acoustic_ledger {
                     let mut ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
-                    self.mint_light_plus_revision(&mut ledger);
+                    self.mint_light_plus_revision(&mut ledger, &tick_budget);
                 }
             }
         }
@@ -4111,43 +4237,25 @@ mod tests {
             )
             .unwrap();
         assert_eq!(revision.rendered_text, "Gotowe polecenie dalsze słowa");
-        assert_eq!(revision.entries.len(), 3);
-        assert!(revision.authenticates_publication(&ledger, "group-live"));
-        assert!(
-            revision.entries[..2]
-                .iter()
-                .all(|entry| entry.presentation_receipt.is_none())
-        );
+        assert!(revision.authenticates_publication());
+        assert_eq!(reducer.revision, revision.source_raw_revision);
+        assert_eq!(reducer.committed_rendered_text(), "Iwo iwo dalsze słowa");
         assert_eq!(ledger.text_of(&members[0].occurrence), Some("iwo"));
         assert_eq!(ledger.text_of(&members[1].occurrence), Some("iwo"));
         assert!(!reducer.terminal);
-
-        let temp = tempfile::tempdir().unwrap();
-        let bus = TranscriptBus::open_at(
-            dictation_session("group-live", true),
-            temp.path().join("groups.jsonl"),
-            None,
-        )
-        .unwrap();
         let mut forged = revision.clone();
-        forged.consultation_presentations[0].rendered_text = "forged".into();
-        forged.publication_digest = forged.digest();
-        assert!(bus.publish_revision(&forged, &ledger).is_empty());
-        let events = bus.publish_revision(&revision, &ledger);
-        assert_eq!(events.len(), 3);
-        for event in &events {
-            assert_eq!(event.reducer_action, "apply_consultation_presentation");
-            assert_eq!(event.rendered_text, revision.rendered_text);
-            assert_eq!(event.consultation_presentations[0].members.len(), 2);
-            assert_eq!(event.consultation_presentations[0].turn_id, "first");
-            assert!(!event.terminal && !event.lifecycle_terminal);
-            let encoded = serde_json::to_string(event).unwrap();
-            assert_eq!(
-                serde_json::from_str::<TranscriptBusEvidenceEvent>(&encoded).unwrap(),
-                *event
-            );
-        }
-        assert!(bus.publish_revision(&revision, &ledger).is_empty());
+        forged.rendered_text = "forged".into();
+        assert!(!forged.authenticates_publication());
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("groups.jsonl");
+        let bus = TranscriptBus::open_at(dictation_session("group-live", true), path.clone(), None)
+            .unwrap();
+        bus.record_derived_projection(&forged);
+        bus.record_derived_projection(&revision);
+        let history =
+            crate::presentation::transcript_bus::document_history_at(&path, "group-live").unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].rendered_text, revision.rendered_text);
         assert!(
             reducer
                 .apply_consultation_presentation(
@@ -4177,7 +4285,11 @@ mod tests {
         let suffix = reducer
             .apply_ledger_mutation(&ledger, &observation, &receipt)
             .unwrap();
-        assert_eq!(suffix.rendered_text, "Gotowe polecenie dalsze słowa jutro");
+        assert_eq!(suffix.rendered_text, "Iwo iwo dalsze słowa jutro");
+        assert_eq!(
+            reducer.consulted_rendered_text(),
+            "Gotowe polecenie dalsze słowa jutro"
+        );
         assert!(suffix.authenticates_publication(&ledger, "group-live"));
         assert_eq!(bus.publish_revision(&suffix, &ledger).len(), 4);
         assert_eq!(ledger.len(), 4);
@@ -6208,22 +6320,13 @@ mod tests {
                 )
                 .unwrap()
         };
-        emitter.publish_revision(revision);
+        emitter.publish_derived_paint(&revision);
         let frozen = emitter.finish_stop_canvas().unwrap();
-        assert_eq!(frozen.text, "Combined answer");
+        assert_eq!(revision.rendered_text, "Combined answer");
+        assert_eq!(frozen.text, stopped.text);
         assert_eq!(frozen.committed_sources.len(), 2);
         let missing = stopped.missing_words_from(&frozen);
-        assert_eq!(missing.len(), 4);
-        for member in &members {
-            assert_eq!(
-                missing
-                    .iter()
-                    .filter(|word| word.reason
-                        == format!("reshaped_in_place occurrence={:?}", member.occurrence))
-                    .count(),
-                2
-            );
-        }
+        assert!(missing.is_empty());
         {
             let mut state = emitter.session_state.lock().unwrap();
             state.document_by_occurrence.remove(&members[1].occurrence);
@@ -6475,6 +6578,7 @@ mod tests {
             .apply_formatter_revision(
                 "refused-take".to_string(),
                 terminal.reducer_revision,
+                FormattingPolicy::Smart,
                 AiFormatResult {
                     text: "Druga wersja".to_string(),
                     reasoning_text: None,
@@ -6485,14 +6589,15 @@ mod tests {
         assert!(formatted.provenance_receipt.starts_with("formatter-"));
         let edit = UserRevisionIntent {
             session_id: "refused-take".to_string(),
-            source_revision: formatted.revision,
-            rendered_text: first.rendered_text.clone(),
+            source_revision: formatted.source_revision,
+            rendered_text: formatted.rendered_text.clone(),
             provenance: DocumentRevisionProvenance::UserEdit,
         };
         let user_edit = emitter
             .apply_user_revision(edit.clone())
             .expect("history restore needs lifecycle end, not a seal");
-        assert_eq!(user_edit.rendered_text, first.rendered_text);
+        assert_eq!(user_edit.rendered_text, formatted.rendered_text);
+        assert_ne!(first.rendered_text, formatted.rendered_text);
         assert!(user_edit.provenance_receipt.starts_with("user-edit-"));
         let committed = emitter
             .apply_user_revision(UserRevisionIntent {
@@ -6527,15 +6632,12 @@ mod tests {
             .expect("formatter is the first edit after session_ended");
         assert!(first_edit_after_end.contains("\"phase\":\"coverage_refused\""));
         assert!(
-            first_edit_after_end.contains(&format!("\"reducer_revision\":{}", formatted.revision))
+            first_edit_after_end.contains(&format!("\"reducer_revision\":{}", user_edit.revision))
         );
         assert!(
-            rows.lines().any(|row| {
-                row.contains(&format!("\"reducer_revision\":{}", formatted.revision))
-                    && row.contains("\"phase\":\"coverage_refused\"")
-                    && row.contains("\"reducer_action\":\"apply_manual_edit\"")
-            }),
-            "formatter revision keeps the refused phase"
+            rows.lines()
+                .any(|row| row.contains(&formatted.provenance_receipt)
+                    && row.contains("codescribe.derived-transcript.v1"))
         );
         for row in rows
             .lines()
@@ -6727,7 +6829,7 @@ mod tests {
                 session_id: "version-take".into(),
                 source_revision: terminal.reducer_revision,
                 rendered_text: "Second words".into(),
-                provenance: DocumentRevisionProvenance::Formatter,
+                provenance: DocumentRevisionProvenance::UserEdit,
             })
             .unwrap();
         let third = emitter
@@ -6741,7 +6843,7 @@ mod tests {
         let before =
             crate::presentation::transcript_bus::document_history_at(&path, "version-take")
                 .unwrap();
-        assert_eq!(before[before.len() - 2].provenance, "formatter");
+        assert_eq!(before[before.len() - 2].provenance, "user-edit");
         assert_eq!(before.last().unwrap().provenance, "retranscribe");
         let restored = emitter
             .apply_user_revision(UserRevisionIntent {
@@ -6838,6 +6940,7 @@ mod tests {
         let failure = emitter.apply_formatter_revision(
             "formatter-session".to_string(),
             terminal.reducer_revision,
+            FormattingPolicy::Smart,
             AiFormatResult {
                 text: source.clone(),
                 reasoning_text: None,
@@ -6868,6 +6971,7 @@ mod tests {
             .apply_formatter_revision(
                 "formatter-session".to_string(),
                 terminal.reducer_revision,
+                FormattingPolicy::Smart,
                 AiFormatResult {
                     text: formatted.clone(),
                     reasoning_text: None,
@@ -6879,31 +6983,33 @@ mod tests {
         assert!(commit.provenance_receipt.starts_with("formatter-"));
 
         emitter.finish().await;
-        assert_eq!(delivery.lock().await.as_str(), formatted);
+        assert_eq!(delivery.lock().await.as_str(), source);
         let ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
-        assert_eq!(ledger.manual_document_revisions().len(), 2);
+        assert_eq!(ledger.manual_document_revisions().len(), 1);
         assert_eq!(
             ledger.manual_document_revisions()[0].provenance,
             "light-plus"
         );
-        assert_eq!(
-            ledger.manual_document_revisions()[1].provenance,
-            "formatter"
-        );
         drop(ledger);
         let projected = projected.lock().unwrap_or_else(|error| error.into_inner());
-        let revision_projection = projected
+        let version = projected
             .iter()
             .rev()
-            .find(|event| event.reducer_revision == commit.revision)
-            .expect("formatter revision projection callback");
-        assert_eq!(revision_projection.reducer_action, "apply_manual_edit");
-        assert_eq!(revision_projection.rendered_text, formatted);
-        assert_eq!(
-            revision_projection.acoustic_receipts[0]
-                .manual_edit_receipt
-                .as_deref(),
-            Some(commit.provenance_receipt.as_str())
+            .find(|event| event.reducer_action == "derived_projection")
+            .unwrap();
+        assert_eq!(version.rendered_text, source);
+        assert_eq!(version.delivery_text.as_deref(), Some(formatted.as_str()));
+        assert_eq!(version.reducer_revision, commit.source_revision);
+        let history = crate::presentation::transcript_bus::document_history_at(
+            &bus_path,
+            "formatter-session",
+        )
+        .unwrap();
+        assert!(history.iter().any(|entry| entry.rendered_text == source));
+        assert!(
+            history
+                .iter()
+                .any(|entry| entry.revision == commit.revision && entry.rendered_text == formatted)
         );
     }
 
@@ -7700,7 +7806,7 @@ mod tests {
         );
         let derived = &reducer.derived_projections()[0];
         assert_eq!(derived.status, "corrections_words_rejected");
-        assert_eq!(derived.rendered_text, "Iwo.");
+        assert_eq!(derived.rendered_text, "Iwo");
         assert_eq!(derived.source_raw_revision, raw_revision);
         assert_eq!(reducer.revision, raw_revision);
         assert_eq!(reducer.committed_rendered_text(), "Iwo");
@@ -8428,6 +8534,7 @@ mod tests {
             .apply_formatter_revision(
                 source.session_id.clone(),
                 source.source_revision,
+                FormattingPolicy::Smart,
                 AiFormatResult {
                     text: "Format before end".to_string(),
                     reasoning_text: None,
@@ -8440,12 +8547,20 @@ mod tests {
             .emitter
             .apply_user_revision(UserRevisionIntent {
                 session_id: source.session_id.clone(),
-                source_revision: before.revision,
-                rendered_text: original.clone(),
+                source_revision: before.source_revision,
+                rendered_text: before.rendered_text.clone(),
                 provenance: DocumentRevisionProvenance::UserEdit,
             })
             .expect("a sealed take admits Restore before lifecycle end");
-        assert_eq!(restored.rendered_text, original);
+        assert_eq!(restored.rendered_text, before.rendered_text);
+        assert_eq!(
+            take.emitter
+                .terminal_revision_source(&source.session_id, before.source_revision),
+            Err(UserRevisionRefusal::StaleRevision {
+                expected: restored.revision,
+                actual: before.source_revision
+            })
+        );
         assert!(restored.provenance_receipt.starts_with("user-edit-"));
 
         take.emitter.on_event(&EngineEvent::SessionFinalised {
@@ -8465,6 +8580,7 @@ mod tests {
             .apply_formatter_revision(
                 source.session_id.clone(),
                 ended.reducer_revision,
+                FormattingPolicy::Smart,
                 AiFormatResult {
                     text: "Format after end".to_string(),
                     reasoning_text: None,
@@ -8477,7 +8593,7 @@ mod tests {
             .emitter
             .apply_user_revision(UserRevisionIntent {
                 session_id: source.session_id,
-                source_revision: after.revision,
+                source_revision: after.source_revision,
                 rendered_text: original.clone(),
                 provenance: DocumentRevisionProvenance::UserEdit,
             })
@@ -10052,7 +10168,6 @@ mod tests {
         )));
     }
     #[test]
-    #[ignore = "W-0 falsifier: closes in L2/L4"]
     fn w0_falsifier_live_formatter_cannot_drop_a_word() {
         let (mut ledger, mut reducer, occurrence) = open_formatter_frontier();
         let whisper =
@@ -10076,7 +10191,364 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "W-0 falsifier: closes in L4"]
+    async fn max_group_and_terminal_light_plus_leave_raw_independent_and_select_max() {
+        use codescribe_core::pipeline::acoustic_ledger::ConsultationPresentationMember;
+        let mut take = live_take("max-raw");
+        let mut members = Vec::new();
+        for (index, text) in ["Iwo yyy [laugh]", "plan"].into_iter().enumerate() {
+            let occurrence = OccurrenceIdentity::new(
+                "max-raw",
+                19,
+                index as u64 * 16_000,
+                (index as u64 + 1) * 16_000,
+            );
+            take.admit(&occurrence, index as u64, text);
+            take.seal(&occurrence);
+            let ledger = take.ledger.lock().unwrap();
+            members.push(ConsultationPresentationMember {
+                occurrence: occurrence.clone(),
+                source_label: text.into(),
+                seal_receipt: ledger.seal_of(&occurrence).unwrap().receipt_id.clone(),
+            });
+        }
+        let before = take
+            .emitter
+            .session_state
+            .lock()
+            .unwrap()
+            .committed_rendered_text();
+        let before_revision = take.emitter.session_state.lock().unwrap().revision;
+        let projection = take
+            .emitter
+            .session_state
+            .lock()
+            .unwrap()
+            .apply_consultation_presentation(
+                &mut take.ledger.lock().unwrap(),
+                ConsultationPresentationInput {
+                    consultation_id: "Max",
+                    turn_id: "max-group",
+                    source_revision: 0,
+                    revision: 0,
+                    members: &members,
+                    rendered_text: "Max version",
+                },
+            )
+            .unwrap();
+        assert_eq!(projection.source_raw_revision, before_revision);
+        assert_eq!(
+            take.emitter.session_state.lock().unwrap().revision,
+            before_revision
+        );
+        assert_eq!(
+            take.emitter
+                .session_state
+                .lock()
+                .unwrap()
+                .committed_rendered_text(),
+            before
+        );
+        take.emitter.publish_derived_paint(&projection);
+        take.emitter.on_event(&EngineEvent::SessionFinalised {
+            session_id: "max-raw".into(),
+            layer_summary: LayerSummary::default(),
+        });
+        let raw = take.emitter.terminal_formatter_request().unwrap();
+        assert_eq!(raw.source_text, "Iwo yyy [laugh] plan.");
+        let selected = take
+            .emitter
+            .delivery_projection(FormattingPolicy::Max, &raw.source_text)
+            .unwrap();
+        assert_eq!(selected.rendered_text, "Max version");
+        assert_eq!(selected.source_raw_text, raw.source_text);
+        assert_eq!(selected.source_raw_revision, raw.source_revision);
+        take.emitter.finish().await;
+        assert_eq!(*take.delivery.lock().await, raw.source_text);
+    }
+
+    #[tokio::test]
+    async fn light_plus_admission_preserves_a_formatter_return_during_preparation() {
+        use codescribe_core::pipeline::light_plus::TickBudget;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let take = live_take("tick-formatter-race");
+        take.emitter.set_literal_delivery(true);
+        let occurrence = OccurrenceIdentity::new("tick-formatter-race", 19, 0, 16_000);
+        take.admit(&occurrence, 1, "Iwo yyy [laugh] plan");
+        take.seal(&occurrence);
+        take.emitter.on_event(&EngineEvent::SessionFinalised {
+            session_id: occurrence.session.clone(),
+            layer_summary: LayerSummary::default(),
+        });
+        take.emitter.set_literal_delivery(false);
+        let source = take.emitter.terminal_formatter_request().unwrap();
+        let emitter = Arc::new(take.emitter);
+        let target = Arc::downgrade(&emitter);
+        let source_revision = source.source_revision;
+        let returned = Arc::new(AtomicBool::new(false));
+        let observed = returned.clone();
+        let budget = TickBudget::schedule(Arc::new(move || {
+            if std::thread::current().name() == Some("light-plus-tick")
+                && !observed.swap(true, Ordering::SeqCst)
+            {
+                target
+                    .upgrade()
+                    .unwrap()
+                    .apply_formatter_revision(
+                        "tick-formatter-race".into(),
+                        source_revision,
+                        FormattingPolicy::Smart,
+                        AiFormatResult {
+                            text: "Smart version".into(),
+                            reasoning_text: None,
+                            status: AiFormatStatus::Applied,
+                        },
+                    )
+                    .unwrap();
+            }
+            std::time::Duration::ZERO
+        }));
+        {
+            let mut ledger = take.ledger.lock().unwrap();
+            assert!(
+                emitter
+                    .run_light_plus_tick(&mut ledger, &budget, true)
+                    .is_none()
+            );
+            assert!(ledger.manual_document_revisions().is_empty());
+        }
+        assert!(returned.load(Ordering::SeqCst));
+        assert_eq!(
+            emitter.session_state.lock().unwrap().revision,
+            source_revision
+        );
+        let selected = emitter
+            .delivery_projection(FormattingPolicy::Smart, &source.source_text)
+            .unwrap();
+        assert_eq!(selected.rendered_text, "Smart version");
+        let mut emitter = Arc::try_unwrap(emitter).ok().unwrap();
+        emitter.finish().await;
+        assert_eq!(*take.delivery.lock().await, source.source_text);
+    }
+
+    #[tokio::test]
+    async fn light_plus_deadline_includes_commit_and_rolls_back_before_publication() {
+        use codescribe_core::pipeline::light_plus::TickBudget;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let mut take = live_take("tick-commit");
+        take.emitter.set_literal_delivery(true);
+        let occurrence = OccurrenceIdentity::new("tick-commit", 19, 0, 16_000);
+        take.admit(&occurrence, 1, "Iwo yyy [laugh] plan");
+        take.seal(&occurrence);
+        take.emitter.set_literal_delivery(false);
+        let main = std::thread::current().id();
+        let checks = Arc::new(AtomicU64::new(0));
+        let seen = checks.clone();
+        let clock = Arc::new(move || {
+            let step = if std::thread::current().id() == main {
+                seen.fetch_add(1, Ordering::SeqCst)
+            } else {
+                0
+            };
+            std::time::Duration::from_millis(if step >= 6 { 2_001 } else { 0 })
+        });
+        let budget = TickBudget::schedule(clock);
+        let before = take.emitter.session_state.lock().unwrap().revision;
+        {
+            let mut ledger = take.ledger.lock().unwrap();
+            assert!(
+                take.emitter
+                    .run_light_plus_tick(&mut ledger, &budget, true)
+                    .is_none()
+            );
+            assert!(checks.load(Ordering::SeqCst) >= 7);
+            assert!(ledger.manual_document_revisions().is_empty());
+            assert_eq!(take.emitter.session_state.lock().unwrap().revision, before);
+        }
+        take.emitter.finish().await;
+        assert_eq!(*take.delivery.lock().await, "Iwo yyy [laugh] plan");
+    }
+
+    #[tokio::test]
+    async fn terminal_smart_projection_delivers_selected_bytes_and_preserves_raw_history() {
+        let mut take = live_take("overlay-smart-raw");
+        let occurrence = OccurrenceIdentity::new("overlay-smart-raw", 19, 0, 16_000);
+        take.admit(&occurrence, 1, "Iwo yyy [laugh] plan");
+        take.seal(&occurrence);
+        take.emitter.on_event(&EngineEvent::SessionFinalised {
+            session_id: occurrence.session.clone(),
+            layer_summary: LayerSummary::default(),
+        });
+        let source = take.emitter.terminal_formatter_request().unwrap();
+        assert_eq!(
+            take.emitter.apply_user_revision(UserRevisionIntent {
+                session_id: source.session_id.clone(),
+                source_revision: source.source_revision,
+                rendered_text: "Attempt to replace Raw".into(),
+                provenance: DocumentRevisionProvenance::Formatter,
+            }),
+            Err(UserRevisionRefusal::LedgerRefusal(
+                "formatter_requires_derived_projection"
+            ))
+        );
+        let commit = take
+            .emitter
+            .apply_formatter_revision(
+                source.session_id.clone(),
+                source.source_revision,
+                FormattingPolicy::Smart,
+                AiFormatResult {
+                    text: "Smart version".into(),
+                    reasoning_text: None,
+                    status: AiFormatStatus::Applied,
+                },
+            )
+            .unwrap();
+        assert_eq!(take.emitter.terminal_formatter_request().unwrap(), source);
+        assert!(commit.revision >= (1_u64 << 63));
+        assert_eq!(
+            take.emitter
+                .delivery_projection(FormattingPolicy::Smart, &source.source_text)
+                .unwrap()
+                .rendered_text,
+            "Smart version"
+        );
+        {
+            let events = take.projected.lock().unwrap();
+            let overlay = events
+                .iter()
+                .rev()
+                .find(|event| event.reducer_action == "derived_projection")
+                .unwrap();
+            assert_eq!(overlay.rendered_text, source.source_text);
+            assert_eq!(overlay.delivery_text.as_deref(), Some("Smart version"));
+            assert!(!overlay.lifecycle_terminal);
+        }
+        let history = crate::presentation::transcript_bus::document_history_at(
+            &take.bus_path,
+            &source.session_id,
+        )
+        .unwrap();
+        assert!(
+            history
+                .iter()
+                .any(|entry| entry.rendered_text == source.source_text)
+        );
+        assert!(
+            history
+                .iter()
+                .any(|entry| entry.rendered_text == "Smart version")
+        );
+        take.emitter.finish().await;
+        assert_eq!(*take.delivery.lock().await, source.source_text);
+    }
+
+    #[tokio::test]
+    async fn light_plus_expired_queue_retains_exact_raw_on_live_and_terminal_paths() {
+        use codescribe_core::pipeline::light_plus::TickBudget;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        for terminal in [false, true] {
+            let mut take = live_take("tick-queue");
+            take.emitter.set_literal_delivery(true);
+            let occurrence = OccurrenceIdentity::new("tick-queue", 19, 0, 16_000);
+            take.admit(&occurrence, 1, "Iwo yyy [laugh] plan");
+            take.seal(&occurrence);
+            take.emitter.set_literal_delivery(false);
+            let time = Arc::new(AtomicU64::new(0));
+            let clock_time = time.clone();
+            let budget = TickBudget::schedule(Arc::new(move || {
+                std::time::Duration::from_millis(clock_time.load(Ordering::SeqCst))
+            }));
+            time.store(2_001, Ordering::SeqCst);
+            let before = take.emitter.session_state.lock().unwrap().revision;
+            {
+                let mut ledger = take.ledger.lock().unwrap();
+                take.emitter
+                    .run_light_plus_tick(&mut ledger, &budget, terminal);
+                assert!(ledger.manual_document_revisions().is_empty());
+                assert!(ledger.incremental_shapings().is_empty());
+            }
+            let rows = std::fs::read_to_string(&take.bus_path).unwrap();
+            assert!(rows.contains("codescribe.light-plus-tick.v1"));
+            assert!(rows.contains("deadline_exceeded"));
+            {
+                let events = take.projected.lock().unwrap();
+                let receipt = events
+                    .iter()
+                    .rev()
+                    .find(|event| event.reducer_action == "light_plus_tick_deadline")
+                    .unwrap();
+                assert_eq!(receipt.rendered_text, "Iwo yyy [laugh] plan");
+            }
+            assert_eq!(take.emitter.session_state.lock().unwrap().revision, before);
+            assert_eq!(
+                take.emitter
+                    .session_state
+                    .lock()
+                    .unwrap()
+                    .committed_rendered_text(),
+                "Iwo yyy [laugh] plan"
+            );
+            take.emitter.finish().await;
+            assert_eq!(*take.delivery.lock().await, "Iwo yyy [laugh] plan");
+        }
+    }
+
+    #[tokio::test]
+    async fn light_plus_discards_late_work_without_authority_and_commits_timely_work() {
+        use codescribe_core::pipeline::light_plus::TickBudget;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        for terminal in [false, true] {
+            let mut take = live_take("tick-compute");
+            take.emitter.set_literal_delivery(true);
+            let occurrence = OccurrenceIdentity::new("tick-compute", 19, 0, 16_000);
+            take.admit(&occurrence, 1, "Iwo yyy [laugh] plan");
+            take.seal(&occurrence);
+            take.emitter.set_literal_delivery(false);
+            let worker_checks = Arc::new(AtomicU64::new(0));
+            let elapsed = Arc::new(AtomicU64::new(0));
+            let time = elapsed.clone();
+            let budget = TickBudget::schedule(Arc::new(move || {
+                if std::thread::current().name() == Some("light-plus-tick")
+                    && worker_checks.fetch_add(1, Ordering::SeqCst) >= 2
+                {
+                    time.store(2_001, Ordering::SeqCst);
+                }
+                std::time::Duration::from_millis(time.load(Ordering::SeqCst))
+            }));
+            {
+                let mut ledger = take.ledger.lock().unwrap();
+                take.emitter
+                    .run_light_plus_tick(&mut ledger, &budget, terminal);
+                assert!(ledger.incremental_shapings().is_empty());
+                assert!(ledger.manual_document_revisions().is_empty());
+                assert_eq!(
+                    take.emitter
+                        .session_state
+                        .lock()
+                        .unwrap()
+                        .committed_rendered_text(),
+                    "Iwo yyy [laugh] plan"
+                );
+                // A new, timely tick is admitted normally; timed-out work owns no
+                // live references and cannot replace this version afterwards.
+                let timely = TickBudget::default();
+                take.emitter
+                    .run_light_plus_tick(&mut ledger, &timely, terminal);
+                assert_eq!(ledger.text_of(&occurrence), Some("Iwo yyy [laugh] plan"));
+            }
+            take.emitter.finish().await;
+            assert_eq!(
+                *take.delivery.lock().await,
+                if terminal {
+                    "Iwo yyy [laugh] plan."
+                } else {
+                    "Iwo yyy [laugh] plan"
+                }
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn w0_falsifier_smart_cannot_replace_raw_projection() {
         let mut take = live_take("w0-smart-raw");
         let occurrence = OccurrenceIdentity::new("w0-smart-raw", 19, 0, 16_000);
@@ -10098,6 +10570,7 @@ mod tests {
             .apply_formatter_revision(
                 source.session_id,
                 source.source_revision,
+                FormattingPolicy::Smart,
                 AiFormatResult {
                     text: "Smart result".into(),
                     reasoning_text: None,

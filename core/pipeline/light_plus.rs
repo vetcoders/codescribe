@@ -26,6 +26,73 @@
 /// Punctuation that closes a clause and may therefore be doubled by a seam.
 const COLLAPSIBLE_PUNCT: [char; 6] = ['.', '!', '?', ',', ';', ':'];
 
+/// One deadline from scheduling through admission, including worker queue time.
+/// A worker owns candidates only; timing out drops its return channel and
+/// cannot grant it authority to publish a late result.
+#[derive(Clone)]
+pub struct TickBudget {
+    scheduled: std::time::Duration,
+    wall_started: std::time::Instant,
+    clock: std::sync::Arc<dyn Fn() -> std::time::Duration + Send + Sync>,
+}
+
+impl Default for TickBudget {
+    fn default() -> Self {
+        let origin = std::time::Instant::now();
+        Self::schedule(std::sync::Arc::new(move || origin.elapsed()))
+    }
+}
+
+impl TickBudget {
+    pub const LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+    pub fn schedule(clock: std::sync::Arc<dyn Fn() -> std::time::Duration + Send + Sync>) -> Self {
+        Self {
+            scheduled: clock(),
+            wall_started: std::time::Instant::now(),
+            clock,
+        }
+    }
+
+    pub fn elapsed(&self) -> std::time::Duration {
+        (self.clock)()
+            .saturating_sub(self.scheduled)
+            .max(self.wall_started.elapsed())
+    }
+
+    pub fn expired(&self) -> bool {
+        self.elapsed() >= Self::LIMIT
+    }
+
+    /// Wait only for the remaining budget. The closure must have no access to
+    /// live authority; its output still needs deadline and source admission.
+    pub fn prepare<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(Self) -> T + Send + 'static,
+    ) -> Option<T> {
+        let remaining = Self::LIMIT.checked_sub(self.elapsed())?;
+        if remaining.is_zero() {
+            return None;
+        }
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let budget = self.clone();
+        std::thread::Builder::new()
+            .name("light-plus-tick".into())
+            .spawn(move || {
+                if !budget.expired() {
+                    let result = work(budget.clone());
+                    if !budget.expired() {
+                        let _ = sender.send(result);
+                    }
+                }
+            })
+            .ok()?;
+        let remaining = Self::LIMIT.checked_sub(self.elapsed())?;
+        let result = receiver.recv_timeout(remaining).ok()?;
+        (!self.expired()).then_some(result)
+    }
+}
+
 /// Apply the deterministic sentence-shaping pass. Idempotent, no allocations
 /// beyond the output, no network, no model.
 ///
@@ -254,6 +321,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn tick_budget_counts_queue_time_and_refuses_late_candidates() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        };
+        let time = Arc::new(AtomicU64::new(0));
+        let clock_time = time.clone();
+        let clock: Arc<dyn Fn() -> std::time::Duration + Send + Sync> =
+            Arc::new(move || std::time::Duration::from_millis(clock_time.load(Ordering::SeqCst)));
+        let queued = TickBudget::schedule(clock.clone());
+        time.store(2_001, Ordering::SeqCst);
+        assert!(
+            queued
+                .prepare(|_| panic!("expired queued job must not start"))
+                .is_none()
+        );
+        time.store(0, Ordering::SeqCst);
+        let late = TickBudget::schedule(clock.clone());
+        let worker_time = time.clone();
+        assert!(
+            late.prepare(move |_| {
+                worker_time.store(2_001, Ordering::SeqCst);
+                "late candidate"
+            })
+            .is_none()
+        );
+        time.store(0, Ordering::SeqCst);
+        let timely = TickBudget::schedule(clock);
+        assert_eq!(
+            timely.prepare(|_| apply("Iwo yyy [laugh]")),
+            Some("Iwo yyy [laugh].".into())
+        );
+    }
+
+    #[test]
     fn polish_clauses_gain_commas_without_losing_words() {
         let source = "to jest fajne bo VNC jak stosuję to zazwyczaj nie potrzebuję wiedzieć że program który działa jest otwarty";
         let shaped = apply(source);
@@ -474,7 +576,6 @@ mod tests {
         assert_eq!(apply(&document), document);
     }
     #[test]
-    #[ignore = "W-0 falsifier: closes in L2"]
     fn w0_falsifier_light_plus_preserves_yyy_in_raw() {
         let shaped = apply("Iwo yyy wraca");
         assert!(
