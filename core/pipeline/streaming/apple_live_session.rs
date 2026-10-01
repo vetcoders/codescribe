@@ -4971,7 +4971,7 @@ fn admit_late_apple_words(
                 let receipt = if ledger.matching_word_slot(&owner, &pin, &text, false) {
                     ledger.refuse_replayed_range(&observation, &text)
                 } else {
-                    ledger.refuse_replacement(&observation, &text, RefuseReason::SealedReplay)
+                    ledger.refuse_replacement(&observation, &text, RefuseReason::AuthorityConflict)
                 };
                 let _ = ev_tx.send(EngineEvent::LedgerMutation {
                     observation,
@@ -7258,6 +7258,7 @@ fn close_apple_phrase(
                     MutationReceipt::Refuse {
                         reason:
                             RefuseReason::SealedReplay
+                            | RefuseReason::AuthorityConflict
                             | RefuseReason::BatchDuplicate
                             | RefuseReason::ReplayedRangeIdentity,
                         ..
