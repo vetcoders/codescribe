@@ -21262,6 +21262,65 @@ mod relay_l1_overlap_admission_tests {
         );
     }
 
+    /// Start of the second window and the region both windows decode.
+    fn shared_window_region(requests: &[TailPatchRequest]) -> (u64, u64) {
+        let first = &requests[0].provider_request.identity.range;
+        let second = &requests[1].provider_request.identity.range;
+        assert!(
+            first.sample_end >= second.sample_start + 15_000,
+            "the two windows must share at least 15 000 samples: first {}..{}, second {}..{}",
+            first.sample_start,
+            first.sample_end,
+            second.sample_start,
+            second.sample_end
+        );
+        (second.sample_start, first.sample_end)
+    }
+
+    // Take agent-channel-3-22e65577 (Astra's evidence): generation 0 brought one
+    // "dość", generation 1 one adjacent "dość"; the ledger kept both.
+    #[test]
+    fn integrator_adjacent_batches_each_with_one_word_keep_one_copy() {
+        let session = "integrator-dosc";
+        let (mut lane, owner, requests) = forensic_lane(session, &[]);
+        let (base, _) = shared_window_region(&requests);
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![
+                    word_pin(session, "to", base + 2_000, base + 8_000),
+                    word_pin(session, "dość", base + 8_000, base + 10_000),
+                ],
+            ),
+            12.5,
+        );
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[1],
+                vec![
+                    word_pin(session, "to", base + 2_200, base + 8_000),
+                    word_pin(session, "dość", base + 10_000, base + 21_000),
+                    word_pin(session, "niesympatyczne", base + 21_000, base + 40_000),
+                ],
+            ),
+            12.5,
+        );
+        let text = held_text(&lane, &owner).unwrap_or_default();
+        assert_eq!(
+            text.split_whitespace()
+                .filter(|word| *word == "dość")
+                .count(),
+            1,
+            "{text}"
+        );
+        assert!(text.contains("to dość niesympatyczne"), "{text}");
+        let ledger = lane.state.acoustic_ledger.lock().unwrap();
+        assert!(ledger.word_deletions().is_empty());
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
     fn long_word_windows(session: &str) -> [Vec<TimedTailSegment>; 3] {
         [
             vec![
