@@ -7745,6 +7745,44 @@ mod tests {
         assert_eq!(ledger.text_of(&occurrence), Some("Iwona"));
     }
 
+    #[test]
+    fn relay_acceptance_stale_smart_cannot_overwrite_manual_human() {
+        let (mut ledger, mut reducer, occurrence) = open_formatter_frontier();
+        let source = ledger
+            .layer_trail_for(&occurrence)
+            .filter(|decision| decision.decision.grants_mutation())
+            .last()
+            .unwrap()
+            .observation
+            .clone();
+        let proposal = OccurrenceLabelProposal::for_existing_occurrence(
+            occurrence.session.clone(),
+            occurrence.capture_epoch,
+            occurrence.sample_start,
+            occurrence.sample_end,
+            "Old Smart",
+            LabelProposalDisposition::Propose,
+        )
+        .with_source(source, "Iwo".into(), FormattingPolicy::Smart);
+        let human =
+            ObservationIdentity::new(ObservationProducer::ManualHuman, 9, 9, occurrence.clone());
+        let receipt = ledger.admit(&human, "Iwona");
+        assert!(receipt.grants_mutation());
+        reducer
+            .apply_ledger_mutation(&ledger, &human, &receipt)
+            .unwrap();
+        let revision = reducer.revision;
+        let slots = ledger.slots_of(&occurrence).unwrap().to_vec();
+        reducer.apply_occurrence_label_proposal(&mut ledger, &proposal);
+        assert_eq!(
+            reducer.derived_projections().last().unwrap().status,
+            "stale_source"
+        );
+        assert_eq!(reducer.committed_rendered_text(), "Iwona");
+        assert_eq!(reducer.revision, revision);
+        assert_eq!(ledger.slots_of(&occurrence).unwrap(), slots);
+    }
+
     #[tokio::test]
     async fn smart_deadline_delivers_one_whole_corrections_version_and_keeps_raw() {
         let mut take = live_take("smart-deadline");
@@ -7818,6 +7856,42 @@ mod tests {
         assert_eq!(rows[0]["selected_mode"], "correction");
         assert_eq!(rows[0]["payload_utf8"], payload);
         assert_eq!(rows[0]["disposition"], "copied_to_clipboard");
+        // A late successful answer is retained as another available version,
+        // but must not revise the already selected handoff or emit delivery.
+        {
+            let mut reducer = take.emitter.session_state.lock().unwrap();
+            let count = reducer.derived_projections().len();
+            reducer.mint_derived_projection(
+                raw.session_id.clone(),
+                raw.source_revision,
+                raw.source_text.clone(),
+                FormattingPolicy::Smart,
+                AiFormatResult {
+                    text: "Late complete Smart".into(),
+                    reasoning_text: None,
+                    status: AiFormatStatus::Applied,
+                },
+                None,
+            );
+            assert_eq!(reducer.derived_projections().len(), count + 1);
+            assert_eq!(
+                reducer.derived_projections().last().unwrap().status,
+                "applied"
+            );
+        }
+        assert_eq!(
+            take.emitter
+                .delivery_projection(FormattingPolicy::Smart, &raw.source_text)
+                .unwrap(),
+            selected
+        );
+        let deliveries = std::fs::read_to_string(&take.bus_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .filter(|row| row["schema"] == "codescribe.projection-delivery.v1")
+            .count();
+        assert_eq!(deliveries, 1, "late Smart emitted another delivery receipt");
         take.emitter.finish().await;
         assert_eq!(*take.delivery.lock().await, raw.source_text);
     }
@@ -10052,14 +10126,17 @@ mod tests {
         )));
     }
     #[test]
-    #[ignore = "W-0 falsifier: closes in L2/L4"]
     fn w0_falsifier_live_formatter_cannot_drop_a_word() {
         let (mut ledger, mut reducer, occurrence) = open_formatter_frontier();
         let whisper =
             ObservationIdentity::new(ObservationProducer::Whisper, 2, 1, occurrence.clone());
         let receipt = ledger.admit(&whisper, "Iwo plan");
-        reducer.apply_ledger_mutation(&ledger, &whisper, &receipt);
+        reducer
+            .apply_ledger_mutation(&ledger, &whisper, &receipt)
+            .unwrap();
         assert_eq!(reducer.committed_rendered_text(), "Iwo plan");
+        let raw_revision = reducer.revision;
+        let slots = ledger.slots_of(&occurrence).unwrap().to_vec();
         let proposal = OccurrenceLabelProposal::for_existing_occurrence(
             occurrence.session.clone(),
             occurrence.capture_epoch,
@@ -10067,16 +10144,19 @@ mod tests {
             occurrence.sample_end,
             "Iwo",
             LabelProposalDisposition::Propose,
-        );
+        )
+        .with_source(whisper, "Iwo plan".into(), FormattingPolicy::Smart);
         reducer.apply_occurrence_label_proposal(&mut ledger, &proposal);
-        assert!(
-            reducer.committed_rendered_text().contains("plan"),
-            "live formatter removed a word"
-        );
+        let derived = reducer.derived_projections().last().unwrap();
+        assert_eq!(derived.status, "applied", "exercise an accepted proposal");
+        assert_eq!(derived.rendered_text, "Iwo");
+        assert_eq!(derived.source_raw_revision, raw_revision);
+        assert_eq!(reducer.committed_rendered_text(), "Iwo plan");
+        assert_eq!(reducer.revision, raw_revision);
+        assert_eq!(ledger.slots_of(&occurrence).unwrap(), slots);
     }
 
     #[tokio::test]
-    #[ignore = "W-0 falsifier: closes in L4"]
     async fn w0_falsifier_smart_cannot_replace_raw_projection() {
         let mut take = live_take("w0-smart-raw");
         let occurrence = OccurrenceIdentity::new("w0-smart-raw", 19, 0, 16_000);
@@ -10096,7 +10176,7 @@ mod tests {
             .to_vec();
         take.emitter
             .apply_formatter_revision(
-                source.session_id,
+                source.session_id.clone(),
                 source.source_revision,
                 AiFormatResult {
                     text: "Smart result".into(),
@@ -10105,20 +10185,95 @@ mod tests {
                 },
             )
             .unwrap();
+        let raw_after = take
+            .emitter
+            .session_state
+            .lock()
+            .unwrap()
+            .committed_rendered_text();
+        let selected = take
+            .emitter
+            .delivery_projection(FormattingPolicy::Smart, &source.source_text)
+            .expect("successful Smart must remain selectable");
+        take.emitter.finish().await;
         assert_eq!(
             take.ledger.lock().unwrap().slots_of(&occurrence).unwrap(),
             before
         );
         assert_eq!(
-            take.emitter
-                .session_state
-                .lock()
-                .unwrap()
-                .committed_rendered_text(),
-            source.source_text,
+            raw_after, source.source_text,
             "Smart changed the common Raw projection despite unchanged slots"
         );
-        take.emitter.finish().await;
+        assert_eq!(selected.delivered_mode, "smart");
+        assert_eq!(selected.rendered_text, "Smart result");
+        assert_eq!(selected.source_raw_revision, source.source_revision);
+        assert_eq!(selected.source_raw_text, source.source_text);
+        assert_eq!(*take.delivery.lock().await, source.source_text);
+    }
+
+    #[test]
+    fn relay_acceptance_max_cannot_replace_raw_or_later_speech() {
+        use codescribe_core::pipeline::acoustic_ledger::ConsultationPresentationMember;
+        let mut ledger = AcousticLedger::new();
+        let mut reducer = TranscriptReducer::default();
+        let mut members = Vec::new();
+        let mut sources = Vec::new();
+        for (index, label) in ["Iwo", "plan", "dalsze słowa"].into_iter().enumerate() {
+            let occurrence = OccurrenceIdentity::new(
+                "relay-max",
+                1,
+                index as u64 * 16_000,
+                (index as u64 + 1) * 16_000,
+            );
+            let EngineEvent::LedgerMutation {
+                observation,
+                receipt,
+                ..
+            } = admitted_mutation(&mut ledger, occurrence.clone(), index as u64, label)
+            else {
+                unreachable!()
+            };
+            reducer
+                .apply_ledger_mutation(&ledger, &observation, &receipt)
+                .unwrap();
+            sources.push((
+                occurrence.clone(),
+                ledger.slots_of(&occurrence).unwrap().to_vec(),
+            ));
+            if index < 2 {
+                ledger.schedule_frontier(occurrence.clone(), [ObservationProducer::Apple]);
+                ledger.note_frontier_return(&occurrence, ObservationProducer::Apple);
+                let seal = ledger.seal(&occurrence).unwrap().clone();
+                reducer.apply_ledger_seal(&seal).unwrap();
+                members.push(ConsultationPresentationMember {
+                    occurrence,
+                    source_label: label.into(),
+                    seal_receipt: seal.receipt_id,
+                });
+            }
+        }
+        let raw = reducer.committed_rendered_text();
+        let raw_revision = reducer.revision;
+        let answer = reducer
+            .apply_consultation_presentation(
+                &mut ledger,
+                ConsultationPresentationInput {
+                    consultation_id: "Max",
+                    turn_id: "relay-max-answer",
+                    source_revision: raw_revision,
+                    revision: raw_revision + 1,
+                    members: &members,
+                    rendered_text: "Gotowe polecenie",
+                },
+            )
+            .expect("Max must produce a usable derived answer, not be disabled");
+        assert!(answer.rendered_text.contains("Gotowe polecenie"));
+        assert!(answer.rendered_text.contains("dalsze słowa"));
+        for (occurrence, slots) in sources {
+            assert_eq!(ledger.slots_of(&occurrence).unwrap(), slots);
+        }
+        assert_eq!(reducer.committed_rendered_text(), raw, "Max changed Raw");
+        assert_eq!(reducer.revision, raw_revision, "Max advanced Raw revision");
     }
     #[test]
     fn w0_saved_decisions_replay_through_production_ledger_and_reducer() {

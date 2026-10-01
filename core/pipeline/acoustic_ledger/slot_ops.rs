@@ -456,6 +456,68 @@ mod slot_ops_tests {
         }
     }
 
+    // A group has acoustic coordinates but no child word boundaries. More
+    // tokens are not evidence that every source word was accounted for.
+    fn assert_group_omission_is_retained(candidate: &str, word_batch: bool) {
+        let original = "czy plan weryfikowałeś";
+        let mut failures = Vec::new();
+        for producer in [ObservationProducer::Whisper, ObservationProducer::CloudLive] {
+            for pinned_group in [false, true] {
+                let mut ledger = if pinned_group {
+                    pinned(&[WordPin::new(0, 16_000, original)])
+                } else {
+                    let mut ledger = AcousticLedger::new();
+                    ledger.admit(&observation(ObservationProducer::Apple, 0), original);
+                    ledger
+                };
+                let before = ledger.slots_of(&owner()).unwrap().to_vec();
+                let next = observation(producer, 1);
+                if word_batch {
+                    ledger.admit_word_slots(&next, &[WordPin::new(0, 16_000, candidate)]);
+                } else {
+                    ledger.admit_pinned_label(&next, candidate, &[]);
+                }
+                let retained = ledger.text_of(&owner()) == Some(original)
+                    && ledger.slots_of(&owner()).unwrap() == before
+                    && ledger.word_deletions().is_empty();
+                let alternative = ledger.slot_alternatives().iter().any(|alternative| {
+                    alternative.candidate == candidate
+                        && alternative.sources == before
+                        && alternative.observation == next
+                });
+                if !retained || !alternative {
+                    failures.push(format!(
+                        "{producer:?}, pinned_group={pinned_group}, word_batch={word_batch}: \
+                         committed={:?}, source_retained={retained}, alternative={alternative}",
+                        ledger.text_of(&owner())
+                    ));
+                }
+                assert_eq!(ledger.conservation().residue(), 0);
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn relay_acceptance_equal_length_label_cannot_mask_group_omission() {
+        assert_group_omission_is_retained("czy weryfikowałeś dokładnie", false);
+    }
+
+    #[test]
+    fn relay_acceptance_longer_label_cannot_mask_group_omission() {
+        assert_group_omission_is_retained("czy weryfikowałeś yyy [śmiech]", false);
+    }
+
+    #[test]
+    fn relay_acceptance_equal_length_word_batch_cannot_mask_group_omission() {
+        assert_group_omission_is_retained("czy weryfikowałeś dokładnie", true);
+    }
+
+    #[test]
+    fn relay_acceptance_longer_word_batch_cannot_mask_group_omission() {
+        assert_group_omission_is_retained("czy weryfikowałeś yyy [śmiech]", true);
+    }
+
     #[test]
     fn whole_acoustic_label_cannot_merge_pinned_words() {
         for producer in [ObservationProducer::Whisper, ObservationProducer::CloudLive] {

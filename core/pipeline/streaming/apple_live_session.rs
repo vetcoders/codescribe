@@ -17128,6 +17128,158 @@ mod live_refinement_admission_tests {
     }
 
     #[test]
+    fn relay_acceptance_hands_free_formatter_waits_for_expected_whisper() {
+        let (mut state, events, _receiver, mut requests) = fixture(1);
+        state.capture_turn = CaptureTurnIntent::HandsFree;
+        let (formatter, mut formatted) = mpsc::channel(FORMATTER_QUEUE_CAP);
+        state.formatter = Some(formatter);
+        let occurrence = OccurrenceIdentity::new("live-admission", 7, 0, 400);
+        assert!(qualify_owned_occurrence(&state, &occurrence));
+        // Explicitly control the return order: Apple and Lexicon finish before
+        // the coalescer submits any Whisper work. No private frontier mutation
+        // in the fixture may manufacture the reservation being tested.
+        for producer in [
+            LedgerObservationProducer::Apple,
+            LedgerObservationProducer::Lexicon,
+        ] {
+            let observation = state.acoustic_ledger.lock().unwrap().next_word_observation(
+                producer,
+                1,
+                &occurrence,
+            );
+            admit_ledger_label(
+                &mut state,
+                &events,
+                LabelAdmission {
+                    observation,
+                    label: "czy weryfikowałeś",
+                    energy: EnergyAdmission::RequireExistingQualification,
+                },
+            )
+            .expect("qualified acoustic owner");
+        }
+        assert!(state.refinement_submitted.is_empty());
+        assert!(matches!(
+            requests.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        assert!(
+            matches!(formatted.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+            "formatter was dispatched before expected Whisper was even enqueued"
+        );
+        let mut ledger = state.acoustic_ledger.lock().unwrap();
+        assert!(
+            ledger
+                .frontier_of(&occurrence)
+                .unwrap()
+                .open_producers()
+                .contains(&LedgerObservationProducer::Whisper)
+        );
+        assert_eq!(ledger.seal(&occurrence), Err(SealRefusal::FrontierOpen));
+    }
+
+    #[test]
+    fn relay_acceptance_formatter_receives_corrected_whisper_source() {
+        for policy in [FormattingPolicy::Correction, FormattingPolicy::Smart] {
+            let (mut state, events, mut receiver, mut requests) = fixture(1);
+            state.capture_turn = CaptureTurnIntent::HandsFree;
+            let (formatter, mut formatted) = mpsc::channel(FORMATTER_QUEUE_CAP);
+            assert!(live_formatter_lane_is_armed(
+                state.capture_turn,
+                true,
+                policy,
+                || true
+            ));
+            state.formatter = Some(formatter);
+            let lexicon = tempfile::tempdir().unwrap();
+            state.lexicon_custom_path = lexicon.path().join("empty.jsonl");
+
+            reconcile_silero_ledger(
+                &mut state,
+                &events,
+                &closed(1),
+                &[TranscriptSegment {
+                    confidence: None,
+                    text: "czy weryfikowałeś".into(),
+                    start_ts: 0.0,
+                    end_ts: 0.4,
+                }],
+            );
+            assert!(state.refinement_submitted.is_empty());
+            assert!(matches!(
+                requests.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ));
+            assert!(
+                matches!(formatted.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+                "{policy:?}: an empty Whisper queue must not authorize formatter work"
+            );
+            assert!(
+                !std::iter::from_fn(|| receiver.try_recv().ok()).any(|event| matches!(
+                    event,
+                    EngineEvent::LedgerSeal { .. } | EngineEvent::UtteranceFinal { .. }
+                )),
+                "Apple must not be published as settled before expected Whisper"
+            );
+
+            // Positive control: waiting cannot be implemented by disabling the
+            // formatter or freezing Apple. The real submitted completion must
+            // release precisely one request with corrected, enriched input.
+            state.flush_layer1_coalesce(&events);
+            let request = requests.try_recv().expect("Whisper remains enabled");
+            let mut completion = labelled_completion(&request);
+            let payload = completion.payload.as_mut().unwrap();
+            payload.text = "czy plan zweryfikowałeś".into();
+            payload.segments[0].text = payload.text.clone();
+            state.complete_whisper_window(&events, completion, 20.0);
+            state.close_admission_horizon(&events, u64::MAX);
+            let derived = formatted
+                .try_recv()
+                .expect("settled Raw releases formatter");
+            assert_eq!(derived.existing_label, "czy plan zweryfikowałeś");
+            let source = derived.source_observation.expect("source observation");
+            assert_eq!(source.occurrence, request.member_occurrences[0].1);
+            assert_ne!(source.producer, LedgerObservationProducer::Apple);
+            assert!(matches!(
+                formatted.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ));
+        }
+    }
+
+    #[test]
+    fn relay_acceptance_disabled_whisper_does_not_leave_phantom_debt() {
+        let (mut state, events, _receiver, _requests) = fixture(1);
+        state.capture_turn = CaptureTurnIntent::HandsFree;
+        state.tail_patch = None;
+        let (formatter, mut formatted) = mpsc::channel(FORMATTER_QUEUE_CAP);
+        state.formatter = Some(formatter);
+        let lexicon = tempfile::tempdir().unwrap();
+        state.lexicon_custom_path = lexicon.path().join("empty.jsonl");
+        reconcile_silero_ledger(
+            &mut state,
+            &events,
+            &closed(1),
+            &[TranscriptSegment {
+                confidence: None,
+                text: "czy weryfikowałeś".into(),
+                start_ts: 0.0,
+                end_ts: 0.4,
+            }],
+        );
+        let request = formatted.try_recv().expect("disabled layer owes no work");
+        assert_eq!(request.existing_label, "czy weryfikowałeś");
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert!(
+            !ledger
+                .frontier_of(&request.occurrence)
+                .unwrap()
+                .open_producers()
+                .contains(&LedgerObservationProducer::Whisper)
+        );
+    }
+
+    #[test]
     fn agent_channel_raw_waits_for_whisper_correction_and_omission() {
         for (apple, whisper) in [
             ("weryfikowałeś", "zweryfikowałeś yyy [śmiech]"),

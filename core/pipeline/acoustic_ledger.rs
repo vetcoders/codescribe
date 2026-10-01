@@ -7045,7 +7045,6 @@ mod tests {
         assert_eq!(ledger.text_of(&occurrence), Some("zostaje"));
     }
     #[test]
-    #[ignore = "W-0 falsifier: closes in L3"]
     fn w0_falsifier_whisper_slot_replacement_accounts_for_missing_word() {
         let (mut ledger, occurrence) = whisper_only_qualified_ledger();
         let apple = obs(ObservationProducer::Apple, 0, occurrence.clone());

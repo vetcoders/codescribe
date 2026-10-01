@@ -584,6 +584,105 @@ mod tests {
     use super::super::acoustic_ledger::{ObservationProducer, WordPin};
     use super::*;
 
+    fn assert_relay_operation_replays(merge: bool) {
+        use super::super::acoustic_ledger::{DictionarySlotRule, SlotTarget};
+        let dir = tempfile::tempdir().unwrap();
+        let session = if merge {
+            "relay-trail-merge"
+        } else {
+            "relay-trail-correction"
+        };
+        let owner = OccurrenceIdentity::new(session, 7, 0, 16_000);
+        let sink = TrailSink::open_in(dir.path(), session, 7, 64).unwrap();
+        let mut ledger = AcousticLedger::new();
+        let calibration = EnergyCalibration::new("relay-trail", 1.0, 1);
+        assert!(
+            ledger
+                .qualify(
+                    &AcousticEvidence {
+                        occurrence: owner.clone(),
+                        duration_ms: 1_000.0,
+                        energy_integral: 10.0,
+                        mean_rms_dbfs: -12.0,
+                        peak_dbfs: -3.0,
+                        vad_open_sample: Some(0),
+                        vad_close_sample: Some(16_000),
+                        evidence_calibration_version: calibration.version.clone(),
+                    },
+                    &calibration
+                )
+                .is_qualified()
+        );
+        let apple = ObservationIdentity::new(ObservationProducer::Apple, 1, 0, owner.clone());
+        if merge {
+            ledger.admit_pinned_label(
+                &apple,
+                "na prawdę",
+                &[
+                    WordPin::new(0, 4_000, "na"),
+                    WordPin::new(8_000, 16_000, "prawdę"),
+                ],
+            );
+            let targets = ledger
+                .slots_of(&owner)
+                .unwrap()
+                .iter()
+                .map(SlotTarget::from)
+                .collect::<Vec<_>>();
+            ledger
+                .merge_word_slots(
+                    &ObservationIdentity::new(ObservationProducer::Lexicon, 2, 1, owner.clone()),
+                    &targets,
+                    &DictionarySlotRule {
+                        id: "relay-test/na-prawde/v1".into(),
+                        input: vec!["na".into(), "prawdę".into()],
+                        canonical: "naprawdę".into(),
+                    },
+                )
+                .unwrap();
+            assert_eq!(ledger.text_of(&owner), Some("naprawdę"));
+        } else {
+            ledger.admit_pinned_label(
+                &apple,
+                "weryfikowałeś",
+                &[WordPin::new(0, 16_000, "weryfikowałeś")],
+            );
+            ledger.admit_pinned_label(
+                &ObservationIdentity::new(ObservationProducer::Whisper, 2, 1, owner.clone()),
+                "zweryfikowałeś",
+                &[],
+            );
+            assert_eq!(ledger.text_of(&owner), Some("zweryfikowałeś"));
+        }
+        assert!(
+            !ledger.slot_operations().is_empty(),
+            "exercise a real operation"
+        );
+        drop(sink);
+        let rows = read_trail(&trail_path(dir.path(), session).unwrap()).unwrap();
+        let replayed = replay_decisions(&rows, |_, _, _| {})
+            .expect("a persisted accepted operation must replay without audio or a model");
+        assert_eq!(replayed.slots_of(&owner), ledger.slots_of(&owner));
+        assert_eq!(replayed.slot_operations(), ledger.slot_operations());
+        for slot in ledger.slots_of(&owner).unwrap() {
+            assert_eq!(
+                replayed.slot_source_ranges(slot),
+                ledger.slot_source_ranges(slot)
+            );
+        }
+        assert!(replay_decisions(&rows[..rows.len() - 1], |_, _, _| {}).is_err());
+    }
+
+    #[test]
+    fn relay_acceptance_trail_replays_acoustic_correction_and_lineage() {
+        assert_relay_operation_replays(false);
+    }
+
+    #[test]
+    fn relay_acceptance_trail_replays_dictionary_merge_with_disjoint_sources() {
+        assert_relay_operation_replays(true);
+    }
+
     #[test]
     fn persisted_five_pins_trace_and_production_admission_replay() {
         let dir = tempfile::tempdir().unwrap();
