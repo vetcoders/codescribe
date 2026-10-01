@@ -728,6 +728,25 @@ OBSERVER projection of the `TranscriptionVerdict`; no delivery path reads it
 back. `codescribe transcribe --inspect` prints the same truth to stderr under
 one time axis: the segment block, the 32 ms Silero row, and the energy row.
 
+CLI file comparison can explicitly select `--apple` or `--whisper` (mutually
+exclusive). The default remains the product's Whisper file final-pass. Apple
+is an explicit comparison lane using the existing file bridge, without a
+Whisper fallback; it requires installed locale assets and existing permissions.
+This does not change the app's live Relay. With Apple, `--stream` observes the
+completed bridge segments once, rather than incremental decoder windows.
+
+`--inspect` (also `--sparkline` / `--power`) adds a PCM RMS sparkline and an
+absolute -90..0 dBFS chart over the original file duration. Its RMS/peak summary
+uses PCM amplitude relative to digital full scale, independently of the relative
+log-mel `energy:` row. Apple inspection runs Silero as an observer only: its
+input is neither trimmed nor gated. All diagnostics stay on stderr. For an
+isolated comparison, use:
+
+```sh
+codescribe transcribe --apple --inspect --raw --no-bus --no-truth recording.wav
+codescribe transcribe --whisper --inspect --raw --no-bus --no-truth recording.wav
+```
+
 ## Word confidence (A6, 2026-09-30)
 
 Every word pin may carry **raw per-word acoustic confidence** from the engine

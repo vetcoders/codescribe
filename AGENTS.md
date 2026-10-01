@@ -14,6 +14,28 @@ Codescribe-specific runtime laws, thrones of authority, release cadence, and can
 - **Falsyfikator przed edycją**: test „pięć Iwo” (5 fizycznych wystąpień PCM → 5 w ledgerze → 5 w reducerze → 5 w delivery).
 - Zobacz `CANARY_MAP.md` oraz `AGENT_CANARY.md` dla pełnej mapy kolizji i 7 tronów.
 
+## Worker embargo — Founder decision 2026-10-01
+
+- **Worker pisze kod. Testy pisze i uruchamia integrator. Worker nie kompiluje
+  i nie uruchamia żadnych testów.**
+  Build, typecheck, Clippy, wykonanie produktu, modele, benchmarki, instalacja
+  i odbiór runtime należą wyłącznie do jawnie wyznaczonego integratora.
+- Zakaz obowiązuje przez cały przydział workera, także po zamknięciu W2.
+  Brak markera embargo, mały zakres, neutralny instrument, szybki smoke test,
+  błąd kompilatora albo zalecenie skilla nie tworzą wyjątku.
+- Worker może czytać i mapować źródła, robić statyczny przegląd oraz
+  `git diff --check`. Oddaje commit, zakres zmian i niepewności. Integrator
+  odpowiada za fixtury, testy i ich wyniki; worker nie ogłasza ich jako PASS.
+- Integrator uruchamia wymagane bramki na jawnie wskazanej generacji po odbiorze
+  zmian. Po błędzie może zwrócić workerowi cut do poprawy; worker nadal nie
+  uruchamia bramek. Worker nie mianuje sam siebie integratorem.
+- Każdy dispatch musi zawierać tę zasadę, rolę oraz tożsamość integratora.
+  Dotyczy wszystkich providerów i runtime'ów. Hook uruchamiający kompilację
+  lub testy również podlega zakazowi; checkpoint stosuje protokół z
+  `docs/COMPILE_EMBARGO.md`, z jawną listą pominiętych hooków.
+- Wymagania build/test/install w tym pliku wykonuje **integrator**, nie worker.
+  Szczegóły i granica technicznego egzekwowania: `docs/COMPILE_EMBARGO.md` §0.
+
 ## Trony władzy (Runtime authority)
 
 - `acoustic_ledger.rs` (`core/pipeline/acoustic_ledger.rs`): jedyny tron tożsamości PCM (`OccurrenceIdentity`, `ObservationIdentity`, `MutationReceipt`). Tekst jest etykietą przypiętą do occurrence, nigdy kluczem identity.

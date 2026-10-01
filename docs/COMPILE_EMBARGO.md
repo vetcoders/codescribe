@@ -1,9 +1,58 @@
 # COMPILE_EMBARGO_CODING
 
 Status: canonical execution protocol
-Revision: 2026-09-09
+Revision: 2026-10-01
 Scope: architecture-sensitive implementation by one agent or a Fleet Worktree
 formation
+
+## 0. Permanent worker prohibition — Founder decision 2026-10-01
+
+**Workers author code. The designated integrator authors tests and fixtures.
+Only the designated integrator compiles,
+runs tests, benchmarks or the product, and performs installation/runtime
+acceptance.** This is a role boundary for the entire worker assignment, not
+a temporary W1/W2 deferral. Structural closure does not grant a worker execution
+authority. A worker cannot appoint itself integrator.
+
+Every dispatch must identify `role=worker`, the designated integrator, the
+closed source domain, and this prohibition. Apply the same contract to every
+provider and runtime. Do not dispatch a worker with a competing instruction to
+build, test or prove runtime success.
+
+For Codescribe, forbidden worker commands include:
+
+- `cargo build`, `cargo check`, `cargo test`, `cargo clippy`, `cargo run`,
+  `cargo bench`, `cargo doc`, and direct `rustc` invocation;
+- `swift build`, `swift test`, `xcodebuild`, and direct Swift compilation;
+- `make check`, `make verify`, `make test-swift`, `make app-bindings`, all
+  build/test/benchmark/install/release targets, and equivalent direct commands;
+- test scripts under `scripts/tests/`, `scripts/test-*`,
+  `scripts/git-hooks/embargo-selftest.sh`, and other test runners, including
+  tests of a neutral instrument or a throwaway repository;
+- application/CLI/model execution for smoke tests, replay or benchmarks, and
+  dependency installation to enable any forbidden command.
+
+Scope, speed and the name of the instrument do not create exemptions. Workers
+may inspect source, use Loctree, perform admitted
+static security/hygiene checks that do not build/import/execute the product,
+and run `git diff --check`. Their checkpoint reports name source scope,
+unknowns and skipped hooks. Build/test/runtime remain `NOT_ASSESSED`, never PASS.
+
+The integrator admits the source and runs required gates on the recorded
+generation. If it returns a failing cut for repair, the worker repairs source
+and returns another checkpoint without running the gates. No required release
+gate disappears; responsibility for execution stays with the integrator.
+
+This section overrides worker-execution permissions in older phase descriptions
+and historical instrument receipts below. Gates returning after W2 return to
+the integrator only. A missing phase marker does not lift the worker prohibition.
+
+**Enforcement boundary:** the existing repository hook guard defers selected
+hook gates; it does not prevent arbitrary direct shell commands or infer an
+agent's role. The dispatcher/integrator must enforce this role contract and
+inspect command receipts before admission. A policy document or phase marker
+alone must not be reported as a technical execution sandbox. Use §5.1 for
+checkpoint hooks; do not accidentally compile via `git commit`.
 
 ## 1. Definition
 
@@ -33,7 +82,7 @@ who approved it. A gate is deferred only when its result is predictably
 useless because it checks exactly the fragment being dismantled. Every other
 check keeps running.
 
-Each deferral carries three things:
+For the integrator, each deferral carries three things:
 
 1. the exact command or hook id that is deferred;
 2. the reason its verdict would be noise at this stage ("refactor in
@@ -48,7 +97,7 @@ gate and the real product path run on the generation being released.
 
 ## 3. What is embargoed
 
-From W1 opening until an explicit W2 structural-close attestation, workers do
+Throughout their assignment, including after W2 structural closure, workers do
 not run any command whose result can steer implementation through
 executability:
 
@@ -78,8 +127,8 @@ checks that do not execute or import the product, such as:
 - a neutral syntax parser only when the plan explicitly admits it as a
   structural instrument.
 
-Tests are authored during W1/W2 because they state the intended contract. They
-remain unrun until the embargo closes.
+The integrator authors tests because they state the intended contract, and
+executes them after structural closure. Workers neither author nor execute them.
 
 ## 4. Roles and truth ownership
 
@@ -92,7 +141,7 @@ destination tree.
 - Agent-Operator/integrator: owns the plan, phase state, recovery channel,
   dispatch ledger, admission, structural-close attestation, the first compile
   and the moment every deferred gate returns.
-- Worker: owns one closed file/symbol domain, its unrun contract tests, one
+- Worker: owns one closed implementation file/symbol domain, one
   durable checkpoint commit and one honest report of unknowns.
 - Compiler/test/runtime: independent falsifiers used only in their declared
   phases. They are not architecture authors.
@@ -184,7 +233,7 @@ No product implementation begins until the Agent-Operator records:
 2. clean/dirty state and ownership of any pre-existing changes;
 3. target architecture, invariants and one source of truth per behavior;
 4. closed worker domains and their overlap matrix;
-5. acceptance contracts and tests each worker must author;
+5. acceptance contracts and the tests the integrator must author;
 6. allowed structural instruments and exact forbidden commands;
 7. each deferred gate with its reason and return condition (section 2);
 8. enforcement grade, phase state and recovery ref;
@@ -208,14 +257,14 @@ All independent workers may run concurrently. Each worker:
 2. maps the domain before editing and reads each affected file immediately
    before changing it;
 3. implements the complete atom, not a compile-shaped fragment;
-4. authors non-trivial tests for success, failure and ownership boundaries but
-   does not execute them;
+4. implements the declared acceptance contract; the integrator authors and
+   executes its tests;
 5. stays inside the closed domain and reports required cross-domain seams as
    `DANGLING` or `BOUNDARY`;
 6. runs only W1-admitted structural checks;
 7. stages only owned files/hunks and creates one durable checkpoint commit;
-8. writes a report with baseline, terminal SHA, changed files, exact checks,
-   unrun tests, skipped hooks, unknowns and the next integrator instruction.
+8. writes a report with baseline, terminal SHA, changed files, exact static
+   checks, skipped hooks, unknowns and the next integrator instruction.
 
 The canonical W1 receipt is:
 
@@ -277,7 +326,7 @@ gates that cover them return.
 
 ### W3 — first compile and bounded recovery
 
-The first compilation is a measurement. Preserve its exact command, output,
+The integrator's first compilation is a measurement. Preserve its exact command, output,
 exit code and integrated SHA before changing source.
 
 Classify every failure before repair:
