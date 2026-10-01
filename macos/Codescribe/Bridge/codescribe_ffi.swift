@@ -11264,6 +11264,7 @@ public func FfiConverterTypeCsProjectedSealCoverageRange_lower(_ value: CsProjec
 
 public struct CsProjectedSealCoverageReceipt: Equatable, Hashable {
     public var status: CsSealCoverageStatus
+    public var sampleRateHz: UInt32?
     public var unavailableReason: CsCoverageUnavailableReason?
     public var speechSamples: UInt64
     public var coveredSamples: UInt64
@@ -11277,8 +11278,9 @@ public struct CsProjectedSealCoverageReceipt: Equatable, Hashable {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(status: CsSealCoverageStatus, unavailableReason: CsCoverageUnavailableReason?, speechSamples: UInt64, coveredSamples: UInt64, uncoveredSpeechRanges: [CsProjectedSealCoverageRange], maxUncoveredSamples: UInt64, incompleteThresholdSamples: UInt64, speechProducer: String, availability: String, observedSamples: UInt64?, coverageRatio: Double?) {
+    public init(status: CsSealCoverageStatus, sampleRateHz: UInt32?, unavailableReason: CsCoverageUnavailableReason?, speechSamples: UInt64, coveredSamples: UInt64, uncoveredSpeechRanges: [CsProjectedSealCoverageRange], maxUncoveredSamples: UInt64, incompleteThresholdSamples: UInt64, speechProducer: String, availability: String, observedSamples: UInt64?, coverageRatio: Double?) {
         self.status = status
+        self.sampleRateHz = sampleRateHz
         self.unavailableReason = unavailableReason
         self.speechSamples = speechSamples
         self.coveredSamples = coveredSamples
@@ -11306,6 +11308,7 @@ public struct FfiConverterTypeCsProjectedSealCoverageReceipt: FfiConverterRustBu
         return
             try CsProjectedSealCoverageReceipt(
                 status: FfiConverterTypeCsSealCoverageStatus.read(from: &buf),
+                sampleRateHz: FfiConverterOptionUInt32.read(from: &buf),
                 unavailableReason: FfiConverterOptionTypeCsCoverageUnavailableReason.read(from: &buf),
                 speechSamples: FfiConverterUInt64.read(from: &buf),
                 coveredSamples: FfiConverterUInt64.read(from: &buf),
@@ -11321,6 +11324,7 @@ public struct FfiConverterTypeCsProjectedSealCoverageReceipt: FfiConverterRustBu
 
     public static func write(_ value: CsProjectedSealCoverageReceipt, into buf: inout [UInt8]) {
         FfiConverterTypeCsSealCoverageStatus.write(value.status, into: &buf)
+        FfiConverterOptionUInt32.write(value.sampleRateHz, into: &buf)
         FfiConverterOptionTypeCsCoverageUnavailableReason.write(value.unavailableReason, into: &buf)
         FfiConverterUInt64.write(value.speechSamples, into: &buf)
         FfiConverterUInt64.write(value.coveredSamples, into: &buf)
