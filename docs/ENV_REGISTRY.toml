@@ -920,9 +920,9 @@ description = "Normalized formatting policy: off, correction, smart, or max; leg
 [vars.CODESCRIBE_FORMAT_ON_DEVICE]
 default = "0"
 type = "bool"
-reload = "restart"
+reload = "hot"
 category = "llm"
-description = "Opt-in power knob: 1/true/yes/on routes the non-assistive formatting lane to the host-registered Apple on-device model first; any on-device failure, or no registered host formatter, falls back to the configured cloud provider inside the same attempt. Off by default because Polish is contractually unsupported by the system model. Read from the process environment, so a .env change takes effect on restart."
+description = "Opt-in: 1/true/yes/on routes the non-assistive formatting lane to the host-registered Apple on-device model first; any on-device failure, or no registered host formatter, falls back to the configured cloud provider inside the same attempt. Two writers fold into one runtime-snapshot value: the developer-build Lab toggle (settings speech.formatting.on_device, applies to the next formatting pass) and this process/.env power knob, which outranks the toggle and is recorded in the snapshot env overlay; a .env change takes effect on restart. Off by default because Polish is contractually unsupported by the system model."
 
 [vars.LLM_FORMATTING_AUTH_MODE]
 default = "api-key"
