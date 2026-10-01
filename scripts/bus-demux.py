@@ -73,6 +73,9 @@ AUDIENCE_BINDING_FILENAME = "vc.agent-audience-binding.v1.json"
 ATTACH_RECEIPT_SCHEMA = "codescribe.agent-bridge.attach-receipt.v1"
 STATUS_SCHEMA = "codescribe.agent-bridge.status.v1"
 DEFAULT_LEASE_TTL_SECONDS = 120.0
+PLAYBACK_WAIT_SECONDS = 120.0
+TAKE_WAIT_SECONDS = 120.0
+PLAYBACK_POLL_SECONDS = 0.5
 DEFAULT_SPEECH_SPEED = 1.25
 ASSIGN_RE = re.compile(
     r"(?i)(?:będziesz(?:\s+od)?\s+teraz|nazywam\s+cię|nazywasz\s+się|"
@@ -163,7 +166,12 @@ def agent_turn_lease_path() -> Path:
     return install_interlock_path().with_name(AGENT_TURN_LEASE_FILENAME)
 
 
-def installation_idle(path: Path) -> bool:
+def installation_idle(
+    path: Path,
+    *,
+    sealed_is_idle: bool = True,
+    cursor: dict[str, Any] | None = None,
+) -> bool:
     """True when no current take is in flight.
 
     One microphone: the live app take is the most recently started app
@@ -190,7 +198,19 @@ def installation_idle(path: Path) -> bool:
     live_app: str | None = None
     try:
         with path.open(encoding="utf-8", errors="strict") as handle:
-            for raw in handle:
+            stat = os.fstat(handle.fileno())
+            identity = (stat.st_dev, stat.st_ino, sealed_is_idle)
+            if (
+                cursor
+                and cursor.get("identity") == identity
+                and cursor["offset"] <= stat.st_size
+            ):
+                handle.seek(cursor["offset"])
+                open_cli = dict(cursor["open_cli"])
+                live_app = cursor["live_app"]
+            # readline keeps tell() usable: playback can consume only the new
+            # tail after its initial scan, instead of rescanning a large bus.
+            for raw in iter(handle.readline, ""):
                 raw = raw.strip()
                 if not raw:
                     continue
@@ -201,6 +221,10 @@ def installation_idle(path: Path) -> bool:
                 if not isinstance(event, dict):
                     return False
                 status = event.get("status")
+                # Speech must wait for session_ended: a channel can seal an
+                # utterance while the microphone keeps capturing the room.
+                if status == SEALED and not sealed_is_idle:
+                    continue
                 if status not in ("session_started", "session_ended", SEALED):
                     continue
                 session_id = event.get("session_id")
@@ -219,6 +243,13 @@ def installation_idle(path: Path) -> bool:
                     open_cli.pop(session_id, None)
                 elif session_id == live_app:
                     live_app = None
+            if cursor is not None:
+                cursor.update(
+                    identity=identity,
+                    offset=handle.tell(),
+                    open_cli=open_cli,
+                    live_app=live_app,
+                )
     except (OSError, UnicodeDecodeError):
         return False
     now = time.time()
@@ -1836,7 +1867,12 @@ def _tts_exchange(request: Any) -> tuple[bytes | None, str | None, str | None]:
 
 
 def _speak_xai(
-    text: str, voice: str, speed: float
+    text: str,
+    voice: str,
+    speed: float,
+    *,
+    playback_root: Path | None = None,
+    bus: Path | None = None,
 ) -> tuple[bool, str | None, str | None]:
     """Same TTS lane as the app (api.x.ai/v1/tts, PCM s16le 24 kHz), played via afplay."""
     import urllib.request
@@ -1866,25 +1902,71 @@ def _speak_xai(
         data=body,
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
     )
-    return _speak_pcm(*_tts_exchange(request))
+    return _speak_pcm(*_tts_exchange(request), playback_root=playback_root, bus=bus)
 
 
 def _speak_pcm(
-    pcm: bytes | None, error: str | None, reason: str | None
+    pcm: bytes | None,
+    error: str | None,
+    reason: str | None,
+    *,
+    playback_root: Path | None = None,
+    bus: Path | None = None,
 ) -> tuple[bool, str | None, str | None]:
     if pcm is None:
         return False, error, reason
-    played, play_error = _play_pcm_24k(pcm)
-    return played, play_error, None if played else "playback_failed"
+    return _play_pcm_24k(pcm, playback_root=playback_root, bus=bus)
 
 
-def _play_pcm_24k(pcm: bytes) -> tuple[bool, str | None]:
-    """Wrap mono s16le 24 kHz PCM as WAV and play it via afplay."""
+def _acquire_playback_lock(descriptor: int) -> bool:
+    """Bound the wait with a monotonic clock; the kernel owns exclusivity."""
+    deadline = time.monotonic() + PLAYBACK_WAIT_SECONDS
+    while True:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.05, remaining))
+
+
+def _wait_for_take_end(bus: Path, cursor: dict[str, Any]) -> bool:
+    deadline = time.monotonic() + TAKE_WAIT_SECONDS
+    while not installation_idle(bus, sealed_is_idle=False, cursor=cursor):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(PLAYBACK_POLL_SECONDS, remaining))
+    return True
+
+
+def _stop_playback(player: Any) -> None:
+    import subprocess
+
+    player.terminate()
+    try:
+        player.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        player.kill()
+        player.wait()
+
+
+def _play_pcm_24k(
+    pcm: bytes,
+    *,
+    playback_root: Path | None = None,
+    bus: Path | None = None,
+) -> tuple[bool, str | None, str | None]:
+    """Prepare WAV independently, then serialize only playback across agents."""
     import subprocess
     import tempfile
     import wave
 
     wav_path = None
+    lock_descriptor = None
+    player = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
             wav_path = handle.name
@@ -1893,20 +1975,57 @@ def _play_pcm_24k(pcm: bytes) -> tuple[bool, str | None]:
                 sink.setsampwidth(2)
                 sink.setframerate(24000)
                 sink.writeframes(pcm)
-        played = subprocess.run(["afplay", wav_path], capture_output=True)
-        if played.returncode != 0:
-            return False, "afplay failed"
+        runtime = (
+            playback_root if playback_root is not None else bridge_home()
+        ) / "runtime"
+        runtime.mkdir(parents=True, exist_ok=True)
+        # Never unlink this file: all current and waiting processes must share
+        # the same inode even when the runtime payload is replaced.
+        lock_descriptor = os.open(
+            runtime / "playback.lock", os.O_RDWR | os.O_CREAT, 0o600
+        )
+        if not _acquire_playback_lock(lock_descriptor):
+            return False, "playback wait timed out", "playback_busy"
+        # A take may have started during synthesis or the lock wait.
+        speech_bus = bus if bus is not None else bus_path()
+        cursor: dict[str, Any] = {}
+        if not _wait_for_take_end(speech_bus, cursor):
+            return False, "live take wait timed out", "take_live"
+        player = subprocess.Popen(
+            ["afplay", wav_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        while True:
+            if not installation_idle(speech_bus, sealed_is_idle=False, cursor=cursor):
+                _stop_playback(player)
+                return False, "take started during playback", "take_started"
+            result = player.poll()
+            if result is not None:
+                if result != 0:
+                    return False, "afplay failed", "playback_failed"
+                break
+            time.sleep(PLAYBACK_POLL_SECONDS)
+    except OSError as error:
+        return False, f"playback failed ({error.__class__.__name__})", "playback_failed"
     finally:
+        if player is not None and player.poll() is None:
+            _stop_playback(player)
+        if lock_descriptor is not None:
+            os.close(lock_descriptor)
         if wav_path:
             try:
                 os.unlink(wav_path)
             except OSError:
                 pass
-    return True, None
+    return True, None, None
 
 
 def _speak_openai(
-    text: str, voice: str, speed: float
+    text: str,
+    voice: str,
+    speed: float,
+    *,
+    playback_root: Path | None = None,
+    bus: Path | None = None,
 ) -> tuple[bool, str | None, str | None]:
     """Same TTS lane as the app (api.openai.com/v1/audio/speech, PCM s16le 24 kHz)."""
     import urllib.request
@@ -1918,7 +2037,10 @@ def _speak_openai(
             "no OpenAI credential (add Keychain item LLM_OPENAI_API_KEY or export it)",
             "credential_missing",
         )
-    model = os.environ.get("SPEECH_TTS_MODEL_OPENAI", "").strip() or "gpt-4o-mini-tts-2025-12-15"
+    model = (
+        os.environ.get("SPEECH_TTS_MODEL_OPENAI", "").strip()
+        or "gpt-4o-mini-tts-2025-12-15"
+    )
     body = json.dumps(
         {
             "model": model,
@@ -1933,7 +2055,7 @@ def _speak_openai(
         data=body,
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
     )
-    return _speak_pcm(*_tts_exchange(request))
+    return _speak_pcm(*_tts_exchange(request), playback_root=playback_root, bus=bus)
 
 
 def lease_name(root: Path, provider: str, session: str) -> str | None:
@@ -1977,7 +2099,9 @@ def say_reply(args: argparse.Namespace) -> int:
         "spoken": False,
     }
     speaker = _speak_openai if vendor == "openai" else _speak_xai
-    spoken, error, reason = speaker(args.say, voice, speed)
+    spoken, error, reason = speaker(
+        args.say, voice, speed, playback_root=args.bridge_home, bus=bus_path()
+    )
     reply["spoken"] = spoken
     if error:
         reply["tts_error"] = error
