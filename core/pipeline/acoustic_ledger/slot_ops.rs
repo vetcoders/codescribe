@@ -95,6 +95,7 @@ impl AcousticLedger {
             output.observation = observation.clone();
             output.surface_rewritten = true;
         }
+        let trace = super::super::trail::SlotTrace::rewrite(self, observation, rewrites);
         let label = compose_label(&proposed);
         let start = self.slot_operations.len();
         let decision = self.admit_with_slots(observation, &label, Some(proposed), true);
@@ -111,7 +112,7 @@ impl AcousticLedger {
                 operation.rule_id = rule.id.clone();
             }
         }
-        Ok(decision)
+        trace.finish(Ok(decision), self)
     }
 
     pub fn slot_operations(&self) -> &[SlotOperationReceipt] {
@@ -299,8 +300,9 @@ impl AcousticLedger {
             source_ranges,
             rule_id: rule.id.clone(),
         };
+        let trace = super::super::trail::SlotTrace::merge(self, observation, targets, rule);
         self.commit_slot_operation(receipt.clone());
-        Ok(receipt)
+        trace.finish(Ok(receipt), self)
     }
 
     /// A split requires timed child pins. Without them a multiword label stays
@@ -358,8 +360,9 @@ impl AcousticLedger {
             outputs,
             rule_id: "producer_child_pcm_boundaries/v1".to_string(),
         };
+        let trace = super::super::trail::SlotTrace::split(self, observation, target, children);
         self.commit_slot_operation(receipt.clone());
-        Ok(receipt)
+        trace.finish(Ok(receipt), self)
     }
 }
 
