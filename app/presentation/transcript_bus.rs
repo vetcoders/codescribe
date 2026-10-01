@@ -466,6 +466,35 @@ pub(crate) fn document_history_at(
     document_history_at_counted(path, session_id, &mut bytes_read)
 }
 
+/// Bytes of backward scan one `document_history_at` call will read while
+/// looking for this session's `session_started` row. A session that began
+/// while persistence was disabled (`TranscriptBus::open_at` refuses to
+/// append after a bus whose last byte is not `\n`) never writes that row, so
+/// an unbounded scan would walk the whole shared bus — tens of GB on the
+/// Founder's machine — for every take. Capped at the same 64 MiB the Swift
+/// `OverlayChannelDeliveryReader` tail window and the Rust
+/// `agent_ack::FOLD_PASS_BUDGET` / `agent_channel::ORPHAN_SCAN_WINDOW_BYTES`
+/// already use, so history degrades to "whatever is in the tail" instead of
+/// reading every row ever written.
+const DOCUMENT_HISTORY_SCAN_BUDGET_BYTES: u64 = 64 << 20;
+
+/// True if `needle` occurs anywhere in `haystack`. Used as a cheap reject
+/// before `serde_json` parsing: a line whose bytes never contain this
+/// session's id as a substring cannot have it as the `session_id` field
+/// value, so most rows from other interleaved sessions are skipped without
+/// building a JSON tree.
+fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if needle.len() > haystack.len() {
+        return false;
+    }
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
+}
+
 fn document_history_at_counted(
     path: &Path,
     session_id: &str,
@@ -480,10 +509,12 @@ fn document_history_at_counted(
     // Recent takes live at the tail. Read blocks backwards and stop at this
     // session's started row; other sessions may be interleaved, so merely
     // seeing another session is not a safe stopping condition.
+    let session_bytes = session_id.as_bytes();
     let mut position = file.metadata()?.len();
     let mut prefix = Vec::new();
     let mut rows = Vec::new();
     let mut found_start = false;
+    let mut budget_exhausted = false;
     while position > 0 && !found_start {
         let width = position.min(64 * 1024) as usize;
         position -= width as u64;
@@ -499,6 +530,9 @@ fn document_history_at_counted(
             }
             let line = &block[index + 1..end];
             end = index;
+            if !contains_subslice(line, session_bytes) {
+                continue;
+            }
             let Ok(row) = serde_json::from_slice::<serde_json::Value>(line) else {
                 continue;
             };
@@ -512,9 +546,20 @@ fn document_history_at_counted(
             rows.push(line.to_vec());
         }
         prefix = block[..end].to_vec();
+        if !found_start && *bytes_read >= DOCUMENT_HISTORY_SCAN_BUDGET_BYTES {
+            budget_exhausted = true;
+            break;
+        }
     }
     if !found_start && !prefix.is_empty() {
         rows.push(prefix);
+    }
+    if budget_exhausted {
+        tracing::warn!(
+            session_id = %session_id,
+            bytes_read = *bytes_read,
+            "document_history_at exhausted its scan budget before finding session_started; returning partial tail history"
+        );
     }
     rows.reverse();
     let mut revisions = std::collections::BTreeMap::new();
@@ -1566,6 +1611,126 @@ mod tests {
             bytes_read <= recent_bytes + 64 * 1024,
             "read {bytes_read} bytes for {recent_bytes} bytes of recent-session rows"
         );
+    }
+
+    /// Regression guard: a bus that still carries this session's
+    /// `session_started` row must stop at that row and return exactly the
+    /// history it returns today, unaffected by the new scan budget or the
+    /// substring prefilter.
+    #[test]
+    fn history_with_session_started_is_unchanged_by_the_scan_budget() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("history-unchanged.jsonl");
+        let bus = TranscriptBus::open_at(session("budget-unaffected"), path.clone(), None).unwrap();
+        bus.publish_started();
+        let (ledger, _, base) = committed_fixture("budget-unaffected");
+        let published = bus.publish_revision(&base, &ledger);
+        assert!(!published.is_empty());
+        let mut edit = published[0].clone();
+        edit.reducer_revision += 1;
+        edit.reducer_action = "apply_manual_edit".to_string();
+        edit.rendered_text = "Edited words".to_string();
+        edit.acoustic_receipts[0].manual_edit_receipt =
+            Some("formatter-budget-unaffected-2-3-0".to_string());
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, "{}", serde_json::to_string(&edit).unwrap()).unwrap();
+        drop(file);
+        let mut bytes_read = 0;
+        let history =
+            document_history_at_counted(&path, "budget-unaffected", &mut bytes_read).unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].revision, base.revision);
+        assert_eq!(history[1].provenance, "formatter");
+        assert_eq!(history[1].rendered_text, "Edited words");
+        assert!(
+            bytes_read < DOCUMENT_HISTORY_SCAN_BUDGET_BYTES,
+            "a bus carrying session_started must stop well short of the budget"
+        );
+    }
+
+    /// When a take began while persistence was disabled
+    /// (`TranscriptBus::open_at` refuses to append after a bus whose last
+    /// byte is not `\n`), `session_started` is never written for it. Before
+    /// this cut the backward scan then walked the whole bus; now it must
+    /// stop at `DOCUMENT_HISTORY_SCAN_BUDGET_BYTES` and still surface the
+    /// tail revision that was actually asked for.
+    #[test]
+    fn history_without_session_started_stops_at_the_scan_budget_and_keeps_the_tail() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("unbounded.jsonl");
+        let filler = format!(
+            "{{\"schema\":\"codescribe.transcript.v1\",\"session_id\":\"other-take\",\"padding\":\"{}\"}}\n",
+            "x".repeat(4096)
+        );
+        let mut out = std::fs::File::create(&path).unwrap();
+        while out.metadata().unwrap().len() < DOCUMENT_HISTORY_SCAN_BUDGET_BYTES + 8 * 1024 * 1024 {
+            out.write_all(filler.as_bytes()).unwrap();
+        }
+        let padded_len = out.metadata().unwrap().len();
+
+        // Build a real revision event without ever writing `session_started`
+        // for it: generate it on a scratch bus, then append the raw line
+        // directly, the way an actually-disabled-persistence take would.
+        let scratch_path = temp.path().join("scratch.jsonl");
+        let scratch_bus =
+            TranscriptBus::open_at(session("unbounded-take"), scratch_path, None).unwrap();
+        let (ledger, _, base) = committed_fixture("unbounded-take");
+        let published = scratch_bus.publish_revision(&base, &ledger);
+        assert!(!published.is_empty());
+        for event in &published {
+            writeln!(out, "{}", serde_json::to_string(event).unwrap()).unwrap();
+        }
+        drop(out);
+        let total_len = std::fs::metadata(&path).unwrap().len();
+        assert!(total_len > padded_len);
+
+        let mut bytes_read = 0;
+        let history =
+            document_history_at_counted(&path, "unbounded-take", &mut bytes_read).unwrap();
+
+        assert!(!history.is_empty(), "tail revision must still surface");
+        assert_eq!(history[0].revision, base.revision);
+        assert!(
+            bytes_read < total_len,
+            "scan read {bytes_read} of {total_len} bytes; the budget should stop it short of the whole file"
+        );
+        assert!(
+            bytes_read >= DOCUMENT_HISTORY_SCAN_BUDGET_BYTES,
+            "scan stopped at {bytes_read} bytes, short of the {DOCUMENT_HISTORY_SCAN_BUDGET_BYTES} byte budget"
+        );
+    }
+
+    /// Not run by default: writes and scans a ~1 GiB fixture to measure
+    /// `document_history_at`'s wall time with the scan budget and substring
+    /// prefilter in place, for a session that never appears in the bus (the
+    /// worst case: every row is read but none ever reaches `serde_json`).
+    /// Run explicitly with:
+    ///   cargo test -p codescribe --lib \
+    ///     transcript_bus::tests::document_history_scan_budget_bounds_a_one_gib_bus \
+    ///     -- --ignored --nocapture
+    #[test]
+    #[ignore = "writes and scans a ~1 GiB fixture; run explicitly, see doc comment"]
+    fn document_history_scan_budget_bounds_a_one_gib_bus() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("one-gib.jsonl");
+        let filler = format!(
+            "{{\"schema\":\"codescribe.transcript.v1\",\"session_id\":\"other-take\",\"padding\":\"{}\"}}\n",
+            "x".repeat(4096)
+        );
+        let mut out = std::fs::File::create(&path).unwrap();
+        while out.metadata().unwrap().len() < 1024 * 1024 * 1024 {
+            out.write_all(filler.as_bytes()).unwrap();
+        }
+        drop(out);
+
+        let started = std::time::Instant::now();
+        let mut bytes_read = 0;
+        let history = document_history_at_counted(&path, "absent-take", &mut bytes_read).unwrap();
+        let elapsed = started.elapsed();
+
+        assert!(history.is_empty());
+        assert!(bytes_read <= DOCUMENT_HISTORY_SCAN_BUDGET_BYTES + 64 * 1024);
+        eprintln!("document_history_at scanned {bytes_read} bytes of a 1 GiB bus in {elapsed:?}");
     }
 
     #[test]
