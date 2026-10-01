@@ -18,7 +18,7 @@ use codescribe_core::pipeline::acoustic_ledger::{
 use codescribe_core::pipeline::contracts::TranscriptSegment;
 use serde::{Deserialize, Serialize};
 
-use super::emitter::{ReducerAction, TranscriptRevision};
+use super::emitter::{DerivedTranscriptProjection, ReducerAction, TranscriptRevision};
 use crate::controller::{
     TranscriptProjectionAvailability, resolve_transcript_projection_availability,
 };
@@ -1218,6 +1218,56 @@ impl TranscriptBus {
             }
             Ok(false) => {}
             Err(error) => self.log_write_error(error),
+        }
+    }
+
+    /// Journal a reducer-minted derived version without advancing the Raw
+    /// projection, seal, lifecycle, or delivery disposition. Readers select
+    /// this schema explicitly; acoustic document readers continue to see Raw.
+    pub(crate) fn record_derived_projection(&self, projection: &DerivedTranscriptProjection) {
+        if projection.session_id != self.session.session_id
+            || !projection.authenticates_publication()
+        {
+            return;
+        }
+        let mut writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Err(error) = Self::append_projection_locked(&mut writer, projection) {
+            self.log_write_error(error);
+        }
+    }
+
+    pub(crate) fn record_projection_delivery(
+        &self,
+        projection: &DerivedTranscriptProjection,
+        payload: &str,
+        disposition: TranscriptDelivery,
+    ) {
+        if projection.session_id != self.session.session_id
+            || !projection.authenticates_publication()
+        {
+            return;
+        }
+        let receipt = serde_json::json!({
+            "schema": "codescribe.projection-delivery.v1",
+            "session_id": projection.session_id,
+            "source_raw_revision": projection.source_raw_revision,
+            "source_state": projection.source_state,
+            "source_raw_text": projection.source_raw_text,
+            "projection_receipt": projection.receipt_id,
+            "requested_mode": projection.requested_mode,
+            "selected_mode": projection.delivered_mode,
+            "payload_utf8": payload,
+            "disposition": disposition,
+        });
+        let mut writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Err(error) = Self::append_projection_locked(&mut writer, &receipt) {
+            self.log_write_error(error);
         }
     }
 

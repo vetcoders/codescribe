@@ -2597,6 +2597,11 @@ impl RecordingController {
                 wait,
                 stop.stopped_at,
                 |text| async move {
+                    let text = if !assistive {
+                        self.select_paste_projection(text).await
+                    } else {
+                        text
+                    };
                     self.deliver_stop_transcript_with_sink(
                         take_id,
                         &text,
@@ -3052,6 +3057,7 @@ impl RecordingController {
             "dictation"
         };
         let payload = self.delivery_tagger.render(trimmed, config, Some(mode));
+        let receipt_payload = payload.clone();
         let outcome = sink(decision.route, payload, latched_target).await;
         if let (Some(notice), Ok(result)) = (paste_hold_notice(decision), outcome.as_ref())
             && result.delivery == OverlayPasteDelivery::CopiedToClipboard
@@ -3060,7 +3066,17 @@ impl RecordingController {
             // user's own ⌘V is the only answer that pastes.
             helpers::announce_paste_hold(notice);
         }
-        self.finish_stop_delivery(outcome, seal_refused).await
+        let result = self.finish_stop_delivery(outcome, seal_refused).await;
+        if let Some(presentation) = self.active_presentation.read().await.as_ref() {
+            presentation.record_projection_delivery(
+                &receipt_payload,
+                result
+                    .as_ref()
+                    .copied()
+                    .unwrap_or(TranscriptDelivery::Retained),
+            );
+        }
+        result
     }
 
     /// The real transport result enters here; tests may inject this boundary
@@ -5457,6 +5473,9 @@ impl RecordingController {
             let streaming_text = self
                 .format_composer_turn_once(capture_turn, streaming_text)
                 .await;
+            let streaming_text = if !take_delivers_to_composer(capture_turn) && !assistive {
+                self.select_paste_projection(streaming_text).await
+            } else { streaming_text };
             if let Some(path) = raw_audio_path_opt.as_deref() {
                 retain_session_audio(
                     session_id_snapshot.as_deref(),
@@ -5891,6 +5910,31 @@ impl RecordingController {
         }
     }
 
+    async fn select_paste_projection(&self, raw: String) -> String {
+        let policy = self.runtime_settings_arc().await.formatting_policy();
+        if !matches!(
+            policy,
+            FormattingPolicy::Correction | FormattingPolicy::Smart
+        ) {
+            return raw;
+        }
+        let Some(presentation) = self.active_presentation.read().await.clone() else {
+            return raw;
+        };
+        if presentation.literal_delivery() {
+            return raw;
+        }
+        let Some(projection) = presentation.delivery_projection(policy, &raw) else {
+            return raw;
+        };
+        if policy == FormattingPolicy::Smart
+            && projection.delivered_mode == FormattingPolicy::Correction.as_str()
+        {
+            info!(status = "Smart unavailable — delivered Corrections", source_revision = projection.source_raw_revision, receipt = %projection.receipt_id);
+        }
+        projection.rendered_text
+    }
+
     /// Stop recording, transcribe, format, and paste the result
     ///
     /// This is the core processing pipeline that:
@@ -6027,6 +6071,12 @@ impl RecordingController {
             }
         };
         let settled = initial_delivery?;
+
+        let streaming_text = if !assistive {
+            self.select_paste_projection(streaming_text).await
+        } else {
+            streaming_text
+        };
 
         if let Some(path) = raw_audio_path_opt.as_deref() {
             retain_session_audio(

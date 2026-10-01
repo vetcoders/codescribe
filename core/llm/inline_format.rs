@@ -1,21 +1,9 @@
-//! Automatic post-ASR label author — W1-D structural part set.
+//! Live formatter presentation proposals for an existing acoustic range.
 //!
-//! Throne law for this module:
-//! - Exactly one automatic label author exists: the chained Responses
-//!   `inline_format` path represented by [`OccurrenceLabelProposal`].
-//! - Proposals bind to already-grounded occurrence coordinates. Text is
-//!   payload only and is never a key.
-//! - This author cannot create, merge, or delete occurrence IDs.
-//! - Light+ is not an author. Only explicitly retained lexicon constraints
-//!   may accompany a proposal as non-authoritative input.
-//! - Whole-session Final BAM and document assembly (`SessionStore`) do not
-//!   return here.
-//!
-//! The Apple live session is the sole producer. It may construct this contract
-//! only after a bounded execution permit owns the exact occurrence and must
-//! return that same Formatter frontier slot on every terminal outcome. An
-//! enabled setting alone never schedules `Formatter`; no bridge, CLI, Swift,
-//! delivery, or whole-session raw-string route consumes this contract.
+//! The transport retains occurrence coordinates and the exact source observation.
+//! Formatter results are reducer-owned derived versions; they never grant ledger
+//! word mutation authority. The producer returns its same scheduled frontier on
+//! every terminal outcome. Missing or stale source evidence refuses publication.
 
 /// Non-authoritative lexicon constraint retained after Light+ authorship was
 /// removed. Constraint input only — never mints occurrences and never selects
@@ -28,13 +16,11 @@ pub struct RetainedLexiconConstraint {
     pub canonical: String,
 }
 
-/// Disposition of one automatic label proposal for layer-decision history.
-///
-/// The ledger records the decision; this author only proposes. It does not
-/// seal, reduce, or deliver.
+/// Disposition of one derived presentation proposal. Returning this task does
+/// not create a word observation or mutate an acoustic label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LabelProposalDisposition {
-    /// Offer a new label for an existing occurrence.
+    /// Offer a derived presentation for an existing range.
     Propose,
     /// Refuse to alter the existing label (guard / fail-closed).
     Refuse,
@@ -42,32 +28,16 @@ pub enum LabelProposalDisposition {
     PreserveExisting,
 }
 
-/// Sole automatic post-ASR label proposal part.
-///
-/// # Inputs
-/// - Occurrence coordinates already admitted by `AcousticLedger`
-///   (`session`, `capture_epoch`, `sample_start`, `sample_end`).
-/// - Current candidate label (payload, never identity).
-/// - Optional [`RetainedLexiconConstraint`] values.
-/// - Optional Responses `previous_response_id` chain tip.
-///
-/// # Outputs
-/// - A proposed label plus [`LabelProposalDisposition`] for later ledger /
-///   reducer admission after a concrete producer is launched.
-///
-/// # Forbidden authority
-/// - Creating or deleting occurrence IDs.
-/// - Owning a transcript document / `SessionStore`.
-/// - Selecting a delivery destination (that is `DeliveryRoute`).
-/// - Whole-session Final BAM rewriting.
-///
-/// # Consumer
-/// - `app/presentation/emitter.rs` (ledger-gated reducer admission after launch).
-///
-/// # Must not reach
-/// - `app/controller/delivery_route.rs` (route cannot choose text).
+/// Non-authoritative formatter output under an exact source observation.
+/// PresentationEmitter owns admission to derived history and delivery selection.
+/// This transport cannot create, change, merge, delete or seal acoustic words.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OccurrenceLabelProposal {
+    /// Exact source observation captured when the formatter job was scheduled.
+    /// Missing provenance permits returning the task, never publishing its text.
+    pub source_observation: Option<crate::pipeline::acoustic_ledger::ObservationIdentity>,
+    pub source_text: String,
+    pub policy: crate::config::FormattingPolicy,
     /// Capture session owning the occurrence.
     pub session: String,
     /// Capture epoch; sample clocks restart across epochs.
@@ -100,6 +70,9 @@ impl OccurrenceLabelProposal {
         disposition: LabelProposalDisposition,
     ) -> Self {
         Self {
+            source_observation: None,
+            source_text: String::new(),
+            policy: crate::config::FormattingPolicy::Smart,
             session: session.into(),
             capture_epoch,
             sample_start,
@@ -109,6 +82,18 @@ impl OccurrenceLabelProposal {
             previous_response_id: None,
             disposition,
         }
+    }
+
+    pub fn with_source(
+        mut self,
+        observation: crate::pipeline::acoustic_ledger::ObservationIdentity,
+        text: String,
+        policy: crate::config::FormattingPolicy,
+    ) -> Self {
+        self.source_observation = Some(observation);
+        self.source_text = text;
+        self.policy = policy;
+        self
     }
 
     /// Attach retained lexicon constraints without granting them authorship.
