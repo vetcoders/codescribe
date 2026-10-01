@@ -2321,6 +2321,11 @@ final class SettingsViewModel: ObservableObject {
     persist("WHISPER_ADAPTIVE_BUFFER", enabled ? "1" : "0")
   }
 
+  func setFormatOnDevice(_ enabled: Bool) {
+    guard DeveloperSurface.isEnabled() else { return }
+    persist("CODESCRIBE_FORMAT_ON_DEVICE", enabled ? "1" : "0")
+  }
+
   private func persist(_ key: String, _ value: String) {
     guard let engine else { return }
     do {
