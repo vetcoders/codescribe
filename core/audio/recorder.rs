@@ -981,17 +981,19 @@ fn audio_spill_from_env_value(value: Option<&str>) -> bool {
 /// and sends — no disk I/O on the audio thread) and lands in a WAV via
 /// incremental `hound` writes. `finalize()` closes the writer and returns the
 /// COMPLETE take, immune to [`STREAMING_BUFFER_CAP_SECONDS`] eviction.
-struct SpillSink {
+pub(crate) struct SpillSink {
+    path: PathBuf,
     tx: Option<std::sync::mpsc::Sender<Vec<i16>>>,
     handle: Option<std::thread::JoinHandle<Result<(PathBuf, usize)>>>,
 }
 
 impl SpillSink {
     /// Open the spill WAV in `dir` and start the writer thread.
-    fn spawn(sample_rate: u32, dir: &std::path::Path) -> Result<Self> {
+    pub(crate) fn spawn(sample_rate: u32, dir: &std::path::Path) -> Result<Self> {
         let path = dir.join(format!(
-            "codescribe_recording_{}.wav",
-            chrono::Utc::now().timestamp_millis()
+            "codescribe_recording_{}_{}.wav",
+            chrono::Utc::now().timestamp_millis(),
+            uuid::Uuid::new_v4()
         ));
         let spec = hound::WavSpec {
             channels: CHANNELS,
@@ -1002,6 +1004,7 @@ impl SpillSink {
         let mut writer = hound::WavWriter::create(&path, spec)
             .map_err(|e| anyhow::anyhow!("spill wav create {}: {e}", path.display()))?;
         let (tx, rx) = std::sync::mpsc::channel::<Vec<i16>>();
+        let archive_path = path.clone();
         let handle = std::thread::Builder::new()
             .name("audio-spill".into())
             .spawn(move || -> Result<(PathBuf, usize)> {
@@ -1013,6 +1016,7 @@ impl SpillSink {
                             .map_err(|e| anyhow::anyhow!("spill wav write: {e}"))?;
                     }
                     written += chunk.len();
+                    writer.flush()?;
                 }
                 writer
                     .finalize()
@@ -1021,13 +1025,18 @@ impl SpillSink {
             })
             .map_err(|e| anyhow::anyhow!("spill thread spawn: {e}"))?;
         Ok(Self {
+            path: archive_path,
             tx: Some(tx),
             handle: Some(handle),
         })
     }
 
+    pub(crate) fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
     /// Clone of the sender for the capture callback (send-only, non-blocking).
-    fn sender(&self) -> Option<std::sync::mpsc::Sender<Vec<i16>>> {
+    pub(crate) fn sender(&self) -> Option<std::sync::mpsc::Sender<Vec<i16>>> {
         self.tx.clone()
     }
 
@@ -1042,7 +1051,7 @@ impl SpillSink {
 
     /// Close the channel, join the writer, return the finalized take.
     /// `None` means the spill failed — callers fall back to the RAM ring.
-    fn finalize(mut self) -> Option<(PathBuf, usize)> {
+    pub(crate) fn finalize(mut self) -> Option<(PathBuf, usize)> {
         self.tx.take(); // drop our sender; callback senders die with the stream
         let handle = self.handle.take()?;
         match handle.join() {

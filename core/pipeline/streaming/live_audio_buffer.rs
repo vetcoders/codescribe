@@ -455,8 +455,10 @@ mod tests {
     }
 }
 
-/// Finalized recorder-owned WAV receipt. Constructed after capture stops, never
-/// in its callback. Identity and count are measured by the capture owner.
+/// Recorder-owned WAV receipt, never constructed in the device callback.
+/// The session feed seeds a zero-sample open-prefix receipt, then publishes
+/// the final measured count before closing its feed. `load` accepts only a
+/// complete receipt matching the worker's sample clock.
 #[derive(Debug)]
 pub struct FinalizedPcmArchive {
     pub(crate) session_id: String,
@@ -471,6 +473,37 @@ pub(crate) struct OwnedTerminalPcm {
 }
 
 impl FinalizedPcmArchive {
+    /// Read a published spill prefix without loading the whole take. The writer
+    /// flushes each block; a not-yet-published range remains unavailable.
+    pub(crate) fn window(
+        &self,
+        session: &str,
+        epoch: u64,
+        rate: u32,
+        start: u64,
+        end: u64,
+    ) -> Option<ResolvedAudioWindow> {
+        if self.session_id != session || self.capture_epoch != epoch
+            || self.sample_rate != rate || end <= start {
+            return None;
+        }
+        let mut reader = hound::WavReader::open(&self.path).ok()?;
+        let spec = reader.spec();
+        if spec.channels != 1 || spec.sample_rate != rate || spec.bits_per_sample != 16
+            || spec.sample_format != hound::SampleFormat::Int
+            || end > u64::from(reader.duration()) {
+            return None;
+        }
+        reader.seek(u32::try_from(start).ok()?).ok()?;
+        let count = usize::try_from(end - start).ok()?;
+        let samples = reader.samples::<i16>().take(count)
+            .map(|sample| sample.map(|value| f32::from(value) / f32::from(i16::MAX)))
+            .collect::<Result<Vec<_>, _>>().ok()?;
+        (samples.len() == count).then_some(ResolvedAudioWindow {
+            samples, sample_start: start, sample_end: end,
+        })
+    }
+
     pub(crate) fn load(
         self,
         session: &str,

@@ -13,7 +13,7 @@
 //! tail of the delivered text.
 
 use crate::asr_session::recorder::{RecorderLifecycleHandle, recorder_lifecycle_channel};
-use crate::audio::recorder::{Recorder, RecorderConfig};
+use crate::audio::recorder::{Recorder, RecorderConfig, SpillSink, takes_dir};
 use crate::config::{RuntimeSettingsSnapshot, UserSettings};
 use crate::pipeline::acoustic_ledger::AcousticLedger;
 #[cfg(test)]
@@ -373,6 +373,7 @@ pub struct StreamingRecorder {
         >,
     >,
     last_window_closed: Option<oneshot::Receiver<()>>,
+    take_archive: Option<JoinHandle<Result<std::path::PathBuf>>>,
 }
 
 /// One subscriber's PCM sender. `kind` lets the callback drop channel blocks
@@ -392,6 +393,7 @@ struct ChannelTask {
     task: JoinHandle<()>,
     lifecycle: RecorderLifecycleHandle,
     last_window: oneshot::Receiver<()>,
+    archive: JoinHandle<Result<std::path::PathBuf>>,
 }
 
 /// What [`StreamingRecorder::register_channel_feed`] handed the caller.
@@ -458,6 +460,7 @@ impl StreamingRecorder {
             captured_samples: Arc::new(AtomicU64::new(0)),
             terminal_audio_sender: None,
             last_window_closed: None,
+            take_archive: None,
         })
     }
 
@@ -494,6 +497,7 @@ impl StreamingRecorder {
             captured_samples: Arc::new(AtomicU64::new(0)),
             terminal_audio_sender: None,
             last_window_closed: None,
+            take_archive: None,
         })
     }
 
@@ -741,9 +745,8 @@ impl StreamingRecorder {
         let (tx, rx) = mpsc::channel::<Vec<f32>>(AUDIO_BACKLOG_CHUNKS);
 
         // The take joins the capture as one subscriber. A capture another
-        // subscriber already opened stays open and is shared; this take then
-        // owes no whole-capture WAV at stop (its terminal PCM lane is the
-        // live-buffer archive, wired with the agent channel in W1b).
+        // subscriber already opened stays open and is shared. The take still
+        // owns its session-clock spill and terminal receipt.
         let shared_capture = self.has_non_take_subscriber() && self.recorder.is_active();
         let take_subscriber = self.acquire_capture_subscriber(CaptureSubscriberKind::Take, tx);
         self.take_subscriber = Some(take_subscriber);
@@ -792,16 +795,19 @@ impl StreamingRecorder {
         let (layer1, _decision_receipt) = crate::asr_session::layer1_decision(&runtime_settings);
         let (lifecycle_handle, lifecycle_events) = recorder_lifecycle_channel();
         self.lifecycle_handle = Some(lifecycle_handle);
-        // A take that shares another subscriber's capture owes no whole-capture
-        // WAV at stop, so the session must not wait on the terminal archive
-        // handoff; its terminal PCM lane arrives with the agent channel (W1b).
-        let terminal_audio = if shared_capture {
-            None
-        } else {
-            let (terminal_tx, terminal_rx) = std::sync::mpsc::channel();
-            self.terminal_audio_sender = Some(terminal_tx);
-            Some(terminal_rx)
+        let (rx, terminal_audio, archive) = match archived_session_feed(
+            rx, session_id.clone(), next_capture_epoch, actual_sample_rate,
+        ) {
+            Ok(archive) => archive,
+            Err(error) => {
+                self.lifecycle_handle = None;
+                if self.release_capture_subscriber(take_subscriber) {
+                    let _ = self.recorder.stop().await;
+                }
+                return Err(error.context("take session archive could not open"));
+            }
         };
+        self.take_archive = Some(archive);
         let (last_window_tx, last_window_rx) = oneshot::channel();
         self.last_window_closed = Some(last_window_rx);
         self.transcription_handle = Some(tokio::spawn(async move {
@@ -822,7 +828,7 @@ impl StreamingRecorder {
                     capture_turn,
                     layer1,
                     lifecycle_events: Some(lifecycle_events),
-                    terminal_audio,
+                    terminal_audio: Some(terminal_audio),
                     last_window_closed: Some(last_window_tx),
                 },
             )
@@ -872,8 +878,7 @@ impl StreamingRecorder {
     /// `EpochGate::for_session` inside `transcription_session`. The take's
     /// silence field and capture epoch are not written.
     ///
-    /// `terminal_audio` stays `None`: a channel seal does not wait on a
-    /// whole-capture WAV.
+    /// Each subscriber owns a session-clock spill, independent of device close.
     pub async fn begin_channel_session(
         &mut self,
         session_id: String,
@@ -922,7 +927,17 @@ impl StreamingRecorder {
         let (last_window_tx, last_window_rx) = oneshot::channel();
         event_sink.on_capture_opened(&session_id, 1);
         let sink = event_sink;
-        let feed = registration.receiver;
+        let (feed, terminal_audio, archive) = match archived_session_feed(
+            registration.receiver, session_id.clone(), 1, actual_sample_rate,
+        ) {
+            Ok(archive) => archive,
+            Err(error) => {
+                if self.release_capture_subscriber(registration.id) {
+                    let _ = self.recorder.stop().await;
+                }
+                return Err(error.context("channel session archive could not open"));
+            }
+        };
         let id = registration.id;
         let task = tokio::spawn(async move {
             transcription_session(
@@ -942,7 +957,7 @@ impl StreamingRecorder {
                     capture_turn: CaptureTurnIntent::AgentChannel,
                     layer1,
                     lifecycle_events: Some(lifecycle_events),
-                    terminal_audio: None,
+                    terminal_audio: Some(terminal_audio),
                     last_window_closed: Some(last_window_tx),
                 },
             )
@@ -953,6 +968,7 @@ impl StreamingRecorder {
             task,
             lifecycle,
             last_window: last_window_rx,
+            archive,
         });
         Ok(id)
     }
@@ -971,29 +987,36 @@ impl StreamingRecorder {
             .position(|task| task.subscriber == id);
         let removed = position.map(|index| self.channel_tasks.remove(index));
         let last = self.release_capture_subscriber(id);
-        let mut audio_path = None;
-        if last && self.recorder.is_active() {
-            // Channel audio retention parity (W5): a channel that owns the
-            // capture keeps its whole-capture WAV, like a dictation take. A
-            // shared capture stays open and owes this channel no WAV.
-            audio_path = self.recorder.stop().await?;
-        }
-        if let Some(removed) = removed {
-            removed
-                .task
-                .await
-                .context("channel transcription task failed")?;
+        let physical_stop = if last && self.recorder.is_active() {
+            self.recorder.stop().await
+        } else {
+            Ok(None)
+        };
+        let session_stop = if let Some(removed) = removed {
+            let archived = removed.archive.await.context("channel archive task failed")
+                .and_then(|result| result);
+            let joined = removed.task.await.context("channel transcription task failed");
             drop(removed.lifecycle);
             drop(removed.last_window);
-        }
+            match archived {
+                Err(error) => Err(error),
+                Ok(path) => joined.map(|()| Some(path)),
+            }
+        } else {
+            Ok(None)
+        };
+        let audio_path = match physical_stop {
+            Err(error) => return Err(error),
+            Ok(capture_path) => session_stop?.or(capture_path),
+        };
         Ok((last, audio_path))
     }
 
     /// Stop the session and return the accumulated transcript plus the WAV path.
     ///
     /// Ordered shutdown: release the take's subscription, stop capture when no
-    /// subscriber remains (a shared capture stays open and yields no WAV
-    /// here), await the transcription task, let the presentation layer drain,
+    /// subscriber remains, finalize this take's spill independently, await the
+    /// transcription task, let the presentation layer drain,
     /// then release the sink. Any chunks dropped to backpressure during the
     /// session are logged here — that counter is the signal that audio was
     /// actually lost.
@@ -1011,9 +1034,8 @@ impl StreamingRecorder {
 
         // The take's subscription is released first: its PCM feed closes and
         // the session drains exactly as a physical close would make it. The
-        // physical stream stops only when no subscriber remains; a capture
-        // shared with other subscribers stays open and owes this take no
-        // whole-capture WAV.
+        // physical stream stops only when no subscriber remains; the take's
+        // session spill finalizes independently while a shared capture stays open.
         let stopped = match self.release_take_pcm_feed() {
             TakeFeedRelease::LastSubscriber | TakeFeedRelease::NoTakeFeed => {
                 self.recorder.stop().await
@@ -1065,6 +1087,17 @@ impl StreamingRecorder {
         &mut self,
         stopped: Result<Option<std::path::PathBuf>>,
     ) -> Result<(String, Option<std::path::PathBuf>)> {
+        let stopped = if let Some(archive) = self.take_archive.as_mut() {
+            let archived = archive.await.context("take archive task failed")
+                .and_then(|result| result).map(Some);
+            self.take_archive = None;
+            match stopped {
+                Err(error) => Err(error),
+                Ok(_) => archived,
+            }
+        } else {
+            stopped
+        };
         if let Some(sender) = self.terminal_audio_sender.take() {
             let receipt = match &stopped {
                 Ok(Some(path)) => Ok(
@@ -1192,6 +1225,65 @@ impl StreamingRecorder {
         let (transcript, _audio_path) = self.stop().await?;
         Ok(transcript)
     }
+}
+
+/// Archive exactly the PCM offered to one transcription session, using the
+/// recorder's native spill writer. Device lifetime is not session ownership.
+/// The open prefix receipt is seeded before the transcription task starts;
+/// the final receipt is published before the downstream feed closes.
+fn archived_session_feed(
+    mut source: mpsc::Receiver<Vec<f32>>,
+    session_id: String,
+    capture_epoch: u64,
+    sample_rate: u32,
+) -> Result<(
+    mpsc::Receiver<Vec<f32>>,
+    std::sync::mpsc::Receiver<Result<crate::pipeline::streaming::live_audio_buffer::FinalizedPcmArchive, String>>,
+    JoinHandle<Result<std::path::PathBuf>>,
+)> {
+    use crate::pipeline::streaming::live_audio_buffer::FinalizedPcmArchive;
+    let spill = SpillSink::spawn(sample_rate, &takes_dir()?)?;
+    let sender = spill.sender().context("session spill sender unavailable")?;
+    let path = spill.path().to_path_buf();
+    let (terminal_tx, terminal_rx) = std::sync::mpsc::channel();
+    terminal_tx.send(Ok(FinalizedPcmArchive {
+        session_id: session_id.clone(), capture_epoch, sample_rate,
+        sample_count: 0, path: path.clone(),
+    })).map_err(|_| anyhow!("session archive receipt receiver closed"))?;
+    let (feed_tx, feed_rx) = mpsc::channel(AUDIO_BACKLOG_CHUNKS);
+    let task = tokio::spawn(async move {
+        let mut sample_count = 0u64;
+        let mut failure = None;
+        while let Some(pcm) = source.recv().await {
+            let count = pcm.len() as u64;
+            let quantized = pcm.iter().map(|sample| (*sample * i16::MAX as f32) as i16).collect();
+            if sender.send(quantized).is_err() {
+                failure = Some("session spill writer closed".to_string());
+                break;
+            }
+            if feed_tx.send(pcm).await.is_err() {
+                failure = Some("session transcription feed closed".to_string());
+                break;
+            }
+            sample_count = sample_count.saturating_add(count);
+        }
+        drop(sender);
+        let finalized = tokio::task::spawn_blocking(move || spill.finalize()).await;
+        let result = match (failure, finalized) {
+            (None, Ok(Some((path, written)))) if written as u64 == sample_count => Ok(path),
+            (Some(error), _) => Err(error),
+            (_, Ok(Some(_))) => Err("session spill sample-count mismatch".into()),
+            (_, Ok(None)) => Err("session spill finalization failed".into()),
+            (_, Err(error)) => Err(format!("session spill join failed: {error}")),
+        };
+        let receipt = result.as_ref().map(|path| FinalizedPcmArchive {
+            session_id, capture_epoch, sample_rate, sample_count, path: path.clone(),
+        }).map_err(Clone::clone);
+        let _ = terminal_tx.send(receipt);
+        drop(feed_tx);
+        result.map_err(anyhow::Error::msg)
+    });
+    Ok((feed_rx, terminal_rx, task))
 }
 
 /// Offer one captured block to every subscriber feed.
