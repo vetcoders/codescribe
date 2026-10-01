@@ -55,6 +55,9 @@ targets:
         # 1 only on keyed `make install-app`. Production DMG must stay 0.
         CSDeveloperSurface: $(CS_DEVELOPER_SURFACE)
         SUEnableAutomaticChecks: true
+        CFBundleURLTypes:
+          - CFBundleURLName: com.vetcoders.codescribe.lab
+            CFBundleURLSchemes: [codescribe]
         LSUIElement: true
         # LSMultipleInstancesProhibited is NOT set here: this target is also the
         # CodescribeTests TEST_HOST, and a flagged host with the installed app's

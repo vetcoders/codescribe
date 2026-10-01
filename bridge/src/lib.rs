@@ -65,6 +65,8 @@ mod speech;
 mod threads;
 /// Menu-bar tray status payloads and listener.
 mod tray_status;
+/// Private, app-owned vocabulary replay.
+mod vocabulary_ab;
 
 pub use agent::{CodescribeAgent, CsAgentListener};
 pub use agent_delivery::CsAgentDeliveryListener;

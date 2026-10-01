@@ -1,6 +1,9 @@
 """Hermetic metrics and privacy regressions; no Apple/microphone/private data."""
 
 import importlib.util
+import io
+import contextlib
+from unittest.mock import patch
 import json
 from pathlib import Path
 import subprocess
@@ -16,6 +19,71 @@ SPEC.loader.exec_module(AB)
 
 
 class VocabularyABTests(unittest.TestCase):
+    def test_sample_is_deterministic_and_ignores_symlinks(self):
+        import os
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            for i in range(5):
+                path = root / f"{i}.wav"
+                with wave.open(str(path), "wb") as audio:
+                    audio.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+                    audio.writeframes(b"\x00\x00" * 160000)
+                os.utime(path, ns=(1000, 1000))
+            (root / "alias.wav").symlink_to(root / "0.wav")
+            first, eligible = AB.select_sample(root, 3)
+            self.assertEqual(eligible, 5)
+            self.assertEqual([entry["name"] for entry in first], ["0.wav", "2.wav", "4.wav"])
+            self.assertEqual(AB.select_sample(root, 3), (first, eligible))
+
+    def test_app_destination_refuses_outside_existing_and_symlinks(self):
+        with tempfile.TemporaryDirectory() as root:
+            private = Path(root) / ".codescribe"
+            private.mkdir()
+            output = private / "lab/vocabulary-ab/result.json"
+            AB.validate_app_output(private, output)
+            with self.assertRaises(ValueError):
+                AB.validate_app_output(private, private / "settings.json")
+            (private / "lab").symlink_to(Path(root))
+            with self.assertRaises(ValueError):
+                AB.validate_app_output(private, output)
+
+    def test_app_entry_uses_shared_runner_and_writes_only_metrics(self):
+        with tempfile.TemporaryDirectory() as root:
+            home = Path(root)
+            private = home / ".codescribe"
+            archive = private / "sessions"
+            archive.mkdir(parents=True)
+            for i in range(2):
+                with wave.open(str(archive / f"{i}.wav"), "wb") as audio:
+                    audio.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+                    audio.writeframes(b"\x00\x00" * 160000)
+            bridge = home / "bridge"
+            bridge.write_bytes(b"fixture")
+            payload = {"bridge": str(bridge), "count": 2, "result_name": "test.json",
+                       "vocabulary": {"terms": ["Iwo"]}}
+            calls = []
+            def transcribe(bridge, path, terms, *args, **kwargs):
+                calls.append(terms)
+                self.assertEqual(kwargs.get("command"),
+                                 "probe" if path is None else "transcribe_vocabulary_lab")
+                return ({"ok": True, "seconds": 1, "backend": "sf_speech_recognizer"},
+                        "SECRET_DICTATION Iwo")
+            stdout = io.StringIO()
+            with patch.object(Path, "home", return_value=home), \
+                    patch.object(sys, "stdin", io.StringIO(json.dumps(payload))), \
+                    patch.object(AB, "transcribe", side_effect=transcribe), \
+                    contextlib.redirect_stdout(stdout):
+                self.assertEqual(AB.app_main(), 0)
+            output = private / "lab/vocabulary-ab/test.json"
+            self.assertNotIn("SECRET_DICTATION", output.read_text() + stdout.getvalue())
+            self.assertEqual(calls, [None, None, ["Iwo"], ["Iwo"], None])
+            report = json.loads(output.read_text())
+            self.assertEqual(report["summary"]["completed_pairs"], 2)
+            self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+            self.assertFalse((private / "settings.json").exists())
+            with self.assertRaises(ValueError):
+                AB.write_app_report(private, output, report)
+
     def test_unicode_multiword_terms_and_occurrences(self):
         hits = AB.term_hits("Iwo, Iwo! STRASSE i ŁÓDŹ. Voice Lab, Voice Laboratory.",
                             ["Iwo", "Straße", "Łódź", "Voice Lab", "Lab"])
@@ -96,6 +164,15 @@ class VocabularyABTests(unittest.TestCase):
             combined = run.stdout + run.stderr + output.read_text()
             self.assertNotIn("PRIVATE_", combined)
             report = json.loads(output.read_text())
+            def check_keys(value):
+                if isinstance(value, dict):
+                    self.assertFalse(set(value) & {"text", "edited_text", "segments", "transcript", "stdout", "stderr"})
+                    for child in value.values():
+                        check_keys(child)
+                elif isinstance(value, list):
+                    for child in value:
+                        check_keys(child)
+            check_keys(report)
             self.assertEqual(report["summary"]["completed_pairs"], 2)
             self.assertFalse(report["summary"]["enable_apple_live"])
             replay = subprocess.run(command + ["--manifest", str(output)], capture_output=True,

@@ -418,6 +418,12 @@ pub fn custom_lexicon_entries() -> Result<Vec<CustomLexiconEntry>> {
     if let Some(parent) = path.parent() {
         cleanup_orphaned_lexicon_temps(parent);
     }
+    custom_lexicon_entries_read_only()
+}
+
+/// Read the dictionary without removing temporary files or writing state.
+pub fn custom_lexicon_entries_read_only() -> Result<Vec<CustomLexiconEntry>> {
+    let path = Config::config_dir().join("lexicon.custom.jsonl");
     let file = match File::open(&path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -2519,6 +2525,29 @@ mod tests {
         let stored: StoredCustomLexiconEntry =
             serde_json::from_str(legacy_line).expect("legacy parse");
         assert!(stored.source.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn lab_dictionary_read_keeps_temporary_files_and_source_bytes() {
+        let _fixture = QualityFixture::new("lab read only");
+        let root = Config::config_dir();
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("lexicon.custom.jsonl");
+        let bytes = r#"{"term":"Iwo","mispronunciations":["ivo"]}"#;
+        fs::write(&path, bytes).unwrap();
+        let orphan = root.join(".lexicon.custom.jsonl.tmp.lab-test");
+        fs::write(&orphan, "untouched").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&orphan)
+            .unwrap()
+            .set_modified(SystemTime::UNIX_EPOCH)
+            .unwrap();
+        let entries = custom_lexicon_entries_read_only().unwrap();
+        assert_eq!(entries[0].canonical, "Iwo");
+        assert_eq!(fs::read_to_string(&path).unwrap(), bytes);
+        assert_eq!(fs::read_to_string(&orphan).unwrap(), "untouched");
     }
 
     /// A deliberately cleared lexicon is neither resurrected nor treated as an

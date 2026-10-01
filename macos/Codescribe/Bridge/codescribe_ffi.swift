@@ -17754,6 +17754,17 @@ public func requestMicPermission() -> Bool  {
 })
 }
 /**
+ * Swift checks the developer/Lab gate before entering this blocking worker.
+ * The executable is resolved beside the host app, never from URL input or PATH.
+ */
+public func runVocabularyAb(sample: UInt32)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_func_run_vocabulary_ab(
+        FfiConverterUInt32.lower(sample),$0
+    )
+})
+}
+/**
  * Project one lane from a single loader snapshot without exposing secrets.
  */
 public func runtimeLlmLane(lane: CsLlmLane) -> CsRuntimeLlmLane  {
@@ -17902,6 +17913,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_request_mic_permission() != 61967) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_run_vocabulary_ab() != 12817) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_runtime_llm_lane() != 23153) {
