@@ -40,7 +40,7 @@ use tracing::{debug, info, warn};
 ///
 /// It deliberately does **not** describe destination, engine, or acoustic
 /// evidence. Silero segmentation, ledger qualification, and Layer 1 tail repair
-/// are unaffected by either variant — only the UI-visible epoch lifecycle and
+/// remain active for every variant — only the UI-visible epoch lifecycle and
 /// the *live* paid formatter lane read this.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CaptureTurnIntent {
@@ -57,6 +57,8 @@ pub enum CaptureTurnIntent {
     /// paid formatting is launched per silence-delimited fragment. The turn is
     /// formatted once at terminal processing instead.
     SingleTurn,
+    /// A channel delivers shaped Raw after acoustic refinement, without LLM formatting.
+    AgentChannel,
 }
 
 impl CaptureTurnIntent {
@@ -68,7 +70,7 @@ impl CaptureTurnIntent {
     /// rests, not the VAD — Silero keeps running for identity and tail repair.
     pub fn utterance_silence_sec(self, configured_sec: f32) -> Option<f32> {
         match self {
-            Self::HandsFree => Some(configured_sec),
+            Self::HandsFree | Self::AgentChannel => Some(configured_sec),
             Self::SingleTurn => None,
         }
     }
@@ -85,9 +87,8 @@ impl CaptureTurnIntent {
 
     /// Whether the take may be formatted once when it terminates.
     ///
-    /// Exactly the complement of [`Self::schedules_live_formatting`]: a
-    /// hands-free take has already paid per occurrence and must not be charged
-    /// a second time at stop.
+    /// A hands-free take has already paid per occurrence; a channel never
+    /// formats with an LLM. Only a composer take formats at stop.
     pub const fn formats_once_at_terminal(self) -> bool {
         matches!(self, Self::SingleTurn)
     }
@@ -938,7 +939,7 @@ impl StreamingRecorder {
                     language,
                     stream_log_path: None,
                     utterance_silence_sec,
-                    capture_turn: CaptureTurnIntent::HandsFree,
+                    capture_turn: CaptureTurnIntent::AgentChannel,
                     layer1,
                     lifecycle_events: Some(lifecycle_events),
                     terminal_audio: None,

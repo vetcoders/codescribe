@@ -1444,7 +1444,7 @@ impl TranscriptReducer {
             &source_label,
             sentence_break_before,
         );
-        // Shaping that consumed every word (a hesitation-only utterance) must
+        // An empty shaping must
         // never be committed: an empty presentation would delete spoken audio
         // from the document on the strength of a formatting pass.
         if shaped.trim().is_empty() {
@@ -2139,6 +2139,7 @@ impl VisibleCanvasSnapshot {
 /// All target mutations are serialized through one mpsc worker, guaranteeing
 /// that overlay deltas and the shared transcript snapshot see identical order.
 pub struct PresentationEmitter {
+    refinement_warnings: Option<Arc<std::sync::Mutex<Vec<String>>>>,
     cursor_observer: Option<CursorObserver>,
     cursor_capture: std::sync::OnceLock<(String, u64)>,
     cursor_sequence: std::sync::Mutex<u64>,
@@ -2409,6 +2410,7 @@ impl PresentationEmitter {
             literal_delivery: std::sync::atomic::AtomicBool::new(false),
             stop_snapshot_pending: std::sync::atomic::AtomicBool::new(false),
             sentence_pause_sec: 0.7,
+            refinement_warnings: None,
             cursor_observer: None,
             cursor_capture: std::sync::OnceLock::new(),
             cursor_sequence: std::sync::Mutex::new(0),
@@ -2426,6 +2428,15 @@ impl PresentationEmitter {
     pub fn set_literal_delivery(&self, literal: bool) {
         self.literal_delivery
             .store(literal, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Counts-only processing receipts retained by the channel close owner.
+    pub fn with_refinement_warnings(
+        mut self,
+        warnings: Arc<std::sync::Mutex<Vec<String>>>,
+    ) -> Self {
+        self.refinement_warnings = Some(warnings);
+        self
     }
 
     /// Set from the immutable settings generation held by this capture.
@@ -2761,7 +2772,7 @@ impl PresentationEmitter {
 
     /// Light+ document shape at terminal or after a frozen Stop revision gains
     /// late words — capital at sentence starts, a closing period,
-    /// hesitation sounds dropped, punctuation seams collapsed — minted as one
+    /// hesitations preserved, punctuation seams collapsed — minted as one
     /// ledger-stamped document revision with provenance `light-plus`, so the
     /// Bus, the delivery buffer, and the formatter CAS all see the same bytes.
     /// It runs for every lane except the literal contract and never touches
@@ -2770,6 +2781,7 @@ impl PresentationEmitter {
         if self.literal_delivery() {
             return;
         }
+        let tick_started = std::time::Instant::now();
         let intent = self
             .session_state
             .lock()
@@ -2778,8 +2790,18 @@ impl PresentationEmitter {
         let Some(intent) = intent else {
             return;
         };
+        if tick_started.elapsed() >= std::time::Duration::from_secs(2) {
+            self.on_event(&EngineEvent::Warning {
+                code: "light_plus_tick_deadline".into(),
+                message:
+                    "Light+ tick exceeded its separate 2 s budget; previous coherent Raw retained."
+                        .into(),
+            });
+            return;
+        }
         match self.commit_document_revision(ledger, intent) {
             Ok(commit) => debug!(
+                elapsed_ms = tick_started.elapsed().as_millis(),
                 revision = commit.revision,
                 receipt = %commit.provenance_receipt,
                 "Light+ terminal revision committed"
@@ -3061,6 +3083,15 @@ impl EventSink for PresentationEmitter {
                 if !ledger.authenticates_seal(receipt) {
                     return;
                 }
+                // The channel follower consumes the terminal seal immediately.
+                // Shape its settled Raw before that delivery boundary is published.
+                if !receipt.is_occurrence_seal() && self.refinement_warnings.is_some() {
+                    self.session_state
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .mark_terminal_lifecycle();
+                    self.mint_light_plus_revision(&mut ledger);
+                }
                 let (revision, evidence_closed) = {
                     let mut state = self
                         .session_state
@@ -3339,6 +3370,19 @@ impl EventSink for PresentationEmitter {
             }
             EngineEvent::Warning { code, message } => {
                 tracing::warn!("Engine warning [{}]: {}", code, message);
+                if (code.starts_with("live_refinement_")
+                    || code.starts_with("tail_patch_")
+                    || code == "agent_raw_whisper_disabled"
+                    || code == "local_tail_patch_degraded"
+                    || code == "layer1_lane_degraded"
+                    || code == "light_plus_tick_deadline")
+                    && let Some(warnings) = &self.refinement_warnings
+                {
+                    let mut warnings = warnings.lock().unwrap_or_else(|error| error.into_inner());
+                    if !warnings.contains(code) {
+                        warnings.push(code.clone());
+                    }
+                }
             }
             EngineEvent::SessionFinalised { .. } => {
                 if self
@@ -6555,6 +6599,239 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn agent_channel_five_iwo_pcm_to_ledger_reducer_and_delivery() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.join("p0_b_five_iwo_manifest.json")).unwrap(),
+        )
+        .unwrap();
+        let pcm = hound::WavReader::open(root.join("p0_b_five_iwo.wav"))
+            .unwrap()
+            .samples::<i16>()
+            .map(|sample| f64::from(sample.unwrap()) / 32_768.0)
+            .collect::<Vec<_>>();
+        let mut take = live_take("agent-five-iwo");
+        let calibration = EnergyCalibration::new(
+            "p0-b-synthetic-energy-v1",
+            manifest["minimum_energy_integral"].as_f64().unwrap(),
+            manifest["minimum_valley_samples"].as_u64().unwrap(),
+        );
+        let bursts = manifest["bursts"].as_array().unwrap();
+        assert_eq!(bursts.len(), 5);
+        for (index, burst) in bursts.iter().enumerate() {
+            let start = burst["sample_start"].as_u64().unwrap();
+            let end = burst["sample_end"].as_u64().unwrap();
+            let samples = &pcm[start as usize..end as usize];
+            let energy = samples.iter().map(|sample| sample * sample).sum::<f64>();
+            let rms = (energy / samples.len() as f64).sqrt();
+            let peak = samples
+                .iter()
+                .map(|sample| sample.abs())
+                .fold(0.0_f64, f64::max);
+            let occurrence = OccurrenceIdentity::new("agent-five-iwo", 1, start, end);
+            let (mutation, seal) = {
+                let mut ledger = take.ledger.lock().unwrap();
+                assert!(
+                    ledger
+                        .qualify(
+                            &AcousticEvidence {
+                                occurrence: occurrence.clone(),
+                                duration_ms: (end - start) as f64 / 16.0,
+                                energy_integral: energy,
+                                mean_rms_dbfs: 20.0 * rms.log10(),
+                                peak_dbfs: 20.0 * peak.log10(),
+                                vad_open_sample: Some(start),
+                                vad_close_sample: Some(end),
+                                evidence_calibration_version: calibration.version.clone(),
+                            },
+                            &calibration
+                        )
+                        .is_qualified()
+                );
+                ledger.schedule_frontier(
+                    occurrence.clone(),
+                    [ObservationProducer::Apple, ObservationProducer::Whisper],
+                );
+                let observation = ObservationIdentity::new(
+                    ObservationProducer::Apple,
+                    index as u64 + 1,
+                    0,
+                    occurrence.clone(),
+                );
+                let receipt = ledger.admit(&observation, "Iwo");
+                assert!(!ledger.note_frontier_return(&occurrence, ObservationProducer::Apple));
+                assert!(ledger.note_frontier_return(&occurrence, ObservationProducer::Whisper));
+                let seal = ledger.seal(&occurrence).unwrap().clone();
+                (
+                    EngineEvent::LedgerMutation {
+                        observation,
+                        label: "Iwo".into(),
+                        receipt,
+                    },
+                    seal,
+                )
+            };
+            take.emitter.on_event(&mutation);
+            take.emitter
+                .on_event(&EngineEvent::LedgerSeal { receipt: seal });
+        }
+        assert_eq!(
+            take.ledger.lock().unwrap().qualified_occurrences().count(),
+            5
+        );
+        take.emitter.on_event(&EngineEvent::SessionFinalised {
+            session_id: "agent-five-iwo".into(),
+            layer_summary: LayerSummary::default(),
+        });
+        take.emitter.finish().await;
+        assert_eq!(take.delivery.lock().await.as_str(), "Iwo Iwo Iwo Iwo Iwo.");
+        let ledger = take.ledger.lock().unwrap();
+        assert_eq!(
+            ledger
+                .qualified_occurrences()
+                .filter(|owner| ledger.is_sealed(owner))
+                .count(),
+            5
+        );
+        assert!(
+            std::fs::read_to_string(&take.bus_path)
+                .unwrap()
+                .contains("Iwo Iwo Iwo Iwo Iwo.")
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_channel_raw_delivery_uses_whisper_then_light_plus_without_formatter() {
+        for (apple, whisper, expected) in [
+            (
+                "weryfikowałeś",
+                "zweryfikowałeś yyy [śmiech]",
+                "Zweryfikowałeś yyy [śmiech].",
+            ),
+            (
+                "czy weryfikowałeś",
+                "czy plan weryfikowałeś",
+                "Czy plan weryfikowałeś.",
+            ),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("agent.jsonl");
+            let bus = Arc::new(
+                TranscriptBus::open_at(
+                    TranscriptSession {
+                        session_id: "agent-raw".into(),
+                        mode: TranscriptMode::Agent,
+                        has_latched_target: false,
+                        latched_target_is_self: false,
+                        audience: Some("test-agent".into()),
+                        badge_only: true,
+                    },
+                    path.clone(),
+                    None,
+                )
+                .unwrap(),
+            );
+            let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+            let delivery = Arc::new(Mutex::new(String::new()));
+            let mut emitter = PresentationEmitter::new_with_authority(
+                delivery.clone(),
+                None,
+                None,
+                Some(bus.clone()),
+                Some(ledger.clone()),
+                None,
+            )
+            .with_refinement_warnings(Arc::new(StdMutex::new(Vec::new())));
+            assert!(!emitter.literal_delivery(), "Raw must run Light+");
+            emitter.on_capture_opened("agent-raw", 7);
+            let occurrence = OccurrenceIdentity::new("agent-raw", 7, 0, 16_000);
+            let mutation = {
+                let mut ledger = ledger.lock().unwrap();
+                let mutation = admitted_mutation(&mut ledger, occurrence.clone(), 1, apple);
+                ledger.schedule_frontier(
+                    occurrence.clone(),
+                    [ObservationProducer::Apple, ObservationProducer::Whisper],
+                );
+                assert!(!ledger.note_frontier_return(&occurrence, ObservationProducer::Apple));
+                assert_eq!(ledger.seal(&occurrence), Err(SealRefusal::FrontierOpen));
+                mutation
+            };
+            emitter.on_event(&mutation);
+            let rows = std::fs::read_to_string(&path).unwrap_or_default();
+            assert!(
+                !rows
+                    .lines()
+                    .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                    .any(|row| row["reducer_action"] == "record_ledger_terminal_seal"
+                        || row["lifecycle_terminal"] == true)
+            );
+            let (corrected, seal) = {
+                let mut ledger = ledger.lock().unwrap();
+                let observation = ObservationIdentity::new(
+                    ObservationProducer::Whisper,
+                    2,
+                    0,
+                    occurrence.clone(),
+                );
+                let receipt = ledger.admit(&observation, whisper);
+                assert!(receipt.grants_mutation());
+                assert!(ledger.note_frontier_return(&occurrence, ObservationProducer::Whisper));
+                let seal = ledger.seal(&occurrence).unwrap().clone();
+                (
+                    EngineEvent::LedgerMutation {
+                        observation,
+                        label: whisper.into(),
+                        receipt,
+                    },
+                    seal,
+                )
+            };
+            emitter.on_event(&corrected);
+            emitter.on_event(&EngineEvent::LedgerSeal { receipt: seal });
+            let tick_started = std::time::Instant::now();
+            let terminal_seal = ledger
+                .lock()
+                .unwrap()
+                .seal_terminal("agent-raw", 7)
+                .unwrap();
+            emitter.on_event(&EngineEvent::LedgerSeal {
+                receipt: terminal_seal,
+            });
+            assert!(
+                std::fs::read_to_string(&path)
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                    .any(|row| row["reducer_action"] == "record_ledger_terminal_seal"
+                        && row["rendered_text"] == expected),
+                "the agent delivery boundary itself must carry shaped Whisper Raw"
+            );
+            emitter.on_event(&EngineEvent::SessionFinalised {
+                session_id: "agent-raw".into(),
+                layer_summary: LayerSummary::default(),
+            });
+            assert!(tick_started.elapsed() < std::time::Duration::from_secs(2));
+            emitter.finish().await;
+            assert_eq!(delivery.lock().await.as_str(), expected);
+            let ledger = ledger.lock().unwrap();
+            assert_eq!(ledger.text_of(&occurrence), Some(whisper));
+            assert!(
+                ledger
+                    .layer_trail()
+                    .iter()
+                    .all(|entry| entry.producer() != ObservationProducer::Formatter)
+            );
+            assert!(
+                std::fs::read_to_string(&path)
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                    .any(|row| row["rendered_text"] == expected)
+            );
+        }
+    }
+
     /// Light+ standard in live: an unpunctuated ledger document gains sentence
     /// shape at the terminal seal, as one `light-plus` document revision that
     /// the Bus persists, the delivery buffer carries, the formatter CAS sees
@@ -6625,7 +6902,7 @@ mod tests {
             .expect("terminal projection");
         emitter.finish().await;
 
-        let shaped = "To jest tekst bez interpunkcji i koniec a to jest ogon.";
+        let shaped = "To jest tekst bez interpunkcji yyy i koniec a to jest ogon.";
         assert_eq!(delivery.lock().await.as_str(), shaped);
 
         // The ledger words are untouched; the shaping is a document revision.
@@ -7503,9 +7780,7 @@ mod tests {
         );
     }
 
-    /// Acceptance: empty shaping cannot erase valid words. A hesitation-only
-    /// utterance shapes to nothing, so the shaping is refused and the spoken
-    /// label stays visible.
+    /// Hesitation-only Raw receives sentence casing without losing its label.
     #[tokio::test]
     async fn a_hesitation_only_occurrence_keeps_its_spoken_words() {
         let mut take = live_take("hesitation-session");
@@ -7515,11 +7790,8 @@ mod tests {
         take.seal(&occurrence);
         take.emitter.finish().await;
 
-        assert!(
-            take.shapings().is_empty(),
-            "a shape that deletes every word is refused"
-        );
-        assert_eq!(take.delivery.lock().await.as_str(), "yyy");
+        assert_eq!(take.shapings().len(), 1);
+        assert_eq!(take.delivery.lock().await.as_str(), "Yyy");
         assert_eq!(
             take.ledger
                 .lock()

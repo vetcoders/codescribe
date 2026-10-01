@@ -17,8 +17,8 @@
 //! deliberately NOT ported: that version deleted "filler" content words (`no`,
 //! `tak`, `właśnie`, `w sumie`). Those carry meaning in Polish — "tak, zgadzam
 //! się" is not the same sentence without its "tak" — and deleting user words is
-//! the exact class of harm the lexicon's stopword gate was added to stop. Only
-//! non-lexical hesitation sounds are removed here.
+//! the exact class of harm the lexicon's stopword gate was added to stop.
+//! Hesitation sounds and accepted acoustic event markers are preserved too.
 //!
 //! Every rule is idempotent: applying the pass twice yields the same string, so
 //! a re-delivered or re-formatted transcript never drifts.
@@ -33,9 +33,9 @@ const COLLAPSIBLE_PUNCT: [char; 6] = ['.', '!', '?', ',', ';', ':'];
 /// crate has neither backreferences nor lookaround, so "a word repeated" and
 /// "the same punctuation mark twice" cannot be expressed as patterns at all.
 ///
-/// Order matters: token work first (it decides which words survive), then the
-/// character pass (punctuation spacing depends on final token adjacency), and
-/// capitalisation last so it sees settled sentence boundaries.
+/// Order matters: normalize punctuation spacing without removing tokens, then
+/// insert conservative clause marks, and capitalise last so the pass sees
+/// settled sentence boundaries.
 pub fn apply(text: &str) -> String {
     apply_with_left_context("", text)
 }
@@ -66,12 +66,7 @@ pub fn apply_live_span(left_context: &str, span: &str, sentence_break_before: bo
         return String::new();
     }
 
-    let joined = collapse_tokens(trimmed);
-    if joined.is_empty() {
-        return String::new();
-    }
-
-    let tightened = tighten_punctuation(&joined);
+    let tightened = tighten_punctuation(trimmed);
     let punctuated = place_polish_commas(&tightened);
     let tightened = punctuated.trim();
     if tightened.is_empty() {
@@ -119,58 +114,6 @@ fn capitalize_span(text: &str, open_at_start: bool) -> String {
         }
     }
     out
-}
-
-/// Drop hesitation sounds and normalise every run of whitespace to a single
-/// space.
-///
-/// A second rule used to live here: an immediately repeated word was deleted as
-/// a seam artifact. It is gone, and for the same reason the Python original's
-/// filler deletion was never ported — it deletes user words. Worse, it decides
-/// by content alone. "Iwo Iwo Iwo Iwo Iwo" is five acoustic occurrences of a
-/// name and this pass turned it into one, every time, with no evidence beyond
-/// the strings being equal. Nothing in a bare string can tell an operator
-/// saying a word twice apart from a concatenation duplicating it.
-///
-/// Duplication introduced by joining overlapping engine output is real, but it
-/// is decided where the PCM ranges are — the tail patcher and the span
-/// idempotence ledger — not here. Hesitations stay because a hesitation is a
-/// non-lexical sound rather than an occurrence of a word, and the punctuation
-/// pass stays because it collapses characters, not tokens.
-fn collapse_tokens(text: &str) -> String {
-    let mut kept: Vec<&str> = Vec::new();
-    for token in text.split_whitespace() {
-        if is_hesitation(token) {
-            continue;
-        }
-        kept.push(token);
-    }
-    kept.join(" ")
-}
-
-/// A non-lexical hesitation: a run of one vowel (`yyy`, `eee`), or an `hm`/`uh`
-/// /`um` form, once trailing punctuation is set aside. The doubling requirement
-/// is what keeps real words — `y`, `a`, `e`, `o` never reach two characters —
-/// out of reach.
-fn is_hesitation(token: &str) -> bool {
-    let core: String = token
-        .chars()
-        .filter(|c| c.is_alphabetic())
-        .flat_map(char::to_lowercase)
-        .collect();
-    if core.len() < 2 {
-        return false;
-    }
-    let mut chars = core.chars();
-    let first = chars.next().expect("non-empty");
-    if matches!(first, 'y' | 'e' | 'a' | 'i' | 'u' | 'o') && core.chars().all(|c| c == first) {
-        // yy, eee, aaa … a single repeated vowel is never a Polish word.
-        return true;
-    }
-    matches!(
-        core.as_str(),
-        "hm" | "hmm" | "hmmm" | "mhm" | "mhmm" | "uh" | "uhm" | "um" | "umm"
-    )
 }
 
 /// Collapse repeated punctuation and pull marks back onto the preceding word.
@@ -431,10 +374,13 @@ mod tests {
         assert_eq!(apply(&once), once);
     }
 
-    /// Hesitation sounds drop; content fillers like `tak`/`no` survive.
+    /// Raw keeps the spoken performance, including hesitations and events.
     #[test]
-    fn removes_hesitation_sounds_only() {
-        assert_eq!(apply("yyy no i eee koniec"), "No i koniec.");
+    fn preserves_hesitations_and_acoustic_events() {
+        assert_eq!(
+            apply("yyy no i eee [śmiech] koniec"),
+            "Yyy no i eee [śmiech] koniec."
+        );
         // Content words that the Python original deleted must survive.
         for kept in ["tak", "no", "właśnie", "jakby"] {
             let shaped = apply(&format!("{kept} zgadzam się"));
@@ -472,19 +418,17 @@ mod tests {
         assert_eq!(apply("   \n  "), "");
     }
 
-    /// A span that shapes to nothing returns an empty string rather than a
-    /// lone period. The live per-occurrence caller reads that emptiness as
-    /// "refuse", so a hesitation-only utterance keeps its spoken label instead
-    /// of being deleted from the document by a formatting pass.
+    /// Hesitation-only spans have the same shaping contract as other speech.
     #[test]
-    fn a_span_that_shapes_to_nothing_returns_nothing() {
-        for hesitation in ["yyy", "  eee ", "hmm", "\n"] {
+    fn hesitation_only_spans_survive_and_whitespace_stays_empty() {
+        for hesitation in ["yyy", "eee", "hmm"] {
             assert_eq!(
                 apply_with_left_context("Zdanie przed.", hesitation),
-                "",
-                "a shape that consumed every word must be empty, not punctuation"
+                format!("{}.", capitalize_span(hesitation, true)),
+                "a hesitation is part of Raw"
             );
         }
+        assert_eq!(apply_with_left_context("Zdanie przed.", "\n"), "");
     }
 
     /// Left context that closes on a comma is an unfinished clause: the span
