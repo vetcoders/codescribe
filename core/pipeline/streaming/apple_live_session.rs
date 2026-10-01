@@ -21085,6 +21085,111 @@ mod relay_l1_overlap_admission_tests {
         assert_eq!(held_text(&lane, &owner).as_deref(), Some("ludzi"));
     }
 
+    // Integrator (2026-10-01, take 2bcb99f9): the last word of a decode, cut
+    // at the fence, lasted 20 ms; read as a clock lie it refused every later
+    // revision of its window and the words over that speech never landed.
+    #[test]
+    fn integrator_fence_cut_stub_is_not_a_clock_lie() {
+        fence_cut_stub_is_not_a_clock_lie(BufferMode::Windows);
+    }
+
+    #[test]
+    fn integrator_adaptive_fence_cut_stub_is_not_a_clock_lie() {
+        fence_cut_stub_is_not_a_clock_lie(BufferMode::Adaptive);
+    }
+
+    fn fence_cut_stub_is_not_a_clock_lie(mode: BufferMode) {
+        let session = &mode.session("integrator-fence-lie");
+        let (mut lane, owner, requests) = forensic_lane_in(mode, session, &[]);
+        lane.state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .bind_capture_rate(RATE);
+        let (base, first_end) = shared_window_region(&requests);
+        assert_eq!(
+            requests[0].provider_request.identity.range.sample_end,
+            first_end
+        );
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![
+                    word_pin(session, "bo", base - 8_000, base - 2_000),
+                    word_pin(session, "nie", first_end - 320, first_end),
+                ],
+            ),
+            12.5,
+        );
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[1],
+                vec![
+                    word_pin(session, "nie", first_end - 2_000, first_end + 3_000),
+                    word_pin(session, "jest", first_end + 5_000, first_end + 10_000),
+                ],
+            ),
+            12.5,
+        );
+        lane.state
+            .return_outstanding_whisper_without_label(&lane.tx);
+        assert_eq!(
+            lane.state.acoustic_ledger.lock().unwrap().clock_lie_count(),
+            0,
+            "{mode:?}: a fence-cut stub is display evidence, not committed text"
+        );
+        assert_eq!(
+            held_text(&lane, &owner).as_deref(),
+            Some("bo nie jest"),
+            "{mode:?}"
+        );
+    }
+
+    // A real clock lie (held text far faster than speech) still cannot
+    // authorize replacing its neighbour, yet words over audio that holds no
+    // word are admitted around it (N1).
+    #[test]
+    fn integrator_clock_lie_never_drops_words_over_unheld_speech() {
+        let session = "integrator-lie-n1";
+        let (mut lane, owner, requests) = forensic_lane(session, &[]);
+        lane.state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .bind_capture_rate(RATE);
+        let (base, _) = shared_window_region(&requests);
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![
+                    word_pin(session, "najprawdopodobniej", base - 9_000, base - 8_840),
+                    word_pin(session, "tak", base - 6_000, base - 2_000),
+                ],
+            ),
+            12.5,
+        );
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[1],
+                vec![
+                    word_pin(session, "potem", base + 2_000, base + 7_000),
+                    word_pin(session, "dalej", base + 9_000, base + 14_000),
+                ],
+            ),
+            12.5,
+        );
+        lane.state
+            .return_outstanding_whisper_without_label(&lane.tx);
+        let held = held_text(&lane, &owner).unwrap_or_default();
+        for word in ["tak", "potem", "dalej"] {
+            assert!(held.contains(word), "{word} lost: {held}");
+        }
+    }
+
     #[test]
     fn forensic_window_stub_is_accounted_at_seal() {
         window_stub_is_accounted_at_seal(BufferMode::Windows);
