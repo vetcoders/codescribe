@@ -5449,24 +5449,6 @@ fn admit_ledger_label<'a>(
                 .rewrite_dictionary_slots(&observation, &rewrites)
                 .unwrap_or_else(|_| ledger.admit(&observation, label))
         }
-    } else if producer == LedgerObservationProducer::Whisper
-        && words.is_empty()
-        && ledger.slots_of(&occurrence).is_some_and(|slots| {
-            slots.len() == 1
-                && slots[0].sample_start == occurrence.sample_start
-                && slots[0].sample_end == occurrence.sample_end
-                && slots[0].text.split_whitespace().count() > 1
-                && label.split_whitespace().count() >= slots[0].text.split_whitespace().count()
-        })
-    {
-        // Phrase evidence corrects this exact group, with group accuracy.
-        // It neither guesses child boundaries nor replaces several words.
-        let group = crate::pipeline::acoustic_ledger::WordPin::new(
-            occurrence.sample_start,
-            occurrence.sample_end,
-            label,
-        );
-        ledger.admit_word_slots(&observation, &[group])
     } else {
         ledger.admit_pinned_label(&observation, label, words)
     };

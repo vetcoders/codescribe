@@ -808,9 +808,9 @@ impl AcousticLedger {
             .collect()
     }
 
-    /// Admit an Apple label with its exact word ranges in the same decision.
+    /// Admit an acoustic label with its exact word ranges in the same decision.
     /// Pins must compose the offered label before they can authorize overlap.
-    /// Invalid or absent timing uses ordinary whole-label admission.
+    /// Invalid Apple timing uses ordinary whole-label admission.
     pub(crate) fn admit_pinned_label(
         &mut self,
         observation: &ObservationIdentity,
@@ -818,6 +818,35 @@ impl AcousticLedger {
         words: &[WordPin],
     ) -> MutationReceipt {
         let occurrence = &observation.occurrence;
+        // With no child boundaries, acoustic evidence can correct this exact
+        // group. The slot path keeps a shorter candidate as an alternative;
+        // several pinned sources still require individual word targets.
+        if matches!(
+            observation.producer,
+            ObservationProducer::Whisper | ObservationProducer::CloudLive
+        ) && words.is_empty()
+            && !label.trim().is_empty()
+            && !self.is_sealed(occurrence)
+            && !self.answered.contains(observation)
+            && self.slots_of(occurrence).is_some_and(|slots| {
+                slots.len() == 1
+                    && slots[0].sample_start == occurrence.sample_start
+                    && slots[0].sample_end == occurrence.sample_end
+                    && slots[0].producer != ObservationProducer::ManualHuman
+                    && (self.word_pin_observations.contains(&slots[0].observation)
+                        || label.split_whitespace().count()
+                            >= slots[0].text.split_whitespace().count())
+            })
+        {
+            return self.admit_word_slots(
+                observation,
+                &[WordPin::new(
+                    occurrence.sample_start,
+                    occurrence.sample_end,
+                    label,
+                )],
+            );
+        }
         if observation.producer != ObservationProducer::Apple
             || self.is_sealed(occurrence)
             || words.is_empty()
@@ -1048,7 +1077,14 @@ impl AcousticLedger {
             let same_label = source.text == compose_label(&incoming);
             let receipt = SlotOperationReceipt {
                 observation: observation.clone(),
-                kind: SlotOperationKind::Split,
+                kind: if incoming.len() == 1
+                    && incoming[0].sample_start == source.sample_start
+                    && incoming[0].sample_end == source.sample_end
+                {
+                    SlotOperationKind::Correct
+                } else {
+                    SlotOperationKind::Split
+                },
                 source_ranges: self.slot_source_ranges(&source),
                 sources: vec![source.clone()],
                 outputs: incoming,

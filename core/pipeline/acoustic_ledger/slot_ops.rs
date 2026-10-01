@@ -382,6 +382,110 @@ mod slot_ops_tests {
     }
 
     #[test]
+    fn acoustic_whole_group_corrections_keep_exact_source() {
+        for producer in [ObservationProducer::Whisper, ObservationProducer::CloudLive] {
+            for (apple, acoustic) in [
+                ("weryfikowałeś", "zweryfikowałeś"),
+                ("weryfikowałeś", "zweryfikowałeś yyy [śmiech]"),
+                ("czy weryfikowałeś", "czy plan weryfikowałeś"),
+            ] {
+                // Exercise both occurrence labels and already pinned groups.
+                for has_pin in [false, true] {
+                    let mut ledger = if has_pin {
+                        pinned(&[WordPin::new(0, 16_000, apple)])
+                    } else {
+                        let mut ledger = AcousticLedger::new();
+                        ledger.admit(&observation(ObservationProducer::Apple, 0), apple);
+                        ledger
+                    };
+                    ledger.require_text_recovery(&owner());
+                    let source = ledger.slots_of(&owner()).unwrap()[0].clone();
+                    let next = observation(producer, 1);
+                    let receipt = ledger.admit_pinned_label(&next, acoustic, &[]);
+                    assert!(receipt.is_correct(), "{producer:?}: {apple} → {acoustic}");
+                    assert_eq!(ledger.text_of(&owner()), Some(acoustic));
+                    assert_eq!(ledger.slots_of(&owner()).unwrap().len(), 1);
+                    let operation = ledger.slot_operations().last().unwrap();
+                    assert_eq!(operation.kind, SlotOperationKind::Correct);
+                    assert_eq!(operation.sources, vec![source]);
+                    assert_eq!(operation.source_ranges, vec![owner()]);
+                    assert_eq!(
+                        ledger.slot_source_ranges(&operation.outputs[0]),
+                        vec![owner()]
+                    );
+                    assert!(!ledger.text_recovery_pending(&owner()));
+                    let operations = ledger.slot_operations().len();
+                    assert!(matches!(
+                        ledger.admit_pinned_label(&next, acoustic, &[]),
+                        MutationReceipt::Refuse {
+                            reason: RefuseReason::BatchDuplicate,
+                            ..
+                        }
+                    ));
+                    assert_eq!(ledger.slot_operations().len(), operations);
+                    assert_eq!(ledger.conservation().residue(), 0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn acoustic_group_omission_retains_committed_plan() {
+        for producer in [ObservationProducer::Whisper, ObservationProducer::CloudLive] {
+            let mut ledger = pinned(&[WordPin::new(0, 16_000, "czy weryfikowałeś")]);
+            ledger.admit_pinned_label(&observation(producer, 1), "czy plan weryfikowałeś", &[]);
+            let source = ledger.slots_of(&owner()).unwrap()[0].clone();
+            for late in [
+                ObservationProducer::Whisper,
+                ObservationProducer::CloudLive,
+                ObservationProducer::Apple,
+                ObservationProducer::Lexicon,
+                ObservationProducer::Formatter,
+            ] {
+                ledger.admit_pinned_label(&observation(late, 2), "czy weryfikowałeś", &[]);
+                assert_eq!(ledger.text_of(&owner()), Some("czy plan weryfikowałeś"));
+                assert_eq!(
+                    ledger.slots_of(&owner()).unwrap(),
+                    std::slice::from_ref(&source)
+                );
+                let alternative = ledger.slot_alternatives().last().unwrap();
+                assert_eq!(alternative.candidate, "czy weryfikowałeś");
+                assert_eq!(alternative.sources, vec![source.clone()]);
+            }
+            assert_eq!(ledger.conservation().residue(), 0);
+        }
+    }
+
+    #[test]
+    fn whole_acoustic_label_cannot_merge_pinned_words() {
+        for producer in [ObservationProducer::Whisper, ObservationProducer::CloudLive] {
+            let mut ledger = pinned(&[
+                WordPin::new(0, 4_000, "czy"),
+                WordPin::new(6_000, 10_000, "plan"),
+                WordPin::new(12_000, 16_000, "weryfikowałeś"),
+            ]);
+            let sources = ledger.slots_of(&owner()).unwrap().to_vec();
+            // Extra words cannot mask the missing pinned source.
+            ledger.admit_pinned_label(
+                &observation(producer, 1),
+                "czy weryfikowałeś yyy [śmiech]",
+                &[],
+            );
+            assert_eq!(ledger.slots_of(&owner()).unwrap(), sources);
+            assert_eq!(ledger.text_of(&owner()), Some("czy plan weryfikowałeś"));
+            assert_eq!(
+                ledger.slot_alternatives().last().unwrap().reason,
+                "whole_label_has_no_word_targets"
+            );
+            let mut partial = pinned(&[WordPin::new(6_000, 10_000, "plan")]);
+            let sources = partial.slots_of(&owner()).unwrap().to_vec();
+            partial.admit_pinned_label(&observation(producer, 1), "nowy plan", &[]);
+            assert_eq!(partial.slots_of(&owner()).unwrap(), sources);
+            assert_eq!(partial.text_of(&owner()), Some("plan"));
+        }
+    }
+
+    #[test]
     fn coarse_group_refinement_conserves_positions() {
         let mut ledger = AcousticLedger::new();
         ledger.admit(&observation(ObservationProducer::Apple, 0), "dwa słowa");
@@ -655,25 +759,28 @@ mod slot_ops_tests {
 
     #[test]
     fn targeted_manual_human_survives_all_late_producers() {
-        let mut ledger = pinned(&[WordPin::new(0, 1_000, "plan")]);
-        ledger.admit_word_slots(
-            &observation(ObservationProducer::ManualHuman, 1),
-            &[WordPin::new(0, 1_000, "Plan")],
-        );
-        for producer in [
-            ObservationProducer::Apple,
-            ObservationProducer::Whisper,
-            ObservationProducer::Lexicon,
-            ObservationProducer::Formatter,
-        ] {
-            ledger.admit_word_slots(&observation(producer, 2), &[WordPin::new(0, 1_000, "inna")]);
-            ledger.admit(&observation(producer, 3), "whole sentence");
+        for end in [1_000, 16_000] {
+            let mut ledger = pinned(&[WordPin::new(0, end, "plan")]);
+            ledger.admit_word_slots(
+                &observation(ObservationProducer::ManualHuman, 1),
+                &[WordPin::new(0, end, "Plan")],
+            );
+            for producer in [
+                ObservationProducer::Apple,
+                ObservationProducer::CloudLive,
+                ObservationProducer::Whisper,
+                ObservationProducer::Lexicon,
+                ObservationProducer::Formatter,
+            ] {
+                ledger.admit_word_slots(&observation(producer, 2), &[WordPin::new(0, end, "inna")]);
+                ledger.admit_pinned_label(&observation(producer, 3), "whole sentence", &[]);
+            }
+            assert_eq!(ledger.text_of(&owner()), Some("Plan"));
+            assert_eq!(
+                ledger.slots_of(&owner()).unwrap()[0].producer,
+                ObservationProducer::ManualHuman
+            );
         }
-        assert_eq!(ledger.text_of(&owner()), Some("Plan"));
-        assert_eq!(
-            ledger.slots_of(&owner()).unwrap()[0].producer,
-            ObservationProducer::ManualHuman
-        );
     }
 
     use super::word_verdict::{WordVerdict, adjudicate_word_pcm};
