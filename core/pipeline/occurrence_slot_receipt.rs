@@ -35,6 +35,7 @@ struct Sidecar {
 /// This registry routes IO by capture identity; it owns no transcript state.
 pub(crate) struct SlotReceiptSink {
     key: CaptureKey,
+    _trail: Option<super::trail::TrailSink>,
 }
 
 impl SlotReceiptSink {
@@ -80,7 +81,14 @@ impl SlotReceiptSink {
                 file: Mutex::new(Some(file)),
             }),
         );
-        Ok(Self { key })
+        let trail = match super::trail::TrailSink::open_in(root, session, epoch, 64) {
+            Ok(sink) => Some(sink),
+            Err(error) => {
+                tracing::warn!(kind = ?error.kind(), "decision trail unavailable");
+                None
+            }
+        };
+        Ok(Self { key, _trail: trail })
     }
 }
 

@@ -80,7 +80,9 @@ use word_verdict::WordDeletionReceipt;
 ///
 /// This is the primary key of the transcript. It carries no text and no
 /// ordering on purpose — see the module docs for why `order` is not here.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct OccurrenceIdentity {
     /// Capture session the samples belong to.
     pub session: String,
@@ -195,7 +197,9 @@ pub enum OccurrenceRelation {
 /// `Ord` follows declaration order. `CloudLive` sits between Apple and Whisper
 /// so a heard cloud word can replace Apple and still yield to Whisper.
 /// Nothing persists the discriminant; receipts and the bus use [`Self::as_str`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum ObservationProducer {
     /// L0 — Apple Speech live lane.
     Apple,
@@ -258,7 +262,7 @@ impl ObservationProducer {
 /// `generation` is the ordering axis, and it belongs here rather than on
 /// [`OccurrenceIdentity`]: arriving later makes an observation newer, not
 /// physically distinct.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ObservationIdentity {
     /// Engine family that produced the hypothesis.
     pub producer: ObservationProducer,
@@ -288,7 +292,7 @@ impl ObservationIdentity {
 }
 
 /// Why an observation was admitted without any right to mutate the transcript.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum NoAuthorityReason {
     /// The range names no audio (zero-width or reversed).
     ZeroWidth,
@@ -327,7 +331,7 @@ impl NoAuthorityReason {
 }
 
 /// Why an observation was refused outright.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RefuseReason {
     /// The occurrence is closed to this hypothesis. Either it is already held
     /// by an equal-or-higher authority at an equal-or-newer generation and this
@@ -401,7 +405,7 @@ pub enum OverlapPinClass {
 ///
 /// Exactly one receipt is produced per observation, in input order. That is
 /// what makes conservation auditable rather than asserted.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MutationReceipt {
     /// The occurrence is already committed and this hypothesis does not have
     /// the authority — or the need — to change it. Text stands unchanged.
@@ -475,14 +479,14 @@ impl MutationReceipt {
 }
 
 /// Speech witness attached to a word slot. Verdicts are a separate cut.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SlotWitness {
     /// No witness verdict has been issued; absence never authorizes deletion.
     Unwitnessed,
 }
 
 /// Ordered lexical evidence inside one physically owned occurrence.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WordSlot {
     /// First owned sample attributed to this word.
     pub sample_start: u64,
@@ -726,6 +730,8 @@ pub struct AcousticLedger {
     named_refusals: BTreeMap<&'static str, usize>,
     /// Capture rate that turns a declared sample range into a duration.
     capture_rate_hz: Option<u32>,
+    /// Observational admission input, consumed by the disk trail only.
+    trail_input: Option<super::trail::TrailAdmission>,
     /// Occurrences whose character rate over the declared range is a clock-lie.
     clock_lie_occurrences: BTreeSet<OccurrenceIdentity>,
     /// Lowest committed sample on this ledger, once any anchored text lands.
@@ -1569,13 +1575,24 @@ impl AcousticLedger {
         self.admit_with_slots(observation, text, None, false)
     }
 
-    fn admit_with_slots(
+    pub(super) fn admit_with_slots(
         &mut self,
         observation: &ObservationIdentity,
         text: &str,
         slots: Option<Vec<WordSlot>>,
         slot_revision: bool,
     ) -> MutationReceipt {
+        self.trail_input = super::trail::is_enabled(&observation.occurrence).then(|| {
+            super::trail::TrailAdmission {
+                source_slots: self
+                    .slots_of(&observation.occurrence)
+                    .unwrap_or(&[])
+                    .to_vec(),
+                offered_slots: slots.clone(),
+                slot_revision,
+                capture_rate_hz: self.capture_rate_hz,
+            }
+        });
         self.offered_observations += 1;
         let has_pinned_sources = self
             .slots_of(&observation.occurrence)
@@ -2277,6 +2294,13 @@ impl AcousticLedger {
         }
         let serial = AcousticSerial::mint(evidence);
         self.evidence.insert(occurrence.clone(), serial.clone());
+        super::trail::record(
+            &occurrence,
+            super::trail::TrailEvent::Qualification {
+                evidence: evidence.clone(),
+                calibration: calibration.clone(),
+            },
+        );
         AdmissionReceipt::Qualified { occurrence, serial }
     }
 
@@ -2307,6 +2331,14 @@ impl AcousticLedger {
         producers: impl IntoIterator<Item = ObservationProducer>,
     ) {
         let frontier = ObservationFrontier::scheduled(coverage.clone(), producers);
+        super::trail::record(
+            &coverage,
+            super::trail::TrailEvent::Frontier {
+                occurrence: coverage.clone(),
+                operation: "schedule".into(),
+                producers: frontier.scheduled.iter().copied().collect(),
+            },
+        );
         self.frontiers.insert(coverage, frontier);
     }
 
@@ -2329,7 +2361,18 @@ impl AcousticLedger {
         if frontier.is_closed() {
             return false;
         }
-        frontier.schedule(producer)
+        let scheduled = frontier.schedule(producer);
+        if scheduled {
+            super::trail::record(
+                &coverage,
+                super::trail::TrailEvent::Frontier {
+                    occurrence: coverage.clone(),
+                    operation: "observer".into(),
+                    producers: vec![producer],
+                },
+            );
+        }
+        scheduled
     }
 
     /// Account for real Apple words arriving after all earlier jobs returned
@@ -2381,6 +2424,14 @@ impl AcousticLedger {
         coverage: &OccurrenceIdentity,
         producer: ObservationProducer,
     ) -> bool {
+        super::trail::record(
+            coverage,
+            super::trail::TrailEvent::Frontier {
+                occurrence: coverage.clone(),
+                operation: "return".into(),
+                producers: vec![producer],
+            },
+        );
         match self.frontiers.get_mut(coverage) {
             Some(frontier) => {
                 let was_closed = frontier.is_closed();
@@ -2942,6 +2993,10 @@ impl AcousticLedger {
             predecessor_ordinal,
             clock_lie,
         });
+        let trail_input = self.trail_input.take();
+        if let Some(entry) = self.trail.last() {
+            super::trail::decision(self, entry, trail_input);
+        }
         self.issued_receipts += 1;
         let reason = match decision {
             MutationReceipt::Refuse { reason, .. } => Some(reason.as_str()),
@@ -3232,7 +3287,7 @@ impl CumulativeFinalAdmission {
 ///   measured under.
 /// * intended W2 consumers: the capture/VAD evidence path that qualifies PCM
 ///   before any producer is allowed to speak about it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EnergyCalibration {
     /// Version label of the calibration run these floors came from. It travels
     /// into every serial so a receipt can never be read under the wrong ruler.
@@ -3268,7 +3323,7 @@ impl EnergyCalibration {
 ///   dBFS *qualify* a region; they never say which region it is.
 /// * intended W2 consumers: `core/audio/streaming_recorder.rs` and the VAD
 ///   evidence path.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AcousticEvidence {
     /// The physical coordinate the evidence was measured over.
     pub occurrence: OccurrenceIdentity,
@@ -6952,5 +7007,37 @@ mod tests {
             } if label.contains("pozno")
         ));
         assert_eq!(ledger.text_of(&occurrence), Some("zostaje"));
+    }
+    #[test]
+    #[ignore = "W-0 falsifier: closes in L3"]
+    fn w0_falsifier_whisper_slot_replacement_accounts_for_missing_word() {
+        let (mut ledger, occurrence) = whisper_only_qualified_ledger();
+        let apple = obs(ObservationProducer::Apple, 0, occurrence.clone());
+        ledger.admit_pinned_label(
+            &apple,
+            "Iwo plan wraca",
+            &[
+                WordPin::new(1_000, 4_000, "Iwo"),
+                WordPin::new(5_000, 8_000, "plan"),
+                WordPin::new(9_000, 14_000, "wraca"),
+            ],
+        );
+        assert_eq!(ledger.slots_of(&occurrence).unwrap().len(), 3);
+        let whisper = obs(ObservationProducer::Whisper, 1, occurrence.clone());
+        let mut replacement = ledger.slots_of(&occurrence).unwrap().to_vec();
+        replacement.remove(1);
+        for slot in &mut replacement {
+            slot.producer = ObservationProducer::Whisper;
+            slot.observation = whisper.clone();
+        }
+        ledger.admit_with_slots(&whisper, "Iwo wraca", Some(replacement), true);
+        assert!(
+            ledger
+                .slots_of(&occurrence)
+                .unwrap()
+                .iter()
+                .any(|slot| slot.text == "plan"),
+            "omitted pin vanished without a no-speech receipt"
+        );
     }
 }

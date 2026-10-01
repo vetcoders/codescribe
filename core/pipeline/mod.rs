@@ -16,6 +16,8 @@ pub mod sinks;
 pub mod streaming;
 /// Take truth sidecar (`.truth.json`) — the schema-v2 observer contract.
 pub mod take_truth;
+/// Versioned diagnostic decision history, asynchronous persistence and replay.
+pub mod trail;
 /// Per-word acoustic confidence: raw engine evidence, per-source thresholds.
 pub mod word_confidence;
 
