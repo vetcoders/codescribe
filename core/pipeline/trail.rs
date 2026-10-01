@@ -496,6 +496,15 @@ pub enum TrailEvent {
     DecisionEffects {
         effects: Box<TrailDecisionEffects>,
     },
+    /// Passive transport evidence, never an acoustic admission or document edit.
+    Transport {
+        state: String,
+        sample_start: u64,
+        sample_end: u64,
+        capture_head: u64,
+        processed_head: u64,
+        lag_secs: f64,
+    },
     Checkpoint {
         record_count: u64,
     },
@@ -681,6 +690,17 @@ pub(super) fn is_enabled(occurrence: &OccurrenceIdentity) -> bool {
 
 /// The only enqueue corridor; JSON encoding and filesystem access live in the worker.
 pub(super) fn record(occurrence: &OccurrenceIdentity, event: TrailEvent) {
+    record_capture(&occurrence.session, occurrence.capture_epoch, event);
+}
+
+/// Transport diagnostics use the existing per-capture sink without minting
+/// an occurrence or changing any ledger state.
+pub(crate) fn record_transport(session: &str, capture_epoch: u64, event: TrailEvent) {
+    debug_assert!(matches!(event, TrailEvent::Transport { .. }));
+    record_capture(session, capture_epoch, event);
+}
+
+fn record_capture(session: &str, capture_epoch: u64, event: TrailEvent) {
     let Some(registry) = SINKS.get() else {
         return;
     };
@@ -688,15 +708,15 @@ pub(super) fn record(occurrence: &OccurrenceIdentity, event: TrailEvent) {
         return;
     };
     let Some(state) = sinks
-        .get(&(occurrence.session.clone(), occurrence.capture_epoch))
+        .get(&(session.to_owned(), capture_epoch))
         .and_then(Weak::upgrade)
     else {
         return;
     };
     let record = TrailRecord {
         schema: SCHEMA.into(),
-        session: occurrence.session.clone(),
-        capture_epoch: occurrence.capture_epoch,
+        session: session.to_owned(),
+        capture_epoch,
         observed_ns: u64::try_from(state.origin.elapsed().as_nanos()).unwrap_or(u64::MAX),
         event,
     };
@@ -822,6 +842,19 @@ pub fn render_trace(records: &[TrailRecord], word: Option<&str>) -> String {
     });
     for row in records {
         match &row.event {
+            TrailEvent::Transport {
+                state,
+                sample_start,
+                sample_end,
+                capture_head,
+                processed_head,
+                lag_secs,
+            } => {
+                output.push_str(&format!(
+                    "transport {state} {sample_start}..{sample_end} capture={capture_head} processed={processed_head} lag={lag_secs:.3}s at {} ns\n",
+                    row.observed_ns
+                ));
+            }
             TrailEvent::SlotStart { operation } => slot_input = Some(operation),
             TrailEvent::SlotEnd { .. } => slot_input = None,
             TrailEvent::Frontier {
@@ -1244,7 +1277,10 @@ fn replay_validated(
                     "document revision replay needs its reducer action",
                 ));
             }
-            TrailEvent::Start { .. } | TrailEvent::End { .. } | TrailEvent::Checkpoint { .. } => {}
+            TrailEvent::Start { .. }
+            | TrailEvent::End { .. }
+            | TrailEvent::Checkpoint { .. }
+            | TrailEvent::Transport { .. } => {}
         }
     }
     if pending.is_some() {

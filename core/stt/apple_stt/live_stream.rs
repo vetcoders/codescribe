@@ -13,6 +13,7 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -97,12 +98,31 @@ pub struct LiveStreamSession {
 impl LiveStreamSession {
     /// Spawn bridge `stream`, send request + PCM header, start stdout reader.
     pub fn open(language: Option<&str>, sample_rate: u32) -> Result<Self> {
+        Self::open_cancellable(language, sample_rate, &AtomicBool::new(false))
+    }
+
+    /// The bridge thread may abandon an unopened epoch without waiting for
+    /// another take to release the process-wide bridge mutex.
+    pub(crate) fn open_cancellable(
+        language: Option<&str>,
+        sample_rate: u32,
+        cancelled: &AtomicBool,
+    ) -> Result<Self> {
         if sample_rate == 0 {
             bail!("live stream: sample_rate must be > 0");
         }
-        let lock_guard = bridge_global_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let lock_guard = loop {
+            if cancelled.load(Ordering::Acquire) {
+                bail!("live stream: opening cancelled");
+            }
+            match bridge_global_lock().try_lock() {
+                Ok(guard) => break guard,
+                Err(std::sync::TryLockError::Poisoned(poisoned)) => break poisoned.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+        };
 
         let locale = resolved_locale(language);
         let bridge_bin = bridge_binary();
@@ -194,6 +214,60 @@ impl LiveStreamSession {
         Ok(())
     }
 
+    /// Bound pipe writes on the bridge thread so cancellation cannot strand
+    /// a mutex owner behind a child that has stopped reading stdin.
+    #[cfg(unix)]
+    pub(crate) fn write_pcm_cancellable(
+        &mut self,
+        samples: &[f32],
+        cancelled: &AtomicBool,
+    ) -> Result<()> {
+        use std::os::fd::AsRawFd;
+
+        const WRITE_BUDGET: Duration = Duration::from_millis(250);
+        let stdin = self.stdin.as_mut().context("live stream: stdin closed")?;
+        let fd = stdin.as_raw_fd();
+        // SAFETY: stdin owns this valid descriptor; changing its status flags
+        // neither transfers ownership nor invalidates it.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 {
+            return Err(std::io::Error::last_os_error()).context("read stream pipe flags");
+        }
+        // SAFETY: the same owned descriptor remains valid; O_NONBLOCK only
+        // changes IO behaviour on this private child stdin pipe.
+        if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return Err(std::io::Error::last_os_error()).context("set stream pipe nonblocking");
+        }
+        let pcm: Vec<u8> = samples.iter().flat_map(|sample| sample.to_le_bytes()).collect();
+        let deadline = std::time::Instant::now() + WRITE_BUDGET;
+        let mut written = 0;
+        while written < pcm.len() {
+            if cancelled.load(Ordering::Acquire) || std::time::Instant::now() >= deadline {
+                bail!("live stream: pipe write cancelled or exceeded 250 ms");
+            }
+            match stdin.write(&pcm[written..]) {
+                Ok(0) => bail!("live stream: pipe write returned zero"),
+                Ok(count) => written += count,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(2));
+                }
+                Err(error) => return Err(error).context("write live stream PCM frames"),
+            }
+        }
+        self.frames_written += samples.len() as u64;
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn write_pcm_cancellable(
+        &mut self,
+        _samples: &[f32],
+        _cancelled: &AtomicBool,
+    ) -> Result<()> {
+        bail!("live stream: nonblocking pipe transport requires Unix");
+    }
+
     /// Non-blocking drain of progressive events so far.
     pub fn poll_events(&mut self) -> Vec<LiveStreamEvent> {
         let mut out = Vec::new();
@@ -208,7 +282,11 @@ impl LiveStreamSession {
     }
 
     /// Close stdin (EOF), wait for reader + child, return remaining events incl. summary.
-    pub fn finish(mut self) -> Result<Vec<LiveStreamEvent>> {
+    pub fn finish(self) -> Result<Vec<LiveStreamEvent>> {
+        self.finish_cancellable(&AtomicBool::new(false))
+    }
+
+    pub(crate) fn finish_cancellable(mut self, cancelled: &AtomicBool) -> Result<Vec<LiveStreamEvent>> {
         // EOF ends the stream session on the bridge side.
         drop(self.stdin.take());
 
@@ -228,6 +306,9 @@ impl LiveStreamSession {
 
         let mut events = Vec::new();
         loop {
+            if cancelled.load(Ordering::Acquire) {
+                bail!("live stream: finish cancelled");
+            }
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
                 break;

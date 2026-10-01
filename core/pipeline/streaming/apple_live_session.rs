@@ -25,12 +25,13 @@
 //! It does not restore the deleted VAD/scheduler pipeline or create another
 //! transcript authority.
 //!
-//! The bridge global lock + child process live on a **dedicated OS thread**
-//! (MutexGuard is `!Send`); the async session only shuttles PCM in and
-//! `EngineEvent`s out.
+//! The bridge mutex and subprocess live on their own IO thread. The PCM
+//! worker retains audio and advances Silero/observers independently of Apple
+//! opening, pipe writes and epoch closure.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -1066,6 +1067,8 @@ pub(crate) async fn apple_stream_transcription_session(
     // blocks on a full sync_channel while live Preview events wait to drain
     // (bounded sync_channel + blocking send would re-stall presentation).
     let (pcm_tx, pcm_rx) = std_mpsc::channel::<Option<Vec<f32>>>();
+    let capture_head = Arc::new(AtomicU64::new(0));
+    let worker_capture_head = Arc::clone(&capture_head);
     // Worker → async events.
     let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<EngineEvent>();
     let (worker_close_tx, mut worker_close_rx) = tokio::sync::oneshot::channel();
@@ -1206,6 +1209,7 @@ pub(crate) async fn apple_stream_transcription_session(
                 session_id: worker_session_id,
                 capture_epoch,
                 capture_energy: worker_capture_energy,
+                capture_head: worker_capture_head,
                 runtime_settings,
                 acoustic_ledger,
                 settings_digest,
@@ -1400,6 +1404,7 @@ pub(crate) async fn apple_stream_transcription_session(
                         // sustained overflow degrades the lane instead of
                         // exerting backpressure here.
                         layer1_lane.offer_pcm(&chunk);
+                        capture_head.fetch_add(chunk.len() as u64, Ordering::Release);
                         if pcm_tx.send(Some(chunk)).is_err() {
                             warn!("Apple live stream worker dropped PCM channel");
                             audio_eof = true;
@@ -7489,6 +7494,7 @@ struct AppleWorkerConfig<'a> {
     /// The capture arm's energy-ladder owner. The worker reads the same handle
     /// the async writer feeds; it never opens a ladder of its own.
     capture_energy: CaptureEnergyOwner,
+    capture_head: Arc<AtomicU64>,
     runtime_settings: Arc<RuntimeSettingsSnapshot>,
     acoustic_ledger: Arc<Mutex<AcousticLedger>>,
     settings_digest: String,
@@ -7504,7 +7510,199 @@ struct AppleWorkerConfig<'a> {
     cloud: Option<CloudWorkerChannels>,
 }
 
-/// Blocking worker: owns the SFSpeech stream(s) for the session's full lifetime.
+/// Apple IO owns its mutex and subprocess on a separate thread. The PCM
+/// worker never waits for open, pipe capacity, or an epoch's endAudio flush.
+struct AppleBridgeFront {
+    pcm: Option<std_mpsc::SyncSender<(u64, Vec<f32>)>>,
+    events: std_mpsc::Receiver<Vec<LiveStreamEvent>>,
+    finished: std_mpsc::Receiver<Result<Vec<LiveStreamEvent>>>,
+    ready: Arc<AtomicBool>,
+    ready_from: Arc<AtomicU64>,
+    written_through: Arc<AtomicU64>,
+    cancelled: Arc<AtomicBool>,
+    closing: bool,
+    started: bool,
+}
+
+impl AppleBridgeFront {
+    fn spawn(
+        language: Option<&str>,
+        sample_rate: u32,
+        capture_head: Arc<AtomicU64>,
+    ) -> Result<Self> {
+        // No PCM enters this queue before the bridge's Ready event. One live
+        // chunk is the entire backlog; saturation closes the epoch rather
+        // than omitting frames inside Apple's compressed sample clock.
+        let (pcm_tx, pcm_rx) = std_mpsc::sync_channel::<(u64, Vec<f32>)>(1);
+        let (events_tx, events) = std_mpsc::channel();
+        let (finished_tx, finished) = std_mpsc::channel();
+        let ready = Arc::new(AtomicBool::new(false));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let ready_from = Arc::new(AtomicU64::new(0));
+        let written_through = Arc::new(AtomicU64::new(0));
+        let thread_written_through = Arc::clone(&written_through);
+        let thread_ready_from = Arc::clone(&ready_from);
+        let thread_ready = Arc::clone(&ready);
+        let thread_cancelled = Arc::clone(&cancelled);
+        let language = language.map(str::to_owned);
+        thread::Builder::new()
+            .name("codescribe-apple-io".into())
+            .spawn(move || {
+                let result = (|| {
+                    let mut session = LiveStreamSession::open_cancellable(
+                        language.as_deref(), sample_rate, &thread_cancelled,
+                    )?;
+                    loop {
+                        if thread_cancelled.load(Ordering::Acquire) {
+                            return Ok(Vec::new());
+                        }
+                        let events = session.poll_events();
+                        if events.iter().any(|event| matches!(event, LiveStreamEvent::Ready)) {
+                            thread_ready_from.store(capture_head.load(Ordering::Acquire), Ordering::Release);
+                            thread_ready.store(true, Ordering::Release);
+                        }
+                        let terminal = events.iter().any(|event| matches!(event,
+                            LiveStreamEvent::End | LiveStreamEvent::Error { .. }
+                                | LiveStreamEvent::Summary { .. }
+                        ));
+                        if !events.is_empty() && events_tx.send(events).is_err() {
+                            return Ok(Vec::new());
+                        }
+                        if terminal {
+                            break;
+                        }
+                        match pcm_rx.recv_timeout(Duration::from_millis(10)) {
+                            Ok((sample_start, samples)) => {
+                                session.write_pcm_cancellable(&samples, &thread_cancelled)?;
+                                thread_written_through.store(
+                                    sample_start + samples.len() as u64, Ordering::Release,
+                                );
+                            }
+                            Err(std_mpsc::RecvTimeoutError::Timeout) => {}
+                            Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
+                        }
+                    }
+                    session.finish_cancellable(&thread_cancelled)
+                })();
+                thread_ready.store(false, Ordering::Release);
+                let result = if thread_cancelled.load(Ordering::Acquire) {
+                    Ok(Vec::new())
+                } else {
+                    result
+                };
+                let _ = finished_tx.send(result);
+            })?;
+        Ok(Self {
+            pcm: Some(pcm_tx), events, finished, ready, ready_from, written_through, cancelled,
+            closing: false, started: false,
+        })
+    }
+
+    fn try_pcm(
+        &mut self,
+        samples: &[f32],
+        sample_rate: u32,
+        chunk_start: u64,
+        capture_head: u64,
+    ) -> Result<bool> {
+        if self.closing || !self.ready.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        if chunk_start < self.ready_from.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        const MAX_LIVE_DELAY: Duration = Duration::from_millis(500);
+        let max_live_samples = u64::from(sample_rate.max(1))
+            * MAX_LIVE_DELAY.as_millis() as u64 / 1_000;
+        let chunk_end = chunk_start.saturating_add(samples.len() as u64);
+        if capture_head.saturating_sub(chunk_end) > max_live_samples {
+            if self.started {
+                anyhow::bail!("Apple live PCM is more than 500 ms behind capture");
+            }
+            return Ok(false);
+        }
+        // A chunk larger than half a second is already a replay/backlog, not
+        // live transport. Do not hand it to Apple as a burst.
+        if samples.len() as u64 > max_live_samples {
+            anyhow::bail!("Apple live chunk exceeds 500 ms");
+        }
+        let Some(sender) = self.pcm.as_ref() else { return Ok(false) };
+        match sender.try_send((chunk_start, samples.to_vec())) {
+            Ok(()) => Ok(true),
+            Err(error) => Err(anyhow::anyhow!("Apple live transport unavailable: {error}")),
+        }
+    }
+
+    fn close(&mut self) {
+        self.closing = true;
+        self.pcm.take();
+        if !self.ready.load(Ordering::Acquire) {
+            self.cancelled.store(true, Ordering::Release);
+        }
+    }
+
+    fn poll_events(&self) -> Vec<LiveStreamEvent> {
+        self.events.try_iter().flatten().collect()
+    }
+
+    /// Called only after capture EOF, never from the live PCM loop.
+    fn finish(mut self) -> (Vec<LiveStreamEvent>, Option<String>) {
+        const STOP_WAIT: Duration = Duration::from_secs(12);
+        self.close();
+        let result = self.finished.recv_timeout(STOP_WAIT);
+        let mut events = self.poll_events();
+        // An IO failure never erases progressive facts already received.
+        let failure = match result {
+            Ok(Ok(trailing)) => {
+                events.extend(trailing);
+                None
+            }
+            Ok(Err(error)) => Some(error.to_string()),
+            Err(error) => Some(format!("Apple stop transport did not finish: {error}")),
+        };
+        (events, failure)
+    }
+}
+
+impl Drop for AppleBridgeFront {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
+        self.pcm.take();
+        // No join here: the IO thread owns bounded cancellation and reaping.
+    }
+}
+
+/// Three seconds is far above ordinary capture-chunk jitter, yet far below
+/// the 120-second retention horizon. Clear below one second to avoid chatter.
+const PCM_WORKER_LAG_WARN_SECS: f64 = 3.0;
+const PCM_WORKER_LAG_CLEAR_SECS: f64 = 1.0;
+const APPLE_OPEN_RETRY: Duration = Duration::from_secs(1);
+
+fn record_live_transport(
+    state: &AppleSealState,
+    transport_state: &str,
+    sample_start: u64,
+    sample_end: u64,
+    capture_head: u64,
+    processed_head: u64,
+    sample_rate: u32,
+) {
+    crate::pipeline::trail::record_transport(
+        &state.session_id,
+        state.capture_epoch,
+        crate::pipeline::trail::TrailEvent::Transport {
+            state: transport_state.into(),
+            sample_start,
+            sample_end,
+            capture_head,
+            processed_head,
+            lag_secs: capture_head.saturating_sub(processed_head) as f64
+                / sample_rate.max(1) as f64,
+        },
+    );
+}
+
+/// PCM worker: Apple transport is optional and must never backpressure capture.
 fn apple_stream_worker(
     pcm_rx: std_mpsc::Receiver<Option<Vec<f32>>>,
     ev_tx: mpsc::UnboundedSender<EngineEvent>,
@@ -7524,6 +7722,7 @@ fn apple_stream_worker(
         session_id,
         capture_epoch,
         capture_energy,
+        capture_head,
         runtime_settings,
         acoustic_ledger,
         settings_digest,
@@ -7632,27 +7831,85 @@ fn apple_stream_worker(
             );
         }
     }
-    // Engine lifecycle. Disarmed → one stream opened here for the whole take
-    // (legacy). Armed → the bridge stays unspawned until the first speech edge,
-    // and every epoch closes on the product silence threshold.
     let mut epoch =
         EpochGate::for_session(sample_rate, utterance_silence_sec, state.fusion.is_some());
-    let mut stream = if epoch.is_armed() {
-        info!(
-            utterance_silence_sec = utterance_silence_sec.unwrap_or_default(),
-            preroll_secs = EPOCH_PREROLL_SECS,
-            "Apple progressive engine lifecycle armed — SFSpeech rests between utterances"
-        );
-        None
-    } else {
-        Some(LiveStreamSession::open(language, sample_rate)?)
-    };
-    // Session-time base of the open epoch. Zero for the legacy single stream,
-    // which is what makes `shift_events` the identity on that path.
+    let mut stream: Option<AppleBridgeFront> = None;
+    let mut retry_open_at = Instant::now();
     let mut epoch_base_samples: u64 = 0;
     let mut samples_seen: u64 = 0;
+    let mut lag_warning = false;
+    let mut apple_unavailable_from: Option<u64> = None;
+    let mut apple_front_failed = false;
+    let mut epoch_closing_at: Option<u64> = None;
 
     loop {
+        let head = capture_head.load(Ordering::Acquire);
+        let lag_secs = head.saturating_sub(samples_seen) as f64 / sample_rate.max(1) as f64;
+        if !lag_warning && lag_secs > PCM_WORKER_LAG_WARN_SECS {
+            lag_warning = true;
+            warn!(session = %state.session_id, lag_secs, capture_head = head,
+                processed_head = samples_seen, "live PCM worker is behind capture");
+            record_live_transport(&state, "pcm_worker_lagging", samples_seen, head,
+                head, samples_seen, sample_rate);
+            let _ = ev_tx.send(EngineEvent::Warning {
+                code: "pcm_worker_lagging".into(),
+                message: format!("Live PCM worker is {lag_secs:.3} seconds behind capture."),
+            });
+        } else if lag_warning && lag_secs < PCM_WORKER_LAG_CLEAR_SECS {
+            lag_warning = false;
+            info!(session = %state.session_id, lag_secs, "live PCM worker caught up");
+            record_live_transport(&state, "pcm_worker_caught_up", samples_seen, head,
+                head, samples_seen, sample_rate);
+        }
+        // Drain one epoch completely before opening another: callbacks from
+        // different Apple sample clocks can never share an open partial.
+        if let Some(front) = stream.as_ref() {
+            let events = shift_events(front.poll_events(),
+                epoch_base_secs(epoch_base_samples, sample_rate));
+            emit_stream_events(events, &ev_tx, &mut state,
+                samples_seen as f32 / sample_rate.max(1) as f32);
+            let completion = match front.finished.try_recv() {
+                Ok(result) => Some(result),
+                Err(std_mpsc::TryRecvError::Empty) => None,
+                Err(std_mpsc::TryRecvError::Disconnected) => {
+                    Some(Err(anyhow::anyhow!("Apple IO thread ended without a receipt")))
+                }
+            };
+            if let Some(result) = completion {
+                let events = match result {
+                    Ok(events) => events,
+                    Err(error) => {
+                        warn!(%error, "Apple front unavailable; PCM observation continues");
+                        apple_front_failed = true;
+                        if front.started {
+                            record_live_transport(&state, "apple_pipe_failed",
+                                front.written_through.load(Ordering::Acquire).max(epoch_base_samples),
+                                samples_seen, head, samples_seen, sample_rate);
+                        }
+                        let _ = ev_tx.send(EngineEvent::Warning {
+                            code: "apple_unavailable".into(), message: error.to_string(),
+                        });
+                        Vec::new()
+                    }
+                };
+                // Completion is sent after the last progressive batch.
+                // Drain again to include a batch racing the first poll.
+                let mut all_events = front.poll_events();
+                all_events.extend(events);
+                emit_stream_events(shift_events(all_events,
+                    epoch_base_secs(epoch_base_samples, sample_rate)), &ev_tx, &mut state,
+                    samples_seen as f32 / sample_rate.max(1) as f32);
+                seal_open_partial(&mut state, &ev_tx,
+                    samples_seen as f32 / sample_rate.max(1) as f32);
+                if let Some(closed_at) = epoch_closing_at.take() {
+                    let _ = state.flush_layer1_coalesce(&ev_tx);
+                    state.close_admission_horizon(&ev_tx, closed_at);
+                }
+                stream = None;
+                retry_open_at = Instant::now() + APPLE_OPEN_RETRY;
+            }
+        }
+
         state.tick_refinements(&ev_tx, Instant::now());
         state.flush_cloud_commits(&ev_tx);
         if let Some(notices) = cloud_notice.as_ref() {
@@ -7728,93 +7985,69 @@ fn apple_stream_worker(
                 }
                 let speech_live = silero_ingest.is_some_and(|ingest| ingest.speech_live);
                 let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
-                match epoch.feed_pcm(&samples, samples_seen, speech_live) {
-                    EpochDecision::Forward => {
-                        if let Some(session) = stream.as_mut() {
-                            session.write_pcm(&samples).inspect_err(|_| {
-                                state.return_outstanding_cloud(&ev_tx);
-                            })?;
-                            let events = shift_events(
-                                session.poll_events(),
-                                epoch_base_secs(epoch_base_samples, sample_rate),
-                            );
-                            emit_stream_events(events, &ev_tx, &mut state, audio_secs);
-                        }
-                    }
-                    EpochDecision::Wake { preroll_from } => {
-                        let mut session = LiveStreamSession::open(language, sample_rate)
-                            .inspect_err(|_| state.return_outstanding_cloud(&ev_tx))?;
-                        let chunk_start = samples_seen.saturating_sub(samples.len() as u64);
-                        // The base is whatever audio this epoch ACTUALLY starts
-                        // with, never what was asked for: a pre-roll that fell
-                        // off retention resolves to nothing, and basing the
-                        // epoch on it would shift every timestamp in it earlier
-                        // by the missing audio.
-                        let preroll = state.audio.window_by_samples(preroll_from, chunk_start);
-                        epoch_base_samples =
-                            preroll.as_ref().map_or(chunk_start, |w| w.sample_start);
-                        let preroll_samples =
-                            preroll.as_ref().map_or(0, |window| window.samples.len());
-                        if let Some(window) = preroll.filter(|w| !w.samples.is_empty()) {
-                            session
-                                .write_pcm(&window.samples)
-                                .inspect_err(|_| state.return_outstanding_cloud(&ev_tx))?;
-                        }
-                        session.write_pcm(&samples).inspect_err(|_| {
-                            state.return_outstanding_cloud(&ev_tx);
-                        })?;
-                        info!(
-                            audio_secs,
-                            epoch_base_secs = epoch_base_secs(epoch_base_samples, sample_rate),
-                            preroll_samples,
-                            "apple_lifecycle: epoch open (speech edge)"
-                        );
-                        let events = shift_events(
-                            session.poll_events(),
-                            epoch_base_secs(epoch_base_samples, sample_rate),
-                        );
-                        emit_stream_events(events, &ev_tx, &mut state, audio_secs);
-                        stream = Some(session);
-                    }
+                let apple_requested = match epoch.feed_pcm(&samples, samples_seen, speech_live) {
+                    EpochDecision::Forward | EpochDecision::Wake { .. } => true,
                     EpochDecision::Sleep { silence_secs } => {
-                        if let Some(session) = stream.take() {
-                            let base_secs = epoch_base_secs(epoch_base_samples, sample_rate);
-                            let trailing = shift_events(
-                                session
-                                    .finish()
-                                    .inspect_err(|_| state.return_outstanding_cloud(&ev_tx))?,
-                                base_secs,
-                            );
-                            emit_stream_events(trailing, &ev_tx, &mut state, audio_secs);
-                            // Same close as capture EOF: whatever the engine
-                            // left open is sealed here, because no later
-                            // callback from this epoch can arrive.
-                            seal_open_partial(&mut state, &ev_tx, audio_secs);
-                            let _ = state.flush_layer1_coalesce(&ev_tx);
-                            state.close_admission_horizon(&ev_tx, samples_seen);
-                            info!(
-                                audio_secs,
-                                silence_secs,
-                                epoch_base_secs = base_secs,
-                                "apple_lifecycle: epoch close (hands-free silence)"
-                            );
+                        if let Some(front) = stream.as_mut() {
+                            front.close();
+                            epoch_closing_at = Some(samples_seen);
+                        }
+                        info!(audio_secs, silence_secs, "apple_lifecycle: epoch closing");
+                        false
+                    }
+                    EpochDecision::Idle => false,
+                };
+                let chunk_start = samples_seen.saturating_sub(samples.len() as u64);
+                if apple_requested && stream.is_none() && Instant::now() >= retry_open_at {
+                    match AppleBridgeFront::spawn(language, sample_rate, Arc::clone(&capture_head)) {
+                        Ok(front) => stream = Some(front),
+                        Err(error) => {
+                            warn!(%error, "Apple IO thread could not open; PCM observation continues");
+                            retry_open_at = Instant::now() + APPLE_OPEN_RETRY;
                         }
                     }
-                    // Resting: audio is retained, the engine is not running.
-                    EpochDecision::Idle => {}
+                }
+                let mut forwarded = false;
+                if apple_requested && let Some(front) = stream.as_mut() {
+                    match front.try_pcm(&samples, sample_rate, chunk_start,
+                        capture_head.load(Ordering::Acquire)) {
+                        Ok(true) => {
+                            if !front.started {
+                                // The actual first accepted live chunk owns
+                                // this clock. No pre-open retention is replayed.
+                                epoch_base_samples = chunk_start;
+                                front.started = true;
+                            }
+                            forwarded = true;
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
+                            warn!(%error, "Apple pipe saturated; close epoch without PCM backpressure");
+                            front.close();
+                        }
+                    }
+                }
+                if apple_requested && !forwarded {
+                    if apple_unavailable_from.is_none() {
+                        apple_unavailable_from = Some(chunk_start);
+                        warn!(session = %state.session_id, sample_start = chunk_start,
+                            "Apple front unavailable; live PCM observation continues");
+                        record_live_transport(&state, "apple_unavailable", chunk_start, samples_seen,
+                            capture_head.load(Ordering::Acquire), samples_seen, sample_rate);
+                        let _ = ev_tx.send(EngineEvent::Warning {
+                            code: "apple_unavailable".into(),
+                            message: "Apple front unavailable; live PCM observation continues.".into(),
+                        });
+                    }
+                } else if let Some(start) = apple_unavailable_from.take() {
+                    info!(session = %state.session_id, sample_start = start,
+                        sample_end = chunk_start, "Apple unavailable interval closed");
+                    record_live_transport(&state, "apple_unavailable_interval_closed", start, chunk_start,
+                        capture_head.load(Ordering::Acquire), samples_seen, sample_rate);
                 }
             }
             Ok(None) => break, // EOF from async side
-            Err(std_mpsc::RecvTimeoutError::Timeout) => {
-                let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
-                if let Some(session) = stream.as_mut() {
-                    let events = shift_events(
-                        session.poll_events(),
-                        epoch_base_secs(epoch_base_samples, sample_rate),
-                    );
-                    emit_stream_events(events, &ev_tx, &mut state, audio_secs);
-                }
-            }
+            Err(std_mpsc::RecvTimeoutError::Timeout) => {}
             Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
         }
         if let Some(owner) = consultation.as_mut() {
@@ -7823,6 +8056,10 @@ fn apple_stream_worker(
         state.emit_speech_integrity(&ev_tx);
     }
 
+    if let Some(start) = apple_unavailable_from.take() {
+        record_live_transport(&state, "apple_unavailable_at_eof", start, samples_seen,
+            capture_head.load(Ordering::Acquire), samples_seen, sample_rate);
+    }
     let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
     if let Some(fusion) = state.fusion.as_mut() {
         fusion.flush(samples_seen);
@@ -7842,7 +8079,8 @@ fn apple_stream_worker(
     } else {
         false
     };
-    let mut apple_final_received = stream.is_none();
+    let mut apple_final_received = !apple_front_failed && stream.is_none();
+    let mut stop_failed_from = None;
     finish_capture_after_seal(
         &mut state,
         &ev_tx,
@@ -7853,10 +8091,19 @@ fn apple_stream_worker(
             stream.take().map_or_else(
                 || Ok(Vec::new()),
                 |session| {
-                    session.finish().map(|events| {
-                        apple_final_received = apple_stop_final_received(&events);
-                        shift_events(events, epoch_base_secs(epoch_base_samples, sample_rate))
-                    })
+                    let written_through = Arc::clone(&session.written_through);
+                    let started = session.started;
+                    let (events, failure) = session.finish();
+                    if let Some(message) = failure.as_ref() {
+                        stop_failed_from = started.then(|| {
+                            written_through.load(Ordering::Acquire).max(epoch_base_samples)
+                        });
+                        let _ = ev_tx.send(EngineEvent::Warning {
+                            code: "apple_unavailable".into(), message: message.clone(),
+                        });
+                    }
+                    apple_final_received = failure.is_none() && apple_stop_final_received(&events);
+                    Ok(shift_events(events, epoch_base_secs(epoch_base_samples, sample_rate)))
                 },
             )
         },
@@ -7868,6 +8115,11 @@ fn apple_stream_worker(
         },
     )
     .inspect_err(|_| state.return_outstanding_cloud(&ev_tx))?;
+
+    if let Some(start) = stop_failed_from {
+        record_live_transport(&state, "apple_pipe_failed_at_eof", start, samples_seen,
+            capture_head.load(Ordering::Acquire), samples_seen, sample_rate);
+    }
 
     // `finish` has delivered the post-endAudio Apple events. CLOUD now ends
     // its live transport while this worker still owns admission. Neither the
