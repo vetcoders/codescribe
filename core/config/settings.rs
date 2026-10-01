@@ -20,6 +20,7 @@
 use super::types::{
     Config, ModeBinding, PasteMode, ShortcutBinding, WorkMode, default_mode_bindings,
 };
+#[cfg(not(any(test, feature = "test-isolation")))]
 use directories::BaseDirs;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -2131,7 +2132,9 @@ impl UserSettings {
     /// Returns the settings directory.
     ///
     /// Respects `CODESCRIBE_DATA_DIR` for test isolation; otherwise uses
-    /// `~/Library/Application Support/Codescribe/`.
+    /// `~/Library/Application Support/Codescribe/`. Test builds default to a
+    /// per-process temporary root instead, so tests never observe the account's
+    /// real `settings.json`.
     pub fn settings_dir() -> PathBuf {
         if let Some(host) = super::runtime_host::selected() {
             return host.data_directory.clone();
@@ -2139,12 +2142,19 @@ impl UserSettings {
         if let Ok(test_dir) = std::env::var("CODESCRIBE_DATA_DIR") {
             PathBuf::from(test_dir)
         } else {
-            BaseDirs::new()
-                .map(|b| b.data_dir().join("Codescribe"))
-                .unwrap_or_else(|| {
-                    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-                    PathBuf::from(home).join("Library/Application Support/Codescribe")
-                })
+            #[cfg(any(test, feature = "test-isolation"))]
+            {
+                crate::test_isolation::test_process_data_root()
+            }
+            #[cfg(not(any(test, feature = "test-isolation")))]
+            {
+                BaseDirs::new()
+                    .map(|b| b.data_dir().join("Codescribe"))
+                    .unwrap_or_else(|| {
+                        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+                        PathBuf::from(home).join("Library/Application Support/Codescribe")
+                    })
+            }
         }
     }
 
@@ -2171,6 +2181,7 @@ impl UserSettings {
     /// Load while the settings transaction lock and app-data admission are held.
     fn load_unlocked() -> Self {
         let path = Self::settings_path();
+        crate::test_isolation::assert_test_read_allowed(&path);
         super::repair::record(super::repair::repair_settings(
             &path,
             super::repair::operator_pack().as_deref(),

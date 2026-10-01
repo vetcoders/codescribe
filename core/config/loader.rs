@@ -8,6 +8,7 @@
 //! - `.env` is optional and only supplies env-managed / power-user overrides.
 //! - explicit process env can still override for tests and developer runs.
 
+#[cfg(not(any(test, feature = "test-isolation")))]
 use directories::BaseDirs;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -790,6 +791,7 @@ impl Config {
         let _bootstrap_guard = Self::config_env_bootstrap_guard();
         let seed_process_env = Self::can_seed_process_env();
         let env_path = Self::env_path();
+        crate::test_isolation::assert_test_read_allowed(&env_path);
         let mut file_env_vars: Option<HashMap<String, String>> = None;
 
         // Load .env file if it exists. It is optional and never required for
@@ -1751,6 +1753,7 @@ impl Config {
         // (config_dir()/.env, or the `CODESCRIBE_ENV_PATH` override used by tests
         // and power users) — never raw request or end-user input. No external
         // path-traversal source reaches this read.
+        crate::test_isolation::assert_test_read_allowed(path);
         let path = canonical_existing_file(path)?;
         let contents = fs::read_to_string(&path)?;
         let mut vars = HashMap::new();
@@ -1917,10 +1920,20 @@ impl Config {
             return maybe_canonicalize(PathBuf::from(shellexpand::tilde(&custom).into_owned()));
         }
 
+        // Test builds never default to the account's real `$HOME/.codescribe`:
+        // a per-process temporary root is the default so tests cannot observe
+        // the host's real configuration.
+        #[cfg(any(test, feature = "test-isolation"))]
+        {
+            crate::test_isolation::test_process_config_root()
+        }
         // Default to $HOME/.codescribe (lowercase - Unix convention)
-        BaseDirs::new()
-            .map(|dirs| dirs.home_dir().join(".codescribe"))
-            .unwrap_or_else(|| PathBuf::from(".codescribe"))
+        #[cfg(not(any(test, feature = "test-isolation")))]
+        {
+            BaseDirs::new()
+                .map(|dirs| dirs.home_dir().join(".codescribe"))
+                .unwrap_or_else(|| PathBuf::from(".codescribe"))
+        }
     }
 
     /// Get the full path to the .env file.
@@ -3662,6 +3675,7 @@ mod local_tail_decision_tests {
 mod captured_startup_tests {
     use super::super::repair::{ConfigUnrepairable, RepairAction};
     use super::*;
+    use serial_test::serial;
 
     fn inputs() -> CapturedRuntimeInputs {
         let mut input =
@@ -3861,7 +3875,11 @@ mod captured_startup_tests {
         }
     }
 
+    /// `#[serial]`: each tripwire load resolves the process-global
+    /// `CODESCRIBE_DATA_DIR`; off the serial lane it can consume or rewrite a
+    /// serial settings test's private fixture (X-hermetic-test-config).
     #[test]
+    #[serial]
     fn acquisition_tripwires_cover_lower_level_sources() {
         let sources: [(&str, fn()); 8] = [
             ("config files/env/keychain", || {

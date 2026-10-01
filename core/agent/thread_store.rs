@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
+#[cfg(not(any(test, feature = "test-isolation")))]
 use directories::BaseDirs;
 use rand::distr::Alphanumeric;
 use rand::{RngExt, rng};
@@ -691,7 +692,8 @@ fn is_assistive_wire_label(line: &str) -> bool {
 /// Root directory for all app-owned data. `CODESCRIBE_DATA_DIR` (tilde
 /// expanded) overrides it — the hook tests and isolated runs rely on — and the
 /// hardcoded Application Support path is the last resort when the platform
-/// directories cannot be resolved.
+/// directories cannot be resolved. Test builds default to a per-process
+/// temporary root instead, so tests never observe the account's real store.
 pub(crate) fn app_data_dir() -> PathBuf {
     if let Some(host) = crate::config::runtime_host::selected() {
         return host.data_directory.clone();
@@ -700,12 +702,19 @@ pub(crate) fn app_data_dir() -> PathBuf {
         return PathBuf::from(shellexpand::tilde(&custom).into_owned());
     }
 
-    BaseDirs::new()
-        .map(|dirs| dirs.data_dir().join("Codescribe"))
-        .unwrap_or_else(|| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-            PathBuf::from(home).join("Library/Application Support/Codescribe")
-        })
+    #[cfg(any(test, feature = "test-isolation"))]
+    {
+        crate::test_isolation::test_process_data_root()
+    }
+    #[cfg(not(any(test, feature = "test-isolation")))]
+    {
+        BaseDirs::new()
+            .map(|dirs| dirs.data_dir().join("Codescribe"))
+            .unwrap_or_else(|| {
+                let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+                PathBuf::from(home).join("Library/Application Support/Codescribe")
+            })
+    }
 }
 
 /// Reduce a caller-supplied attachment name to a safe leaf file name: drop any

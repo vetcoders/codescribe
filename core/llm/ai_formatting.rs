@@ -2304,7 +2304,13 @@ mod tests {
     /// Statically proves that all public formatting entry points require the immutable
     /// runtime settings generation (`&RuntimeSettingsSnapshot`) without polling futures,
     /// guaranteeing zero network activity.
+    ///
+    /// `#[serial]`: the snapshot load resolves the process-global
+    /// `CODESCRIBE_DATA_DIR`; running off the serial lane let this load consume a
+    /// serial settings test's one-time V1 migration and rewrite its private
+    /// fixture (traced 2026-10-01, X-hermetic-test-config load loop).
     #[test]
+    #[serial]
     fn formatter_entry_requires_runtime_settings_snapshot() {
         let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
         let _f1 = format_text("test", None, false, &runtime_settings);

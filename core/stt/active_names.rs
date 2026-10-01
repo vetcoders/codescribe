@@ -67,7 +67,9 @@ pub fn active_names() -> Vec<String> {
 
 /// Runtime agent-bridge home: `CODESCRIBE_AGENT_BRIDGE_HOME`, otherwise
 /// `~/.codescribe/agent-bridge`. The audience binding file sits here, beside
-/// the leases the Bus followers already use.
+/// the leases the Bus followers already use. Test builds default under the
+/// per-process temporary config root instead, so tests never observe the
+/// account's real bridge leases.
 pub fn bridge_home() -> PathBuf {
     if let Ok(value) = std::env::var(BRIDGE_HOME_ENV) {
         let value = value.trim();
@@ -75,9 +77,16 @@ pub fn bridge_home() -> PathBuf {
             return expand_tilde(value);
         }
     }
-    BaseDirs::new()
-        .map(|dirs| dirs.home_dir().join(".codescribe/agent-bridge"))
-        .unwrap_or_else(|| PathBuf::from(".codescribe/agent-bridge"))
+    #[cfg(any(test, feature = "test-isolation"))]
+    {
+        crate::test_isolation::test_process_config_root().join("agent-bridge")
+    }
+    #[cfg(not(any(test, feature = "test-isolation")))]
+    {
+        BaseDirs::new()
+            .map(|dirs| dirs.home_dir().join(".codescribe/agent-bridge"))
+            .unwrap_or_else(|| PathBuf::from(".codescribe/agent-bridge"))
+    }
 }
 
 fn expand_tilde(path: &str) -> PathBuf {

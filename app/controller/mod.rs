@@ -690,6 +690,8 @@ static STOP_PASTE_WAIT: std::sync::Mutex<Option<std::sync::Weak<StopPasteWaitCon
     std::sync::Mutex::new(None);
 
 pub(crate) fn preempt_stop_paste_for_next_take() -> bool {
+    #[cfg(test)]
+    let _lane = crate::test_env::StopPastePreemptionTestLane::acquire();
     let slot = STOP_PASTE_WAIT
         .lock()
         .unwrap_or_else(|error| error.into_inner());
@@ -7752,8 +7754,14 @@ mod refusal_recovery_tests {
 
     /// Both races run through the live wait, settlement, retirement and new
     /// admission. The tail delay and OS sink are the only injected effects.
+    ///
+    /// The preemption lane keeps this test's preempt aimed at its own stop:
+    /// the stop-paste slot is process-global, so a foreign test's registration
+    /// could otherwise eat the preempt while this test's stop is preempted by
+    /// a foreign start.
     #[tokio::test(start_paused = true)]
     async fn next_take_preempts_pending_or_same_tick_final_once() {
+        let _preemption_lane = crate::test_env::StopPastePreemptionTestLane::acquire();
         for final_same_tick in [false, true] {
             let take = take(State::Busy, false).await;
             take.emitter.on_capture_opened(TAKE, 7);
@@ -9181,8 +9189,14 @@ mod serving_status_producer_falsifiers {
     /// `StreamingRecorder::new` opens no device, and `stop()` on a session
     /// that never started returns an empty transcript, so this drives the real
     /// `stop_toggle_and_adjudicate_inner` success branch without CoreAudio.
+    ///
+    /// The preemption lane keeps a foreign test's take start from preempting
+    /// this stop through the process-global stop-paste slot: a preempted stop
+    /// legitimately skips the verdict, which is the race this test would then
+    /// misreport as a missing publish.
     #[tokio::test]
     async fn toggle_stop_publishes_the_live_session_engine() {
+        let _preemption_lane = crate::test_env::StopPastePreemptionTestLane::acquire();
         let _serialized = serving_status::test_store_lock().lock().await;
         serving_status::clear_last_serving();
         let controller = RecordingController::new_without_keychain();
