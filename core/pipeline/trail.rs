@@ -465,6 +465,10 @@ pub struct TrailDecision {
     pub candidate_tokens: Vec<String>,
     pub verdict: MutationReceipt,
     pub predecessor_ordinal: Option<usize>,
+    #[serde(default)]
+    pub clock_lie: bool,
+    #[serde(default)]
+    pub clock_lie_blocker: Option<OccurrenceIdentity>,
     pub input: Option<TrailAdmission>,
     pub result_slots: Vec<WordSlot>,
     // Reducer revisions and job handoff times are separate authorities. Null
@@ -743,6 +747,8 @@ fn decision_snapshot(
         candidate_tokens: entry.candidate_tokens.clone(),
         verdict: entry.decision.clone(),
         predecessor_ordinal: entry.predecessor_ordinal,
+        clock_lie: entry.clock_lie,
+        clock_lie_blocker: entry.clock_lie_blocker.clone(),
         input,
         result_slots: ledger
             .slots_of(&entry.observation.occurrence)
@@ -998,6 +1004,8 @@ fn decision_matches(actual: &TrailDecision, expected: &TrailDecision) -> bool {
         && actual.candidate_tokens == expected.candidate_tokens
         && actual.verdict == expected.verdict
         && actual.predecessor_ordinal == expected.predecessor_ordinal
+        && actual.clock_lie == expected.clock_lie
+        && actual.clock_lie_blocker == expected.clock_lie_blocker
         && actual.result_slots == expected.result_slots
 }
 

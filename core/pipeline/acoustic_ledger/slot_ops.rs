@@ -820,7 +820,7 @@ impl AcousticLedger {
         self.offered_observations += 1;
         self.answered.push(observation.clone());
         self.word_pin_observations.insert(observation.clone());
-        self.record_layer_decision(observation, &label, &decision);
+        self.record_layer_decision(observation, &label, &decision, None);
         self.slot_operations.push(receipt);
     }
 
