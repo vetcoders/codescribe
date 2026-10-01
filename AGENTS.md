@@ -16,15 +16,16 @@ Codescribe-specific runtime laws, thrones of authority, release cadence, and can
 
 ## Worker embargo — Founder decision 2026-10-01
 
-- **Worker pisze kod i testy, ale nie kompiluje i nie uruchamia żadnych testów.**
+- **Worker pisze kod. Testy pisze i uruchamia integrator. Worker nie kompiluje
+  i nie uruchamia żadnych testów.**
   Build, typecheck, Clippy, wykonanie produktu, modele, benchmarki, instalacja
   i odbiór runtime należą wyłącznie do jawnie wyznaczonego integratora.
 - Zakaz obowiązuje przez cały przydział workera, także po zamknięciu W2.
   Brak markera embargo, mały zakres, neutralny instrument, szybki smoke test,
   błąd kompilatora albo zalecenie skilla nie tworzą wyjątku.
-- Worker może czytać i mapować źródła, pisać fixtury i testy, robić statyczny
-  przegląd oraz `git diff --check`. Oddaje commit, listę **nieuruchomionych**
-  testów i niepewności; nigdy nie ogłasza ich jako PASS.
+- Worker może czytać i mapować źródła, robić statyczny przegląd oraz
+  `git diff --check`. Oddaje commit, zakres zmian i niepewności. Integrator
+  odpowiada za fixtury, testy i ich wyniki; worker nie ogłasza ich jako PASS.
 - Integrator uruchamia wymagane bramki na jawnie wskazanej generacji po odbiorze
   zmian. Po błędzie może zwrócić workerowi cut do poprawy; worker nadal nie
   uruchamia bramek. Worker nie mianuje sam siebie integratorem.

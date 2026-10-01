@@ -7,7 +7,8 @@ formation
 
 ## 0. Permanent worker prohibition — Founder decision 2026-10-01
 
-**Workers author code and tests. Only the designated integrator compiles,
+**Workers author code. The designated integrator authors tests and fixtures.
+Only the designated integrator compiles,
 runs tests, benchmarks or the product, and performs installation/runtime
 acceptance.** This is a role boundary for the entire worker assignment, not
 a temporary W1/W2 deferral. Structural closure does not grant a worker execution
@@ -32,10 +33,10 @@ For Codescribe, forbidden worker commands include:
   dependency installation to enable any forbidden command.
 
 Scope, speed and the name of the instrument do not create exemptions. Workers
-may author tests and fixtures, inspect source, use Loctree, perform admitted
+may inspect source, use Loctree, perform admitted
 static security/hygiene checks that do not build/import/execute the product,
-and run `git diff --check`. Their checkpoint reports name all unrun tests and
-skipped hooks as `NOT_ASSESSED`, never PASS.
+and run `git diff --check`. Their checkpoint reports name source scope,
+unknowns and skipped hooks. Build/test/runtime remain `NOT_ASSESSED`, never PASS.
 
 The integrator admits the source and runs required gates on the recorded
 generation. If it returns a failing cut for repair, the worker repairs source
@@ -126,8 +127,8 @@ checks that do not execute or import the product, such as:
 - a neutral syntax parser only when the plan explicitly admits it as a
   structural instrument.
 
-Tests are authored during W1/W2 because they state the intended contract. They
-remain unrun by workers. The integrator executes them after structural closure.
+The integrator authors tests because they state the intended contract, and
+executes them after structural closure. Workers neither author nor execute them.
 
 ## 4. Roles and truth ownership
 
@@ -140,7 +141,7 @@ destination tree.
 - Agent-Operator/integrator: owns the plan, phase state, recovery channel,
   dispatch ledger, admission, structural-close attestation, the first compile
   and the moment every deferred gate returns.
-- Worker: owns one closed file/symbol domain, its unrun contract tests, one
+- Worker: owns one closed implementation file/symbol domain, one
   durable checkpoint commit and one honest report of unknowns.
 - Compiler/test/runtime: independent falsifiers used only in their declared
   phases. They are not architecture authors.
@@ -232,7 +233,7 @@ No product implementation begins until the Agent-Operator records:
 2. clean/dirty state and ownership of any pre-existing changes;
 3. target architecture, invariants and one source of truth per behavior;
 4. closed worker domains and their overlap matrix;
-5. acceptance contracts and tests each worker must author;
+5. acceptance contracts and the tests the integrator must author;
 6. allowed structural instruments and exact forbidden commands;
 7. each deferred gate with its reason and return condition (section 2);
 8. enforcement grade, phase state and recovery ref;
@@ -256,14 +257,14 @@ All independent workers may run concurrently. Each worker:
 2. maps the domain before editing and reads each affected file immediately
    before changing it;
 3. implements the complete atom, not a compile-shaped fragment;
-4. authors non-trivial tests for success, failure and ownership boundaries but
-   does not execute them;
+4. implements the declared acceptance contract; the integrator authors and
+   executes its tests;
 5. stays inside the closed domain and reports required cross-domain seams as
    `DANGLING` or `BOUNDARY`;
 6. runs only W1-admitted structural checks;
 7. stages only owned files/hunks and creates one durable checkpoint commit;
-8. writes a report with baseline, terminal SHA, changed files, exact checks,
-   unrun tests, skipped hooks, unknowns and the next integrator instruction.
+8. writes a report with baseline, terminal SHA, changed files, exact static
+   checks, skipped hooks, unknowns and the next integrator instruction.
 
 The canonical W1 receipt is:
 
