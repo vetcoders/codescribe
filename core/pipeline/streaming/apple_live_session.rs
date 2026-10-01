@@ -20962,12 +20962,43 @@ mod relay_l1_overlap_admission_tests {
         (occurrence, requests)
     }
 
+    /// Whisper observation buffer a take selects once, at worker start.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum BufferMode {
+        Windows,
+        Adaptive,
+    }
+
+    impl BufferMode {
+        const BOTH: [Self; 2] = [Self::Windows, Self::Adaptive];
+
+        fn session(self, base: &str) -> String {
+            match self {
+                Self::Windows => base.to_string(),
+                Self::Adaptive => format!("{base}-adaptive"),
+            }
+        }
+    }
+
     // Seed word geometry without replacing it with an occurrence-wide label.
     fn forensic_lane(
         session: &str,
         held: &[(&str, u64, u64)],
     ) -> (Lane, OccurrenceIdentity, Vec<TailPatchRequest>) {
+        forensic_lane_in(BufferMode::Windows, session, held)
+    }
+
+    /// The worker's own selection: `apple_stream_worker` swaps in
+    /// `Layer1Coalesce::adaptive()` on the fresh state before any piece arrives.
+    fn forensic_lane_in(
+        mode: BufferMode,
+        session: &str,
+        held: &[(&str, u64, u64)],
+    ) -> (Lane, OccurrenceIdentity, Vec<TailPatchRequest>) {
         let mut lane = open(session);
+        if mode == BufferMode::Adaptive {
+            lane.state.layer1_coalesce = Layer1Coalesce::adaptive();
+        }
         let owner = OccurrenceIdentity::new(session, 1, 0, 200_000);
         qualify_unlabelled(&mut lane, &owner);
         {
@@ -21037,8 +21068,17 @@ mod relay_l1_overlap_admission_tests {
 
     #[test]
     fn forensic_window_stub_waits_for_next_window() {
-        let session = "forensic-stub";
-        let (mut lane, owner, requests) = forensic_lane(session, &[]);
+        window_stub_waits_for_next_window(BufferMode::Windows);
+    }
+
+    #[test]
+    fn adaptive_buffer_window_stub_waits_for_next_window() {
+        window_stub_waits_for_next_window(BufferMode::Adaptive);
+    }
+
+    fn window_stub_waits_for_next_window(mode: BufferMode) {
+        let session = &mode.session("forensic-stub");
+        let (mut lane, owner, requests) = forensic_lane_in(mode, session, &[]);
         let end = requests[0].provider_request.identity.range.sample_end;
         lane.state.complete_whisper_window(
             &lane.tx,
@@ -21066,8 +21106,17 @@ mod relay_l1_overlap_admission_tests {
 
     #[test]
     fn forensic_window_stub_is_accounted_at_seal() {
-        let session = "forensic-stub-seal";
-        let (mut lane, owner, requests) = forensic_lane(session, &[]);
+        window_stub_is_accounted_at_seal(BufferMode::Windows);
+    }
+
+    #[test]
+    fn adaptive_buffer_window_stub_is_accounted_at_seal() {
+        window_stub_is_accounted_at_seal(BufferMode::Adaptive);
+    }
+
+    fn window_stub_is_accounted_at_seal(mode: BufferMode) {
+        let session = &mode.session("forensic-stub-seal");
+        let (mut lane, owner, requests) = forensic_lane_in(mode, session, &[]);
         let end = requests[0].provider_request.identity.range.sample_end;
         lane.state.complete_whisper_window(
             &lane.tx,
@@ -21300,8 +21349,17 @@ mod relay_l1_overlap_admission_tests {
 
     #[test]
     fn forensic_real_repetitions_on_distinct_pcm_stay() {
-        let session = "forensic-repetitions";
-        let (mut lane, owner, requests) = forensic_lane(session, &[]);
+        real_repetitions_on_distinct_pcm_stay(BufferMode::Windows);
+    }
+
+    #[test]
+    fn adaptive_buffer_real_repetitions_on_distinct_pcm_stay() {
+        real_repetitions_on_distinct_pcm_stay(BufferMode::Adaptive);
+    }
+
+    fn real_repetitions_on_distinct_pcm_stay(mode: BufferMode) {
+        let session = &mode.session("forensic-repetitions");
+        let (mut lane, owner, requests) = forensic_lane_in(mode, session, &[]);
         let pins = vec![
             word_pin(session, "Iwo", 1_000, 5_000),
             word_pin(session, "Iwo", 7_000, 11_000),
@@ -21338,8 +21396,17 @@ mod relay_l1_overlap_admission_tests {
     // "dość", generation 1 one adjacent "dość"; the ledger kept both.
     #[test]
     fn integrator_adjacent_batches_each_with_one_word_keep_one_copy() {
-        let session = "integrator-dosc";
-        let (mut lane, owner, requests) = forensic_lane(session, &[]);
+        adjacent_batches_each_with_one_word_keep_one_copy(BufferMode::Windows);
+    }
+
+    #[test]
+    fn adaptive_buffer_adjacent_batches_each_with_one_word_keep_one_copy() {
+        adjacent_batches_each_with_one_word_keep_one_copy(BufferMode::Adaptive);
+    }
+
+    fn adjacent_batches_each_with_one_word_keep_one_copy(mode: BufferMode) {
+        let session = &mode.session("integrator-dosc");
+        let (mut lane, owner, requests) = forensic_lane_in(mode, session, &[]);
         let (base, _) = shared_window_region(&requests);
         lane.state.complete_whisper_window(
             &lane.tx,
@@ -21382,8 +21449,17 @@ mod relay_l1_overlap_admission_tests {
     // "sympatyczne" on the same PCM; the ledger replaced the complete word.
     #[test]
     fn integrator_pin_clipped_at_window_start_cannot_replace_a_complete_word() {
-        let session = "integrator-niesympatyczne";
-        let (mut lane, owner, requests) = forensic_lane(session, &[]);
+        pin_clipped_at_window_start_cannot_replace_a_complete_word(BufferMode::Windows);
+    }
+
+    #[test]
+    fn adaptive_buffer_pin_clipped_at_window_start_cannot_replace_a_complete_word() {
+        pin_clipped_at_window_start_cannot_replace_a_complete_word(BufferMode::Adaptive);
+    }
+
+    fn pin_clipped_at_window_start_cannot_replace_a_complete_word(mode: BufferMode) {
+        let session = &mode.session("integrator-niesympatyczne");
+        let (mut lane, owner, requests) = forensic_lane_in(mode, session, &[]);
         let (second_start, _) = shared_window_region(&requests);
         lane.state.complete_whisper_window(
             &lane.tx,
@@ -21439,8 +21515,17 @@ mod relay_l1_overlap_admission_tests {
     // "Bym to powiedział. Nie." a SealedReplay; the words were heard and lost.
     #[test]
     fn integrator_wide_early_pin_splits_for_the_words_it_covers() {
-        let session = "integrator-wide-pin";
-        let (mut lane, owner, requests) = forensic_lane(session, &[]);
+        wide_early_pin_splits_for_the_words_it_covers(BufferMode::Windows);
+    }
+
+    #[test]
+    fn adaptive_buffer_wide_early_pin_splits_for_the_words_it_covers() {
+        wide_early_pin_splits_for_the_words_it_covers(BufferMode::Adaptive);
+    }
+
+    fn wide_early_pin_splits_for_the_words_it_covers(mode: BufferMode) {
+        let session = &mode.session("integrator-wide-pin");
+        let (mut lane, owner, requests) = forensic_lane_in(mode, session, &[]);
         let (base, first_end) = shared_window_region(&requests);
         // The wide pin ends before the first window's edge, so it is no stub.
         assert!(base + 15_000 < first_end);
@@ -21485,6 +21570,141 @@ mod relay_l1_overlap_admission_tests {
         );
         assert!(ledger.word_deletions().is_empty());
         assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    fn request_geometry(requests: &[TailPatchRequest]) -> Vec<(u64, u64, u64, u64)> {
+        requests
+            .iter()
+            .map(|request| {
+                let range = &request.provider_request.identity.range;
+                (
+                    range.sample_start,
+                    range.sample_end,
+                    request.admit_sample_start,
+                    request.admit_sample_end,
+                )
+            })
+            .collect()
+    }
+
+    // Both buffers launch requests whose decode start and admission range reach
+    // the completion path, and whose admission ranges partition the occurrence.
+    #[test]
+    fn buffer_modes_launch_requests_whose_admission_partitions_the_occurrence() {
+        let overlap = (Layer1Coalesce::OVERLAP_SECS * RATE as f32) as u64;
+        for mode in BufferMode::BOTH {
+            let session = &mode.session("buffer-geometry");
+            let (lane, owner, requests) = forensic_lane_in(mode, session, &[]);
+            let geometry = request_geometry(&requests);
+            let ceiling = match mode {
+                BufferMode::Windows => 64_000,
+                BufferMode::Adaptive => 128_000,
+            };
+            let longest = geometry
+                .iter()
+                .map(|(start, end, _, _)| end - start)
+                .max()
+                .unwrap_or(0);
+            assert!(requests.len() >= 2, "{mode:?}: {geometry:?}");
+            assert!(longest <= ceiling, "{mode:?}: {geometry:?}");
+            if mode == BufferMode::Adaptive {
+                assert!(longest > 64_000, "adaptive buffer engaged: {geometry:?}");
+            }
+            assert_eq!(geometry[0].2, owner.sample_start, "{mode:?}: {geometry:?}");
+            assert_eq!(
+                geometry[geometry.len() - 1].3,
+                owner.sample_end,
+                "{mode:?}: {geometry:?}"
+            );
+            for &(start, end, admit_start, admit_end) in &geometry {
+                assert!(
+                    start <= admit_start && admit_start < admit_end && admit_end <= end,
+                    "{mode:?}: admission inside the decoded range: {geometry:?}"
+                );
+            }
+            for pair in geometry.windows(2) {
+                let (_, previous_end, _, previous_admit_end) = pair[0];
+                let (next_start, _, next_admit_start, _) = pair[1];
+                assert_eq!(
+                    previous_admit_end, next_admit_start,
+                    "{mode:?}: admission ranges are contiguous: {geometry:?}"
+                );
+                assert_eq!(
+                    previous_end - next_start,
+                    overlap,
+                    "{mode:?}: consecutive decodes share one second: {geometry:?}"
+                );
+            }
+            for request in &requests {
+                let job = lane
+                    .state
+                    .refinement_submitted
+                    .values()
+                    .find(|job| job.request_identity == request.provider_request.identity)
+                    .expect("every emitted request is a launched job");
+                assert_eq!(
+                    (job.admit_sample_start, job.admit_sample_end),
+                    (request.admit_sample_start, request.admit_sample_end),
+                    "{mode:?}"
+                );
+                assert_eq!(
+                    job.request_identity.range.sample_start,
+                    request.provider_request.identity.range.sample_start,
+                    "{mode:?}: the decode start completion hands the ledger"
+                );
+            }
+        }
+    }
+
+    // The second both decodes share: a word both report on the same PCM is held
+    // once, and a real repetition inside that second stays twice.
+    #[test]
+    fn buffer_modes_hold_a_shared_region_word_once_and_keep_real_repetitions() {
+        for mode in BufferMode::BOTH {
+            let session = &mode.session("buffer-overlap");
+            let (mut lane, owner, requests) = forensic_lane_in(mode, session, &[]);
+            let (base, first_end) = shared_window_region(&requests);
+            assert!(base + 8_000 < first_end, "{mode:?}: no window-edge stub");
+            let shared = |text: &str, start: u64, end: u64| {
+                word_pin(session, text, base + start, base + end)
+            };
+            lane.state.complete_whisper_window(
+                &lane.tx,
+                completion(
+                    &requests[0],
+                    vec![
+                        word_pin(session, "wcześniej", base - 10_000, base - 2_000),
+                        shared("raz", 1_000, 4_000),
+                        shared("raz", 5_000, 8_000),
+                    ],
+                ),
+                12.5,
+            );
+            lane.state.complete_whisper_window(
+                &lane.tx,
+                completion(
+                    &requests[1],
+                    vec![
+                        shared("raz", 1_000, 4_000),
+                        shared("raz", 5_000, 8_000),
+                        shared("dwa", 20_000, 30_000),
+                    ],
+                ),
+                12.5,
+            );
+            let text = held_text(&lane, &owner).unwrap_or_default();
+            assert_eq!(
+                text.split_whitespace()
+                    .filter(|word| *word == "raz")
+                    .count(),
+                2,
+                "{mode:?}: {text}"
+            );
+            assert!(text.contains("wcześniej raz raz dwa"), "{mode:?}: {text}");
+            let ledger = lane.state.acoustic_ledger.lock().unwrap();
+            assert!(ledger.word_deletions().is_empty(), "{mode:?}");
+            assert_eq!(ledger.conservation().residue(), 0, "{mode:?}");
+        }
     }
 
     fn long_word_windows(session: &str) -> [Vec<TimedTailSegment>; 3] {

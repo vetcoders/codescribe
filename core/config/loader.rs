@@ -2766,6 +2766,39 @@ mod tests {
         assert_eq!(snapshot.seal_lane_source().as_str(), "env_override");
     }
 
+    /// A take binds one snapshot at its start (`bind_session_authority`) and
+    /// `apple_stream_worker` reads `whisper_adaptive_buffer` from it once. A
+    /// Lab write during the take cannot reach that snapshot; the next take's can.
+    #[test]
+    #[serial]
+    fn whisper_adaptive_buffer_change_reaches_only_the_next_take_snapshot() {
+        let _tmp = setup_isolated_data_dir();
+        let _override = TestEnvGuard::unset("WHISPER_ADAPTIVE_BUFFER");
+        let current_take =
+            Config::load_runtime_snapshot_without_keychain().expect("seal current take");
+        assert!(!current_take.values().whisper_adaptive_buffer);
+
+        Config::default()
+            .save_to_env("WHISPER_ADAPTIVE_BUFFER", "1")
+            .expect("Lab toggle during the take");
+        assert_eq!(UserSettings::load().whisper_adaptive_buffer, Some(true));
+        assert!(
+            !current_take.values().whisper_adaptive_buffer,
+            "the running take keeps the mode it started with"
+        );
+
+        let next_take = Config::load_runtime_snapshot_without_keychain().expect("seal next take");
+        assert!(next_take.values().whisper_adaptive_buffer);
+        assert_ne!(current_take.digest(), next_take.digest());
+
+        Config::default()
+            .save_to_env("WHISPER_ADAPTIVE_BUFFER", "0")
+            .expect("Lab toggle back");
+        assert!(next_take.values().whisper_adaptive_buffer);
+        let third_take = Config::load_runtime_snapshot_without_keychain().expect("seal third take");
+        assert!(!third_take.values().whisper_adaptive_buffer);
+    }
+
     /// Distinct UI writes are one read-modify-write transaction each. Start two
     /// callers together and prove the later atomic rename cannot erase the
     /// field persisted by the other caller.
