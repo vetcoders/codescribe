@@ -140,6 +140,7 @@ impl LiveStreamSession {
             audio_path: None,
             contextual_strings: contextual_strings.as_deref(),
             allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
+            deadline_policy: None,
         };
         let req_payload = serde_json::to_vec(&request).context("serialize stream request")?;
         stdin
