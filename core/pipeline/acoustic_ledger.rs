@@ -579,6 +579,38 @@ pub(crate) fn same_word_pin(
         && normalized == normalize(prior_text)
 }
 
+pub(crate) fn normalize_word_token(word: &str) -> String {
+    word.trim_matches(|ch: char| !ch.is_alphanumeric())
+        .to_lowercase()
+}
+
+fn edge_token_duplicate(held: &WordSlot, word: &WordSlot, normalized: &str) -> bool {
+    if normalized.is_empty() || word.text.split_whitespace().count() != 1 {
+        return false;
+    }
+    let overlap = held.sample_start < word.sample_end && word.sample_start < held.sample_end;
+    let adjacent = held.sample_end == word.sample_start || word.sample_end == held.sample_start;
+    if !overlap && !adjacent {
+        return false;
+    }
+    let tokens = held.text.split_whitespace().collect::<Vec<_>>();
+    if overlap {
+        // A coarse group supplies no internal boundaries: a contained token
+        // is already held on this PCM, even when it is not the last token.
+        tokens
+            .iter()
+            .any(|token| normalize_word_token(token) == normalized)
+    } else {
+        let edge = if held.sample_end == word.sample_start {
+            tokens.last()
+        } else {
+            tokens.first()
+        };
+        edge.is_some_and(|token| normalize_word_token(token) == normalized)
+            && held.observation != word.observation
+    }
+}
+
 /// Two timed witnesses address one lexical slot when their PCM centres agree.
 /// Crossing ranges alone are insufficient: adjacent short words may overlap
 /// at a window seam while each midpoint still belongs to its own word.
@@ -704,7 +736,7 @@ pub struct AcousticLedger {
     committed: BTreeMap<OccurrenceIdentity, CommittedObservation>,
     slot_alternatives: Vec<SlotAlternative>,
     slot_operations: Vec<SlotOperationReceipt>,
-    speech_evidence: Option<AcousticSpeechEvidence>,
+    pub(super) speech_evidence: Option<AcousticSpeechEvidence>,
     assigned_word_pins: Option<slot_ops::AssignedWordPinBatch>,
     group_speech_coverages: Vec<GroupSpeechCoverageReceipt>,
     word_deletions: Vec<WordDeletionReceipt>,
@@ -776,7 +808,7 @@ impl AcousticLedger {
         &self.slot_alternatives
     }
 
-    fn retain_slot_alternative(
+    pub(crate) fn retain_slot_alternative(
         &mut self,
         observation: &ObservationIdentity,
         candidate: &str,
@@ -792,6 +824,17 @@ impl AcousticLedger {
         if !self.slot_alternatives.contains(&alternative) {
             self.slot_alternatives.push(alternative);
         }
+    }
+
+    pub(super) fn assigned_word_pin_ranges(
+        &self,
+        observation: &ObservationIdentity,
+    ) -> Vec<(OccurrenceIdentity, OccurrenceIdentity)> {
+        self.assigned_word_pins
+            .as_ref()
+            .filter(|batch| batch.observation == *observation)
+            .map(|batch| batch.assignments.clone())
+            .unwrap_or_default()
     }
 
     /// Read-only word evidence for one occurrence.
@@ -946,8 +989,8 @@ impl AcousticLedger {
             slots.iter().any(|slot| {
                 (!whisper_only || slot.producer == ObservationProducer::Whisper)
                     && same_word_pin(
-                        pin.sample_start.max(owner.sample_start),
-                        pin.sample_end.min(owner.sample_end),
+                        pin.sample_start,
+                        pin.sample_end,
                         text,
                         slot.sample_start,
                         slot.sample_end,
@@ -1206,7 +1249,11 @@ impl AcousticLedger {
                 self,
             );
         }
-        let mut removed = Vec::new();
+        let resegments = self.resegment_word_slots(observation, &mut slots, &mut incoming);
+        let mut removed = resegments
+            .iter()
+            .flat_map(|op| op.sources.clone())
+            .collect::<Vec<_>>();
         let mut refused = Vec::new();
         let mut group_rules = Vec::new();
         // Match the complete batch before editing. Two candidates for one
@@ -1339,6 +1386,39 @@ impl AcousticLedger {
                 );
                 refused.push(word);
             } else {
+                // A new pin is not a new word if the same PCM edge already
+                // carries that token, including a group or a neighbouring owner.
+                let normalized = normalize_word_token(&word.text);
+                let duplicate_sources = slots
+                    .iter()
+                    .filter(|held| edge_token_duplicate(held, &word, &normalized))
+                    .cloned()
+                    .chain(
+                        self.committed
+                            .iter()
+                            .filter(|(other, _)| {
+                                *other != owner
+                                    && other.same_capture(owner)
+                                    && (other.sample_end == owner.sample_start
+                                        || owner.sample_end == other.sample_start)
+                            })
+                            .flat_map(|(_, held)| held.slots.iter())
+                            .filter(|held| edge_token_duplicate(held, &word, &normalized))
+                            .cloned(),
+                    )
+                    .collect::<Vec<_>>();
+                if word.producer != ObservationProducer::ManualHuman
+                    && !duplicate_sources.is_empty()
+                {
+                    self.retain_slot_alternative(
+                        observation,
+                        &word.text,
+                        duplicate_sources,
+                        "duplicate_pcm_edge_token",
+                    );
+                    refused.push(word);
+                    continue;
+                }
                 let position = slots
                     .iter()
                     .position(|held| held.sample_start > word.sample_start)
@@ -1368,7 +1448,7 @@ impl AcousticLedger {
         }
         let label = compose_label(&slots);
         let operation_start = self.slot_operations.len();
-        let receipt = self.admit_with_slots(observation, &label, Some(slots), true);
+        let receipt = self.admit_slot_batch(observation, &label, Some(slots), true, &resegments);
         for operation in &mut self.slot_operations[operation_start..] {
             if let Some((_, _, rule_id)) = group_rules.iter().find(|(start, end, _)| {
                 operation
@@ -1768,6 +1848,18 @@ impl AcousticLedger {
         slots: Option<Vec<WordSlot>>,
         slot_revision: bool,
     ) -> MutationReceipt {
+        self.admit_slot_batch(observation, text, slots, slot_revision, &[])
+    }
+
+    /// All slot batches commit here, including explicit geometric operations.
+    fn admit_slot_batch(
+        &mut self,
+        observation: &ObservationIdentity,
+        text: &str,
+        slots: Option<Vec<WordSlot>>,
+        slot_revision: bool,
+        operations: &[SlotOperationReceipt],
+    ) -> MutationReceipt {
         self.trail_input = super::trail::is_enabled(&observation.occurrence).then(|| {
             super::trail::TrailAdmission {
                 source_slots: self
@@ -1859,6 +1951,12 @@ impl AcousticLedger {
             || (slot_revision && matches!(decision, MutationReceipt::Preserve { .. }));
         if applies_slots && let Some(proposed) = slots.as_ref() {
             for output in proposed {
+                if operations
+                    .iter()
+                    .any(|group| group.outputs.contains(output))
+                {
+                    continue;
+                }
                 let source = self
                     .slots_of(&observation.occurrence)
                     .unwrap_or(&[])
@@ -1916,7 +2014,19 @@ impl AcousticLedger {
                     held.slots.push(slot);
                 }
             }
+            // Only explicit Merge/Split receipts retire old source geometry.
+            // Every source omitted without an operation remains held.
+            held.slots.retain(|source| {
+                !operations
+                    .iter()
+                    .any(|group| group.sources.contains(source))
+            });
+            held.slots
+                .sort_by_key(|word| (word.sample_start, word.sample_end));
             held.recompose();
+        }
+        if applies_slots {
+            self.slot_operations.extend_from_slice(operations);
         }
         self.record_layer_decision(observation, text, &decision);
         if authorized_recovery
