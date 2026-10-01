@@ -1545,7 +1545,12 @@ mod tests {
     /// Capture lifetime is refcounted over subscribers, never take-identical:
     /// the capture closes only when the last subscriber releases, and a take
     /// after the close binds a fresh ledger and epoch like any first take.
+    ///
+    /// `#[serial]`: the runtime-snapshot load resolves the process-global
+    /// `CODESCRIBE_DATA_DIR`; off the serial lane it can consume or rewrite a
+    /// serial settings test's private fixture (X-hermetic-test-config).
     #[tokio::test]
+    #[serial]
     async fn capture_lifecycle_is_refcounted_over_subscribers() {
         let mut recorder = StreamingRecorder::new().expect("Failed to create recorder");
         let (channel_tx, mut channel_rx) = mpsc::channel::<Vec<f32>>(8);
@@ -1660,7 +1665,12 @@ mod tests {
 
     /// One dictation take at a time: a second `start_event_session` is refused
     /// before any device work while a take subscription is live.
+    ///
+    /// `#[serial]`: the runtime-snapshot load resolves the process-global
+    /// `CODESCRIBE_DATA_DIR`; off the serial lane it can consume or rewrite a
+    /// serial settings test's private fixture (X-hermetic-test-config).
     #[tokio::test]
+    #[serial]
     async fn start_event_session_refuses_a_second_take_subscriber() {
         let mut recorder = StreamingRecorder::new().expect("Failed to create recorder");
         recorder.set_event_sink(Some(Arc::new(
