@@ -13,8 +13,7 @@ use std::process::Command;
 /// ordinary edits do not force a rebuild of the whole crate.
 fn main() {
     println!("cargo:rerun-if-env-changed=CODESCRIBE_DEVELOPER_SURFACE");
-    let developer =
-        std::env::var("CODESCRIBE_DEVELOPER_SURFACE").is_ok_and(|value| value == "1");
+    let developer = std::env::var("CODESCRIBE_DEVELOPER_SURFACE").is_ok_and(|value| value == "1");
     println!(
         "cargo:rustc-env=CODESCRIBE_DEVELOPER_SURFACE={}",
         u8::from(developer)
