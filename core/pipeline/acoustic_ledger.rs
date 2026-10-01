@@ -1128,10 +1128,11 @@ impl AcousticLedger {
             );
         }
         let mut slots = self.slots_of(owner).unwrap_or(&[]).to_vec();
-        // A later window cannot correct PCM it did not hear from the left.
-        // Fence before every mutation path, including group refinement and
-        // connected resegmentation; text similarity has no authority here.
+        // Only a pin at the decoded left edge can be clipped by the window.
+        // Protect overlapping words that started before that edge, before
+        // every mutation path; text similarity has no authority here.
         if observation.producer != ObservationProducer::ManualHuman {
+            let jitter = u64::from(self.capture_rate_hz.unwrap_or(16_000)) / 4;
             incoming.retain(|word| {
                 let clipped_sources = slots
                     .iter()
@@ -1141,9 +1142,10 @@ impl AcousticLedger {
                             && words.iter().any(|pin| {
                                 pin.sample_start.max(owner.sample_start) == word.sample_start
                                     && pin.sample_end.min(owner.sample_end) == word.sample_end
-                                    && pin
-                                        .decode_sample_start
-                                        .is_some_and(|start| source.sample_start < start)
+                                    && pin.decode_sample_start.is_some_and(|start| {
+                                        pin.sample_start.abs_diff(start) <= jitter
+                                            && source.sample_start < start
+                                    })
                             })
                     })
                     .cloned()
