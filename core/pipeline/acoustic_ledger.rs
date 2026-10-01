@@ -1141,9 +1141,9 @@ impl AcousticLedger {
                             && words.iter().any(|pin| {
                                 pin.sample_start.max(owner.sample_start) == word.sample_start
                                     && pin.sample_end.min(owner.sample_end) == word.sample_end
-                                    && pin.decode_sample_start.is_some_and(|start| {
-                                        source.sample_start < start
-                                    })
+                                    && pin
+                                        .decode_sample_start
+                                        .is_some_and(|start| source.sample_start < start)
                             })
                     })
                     .cloned()

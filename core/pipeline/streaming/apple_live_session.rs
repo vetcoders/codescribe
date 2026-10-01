@@ -3382,7 +3382,8 @@ impl AppleSealState {
                                         .filter(|other| {
                                             let range = &other.range;
                                             let midpoint = range.sample_start
-                                                + range.sample_end
+                                                + range
+                                                    .sample_end
                                                     .saturating_sub(range.sample_start)
                                                     / 2;
                                             !other.text.trim().is_empty()
@@ -21364,6 +21365,115 @@ mod relay_l1_overlap_admission_tests {
         );
         assert!(text.contains("to dość niesympatyczne"), "{text}");
         let ledger = lane.state.acoustic_ledger.lock().unwrap();
+        assert!(ledger.word_deletions().is_empty());
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    // Same take: generation 13 decoded from inside "niesympatyczne" and offered
+    // "sympatyczne" on the same PCM; the ledger replaced the complete word.
+    #[test]
+    fn integrator_pin_clipped_at_window_start_cannot_replace_a_complete_word() {
+        let session = "integrator-niesympatyczne";
+        let (mut lane, owner, requests) = forensic_lane(session, &[]);
+        let (second_start, _) = shared_window_region(&requests);
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![
+                    word_pin(session, "dość", second_start - 16_000, second_start - 6_000),
+                    word_pin(
+                        session,
+                        "niesympatyczne",
+                        second_start - 6_000,
+                        second_start + 12_000,
+                    ),
+                ],
+            ),
+            12.5,
+        );
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[1],
+                vec![
+                    word_pin(session, "sympatyczne", second_start, second_start + 12_000),
+                    word_pin(
+                        session,
+                        "kiedy",
+                        second_start + 12_000,
+                        second_start + 20_000,
+                    ),
+                ],
+            ),
+            12.5,
+        );
+        let ledger = lane.state.acoustic_ledger.lock().unwrap();
+        let text = ledger.text_of(&owner).unwrap_or_default().to_string();
+        assert!(text.contains("dość niesympatyczne"), "{text}");
+        assert!(
+            !text.split_whitespace().any(|word| word == "sympatyczne"),
+            "{text}"
+        );
+        assert!(
+            ledger
+                .slot_alternatives()
+                .iter()
+                .any(|alternative| alternative.candidate.contains("sympatyczne")),
+            "the clipped hypothesis stays visible as an alternative"
+        );
+        assert!(ledger.word_deletions().is_empty());
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    // Same take: an early, too wide "Dzieją" pin made the later window's
+    // "Bym to powiedział. Nie." a SealedReplay; the words were heard and lost.
+    #[test]
+    fn integrator_wide_early_pin_splits_for_the_words_it_covers() {
+        let session = "integrator-wide-pin";
+        let (mut lane, owner, requests) = forensic_lane(session, &[]);
+        let (base, first_end) = shared_window_region(&requests);
+        // The wide pin ends before the first window's edge, so it is no stub.
+        assert!(base + 15_000 < first_end);
+        record_voiced_spans(
+            &lane,
+            200_000,
+            // Capture energy is measured in 1 000-sample blocks: keep speech
+            // block-aligned so the new pins can cover all of it.
+            &[(base + 1_000, base + 15_000)],
+        );
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![word_pin(session, "Dzieją", base, base + 15_000)],
+            ),
+            12.5,
+        );
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[1],
+                vec![
+                    word_pin(session, "Bym", base + 1_000, base + 3_000),
+                    word_pin(session, "to", base + 3_000, base + 5_000),
+                    word_pin(session, "powiedział.", base + 5_000, base + 9_000),
+                    word_pin(session, "Nie.", base + 9_000, base + 11_000),
+                    word_pin(session, "Dzieją", base + 11_000, base + 15_000),
+                ],
+            ),
+            12.5,
+        );
+        let ledger = lane.state.acoustic_ledger.lock().unwrap();
+        let text = ledger.text_of(&owner).unwrap_or_default().to_string();
+        assert!(text.contains("Bym to powiedział. Nie. Dzieją"), "{text}");
+        assert_eq!(
+            text.split_whitespace()
+                .filter(|word| *word == "Dzieją")
+                .count(),
+            1,
+            "{text}"
+        );
         assert!(ledger.word_deletions().is_empty());
         assert_eq!(ledger.conservation().residue(), 0);
     }

@@ -380,8 +380,8 @@ impl AcousticLedger {
                 && sources[0].text.split_whitespace().count() == 1
                 && outputs.len() > 1
                 && outputs.iter().all(|word| {
-                    let midpoint = word.sample_start
-                        + word.sample_end.saturating_sub(word.sample_start) / 2;
+                    let midpoint =
+                        word.sample_start + word.sample_end.saturating_sub(word.sample_start) / 2;
                     midpoint >= sources[0].sample_start && midpoint < sources[0].sample_end
                 });
             if replayed_word && !held_pin_split {
@@ -1973,7 +1973,9 @@ mod slot_ops_tests {
         let alternative = ledger.slot_alternatives().last().unwrap();
         assert_eq!(alternative.sources, before);
         assert_eq!(alternative.observation, candidate);
-        assert_eq!(alternative.reason, "ambiguous_pcm_target");
+        // Resegmentation now names why the compression was refused: the held
+        // "Iwo Iwo plan" is not accounted for by one "Iwo".
+        assert_eq!(alternative.reason, "resegmentation_unaccounted_speech");
     }
 
     #[test]
@@ -1987,7 +1989,9 @@ mod slot_ops_tests {
             ],
         );
         assert_eq!(ledger.text_of(&owner()), Some("naprawdę"));
-        assert_eq!(ledger.slot_alternatives().len(), 2);
+        // The refused partition is kept whole, as one candidate for the picker.
+        assert_eq!(ledger.slot_alternatives().len(), 1);
+        assert_eq!(ledger.slot_alternatives()[0].candidate, "na prawdę");
     }
 
     #[test]
