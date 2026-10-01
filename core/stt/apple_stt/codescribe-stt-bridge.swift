@@ -45,12 +45,15 @@ struct BridgeSegment: Codable {
     /// `SFTranscriptionSegment.confidence` (0…1) — populated on finals in the
     /// streaming path (0 on partials, per Apple semantics). Absent elsewhere.
     let confidence: Double?
+    /// Window placement is an acoustic bound, never a word timestamp.
+    let timingPrecision: String?
 
-    init(text: String, startTs: Double, endTs: Double, confidence: Double? = nil) {
+    init(text: String, startTs: Double, endTs: Double, confidence: Double? = nil, timingPrecision: String? = nil) {
         self.text = text
         self.startTs = startTs
         self.endTs = endTs
         self.confidence = confidence
+        self.timingPrecision = timingPrecision
     }
 }
 
@@ -285,11 +288,6 @@ private func handle(request: BridgeRequest) async throws -> BridgeResponse {
         }
         let transcription = try await transcribe(
             audioPath: audioPath, locale: locale, deadlinePolicy: deadlinePolicy)
-        if deadlinePolicy == .wholeFile {
-            let file = try AVAudioFile(forReading: URL(fileURLWithPath: audioPath))
-            let seconds = Double(file.length) / max(file.processingFormat.sampleRate, 1.0)
-            try requireCompleteAppleFile(transcription, audioSeconds: seconds)
-        }
         return BridgeResponse(
             ok: true,
             status: "ok",
@@ -1541,7 +1539,7 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
         return frozen
     }
 
-    fileprivate func snapshotPayload() -> TranscriptionPayload? {
+    fileprivate func snapshotPayload(preserveUntimed: Bool = false) -> TranscriptionPayload? {
         lock.lock()
         defer { lock.unlock() }
         var parts = finals
@@ -1556,7 +1554,7 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
         // Return payload even when empty so callers can treat silence honestly.
         return TranscriptionPayload(
             text: text,
-            segments: normalizeSegments(segs),
+            segments: preserveUntimed ? segs : normalizeSegments(segs),
             backend: .sfSpeechRecognizer
         )
     }
@@ -1623,48 +1621,6 @@ private func runPhraseRestartVectorSelfTest() -> Int32 {
     } catch {
         fputs("phrase_restart_self_test fixture_error=\(error)\n", stderr)
         return 2
-    }
-}
-
-/// File oracle admission is deliberately conservative: without PCM speech bounds,
-/// an uncovered interval may be silence OR lost speech. Never certify it as complete.
-/// The half-second tolerance accommodates word-boundary timestamps, not task deadlines.
-private func requireCompleteAppleFile(
-    _ payload: TranscriptionPayload, audioSeconds: Double, processedSeconds: Double? = nil,
-    phraseCounts: String? = nil
-) throws {
-    let tolerance = 0.5
-    let segments = payload.segments.sorted { $0.startTs < $1.startTs }
-    var cursor = 0.0
-    var gaps: [String] = []
-    var invalid = false
-    for segment in segments {
-        guard segment.startTs.isFinite, segment.endTs.isFinite,
-            segment.startTs >= 0, segment.endTs > segment.startTs,
-            segment.endTs <= audioSeconds + tolerance else {
-            invalid = true
-            continue
-        }
-        if segment.startTs - cursor > tolerance {
-            gaps.append("\(cursor)..\(segment.startTs)")
-        }
-        cursor = max(cursor, segment.endTs)
-    }
-    if audioSeconds - cursor > tolerance {
-        gaps.append("\(cursor)..\(audioSeconds)")
-    }
-    // SF passes zero until it reports progress; analyzer callers verify file ranges here.
-    let processingIncomplete = processedSeconds.map {
-        !$0.isFinite || $0 < 0 || $0 + 0.05 < audioSeconds
-    } ?? false
-    if !audioSeconds.isFinite || audioSeconds <= 0 || invalid || segments.isEmpty
-        || payload.text.isEmpty || !gaps.isEmpty || processingIncomplete {
-        throw BridgeError.runtime(
-            "recognition_incomplete "
-                + appleFileCoverageDiagnostic(
-                    payload, audioSeconds: audioSeconds, processedSeconds: processedSeconds,
-                    phraseCounts: phraseCounts)
-                + " uncovered_ranges_seconds=[\(gaps.joined(separator: ","))] invalid_segments=\(invalid)")
     }
 }
 
@@ -1871,8 +1827,23 @@ final class SfSpeechFileRecognitionDelegate: NSObject, SFSpeechRecognitionTaskDe
         defer { progressLock.unlock() }
         // One assembly function for URL, buffer and stream; copy its payload
         // and telemetry under the same lock before any terminal error is built.
-        let payload = accumulator.snapshotPayload()
+        let assembled = accumulator.snapshotPayload(preserveUntimed: true)
             ?? TranscriptionPayload(text: "", segments: [], backend: .sfSpeechRecognizer)
+        // Hypotheses can have 0..0 timestamps. Preserve their physical window
+        // without distributing invented times over words or normalizing them away.
+        var placed = assembled.segments.map { segment in
+            if segment.endTs <= segment.startTs {
+                return BridgeSegment(text: segment.text, startTs: 0, endTs: audioSeconds,
+                    timingPrecision: "window")
+            }
+            return segment
+        }
+        if placed.isEmpty && !assembled.text.isEmpty {
+            placed = [BridgeSegment(text: assembled.text, startTs: 0, endTs: audioSeconds,
+                timingPrecision: "window")]
+        }
+        let payload = TranscriptionPayload(text: assembled.text, segments: placed,
+            backend: .sfSpeechRecognizer)
         let counts = "phrase_restarts=\(frozenPhraseCount), recognition_finals=\(finalResultCount)"
         let diagnostic = appleFileCoverageDiagnostic(
             payload, audioSeconds: audioSeconds, processedSeconds: processedSeconds,
@@ -1886,15 +1857,9 @@ final class SfSpeechFileRecognitionDelegate: NSObject, SFSpeechRecognitionTaskDe
         timeout.cancel()
         let snapshot = snapshotForTerminal(outcome: successfully ? "task_success" : "task_failure")
         if successfully {
-            do {
-                try requireCompleteAppleFile(
-                    snapshot.payload, audioSeconds: audioSeconds, processedSeconds: snapshot.processed,
-                    phraseCounts: snapshot.phraseCounts)
-                continuation.resume(returning: snapshot.payload)
-            } catch {
-                fputs("ERROR apple_file: \(error)\n", stderr)
-                continuation.resume(throwing: error)
-            }
+            // Rust's Silero arbiter owns speech-window admission. A successful
+            // producer task returns its description, including an empty one.
+            continuation.resume(returning: snapshot.payload)
         } else {
             continuation.resume(throwing: BridgeError.runtime(
                 "sf_speech: \(task.error?.localizedDescription ?? "recognition task failed") "

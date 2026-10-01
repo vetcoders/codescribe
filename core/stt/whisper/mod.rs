@@ -41,6 +41,8 @@ pub mod timing;
 /// Cross-attention word pins for the L1 tail path.
 mod word_pins;
 
+pub(crate) use engine::silence_spans_from_vad_probabilities;
+
 // Public API exports
 pub use engine::LocalWhisperEngine; // Kept for advanced usage if needed
 pub use params::DecodingParams; // Kept for params config if needed
