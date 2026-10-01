@@ -460,7 +460,7 @@ fi
 
 # Install/release lanes only (`make install-app`, scripts/build-dmg.sh set
 # CODESCRIBE_INSTALL_LANE=1): the installed app refuses a second generation.
-# Dev builds and the XCTest host (same target, same bundle id) stay
+# Dev builds and the XCTest host (same target, distinct Debug bundle id) stay
 # launchable while an installed build runs. Stamped here, before stage 7,
 # because an Info.plist edit after codesign breaks the seal.
 INSTALL_LANE="${CODESCRIBE_INSTALL_LANE:-0}"
@@ -470,9 +470,9 @@ fi
 
 # Ad-hoc sign the finished bundle with a STABLE identifier so macOS TCC
 # (Accessibility / Input Monitoring) keeps its grant across rebuilds instead of
-# re-prompting every time an unsigned binary's cdhash changes — the same
-# identifier make install-app uses. `--deep` also covers the just-embedded dylib.
-BUNDLE_ID="${CODESCRIBE_BUNDLE_ID:-com.vetcoders.codescribe}"
+# re-prompting every time an unsigned binary's cdhash changes. Use the built
+# plist identity for this configuration; `--deep` covers the embedded dylib.
+BUNDLE_ID="${CODESCRIBE_BUNDLE_ID:-$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")}"
 # Prefer a REAL signing identity (Developer ID / Apple Development). Its designated
 # requirement is certificate-based, so a TCC grant (Accessibility / Input
 # Monitoring) survives rebuilds. Ad-hoc (`--sign -`) is cdhash-based, so the grant
