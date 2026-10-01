@@ -68,6 +68,8 @@ pub struct TrailWordPin {
     pub surface_rewritten: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decode_sample_start: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decode_sample_end: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -414,6 +416,7 @@ fn saved_pins(pins: &[WordPin]) -> Vec<TrailWordPin> {
             confidence: pin.confidence,
             surface_rewritten: pin.surface_rewritten,
             decode_sample_start: pin.decode_sample_start,
+            decode_sample_end: pin.decode_sample_end,
         })
         .collect()
 }
@@ -428,6 +431,7 @@ fn word_pins(slots: &[TrailWordPin]) -> Vec<WordPin> {
             confidence: slot.confidence,
             surface_rewritten: slot.surface_rewritten,
             decode_sample_start: slot.decode_sample_start,
+            decode_sample_end: slot.decode_sample_end,
         })
         .collect()
 }

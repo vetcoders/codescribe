@@ -1798,7 +1798,7 @@ final class SfSpeechFileRecognitionDelegate: NSObject, SFSpeechRecognitionTaskDe
     private let progressLock = NSLock()
     private var processedSeconds: Double = 0
 
-    init(
+    fileprivate init(
         gate: SfSpeechSettleGate, timeout: SfSpeechTimeoutCancel,
         continuation: CheckedContinuation<TranscriptionPayload, Error>,
         audioSeconds: Double, deadlineSeconds: Double, recognizer: SFSpeechRecognizer

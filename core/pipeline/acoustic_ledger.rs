@@ -530,6 +530,8 @@ pub struct WordPin {
     /// Actual left fence of the PCM decoded for this candidate, before routing.
     /// Missing evidence does not imply that the window began at the word pin.
     pub decode_sample_start: Option<u64>,
+    /// Actual right fence; together the fences prove a complete decoded word.
+    pub decode_sample_end: Option<u64>,
 }
 
 impl WordPin {
@@ -542,6 +544,7 @@ impl WordPin {
             confidence: None,
             surface_rewritten: false,
             decode_sample_start: None,
+            decode_sample_end: None,
         }
     }
 
@@ -560,6 +563,12 @@ impl WordPin {
 
     pub fn with_decode_start(mut self, sample_start: u64) -> Self {
         self.decode_sample_start = Some(sample_start);
+        self
+    }
+
+    pub fn with_decode_window(mut self, sample_start: u64, sample_end: u64) -> Self {
+        self.decode_sample_start = Some(sample_start);
+        self.decode_sample_end = Some(sample_end);
         self
     }
 }
@@ -751,6 +760,8 @@ pub struct AcousticLedger {
     word_deletions: Vec<WordDeletionReceipt>,
     /// Provenance only: label-wide slots do not prove individual word pins.
     word_pin_observations: std::collections::HashSet<ObservationIdentity>,
+    /// Exact word spans decoded strictly inside both window fences.
+    complete_decoded_words: std::collections::HashMap<ObservationIdentity, Vec<(u64, u64)>>,
     answered: Vec<ObservationIdentity>,
     kept_visible: usize,
     evidence: BTreeMap<OccurrenceIdentity, AcousticSerial>,
@@ -1127,24 +1138,53 @@ impl AcousticLedger {
                 self,
             );
         }
+        let complete_words = words
+            .iter()
+            .filter(|pin| {
+                pin.decode_sample_start
+                    .is_some_and(|start| start < pin.sample_start)
+                    && pin
+                        .decode_sample_end
+                        .is_some_and(|end| pin.sample_end < end)
+                    && pin.sample_start >= owner.sample_start
+                    && pin.sample_end <= owner.sample_end
+                    && pin.sample_start < pin.sample_end
+                    && pin.text.split_whitespace().count() == 1
+            })
+            .map(|pin| (pin.sample_start, pin.sample_end))
+            .collect::<Vec<_>>();
+        if !complete_words.is_empty() {
+            self.complete_decoded_words
+                .insert(observation.clone(), complete_words);
+        }
         let mut slots = self.slots_of(owner).unwrap_or(&[]).to_vec();
-        // Only a pin at the decoded left edge can be clipped by the window.
-        // Protect overlapping words that started before that edge, before
-        // every mutation path; text similarity has no authority here.
+        // A left-edge candidate cannot replace a complete word decoded across
+        // that edge by an earlier window. Coarse labels and edge stubs supply
+        // no such evidence; their candidates follow ordinary admission.
         if observation.producer != ObservationProducer::ManualHuman {
             let jitter = u64::from(self.capture_rate_hz.unwrap_or(16_000)) / 4;
             incoming.retain(|word| {
                 let clipped_sources = slots
                     .iter()
                     .filter(|source| {
-                        source.sample_start < word.sample_end
+                        self.word_pin_observations.contains(&source.observation)
+                            && source.observation != *observation
+                            && self
+                                .complete_decoded_words
+                                .get(&source.observation)
+                                .is_some_and(|ranges| {
+                                    ranges.contains(&(source.sample_start, source.sample_end))
+                                })
+                            && source.sample_start < word.sample_end
                             && word.sample_start < source.sample_end
                             && words.iter().any(|pin| {
                                 pin.sample_start.max(owner.sample_start) == word.sample_start
                                     && pin.sample_end.min(owner.sample_end) == word.sample_end
                                     && pin.decode_sample_start.is_some_and(|start| {
-                                        pin.sample_start.abs_diff(start) <= jitter
+                                        pin.sample_start >= start
+                                            && pin.sample_start - start <= jitter
                                             && source.sample_start < start
+                                            && start < source.sample_end
                                     })
                             })
                     })
