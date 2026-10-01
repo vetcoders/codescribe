@@ -28,6 +28,7 @@ expect() {
 
 expect accept '[claude/vc-implement] fix(bridge): schema'
 expect accept '[codex/vc-ownership] release: embed models by default'
+expect accept '[copilot/vc-implement] fix(bus): bounded history'
 expect accept '[ok-commit] fix: overlay crash'
 expect accept "Merge branch 'feature' into develop"
 expect accept 'Squashed commit of the following:'
