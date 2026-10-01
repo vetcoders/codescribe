@@ -17,6 +17,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+#[cfg(not(any(test, feature = "test-isolation")))]
 use directories::BaseDirs;
 
 /// Shared filename used by the app runtime and `install-if-idle`.
@@ -40,18 +41,26 @@ pub struct AgentTurnLease {
 ///
 /// The app acquires this before dotenv bootstrap, so allowing
 /// `CODESCRIBE_DATA_DIR` to relocate it would let the installer and runtime
-/// lock different files.
+/// lock different files. Test builds resolve under the per-process temporary
+/// config root instead, so tests never touch the account's real lock files.
 pub fn install_interlock_path() -> PathBuf {
     if let Some(host) = super::runtime_host::selected() {
         return host.data_directory.join(INSTALL_INTERLOCK_FILE_NAME);
     }
-    BaseDirs::new()
-        .map(|dirs| {
-            dirs.home_dir()
-                .join(".codescribe")
-                .join(INSTALL_INTERLOCK_FILE_NAME)
-        })
-        .unwrap_or_else(|| PathBuf::from(".codescribe").join(INSTALL_INTERLOCK_FILE_NAME))
+    #[cfg(any(test, feature = "test-isolation"))]
+    {
+        crate::test_isolation::test_process_config_root().join(INSTALL_INTERLOCK_FILE_NAME)
+    }
+    #[cfg(not(any(test, feature = "test-isolation")))]
+    {
+        BaseDirs::new()
+            .map(|dirs| {
+                dirs.home_dir()
+                    .join(".codescribe")
+                    .join(INSTALL_INTERLOCK_FILE_NAME)
+            })
+            .unwrap_or_else(|| PathBuf::from(".codescribe").join(INSTALL_INTERLOCK_FILE_NAME))
+    }
 }
 
 /// Resolve the agent-turn lease next to the runtime interlock, with the same

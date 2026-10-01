@@ -219,18 +219,44 @@ mod tests {
         assert_eq!(config.sound_volume, 0.0);
     }
 
-    /// `config_dir` respects `CODESCRIBE_DATA_DIR` or falls under `.codescribe`.
+    /// `config_dir` respects `CODESCRIBE_DATA_DIR`; in test builds it otherwise
+    /// defaults to the per-process temporary root, never the account's real
+    /// `$HOME/.codescribe` — even when `HOME` points at a hostile directory.
     #[test]
     #[serial]
     fn test_config_dir() {
-        // #[serial]: reads the global CODESCRIBE_DATA_DIR env var, which the
-        // setup_isolated_data_dir() tests mutate — without serialization this races
-        // and flakes (config_dir() vs env::var() observing different values).
+        // #[serial]: reads the global CODESCRIBE_DATA_DIR/HOME env vars, which
+        // other tests mutate — without serialization this races and flakes.
+        let previous_home = std::env::var_os("HOME");
+        let hostile = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(hostile.path().join(".codescribe")).unwrap();
+        std::fs::write(
+            hostile.path().join(".codescribe/settings.json"),
+            r#"{"schema_version":3}"#,
+        )
+        .unwrap();
+        // SAFETY: #[serial]; restored before the test returns.
+        unsafe { std::env::set_var("HOME", hostile.path()) };
+
         let dir = Config::config_dir();
+
+        // SAFETY: same serialized scope as the set above.
+        unsafe {
+            match &previous_home {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+
         if let Ok(custom) = std::env::var("CODESCRIBE_DATA_DIR") {
             assert_eq!(dir, std::path::PathBuf::from(custom));
         } else {
-            assert!(dir.to_string_lossy().contains(".codescribe"));
+            assert_eq!(dir, crate::test_isolation::test_process_config_root());
+            let home = crate::test_isolation::account_home().expect("account home");
+            assert!(
+                !dir.starts_with(&home),
+                "test default config_dir must not resolve under the account home"
+            );
         }
     }
 
