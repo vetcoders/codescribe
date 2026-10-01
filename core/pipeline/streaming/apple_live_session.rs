@@ -554,6 +554,7 @@ enum RefinementFailure {
     InvalidIdentity,
     NoLabel,
     StopDeadline,
+    NotScheduled,
     QualificationRefused,
 }
 
@@ -566,6 +567,7 @@ impl RefinementFailure {
             Self::InvalidIdentity => "live_refinement_invalid_identity",
             Self::NoLabel => "live_refinement_no_label",
             Self::StopDeadline => "live_refinement_stop_deadline",
+            Self::NotScheduled => "live_refinement_not_scheduled",
             Self::QualificationRefused => "live_refinement_qualification_refused",
         }
     }
@@ -1065,6 +1067,12 @@ pub(crate) async fn apple_stream_transcription_session(
     // Layered off → the worker gets no sender at all, so the lane stays empty
     // and its branch never yields: zero jobs, zero behaviour change.
     let worker_tp_tx = tail_patch_on.then_some(tp_tx);
+    if capture_turn == CaptureTurnIntent::AgentChannel && !tail_patch_on {
+        event_sink.on_event(&EngineEvent::Warning {
+            code: "agent_raw_whisper_disabled".into(),
+            message: "Whisper lane disabled for this take; Raw is not Whisper-refined.".into(),
+        });
+    }
 
     // Formatting consumes only facts frozen into this exact per-take snapshot.
     // Arming the transport does not schedule a ledger observer; a concrete
@@ -1082,7 +1090,7 @@ pub(crate) async fn apple_stream_transcription_session(
     );
     if !capture_turn.schedules_live_formatting() {
         info!(
-            "One-turn capture: the live formatter lane stays unarmed for this take, so no \
+            "Capture intent: the live formatter lane stays unarmed for this take, so no \
              silence-delimited fragment can open a paid provider slot"
         );
     }
@@ -1160,6 +1168,7 @@ pub(crate) async fn apple_stream_transcription_session(
                 runtime_settings,
                 acoustic_ledger,
                 settings_digest,
+                capture_turn,
                 utterance_silence_sec,
                 terminal_audio,
                 last_window_closed: worker_close_tx,
@@ -1680,6 +1689,7 @@ struct PendingAppleSeal {
 }
 
 struct AppleSealState {
+    capture_turn: CaptureTurnIntent,
     session_id: String,
     capture_epoch: u64,
     sample_rate: u32,
@@ -2099,6 +2109,7 @@ impl AppleSealState {
         let session_id_for_energy = session_id.clone();
         let speech_progress = SpeechProgress::new(session_id.clone(), capture_epoch, sample_rate);
         let state = Self {
+            capture_turn: CaptureTurnIntent::HandsFree,
             session_id,
             capture_epoch,
             sample_rate,
@@ -2692,8 +2703,34 @@ impl AppleSealState {
         if !ledger.is_qualified(&occurrence) || ledger.is_sealed(&occurrence) {
             return false;
         }
+        if self.capture_turn == CaptureTurnIntent::AgentChannel
+            && (self.layer1_coalesce.holds_occurrence(&occurrence)
+                || self.refinement_pending.iter().any(|job| {
+                    job.member_occurrences
+                        .iter()
+                        .any(|(_, owner)| owner == &occurrence)
+                })
+                || self.refinement_submitted.values().any(|job| {
+                    job.member_occurrences
+                        .iter()
+                        .any(|(_, owner)| owner == &occurrence)
+                })
+                || ledger
+                    .layer_trail_for(&occurrence)
+                    .any(|entry| entry.producer() == LedgerObservationProducer::Whisper))
+        {
+            return false;
+        }
         let scheduled = if ledger.frontier_of(&occurrence).is_none() {
             ledger.schedule_frontier(occurrence.clone(), [LedgerObservationProducer::Whisper]);
+            true
+        } else if self.capture_turn == CaptureTurnIntent::AgentChannel
+            && ledger.frontier_of(&occurrence).is_some_and(|frontier| {
+                frontier
+                    .open_producers()
+                    .contains(&LedgerObservationProducer::Whisper)
+            })
+        {
             true
         } else {
             ledger.schedule_observer(occurrence.clone(), LedgerObservationProducer::Whisper)
@@ -2930,7 +2967,10 @@ impl AppleSealState {
                 occurrence.sample_end,
             ),
         });
-        if matches!(reason, RefinementFailure::StopDeadline) {
+        if matches!(
+            reason,
+            RefinementFailure::StopDeadline | RefinementFailure::NotScheduled
+        ) {
             self.return_whisper_without_label(ev_tx, id, occurrence);
             self.emit_pending_seal(ev_tx, id);
         } else {
@@ -3554,6 +3594,14 @@ impl AppleSealState {
                     },
                 );
                 self.refinement_receipt(occurrence, RefinementFailure::NoLabel.code());
+                if self.capture_turn == CaptureTurnIntent::AgentChannel {
+                    let _ = ev_tx.send(EngineEvent::Warning {
+                        code: RefinementFailure::NoLabel.code().into(),
+                        message:
+                            "Whisper returned no accepted label; refinement_not_completed=true"
+                                .into(),
+                    });
+                }
             }
         }
         // A failed decode advances the same geometric horizon as a successful
@@ -3686,6 +3734,11 @@ impl AppleSealState {
         sample_start: u64,
     ) {
         self.admission_horizon = self.admission_horizon.max(sample_start);
+        // A held coalescer window is future Whisper work even before enqueue.
+        if self.capture_turn == CaptureTurnIntent::AgentChannel && !self.layer1_coalesce.is_empty()
+        {
+            return;
+        }
         let owners = self.word_owners();
         for (id, owner) in owners {
             if owner.sample_end > self.admission_horizon {
@@ -3713,6 +3766,21 @@ impl AppleSealState {
                 });
             if !is_open {
                 continue;
+            }
+            if self.capture_turn == CaptureTurnIntent::AgentChannel {
+                let has_return = self
+                    .acoustic_ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .layer_trail_for(&owner)
+                    .any(|entry| entry.producer() == LedgerObservationProducer::Whisper);
+                if !has_return {
+                    if sample_start != u64::MAX {
+                        continue;
+                    }
+                    self.fail_refinement(ev_tx, id, &owner, RefinementFailure::NotScheduled);
+                    continue;
+                }
             }
             self.refinement_receipt(&owner, "admission_horizon_closed");
             self.return_whisper_without_label(ev_tx, id, &owner);
@@ -3867,11 +3935,13 @@ impl AppleSealState {
                 .iter()
                 .find_map(|(id, pending)| (pending.occurrence == occurrence).then_some(*id))
                 .unwrap_or(0);
-            if self.refinement_submitted.values().any(|job| {
-                job.member_occurrences
-                    .iter()
-                    .any(|(_, member)| member == &occurrence)
-            }) {
+            if self.capture_turn == CaptureTurnIntent::AgentChannel
+                || self.refinement_submitted.values().any(|job| {
+                    job.member_occurrences
+                        .iter()
+                        .any(|(_, member)| member == &occurrence)
+                })
+            {
                 self.fail_refinement(ev_tx, id, &occurrence, RefinementFailure::StopDeadline);
             }
         }
@@ -5199,6 +5269,13 @@ fn admit_ledger_label<'a>(
             ];
             if state.cloud_commit_tx.is_some() {
                 producers.push(LedgerObservationProducer::CloudLive);
+            }
+            // Reserve the expected acoustic layer before Apple/Lexicon can close
+            // the frontier. A coalescer with no submitted job still owes Whisper.
+            if state.capture_turn == CaptureTurnIntent::AgentChannel
+                && (state.tail_patch.is_some() || state.refinement_lane_lost)
+            {
+                producers.push(LedgerObservationProducer::Whisper);
             }
             producers
         };
@@ -6871,6 +6948,7 @@ fn drain_cloud_stop_finals(
 
 /// Everything the blocking worker needs that is not a channel.
 struct AppleWorkerConfig<'a> {
+    capture_turn: CaptureTurnIntent,
     consultation: Option<LiveConsultationCapture>,
     local_execution: Arc<LocalExecutionOwner>,
     sample_rate: u32,
@@ -6908,6 +6986,7 @@ fn apple_stream_worker(
     config: AppleWorkerConfig<'_>,
 ) -> anyhow::Result<AppleStreamOutcome> {
     let AppleWorkerConfig {
+        capture_turn,
         mut consultation,
         local_execution,
         sample_rate,
@@ -6986,6 +7065,7 @@ fn apple_stream_worker(
         ),
     };
     state.bind_capture_energy(capture_energy);
+    state.capture_turn = capture_turn;
     state.formatter = formatter;
     let (cloud_commit, cloud_notice) = cloud.map(|lane| (lane.commit, lane.notice)).unzip();
     state.cloud_commit_tx = cloud_commit;
@@ -16601,6 +16681,17 @@ mod composer_turn_formatter_arming_tests {
     fn unarmed_live_formatting_never_resolves_credentials() {
         for (intent, enabled, policy) in [
             (
+                CaptureTurnIntent::AgentChannel,
+                true,
+                FormattingPolicy::Correction,
+            ),
+            (
+                CaptureTurnIntent::AgentChannel,
+                true,
+                FormattingPolicy::Smart,
+            ),
+            (CaptureTurnIntent::AgentChannel, true, FormattingPolicy::Max),
+            (
                 CaptureTurnIntent::SingleTurn,
                 true,
                 FormattingPolicy::Correction,
@@ -16823,6 +16914,165 @@ mod live_refinement_admission_tests {
             },
         });
         completion
+    }
+
+    #[test]
+    fn agent_channel_expected_whisper_blocks_frontier_before_enqueue() {
+        let (mut state, events, mut receiver, _requests) = fixture(1);
+        state.capture_turn = CaptureTurnIntent::AgentChannel;
+        let occurrence = OccurrenceIdentity::new("live-admission", 7, 0, 400);
+        assert!(qualify_owned_occurrence(&state, &occurrence));
+        for producer in [
+            LedgerObservationProducer::Apple,
+            LedgerObservationProducer::Lexicon,
+        ] {
+            let observation = state.acoustic_ledger.lock().unwrap().next_word_observation(
+                producer,
+                1,
+                &occurrence,
+            );
+            assert!(
+                admit_ledger_label(
+                    &mut state,
+                    &events,
+                    LabelAdmission {
+                        observation,
+                        label: "Apple words",
+                        energy: EnergyAdmission::RequireExistingQualification,
+                    }
+                )
+                .is_some()
+            );
+        }
+        assert!(state.refinement_submitted.is_empty());
+        assert!(state.refinement_pending.is_empty());
+        assert!(state.layer1_coalesce.is_empty());
+        state.close_admission_horizon(&events, occurrence.sample_end);
+        let mut ledger = state.acoustic_ledger.lock().unwrap();
+        assert_eq!(
+            ledger.frontier_of(&occurrence).unwrap().open_producers(),
+            vec![LedgerObservationProducer::Whisper]
+        );
+        assert_eq!(ledger.seal(&occurrence), Err(SealRefusal::FrontierOpen));
+        assert!(
+            !std::iter::from_fn(|| receiver.try_recv().ok())
+                .any(|event| matches!(event, EngineEvent::LedgerSeal { .. }))
+        );
+    }
+
+    #[test]
+    fn agent_channel_raw_waits_for_whisper_correction_and_omission() {
+        for (apple, whisper) in [
+            ("weryfikowałeś", "zweryfikowałeś yyy [śmiech]"),
+            ("czy weryfikowałeś", "czy plan weryfikowałeś"),
+        ] {
+            let (mut state, events, mut receiver, mut requests) = fixture(1);
+            state.capture_turn = CaptureTurnIntent::AgentChannel;
+            reconcile_silero_ledger(
+                &mut state,
+                &events,
+                &closed(1),
+                &[TranscriptSegment {
+                    confidence: None,
+                    text: apple.into(),
+                    start_ts: 0.0,
+                    end_ts: 0.4,
+                }],
+            );
+            let occurrence = OccurrenceIdentity::new("live-admission", 7, 0, 400);
+            {
+                let ledger = state.acoustic_ledger.lock().unwrap();
+                assert!(!ledger.is_sealed(&occurrence));
+                assert!(
+                    ledger
+                        .frontier_of(&occurrence)
+                        .unwrap()
+                        .open_producers()
+                        .contains(&LedgerObservationProducer::Whisper)
+                );
+                assert_eq!(ledger.text_of(&occurrence), Some(apple));
+            }
+            assert!(
+                state.refinement_submitted.is_empty(),
+                "no submitted job is not settlement"
+            );
+            assert!(
+                !std::iter::from_fn(|| receiver.try_recv().ok()).any(|event| matches!(
+                    event,
+                    EngineEvent::UtteranceFinal { .. } | EngineEvent::LedgerSeal { .. }
+                ))
+            );
+            state.flush_layer1_coalesce(&events);
+            let request = requests.try_recv().unwrap();
+            let mut completion = labelled_completion(&request);
+            let payload = completion.payload.as_mut().unwrap();
+            payload.text = whisper.into();
+            payload.segments[0].text = whisper.into();
+            state.complete_whisper_window(&events, completion, 20.0);
+            state.close_admission_horizon(&events, u64::MAX);
+            let ledger = state.acoustic_ledger.lock().unwrap();
+            assert_eq!(ledger.text_of(&occurrence), Some(whisper));
+            assert!(ledger.is_sealed(&occurrence));
+            assert!(
+                ledger
+                    .layer_trail()
+                    .iter()
+                    .all(|decision| decision.producer() != LedgerObservationProducer::Formatter)
+            );
+            let finals = std::iter::from_fn(|| receiver.try_recv().ok())
+                .filter_map(|event| match event {
+                    EngineEvent::UtteranceFinal { text, .. } => Some(text),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(finals, vec![whisper.to_string()]);
+        }
+    }
+
+    #[test]
+    fn agent_channel_timeout_invalidates_submissions_and_keeps_explicit_status() {
+        let (mut state, events, mut receiver, mut requests) = fixture(1);
+        state.capture_turn = CaptureTurnIntent::AgentChannel;
+        reconcile_silero_ledger(
+            &mut state,
+            &events,
+            &closed(1),
+            &[TranscriptSegment {
+                confidence: None,
+                text: "Apple words".into(),
+                start_ts: 0.0,
+                end_ts: 0.4,
+            }],
+        );
+        state.flush_layer1_coalesce(&events);
+        let request = requests.try_recv().unwrap();
+        let deadline = state.refinement_clock + TAIL_PATCH_CLOSURE_TIMEOUT;
+        assert!(!state.stop_refinements_tick(&events, deadline, deadline));
+        let warnings = std::iter::from_fn(|| receiver.try_recv().ok())
+            .filter_map(|event| match event {
+                EngineEvent::Warning { code, message } => Some((code, message)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(warnings.iter().any(|(code, message)| code
+            == RefinementFailure::StopDeadline.code()
+            && message.contains("refinement_not_completed=true")));
+        assert!(state.refinement_submitted.is_empty());
+        assert!(state.refinement_pending.is_empty());
+        let occurrence = request.member_occurrences[0].1.clone();
+        let before = state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .text_of(&occurrence)
+            .unwrap()
+            .to_string();
+        state.complete_whisper_window(&events, labelled_completion(&request), 20.0);
+        assert_eq!(
+            state.acoustic_ledger.lock().unwrap().text_of(&occurrence),
+            Some(before.as_str())
+        );
+        assert!(TAIL_PATCH_CLOSURE_TIMEOUT > Duration::from_secs(2));
     }
 
     /// Synthetic boundary-driven integration witness, not a microphone proof.

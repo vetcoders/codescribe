@@ -137,6 +137,7 @@ pub(crate) struct OpenAgentChannel {
     pub bus: Option<PathBuf>,
     /// Last non-empty projection, so the archived take carries its words.
     pub last_text: Arc<StdMutex<String>>,
+    pub refinement_warnings: Arc<StdMutex<Vec<String>>>,
 }
 
 /// Open-channel fact for the overlay. W2 exposes it; the overlay paint is separate.
@@ -248,14 +249,28 @@ fn append_seal_receipt(
     bus: &Path,
     reason: ChannelSealReason,
     open: &crate::presentation::agent_ack::ChannelSessionLine<'_>,
+    refinement_warnings: &[String],
 ) -> std::io::Result<()> {
-    let line = crate::presentation::agent_ack::channel_session_line(
+    let mut line = crate::presentation::agent_ack::channel_session_line(
         &crate::presentation::agent_ack::ChannelSessionLine {
             state: "sealed",
             reason: reason.as_str(),
             ..*open
         },
     );
+    line["raw_processing_status"] = serde_json::json!(if reason == ChannelSealReason::Orphan {
+        "not_applicable"
+    } else if refinement_warnings.is_empty() {
+        "settled"
+    } else if refinement_warnings
+        .iter()
+        .all(|code| code == "agent_raw_whisper_disabled")
+    {
+        "whisper_disabled"
+    } else {
+        "refinement_incomplete"
+    });
+    line["refinement_warnings"] = serde_json::json!(refinement_warnings);
     crate::presentation::agent_ack::append_json_line(bus, &line)
 }
 
@@ -389,7 +404,7 @@ fn seal_orphaned_sessions(
             let Some(open) = orphan_open_line(row, live) else {
                 continue;
             };
-            match append_seal_receipt(bus, ChannelSealReason::Orphan, &open) {
+            match append_seal_receipt(bus, ChannelSealReason::Orphan, &open, &[]) {
                 Ok(()) => sealed.push(OrphanSeal {
                     bus: bus.clone(),
                     channel: open.channel.to_string(),
@@ -519,6 +534,7 @@ impl RecordingController {
         let opened_at = SystemTime::now();
         let last_voice_at = Arc::new(StdMutex::new(opened_at));
         let last_text = Arc::new(StdMutex::new(String::new()));
+        let refinement_warnings = Arc::new(StdMutex::new(Vec::new()));
         let mut session_id = None;
         let mut recorder_guard = self.recorder.lock().await;
         let recorder = recorder_guard.as_mut().ok_or_else(|| {
@@ -597,7 +613,8 @@ impl RecordingController {
                             projection.degraded,
                         );
                     }))
-                    .with_sentence_pause_sec(sentence_pause),
+                    .with_sentence_pause_sec(sentence_pause)
+                    .with_refinement_warnings(Arc::clone(&refinement_warnings)),
                 );
                 let sink: Arc<dyn EventSink> = emitter;
                 match recorder
@@ -641,6 +658,7 @@ impl RecordingController {
                 mode,
                 bus: bound.bus,
                 last_text,
+                refinement_warnings,
             },
         );
         drop(recorder_guard);
@@ -726,7 +744,14 @@ impl RecordingController {
             provider_session_id: open.provider_session_id.as_deref(),
         };
         let seal_receipt_bus = open.bus.as_deref().unwrap_or(shared_bus);
-        if let Err(error) = append_seal_receipt(seal_receipt_bus, reason, &opened) {
+        let refinement_warnings = open
+            .refinement_warnings
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        if let Err(error) =
+            append_seal_receipt(seal_receipt_bus, reason, &opened, &refinement_warnings)
+        {
             tracing::warn!(
                 %error,
                 digit,
@@ -1873,6 +1898,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn channel_seal_records_whisper_timeout_and_disabled_status() {
+        for (codes, status) in [
+            (
+                vec!["live_refinement_stop_deadline".to_string()],
+                "refinement_incomplete",
+            ),
+            (
+                vec!["agent_raw_whisper_disabled".to_string()],
+                "whisper_disabled",
+            ),
+            (Vec::new(), "settled"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("channel.jsonl");
+            let warnings = Arc::new(StdMutex::new(Vec::new()));
+            let mut emitter =
+                PresentationEmitter::new(Arc::new(TokioMutex::new(String::new())), None, None)
+                    .with_refinement_warnings(warnings.clone());
+            for code in &codes {
+                emitter.on_event(
+                    &codescribe_core::pipeline::contracts::EngineEvent::Warning {
+                        code: code.clone(),
+                        message: "refinement_not_completed=true".into(),
+                    },
+                );
+            }
+            emitter.finish().await;
+            let open = live_open_line("agent-raw-receipt");
+            append_seal_receipt(
+                &path,
+                ChannelSealReason::Hangup,
+                &open,
+                &warnings.lock().unwrap(),
+            )
+            .unwrap();
+            let rows = bus_rows(&path);
+            assert_eq!(rows[0]["raw_processing_status"], status);
+            assert_eq!(rows[0]["refinement_warnings"], serde_json::json!(codes));
+        }
+    }
+
+    #[tokio::test]
     async fn sessions_sealed_by_silence_or_hang_up_get_no_orphan_row() {
         let controller = RecordingController::new_without_keychain();
         let dir = tempfile::tempdir().expect("temp");
@@ -1884,7 +1951,7 @@ mod tests {
         ] {
             let open = live_open_line(session);
             write_open_row(&channel_bus, &open);
-            append_seal_receipt(&channel_bus, reason, &open).expect("seal");
+            append_seal_receipt(&channel_bus, reason, &open, &[]).expect("seal");
         }
         let before = std::fs::read(&channel_bus).expect("bus");
 

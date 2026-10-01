@@ -81,6 +81,13 @@ impl Layer1Coalesce {
         self.pieces.is_empty()
     }
 
+    /// A reserved frontier may already be owned by a not-yet-submitted window.
+    pub(crate) fn holds_occurrence(&self, occurrence: &OccurrenceIdentity) -> bool {
+        self.pieces
+            .iter()
+            .any(|piece| &piece.occurrence == occurrence)
+    }
+
     /// Remember the canvas already sealed before the next piece.
     pub fn set_neighbour(&mut self, neighbour: impl Into<String>) {
         if self.pieces.is_empty() {
