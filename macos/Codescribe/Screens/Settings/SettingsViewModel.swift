@@ -849,6 +849,18 @@ enum SettingsQuickStartAction: String, CaseIterable {
 
 @MainActor
 final class SettingsViewModel: ObservableObject {
+  static let agentBridgeLaunchSynchronizationDidFinish = Notification.Name(
+    "com.vetcoders.codescribe.agent-bridge-launch-synchronization"
+  )
+  // A launch-result projection for Settings instances opened after the task
+  // finishes. Installation ownership remains in the on-disk managed receipt.
+  private static var agentBridgeLaunchNotice: String?
+
+  static func recordAgentBridgeLaunchSynchronization(_ detail: String?) {
+    agentBridgeLaunchNotice = detail
+    NotificationCenter.default.post(name: agentBridgeLaunchSynchronizationDidFinish, object: nil)
+  }
+
   @Published var section: SettingsSection = .creator
   /// Selected tab within `section`, when that section has tabs. Navigation
   /// state only — never persisted. Written exclusively by the `select`
@@ -1070,6 +1082,9 @@ final class SettingsViewModel: ObservableObject {
   /// Passive inspection of the bundled installer; never attaches an agent.
   func refreshCreatorAgentBridge() {
     creatorAgentBridgeStatus = creatorAgentBridge.status()
+    if creatorAgentBridgeNotice == nil {
+      creatorAgentBridgeNotice = Self.agentBridgeLaunchNotice
+    }
   }
 
   /// Add/update one client while preserving other managed clients. Creator
