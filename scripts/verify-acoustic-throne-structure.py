@@ -169,6 +169,15 @@ def run_ast_json(repo: Path, command: list[str], payload: dict[str, Any]) -> dic
     env.update(CARGO_TARGET_DIR=target, CARGO_BUILD_JOBS=str(jobs))
     if incremental is not None:
         env["CARGO_INCREMENTAL"] = str(incremental)
+    # Loctree's call-graph metadata is not input to the neutral syntax proof.
+    # Drop only `structure`; preserve every other field so the Rust parser's
+    # deny_unknown_fields and complete-body checks remain authoritative.
+    if isinstance(payload.get("bodies"), list):
+        payload = {**payload, "bodies": [
+            {key: value for key, value in body.items() if key != "structure"}
+            if isinstance(body, dict) else body
+            for body in payload["bodies"]
+        ]}
     serialized = json.dumps(payload)
     try:
         completed = subprocess.run(command, cwd=repo, env=env, input=serialized,

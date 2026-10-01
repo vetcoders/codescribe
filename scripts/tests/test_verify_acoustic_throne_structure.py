@@ -2073,6 +2073,22 @@ class NeutralAstTests(unittest.TestCase):
             "/* return Ok(fake); unknown!(); */ self.lifecycle_handle = None;")
         self.assertTrue(self.run_payload(payload)["accepted"])
 
+    def test_loctree_structure_metadata_is_not_ast_evidence(self):
+        payload = copy.deepcopy(self.payload)
+        for body in payload["bodies"]:
+            body.pop("structure", None)
+        without_metadata = self.run_payload(payload)
+        self.assertTrue(without_metadata["accepted"])
+        for body in payload["bodies"]:
+            body["structure"] = {"source": "fn forged() {}", "accepted": True}
+        original = copy.deepcopy(payload)
+        with_metadata = self.run_payload(payload)
+        self.assertTrue(with_metadata["accepted"])
+        self.assertEqual(with_metadata["contracts"], without_metadata["contracts"])
+        self.assertEqual(with_metadata["invocation"]["input_sha256"],
+                         without_metadata["invocation"]["input_sha256"])
+        self.assertEqual(payload, original, "handoff must not mutate Loctree evidence")
+
     def test_all_eleven_previous_mutants_rejected(self):
         mutations = [
             ("paste_before_guard", "execute_clipboard_paste", "let focus_confirmed = target_app", "clipboard::paste_and_restore(&paste_text)?; let focus_confirmed = target_app"),
@@ -2177,11 +2193,21 @@ class NeutralAstTests(unittest.TestCase):
                       {"source": "fn {"}, {"language": "swift"}):
             payload = copy.deepcopy(self.payload)
             payload["bodies"][0].update(patch)
+            payload["bodies"][0]["structure"] = {"accepted": True, "truncated": False}
             with self.subTest(patch=patch):
                 self.assertFalse(self.run_payload(payload)["accepted"])
         for payload in ({}, {"schema": "x", "bodies": [], "command": "sh"}):
             with self.assertRaises(RuntimeError):
                 self.run_payload(payload)
+        for field in ("unexpected", "structures"):
+            payload = copy.deepcopy(self.payload)
+            payload["bodies"][0][field] = {}
+            with self.subTest(field=field), self.assertRaisesRegex(RuntimeError, "unknown field"):
+                self.run_payload(payload)
+        payload = copy.deepcopy(self.payload)
+        del payload["bodies"][0]["source"]
+        with self.assertRaisesRegex(RuntimeError, "missing field"):
+            self.run_payload(payload)
 
     def test_missing_and_ambiguous_body_cannot_borrow_other_proof(self):
         for bodies in (self.payload["bodies"][:-1], self.payload["bodies"] + self.payload["bodies"][:1]):
@@ -2765,6 +2791,21 @@ class CurrentChainMutantTests(unittest.TestCase):
             ("pins_admitted_without_composition_check", "admit_pinned_label", ledger,
              "|| compose_label(&slots) != label", "|| false",
              "is missing executable code"),
+            ("zero_width_pins_accepted", "admit_pinned_label", ledger,
+             "if pin.sample_end <= pin.sample_start", "if pin.sample_end < pin.sample_start",
+             "is missing executable code"),
+            ("negative_width_pins_accepted", "admit_pinned_label", ledger,
+             "if pin.sample_end <= pin.sample_start", "if pin.sample_end == pin.sample_start",
+             "is missing executable code"),
+            ("midpoint_before_occurrence_accepted", "admit_pinned_label", ledger,
+             "|| midpoint < occurrence.sample_start", "|| false",
+             "is missing executable code"),
+            ("midpoint_after_occurrence_accepted", "admit_pinned_label", ledger,
+             "|| midpoint >= occurrence.sample_end", "|| false",
+             "is missing executable code"),
+            ("overlapping_pins_accepted", "admit_pinned_label", ledger,
+             ".any(|pair| pair[0].sample_end > pair[1].sample_start)", ".any(|pair| false)",
+             "is missing executable code"),
             # Target the invalid-composition/overlap return, leaving the two
             # earlier whole-label returns intact. They cannot discharge it.
             ("invalid_pins_skip_whole_label_fallback", "admit_pinned_label", ledger,
@@ -2783,6 +2824,10 @@ class CurrentChainMutantTests(unittest.TestCase):
              "ledger.admit_pinned_label(&observation, label, words)",
              "ledger.admit(&observation, label)",
              "is missing executable code"),
+            ("non_dictionary_admission_bypasses_pin_validation", "admit_ledger_label", apple,
+             "} else {\n        ledger.admit_pinned_label(&observation, label, words)\n    };",
+             "} else {\n        ledger.admit(&observation, label)\n    };",
+             "is missing executable code"),
         ]
         for name, symbol, file, old, new, reason in cases:
             with self.subTest(mutation=name):
@@ -2792,6 +2837,24 @@ class CurrentChainMutantTests(unittest.TestCase):
                     failures[0].startswith(
                         f"corridor capture_to_ledger hop {symbol} {reason}"
                     ), (name, failures))
+
+        # L3 can update existing slots, but only after the same pin validation.
+        existing_write = (
+            "        if self.committed.contains_key(occurrence) {\n"
+            "            return self.admit_word_slots(observation, words);\n"
+            "        }\n"
+        )
+        with self.subTest(mutation="existing_slots_written_before_pin_validation"):
+            failures = self.run_mutations("admit_pinned_label", ledger, [
+                (existing_write, ""),
+                ("        let mut slots = Vec::with_capacity(words.len());",
+                 existing_write + "        let mut slots = Vec::with_capacity(words.len());"),
+            ])
+            self.assertEqual(len(failures), 1, failures)
+            self.assertTrue(failures[0].startswith(
+                "corridor capture_to_ledger hop admit_pinned_label "
+                "has executable code out of required order"
+            ), failures)
 
     def test_retired_capture_names_are_absent_from_the_manifest(self):
         """The stale capture corridor named a predicate and an argument shape
