@@ -1087,7 +1087,12 @@ impl TranscriptReducer {
             .filter(|decision| decision.is_evidence_backed())
             .map(|decision| decision.receipt_id.clone())
             .collect::<Vec<_>>();
-        if trail.is_empty() || composition.tokens.is_empty() {
+        let authenticated_empty_deletion = composition.tokens.is_empty()
+            && ledger
+                .word_deletions()
+                .iter()
+                .any(|deletion| deletion.operation.observation == *observation);
+        if trail.is_empty() || (composition.tokens.is_empty() && !authenticated_empty_deletion) {
             return None;
         }
         self.manual_rendered_text = None;
@@ -9029,6 +9034,54 @@ mod tests {
         (observation, receipt)
     }
 
+    #[test]
+    fn authenticated_no_speech_deletion_can_empty_the_document() {
+        use codescribe_core::audio::capture_receipt::{
+            AcousticAvailability, AcousticSpeechEvidence, CaptureEvidenceIdentity,
+        };
+        use codescribe_core::pipeline::acoustic_ledger::SlotTarget;
+        use codescribe_core::pipeline::acoustic_ledger::word_verdict::adjudicate_word_pcm;
+
+        let mut ledger = AcousticLedger::new();
+        let mut reducer = TranscriptReducer::default();
+        let occurrence = OccurrenceIdentity::new("word-delete", 1, 0, 1_000);
+        let (first, admitted) = whisper_slot_mutation(
+            &mut ledger,
+            occurrence.clone(),
+            1,
+            &[WordPin::new(0, 1_000, "phantom")],
+        );
+        assert_eq!(
+            reducer
+                .apply_ledger_mutation(&ledger, &first, &admitted)
+                .unwrap()
+                .rendered_text,
+            "phantom"
+        );
+        let target = SlotTarget::from(&ledger.slots_of(&occurrence).unwrap()[0]);
+        let speech = AcousticSpeechEvidence::measured(
+            CaptureEvidenceIdentity::new("word-delete", 1),
+            "silero_boundaries",
+            AcousticAvailability::Observed {
+                observed_samples: 1_000,
+            },
+            vec![],
+        );
+        let verdict = adjudicate_word_pcm(&occurrence, &occurrence, &[0.0; 1_000], &speech);
+        let deletion =
+            ObservationIdentity::new(ObservationProducer::Whisper, 2, 1, occurrence.clone());
+        ledger
+            .remove_word_with_verdict(&deletion, &target, &verdict)
+            .unwrap();
+        let receipt = ledger.layer_trail().last().unwrap().decision.clone();
+        let revision = reducer
+            .apply_ledger_mutation(&ledger, &deletion, &receipt)
+            .unwrap();
+        assert_eq!(revision.rendered_text, "");
+        assert!(revision.uncertain_spans.is_empty());
+        assert!(ledger.slots_of(&occurrence).unwrap().is_empty());
+    }
+
     /// The Five-Iwo falsifier for confidence: five identical surface words,
     /// only the third unsure. Text must not be the key — exactly one span,
     /// on the third pin's PCM and at the third word's UTF-16 range.
@@ -9063,6 +9116,41 @@ mod tests {
         let painted: String =
             String::from_utf16_lossy(&utf16[span.utf16_start as usize..span.utf16_end as usize]);
         assert_eq!(painted, "Iwo");
+    }
+
+    #[tokio::test]
+    async fn five_iwo_formatter_revision_keeps_reducer_document_and_delivery() {
+        let (mut emitter, delivery, ledger) = opened_delivery_take();
+        let occurrence = OccurrenceIdentity::new("take", 7, 0, 80_000);
+        let pins = (0..5)
+            .map(|index| WordPin::new(index * 16_000, (index + 1) * 16_000, "Iwo"))
+            .collect::<Vec<_>>();
+        let (observation, receipt) =
+            whisper_slot_mutation(&mut ledger.lock().unwrap(), occurrence.clone(), 1, &pins);
+        emitter.on_event(&EngineEvent::LedgerMutation {
+            observation,
+            label: "Iwo Iwo Iwo Iwo Iwo".into(),
+            receipt,
+        });
+        let formatter =
+            ObservationIdentity::new(ObservationProducer::Formatter, 2, 0, occurrence.clone());
+        let receipt = ledger.lock().unwrap().admit(&formatter, "Iwo");
+        assert!(matches!(receipt, MutationReceipt::Preserve { .. }));
+        emitter.on_event(&EngineEvent::LedgerMutation {
+            observation: formatter,
+            label: "Iwo".into(),
+            receipt,
+        });
+        assert_eq!(
+            ledger.lock().unwrap().slots_of(&occurrence).unwrap().len(),
+            5
+        );
+        assert_eq!(
+            emitter.visible_canvas_snapshot().unwrap().text,
+            "Iwo Iwo Iwo Iwo Iwo"
+        );
+        emitter.finish().await;
+        assert_eq!(delivery.lock().await.as_str(), "Iwo Iwo Iwo Iwo Iwo");
     }
 
     /// (c) A lexicon-rewritten surface keeps its acoustic confidence; the
