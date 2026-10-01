@@ -138,6 +138,9 @@ pub(crate) struct OpenAgentChannel {
     /// Last non-empty projection, so the archived take carries its words.
     pub last_text: Arc<StdMutex<String>>,
     pub refinement_warnings: Arc<StdMutex<Vec<String>>>,
+    /// The same bus session used by the reducer, including its fanout and
+    /// per-destination persistence state, retained through the closing receipt.
+    pub transcript_bus: Option<Arc<TranscriptBus>>,
 }
 
 /// Open-channel fact for the overlay. W2 exposes it; the overlay paint is separate.
@@ -251,6 +254,17 @@ fn append_seal_receipt(
     open: &crate::presentation::agent_ack::ChannelSessionLine<'_>,
     refinement_warnings: &[String],
 ) -> std::io::Result<()> {
+    crate::presentation::agent_ack::append_json_line(
+        bus,
+        &seal_receipt_line(reason, open, refinement_warnings),
+    )
+}
+
+fn seal_receipt_line(
+    reason: ChannelSealReason,
+    open: &crate::presentation::agent_ack::ChannelSessionLine<'_>,
+    refinement_warnings: &[String],
+) -> serde_json::Value {
     let mut line = crate::presentation::agent_ack::channel_session_line(
         &crate::presentation::agent_ack::ChannelSessionLine {
             state: "sealed",
@@ -271,7 +285,7 @@ fn append_seal_receipt(
         "refinement_incomplete"
     });
     line["refinement_warnings"] = serde_json::json!(refinement_warnings);
-    crate::presentation::agent_ack::append_json_line(bus, &line)
+    line
 }
 
 /// Bytes of each bus tail the orphan reconciliation reads: the budget of one
@@ -529,6 +543,24 @@ impl RecordingController {
         }
 
         let bound = resolve_digit(digit, binding_file).map_err(refusal)?;
+        // Fn+0 always includes the shared bus. Freeze the binding's distinct
+        // dedicated paths for this take so hang-up closes the same destinations.
+        let mut broadcast_buses = Vec::new();
+        if digit == 0 {
+            match load_binding(binding_file) {
+                Ok(binding) => {
+                    for bus in binding.bindings.values().filter_map(BindingEntry::bus) {
+                        if bus != shared_bus && !broadcast_buses.contains(&bus) {
+                            broadcast_buses.push(bus);
+                        }
+                    }
+                }
+                Err(ChannelOpenRefusal::BindingMissing { .. }) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "broadcast could not read dedicated destinations; shared bus remains active")
+                }
+            }
+        }
         let runtime_settings = self.runtime_settings_arc().await;
         let silence_sec = runtime_settings.values().toggle_silence_sec;
         let opened_at = SystemTime::now();
@@ -536,6 +568,7 @@ impl RecordingController {
         let last_text = Arc::new(StdMutex::new(String::new()));
         let refinement_warnings = Arc::new(StdMutex::new(Vec::new()));
         let mut session_id = None;
+        let mut transcript_bus = None;
         let mut recorder_guard = self.recorder.lock().await;
         let recorder = recorder_guard.as_mut().ok_or_else(|| {
             anyhow!("agent channel refused: recording controller has no recorder")
@@ -553,9 +586,7 @@ impl RecordingController {
                     .whisper_language
                     .whisper_hint()
                     .map(str::to_string);
-                // W5: a binding with a dedicated bus routes this channel's
-                // rows there; without one the shared bus stays authoritative.
-                let bus = Some(Arc::new(TranscriptBus::open_with_path(
+                let bus = Arc::new(TranscriptBus::open_with_paths(
                     TranscriptSession {
                         session_id: session_label.clone(),
                         mode: TranscriptMode::Agent,
@@ -568,7 +599,9 @@ impl RecordingController {
                         .bus
                         .clone()
                         .unwrap_or_else(|| shared_bus.to_path_buf()),
-                )));
+                    broadcast_buses,
+                ));
+                transcript_bus = Some(Arc::clone(&bus));
                 // The Pointer Indicator knob rules every badge path: Settings
                 // promises "Base size; Agent mode stays proportionally larger",
                 // so the channel dot is the persisted base times the Assistive
@@ -592,7 +625,7 @@ impl RecordingController {
                         Arc::new(TokioMutex::new(String::new())),
                         None,
                         None,
-                        bus,
+                        Some(bus),
                         Some(Arc::clone(&ledger)),
                         None,
                     )
@@ -643,7 +676,7 @@ impl RecordingController {
         let receipt_session = session_id.clone();
         let receipt_provider = bound.provider.clone();
         let receipt_provider_session = bound.provider_session_id.clone();
-        let receipt_bus = bound.bus.clone();
+        let receipt_bus = transcript_bus.clone();
         channels.insert(
             digit,
             OpenAgentChannel {
@@ -659,6 +692,7 @@ impl RecordingController {
                 bus: bound.bus,
                 last_text,
                 refinement_warnings,
+                transcript_bus,
             },
         );
         drop(recorder_guard);
@@ -678,11 +712,8 @@ impl RecordingController {
                     provider_session_id: receipt_provider_session.as_deref(),
                 },
             );
-            let open_receipt_bus = receipt_bus.as_deref().unwrap_or(shared_bus);
-            if let Err(error) =
-                crate::presentation::agent_ack::append_json_line(open_receipt_bus, &line)
-            {
-                tracing::warn!(%error, digit, "channel open receipt was not appended");
+            if let Some(bus) = receipt_bus {
+                bus.record_channel_receipt(&line);
             }
         }
         Ok(())
@@ -743,15 +774,19 @@ impl RecordingController {
             provider: open.provider.as_deref(),
             provider_session_id: open.provider_session_id.as_deref(),
         };
-        let seal_receipt_bus = open.bus.as_deref().unwrap_or(shared_bus);
         let refinement_warnings = open
             .refinement_warnings
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clone();
-        if let Err(error) =
-            append_seal_receipt(seal_receipt_bus, reason, &opened, &refinement_warnings)
-        {
+        if let Some(bus) = open.transcript_bus.as_ref() {
+            bus.record_channel_receipt(&seal_receipt_line(reason, &opened, &refinement_warnings));
+        } else if let Err(error) = append_seal_receipt(
+            open.bus.as_deref().unwrap_or(shared_bus),
+            reason,
+            &opened,
+            &refinement_warnings,
+        ) {
             tracing::warn!(
                 %error,
                 digit,

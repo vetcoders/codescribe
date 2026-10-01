@@ -796,6 +796,15 @@ pub struct TranscriptBus {
     persistence_diagnostic_sink: PersistenceDiagnosticSink,
 }
 
+impl std::fmt::Debug for TranscriptBus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TranscriptBus")
+            .field("session", &self.session)
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
+}
+
 /// One lock orders live lifecycle and projections. Sequence is in-process
 /// publication order, never an acknowledgment of file persistence or delivery.
 struct TranscriptBusWriter {
@@ -852,6 +861,38 @@ pub(crate) fn open_bus_append_file(path: &Path) -> io::Result<File> {
 }
 
 struct SharedBusWriter(Arc<Mutex<File>>);
+
+/// One session publishes the same encoded row to every destination. An
+/// uncertain append retires only that destination, without retrying its prefix.
+struct BusFanout {
+    session_id: String,
+    destinations: Vec<BusDestination>,
+}
+
+struct BusDestination {
+    path: PathBuf,
+    file: Option<Box<dyn Write + Send>>,
+}
+
+impl Write for BusFanout {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        for destination in &mut self.destinations {
+            let Some(file) = destination.file.as_mut() else {
+                continue;
+            };
+            if let Err(error) = file.write_all(bytes).and_then(|()| file.flush()) {
+                destination.file = None;
+                tracing::warn!(%error, bus = %destination.path.display(), session_id = %self.session_id, persistence = "disabled_for_session", "transcript bus destination disabled; other destinations continue");
+            }
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        // Each destination was flushed as part of the complete-row write.
+        Ok(())
+    }
+}
 
 impl Write for SharedBusWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -1168,6 +1209,54 @@ impl TranscriptBus {
         }
     }
 
+    /// Open one lifecycle/sequence with a primary path and additional buses.
+    /// Every descriptor comes from the shared registry used by compaction.
+    pub(crate) fn open_with_paths(
+        session: TranscriptSession,
+        path: PathBuf,
+        additional_paths: Vec<PathBuf>,
+    ) -> Self {
+        let bus = Self::open_with_path(session, path.clone());
+        if additional_paths.is_empty() {
+            return bus;
+        }
+        let mut writer = bus.writer.lock().unwrap_or_else(|error| error.into_inner());
+        let mut destinations = vec![BusDestination {
+            path,
+            file: writer.file.take(),
+        }];
+        for path in additional_paths {
+            if destinations.iter().any(|known| known.path == path) {
+                continue;
+            }
+            let file = match Self::open_persistence_file(&path) {
+                Ok(file) => Some(file),
+                Err(error) => {
+                    tracing::warn!(%error, bus = %path.display(), session_id = %bus.session.session_id, persistence = "disabled_for_session", "transcript bus destination could not open; other destinations continue");
+                    None
+                }
+            };
+            destinations.push(BusDestination { path, file });
+        }
+        writer.file = Some(Box::new(BusFanout {
+            session_id: bus.session.session_id.clone(),
+            destinations,
+        }));
+        drop(writer);
+        bus
+    }
+
+    /// Channel boundaries share the session's destinations and failure state.
+    pub(crate) fn record_channel_receipt(&self, receipt: &serde_json::Value) {
+        let mut writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Err(error) = Self::append_projection_locked(&mut writer, receipt) {
+            self.log_write_error(error);
+        }
+    }
+
     fn with_writer(
         session: TranscriptSession,
         path: PathBuf,
@@ -1203,11 +1292,16 @@ impl TranscriptBus {
         path: PathBuf,
         _sample_rate_override: Option<u32>,
     ) -> io::Result<Self> {
+        let file = Self::open_persistence_file(&path)?;
+        Ok(Self::with_writer(session, path, Some(file)))
+    }
+
+    fn open_persistence_file(path: &Path) -> io::Result<Box<dyn Write + Send>> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
-        let shared = shared_bus_file(&path)?;
+        let shared = shared_bus_file(path)?;
         let mut file = shared.lock().unwrap_or_else(|error| error.into_inner());
 
         // A prior partial write is not an append boundary. Do not join a new
@@ -1224,11 +1318,7 @@ impl TranscriptBus {
             }
         }
         drop(file);
-        Ok(Self::with_writer(
-            session,
-            path,
-            Some(Box::new(SharedBusWriter(shared))),
-        ))
+        Ok(Box::new(SharedBusWriter(shared)))
     }
 
     /// Announce the recording start exactly once, even if persistence fails.
