@@ -869,8 +869,9 @@ final class SettingsViewModel: ObservableObject {
     }
   }
 
-  /// Sidebar selection. `List` selection is optional by contract; a nil write
-  /// (⌘-click clearing a row) must not blank the detail pane, so it is dropped.
+  /// Optional navigation request; a nil write must not blank the detail pane.
+  /// Native controls keep their reconciliation state in the view and submit
+  /// requests from onChange, rather than binding directly to this setter.
   var sidebarSelection: SettingsSection? {
     get { section }
     set {
@@ -1443,24 +1444,28 @@ final class SettingsViewModel: ObservableObject {
   }
 
   func select(_ target: SettingsSection) {
-    guard target.availability == .available else { return }
-    section = target
     // Landing on a section shows its first tab; sections without tabs keep
     // tab == nil and render whole.
-    tab = SettingsTab.tabs(in: target).first
+    select(target, tab: SettingsTab.tabs(in: target).first)
+  }
+
+  /// Select a specific tab without publishing a temporary first-tab landing.
+  func select(_ target: SettingsTab) {
+    select(target.section, tab: target)
+  }
+
+  private func select(_ target: SettingsSection, tab targetTab: SettingsTab?) {
+    guard target.availability == .available,
+      section != target || tab != targetTab
+    else { return }
+    if section != target { section = target }
+    if tab != targetTab { tab = targetTab }
     if target == .agent {
       refreshModelDiscoveries(providerIds: LLMLane.allCases.map { llmLane($0).providerId })
     }
     if target == .engine {
       refreshServingStatus()
     }
-  }
-
-  /// Select a specific tab. Routes through `select` so the section's refresh
-  /// side effects fire exactly as they do for a sidebar click.
-  func select(_ target: SettingsTab) {
-    select(target.section)
-    tab = target
   }
 
   func select(_ target: SettingsDeepLinkTarget) {

@@ -445,6 +445,11 @@ struct VoiceLabPanel: View {
             Text("CORRECTION")
               .font(CSFont.mono(10.5, .semibold))
               .foregroundStyle(row.isLowConfidence ? CSColor.terracotta : CSColor.oliveLight)
+              .accessibilityAddTraits(.isHeader)
+              .accessibilityLabel(
+                "Heard \(row.variant). Current correction \(row.editedText). Revision \(row.revision)."
+              )
+              .accessibilityIdentifier("dictionary-correction-summary")
             if row.isLowConfidence {
               Text("LOW CONFIDENCE")
                 .font(CSFont.mono(9.5, .semibold))
@@ -510,19 +515,21 @@ struct VoiceLabPanel: View {
                 .font(CSFont.mono(10, .semibold))
                 .foregroundStyle(Color.secondary)
               VStack(alignment: .leading, spacing: 8) {
-                ForEach(Array(major.enumerated()), id: \.offset) { _, span in
+                ForEach(Array(major.enumerated()), id: \.offset) { index, span in
                   diffSpanText(span)
                     .font(CSFont.ui(13, .medium))
                     .textSelection(.enabled)
+                    .accessibilityIdentifier("dictionary-major-diff-\(index)")
                 }
                 if !minor.isEmpty {
                   DisclosureGroup {
                     VStack(alignment: .leading, spacing: 6) {
-                      ForEach(Array(minor.enumerated()), id: \.offset) { _, span in
+                      ForEach(Array(minor.enumerated()), id: \.offset) { index, span in
                         diffSpanText(span)
                           .font(CSFont.ui(12, .medium))
                           .foregroundStyle(Color.secondary)
                           .textSelection(.enabled)
+                          .accessibilityIdentifier("dictionary-minor-diff-\(index)")
                       }
                     }
                     .padding(.top, 4)
@@ -531,6 +538,7 @@ struct VoiceLabPanel: View {
                       .font(CSFont.mono(10, .medium))
                       .foregroundStyle(Color.secondary)
                   }
+                  .accessibilityIdentifier("dictionary-minor-adjustments")
                 }
               }
               .frame(maxWidth: .infinity, alignment: .leading)
@@ -593,6 +601,8 @@ struct VoiceLabPanel: View {
           }
           .buttonStyle(.plain)
           .accessibilityLabel("Toggle the full transcript for this correction")
+          .accessibilityValue(showFullText ? "Expanded" : "Collapsed")
+          .accessibilityIdentifier("dictionary-full-transcript-toggle")
           if showFullText {
             VStack(alignment: .leading, spacing: 10) {
               fullTextBlock("RAW STT · \(row.rawText.count) CHARS", text: row.rawText)
@@ -675,10 +685,10 @@ struct VoiceLabPanel: View {
           .foregroundStyle(Color.secondary)
         }
         .settingsGroupedInset()
+        // Keep controls and selectable text as children; the summary belongs
+        // to the static header, not to the mixed AppKit/SwiftUI container.
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(
-          "Heard \(row.variant). Current correction \(row.editedText). Revision \(row.revision)."
-        )
+        .accessibilityIdentifier("dictionary-correction-card")
         HStack {
           Button("Previous") { correctionIndex = max(0, safeIndex - 1) }
             .disabled(safeIndex == 0)
@@ -786,9 +796,12 @@ struct VoiceLabPanel: View {
           Text(row.source)
             .font(CSFont.mono(10, .medium))
             .foregroundStyle(Color.secondary)
+            .accessibilityLabel("\(row.variant) to \(row.canonical), source \(row.source)")
+            .accessibilityIdentifier("dictionary-lexicon-summary")
         }
         .settingsGroupedInset()
-        .accessibilityLabel("\(row.variant) to \(row.canonical), source \(row.source)")
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("dictionary-lexicon-card")
         HStack {
           Button("Previous") { lexiconIndex = max(0, safeIndex - 1) }
             .disabled(safeIndex == 0)
@@ -824,6 +837,11 @@ struct VoiceLabPanel: View {
             Text("\(candidate.occurrences) occurrences")
               .font(CSFont.mono(10, .medium))
               .foregroundStyle(Color.secondary)
+              .accessibilityAddTraits(.isHeader)
+              .accessibilityLabel(
+                "Suggested rule for \(candidate.target) from \(candidate.variants.count) variants. \(candidate.occurrences) occurrences."
+              )
+              .accessibilityIdentifier("dictionary-rule-summary")
           }
           VStack(alignment: .leading, spacing: 4) {
             ForEach(Array(candidate.variants.enumerated()), id: \.offset) { _, variant in
@@ -839,12 +857,14 @@ struct VoiceLabPanel: View {
                 .font(CSFont.mono(10.5, .semibold))
                 .controlSize(.small)
                 .disabled(model.voiceLabTeachPending)
+                .accessibilityLabel("Teach \(variant) as \(candidate.target)")
               }
             }
           }
         }
         .settingsGroupedInset()
-        .accessibilityLabel("Suggested rule for \(candidate.target) from \(candidate.variants.count) variants")
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("dictionary-rule-card")
         HStack {
           Button("Previous") { ruleCandidateIndex = max(0, safeIndex - 1) }
             .disabled(safeIndex == 0)
@@ -889,6 +909,7 @@ struct VoiceLabPanel: View {
       Text(title)
         .font(CSFont.mono(10, .semibold))
         .foregroundStyle(Color.secondary)
+        .accessibilityAddTraits(.isHeader)
       Text(text)
         .font(CSFont.ui(12.5, .medium))
         .foregroundStyle(Color.secondary)
