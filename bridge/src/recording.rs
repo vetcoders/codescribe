@@ -119,6 +119,7 @@ pub struct CsProjectedSealCoverageRange {
 #[derive(uniffi::Record, Debug, Clone, PartialEq)]
 pub struct CsProjectedSealCoverageReceipt {
     pub status: CsSealCoverageStatus,
+    pub sample_rate_hz: Option<u32>,
     pub unavailable_reason: Option<CsCoverageUnavailableReason>,
     pub speech_samples: u64,
     pub covered_samples: u64,
@@ -140,6 +141,7 @@ impl CsProjectedSealCoverageReceipt {
                 "unavailable" => CsSealCoverageStatus::Unavailable,
                 _ => CsSealCoverageStatus::Unknown,
             },
+            sample_rate_hz: receipt.sample_rate_hz,
             unavailable_reason: receipt
                 .unavailable_reason
                 .as_deref()

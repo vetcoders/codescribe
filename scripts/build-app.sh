@@ -156,6 +156,17 @@ case "$PROFILE" in
   *) echo "usage: $0 [debug|local-release|release]" >&2; exit 2 ;;
 esac
 
+# Resolve before Cargo as well as Xcode: both halves use the same build bit.
+CS_DEVELOPER_SURFACE=0
+if [[ "$PROFILE" != "release" && "${CODESCRIBE_DEVELOPER_SURFACE:-0}" == "1" ]]; then
+  CS_DEVELOPER_SURFACE="$(./scripts/developer-surface-gate.sh)"
+  if [[ "$CS_DEVELOPER_SURFACE" != "1" ]]; then
+    echo "Developer build requires verified private Voice Lab access and its settings pack." >&2
+    exit 1
+  fi
+fi
+export CODESCRIBE_DEVELOPER_SURFACE="$CS_DEVELOPER_SURFACE"
+
 # ── Preflight: a clean checkout on a fresh Mac otherwise dies deep in the
 # pipeline with a cryptic "command not found". Fail early, actionably.
 require() {
@@ -343,11 +354,6 @@ if [ "${SKIP_XCODEBUILD:-0}" = "1" ]; then
   exit 0
 fi
 
-if [ "$PROFILE" = "release" ]; then
-  CS_DEVELOPER_SURFACE=0
-else
-  CS_DEVELOPER_SURFACE="${CODESCRIBE_DEVELOPER_SURFACE:-0}"
-fi
 echo "==> [5/7] Building app (xcodebuild, $CONFIG)"
 echo "    stamp: v${STAMP_VERSION} build ${STAMP_BUILD_NUM} commit ${STAMP_COMMIT} built ${STAMP_BUILT_AT}"
 echo "    developer surface: ${CS_DEVELOPER_SURFACE}"

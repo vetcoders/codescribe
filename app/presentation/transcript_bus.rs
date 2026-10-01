@@ -228,6 +228,9 @@ pub struct ProjectedSealCoverageRange {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectedSealCoverageReceipt {
     pub status: String,
+    /// Capture clock carried by the ledger receipt, never inferred by the Bus.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_rate_hz: Option<u32>,
     /// Typed reason the measurement was missing. Present only when
     /// `status == "unavailable"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -255,6 +258,7 @@ impl From<&SealCoverageReceipt> for ProjectedSealCoverageReceipt {
     fn from(receipt: &SealCoverageReceipt) -> Self {
         Self {
             status: receipt.status.as_str().to_string(),
+            sample_rate_hz: receipt.sample_rate_hz,
             unavailable_reason: receipt
                 .status
                 .unavailable_reason()
@@ -796,6 +800,15 @@ pub struct TranscriptBus {
     persistence_diagnostic_sink: PersistenceDiagnosticSink,
 }
 
+impl std::fmt::Debug for TranscriptBus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TranscriptBus")
+            .field("session", &self.session)
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
+}
+
 /// One lock orders live lifecycle and projections. Sequence is in-process
 /// publication order, never an acknowledgment of file persistence or delivery.
 struct TranscriptBusWriter {
@@ -852,6 +865,38 @@ pub(crate) fn open_bus_append_file(path: &Path) -> io::Result<File> {
 }
 
 struct SharedBusWriter(Arc<Mutex<File>>);
+
+/// One session publishes the same encoded row to every destination. An
+/// uncertain append retires only that destination, without retrying its prefix.
+struct BusFanout {
+    session_id: String,
+    destinations: Vec<BusDestination>,
+}
+
+struct BusDestination {
+    path: PathBuf,
+    file: Option<Box<dyn Write + Send>>,
+}
+
+impl Write for BusFanout {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        for destination in &mut self.destinations {
+            let Some(file) = destination.file.as_mut() else {
+                continue;
+            };
+            if let Err(error) = file.write_all(bytes).and_then(|()| file.flush()) {
+                destination.file = None;
+                tracing::warn!(%error, bus = %destination.path.display(), session_id = %self.session_id, persistence = "disabled_for_session", "transcript bus destination disabled; other destinations continue");
+            }
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        // Each destination was flushed as part of the complete-row write.
+        Ok(())
+    }
+}
 
 impl Write for SharedBusWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -1168,6 +1213,54 @@ impl TranscriptBus {
         }
     }
 
+    /// Open one lifecycle/sequence with a primary path and additional buses.
+    /// Every descriptor comes from the shared registry used by compaction.
+    pub(crate) fn open_with_paths(
+        session: TranscriptSession,
+        path: PathBuf,
+        additional_paths: Vec<PathBuf>,
+    ) -> Self {
+        let bus = Self::open_with_path(session, path.clone());
+        if additional_paths.is_empty() {
+            return bus;
+        }
+        let mut writer = bus.writer.lock().unwrap_or_else(|error| error.into_inner());
+        let mut destinations = vec![BusDestination {
+            path,
+            file: writer.file.take(),
+        }];
+        for path in additional_paths {
+            if destinations.iter().any(|known| known.path == path) {
+                continue;
+            }
+            let file = match Self::open_persistence_file(&path) {
+                Ok(file) => Some(file),
+                Err(error) => {
+                    tracing::warn!(%error, bus = %path.display(), session_id = %bus.session.session_id, persistence = "disabled_for_session", "transcript bus destination could not open; other destinations continue");
+                    None
+                }
+            };
+            destinations.push(BusDestination { path, file });
+        }
+        writer.file = Some(Box::new(BusFanout {
+            session_id: bus.session.session_id.clone(),
+            destinations,
+        }));
+        drop(writer);
+        bus
+    }
+
+    /// Channel boundaries share the session's destinations and failure state.
+    pub(crate) fn record_channel_receipt(&self, receipt: &serde_json::Value) {
+        let mut writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Err(error) = Self::append_projection_locked(&mut writer, receipt) {
+            self.log_write_error(error);
+        }
+    }
+
     fn with_writer(
         session: TranscriptSession,
         path: PathBuf,
@@ -1203,11 +1296,16 @@ impl TranscriptBus {
         path: PathBuf,
         _sample_rate_override: Option<u32>,
     ) -> io::Result<Self> {
+        let file = Self::open_persistence_file(&path)?;
+        Ok(Self::with_writer(session, path, Some(file)))
+    }
+
+    fn open_persistence_file(path: &Path) -> io::Result<Box<dyn Write + Send>> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
-        let shared = shared_bus_file(&path)?;
+        let shared = shared_bus_file(path)?;
         let mut file = shared.lock().unwrap_or_else(|error| error.into_inner());
 
         // A prior partial write is not an append boundary. Do not join a new
@@ -1224,11 +1322,7 @@ impl TranscriptBus {
             }
         }
         drop(file);
-        Ok(Self::with_writer(
-            session,
-            path,
-            Some(Box::new(SharedBusWriter(shared))),
-        ))
+        Ok(Box::new(SharedBusWriter(shared)))
     }
 
     /// Announce the recording start exactly once, even if persistence fails.
@@ -2054,6 +2148,70 @@ mod tests {
         );
     }
 
+    /// Integrator (2026-10-01, take agent-channel-0-b351ea82): Fn+0 rows
+    /// reached only the shared bus while every follower read its channel bus.
+    #[test]
+    fn integrator_broadcast_bus_writes_every_row_to_every_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("transcript-events.jsonl");
+        let one = dir.path().join("buses/channel-1.jsonl");
+        let three = dir.path().join("buses/channel-3.jsonl");
+        let mut broadcast = session("agent-channel-0-fanout");
+        broadcast.audience = Some("*".to_string());
+        broadcast.badge_only = true;
+        let bus = TranscriptBus::open_with_paths(
+            broadcast,
+            shared.clone(),
+            vec![one.clone(), three.clone(), one.clone(), shared.clone()],
+        );
+        bus.publish_started();
+        let (ledger, _, revision) = committed_fixture("agent-channel-0-fanout");
+        bus.publish_revision(&revision, &ledger);
+        bus.record_channel_receipt(&serde_json::json!({
+            "schema": "codescribe.channel-session.v1",
+            "kind": "channel_session",
+            "state": "sealed",
+            "channel": "0",
+            "session_id": "agent-channel-0-fanout",
+        }));
+        let read = |path: &Path| std::fs::read_to_string(path).unwrap_or_default();
+        let shared_rows = read(&shared);
+        assert!(shared_rows.lines().count() >= 2, "{shared_rows}");
+        assert_eq!(read(&one), shared_rows, "channel 1 gets the same rows once");
+        assert_eq!(
+            read(&three),
+            shared_rows,
+            "channel 3 gets the same rows once"
+        );
+        assert!(shared_rows.contains("\"audience\":\"*\""), "{shared_rows}");
+        assert!(shared_rows.contains("codescribe.channel-session.v1"));
+    }
+
+    #[test]
+    fn integrator_broken_broadcast_destination_leaves_the_others_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("transcript-events.jsonl");
+        let blocker = dir.path().join("not-a-dir");
+        std::fs::write(&blocker, b"file").unwrap();
+        let broken = blocker.join("channel-2.jsonl");
+        let good = dir.path().join("buses/channel-1.jsonl");
+        let mut broadcast = session("agent-channel-0-broken");
+        broadcast.audience = Some("*".to_string());
+        broadcast.badge_only = true;
+        let bus = TranscriptBus::open_with_paths(
+            broadcast,
+            shared.clone(),
+            vec![broken.clone(), good.clone()],
+        );
+        bus.publish_started();
+        let (ledger, _, revision) = committed_fixture("agent-channel-0-broken");
+        bus.publish_revision(&revision, &ledger);
+        let shared_rows = std::fs::read_to_string(&shared).unwrap();
+        assert!(!shared_rows.is_empty());
+        assert_eq!(std::fs::read_to_string(&good).unwrap(), shared_rows);
+        assert!(!broken.exists());
+    }
+
     /// Quiet delivery contract (Founder seal cc6c8248): between one start row
     /// per document and the terminal seal, channel revisions stay off disk.
     #[test]
@@ -2263,6 +2421,48 @@ mod tests {
     /// The projection carries the typed availability reason, an explicitly
     /// absent ratio, and survives a JSON round-trip byte-for-byte — including
     /// the exact-receipt equality the recovery guard depends on.
+    /// Integrator (2026-10-01): the overlay places speech without words only
+    /// with the take's own clock; receipts written before the field read as no
+    /// clock, never as a guessed rate.
+    #[test]
+    fn integrator_coverage_projection_carries_the_capture_clock_and_reads_old_rows() {
+        use codescribe_core::pipeline::acoustic_ledger::{SealCoverageReceipt, SealCoverageStatus};
+
+        let receipt = SealCoverageReceipt {
+            sample_rate_hz: Some(48_000),
+            session_id: "clock".into(),
+            capture_epoch: 1,
+            speech_samples: 96_000,
+            covered_samples: 33_600,
+            uncovered_speech_ranges: Vec::new(),
+            max_uncovered_samples: 62_400,
+            incomplete_threshold_samples: 4_000,
+            status: SealCoverageStatus::Incomplete,
+            speech_producer: "capture_energy".into(),
+            availability: "observed".into(),
+            observed_samples: Some(96_000),
+        };
+        let projected = ProjectedSealCoverageReceipt::from(&receipt);
+        assert_eq!(projected.sample_rate_hz, Some(48_000));
+        let json = serde_json::to_string(&projected).unwrap();
+        assert!(json.contains("\"sample_rate_hz\":48000"), "{json}");
+        assert_eq!(
+            serde_json::from_str::<ProjectedSealCoverageReceipt>(&json).unwrap(),
+            projected
+        );
+
+        let mut old = projected.clone();
+        old.sample_rate_hz = None;
+        let old_row = serde_json::to_string(&old).unwrap();
+        assert!(!old_row.contains("sample_rate_hz"), "{old_row}");
+        assert_eq!(
+            serde_json::from_str::<ProjectedSealCoverageReceipt>(&old_row)
+                .unwrap()
+                .sample_rate_hz,
+            None
+        );
+    }
+
     #[test]
     fn coverage_projection_round_trips_missing_ratio_and_exact_receipt_equality() {
         use codescribe_core::pipeline::acoustic_ledger::{
@@ -2270,6 +2470,7 @@ mod tests {
         };
 
         let unavailable = SealCoverageReceipt {
+            sample_rate_hz: None,
             session_id: "round-trip".into(),
             capture_epoch: 7,
             speech_samples: 0,
@@ -2400,6 +2601,7 @@ mod tests {
             bus.publish_started();
             if measured {
                 let coverage = SealCoverageReceipt {
+                    sample_rate_hz: None,
                     session_id: id.into(),
                     capture_epoch: 7,
                     speech_samples: 32_000,

@@ -10804,6 +10804,8 @@ mod tests {
                     candidate_tokens: vec!["Iwo".into()],
                     verdict,
                     predecessor_ordinal: None,
+                    clock_lie: receipt.clock_lie,
+                    clock_lie_blocker: receipt.clock_lie_blocker.clone(),
                     input: Some(TrailAdmission {
                         source_slots: vec![],
                         offered_slots: None,

@@ -1020,6 +1020,18 @@ enum SettingsQuickStartAction: String, CaseIterable {
 
 @MainActor
 final class SettingsViewModel: ObservableObject {
+  static let agentBridgeLaunchSynchronizationDidFinish = Notification.Name(
+    "com.vetcoders.codescribe.agent-bridge-launch-synchronization"
+  )
+  // A launch-result projection for Settings instances opened after the task
+  // finishes. Installation ownership remains in the on-disk managed receipt.
+  private static var agentBridgeLaunchNotice: String?
+
+  static func recordAgentBridgeLaunchSynchronization(_ detail: String?) {
+    agentBridgeLaunchNotice = detail
+    NotificationCenter.default.post(name: agentBridgeLaunchSynchronizationDidFinish, object: nil)
+  }
+
   @Published var section: SettingsSection = .creator
   /// Selected tab within `section`, when that section has tabs. Navigation
   /// state only — never persisted. Written exclusively by the `select`
@@ -1040,8 +1052,9 @@ final class SettingsViewModel: ObservableObject {
     }
   }
 
-  /// Sidebar selection. `List` selection is optional by contract; a nil write
-  /// (⌘-click clearing a row) must not blank the detail pane, so it is dropped.
+  /// Optional navigation request; a nil write must not blank the detail pane.
+  /// Native controls keep their reconciliation state in the view and submit
+  /// requests from onChange, rather than binding directly to this setter.
   var sidebarSelection: SettingsSection? {
     get { section }
     set {
@@ -1241,6 +1254,9 @@ final class SettingsViewModel: ObservableObject {
   /// Passive inspection of the bundled installer; never attaches an agent.
   func refreshCreatorAgentBridge() {
     creatorAgentBridgeStatus = creatorAgentBridge.status()
+    if creatorAgentBridgeNotice == nil {
+      creatorAgentBridgeNotice = Self.agentBridgeLaunchNotice
+    }
   }
 
   /// Add/update one client while preserving other managed clients. Creator
@@ -1629,24 +1645,28 @@ final class SettingsViewModel: ObservableObject {
   }
 
   func select(_ target: SettingsSection) {
-    guard target.availability == .available else { return }
-    section = target
     // Landing on a section shows its first tab; sections without tabs keep
     // tab == nil and render whole.
-    tab = SettingsTab.tabs(in: target).first
+    select(target, tab: SettingsTab.tabs(in: target).first)
+  }
+
+  /// Select a specific tab without publishing a temporary first-tab landing.
+  func select(_ target: SettingsTab) {
+    select(target.section, tab: target)
+  }
+
+  private func select(_ target: SettingsSection, tab targetTab: SettingsTab?) {
+    guard target.availability == .available,
+      section != target || tab != targetTab
+    else { return }
+    if section != target { section = target }
+    if tab != targetTab { tab = targetTab }
     if target == .agent {
       refreshModelDiscoveries(providerIds: LLMLane.allCases.map { llmLane($0).providerId })
     }
     if target == .engine {
       refreshServingStatus()
     }
-  }
-
-  /// Select a specific tab. Routes through `select` so the section's refresh
-  /// side effects fire exactly as they do for a sidebar click.
-  func select(_ target: SettingsTab) {
-    select(target.section)
-    tab = target
   }
 
   func select(_ target: SettingsDeepLinkTarget) {
@@ -2548,6 +2568,16 @@ final class SettingsViewModel: ObservableObject {
     guard let lane = sttLanes.first(where: { $0.id == id }) else { return }
     persist(lane.endpointWireKey, value.trimmingCharacters(in: .whitespaces))
     if let engine { sttLanes = engine.sttLanes() }
+  }
+
+  func setWhisperAdaptiveBuffer(_ enabled: Bool) {
+    guard DeveloperSurface.isEnabled() else { return }
+    persist("WHISPER_ADAPTIVE_BUFFER", enabled ? "1" : "0")
+  }
+
+  func setFormatOnDevice(_ enabled: Bool) {
+    guard DeveloperSurface.isEnabled() else { return }
+    persist("CODESCRIBE_FORMAT_ON_DEVICE", enabled ? "1" : "0")
   }
 
   private func persist(_ key: String, _ value: String) {

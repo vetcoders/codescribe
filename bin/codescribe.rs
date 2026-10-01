@@ -971,15 +971,15 @@ fn transcribe(file: &std::path::Path, options: FileTranscribeOptions<'_>) -> any
         Ok(())
     };
     let verdict = match engine {
-        FileEngine::Default => {
-            codescribe_core::stt::transcribe_file_verdict_observed(file, language, &mut observe)
+        // Whole-file selection is independent of the live engine and Apple readiness.
+        FileEngine::Default | FileEngine::Whisper => {
+            codescribe_core::stt::whisper::transcribe_file_verdict_observed(
+                file,
+                language,
+                Default::default(),
+                &mut observe,
+            )
         }
-        FileEngine::Whisper => codescribe_core::stt::whisper::transcribe_file_verdict_observed(
-            file,
-            language,
-            Default::default(),
-            &mut observe,
-        ),
         FileEngine::Apple => (|| {
             codescribe_core::stt::apple_stt::ensure_noninteractive_ready(language)?;
             let verdict = codescribe_core::stt::apple_stt::transcribe_file_verdict(file, language)?;

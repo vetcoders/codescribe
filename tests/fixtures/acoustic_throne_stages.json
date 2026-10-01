@@ -1187,7 +1187,7 @@
                 "latestTranscriptProjection = projection",
                 "mode = OverlayMode(rawValue: projection.phase) ?? mode",
                 "terminal = projection.terminal",
-                "revisionDraft = projection.renderedText"
+                "revisionDraft = formattedText"
               ]
             },
             {
@@ -1833,7 +1833,7 @@
                 "latestTranscriptProjection = projection",
                 "mode = OverlayMode(rawValue: projection.phase) ?? mode",
                 "terminal = projection.terminal",
-                "revisionDraft = projection.renderedText"
+                "revisionDraft = formattedText"
               ]
             }
           ],

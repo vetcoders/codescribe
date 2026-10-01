@@ -118,6 +118,12 @@ struct CreatorPanel: View {
     .padding(.horizontal, CSSpace.xl)
     .padding(.vertical, CSSpace.section)
     .onAppear { model.refreshCreatorAgentBridge() }
+    .onReceive(
+      NotificationCenter.default.publisher(
+        for: SettingsViewModel.agentBridgeLaunchSynchronizationDidFinish)
+    ) { _ in
+      model.refreshCreatorAgentBridge()
+    }
     .confirmationDialog(
       "Replace a manually installed Codescribe skill?",
       isPresented: Binding(

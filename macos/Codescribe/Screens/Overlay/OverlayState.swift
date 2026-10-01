@@ -569,10 +569,12 @@ final class OverlayState {
 
   /// Display copy distinguishes measured coverage from refused finality.
   /// Absent coverage is unknown; complete coverage does not mint a terminal seal.
-  /// The notice is the engine-owned sentence the footer chip also shows.
+  /// The notice is the observation sentence the footer chip also shows.
   private var coverageRefusalCopy: (status: String, notice: String) {
     let coverage = latestTranscriptProjection?.sealCoverage
-    let notice = OverlayWarningCopy.sealRefused(coverage).sentence
+    let notice = OverlayWarningCopy.sealRefused(
+      coverage, sampleRateHz: coverage?.sampleRateHz
+    ).sentence
     switch coverage?.status {
     case .incomplete: return (String(localized: "incomplete coverage"), notice)
     case .unavailable: return (String(localized: "measurement unavailable"), notice)
@@ -581,11 +583,12 @@ final class OverlayState {
     }
   }
 
-  /// The footer warning and whose fact it is: a refused seal belongs to the
-  /// engine, a quiet input to the microphone. Nil when neither applies.
+  /// The footer reports seal coverage or measured quiet microphone input.
+  /// Nil when neither applies.
   var footerWarning: OverlayWarningCopy? {
     if mode == .coverageRefused {
-      return .sealRefused(latestTranscriptProjection?.sealCoverage)
+      let coverage = latestTranscriptProjection?.sealCoverage
+      return .sealRefused(coverage, sampleRateHz: coverage?.sampleRateHz)
     }
     if mode == .listening && levelMeter.hasLowInputSignal { return .quietInput }
     return nil

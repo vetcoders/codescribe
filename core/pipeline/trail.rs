@@ -66,6 +66,10 @@ pub struct TrailWordPin {
     pub text: String,
     pub confidence: Option<super::word_confidence::WordConfidence>,
     pub surface_rewritten: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decode_sample_start: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decode_sample_end: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,6 +181,62 @@ impl From<&SlotAlternative> for TrailSlotAlternative {
     }
 }
 
+/// Acoustic measurements that authorized this particular word batch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrailSpeechEvidence {
+    session: String,
+    capture_epoch: u64,
+    producer: String,
+    observed_samples: Option<u64>,
+    ranges: Vec<OccurrenceIdentity>,
+}
+
+impl TrailSpeechEvidence {
+    fn from_evidence(speech: &crate::audio::capture_receipt::AcousticSpeechEvidence) -> Self {
+        Self {
+            session: speech.identity().session.clone(),
+            capture_epoch: speech.identity().capture_epoch,
+            producer: speech.producer().into(),
+            observed_samples: speech.availability().observed_samples(),
+            ranges: speech
+                .ranges()
+                .iter()
+                .map(OccurrenceIdentity::from)
+                .collect(),
+        }
+    }
+
+    fn evidence(&self) -> io::Result<crate::audio::capture_receipt::AcousticSpeechEvidence> {
+        use super::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER;
+        use crate::audio::capture_receipt::{
+            AcousticAvailability, AcousticSpeechEvidence, CAPTURE_ENERGY_PRODUCER,
+            CaptureEvidenceIdentity,
+        };
+        let producer = match self.producer.as_str() {
+            CAPTURE_ENERGY_PRODUCER => CAPTURE_ENERGY_PRODUCER,
+            SILERO_BOUNDARIES_PRODUCER => SILERO_BOUNDARIES_PRODUCER,
+            _ => return Err(io::Error::other("unrecognized speech measurement producer")),
+        };
+        Ok(AcousticSpeechEvidence::measured(
+            CaptureEvidenceIdentity::new(&self.session, self.capture_epoch),
+            producer,
+            self.observed_samples
+                .map_or(AcousticAvailability::NotObserved, |observed_samples| {
+                    AcousticAvailability::Observed { observed_samples }
+                }),
+            self.ranges
+                .iter()
+                .map(|range| crate::stt::tail_provider::TailSampleRange {
+                    session: range.session.clone(),
+                    capture_epoch: range.capture_epoch,
+                    sample_start: range.sample_start,
+                    sample_end: range.sample_end,
+                })
+                .collect(),
+        ))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrailSlotStart {
     pub observation: ObservationIdentity,
@@ -186,6 +246,10 @@ pub struct TrailSlotStart {
     pub first_ordinal: usize,
     pub operations_before: usize,
     pub alternatives_before: usize,
+    #[serde(default)]
+    pub speech: Option<TrailSpeechEvidence>,
+    #[serde(default)]
+    pub assignments: Vec<(OccurrenceIdentity, OccurrenceIdentity)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -248,6 +312,11 @@ impl SlotTrace {
             first_ordinal: ledger.layer_trail().len(),
             operations_before: ledger.slot_operations().len(),
             alternatives_before: ledger.slot_alternatives().len(),
+            speech: ledger
+                .speech_evidence
+                .as_ref()
+                .map(TrailSpeechEvidence::from_evidence),
+            assignments: ledger.assigned_word_pin_ranges(observation),
         };
         record(
             &observation.occurrence,
@@ -346,6 +415,8 @@ fn saved_pins(pins: &[WordPin]) -> Vec<TrailWordPin> {
             text: pin.text.clone(),
             confidence: pin.confidence,
             surface_rewritten: pin.surface_rewritten,
+            decode_sample_start: pin.decode_sample_start,
+            decode_sample_end: pin.decode_sample_end,
         })
         .collect()
 }
@@ -359,6 +430,8 @@ fn word_pins(slots: &[TrailWordPin]) -> Vec<WordPin> {
             text: slot.text.clone(),
             confidence: slot.confidence,
             surface_rewritten: slot.surface_rewritten,
+            decode_sample_start: slot.decode_sample_start,
+            decode_sample_end: slot.decode_sample_end,
         })
         .collect()
 }
@@ -392,6 +465,10 @@ pub struct TrailDecision {
     pub candidate_tokens: Vec<String>,
     pub verdict: MutationReceipt,
     pub predecessor_ordinal: Option<usize>,
+    #[serde(default)]
+    pub clock_lie: bool,
+    #[serde(default)]
+    pub clock_lie_blocker: Option<OccurrenceIdentity>,
     pub input: Option<TrailAdmission>,
     pub result_slots: Vec<WordSlot>,
     // Reducer revisions and job handoff times are separate authorities. Null
@@ -670,6 +747,8 @@ fn decision_snapshot(
         candidate_tokens: entry.candidate_tokens.clone(),
         verdict: entry.decision.clone(),
         predecessor_ordinal: entry.predecessor_ordinal,
+        clock_lie: entry.clock_lie,
+        clock_lie_blocker: entry.clock_lie_blocker.clone(),
         input,
         result_slots: ledger
             .slots_of(&entry.observation.occurrence)
@@ -925,6 +1004,8 @@ fn decision_matches(actual: &TrailDecision, expected: &TrailDecision) -> bool {
         && actual.candidate_tokens == expected.candidate_tokens
         && actual.verdict == expected.verdict
         && actual.predecessor_ordinal == expected.predecessor_ordinal
+        && actual.clock_lie == expected.clock_lie
+        && actual.clock_lie_blocker == expected.clock_lie_blocker
         && actual.result_slots == expected.result_slots
 }
 
@@ -965,6 +1046,12 @@ fn replay_slot_operation(
     REPLAY_CHECKPOINTS.with(|rows| *rows.borrow_mut() = Some(Vec::new()));
     let _checkpoints = ReplayCheckpoints;
     let observation = &start.observation;
+    ledger.speech_evidence = start
+        .speech
+        .as_ref()
+        .map(TrailSpeechEvidence::evidence)
+        .transpose()?;
+    ledger.record_assigned_word_pins(observation, &start.assignments);
     match &start.input {
         TrailSlotInput::Words { words } => {
             ledger.admit_word_slots(observation, &word_pins(words));
@@ -1241,6 +1328,40 @@ mod tests {
                     "other",
                 );
             }
+            "speech-resegment" => {
+                use crate::audio::capture_receipt::{
+                    AcousticAvailability, AcousticSpeechEvidence, CAPTURE_ENERGY_PRODUCER,
+                    CaptureEvidenceIdentity,
+                };
+                ledger.admit_word_slots(
+                    &apple,
+                    &[
+                        WordPin::new(0, 12_000, "apple floor"),
+                        WordPin::new(14_000, 16_000, "dalej"),
+                    ],
+                );
+                ledger.record_speech_evidence(&AcousticSpeechEvidence::measured(
+                    CaptureEvidenceIdentity::new(&owner.session, 11),
+                    CAPTURE_ENERGY_PRODUCER,
+                    AcousticAvailability::Observed {
+                        observed_samples: 16_000,
+                    },
+                    vec![crate::stt::tail_provider::TailSampleRange {
+                        session: owner.session.clone(),
+                        capture_epoch: 11,
+                        sample_start: 1_000,
+                        sample_end: 11_000,
+                    }],
+                ));
+                ledger.admit_word_slots(
+                    &whisper,
+                    &[
+                        WordPin::new(0, 6_000, "był"),
+                        WordPin::new(6_000, 12_000, "sobie"),
+                    ],
+                );
+                assert_eq!(ledger.text_of(&owner), Some("był sobie dalej"));
+            }
             "group-split" => {
                 ledger.admit(&apple, "na prawdę");
                 ledger.admit_word_slots(&whisper, &children);
@@ -1317,7 +1438,13 @@ mod tests {
 
     #[test]
     fn saved_inputs_replay_insert_split_rewrite_and_alternatives_literally() {
-        for scenario in ["batch", "group-split", "explicit-split", "rewrite-merge"] {
+        for scenario in [
+            "speech-resegment",
+            "batch",
+            "group-split",
+            "explicit-split",
+            "rewrite-merge",
+        ] {
             let (_dir, owner, ledger, rows) = saved_slot_scenario(scenario);
             let mut receipts = Vec::new();
             let mut merge_projection_ranges = Vec::new();

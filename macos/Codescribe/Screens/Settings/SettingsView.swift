@@ -6,6 +6,9 @@ import SwiftUI
 struct SettingsView: View {
   static let windowID = "codescribe-settings"
   @StateObject private var model: SettingsViewModel
+  // Native selection reconciliation writes only view state. Navigation and
+  // its refresh effects are committed by onChange, outside the List setter.
+  @State private var sidebarSelection: SettingsSection?
   @State private var columnVisibility: NavigationSplitViewVisibility = .all
   @State private var search: String = ""
   @State private var pendingScrollAnchor: SettingsAnchor?
@@ -13,6 +16,7 @@ struct SettingsView: View {
 
   init(model: SettingsViewModel? = nil) {
     _model = StateObject(wrappedValue: model ?? SettingsViewModel())
+    _sidebarSelection = State(initialValue: model?.section ?? .creator)
   }
 
   var body: some View {
@@ -35,6 +39,7 @@ struct SettingsView: View {
     .controlSize(.regular)
     .frame(minWidth: 880, maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)
     .onAppear {
+      sidebarSelection = model.section
       model.refresh()
       consumePendingDeepLink()
     }
@@ -74,7 +79,7 @@ struct SettingsView: View {
   /// search field that matches panel names AND what each panel does. One flat
   /// row per section — a pane's parts are tabs inside the pane, not child rows.
   private var sidebar: some View {
-    List(selection: $model.sidebarSelection) {
+    List(selection: $sidebarSelection) {
       ForEach(SettingsSectionGroup.allCases) { group in
         let items = matchedSections.filter { $0.group == group }
         if !items.isEmpty {
@@ -94,7 +99,13 @@ struct SettingsView: View {
       placement: .sidebar,
       prompt: "Search settings"
     )
+    .onChange(of: sidebarSelection) { _, selection in
+      // Clearing/filtering the native selection does not clear the detail.
+      guard let selection, selection != model.section else { return }
+      model.select(selection)
+    }
     .onChange(of: model.section) { _, section in
+      sidebarSelection = section
       landOnSearchHit(in: section)
     }
   }
@@ -164,7 +175,7 @@ struct SettingsView: View {
     case .creator:
       CreatorPanel(model: model)
     case .lab:
-      LabPanel()
+      LabPanel(model: model)
     case .dictation, .agent:
       EmptyView()
     }

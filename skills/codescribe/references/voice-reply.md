@@ -22,7 +22,7 @@ had said it.
 ## Speak with `--say`
 
 `--say` is the only voice path. It appends one `codescribe.agent-reply.v1` row
-to the bus, then speaks through the same TTS lane as the app (xAI by default;
+to the bus with the playback result. It speaks through the same TTS lane as the app (xAI by default;
 OpenAI when the profile or `--tts-vendor` says so):
 
 ```bash
@@ -41,6 +41,17 @@ python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
   never print them. Do not install another helper, mint keys or edit provider
   configuration in order to speak.
 
+Synthesis can run in parallel. Playback shares one exclusive lock at
+`~/.codescribe/agent-bridge/runtime/playback.lock` (under the selected bridge
+home when overridden). Replies play in lock acquisition order. The wait is
+bounded to 120 seconds; timeout leaves a text-only bus reply with
+`spoken: false` and `reason: playback_busy`. Immediately after acquiring the
+lock, the helper checks the canonical application bus, even when the reply uses a
+channel bus. A live take waits up to another 120 seconds, then refuses playback
+with `reason: take_live`; an utterance seal alone does not end that take.
+If a take starts during playback, the helper stops afplay and reports
+`reason: take_started`. Continue the reply in text.
+
 A failed synthesis still lands the row, with `spoken: false`, `tts_error` and a
 `reason`; the command exits 5. The body of a refused request is never printed.
 
@@ -51,6 +62,9 @@ A failed synthesis still lands the row, with `spoken: false`, `tts_error` and a
 | `quota_exhausted`     | Spending limit or credits used up; the Founder decides |
 | `http_<code>`         | Other refusal; report the code                         |
 | `network`             | The request did not complete; one retry is reasonable  |
+| `playback_busy`       | Another reply held playback beyond the 120-second wait |
+| `take_live`           | Take did not end within the 120-second wait            |
+| `take_started`        | Take started during playback; audio was stopped        |
 | `playback_failed`     | Audio arrived, `afplay` failed                         |
 
 Report a failed reply in chat with its `reason`; do not retry a

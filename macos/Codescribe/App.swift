@@ -323,6 +323,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       return
     }
 
+    Task { @MainActor in
+      let detail = await Task.detached(priority: .utility) {
+        RealAgentBridgeInstaller().synchronizeManagedPayload()
+      }.value
+      appLogger.info("\(detail, privacy: .public)")
+      SettingsViewModel.recordAgentBridgeLaunchSynchronization(detail)
+    }
+
     DistributedNotificationCenter.default().addObserver(
       self,
       selector: #selector(showAgentFromExternalLaunch),

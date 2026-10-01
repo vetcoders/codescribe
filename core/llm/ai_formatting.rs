@@ -1380,9 +1380,7 @@ async fn request_format_text_with_status_channels_for_policy(
         // failure falls back to the cloud wire below inside the same retry
         // budget, so refusal detection, `AiNoop` handling and the retry
         // policy apply to both engines identically.
-        let on_device_output = if !assistive
-            && crate::llm::on_device::on_device_formatting_selected()
-        {
+        let on_device_output = if !assistive && runtime_settings.values().format_on_device {
             match crate::llm::on_device::on_device_formatter() {
                 Some(formatter) => match formatter.format(&system_prompt, &user_message).await {
                     Ok(assistant_text) => {

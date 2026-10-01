@@ -779,6 +779,33 @@ final class SettingsTruthTests: XCTestCase {
       ])
   }
 
+  /// The Lab pickers write their exact promoted keys on a developer build and
+  /// nothing at all on a production bundle.
+  func testLabPickersWriteExactPromotedKeysOnlyOnTheDeveloperSurface() {
+    var writes: [(key: String, value: String)] = []
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(updateConfigObserver: { key, value in
+        writes.append((key, value))
+      }))
+
+    model.setWhisperAdaptiveBuffer(true)
+    model.setFormatOnDevice(true)
+    model.setFormatOnDevice(false)
+
+    guard DeveloperSurface.isEnabled() else {
+      XCTAssertTrue(writes.isEmpty, "production bundle must not persist Lab knobs")
+      return
+    }
+    XCTAssertEqual(
+      writes.map(\.key),
+      [
+        "WHISPER_ADAPTIVE_BUFFER",
+        "CODESCRIBE_FORMAT_ON_DEVICE",
+        "CODESCRIBE_FORMAT_ON_DEVICE",
+      ])
+    XCTAssertEqual(writes.map(\.value), ["1", "1", "0"])
+  }
+
   func testLocalWhisperDiagnosticEnvTokensMatchRuntimePolicy() {
     for value in ["", "  ", "phase1", " PHASE1 ", "1"] {
       XCTAssertEqual(

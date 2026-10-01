@@ -523,6 +523,87 @@ final class AgentBridgeInstallerTests: XCTestCase {
     }
   }
 
+  // Integrator (2026-10-01): build 1643 bundled the speech guard, but the
+  // managed runtime kept the earlier helper until someone clicked Install.
+  func testLaunchSynchronizationUpdatesAManagedRuntimeAndKeepsItsState() throws {
+    let home = scratch.appendingPathComponent("sync-home", isDirectory: true)
+    let previous = try makePayload(helperContent: "#!/usr/bin/env python3\nprint('old')\n")
+    _ = try RealAgentBridgeInstaller(
+      resourceRoot: previous, homeDirectory: home, environment: [:]
+    ).install(selectedClients: [.claudeCode, .codex])
+    let runtime = home.appendingPathComponent(".codescribe/agent-bridge/runtime", isDirectory: true)
+    let followers = runtime.appendingPathComponent("followers", isDirectory: true)
+    try FileManager.default.createDirectory(at: followers, withIntermediateDirectories: true)
+    let log = followers.appendingPathComponent("filip.log")
+    let logBytes = Data("follower filip attached\n".utf8)
+    try logBytes.write(to: log)
+    let cursor = runtime.appendingPathComponent("agent-ack-cursor.json")
+    let cursorBytes = Data("{\"cursor\": 41}\n".utf8)
+    try cursorBytes.write(to: cursor)
+    let cursorInode = try fileNumber(cursor)
+
+    let bundled = try makePayload(helperContent: "#!/usr/bin/env python3\nprint('guard')\n")
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: bundled, homeDirectory: home, environment: [:])
+    let detail = installer.synchronizeManagedPayload()
+
+    XCTAssertTrue(detail.contains("synchronized"), detail)
+    XCTAssertEqual(
+      try String(contentsOf: runtime.appendingPathComponent("bin/bus-demux.py"), encoding: .utf8),
+      "#!/usr/bin/env python3\nprint('guard')\n")
+    let receipt = try jsonObject(home.appendingPathComponent(".codescribe/agent-bridge/receipt.json"))
+    XCTAssertEqual(
+      Set(try XCTUnwrap(receipt["selected_clients"] as? [String])),
+      Set([AgentBridgeClient.claudeCode.rawValue, AgentBridgeClient.codex.rawValue]),
+      "startup keeps the recorded selection")
+    XCTAssertEqual(try Data(contentsOf: log), logBytes)
+    XCTAssertEqual(try Data(contentsOf: cursor), cursorBytes)
+    XCTAssertEqual(try fileNumber(cursor), cursorInode, "ack cursor keeps its inode")
+
+    let again = installer.synchronizeManagedPayload()
+    XCTAssertTrue(again.contains("unchanged"), again)
+  }
+
+  func testLaunchSynchronizationNeverPerformsAFirstInstallation() throws {
+    let home = scratch.appendingPathComponent("sync-fresh-home", isDirectory: true)
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: try makePayload(), homeDirectory: home, environment: [:])
+
+    let detail = installer.synchronizeManagedPayload()
+
+    XCTAssertTrue(detail.contains("skipped"), detail)
+    XCTAssertFalse(
+      FileManager.default.fileExists(
+        atPath: home.appendingPathComponent(".codescribe/agent-bridge/receipt.json").path))
+    XCTAssertFalse(
+      FileManager.default.fileExists(
+        atPath: home.appendingPathComponent(".codescribe/agent-bridge/runtime").path))
+    for folder in [".codex/skills/codescribe", ".claude/skills/codescribe"] {
+      XCTAssertFalse(
+        FileManager.default.fileExists(atPath: home.appendingPathComponent(folder).path),
+        "no client folder appears without an explicit installation")
+    }
+  }
+
+  func testLaunchSynchronizationLeavesAHandEditedRuntimeAlone() throws {
+    let home = scratch.appendingPathComponent("sync-edited-home", isDirectory: true)
+    _ = try RealAgentBridgeInstaller(
+      resourceRoot: try makePayload(helperContent: "#!/usr/bin/env python3\nprint('old')\n"),
+      homeDirectory: home, environment: [:]
+    ).install(selectedClients: [.codex])
+    let helper = home.appendingPathComponent(".codescribe/agent-bridge/runtime/bin/bus-demux.py")
+    let edited = "#!/usr/bin/env python3\nprint('hand edited')\n"
+    try Data(edited.utf8).write(to: helper)
+
+    let detail = RealAgentBridgeInstaller(
+      resourceRoot: try makePayload(helperContent: "#!/usr/bin/env python3\nprint('guard')\n"),
+      homeDirectory: home, environment: [:]
+    ).synchronizeManagedPayload()
+
+    XCTAssertTrue(detail.contains("skipped"), detail)
+    XCTAssertEqual(try String(contentsOf: helper, encoding: .utf8), edited)
+  }
+
   func testInstallPreservesRuntimeStateByteForByteAtTheSamePath() throws {
     let payload = try makePayload()
     let home = scratch.appendingPathComponent("state-preserved")
@@ -745,6 +826,11 @@ final class AgentBridgeInstallerTests: XCTestCase {
       ) + Data([0x0A])
     try manifestData.write(to: payload.appendingPathComponent("manifest.json"))
     return payload
+  }
+
+  private func fileNumber(_ url: URL) throws -> UInt64 {
+    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+    return try XCTUnwrap((attributes[.systemFileNumber] as? NSNumber)?.uint64Value)
   }
 
   private func jsonObject(_ url: URL) throws -> [String: Any] {

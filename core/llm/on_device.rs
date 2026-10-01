@@ -82,21 +82,13 @@ pub fn on_device_formatter() -> Option<Arc<dyn OnDeviceFormatter>> {
         .map(Arc::clone)
 }
 
-/// Opt-in knob: truthy values route the (non-assistive) formatting lane to
-/// the on-device model first. Doctrine 2026-09-25: opt-in defaults, power
-/// knobs in `.env`.
+/// Opt-in key: routes the (non-assistive) formatting lane to the on-device
+/// model first. One key, two writers — the developer Lab toggle (settings
+/// `speech.formatting.on_device`) and the `.env` power knob. The runtime
+/// snapshot resolves them once per settings generation into
+/// `Config::format_on_device`, the process value outranking Settings.
+/// Doctrine 2026-09-25: opt-in defaults.
 pub const FORMAT_ON_DEVICE_ENV: &str = "CODESCRIBE_FORMAT_ON_DEVICE";
-
-/// True when the knob selects the on-device lane. A selected lane without a
-/// registered formatter still falls through to the cloud, loudly.
-pub fn on_device_formatting_selected() -> bool {
-    std::env::var(FORMAT_ON_DEVICE_ENV).is_ok_and(|value| {
-        matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    })
-}
 
 #[cfg(test)]
 mod tests {
