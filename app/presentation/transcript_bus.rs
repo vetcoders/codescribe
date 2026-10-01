@@ -326,8 +326,8 @@ pub struct TranscriptBusEvidenceEvent {
     pub document_index: u64,
     pub label: String,
     pub rendered_text: String,
-    /// Optional sink-ready bytes. This is populated only on the lifecycle
-    /// terminal for a composer delivery; `rendered_text` remains reducer truth.
+    /// Optional sink-ready bytes, including a selected derived presentation.
+    /// `rendered_text` and `reducer_revision` always remain source Raw truth.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_text: Option<String>,
     #[serde(default)]
@@ -579,6 +579,26 @@ fn document_history_at_counted(
                 });
             continue;
         }
+        if let Ok(row) = serde_json::from_slice::<serde_json::Value>(&line)
+            && row["schema"] == "codescribe.derived-transcript.v1"
+            && row["session_id"] == session_id
+            && let (Some(revision), Some(text), Some(mode), Some(time)) = (
+                row["revision"].as_u64(),
+                row["rendered_text"].as_str(),
+                row["requested_mode"].as_str(),
+                row["emitted_at"].as_str(),
+            )
+        {
+            revisions
+                .entry((session_id.to_string(), revision))
+                .or_insert(DocumentHistoryEntry {
+                    revision,
+                    rendered_text: text.into(),
+                    provenance: format!("formatter-{mode}"),
+                    emitted_at: time.into(),
+                });
+            continue;
+        }
         let Ok(event) = serde_json::from_slice::<TranscriptBusEvidenceEvent>(&line) else {
             continue;
         };
@@ -591,7 +611,13 @@ fn document_history_at_counted(
                 .or_insert(entry);
         }
     }
-    Ok(revisions.into_values().collect())
+    let mut history = revisions.into_values().collect::<Vec<_>>();
+    history.sort_by(|left, right| {
+        left.emitted_at
+            .cmp(&right.emitted_at)
+            .then(left.revision.cmp(&right.revision))
+    });
+    Ok(history)
 }
 
 /// Group-level provenance, deliberately separate from per-word acoustic rows.
@@ -1237,6 +1263,70 @@ impl TranscriptBus {
         if let Err(error) = Self::append_projection_locked(&mut writer, projection) {
             self.log_write_error(error);
         }
+    }
+
+    /// UI-only projection of a reducer-authenticated version. It consumes a
+    /// sequence but never changes the Bus's retained Raw document or emits a
+    /// clean transcript event to an agent observer.
+    pub(crate) fn derived_presentation_event(
+        &self,
+        projection: &DerivedTranscriptProjection,
+    ) -> Option<TranscriptBusEvidenceEvent> {
+        if !projection.authenticates_publication()
+            || projection.session_id != self.session.session_id
+        {
+            return None;
+        }
+        let mut writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut event = writer.last_projection.clone()?;
+        if event.reducer_revision != projection.source_raw_revision
+            || event.rendered_text != projection.source_raw_text
+        {
+            return None;
+        }
+        writer.sequence = writer.sequence.saturating_add(1);
+        event.sequence = writer.sequence;
+        event.emitted_at.clone_from(&projection.emitted_at);
+        event.reducer_action = "derived_projection".into();
+        event.label.clone_from(&projection.receipt_id);
+        event.delivery_text = Some(projection.rendered_text.clone());
+        event.lifecycle_terminal = false;
+        event.delivery = TranscriptDelivery::Unattempted;
+        event.uncertain_spans.clear();
+        Some(event)
+    }
+
+    pub(crate) fn light_plus_deadline_event(
+        &self,
+        elapsed_ms: u128,
+    ) -> Option<TranscriptBusEvidenceEvent> {
+        let mut writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut event = writer.last_projection.clone()?;
+        let receipt = serde_json::json!({
+            "schema": "codescribe.light-plus-tick.v1",
+            "session_id": self.session.session_id,
+            "source_raw_revision": event.reducer_revision,
+            "status": "deadline_exceeded",
+            "budget_ms": 2000,
+            "elapsed_ms": elapsed_ms,
+            "delivered": "unchanged_raw",
+        });
+        if let Err(error) = Self::append_projection_locked(&mut writer, &receipt) {
+            self.log_write_error(error);
+        }
+        writer.sequence = writer.sequence.saturating_add(1);
+        event.sequence = writer.sequence;
+        event.reducer_action = "light_plus_tick_deadline".into();
+        event.label = "Light+ skipped — delivered Raw".into();
+        event.lifecycle_terminal = false;
+        event.delivery = TranscriptDelivery::Unattempted;
+        Some(event)
     }
 
     pub(crate) fn record_projection_delivery(

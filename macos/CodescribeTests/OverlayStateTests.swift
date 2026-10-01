@@ -245,8 +245,9 @@ final class OverlayStateTests: XCTestCase {
       .init(channel: "2", agent: "miron", deliveryID: nil, stage: nil, isOpen: false)
     ])
     engine.rosterSnapshot = [
-      .init(channel: "2", audience: "miron", open: true, loud: false,
-            autosealDeadlineUnixMs: nil, followerAlive: true)
+      .init(
+        channel: "2", audience: "miron", open: true, loud: false,
+        autosealDeadlineUnixMs: nil, followerAlive: true)
     ]
 
     await state.toggleAgentChannel(2)
@@ -279,10 +280,12 @@ final class OverlayStateTests: XCTestCase {
   func testRosterSnapshotProjectsDeadAndUnknownFollowersWithoutGuessing() {
     let state = OverlayState()
     state.applyChannelRoster([
-      .init(channel: "1", audience: "klaudiusz", open: false, loud: false,
-            autosealDeadlineUnixMs: 1_700_000_000_000, followerAlive: false),
-      .init(channel: "2", audience: "miron", open: false, loud: false,
-            autosealDeadlineUnixMs: nil, followerAlive: nil),
+      .init(
+        channel: "1", audience: "klaudiusz", open: false, loud: false,
+        autosealDeadlineUnixMs: 1_700_000_000_000, followerAlive: false),
+      .init(
+        channel: "2", audience: "miron", open: false, loud: false,
+        autosealDeadlineUnixMs: nil, followerAlive: nil),
     ])
 
     XCTAssertEqual(state.channelHudStates["1"]?.followerAlive, false)
@@ -294,7 +297,8 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertTrue(state.channelDelivery.isEmpty, "there is no lease-backed mailbox row")
     XCTAssertEqual(state.visibleChannelRows.map(\.channel), ["1", "2"])
     XCTAssertEqual(state.visibleChannelRows.first?.agent, "klaudiusz")
-    XCTAssertNil(state.visibleChannelRows.first?.stage, "the roster must not invent delivery evidence")
+    XCTAssertNil(
+      state.visibleChannelRows.first?.stage, "the roster must not invent delivery evidence")
     let view = OverlayChannelStatusView(
       channels: state.visibleChannelRows, unavailable: false, palette: .dark, animates: false,
       hudStates: state.channelHudStates)
@@ -438,6 +442,8 @@ final class OverlayStateTests: XCTestCase {
     reducerRevision: UInt64? = nil,
     reducerAction: String? = nil,
     manualEditReceipt: String? = nil,
+    label: String? = nil,
+    deliveryText: String? = nil,
     sealCoverage: CsProjectedSealCoverageReceipt? = nil,
     consultationPresentations: [CsProjectedConsultationPresentation] = []
   ) {
@@ -475,6 +481,8 @@ final class OverlayStateTests: XCTestCase {
         reducerRevision: reducerRevision,
         sampleStart: sampleStart,
         sampleEnd: sampleEnd,
+        label: label,
+        deliveryText: deliveryText,
         canPaste: canPaste,
         canInsert: canInsert,
         canCopy: canCopy,
@@ -676,7 +684,10 @@ final class OverlayStateTests: XCTestCase {
 
     XCTAssertEqual(
       engine.teachRequests,
-      [OverlayStateTestEngine.TeachRequest(variant: "iwo", canonical: "Iwo", kind: "lexicon_corrected")]
+      [
+        OverlayStateTestEngine.TeachRequest(
+          variant: "iwo", canonical: "Iwo", kind: "lexicon_corrected")
+      ]
     )
     XCTAssertEqual(state.toast, "Saved as evidence — 1/3 manual confirmations")
 
@@ -2138,18 +2149,22 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertTrue(OverlayIntentRail.projectedIntents(for: state).isEmpty)
 
     projectText(
-      engine.formatterRenderedText,
+      "tekst bazowy do formatowania",
       to: state,
       canCopy: true,
       canFormat: true,
       terminal: true,
+      lifecycleTerminal: false,
       sessionId: "formatter-session",
-      reducerRevision: 12,
-      reducerAction: "apply_manual_edit",
-      manualEditReceipt: "formatter-formatter-session-11-12-0"
+      reducerRevision: 11,
+      reducerAction: "derived_projection",
+      label: "formatter-derived-formatter-session-11-9223372036854775809",
+      deliveryText: engine.formatterRenderedText
     )
 
     XCTAssertEqual(state.formattedText, engine.formatterRenderedText)
+    XCTAssertEqual(state.latestTranscriptProjection?.renderedText, "tekst bazowy do formatowania")
+    XCTAssertEqual(state.revision, 11)
     XCTAssertFalse(state.formatterCommitPending)
     XCTAssertNil(state.formatterError)
     XCTAssertNil(state.userRevisionProvenance, "formatter is not a human correction")
@@ -2164,6 +2179,36 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertFalse(state.formatterCommitPending)
     XCTAssertEqual(state.formattedText, engine.formatterRenderedText)
     XCTAssertTrue(state.formatterError?.contains("gateway unavailable") == true)
+  }
+
+  func testDerivedOverlayDisplaysSmartButSendsRawToAgent() async {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    state.engine = engine
+    let raw = " Iwo yyy [laugh] plan.\n"
+    projectText(raw, to: state, terminal: true, reducerRevision: 11)
+    projectText(
+      raw, to: state, terminal: true, lifecycleTerminal: false,
+      reducerRevision: 11, reducerAction: "derived_projection",
+      label: "formatter-derived-test", deliveryText: "Smart version")
+    XCTAssertEqual(state.formattedText, "Smart version")
+    XCTAssertEqual(state.latestTranscriptProjection?.renderedText, raw)
+    let delivered = expectation(description: "Raw delivered to agent")
+    engine.onAssistiveSend = { delivered.fulfill() }
+    state.sendToAgent()
+    await fulfillment(of: [delivered], timeout: 1)
+    XCTAssertEqual(engine.sentAssistiveTexts, [raw])
+  }
+
+  func testLightPlusDeadlineReceiptKeepsRawAndShowsNotice() {
+    let state = OverlayState()
+    projectText("Iwo yyy [laugh] plan", to: state, terminal: true, reducerRevision: 11)
+    projectText(
+      "Iwo yyy [laugh] plan", to: state, terminal: true, lifecycleTerminal: false,
+      reducerRevision: 11, reducerAction: "light_plus_tick_deadline",
+      label: "Light+ skipped — delivered Raw")
+    XCTAssertEqual(state.formattedText, "Iwo yyy [laugh] plan")
+    XCTAssertEqual(state.toast, "Light+ skipped — delivered Raw")
   }
 
   func testCloseIsImmediateAndAgentButtonUsesControllerDelivery() async {
@@ -2963,7 +3008,9 @@ final class OverlayStateTests: XCTestCase {
           else { continue }
           if color.redComponent > 0.7 && color.greenComponent > 0.7
             && color.blueComponent > 0.7 && color.alphaComponent > 0.5
-          { count += 1 }
+          {
+            count += 1
+          }
         }
       }
       return count
@@ -2971,12 +3018,14 @@ final class OverlayStateTests: XCTestCase {
     // Bitmap rows start at the top. Prove text rendered before checking its
     // exclusion from the bottom strip; a collapsed/empty canvas cannot pass.
     XCTAssertGreaterThan(
-      brightPixels(x: Int(40 * scaleX)..<Int(520 * scaleX),
-                   y: Int(60 * scaleY)..<Int(170 * scaleY)),
+      brightPixels(
+        x: Int(40 * scaleX)..<Int(520 * scaleX),
+        y: Int(60 * scaleY)..<Int(170 * scaleY)),
       Int(100 * scaleX * scaleY), "transcript body did not render")
     XCTAssertLessThan(
-      brightPixels(x: Int(390 * scaleX)..<Int(520 * scaleX),
-                   y: Int((size.height - 28) * scaleY)..<Int((size.height - 6) * scaleY)),
+      brightPixels(
+        x: Int(390 * scaleX)..<Int(520 * scaleX),
+        y: Int((size.height - 28) * scaleY)..<Int((size.height - 6) * scaleY)),
       Int(20 * scaleX * scaleY), "formatted transcript painted into the footer band")
   }
 

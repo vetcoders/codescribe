@@ -331,7 +331,11 @@ final class OverlayState {
   // MARK: Published state
   private(set) var transcriptMode = "dictation"
   private(set) var mode: OverlayMode = .listening
-  var formattedText: String { latestTranscriptProjection?.renderedText ?? "" }
+  var formattedText: String {
+    guard let projection = latestTranscriptProjection else { return "" }
+    return projection.reducerAction == "derived_projection"
+      ? projection.deliveryText ?? projection.renderedText : projection.renderedText
+  }
   /// A6 uncertain-word spans from the reducer projection (UTF-16 ranges into
   /// `formattedText`). The overlay stays a pure projection: classification
   /// happened in Rust; `canvasUncertainWords` maps them onto the canvas.
@@ -708,7 +712,8 @@ final class OverlayState {
   private(set) var channelToggleError: String?
   var visibleChannelRows: [OverlayChannelDelivery] {
     let deliveredDigits = Set(channelDelivery.map(\.channel))
-    let boundWithoutDelivery = channelRosterNames.keys.sorted().compactMap { digit -> OverlayChannelDelivery? in
+    let boundWithoutDelivery = channelRosterNames.keys.sorted().compactMap {
+      digit -> OverlayChannelDelivery? in
       guard !deliveredDigits.contains(digit), let audience = channelRosterNames[digit] else {
         return nil
       }
@@ -1973,13 +1978,15 @@ final class OverlayState {
 
   @discardableResult
   private func deliverAgentTranscript() -> Task<Void, Never>? {
-    let text = activeText.trimmingCharacters(in: .whitespacesAndNewlines)
+    let text = latestTranscriptProjection?.renderedText ?? activeText
     // No `agentSessionArmed` here: the explicit Send button is live for
     // every terminal overlay (dictation and formatting included), and the
     // controller falls back to the session trigger context when no
     // assistive context was armed (review P0-03). Auto-send remains gated
     // on the armed latch by its caller.
-    guard !agentDeliveryStarted, !text.isEmpty, let engine else { return nil }
+    guard !agentDeliveryStarted,
+      !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, let engine
+    else { return nil }
     agentDeliveryStarted = true
     let generation = captureGeneration
     cancelAutoHide()
@@ -2283,9 +2290,9 @@ final class OverlayState {
     let revisionReceipt = projection.acousticReceipts
       .compactMap(\.manualEditReceipt)
       .first(where: { $0.hasPrefix("user-edit-") })
-    let formatterReceipt = projection.acousticReceipts
-      .compactMap(\.manualEditReceipt)
-      .first(where: { $0.hasPrefix("formatter-") })
+    let formatterReceipt =
+      projection.reducerAction == "derived_projection"
+        && projection.label.hasPrefix("formatter-") ? projection.label : nil
     let completesPendingRevision =
       revisionCommitPending
       && projection.reducerAction == "apply_manual_edit"
@@ -2295,10 +2302,10 @@ final class OverlayState {
       && revisionReceipt != nil
     let completesPendingFormatter =
       formatterCommitPending
-      && projection.reducerAction == "apply_manual_edit"
+      && projection.reducerAction == "derived_projection"
       && projection.terminal
       && projection.sessionId == pendingRevisionSessionId
-      && projection.reducerRevision > (pendingRevisionSource ?? UInt64.max)
+      && projection.reducerRevision == pendingRevisionSource
       && formatterReceipt != nil
     // A successful acoustic terminal has its own callback. Agent auto-send
     // below uses lifecycle completion and nonempty text, not this seal signal.
@@ -2350,6 +2357,9 @@ final class OverlayState {
       abortRecordingSession()
     }
     latestTranscriptProjection = projection
+    if projection.reducerAction == "light_plus_tick_deadline" {
+      showFooterNotice(projection.label)
+    }
     // Mirror this accepted projection; a successor or a later document verdict
     // cannot inherit a notice belonging to its predecessor.
     coverageRefusalNotice =
@@ -2380,16 +2390,17 @@ final class OverlayState {
       pendingRevisionSessionId = nil
       pendingRevisionSource = nil
       revisionCommitError = nil
-      revisionDraft = projection.renderedText
+      revisionDraft = formattedText
     } else if completesPendingFormatter {
       formatterCommitPending = false
       pendingRevisionSessionId = nil
       pendingRevisionSource = nil
       formatterError = nil
-      revisionDraft = projection.renderedText
+      revisionDraft = formattedText
       showFooterNotice("formatted")
+      loadDocumentHistory()
     } else if !draftWasDirty || isNewSession {
-      revisionDraft = projection.renderedText
+      revisionDraft = formattedText
     }
 
     if projection.terminal {

@@ -1766,7 +1766,7 @@ impl RecordingController {
             return Err(anyhow::anyhow!("terminal transcript authority changed"));
         }
         let receipt = presentation
-            .apply_formatter_revision(session_id, source_revision, result)
+            .apply_formatter_revision(session_id, source_revision, format_level, result)
             .map_err(anyhow::Error::new)?;
         log_formatter_revision(&receipt, format_level, level_source);
         Ok(receipt)
@@ -5840,8 +5840,8 @@ impl RecordingController {
     /// - a formatter refusal (failed, policy-skipped, healthy no-op) keeps the
     ///   committed document exactly as the ledger sealed it.
     ///
-    /// On success the committed revision is the delivered text, so the Bus, the
-    /// delivery buffer and the ledger CAS keep seeing the same bytes.
+    /// On success delivery selects the source-bound derived version. The Bus
+    /// Raw document, shared buffer and acoustic revision remain unchanged.
     async fn format_composer_turn_once(
         &self,
         capture_turn: CaptureTurnIntent,
@@ -5894,14 +5894,22 @@ impl RecordingController {
             }),
         )
         .await;
-        match presentation.apply_formatter_revision(session_id, source_revision, result) {
+        match presentation.apply_formatter_revision(
+            session_id,
+            source_revision,
+            runtime_settings.formatting_policy(),
+            result,
+        ) {
             Ok(commit) => {
                 info!(
                     revision = commit.revision,
                     receipt = %commit.provenance_receipt,
                     "Composer turn formatted once at terminal processing"
                 );
-                commit.rendered_text
+                presentation
+                    .delivery_projection(runtime_settings.formatting_policy(), &source_text)
+                    .map(|projection| projection.rendered_text)
+                    .unwrap_or(committed_text)
             }
             Err(refusal) => {
                 info!(%refusal, "Composer turn terminal formatting refused; committed text stands");
@@ -5914,7 +5922,7 @@ impl RecordingController {
         let policy = self.runtime_settings_arc().await.formatting_policy();
         if !matches!(
             policy,
-            FormattingPolicy::Correction | FormattingPolicy::Smart
+            FormattingPolicy::Correction | FormattingPolicy::Smart | FormattingPolicy::Max
         ) {
             return raw;
         }
