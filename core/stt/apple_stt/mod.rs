@@ -82,6 +82,18 @@ struct BridgeRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     contextual_strings: Option<&'a [String]>,
     allow_download: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deadline_policy: Option<AppleDeadlinePolicy>,
+}
+
+/// Caller intent for URL recognition; file length only sizes the chosen budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppleDeadlinePolicy {
+    /// Interactive stop path: retain the short SFSpeech deadline and env override.
+    LiveFinal,
+    /// Offline recognition: collect every phrase until the task finishes.
+    WholeFile,
 }
 
 /// Apple bridge backend selected for a locale (matches Swift `AppleSttBackend`).
@@ -401,15 +413,29 @@ pub(crate) fn try_transcribe_long_with_segments(
 
 /// Convenience helper for batch/offline file transcription.
 pub fn transcribe_file(path: &Path, language: Option<&str>) -> Result<RawTranscript> {
-    Ok(transcribe_file_with_backend(path, language)?.0)
+    Ok(transcribe_file_with_backend(
+        path,
+        language,
+        AppleDeadlinePolicy::WholeFile,
+    )?
+    .0)
 }
 
-/// File transcription with Apple backend provenance for final-pass adjudication.
+/// Whole-file transcription with Apple backend provenance.
 pub fn transcribe_file_verdict(
     path: &Path,
     language: Option<&str>,
 ) -> Result<TranscriptionVerdict> {
-    let (raw, backend) = transcribe_file_with_backend(path, language)?;
+    transcribe_file_verdict_with_policy(path, language, AppleDeadlinePolicy::WholeFile)
+}
+
+/// URL transcription with an explicit interactive or offline caller budget.
+pub fn transcribe_file_verdict_with_policy(
+    path: &Path,
+    language: Option<&str>,
+    policy: AppleDeadlinePolicy,
+) -> Result<TranscriptionVerdict> {
+    let (raw, backend) = transcribe_file_with_backend(path, language, policy)?;
     let mode = backend
         .map(AppleSttBackend::engine_mode)
         .unwrap_or(TranscriptionEngineMode::SfSpeechOnDevice);
@@ -424,10 +450,11 @@ pub fn transcribe_file_verdict(
     ))
 }
 
-/// Transcribe a path already on disk without re-encoding (preferred final-pass path).
+/// Transcribe a path already on disk with the caller's URL recognition policy.
 fn transcribe_file_with_backend(
     path: &Path,
     language: Option<&str>,
+    policy: AppleDeadlinePolicy,
 ) -> Result<(RawTranscript, Option<AppleSttBackend>)> {
     init()?;
     let locale = resolved_locale(language);
@@ -439,8 +466,19 @@ fn transcribe_file_with_backend(
         audio_path: Some(audio_path.as_str()),
         contextual_strings: None,
         allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
+        deadline_policy: Some(policy),
     };
-    let response = run_bridge_with_timeout(&request, Some(BRIDGE_TRANSCRIBE_TIMEOUT))
+    let timeout = match policy {
+        AppleDeadlinePolicy::LiveFinal => BRIDGE_TRANSCRIBE_TIMEOUT,
+        AppleDeadlinePolicy::WholeFile => {
+            let (samples, rate) = crate::audio::load_audio_file(path)
+                .context("read whole-file Apple recognition duration")?;
+            let audio_seconds = samples.len() as f64 / f64::from(rate.max(1));
+            // Same recognition budget as Swift, plus process/setup margin.
+            Duration::from_secs_f64((audio_seconds + 25.0).max(20.0) + 30.0)
+        }
+    };
+    let response = run_bridge_with_timeout(&request, Some(timeout))
         .context("Apple STT bridge transcribe failed")?;
     let backend = response
         .backend
@@ -508,6 +546,7 @@ fn transcribe_via_bridge_wav_live(
         audio_path: Some(audio_path.as_str()),
         contextual_strings: contextual_strings.as_deref(),
         allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
+        deadline_policy: None,
     };
     let audio_secs = audio.len() as f64 / sample_rate.max(1) as f64;
     let timeout = Duration::from_secs_f64((audio_secs + 20.0).clamp(30.0, 180.0));
@@ -565,6 +604,7 @@ fn run_bridge_stream(
             audio_path: None,
             contextual_strings: contextual_strings.as_deref(),
             allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
+            deadline_policy: None,
         };
         let req_payload = serde_json::to_vec(&request).context("serialize stream request")?;
         stdin
@@ -885,6 +925,7 @@ fn probe_bridge(locale: &str, allow_download: bool) -> Result<ProbeResult> {
         audio_path: None,
         contextual_strings: None,
         allow_download,
+        deadline_policy: None,
     };
     let response = run_bridge_with_timeout(&request, Some(BRIDGE_PROBE_TIMEOUT))
         .context("Apple STT bridge probe failed")?;
@@ -902,6 +943,7 @@ fn request_speech_auth_bridge(locale: &str, allow_download: bool) -> Result<Brid
         audio_path: None,
         contextual_strings: None,
         allow_download,
+        deadline_policy: None,
     };
     // Dialog can wait on the user; reuse the generous probe budget.
     run_bridge_with_timeout(&request, Some(BRIDGE_PROBE_TIMEOUT))
