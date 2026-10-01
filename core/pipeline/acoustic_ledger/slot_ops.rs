@@ -3,6 +3,230 @@
 
 use super::*;
 
+/// Align labels inside one PCM group; lexical matching never creates a pin.
+/// An unpaired held token preserves the entire group at its existing accuracy.
+pub(super) fn preserve_group_content(
+    held: &str,
+    candidate: &str,
+) -> Result<(String, bool), &'static str> {
+    const AMBIGUOUS: &str = "group_alignment_ambiguous";
+
+    fn tokens(text: &str) -> Vec<&str> {
+        let mut result = Vec::new();
+        let mut start = None;
+        let mut in_tag = false;
+        for (offset, ch) in text.char_indices() {
+            if ch.is_whitespace() && !in_tag {
+                if let Some(begin) = start.take() {
+                    result.push(&text[begin..offset]);
+                }
+            } else {
+                start.get_or_insert(offset);
+                if ch == '[' {
+                    in_tag = true;
+                }
+                if ch == ']' {
+                    in_tag = false;
+                }
+            }
+        }
+        if let Some(begin) = start {
+            result.push(&text[begin..]);
+        }
+        result
+    }
+
+    fn normalize(token: &str) -> String {
+        token
+            .trim_matches(|ch: char| !ch.is_alphanumeric() && ch != '[' && ch != ']')
+            .to_lowercase()
+    }
+
+    fn event(token: &str) -> bool {
+        let token = normalize(token);
+        token == "yyy" || (token.starts_with('[') && token.ends_with(']'))
+    }
+
+    fn similar(left: &str, right: &str) -> bool {
+        if event(left) || event(right) {
+            return false;
+        }
+        let left = normalize(left).chars().collect::<Vec<_>>();
+        let right = normalize(right).chars().collect::<Vec<_>>();
+        let longest = left.len().max(right.len());
+        if longest == 0 || longest > 128 {
+            return false;
+        }
+        let budget = longest / 3;
+        if left.len().abs_diff(right.len()) > budget {
+            return false;
+        }
+        let mut row = (0..=right.len()).collect::<Vec<_>>();
+        for (i, a) in left.iter().enumerate() {
+            let mut diagonal = row[0];
+            row[0] = i + 1;
+            for (j, b) in right.iter().enumerate() {
+                let previous = row[j + 1];
+                row[j + 1] = (diagonal + usize::from(a != b))
+                    .min(row[j] + 1)
+                    .min(previous + 1);
+                diagonal = previous;
+            }
+        }
+        row[right.len()] <= budget
+    }
+
+    fn gap<'a>(
+        held: &[&'a str],
+        candidate: &[&'a str],
+        output: &mut Vec<&'a str>,
+        retained: &mut bool,
+    ) -> Result<(), &'static str> {
+        if held.is_empty() {
+            output.extend_from_slice(candidate);
+            return Ok(());
+        }
+        if candidate.is_empty() || candidate.iter().all(|token| event(token)) {
+            output.extend_from_slice(held);
+            output.extend_from_slice(candidate);
+            *retained = true;
+            return Ok(());
+        }
+        let lexical = candidate
+            .iter()
+            .enumerate()
+            .filter(|(_, token)| !event(token))
+            .collect::<Vec<_>>();
+        if held.len() == 1 && !event(held[0]) && lexical.len() == 1 {
+            output.extend_from_slice(candidate);
+            return Ok(());
+        }
+        // Only a mutual, unique spelling match can partition a larger gap.
+        // Recurse around it so unpaired held tokens keep their document place.
+        let mut pairs = Vec::new();
+        for (i, token) in held.iter().enumerate() {
+            let matches = lexical
+                .iter()
+                .filter(|(_, other)| similar(token, other))
+                .collect::<Vec<_>>();
+            if let [matched] = matches.as_slice() {
+                let (j, other) = **matched;
+                if held.iter().filter(|prior| similar(prior, other)).count() == 1 {
+                    pairs.push((i, j));
+                }
+            }
+        }
+        if pairs.windows(2).any(|pair| pair[0].1 >= pair[1].1) {
+            return Err(AMBIGUOUS);
+        }
+        if let Some(&(i, j)) = pairs.first() {
+            gap(&held[..i], &candidate[..j], output, retained)?;
+            output.push(candidate[j]);
+            gap(&held[i + 1..], &candidate[j + 1..], output, retained)?;
+            return Ok(());
+        }
+        Err(AMBIGUOUS)
+    }
+
+    let held_label = held;
+    let held = tokens(held);
+    let candidate = tokens(candidate);
+    // Keep work bounded for a malformed or occurrence-wide producer payload.
+    if held.len() > 256 || candidate.len() > 256 {
+        return Err(AMBIGUOUS);
+    }
+    let held_keys = held
+        .iter()
+        .map(|token| normalize(token))
+        .collect::<Vec<_>>();
+    let candidate_keys = candidate
+        .iter()
+        .map(|token| normalize(token))
+        .collect::<Vec<_>>();
+    let mut lengths = vec![vec![0; candidate.len() + 1]; held.len() + 1];
+    for i in (0..held.len()).rev() {
+        for j in (0..candidate.len()).rev() {
+            lengths[i][j] = if !held_keys[i].is_empty() && held_keys[i] == candidate_keys[j] {
+                lengths[i + 1][j + 1] + 1
+            } else {
+                lengths[i + 1][j].max(lengths[i][j + 1])
+            };
+        }
+    }
+    // A repeated anchor in a mixed label may name different gaps. Do not
+    // choose a physical word's form from whichever LCS path was visited first.
+    // Uniform repetitions have no competing labels; omitted copies stay.
+    let uniform_repetition = held_keys.first().is_some_and(|key| {
+        !key.is_empty()
+            && held_keys
+                .iter()
+                .chain(&candidate_keys)
+                .all(|other| other == key)
+    });
+    if !uniform_repetition {
+        let mut prefixes = vec![vec![0; candidate.len() + 1]; held.len() + 1];
+        for i in 0..held.len() {
+            for (j, key) in candidate_keys.iter().enumerate() {
+                prefixes[i + 1][j + 1] = if !held_keys[i].is_empty() && &held_keys[i] == key {
+                    prefixes[i][j] + 1
+                } else {
+                    prefixes[i][j + 1].max(prefixes[i + 1][j])
+                };
+            }
+        }
+        for (j, key) in candidate_keys.iter().enumerate() {
+            let possible_sources = held_keys
+                .iter()
+                .enumerate()
+                .filter(|(i, held_key)| {
+                    !key.is_empty()
+                        && *held_key == key
+                        && prefixes[*i][j] + 1 + lengths[*i + 1][j + 1] == lengths[0][0]
+                })
+                .count();
+            if possible_sources > 1 {
+                return Err(AMBIGUOUS);
+            }
+        }
+    }
+    let mut output = Vec::new();
+    let mut retained = false;
+    let (mut i, mut j, mut held_start, mut candidate_start) = (0, 0, 0, 0);
+    while i < held.len() && j < candidate.len() {
+        if !held_keys[i].is_empty() && held_keys[i] == candidate_keys[j] {
+            gap(
+                &held[held_start..i],
+                &candidate[candidate_start..j],
+                &mut output,
+                &mut retained,
+            )?;
+            output.push(candidate[j]);
+            i += 1;
+            j += 1;
+            held_start = i;
+            candidate_start = j;
+        } else if lengths[i + 1][j] >= lengths[i][j + 1] {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+    gap(
+        &held[held_start..],
+        &candidate[candidate_start..],
+        &mut output,
+        &mut retained,
+    )?;
+    Ok((
+        if retained {
+            held_label.to_owned()
+        } else {
+            output.join(" ")
+        },
+        retained,
+    ))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlotTarget {
     pub observation: ObservationIdentity,
@@ -379,6 +603,346 @@ mod slot_ops_tests {
         let mut ledger = AcousticLedger::new();
         ledger.admit_word_slots(&observation(ObservationProducer::Apple, 0), words);
         ledger
+    }
+
+    #[test]
+    fn audit_f02_group_omission_cannot_hide_behind_extra_tokens() {
+        for producer in [ObservationProducer::Whisper, ObservationProducer::CloudLive] {
+            for has_pin in [false, true] {
+                for via_label in [false, true] {
+                    for candidate in [
+                        "czy weryfikowałeś dokładnie",
+                        "czy weryfikowałeś yyy [śmiech]",
+                    ] {
+                        let mut ledger = if has_pin {
+                            pinned(&[WordPin::new(0, 16_000, "czy plan weryfikowałeś")])
+                        } else {
+                            let mut ledger = AcousticLedger::new();
+                            ledger.admit(
+                                &observation(ObservationProducer::Apple, 0),
+                                "czy plan weryfikowałeś",
+                            );
+                            ledger
+                        };
+                        let sources = ledger.slots_of(&owner()).unwrap().to_vec();
+                        let next = observation(producer, 1);
+                        let receipt = if via_label {
+                            ledger.admit_pinned_label(&next, candidate, &[])
+                        } else {
+                            ledger.admit_word_slots(&next, &[WordPin::new(0, 16_000, candidate)])
+                        };
+                        assert_eq!(
+                            ledger.text_of(&owner()),
+                            Some("czy plan weryfikowałeś"),
+                            "{producer:?}, pinned={has_pin}, label={via_label}"
+                        );
+                        assert!(!receipt.grants_mutation());
+                        assert_eq!(ledger.slots_of(&owner()).unwrap(), sources);
+                        assert!(ledger.word_deletions().is_empty());
+                        let alternative = ledger.slot_alternatives().last().unwrap();
+                        assert_eq!(alternative.candidate, candidate);
+                        assert_eq!(alternative.sources, sources);
+                        assert_eq!(alternative.observation, next);
+                        let operation = ledger.slot_operations().last().unwrap();
+                        assert!(operation.rule_id.contains("held_token_retained"));
+                        assert_eq!(operation.sources[0].text, "czy plan weryfikowałeś");
+                        assert_eq!(operation.source_ranges, vec![owner()]);
+                        assert_eq!(ledger.conservation().residue(), 0);
+                        let slots = ledger.slots_of(&owner()).unwrap().to_vec();
+                        let operations = ledger.slot_operations().len();
+                        assert!(matches!(
+                            ledger.admit_word_slots(&next, &[WordPin::new(0, 16_000, candidate)]),
+                            MutationReceipt::Refuse {
+                                reason: RefuseReason::BatchDuplicate,
+                                ..
+                            }
+                        ));
+                        assert_eq!(ledger.slots_of(&owner()).unwrap(), slots);
+                        assert_eq!(ledger.slot_operations().len(), operations);
+                        assert_eq!(ledger.conservation().residue(), 0);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn group_alignment_ambiguity_retains_text_and_candidate() {
+        for producer in [ObservationProducer::Whisper, ObservationProducer::CloudLive] {
+            for has_pin in [false, true] {
+                let mut ledger = if has_pin {
+                    pinned(&[WordPin::new(0, 16_000, "czy plan jutro weryfikowałeś")])
+                } else {
+                    let mut ledger = AcousticLedger::new();
+                    ledger.admit(
+                        &observation(ObservationProducer::Apple, 0),
+                        "czy plan jutro weryfikowałeś",
+                    );
+                    ledger
+                };
+                let sources = ledger.slots_of(&owner()).unwrap().to_vec();
+                let next = observation(producer, 1);
+                ledger.admit_word_slots(
+                    &next,
+                    &[WordPin::new(0, 16_000, "czy kot teraz weryfikowałeś")],
+                );
+                assert_eq!(ledger.slots_of(&owner()).unwrap(), sources);
+                let alternative = ledger.slot_alternatives().last().unwrap();
+                assert_eq!(alternative.candidate, "czy kot teraz weryfikowałeś");
+                assert_eq!(alternative.reason, "group_alignment_ambiguous");
+                assert_eq!(ledger.conservation().residue(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn group_alignment_keeps_forms_insertions_events_and_repetitions() {
+        for producer in [ObservationProducer::Whisper, ObservationProducer::CloudLive] {
+            for (held, candidate, expected, retained) in [
+                (
+                    "czy plan weryfikowałeś",
+                    "Czy PLAN, zweryfikowałeś.",
+                    "Czy PLAN, zweryfikowałeś.",
+                    false,
+                ),
+                (
+                    "czy plan weryfikowałeś",
+                    "czy klan weryfikowałeś",
+                    "czy klan weryfikowałeś",
+                    false,
+                ),
+                (
+                    "plan weryfikowałeś",
+                    "zweryfikowałeś yyy [śmiech]",
+                    "plan weryfikowałeś",
+                    true,
+                ),
+                (
+                    "czy yyy [śmiech głośny] plan",
+                    "Czy plan.",
+                    "czy yyy [śmiech głośny] plan",
+                    true,
+                ),
+                (
+                    "Iwo Iwo Iwo Iwo Iwo",
+                    "Iwo Iwo",
+                    "Iwo Iwo Iwo Iwo Iwo",
+                    true,
+                ),
+            ] {
+                for has_pin in [false, true] {
+                    for via_label in [false, true] {
+                        let mut ledger = if has_pin {
+                            pinned(&[WordPin::new(0, 16_000, held)])
+                        } else {
+                            let mut ledger = AcousticLedger::new();
+                            ledger.admit(&observation(ObservationProducer::Apple, 0), held);
+                            ledger
+                        };
+                        let next = observation(producer, 1);
+                        if via_label {
+                            ledger.admit_pinned_label(&next, candidate, &[]);
+                        } else {
+                            ledger.admit_word_slots(&next, &[WordPin::new(0, 16_000, candidate)]);
+                        }
+                        assert_eq!(
+                            ledger.text_of(&owner()),
+                            Some(expected),
+                            "{held} → {candidate}"
+                        );
+                        assert_eq!(ledger.slots_of(&owner()).unwrap().len(), 1);
+                        assert_eq!(
+                            ledger
+                                .slot_operations()
+                                .last()
+                                .unwrap()
+                                .rule_id
+                                .contains("held_token_retained"),
+                            retained
+                        );
+                        assert_eq!(ledger.conservation().residue(), 0);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn grouped_omission_cannot_be_hidden_by_new_child_boundaries() {
+        let mut ledger = AcousticLedger::new();
+        ledger.admit(
+            &observation(ObservationProducer::Apple, 0),
+            "czy plan weryfikowałeś",
+        );
+        let sources = ledger.slots_of(&owner()).unwrap().to_vec();
+        ledger.admit_word_slots(
+            &observation(ObservationProducer::Whisper, 1),
+            &[
+                WordPin::new(0, 4_000, "czy"),
+                WordPin::new(6_000, 10_000, "weryfikowałeś"),
+                WordPin::new(12_000, 16_000, "dokładnie"),
+            ],
+        );
+        assert_eq!(ledger.slots_of(&owner()).unwrap(), sources);
+        assert!(!ledger.slot_alternatives().is_empty());
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    #[test]
+    fn automatic_group_slot_revisions_share_content_preservation() {
+        for producer in [ObservationProducer::Apple, ObservationProducer::Lexicon] {
+            for via_label in [false, true] {
+                let mut ledger = AcousticLedger::new();
+                ledger.admit(
+                    &observation(ObservationProducer::Apple, 0),
+                    "czy plan weryfikowałeś",
+                );
+                if via_label {
+                    ledger.admit_pinned_label(
+                        &observation(producer, 1),
+                        "czy weryfikowałeś dokładnie",
+                        &[],
+                    );
+                } else {
+                    ledger.admit_word_slots(
+                        &observation(producer, 1),
+                        &[WordPin::new(0, 16_000, "czy weryfikowałeś dokładnie")],
+                    );
+                }
+                assert_eq!(ledger.text_of(&owner()), Some("czy plan weryfikowałeś"));
+                assert!(
+                    ledger
+                        .slot_operations()
+                        .last()
+                        .unwrap()
+                        .rule_id
+                        .contains("held_token_retained")
+                );
+                assert_eq!(ledger.conservation().residue(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn group_alignment_does_not_choose_between_repeated_anchors() {
+        let mut ledger = pinned(&[WordPin::new(0, 16_000, "Iwo plan Iwo")]);
+        let sources = ledger.slots_of(&owner()).unwrap().to_vec();
+        ledger.admit_word_slots(
+            &observation(ObservationProducer::Whisper, 1),
+            &[WordPin::new(0, 16_000, "Iwo klan")],
+        );
+        assert_eq!(ledger.slots_of(&owner()).unwrap(), sources);
+        assert_eq!(
+            ledger.slot_alternatives().last().unwrap().reason,
+            "group_alignment_ambiguous"
+        );
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    #[test]
+    fn crossing_spelling_matches_remain_alternative() {
+        let mut ledger = pinned(&[WordPin::new(0, 16_000, "czy plan weryfikowałeś")]);
+        let sources = ledger.slots_of(&owner()).unwrap().to_vec();
+        ledger.admit_word_slots(
+            &observation(ObservationProducer::Whisper, 1),
+            &[WordPin::new(0, 16_000, "czy zweryfikowałeś klan")],
+        );
+        assert_eq!(ledger.slots_of(&owner()).unwrap(), sources);
+        assert_eq!(
+            ledger.slot_alternatives().last().unwrap().reason,
+            "group_alignment_ambiguous"
+        );
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    #[test]
+    fn whole_group_formatter_pin_has_no_slot_authority() {
+        for via_label in [false, true] {
+            let mut ledger = AcousticLedger::new();
+            ledger.admit(
+                &observation(ObservationProducer::Apple, 0),
+                "czy plan weryfikowałeś",
+            );
+            let sources = ledger.slots_of(&owner()).unwrap().to_vec();
+            if via_label {
+                ledger.admit_pinned_label(
+                    &observation(ObservationProducer::Formatter, 1),
+                    "czy weryfikowałeś dokładnie",
+                    &[],
+                );
+            } else {
+                ledger.admit_word_slots(
+                    &observation(ObservationProducer::Formatter, 1),
+                    &[WordPin::new(0, 16_000, "czy weryfikowałeś dokładnie")],
+                );
+            }
+            assert_eq!(ledger.slots_of(&owner()).unwrap(), sources);
+            assert_eq!(
+                ledger.slot_alternatives().last().unwrap().reason,
+                "protected_source"
+            );
+            assert_eq!(ledger.conservation().residue(), 0);
+        }
+    }
+
+    #[test]
+    fn group_label_revision_keeps_accuracy_and_noop_lexicon_keeps_authority() {
+        let mut ledger = AcousticLedger::new();
+        ledger.admit(
+            &observation(ObservationProducer::Apple, 0),
+            "czy plan weryfikowałeś",
+        );
+        ledger.admit_pinned_label(
+            &observation(ObservationProducer::Whisper, 1),
+            "Czy plan weryfikowałeś",
+            &[],
+        );
+        assert!(ledger.committed_word_pin_ranges(&owner()).is_empty());
+        let source = ledger.slots_of(&owner()).unwrap()[0].clone();
+        ledger.admit_pinned_label(
+            &observation(ObservationProducer::Lexicon, 1),
+            "Czy plan weryfikowałeś",
+            &[],
+        );
+        assert_eq!(
+            ledger.slots_of(&owner()).unwrap(),
+            std::slice::from_ref(&source)
+        );
+        assert_eq!(source.producer, ObservationProducer::Whisper);
+        ledger.admit_word_slots(
+            &observation(ObservationProducer::Whisper, 2),
+            &[
+                WordPin::new(0, 4_000, "czy"),
+                WordPin::new(6_000, 10_000, "plan"),
+                WordPin::new(12_000, 16_000, "zweryfikowałeś"),
+            ],
+        );
+        assert_eq!(ledger.text_of(&owner()), Some("czy plan zweryfikowałeś"));
+        assert_eq!(ledger.slots_of(&owner()).unwrap().len(), 3);
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    #[test]
+    fn manual_human_can_change_a_group_and_blocks_late_acoustic_labels() {
+        let mut ledger = pinned(&[WordPin::new(0, 16_000, "czy plan weryfikowałeś")]);
+        ledger.admit_word_slots(
+            &observation(ObservationProducer::ManualHuman, 1),
+            &[WordPin::new(0, 16_000, "czy weryfikowałeś")],
+        );
+        let sources = ledger.slots_of(&owner()).unwrap().to_vec();
+        assert_eq!(ledger.text_of(&owner()), Some("czy weryfikowałeś"));
+        for producer in [
+            ObservationProducer::Whisper,
+            ObservationProducer::CloudLive,
+            ObservationProducer::Apple,
+        ] {
+            ledger.admit_word_slots(
+                &observation(producer, 2),
+                &[WordPin::new(0, 16_000, "czy plan weryfikowałeś")],
+            );
+            assert_eq!(ledger.slots_of(&owner()).unwrap(), sources);
+        }
+        assert_eq!(ledger.conservation().residue(), 0);
     }
 
     #[test]
