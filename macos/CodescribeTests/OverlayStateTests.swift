@@ -4179,7 +4179,8 @@ final class OverlayStateTests: XCTestCase {
     projectText("usable words", to: state, phase: "coverage_refused", canCopy: true, terminal: true)
 
     XCTAssertEqual(state.coverageRefusalNotice, OverlayWarningCopy.sealRefused(nil).sentence)
-    XCTAssertEqual(state.footerWarning?.owner, .engine, "a refused seal is the engine's fact")
+    XCTAssertEqual(
+      state.footerWarning?.owner, .coverage, "a refused seal reports an observation, not a culprit")
     XCTAssertEqual(
       state.coverageRefusalDetail,
       "No seal was recorded for this take, so nothing here is certified complete.")
