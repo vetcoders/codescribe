@@ -70,7 +70,8 @@ use crate::stt::tail_provider::TailSampleRange;
 #[path = "acoustic_ledger/slot_ops.rs"]
 mod slot_ops;
 pub use slot_ops::{
-    DictionarySlotRule, SlotOperationKind, SlotOperationReceipt, SlotOperationRefusal, SlotTarget,
+    DictionarySlotRule, GroupSpeechCoverageReceipt, SlotOperationKind, SlotOperationReceipt,
+    SlotOperationRefusal, SlotTarget, SpeechPinCoverage,
 };
 #[path = "acoustic_ledger/word_verdict.rs"]
 pub mod word_verdict;
@@ -703,6 +704,9 @@ pub struct AcousticLedger {
     committed: BTreeMap<OccurrenceIdentity, CommittedObservation>,
     slot_alternatives: Vec<SlotAlternative>,
     slot_operations: Vec<SlotOperationReceipt>,
+    speech_evidence: Option<AcousticSpeechEvidence>,
+    assigned_word_pins: Option<slot_ops::AssignedWordPinBatch>,
+    group_speech_coverages: Vec<GroupSpeechCoverageReceipt>,
     word_deletions: Vec<WordDeletionReceipt>,
     /// Provenance only: label-wide slots do not prove individual word pins.
     word_pin_observations: std::collections::HashSet<ObservationIdentity>,
@@ -1067,15 +1071,17 @@ impl AcousticLedger {
         }
         let mut slots = self.slots_of(owner).unwrap_or(&[]).to_vec();
         // An occurrence-wide label has no word geometry yet. An acoustic
-        // producer can refine that group into real pins without dropping any
-        // of its lexical positions. The operation retains the group source.
-        if slots.len() == 1
+        // producer refines it only with lexical accounting or exact coverage
+        // of measured speech by owned pins. The operation retains its source.
+        let group_refinement = slots.len() == 1
             && (incoming.len() > 1
                 || incoming.first().is_some_and(|word| {
                     word.sample_start != slots[0].sample_start
                         || word.sample_end != slots[0].sample_end
                 }))
-            && !self.word_pin_observations.contains(&slots[0].observation)
+            && (!self.word_pin_observations.contains(&slots[0].observation)
+                || (slots[0].text.trim().contains(char::is_whitespace)
+                    && self.slot_source_ranges(&slots[0]).len() == 1))
             && matches!(
                 observation.producer,
                 ObservationProducer::Whisper | ObservationProducer::CloudLive
@@ -1084,21 +1090,57 @@ impl AcousticLedger {
                 || (observation.producer == slots[0].producer
                     && observation.generation > slots[0].observation.generation))
             && !self.answered.contains(observation)
-            && (slot_ops::preserve_group_content(&slots[0].text, &compose_label(&incoming))
-                .is_ok_and(|(label, retained)| !retained && label == compose_label(&incoming))
-                // Measured child pins authorize a split of one atomic word.
-                // A multiword label still accounts for every held token above.
-                || (!slots[0].text.trim().contains(char::is_whitespace)
-                    && !slots[0].text.contains('[')
-                    && !slots[0].text
-                        .trim_matches(|ch: char| !ch.is_alphanumeric())
-                        .eq_ignore_ascii_case("yyy")))
             && incoming.iter().enumerate().all(|(index, word)| {
                 incoming[index + 1..]
                     .iter()
                     .all(|other| !same_pcm_slot(word, other))
-            })
-        {
+            });
+        let mut speech_coverage = None;
+        if group_refinement {
+            let source = &slots[0];
+            let candidate = compose_label(&incoming);
+            let alignment = slot_ops::preserve_group_content(&source.text, &candidate);
+            let accounted = alignment
+                .as_ref()
+                .is_ok_and(|(label, retained)| !retained && label == &candidate);
+            let atomic = !source.text.trim().contains(char::is_whitespace)
+                && !source.text.contains('[')
+                && !source
+                    .text
+                    .trim_matches(|ch: char| !ch.is_alphanumeric())
+                    .eq_ignore_ascii_case("yyy");
+            if !accounted && !atomic {
+                speech_coverage = self.group_speech_coverage(observation, source, &incoming);
+                if speech_coverage.is_none() {
+                    self.retain_slot_alternative(
+                        observation,
+                        &candidate,
+                        vec![source.clone()],
+                        alignment
+                            .as_ref()
+                            .err()
+                            .copied()
+                            .unwrap_or("held_token_retained"),
+                    );
+                    self.slot_operations.push(SlotOperationReceipt {
+                        observation: observation.clone(),
+                        kind: SlotOperationKind::Correct,
+                        sources: vec![source.clone()],
+                        outputs: vec![source.clone()],
+                        source_ranges: self.slot_source_ranges(source),
+                        rule_id: "group_alignment/held_token_retained/v1".into(),
+                    });
+                    let label = self.text_of(owner).unwrap_or("").to_string();
+                    let recovery_pending = self.text_recovery_pending(owner);
+                    let receipt = self.admit(observation, &label);
+                    if recovery_pending {
+                        self.pending_text_recovery.insert(owner.clone());
+                    }
+                    return receipt;
+                }
+            }
+        }
+        if group_refinement {
             let source = slots.remove(0);
             let from = source.producer;
             let same_label = source.text == compose_label(&incoming);
@@ -1115,8 +1157,22 @@ impl AcousticLedger {
                 source_ranges: self.slot_source_ranges(&source),
                 sources: vec![source.clone()],
                 outputs: incoming,
-                rule_id: "acoustic_group_refinement/v1".to_string(),
+                rule_id: if speech_coverage.is_some() {
+                    "acoustic_group_refinement/speech-coverage/v1"
+                } else {
+                    "acoustic_group_refinement/v1"
+                }
+                .to_string(),
             };
+            if let Some((speech, coverage)) = speech_coverage {
+                self.group_speech_coverages
+                    .push(GroupSpeechCoverageReceipt {
+                        operation: receipt.clone(),
+                        speech,
+                        coverage,
+                        rule_version: "group-speech-coverage/v1",
+                    });
+            }
             self.commit_slot_operation(receipt);
             self.pending_text_recovery.remove(owner);
             self.refuse_replacement(
