@@ -305,6 +305,176 @@ pub enum SlotOperationRefusal {
 }
 
 impl AcousticLedger {
+    /// Resolve connected intersections as one geometric operation. Slot count
+    /// is not occurrence identity: several words may refine one coarse source.
+    pub(super) fn resegment_word_slots(
+        &mut self,
+        observation: &ObservationIdentity,
+        slots: &mut Vec<WordSlot>,
+        incoming: &mut Vec<WordSlot>,
+    ) -> Vec<SlotOperationReceipt> {
+        if !matches!(
+            observation.producer,
+            ObservationProducer::Whisper | ObservationProducer::CloudLive
+        ) {
+            return Vec::new();
+        }
+        let prior = slots.clone();
+        let pins = incoming.clone();
+        let mut visited = BTreeSet::new();
+        let mut consumed = BTreeSet::new();
+        let mut operations = Vec::new();
+        let jitter = u64::from(self.capture_rate_hz.unwrap_or(16_000)) / 4;
+        let intersects = |a: &WordSlot, b: &WordSlot| {
+            a.sample_start < b.sample_end && b.sample_start < a.sample_end
+        };
+        for seed in 0..pins.len() {
+            if visited.contains(&seed) {
+                continue;
+            }
+            let mut word_indices = BTreeSet::from([seed]);
+            let mut source_indices = BTreeSet::new();
+            loop {
+                let size = word_indices.len() + source_indices.len();
+                for (index, source) in prior.iter().enumerate() {
+                    if word_indices
+                        .iter()
+                        .any(|word| intersects(source, &pins[*word]))
+                    {
+                        source_indices.insert(index);
+                    }
+                }
+                for (index, pin) in pins.iter().enumerate() {
+                    if source_indices
+                        .iter()
+                        .any(|source| intersects(&prior[*source], pin))
+                    {
+                        word_indices.insert(index);
+                    }
+                }
+                if size == word_indices.len() + source_indices.len() {
+                    break;
+                }
+            }
+            visited.extend(word_indices.iter().copied());
+            if source_indices.is_empty() || (source_indices.len() == 1 && word_indices.len() == 1) {
+                continue;
+            }
+            let sources = source_indices
+                .iter()
+                .map(|index| prior[*index].clone())
+                .collect::<Vec<_>>();
+            let mut outputs = word_indices
+                .iter()
+                .map(|index| pins[*index].clone())
+                .collect::<Vec<_>>();
+            outputs.sort_by_key(|word| (word.sample_start, word.sample_end));
+            // A replayed single word plus its short neighbour is not a split.
+            // Keep the word's identity and admit the neighbour independently.
+            if sources.len() == 1
+                && sources[0].text.split_whitespace().count() == 1
+                && outputs.iter().any(|word| {
+                    normalize_word_token(&word.text) == normalize_word_token(&sources[0].text)
+                })
+            {
+                continue;
+            }
+            let source_start = sources.iter().map(|word| word.sample_start).min().unwrap();
+            let source_end = sources.iter().map(|word| word.sample_end).max().unwrap();
+            let pin_start = outputs[0].sample_start;
+            let pin_end = outputs.iter().map(|word| word.sample_end).max().unwrap();
+            let authority = sources.iter().all(|source| {
+                source.producer != ObservationProducer::ManualHuman
+                    && (source.producer.authority_rank() < observation.producer.authority_rank()
+                        || (source.producer == observation.producer
+                            && source.observation.generation < observation.generation))
+            });
+            let geometry = source_start.abs_diff(pin_start) <= jitter
+                && source_end.abs_diff(pin_end) <= jitter
+                && source_indices.last().unwrap() - source_indices.first().unwrap() + 1
+                    == sources.len()
+                && outputs.iter().enumerate().all(|(index, word)| {
+                    outputs[index + 1..]
+                        .iter()
+                        .all(|other| !same_pcm_slot(word, other))
+                });
+            if !geometry || !authority {
+                continue;
+            }
+            let candidate = compose_label(&outputs);
+            let held = compose_label(&sources);
+            let alignment = preserve_group_content(&held, &candidate);
+            let accounted = alignment
+                .as_ref()
+                .is_ok_and(|(label, retained)| !retained && *label == candidate);
+            let coverage = sources
+                .iter()
+                .map(|source| self.group_speech_coverage(observation, source, &outputs))
+                .collect::<Option<Vec<_>>>();
+            // When measurements exist they must not contradict a refinement.
+            // Without measured speech, complete lexical accounting is required.
+            let measured = self.speech_evidence.as_ref().is_some_and(|speech| {
+                speech
+                    .availability()
+                    .observed_samples()
+                    .is_some_and(|end| end >= source_end)
+            });
+            consumed.extend(word_indices.iter().copied());
+            if coverage.is_none() && (!accounted || measured) {
+                self.retain_slot_alternative(
+                    observation,
+                    &candidate,
+                    sources,
+                    "resegmentation_unaccounted_speech",
+                );
+                continue;
+            }
+            let source_ranges = sources
+                .iter()
+                .flat_map(|source| self.slot_source_ranges(source))
+                .collect();
+            let operation = SlotOperationReceipt {
+                observation: observation.clone(),
+                kind: if outputs.len() > sources.len() {
+                    SlotOperationKind::Split
+                } else {
+                    SlotOperationKind::Merge
+                },
+                source_ranges,
+                sources: sources.clone(),
+                outputs: outputs.clone(),
+                rule_id: if accounted {
+                    "acoustic_resegmentation/content/v1"
+                } else {
+                    "acoustic_resegmentation/speech-coverage/v1"
+                }
+                .into(),
+            };
+            if let Some(coverage) = coverage {
+                for (speech, coverage) in coverage {
+                    self.group_speech_coverages
+                        .push(GroupSpeechCoverageReceipt {
+                            operation: operation.clone(),
+                            speech,
+                            coverage,
+                            rule_version: "group-speech-coverage/v1",
+                        });
+                }
+            }
+            slots.retain(|source| !sources.contains(source));
+            slots.extend(outputs);
+            operations.push(operation);
+        }
+        *incoming = incoming
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !consumed.contains(index))
+            .map(|(_, pin)| pin.clone())
+            .collect();
+        slots.sort_by_key(|word| (word.sample_start, word.sample_end));
+        operations
+    }
+
     /// Snapshot the existing capture observer; unavailable evidence replaces
     /// the previous snapshot so stale measurements cannot authorize a cut.
     pub fn record_speech_evidence(&mut self, speech: &AcousticSpeechEvidence) {
@@ -517,7 +687,9 @@ impl AcousticLedger {
                     .iter()
                     .any(|output| output == slot)
                     .then(|| {
-                        if receipt.kind == SlotOperationKind::Split {
+                        // Every measured child owns its own playback PCM.
+                        // The operation still retains all original source ranges.
+                        if receipt.kind == SlotOperationKind::Split || receipt.outputs.len() > 1 {
                             vec![OccurrenceIdentity::new(
                                 &slot.observation.occurrence.session,
                                 slot.observation.occurrence.capture_epoch,
