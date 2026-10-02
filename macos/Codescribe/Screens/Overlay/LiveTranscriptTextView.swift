@@ -77,7 +77,7 @@ struct LiveTranscriptScrollFollowState: Equatable {
 }
 
 /// The one AppKit transcript surface: read-only while recording, an editor for
-/// the formatted take.
+/// the completed take, including refused or failed outcomes.
 ///
 /// `Text` plus SwiftUI's selection overlay loses its selection whenever the
 /// rapidly-changing value is rebuilt. A real `NSTextView` owns the responder
@@ -86,7 +86,7 @@ struct LiveTranscriptScrollFollowState: Equatable {
 ///
 /// In the editable phase the same view carries the local revision draft:
 /// keystrokes flow out through `onTextChange`, focus transitions through
-/// `onEditingChanged` (the panel becomes key only inside that window), and
+/// `onEditingChanged` (separate from the selection keyboard gate), and
 /// Escape through `onCancelEdit`. Bytes still arrive from the caller — the
 /// view never invents transcript truth.
 struct LiveTranscriptTextView: NSViewRepresentable {
@@ -586,8 +586,8 @@ final class LiveTranscriptScrollView: NSScrollView {
 /// non-activating panel: it must not steal focus merely by appearing, but an
 /// explicit click in the transcript must immediately begin a drag selection.
 ///
-/// When editable, gaining first responder is what makes the hosting
-/// `FloatingOverlayPanel` key; resigning gives the keyboard back.
+/// An explicit click takes keyboard focus for native selection/copy.
+/// Editing opens a separate draft gate; resigning gives the keyboard back.
 final class LiveTranscriptNativeTextView: NSTextView {
   static func liveBottomScrollOrigin(
     documentMaxY: CGFloat,
@@ -626,6 +626,7 @@ final class LiveTranscriptNativeTextView: NSTextView {
   }
 
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+  override var needsPanelToBecomeKey: Bool { isSelectable }
 
   private var editCoordinator: LiveTranscriptTextView.Coordinator? {
     delegate as? LiveTranscriptTextView.Coordinator
@@ -633,19 +634,22 @@ final class LiveTranscriptNativeTextView: NSTextView {
 
   func beginEditingIfNeeded() {
     guard isEditable, let coordinator = editCoordinator, !coordinator.isEditing else { return }
-    (window as? FloatingOverlayPanel)?.takeKeyForEdit()
+    (window as? FloatingOverlayPanel)?.takeKeyForTranscript()
     coordinator.isEditing = true
     coordinator.onEditingChanged?(true)
   }
 
   override func becomeFirstResponder() -> Bool {
     guard super.becomeFirstResponder() else { return false }
+    // AppKit may preselect the canvas while constructing the hosting view.
+    // Only a user interaction may make a read-only preview take keyboard focus.
     beginEditingIfNeeded()
     return true
   }
 
   override func mouseDown(with event: NSEvent) {
     mouseDownCharacterIndex = characterIndex(for: event)
+    if isSelectable { (window as? FloatingOverlayPanel)?.takeKeyForTranscript() }
     super.mouseDown(with: event)
     // AppKit can preselect this view while the take is still read-only. An
     // explicit later click must open the edit gate even if responder identity
@@ -678,16 +682,51 @@ final class LiveTranscriptNativeTextView: NSTextView {
     if let coordinator = editCoordinator, coordinator.isEditing {
       coordinator.isEditing = false
       coordinator.onEditingChanged?(false)
-      (window as? FloatingOverlayPanel)?.releaseKeyAfterEdit()
     }
+    (window as? FloatingOverlayPanel)?.releaseKeyAfterTranscript()
     return true
+  }
+
+  private var hasCopyableSelection: Bool {
+    let selection = selectedRange()
+    let length = (string as NSString).length
+    return isSelectable && selection.location >= 0 && selection.location <= length
+      && selection.length > 0
+      && selection.length <= length - selection.location
+  }
+
+  override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+    if item.action == #selector(NSText.copy(_:)) { return hasCopyableSelection }
+    return super.validateUserInterfaceItem(item)
+  }
+
+  /// A non-activating panel can keep another app's menu bar. Route the ordinary
+  /// Copy chord to this first responder, without invoking transcript delivery.
+  func performSelectedCopy(with event: NSEvent) -> Bool {
+    guard event.type == .keyDown, window?.firstResponder === self,
+      event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
+      event.charactersIgnoringModifiers?.lowercased() == "c"
+    else { return false }
+    copy(nil)
+    return true
+  }
+
+  override func performKeyEquivalent(with event: NSEvent) -> Bool {
+    if performSelectedCopy(with: event) { return true }
+    return super.performKeyEquivalent(with: event)
+  }
+
+  override func keyDown(with event: NSEvent) {
+    if performSelectedCopy(with: event) { return }
+    beginEditingIfNeeded()
+    super.keyDown(with: event)
   }
 
   @discardableResult
   func copySelection(to pasteboard: NSPasteboard) -> Bool {
     let selection = selectedRange()
     let source = string as NSString
-    guard selection.length > 0, NSMaxRange(selection) <= source.length else { return false }
+    guard hasCopyableSelection else { return false }
 
     pasteboard.clearContents()
     return pasteboard.setString(source.substring(with: selection), forType: .string)

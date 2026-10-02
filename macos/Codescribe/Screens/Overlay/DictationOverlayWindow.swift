@@ -9,11 +9,9 @@ import SwiftUI
 // with a clear background so the appearance-aware material inside the SwiftUI
 // sheet blurs whatever is underneath.
 
-/// Borderless, non-activating panel. Buttons receive clicks without the panel
-/// ever being key; the panel becomes key ONLY while the transcript canvas is
-/// being edited (`takeKeyForEdit` / `releaseKeyAfterEdit`, driven by the
-/// canvas's first-responder transitions), and hands the keyboard back to the
-/// previous app the moment editing ends.
+/// Borderless, non-activating panel. Explicit transcript interaction takes
+/// keyboard focus for native selection/copy or editing. Showing the overlay
+/// and clicking its chrome do not open this gate.
 final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   var onUserMove: (() -> Void)?
   var onUserDragEnded: ((NSPoint) -> Void)?
@@ -35,7 +33,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     if collapsed {
       // A hidden editor must not keep accepting the Founder's keystrokes.
       makeFirstResponder(nil)
-      releaseKeyAfterEdit()
+      releaseKeyAfterTranscript()
       expandedSize = frame.size
       size = NSSize(
         width: frame.width, height: DictationOverlayWindow.collapsedHeight)
@@ -72,32 +70,40 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     presence?.invalidate()
   }
 
-  override var canBecomeKey: Bool { allowsKeyForEdit }
+  override var canBecomeKey: Bool { allowsKeyForTranscript }
   override var canBecomeMain: Bool { false }
-  /// The single writer is the edit gate below. Any other path leaves the caret
-  /// in the previous app.
-  private(set) var allowsKeyForEdit = false
+  /// Only explicit transcript interaction opens the keyboard gate.
+  private(set) var allowsKeyForTranscript = false
 
-  /// The transcript canvas became first responder for an edit.
-  func takeKeyForEdit() {
-    allowsKeyForEdit = true
+  /// The transcript canvas needs keyboard input for selection or editing.
+  func takeKeyForTranscript() {
+    allowsKeyForTranscript = true
     if !isKeyWindow { makeKey() }
   }
 
   /// The canvas resigned. Drop key status so keystrokes return to the app the
   /// user was dictating into.
-  func releaseKeyAfterEdit() {
-    guard allowsKeyForEdit else { return }
-    allowsKeyForEdit = false
+  func releaseKeyAfterTranscript() {
+    guard allowsKeyForTranscript else { return }
+    allowsKeyForTranscript = false
     if isKeyWindow { resignKey() }
   }
 
-  /// Key left from outside (click in another app, panel ordered out): close
-  /// the edit by resigning the canvas, which schedules its focus-exit commit.
+  /// Key left from outside: resign the canvas. An active edit uses its
+  /// existing focus-exit commit; a selection has no revision side effects.
   func windowDidResignKey(_ notification: Notification) {
-    guard allowsKeyForEdit else { return }
-    allowsKeyForEdit = false
+    guard allowsKeyForTranscript else { return }
+    allowsKeyForTranscript = false
     makeFirstResponder(nil)
+  }
+
+  override func performKeyEquivalent(with event: NSEvent) -> Bool {
+    if isKeyWindow, let transcript = firstResponder as? LiveTranscriptNativeTextView,
+      transcript.performSelectedCopy(with: event)
+    {
+      return true
+    }
+    return super.performKeyEquivalent(with: event)
   }
 
   /// A non-activating panel does not turn SwiftUI background hits into window
@@ -335,6 +341,7 @@ enum DictationOverlayWindow {
     // afterwards without ending the take or rebuilding its content.
     panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
     panel.isFloatingPanel = true
+    panel.becomesKeyOnlyIfNeeded = true
     panel.hidesOnDeactivate = false
     // One explicit AppKit path owns dragging on every supported OS version.
     panel.isMovableByWindowBackground = false

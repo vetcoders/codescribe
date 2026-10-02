@@ -342,10 +342,10 @@ final class OverlayState {
   var uncertainSpans: [CsUncertainSpan] { latestTranscriptProjection?.uncertainSpans ?? [] }
   /// View-local editor payload. It is never delivery or transcript truth; only
   /// `formattedText`, repainted from the Rust projection, feeds downstream
-  /// actions. The canvas paints it while the formatted take is under review.
+  /// actions. The canvas paints it while a completed take is under review.
   var revisionDraft = ""
-  /// True while the transcript canvas holds keyboard focus on the panel. The
-  /// panel is key only inside this window; see `FloatingOverlayPanel`.
+  /// True while the canvas is being edited. Native selection can also hold
+  /// keyboard focus without entering an edit.
   private(set) var isEditingTranscript = false
   private(set) var revision: UInt64 = 0
   private(set) var revisionCommitPending = false
@@ -616,6 +616,9 @@ final class OverlayState {
   private var qualityCapturedProvenance: String?
   private var pendingRevisionSessionId: String?
   private var pendingRevisionSource: UInt64?
+  /// Request bytes and generation fence acknowledgements, never acoustic identity.
+  private var pendingRevisionDraft: String?
+  private var revisionRequestGeneration: UInt64 = 0
   private var revisionFocusCommitTask: Task<Void, Never>?
   /// Last reducer-owned projection painted by Swift. The reducer owns ordering
   /// and finality within a session; retired sessions cannot repaint the current one.
@@ -891,20 +894,19 @@ final class OverlayState {
     formattedText
   }
 
-  /// The one transcript canvas is an editor only for a formatted, sealed take
-  /// that is not mid-commit. Listening / finalizing stay read-only and the
-  /// panel never takes the keyboard for them.
+  /// Human review depends on capture completion, not the engine's seal,
+  /// warning, phase label or a revision request in flight. Typing stays local.
   var isTranscriptEditable: Bool {
-    (mode == .formatted || mode == .coverageRefused) && terminal && presentationStatus == nil
-      && !revisionCommitPending && !formatterCommitPending
+    (finalized || terminal) && latestTranscriptProjection != nil
+      && !recording && !warmingUp && !transcribing
   }
 
+  /// Engine state changes cannot hide or discard an unsaved human draft.
   var isRevisionDraftDirty: Bool {
-    (mode == .formatted || mode == .coverageRefused) && terminal
-      && revisionDraft != formattedText
+    latestTranscriptProjection != nil && !revisionDraft.utf8.elementsEqual(formattedText.utf8)
   }
 
-  /// Bytes painted on the canvas: the local draft while a formatted take is
+  /// Bytes painted on the canvas: the local draft while a completed take is
   /// under review or awaiting its ledger projection, the Rust projection
   /// otherwise. Delivery never reads this; it reads `activeText`.
   var canvasText: String {
@@ -1647,10 +1649,13 @@ final class OverlayState {
   func commitRevisionDraft() {
     revisionFocusCommitTask?.cancel()
     revisionFocusCommitTask = nil
-    guard mode == .formatted || mode == .coverageRefused, terminal,
-      isRevisionDraftDirty, !revisionCommitPending,
+    guard isTranscriptEditable, isRevisionDraftDirty, !revisionCommitPending,
       !formatterCommitPending
     else {
+      return
+    }
+    guard terminal, latestTranscriptProjection?.terminal == true else {
+      revisionCommitError = "The take has no terminal document revision — your draft is kept"
       return
     }
     let proposed = revisionDraft
@@ -1666,6 +1671,9 @@ final class OverlayState {
     revisionCommitError = nil
     pendingRevisionSessionId = projection.sessionId
     pendingRevisionSource = projection.reducerRevision
+    pendingRevisionDraft = proposed
+    revisionRequestGeneration &+= 1
+    let requestGeneration = revisionRequestGeneration
     cancelAutoHide()
     Task { @MainActor [weak self] in
       guard let self else { return }
@@ -1675,6 +1683,11 @@ final class OverlayState {
           sourceRevision: projection.reducerRevision,
           renderedText: proposed
         )
+        guard revisionRequestGeneration == requestGeneration, revisionCommitPending,
+          pendingRevisionSessionId == projection.sessionId,
+          pendingRevisionSource == projection.reducerRevision,
+          latestTranscriptProjection?.sessionId == projection.sessionId
+        else { return }
         guard receipt.sessionId == projection.sessionId,
           receipt.sourceRevision == projection.reducerRevision,
           receipt.revision > receipt.sourceRevision,
@@ -1684,15 +1697,22 @@ final class OverlayState {
           revisionCommitPending = false
           pendingRevisionSessionId = nil
           pendingRevisionSource = nil
+          pendingRevisionDraft = nil
           revisionCommitError = "Transcript revision receipt was inconsistent"
           return
         }
         // The callback can arrive before this acknowledgement. Either way,
         // projection — never this receipt — owns the visible state transition.
       } catch {
+        guard revisionRequestGeneration == requestGeneration, revisionCommitPending,
+          pendingRevisionSessionId == projection.sessionId,
+          pendingRevisionSource == projection.reducerRevision,
+          latestTranscriptProjection?.sessionId == projection.sessionId
+        else { return }
         revisionCommitPending = false
         pendingRevisionSessionId = nil
         pendingRevisionSource = nil
+        pendingRevisionDraft = nil
         revisionCommitError = "Couldn't commit transcript revision: \(error)"
       }
     }
@@ -2319,7 +2339,10 @@ final class OverlayState {
     if isNewSession {
       documentHistory = []
       historyReadSessionId = nil
-      if let priorProjection { retiredProjectionSessions.insert(priorProjection.sessionId) }
+      if let priorProjection {
+        retiredProjectionSessions.insert(priorProjection.sessionId)
+        retainSupersededTake(priorProjection, draftWasDirty: draftWasDirty)
+      }
       deliveredText = ""
       deliveredTextSessionId = nil
       qualityCapturedProvenance = nil
@@ -2328,6 +2351,7 @@ final class OverlayState {
       formatterCommitPending = false
       pendingRevisionSessionId = nil
       pendingRevisionSource = nil
+      pendingRevisionDraft = nil
       revisionCommitError = nil
       formatterError = nil
       revisionFocusCommitTask?.cancel()
@@ -2393,13 +2417,19 @@ final class OverlayState {
       pendingRevisionSessionId = nil
       pendingRevisionSource = nil
       revisionCommitError = nil
-      revisionDraft = formattedText
+      if let pendingRevisionDraft,
+        revisionDraft.utf8.elementsEqual(pendingRevisionDraft.utf8)
+      {
+        revisionDraft = formattedText
+      }
+      pendingRevisionDraft = nil
     } else if completesPendingFormatter {
       formatterCommitPending = false
       pendingRevisionSessionId = nil
       pendingRevisionSource = nil
+      pendingRevisionDraft = nil
       formatterError = nil
-      revisionDraft = formattedText
+      if !draftWasDirty { revisionDraft = formattedText }
       showFooterNotice("formatted")
       loadDocumentHistory()
     } else if !draftWasDirty || isNewSession {
@@ -2527,6 +2557,9 @@ final class OverlayState {
     formatterError = nil
     pendingRevisionSessionId = projection.sessionId
     pendingRevisionSource = projection.reducerRevision
+    pendingRevisionDraft = revisionDraft
+    revisionRequestGeneration &+= 1
+    let requestGeneration = revisionRequestGeneration
     cancelAutoHide()
     showFooterNotice("formatting…", persists: true)
     Task { @MainActor [weak self] in
@@ -2537,6 +2570,11 @@ final class OverlayState {
           sourceRevision: projection.reducerRevision,
           level: level
         )
+        guard revisionRequestGeneration == requestGeneration, formatterCommitPending,
+          pendingRevisionSessionId == projection.sessionId,
+          pendingRevisionSource == projection.reducerRevision,
+          latestTranscriptProjection?.sessionId == projection.sessionId
+        else { return }
         guard receipt.sessionId == projection.sessionId,
           receipt.sourceRevision == projection.reducerRevision,
           receipt.revision > receipt.sourceRevision,
@@ -2546,6 +2584,7 @@ final class OverlayState {
           formatterCommitPending = false
           pendingRevisionSessionId = nil
           pendingRevisionSource = nil
+          pendingRevisionDraft = nil
           formatterError = "Formatter revision receipt was inconsistent"
           showFooterNotice("format failed")
           restartAutoHideCountdown()
@@ -2554,9 +2593,15 @@ final class OverlayState {
         // Projection can arrive before acknowledgement. It is still the only
         // path that may repaint `formattedText` or the local editor draft.
       } catch {
+        guard revisionRequestGeneration == requestGeneration, formatterCommitPending,
+          pendingRevisionSessionId == projection.sessionId,
+          pendingRevisionSource == projection.reducerRevision,
+          latestTranscriptProjection?.sessionId == projection.sessionId
+        else { return }
         formatterCommitPending = false
         pendingRevisionSessionId = nil
         pendingRevisionSource = nil
+        pendingRevisionDraft = nil
         formatterError = "Couldn't format transcript: \(error)"
         showFooterNotice("format failed")
         restartAutoHideCountdown()
@@ -2574,6 +2619,9 @@ final class OverlayState {
     revisionCommitError = nil
     pendingRevisionSessionId = projection.sessionId
     pendingRevisionSource = projection.reducerRevision
+    pendingRevisionDraft = revisionDraft
+    revisionRequestGeneration &+= 1
+    let requestGeneration = revisionRequestGeneration
     cancelAutoHide()
     Task { @MainActor [weak self] in
       guard let self else { return }
@@ -2582,6 +2630,11 @@ final class OverlayState {
           sessionId: projection.sessionId,
           sourceRevision: projection.reducerRevision,
           restoreRevision: selectedRevision)
+        guard revisionRequestGeneration == requestGeneration, revisionCommitPending,
+          pendingRevisionSessionId == projection.sessionId,
+          pendingRevisionSource == projection.reducerRevision,
+          latestTranscriptProjection?.sessionId == projection.sessionId
+        else { return }
         guard receipt.sessionId == projection.sessionId,
           receipt.sourceRevision == projection.reducerRevision,
           receipt.revision > receipt.sourceRevision,
@@ -2590,14 +2643,21 @@ final class OverlayState {
           revisionCommitPending = false
           pendingRevisionSessionId = nil
           pendingRevisionSource = nil
+          pendingRevisionDraft = nil
           revisionCommitError = "Transcript restore receipt was inconsistent"
           return
         }
         // Only the matching reducer callback repaints the canvas.
       } catch {
+        guard revisionRequestGeneration == requestGeneration, revisionCommitPending,
+          pendingRevisionSessionId == projection.sessionId,
+          pendingRevisionSource == projection.reducerRevision,
+          latestTranscriptProjection?.sessionId == projection.sessionId
+        else { return }
         revisionCommitPending = false
         pendingRevisionSessionId = nil
         pendingRevisionSource = nil
+        pendingRevisionDraft = nil
         revisionCommitError = "Couldn't restore transcript version: \(error)"
       }
     }
@@ -2829,6 +2889,7 @@ final class OverlayState {
     formatterError = nil
     pendingRevisionSessionId = nil
     pendingRevisionSource = nil
+    pendingRevisionDraft = nil
     userRevisionProvenance = nil
     onTranscriptPresentationChanged?()
   }
