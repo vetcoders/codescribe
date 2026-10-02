@@ -21664,15 +21664,20 @@ mod relay_l1_overlap_admission_tests {
 
     #[test]
     fn forensic_window_stub_waits_for_next_window() {
-        window_stub_waits_for_next_window(BufferMode::Windows);
+        window_stub_waits_for_next_window(BufferMode::Windows, false);
     }
 
     #[test]
     fn adaptive_buffer_window_stub_waits_for_next_window() {
-        window_stub_waits_for_next_window(BufferMode::Adaptive);
+        window_stub_waits_for_next_window(BufferMode::Adaptive, false);
     }
 
-    fn window_stub_waits_for_next_window(mode: BufferMode) {
+    #[test]
+    fn forensic_same_physical_word_reverse_adaptive() {
+        window_stub_waits_for_next_window(BufferMode::Adaptive, true);
+    }
+
+    fn window_stub_waits_for_next_window(mode: BufferMode, reverse: bool) {
         let session = &mode.session("forensic-one-physical-word");
         let (_, _, clock_requests) = forensic_lane_in(mode, "forensic-one-word-clock", &[]);
         let end = clock_requests[0].provider_request.identity.range.sample_end;
@@ -21705,23 +21710,24 @@ mod relay_l1_overlap_admission_tests {
                 pcm[range.sample_start as usize..range.sample_end as usize]
             );
         }
-        lane.state.complete_whisper_window(
-            &lane.tx,
-            completion(
-                &requests[0],
-                vec![word_pin(session, "Iwo", end - 4_000, end)],
-            ),
-            12.5,
-        );
-        assert!(held_text(&lane, &owner).is_none_or(|text| !text.contains("Iwo")));
-        lane.state.complete_whisper_window(
-            &lane.tx,
-            completion(
-                &requests[1],
-                vec![word_pin(session, "Iwo", end - 4_000, end + 2_000)],
-            ),
-            12.5,
-        );
+        let order = if reverse { [1, 0] } else { [0, 1] };
+        for (position, index) in order.into_iter().enumerate() {
+            let pin_end = if index == 0 { end } else { end + 2_000 };
+            lane.state.complete_whisper_window(
+                &lane.tx,
+                completion(
+                    &requests[index],
+                    vec![word_pin(session, "Iwo", end - 4_000, pin_end)],
+                ),
+                12.5,
+            );
+            if position == 0 && !reverse {
+                assert!(held_text(&lane, &owner).is_none_or(|text| !text.contains("Iwo")));
+            }
+            if position == 0 && reverse {
+                assert_eq!(held_text(&lane, &owner).as_deref(), Some("Iwo"));
+            }
+        }
         lane.state
             .return_outstanding_whisper_without_label(&lane.tx);
         let ledger = lane.state.acoustic_ledger.lock().unwrap();
@@ -22125,29 +22131,7 @@ mod relay_l1_overlap_admission_tests {
 
     #[test]
     fn forensic_stub_after_wider_window_never_adds_second_copy() {
-        let session = "forensic-stub-reversed";
-        let (mut lane, owner, requests) = forensic_lane(session, &[]);
-        let end = requests[0].provider_request.identity.range.sample_end;
-        lane.state.complete_whisper_window(
-            &lane.tx,
-            completion(
-                &requests[1],
-                vec![word_pin(session, "ludzi", end + 1_000, end + 36_000)],
-            ),
-            12.5,
-        );
-        lane.state.complete_whisper_window(
-            &lane.tx,
-            completion(
-                &requests[0],
-                vec![word_pin(session, "ludzi", end - 4_000, end)],
-            ),
-            12.5,
-        );
-        lane.state
-            .return_outstanding_whisper_without_label(&lane.tx);
-        assert_eq!(held_text(&lane, &owner).as_deref(), Some("ludzi"));
-        assert!(lane.state.pending_whisper_stubs.is_empty());
+        window_stub_waits_for_next_window(BufferMode::Windows, true);
     }
 
     #[test]
