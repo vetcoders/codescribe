@@ -1180,6 +1180,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn spill_failure_after_ring_eviction_cannot_certify_a_shortened_take() {
+        let dir = tempfile::tempdir().unwrap();
+        let partial = dir.path().join("partial.wav");
+        write_wav_file(&partial, &[11, 22], 16_000, 1).unwrap();
+        let mut recorder = Recorder::with_config(RecorderConfig::default()).unwrap();
+        recorder.actual_sample_rate = 16_000;
+        recorder.buffer.lock().unwrap().extend([33, 44]);
+        recorder.buffer_start_offset.store(2, Ordering::SeqCst);
+        recorder.spill = Some(SpillSink {
+            tx: None,
+            handle: Some(std::thread::spawn(|| {
+                Err(anyhow::anyhow!("injected spill write failure"))
+            })),
+        });
+        let result = recorder.finalize_closed_capture(true);
+        assert!(
+            result.is_err(),
+            "evicted ring cannot become a complete archive after writer failure: {result:?}"
+        );
+        assert_eq!(recorder.buffer.lock().unwrap().len(), 2, "recoverable tail remains owned");
+        assert_eq!(recorder.buffer_start_offset.load(Ordering::SeqCst), 2);
+        assert!(partial.is_file(), "partial source must remain recoverable");
+    }
+
+    #[test]
     fn explicit_capture_device_never_opens_system_default() {
         for devices in [vec![], vec![(1, "MacBook Microphone".to_string())]] {
             assert!(

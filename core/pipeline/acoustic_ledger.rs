@@ -5921,12 +5921,13 @@ mod tests {
             &obs(ObservationProducer::ManualHuman, 0, range.clone()),
             "Iwo",
         );
+        // Human ownership is protected without inventing an acoustic seal.
         let downgrade = ledger.admit(&obs(ObservationProducer::Whisper, 9, range.clone()), "Ivo");
         assert_eq!(
             downgrade,
             MutationReceipt::Refuse {
                 occurrence: range.clone(),
-                reason: RefuseReason::SealedReplay,
+                reason: RefuseReason::AuthorityConflict,
             }
         );
         assert_eq!(ledger.text_of(&range), Some("Iwo"));

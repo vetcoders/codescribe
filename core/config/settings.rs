@@ -3060,6 +3060,43 @@ mod tests {
 
     #[test]
     #[serial]
+    fn audio_retention_missing_or_unknown_choice_preserves_forever_on_disk() {
+        let dir = TempDir::new().unwrap();
+        let _env = crate::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", dir.path());
+        let path = UserSettings::settings_path();
+        for audio in [serde_json::json!({}), serde_json::json!({"retention":"unsupported"})] {
+            fs::write(&path, serde_json::to_vec(&serde_json::json!({
+                "schema_version":3, "audio":audio, "interaction":{"paste_mode":"off"}
+            })).unwrap()).unwrap();
+            UserSettings::load().save().unwrap();
+            let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(saved.pointer("/audio/retention"), Some(&serde_json::json!("forever")));
+            assert_eq!(saved.pointer("/interaction/paste_mode"), Some(&serde_json::json!("off")),
+                       "retention cannot overwrite unrelated choices");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn audio_retention_all_five_choices_survive_real_file_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let _env = crate::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", dir.path());
+        let path = UserSettings::settings_path();
+        for choice in ["forever", "30_days", "7_days", "24h", "off"] {
+            fs::write(&path, serde_json::to_vec(&serde_json::json!({
+                "schema_version":3, "audio":{"retention":choice}
+            })).unwrap()).unwrap();
+            UserSettings::load().save().unwrap();
+            let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(saved.pointer("/audio/retention"), Some(&serde_json::json!(choice)), "lost {choice}");
+            UserSettings::load().save().unwrap();
+            let reloaded: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(reloaded.pointer("/audio/retention"), Some(&serde_json::json!(choice)));
+        }
+    }
+
+    #[test]
+    #[serial]
     fn retired_bus_retention_key_is_ignored_on_load() {
         let _tmp = setup_isolated_data_dir();
         let path = UserSettings::settings_path();

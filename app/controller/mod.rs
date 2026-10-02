@@ -7904,10 +7904,7 @@ mod refusal_recovery_tests {
             0,
             "closure is not delivery lineage"
         );
-        assert!(
-            !settled,
-            "a skipped prefix cannot suppress terminal delivery"
-        );
+        assert_eq!(settled, TranscriptDelivery::Retained);
     }
 
     // A shorter final accounts for stopped words through the phrase closure.

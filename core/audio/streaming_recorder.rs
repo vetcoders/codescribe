@@ -2249,6 +2249,41 @@ mod capture_stop_failure_tests {
     use super::*;
     use crate::pipeline::acoustic_ledger::SealCoverageStatus;
 
+    /// Synchronous test presentation: on_event has no queued work. Acknowledgement
+    /// is owned by this fixture and still requires the exact capture identity.
+    struct SynchronousTestPresentation;
+
+    impl crate::pipeline::contracts::EventSink for SynchronousTestPresentation {
+        fn on_event(&self, _event: &EngineEvent) {}
+        fn wait_presentation_published<'a>(
+            &'a self, session_id: &'a str, capture_epoch: u64,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+            Box::pin(async move {
+                anyhow::ensure!(session_id == "capture-owner" && capture_epoch == 7, "foreign capture");
+                Ok(())
+            })
+        }
+    }
+
+    struct ControlledTestPresentation {
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    impl crate::pipeline::contracts::EventSink for ControlledTestPresentation {
+        fn on_event(&self, _event: &EngineEvent) {}
+        fn wait_presentation_published<'a>(
+            &'a self, session_id: &'a str, capture_epoch: u64,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+            Box::pin(async move {
+                anyhow::ensure!(session_id == "capture-owner" && capture_epoch == 7, "foreign capture");
+                self.entered.notify_one();
+                self.release.notified().await;
+                Ok(())
+            })
+        }
+    }
+
     fn recorder() -> StreamingRecorder {
         let mut recorder = StreamingRecorder::new().unwrap();
         recorder.authority_session_id = Some("capture-owner".into());
@@ -2349,7 +2384,7 @@ mod capture_stop_failure_tests {
         let bytes = write_wav(&path);
         let mut recorder = recorder();
         recorder.sample_rate = 16_000;
-        let sink = Arc::new(crate::pipeline::sinks::CollectorEventSink::new());
+        let sink = Arc::new(SynchronousTestPresentation);
         let weak_sink = Arc::downgrade(&sink);
         recorder.set_event_sink(Some(sink));
         // Neither preview nor a raw buffer can become recovery transcript.
@@ -2395,7 +2430,7 @@ mod capture_stop_failure_tests {
     async fn archive_failure_reaps_worker_and_preserves_both_errors_without_a_path() {
         let mut recorder = recorder();
         recorder.set_event_sink(Some(Arc::new(
-            crate::pipeline::sinks::CollectorEventSink::new(),
+            SynchronousTestPresentation,
         )));
         let (sender, receiver) = std::sync::mpsc::channel();
         recorder.terminal_audio_sender = Some(sender);
@@ -2855,4 +2890,77 @@ mod capture_stop_failure_tests {
         delayed.await.unwrap();
         assert_eq!(&*recorder.transcript_buffer.lock().await, "final");
     }
+    #[tokio::test]
+    async fn explicit_publication_ack_preserves_a_same_length_terminal_correction() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("take.wav");
+        let wav = write_wav(&path);
+        let mut recorder = recorder();
+        recorder.acoustic_ledger = Some(Arc::new(StdMutex::new(stop_finality_ledger(true, false))));
+        *recorder.transcript_buffer.lock().await = "committed worts".into();
+        let text = Arc::clone(&recorder.transcript_buffer);
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        recorder.set_event_sink(Some(Arc::new(ControlledTestPresentation {
+            entered: entered.clone(), release: release.clone(),
+        })));
+        let audio = path.clone();
+        let stopping = tokio::spawn(async move {
+            let result = recorder.complete_stop(Ok(Some(audio))).await;
+            (recorder, result)
+        });
+        entered.notified().await;
+        assert!(!stopping.is_finished(), "publication is still pending");
+        *text.lock().await = "committed words".into();
+        release.notify_one();
+        let (recorder, result) = stopping.await.unwrap();
+        let (committed, saved) = result.unwrap();
+        assert_eq!(committed, "committed words");
+        assert_eq!(saved.as_deref(), Some(path.as_path()));
+        assert_eq!(std::fs::read(path).unwrap(), wav);
+        assert_released(&recorder);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn publication_timeout_retains_sink_and_audio_without_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("take.wav");
+        let wav = write_wav(&path);
+        let mut recorder = recorder();
+        let entered = Arc::new(tokio::sync::Notify::new());
+        recorder.set_event_sink(Some(Arc::new(ControlledTestPresentation {
+            entered: entered.clone(), release: Arc::new(tokio::sync::Notify::new()),
+        })));
+        let audio = path.clone();
+        let stopping = tokio::spawn(async move {
+            let result = recorder.complete_stop(Ok(Some(audio))).await;
+            (recorder, result)
+        });
+        entered.notified().await;
+        tokio::time::advance(std::time::Duration::from_millis(3001)).await;
+        let (recorder, result) = stopping.await.unwrap();
+        let error = result.unwrap_err();
+        let failure = error.downcast_ref::<CaptureStopFailure>().unwrap();
+        assert!(failure.cause.to_string().contains("timed out"));
+        assert_eq!(failure.audio_path.as_deref(), Some(path.as_path()));
+        assert!(recorder.event_sink.is_some(), "uncompleted publication remains owned");
+        assert_eq!(std::fs::read(path).unwrap(), wav);
+    }
+
+    #[tokio::test]
+    async fn a_foreign_capture_cannot_acknowledge_terminal_publication() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("take.wav");
+        let wav = write_wav(&path);
+        let mut recorder = recorder();
+        recorder.capture_epoch = 8;
+        recorder.set_event_sink(Some(Arc::new(SynchronousTestPresentation)));
+        let error = recorder.complete_stop(Ok(Some(path.clone()))).await.unwrap_err();
+        let failure = error.downcast_ref::<CaptureStopFailure>().unwrap();
+        assert!(failure.cause.to_string().contains("foreign capture"));
+        assert_eq!(failure.capture_epoch, 8);
+        assert!(recorder.event_sink.is_some());
+        assert_eq!(std::fs::read(path).unwrap(), wav);
+    }
+
 }
