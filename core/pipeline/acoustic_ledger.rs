@@ -5016,6 +5016,43 @@ mod tests {
     }
 
     #[test]
+    fn late_rejected_source_cannot_create_new_recovery_debt() {
+        for held_by in [
+            ObservationProducer::Whisper,
+            ObservationProducer::ManualHuman,
+        ] {
+            let (mut ledger, occurrence) = whisper_only_qualified_ledger();
+            let held = obs(held_by, 3, occurrence.clone());
+            let receipt =
+                ledger.admit_word_slots(&held, &[WordPin::new(1_000, 14_000, "confirmed")]);
+            assert!(
+                receipt.grants_mutation(),
+                "initial source must be committed: {receipt:?}"
+            );
+            assert!(!ledger.text_recovery_pending(&occurrence));
+            let before = ledger.slots_of(&occurrence).unwrap().to_vec();
+            let stale = obs(ObservationProducer::Apple, 1, occurrence.clone());
+            let receipt = ledger.admit_word_slots(&stale, &[WordPin::new(1_000, 14_000, "weaker")]);
+            assert!(
+                !receipt.grants_mutation(),
+                "stale source must be refused: {receipt:?}"
+            );
+            assert_eq!(ledger.slots_of(&occurrence).unwrap(), before.as_slice());
+            assert_eq!(ledger.text_of(&occurrence), Some("confirmed"));
+            assert!(
+                ledger
+                    .slot_alternatives()
+                    .iter()
+                    .any(|alternative| alternative.observation == stale)
+            );
+            assert!(
+                !ledger.text_recovery_pending(&occurrence),
+                "rejected weaker hypothesis created terminal work over an already committed source: {held_by:?}"
+            );
+        }
+    }
+
+    #[test]
     fn word_slots_compose_with_their_own_ranges_and_one_occurrence_serial() {
         let (mut ledger, occurrence) = whisper_only_qualified_ledger();
         let observation = obs(ObservationProducer::Apple, 0, occurrence.clone());
