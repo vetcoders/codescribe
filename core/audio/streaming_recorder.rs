@@ -7,10 +7,10 @@
 //! user's first words queue up instead of being dropped while the model loads.
 //!
 //! Shutdown is ordered and matters. Stopping capture is not enough — the session
-//! task has to drain, and the presentation layer ticks on its own task, so both
-//! `stop` paths wait for the transcript to stop growing (bounded to three
-//! seconds) before releasing the sink. Dropping the sink early truncates the
-//! tail of the delivered text.
+//! task has to drain, and the presentation layer publishes on its own task, so
+//! both `stop` paths require its FIFO acknowledgement before releasing the sink.
+//! The three-second bound refuses an unfinished drain; buffer length cannot
+//! prove publication. Dropping the sink early truncates delivered text.
 
 use crate::asr_session::recorder::{RecorderLifecycleHandle, recorder_lifecycle_channel};
 use crate::audio::recorder::{Recorder, RecorderConfig};
@@ -1097,30 +1097,38 @@ impl StreamingRecorder {
         };
         self.transcription_handle = None;
 
-        // 3. Drain presentation layer.
-        // PresentationEmitter's BufferedEmitter tick loop runs in a separate
-        // tokio task. After transcription_session sends Finish, the tick loop
-        // needs time to drain queued text into transcript_buffer before we
-        // drop the event sink (which aborts the tick loop via Drop).
-        if self.event_sink.is_some() {
-            let drain_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
-            loop {
-                let snapshot = self.transcript_buffer.lock().await.len();
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                if self.transcript_buffer.lock().await.len() == snapshot
-                    || tokio::time::Instant::now() >= drain_deadline
-                {
-                    break;
-                }
-            }
+        // 3. Fence the existing FIFO after the producer has joined. Neither
+        // unchanged bytes nor an expired bound proves that publication ended.
+        // Keep the sink on failure/cancellation so pending committed text is
+        // still owned and recoverable; do not copy a partially published buffer.
+        let drain_failure = match self.event_sink.as_ref() {
+            Some(sink) => match self.authority_session_id.as_deref() {
+                Some(session_id) => tokio::time::timeout(
+                    std::time::Duration::from_secs(3),
+                    sink.wait_presentation_published(session_id, self.capture_epoch),
+                )
+                .await
+                .unwrap_or_else(|_| Err(anyhow!("presentation terminal drain timed out")))
+                .err(),
+                None => Some(anyhow!("presentation terminal drain has no capture identity")),
+            },
+            None => None,
+        };
+        if drain_failure.is_none() {
+            self.event_sink = None;
         }
-        self.event_sink = None;
 
         // No early return may bypass the owned shutdown tail. Archive failure
         // is primary when both operations failed; never invent a saved path.
         let (audio_path, cause, task_failure) = match stopped {
             Ok(path) => (path, task_failure, None),
             Err(error) => (None, Some(error), task_failure),
+        };
+        let cause = match (cause, drain_failure) {
+            (Some(cause), Some(drain)) => {
+                Some(cause.context(format!("presentation drain also failed: {drain:#}")))
+            }
+            (cause, drain) => cause.or(drain),
         };
         if let Some(cause) = cause {
             return Err(anyhow::Error::new(CaptureStopFailure {

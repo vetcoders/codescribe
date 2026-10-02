@@ -1373,6 +1373,18 @@ pub trait EventSink: Send + Sync {
     /// ledger receipt, or public IPC message.
     fn on_capture_opened(&self, _session_id: &str, _capture_epoch: u64) {}
 
+    /// Acknowledge FIFO publication for this exact capture after its producers
+    /// have joined. Only the committed presentation owner can complete this
+    /// protocol; an observer or unwired sink must refuse it. Cancellation or
+    /// timeout at the caller is never an acknowledgement.
+    fn wait_presentation_published<'a>(
+        &'a self,
+        _session_id: &'a str,
+        _capture_epoch: u64,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async { anyhow::bail!("presentation completion owner unavailable") })
+    }
+
     /// Receive one semantic engine event. Called from the engine's own thread,
     /// so implementations must not block — presentation work belongs on the
     /// consumer's queue, not on this call.

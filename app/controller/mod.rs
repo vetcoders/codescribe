@@ -67,7 +67,7 @@ use crate::presentation::{
 use anyhow::{Context, Result};
 use codescribe_core::llm::ai_formatting::format_text_with_status_for_policy;
 use codescribe_core::pipeline::acoustic_ledger::DocumentRevisionProvenance;
-use codescribe_core::pipeline::contracts::EngineEvent;
+use codescribe_core::pipeline::contracts::{EngineEvent, EventSink};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -839,7 +839,35 @@ struct TakeExternalEventSink {
 }
 
 impl codescribe_core::pipeline::contracts::EventSink for TakeExternalEventSink {
+    fn consultation_destinations(&self) -> usize {
+        self.presentation.consultation_destinations()
+    }
+
+    fn on_consultation_completed(
+        &self,
+        completed: &codescribe_core::agent::consultation::ConsultationGroupAnswer,
+    ) -> Result<()> {
+        self.presentation.on_consultation_completed(completed)
+    }
+
+    fn on_capture_opened(&self, session_id: &str, capture_epoch: u64) {
+        self.presentation.on_capture_opened(session_id, capture_epoch);
+        self.sink.on_capture_opened(session_id, capture_epoch);
+    }
+
+    fn wait_presentation_published<'a>(
+        &'a self,
+        session_id: &'a str,
+        capture_epoch: u64,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+        self.presentation
+            .wait_presentation_published(session_id, capture_epoch)
+    }
+
     fn on_event(&self, event: &EngineEvent) {
+        // The same take sink routes events and completion to one reducer/FIFO.
+        // External observers still see each event after reducer admission.
+        self.presentation.on_event(event);
         self.stop_receipt
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -879,8 +907,30 @@ impl StopCanvasWait {
                 Some(canvas.session_id.as_str()) == take_id
                     && canvas.has_committed_document
                     && canvas.preview_only_words == 0
+                    && self.painted_at_stop.as_ref().is_none_or(|before| {
+                        before.session_id == canvas.session_id
+                            && before.capture_epoch == canvas.capture_epoch
+                            && before.revision <= canvas.revision
+                            && !requires_terminal_accounting(&before.missing_words_from(canvas))
+                    })
             })
     }
+}
+
+/// Phrase closure and volatile paint transitions are lifecycle evidence, not
+/// proof that the chosen committed projection accounts for their PCM. Leave
+/// those takes to the owned terminal drain rather than claiming an early paste.
+/// Relabel/shape receipts may replace wording without any lexical word floor.
+fn requires_terminal_accounting(
+    missing: &[crate::presentation::emitter::MissingVisibleWord],
+) -> bool {
+    missing.iter().any(|word| {
+        !word.reason.split("; ").all(|reason| {
+            reason.starts_with("covered_by_committed occurrence=")
+                || reason.starts_with("relabeled_in_place occurrence=")
+                || reason.starts_with("reshaped_in_place occurrence=")
+        })
+    })
 }
 
 async fn await_live_finals_for_delivery(
@@ -2809,7 +2859,7 @@ impl RecordingController {
         if preempted {
             info!(take_id, "stop_paste_preempted_by_next_take");
         }
-        let (delivery, snapshot, light_plus) = match snapshot {
+        let (snapshot, light_plus) = match snapshot {
             Some(snapshot) if !snapshot.text.trim().is_empty() => {
                 let presentation = presentation
                     .ok_or_else(|| anyhow::anyhow!("stop canvas has no presentation owner"))?;
@@ -2824,8 +2874,7 @@ impl RecordingController {
                 let snapshot = presentation
                     .shape_frozen_canvas_at_stop(snapshot)
                     .map_err(|error| anyhow::anyhow!("Light+ stop revision refused: {error}"))?;
-                let delivery = deliver(snapshot.text.clone()).await?;
-                (delivery, Some(snapshot), light_plus)
+                (Some(snapshot), light_plus)
             }
             snapshot => {
                 warn!(
@@ -2838,10 +2887,9 @@ impl RecordingController {
                     capture_epoch = snapshot.as_ref().map(|canvas| canvas.capture_epoch),
                     "stop_canvas_empty"
                 );
-                (TranscriptDelivery::Retained, snapshot, "literal")
+                (snapshot, "literal")
             }
         };
-        self.record_delivery_disposition(delivery).await;
         let canvas = snapshot.as_ref();
         let text = canvas.map_or("", |canvas| canvas.text.as_str());
         let preview_words = canvas.map_or(0, |canvas| canvas.preview_only_words);
@@ -2928,6 +2976,38 @@ impl RecordingController {
                 error!(take_id, missing_words = ?missing_words, "stop_paste_visible_word_defect");
             }
         }
+        // Settlement must precede the irreversible destination effect. A
+        // closed preview alone cannot authorize it; only an accounted committed
+        // projection from this capture may be handed off. The production caller
+        // defers unresolved paint to terminal processing before reaching here.
+        let accounted = !preempted
+            && live_finals_admitted
+            && canvas.is_some_and(|canvas| {
+                canvas.has_committed_document
+                    && canvas.preview_only_words == 0
+                    && presentation
+                        .and_then(PresentationEmitter::visible_canvas_snapshot)
+                        .is_some_and(|current| {
+                            current.session_id == canvas.session_id
+                                && current.capture_epoch == canvas.capture_epoch
+                                && current.revision == canvas.revision
+                        })
+            })
+            && !requires_terminal_accounting(&missing_words);
+        let delivery = if accounted && !text.trim().is_empty() {
+            deliver(text.to_owned()).await?
+        } else {
+            if !text.trim().is_empty() || !missing_words.is_empty() {
+                warn!(take_id, unaccounted, closed_by_final_words,
+                    "stop canvas retained without committed delivery accounting");
+                self.publish_stop_warning(
+                    "stop_canvas_accounting_unsettled",
+                    "Recording stopped. Text and audio are retained for review; this stop projection could not authorize delivery.".to_string(),
+                );
+            }
+            TranscriptDelivery::Retained
+        };
+        self.record_delivery_disposition(delivery).await;
         info!(
             stop_to_delivery_ms = stop_start.elapsed().as_millis(),
             delivery = match delivery {
@@ -3820,23 +3900,18 @@ impl RecordingController {
             }))
             .with_sentence_pause_sec(options.sentence_pause_sec),
         );
-        let presentation_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
-            presentation.clone();
         let ipc_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
             Arc::new(helpers::IpcBroadcastSink::new(event_broadcast));
         let delivery_tag_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
             delivery_tagger;
         let stop_receipt = Arc::new(std::sync::Mutex::new(LateFinalReceipt::default()));
-        let external_sink = Arc::new(TakeExternalEventSink {
+        let event_sink = Arc::new(TakeExternalEventSink {
             stop_receipt: Arc::clone(&stop_receipt),
             presentation: Arc::clone(&presentation),
             sink: Arc::new(codescribe_core::pipeline::sinks::FanoutEventSink::new(
                 vec![ipc_sink, delivery_tag_sink],
             )),
         });
-        let event_sink = Arc::new(codescribe_core::pipeline::sinks::FanoutEventSink::new(
-            vec![presentation_sink, external_sink],
-        ));
         RecordingEventPipeline {
             stop_receipt,
             event_sink,

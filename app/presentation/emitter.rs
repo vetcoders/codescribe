@@ -3363,6 +3363,26 @@ impl Drop for PresentationEmitter {
 }
 
 impl EventSink for PresentationEmitter {
+    fn wait_presentation_published<'a>(
+        &'a self,
+        session_id: &'a str,
+        capture_epoch: u64,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            anyhow::ensure!(
+                self.cursor_capture.get().is_some_and(|(session, epoch)| {
+                    session == session_id && *epoch == capture_epoch && capture_epoch != 0
+                }),
+                "presentation completion capture identity mismatch"
+            );
+            anyhow::ensure!(
+                self.wait_paint_published().await,
+                "presentation FIFO closed without a drain acknowledgement"
+            );
+            Ok(())
+        })
+    }
+
     fn consultation_destinations(&self) -> usize {
         1
     }
