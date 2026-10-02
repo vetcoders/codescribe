@@ -534,8 +534,8 @@ fn prepare_cloud_jobs(
                 #[cfg(unix)]
                 let _audio_lease = audio_lease;
                 runtime.block_on(async move {
-                    let audio_canon =
-                        safe_canonicalize_bounded(&audio_path, &input_root).with_context(|| {
+                    let audio_canon = safe_canonicalize_bounded(&audio_path, &input_root)
+                        .with_context(|| {
                             format!("Audio path escapes input root: {}", audio_path.display())
                         })?;
                     client::transcribe_cloud_on_worker(
