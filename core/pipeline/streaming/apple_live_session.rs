@@ -4158,23 +4158,14 @@ impl AppleSealState {
                         .flat_map(|other| ledger.slots_of(other).unwrap_or(&[]).iter())
                         .filter(|slot| {
                             slot.producer == LedgerObservationProducer::Whisper
-                                && (crate::pipeline::acoustic_ledger::same_word_pin(
-                                    stub.pin.sample_start,
-                                    stub.pin.sample_end,
-                                    &stub.text,
-                                    slot.sample_start,
-                                    slot.sample_end,
-                                    &slot.text,
-                                ) || (slot.sample_start < stub.pin.sample_end
-                                    && stub.pin.sample_start < slot.sample_end)
-                                    || (slot.sample_start >= stub.pin.sample_end
-                                        && slot.sample_start - stub.pin.sample_end <= u64::from(self.sample_rate) / 4
-                                        && crate::pipeline::acoustic_ledger::normalize_word_token(&slot.text)
-                                            == crate::pipeline::acoustic_ledger::normalize_word_token(&stub.text)))
+                                && ledger.word_slot_targets_pin(slot, &stub.pin)
+                                && (ledger.complete_word_slot(slot)
+                                    || crate::pipeline::acoustic_ledger::normalize_word_token(&slot.text)
+                                        == crate::pipeline::acoustic_ledger::normalize_word_token(&stub.text))
                         })
                         .cloned()
                         .collect::<Vec<_>>();
-                    if sources.is_empty() {
+                    if sources.len() != 1 {
                         false
                     } else {
                         let observation = ledger.next_word_observation(
@@ -6316,6 +6307,13 @@ fn admit_debt_occurrence_recovery(
         return false;
     }
     if word_grain {
+        if payload.validate().is_err()
+            || payload.identity.range.session != occurrence.session
+            || payload.identity.range.capture_epoch != occurrence.capture_epoch
+        {
+            warn_recovery(ev_tx, "recovery word batch has no authenticated decode range".into());
+            return false;
+        }
         let owners = state.word_owners();
         let routes = state.route_overlap_pins(
             ev_tx,
@@ -6330,11 +6328,14 @@ fn admit_debt_occurrence_recovery(
         );
         for (index, ((id, owner), route)) in owners.iter().zip(&routes).enumerate() {
             if !route.exclusive.is_empty() {
-                state.admit_routed_words(
+                state.admit_routed_words_with_decode_window(
                     ev_tx,
                     *id,
                     owner,
-                    payload.identity.request_id,
+                    (payload.identity.request_id, Some((
+                        payload.identity.range.sample_start,
+                        payload.identity.range.sample_end,
+                    ))),
                     RoutedWords {
                         pins: &route.exclusive,
                         neighbours: &neighbour_pin_assignments(

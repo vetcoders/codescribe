@@ -332,6 +332,186 @@ pub(super) fn repetition_target_ambiguous(sources: &[WordSlot], pins: &[WordSlot
 }
 
 impl AcousticLedger {
+    /// Current and predecessor ranges are physical targets; labels never
+    /// broaden this relation. A split child addresses its own range only.
+    pub(super) fn pin_targets_source(&self, source: &WordSlot, pin: &WordSlot) -> bool {
+        same_pcm_slot(source, pin)
+            || self.slot_source_ranges(source).iter().any(|range| {
+                range.same_capture(&pin.observation.occurrence)
+                    && same_pcm_slot(
+                        &WordSlot {
+                            sample_start: range.sample_start,
+                            sample_end: range.sample_end,
+                            ..source.clone()
+                        },
+                        pin,
+                    )
+            })
+    }
+
+    pub(crate) fn word_slot_targets_pin(
+        &self,
+        source: &WordSlot,
+        pin: &OccurrenceIdentity,
+    ) -> bool {
+        self.word_pin_observations.contains(&source.observation)
+            && source.text.split_whitespace().count() == 1
+            && pin.is_anchored()
+            && pin.same_capture(&source.observation.occurrence)
+            && self.pin_targets_source(source, &WordSlot {
+                sample_start: pin.sample_start,
+                sample_end: pin.sample_end,
+                ..source.clone()
+            })
+    }
+
+    pub(crate) fn complete_word_slot(&self, source: &WordSlot) -> bool {
+        self.word_pin_observations.contains(&source.observation)
+            && self.complete_decoded_words.get(&source.observation).is_some_and(|ranges| {
+                ranges.contains(&(source.sample_start, source.sample_end))
+            })
+    }
+
+    fn slot_descends_from(&self, pin: &WordSlot, source: &WordSlot) -> bool {
+        let mut descendants = vec![source.clone()];
+        for operation in &self.slot_operations {
+            if operation.sources.iter().any(|held| descendants.contains(held)) {
+                for output in &operation.outputs {
+                    if !descendants.contains(output) {
+                        descendants.push(output.clone());
+                    }
+                }
+            }
+        }
+        descendants.contains(pin)
+    }
+
+    /// A returned producer scope or a completed decode window accounts for
+    /// transcription work. Word timestamps are not an energy-density map.
+    pub(super) fn returned_word_scope_accounted(
+        &self,
+        observation: &ObservationIdentity,
+    ) -> bool {
+        let owner = &observation.occurrence;
+        let scope_returned = self.frontier_of(owner).is_some_and(|frontier| {
+            frontier.returned.contains(&observation.producer)
+        }) || self.decoded_word_windows.get(observation).is_some_and(|(start, end)| {
+            *start <= owner.sample_start && *end >= owner.sample_end
+        });
+        scope_returned
+            && matches!(
+                observation.producer,
+                ObservationProducer::Whisper | ObservationProducer::CloudLive
+            )
+            && self.word_pin_observations.contains(observation)
+            && self.slots_of(owner).is_some_and(|pins| {
+                !pins.is_empty()
+                    && pins.iter().all(|pin| {
+                        pin.producer == ObservationProducer::ManualHuman
+                            || (self.word_pin_observations.contains(&pin.observation)
+                                && pin.text.split_whitespace().count() == 1
+                                && pin.producer.authority_rank()
+                                    >= observation.producer.authority_rank())
+                    })
+            })
+    }
+
+    /// Settle only exact rejected targets and retired coarse-source lineage.
+    /// Producer return cannot erase a rejected higher-layer word, a missing
+    /// accepted child, or a source still retained by a refused operation.
+    pub(super) fn reconcile_returned_word_debt(&mut self, owner: &OccurrenceIdentity) {
+        if !self.text_recovery_pending(owner) && !self.rejected_word_pins.contains_key(owner) {
+            return;
+        }
+        let held = self.slots_of(owner).unwrap_or(&[]);
+        let rejected = self.rejected_word_pins.get(owner).cloned().unwrap_or_default();
+        let unresolved = rejected.iter().filter(|source| {
+            let partial = self.slot_operations.iter().find(|operation| {
+                operation.observation.occurrence == *owner
+                    && operation.rule_id == "acoustic_resegmentation/partial-speech/v1"
+                    && operation.sources.contains(source)
+            });
+            if let Some(operation) = partial {
+                let returned = self.frontier_of(owner).is_some_and(|frontier| {
+                    frontier.returned.contains(&operation.observation.producer)
+                }) || self.decoded_word_windows.get(&operation.observation)
+                    .is_some_and(|(start, end)| {
+                        *start <= source.sample_start && *end >= source.sample_end
+                    });
+                let children_held = !operation.outputs.is_empty()
+                    && operation.outputs.iter().all(|output| {
+                        held.iter().any(|pin| {
+                            self.word_pin_observations.contains(&pin.observation)
+                                && pin.text.split_whitespace().count() == 1
+                                && pin.producer.authority_rank()
+                                    >= operation.observation.producer.authority_rank()
+                                && self.slot_descends_from(pin, output)
+                        }) || self.word_deletions.iter().any(|deletion| {
+                            deletion.operation.observation.occurrence == *owner
+                                && deletion.operation.sources.iter().any(|source| {
+                                    self.slot_descends_from(source, output)
+                                })
+                        })
+                    });
+                return !returned || !children_held || held.contains(source);
+            }
+            let targets = held.iter().filter(|pin| {
+                self.word_pin_observations.contains(&pin.observation)
+                    && pin.observation != source.observation
+                    && pin.text.split_whitespace().count() == 1
+                    && source.text.split_whitespace().count() == 1
+                    && (pin.producer == ObservationProducer::ManualHuman
+                        || pin.producer.authority_rank() > source.producer.authority_rank()
+                        || (pin.producer == source.producer
+                            && pin.observation.generation > source.observation.generation))
+                    && self.pin_targets_source(source, pin)
+                    && rejected.iter().all(|other| {
+                        !self.pin_targets_source(other, pin)
+                            || (other.sample_start == source.sample_start
+                                && other.sample_end == source.sample_end)
+                    })
+            }).count();
+            let no_speech = self.word_deletions.iter().any(|deletion| {
+                let target = deletion.verdict.target();
+                deletion.operation.observation.occurrence == *owner
+                    && target.same_capture(owner)
+                    && target.sample_start <= source.sample_start
+                    && target.sample_end >= source.sample_end
+            });
+            targets != 1 && !no_speech
+        }).cloned().collect::<Vec<_>>();
+        if unresolved.is_empty() {
+            self.rejected_word_pins.remove(owner);
+        } else {
+            self.rejected_word_pins.insert(owner.clone(), unresolved);
+        }
+        if !self.retained_recovery_source(owner)
+            && !self.rejected_word_pins.contains_key(owner)
+            && self.slots_of(owner).is_some_and(|pins| {
+                pins.iter().any(|pin| self.returned_word_scope_accounted(&pin.observation))
+            })
+        {
+            self.pending_text_recovery.remove(owner);
+        }
+    }
+
+    pub(super) fn retained_recovery_source(&self, owner: &OccurrenceIdentity) -> bool {
+        self.slot_alternatives.iter().any(|alternative| {
+            alternative.observation.occurrence == *owner
+                && !matches!(alternative.reason,
+                    "resegmentation_source_label" | "window_start_clipped"
+                        | "window_stub_superseded" | "duplicate_pcm_edge_token")
+                && alternative.sources.iter().any(|source| {
+                    source.producer != ObservationProducer::ManualHuman
+                        && source.producer.authority_rank()
+                            <= alternative.observation.producer.authority_rank()
+                        && (source.producer != alternative.observation.producer
+                            || source.observation.generation < alternative.observation.generation)
+                        && self.slots_of(owner).is_some_and(|pins| pins.contains(source))
+                })
+        })
+    }
+
     /// Jitter may move either fence, but may not borrow another word's centre
     /// or turn one member of a partition into the whole source word.
     pub(super) fn ordinary_word_target(
@@ -343,28 +523,20 @@ impl AcousticLedger {
         let targets = sources
             .iter()
             .enumerate()
-            .filter(|(_, source)| same_pcm_slot(source, pin))
+            .filter(|(_, source)| self.pin_targets_source(source, pin))
             .collect::<Vec<_>>();
         let [(index, source)] = targets.as_slice() else {
             return None;
         };
-        let source_mid = source.sample_start + (source.sample_end - source.sample_start) / 2;
-        let pin_mid = pin.sample_start + (pin.sample_end - pin.sample_start) / 2;
         (self.word_pin_observations.contains(&source.observation)
             && source.text.split_whitespace().count() == 1
             && pin.text.split_whitespace().count() == 1
-            && self.slot_source_ranges(source).len() == 1
-            && self
-                .complete_decoded_words
-                .get(&source.observation)
-                .is_none_or(|ranges| ranges.contains(&(source.sample_start, source.sample_end)))
-            && source.sample_start <= pin_mid
-            && pin_mid < source.sample_end
-            && pin.sample_start <= source_mid
-            && source_mid < pin.sample_end
+            && self.complete_decoded_words.get(&source.observation).is_none_or(|ranges| {
+                ranges.contains(&(source.sample_start, source.sample_end))
+            })
             && pins
                 .iter()
-                .filter(|other| same_pcm_slot(source, other))
+                .filter(|other| self.pin_targets_source(source, other))
                 .count()
                 == 1
             && sources.iter().enumerate().all(|(other_index, other)| {
@@ -403,7 +575,19 @@ impl AcousticLedger {
             .collect::<Vec<_>>();
         let connected = |source: usize, pin: usize| {
             ordinary_targets[pin].map_or_else(
-                || same_pcm_slot(&prior[source], &pins[pin]),
+                || {
+                    let held = &prior[source];
+                    let word = &pins[pin];
+                    let coarse = !self.word_pin_observations.contains(&held.observation)
+                        || held.text.split_whitespace().count() != 1
+                        || self.complete_decoded_words.get(&held.observation)
+                            .is_some_and(|ranges| {
+                                !ranges.contains(&(held.sample_start, held.sample_end))
+                            });
+                    self.pin_targets_source(held, word)
+                        || (coarse && held.sample_start < word.sample_end
+                            && word.sample_start < held.sample_end)
+                },
                 |target| source == target,
             )
         };
@@ -493,6 +677,20 @@ impl AcousticLedger {
                 && outputs
                     .windows(2)
                     .all(|pair| pair[0].sample_end <= pair[1].sample_start);
+            // A completed word-grain decode covering every addressed source
+            // is a partition receipt. It does not turn word timestamp gaps into
+            // untranscribed speech or fabricate a speech-coverage receipt.
+            let window_refinement = self.decoded_word_windows.get(observation)
+                .is_some_and(|(start, end)| {
+                    sources.iter().all(|source| {
+                        *start <= source.sample_start && *end >= source.sample_end
+                    })
+                })
+                && outputs.iter().all(|word| {
+                    self.complete_decoded_words.get(observation).is_some_and(|ranges| {
+                        ranges.contains(&(word.sample_start, word.sample_end))
+                    })
+                });
             let mut coverage = sources
                 .iter()
                 .map(|source| self.group_speech_coverage(observation, source, &outputs))
@@ -501,6 +699,7 @@ impl AcousticLedger {
                 && geometry
                 && all_coarse
                 && coverage.is_none()
+                && !window_refinement
                 && self.speech_evidence.is_some()
             {
                 outputs.retain(|word| {
@@ -522,7 +721,11 @@ impl AcousticLedger {
                     consumed.extend(word_indices.iter().copied());
                     continue;
                 }
-                sources.retain(|source| outputs.iter().any(|word| same_pcm_slot(source, word)));
+                sources.retain(|source| outputs.iter().any(|word| {
+                    self.pin_targets_source(source, word)
+                        || (source.sample_start < word.sample_end
+                            && word.sample_start < source.sample_end)
+                }));
                 coverage = sources
                     .iter()
                     .map(|source| self.group_speech_coverage(observation, source, &outputs))
@@ -535,6 +738,7 @@ impl AcousticLedger {
             // a complete measured word still requires complete accounting.
             let partial_refinement = all_coarse
                 && coverage.is_none()
+                && !window_refinement
                 && outputs.iter().all(|word| {
                     self.group_speech_coverage(observation, word, std::slice::from_ref(word))
                         .is_some()
@@ -553,12 +757,14 @@ impl AcousticLedger {
                     cursor >= source.sample_end
                 });
             let ambiguous = repetition_target_ambiguous(&sources, &outputs)
-                && !(coverage.is_some() || range_refinement || partial_refinement);
+                && !(coverage.is_some() || range_refinement || partial_refinement
+                    || window_refinement);
             let refusal = if !authority {
                 Some("protected_source")
             } else if !geometry
                 || ambiguous
-                || (coverage.is_none() && !range_refinement && !partial_refinement)
+                || (coverage.is_none() && !range_refinement && !partial_refinement
+                    && !window_refinement)
             {
                 Some("resegmentation_unaccounted_speech")
             } else {
@@ -575,16 +781,12 @@ impl AcousticLedger {
                 continue;
             }
             if partial_refinement {
-                self.require_text_recovery(&observation.occurrence);
                 self.retain_slot_alternative(
                     observation,
                     &candidate,
                     sources.clone(),
                     "partial_group_speech_pending",
                 );
-                for source in &sources {
-                    self.retain_rejected_word_pin(observation, source);
-                }
             }
             let source_ranges = sources
                 .iter()
@@ -608,6 +810,8 @@ impl AcousticLedger {
                 outputs: outputs.clone(),
                 rule_id: if coverage.is_some() {
                     "acoustic_resegmentation/speech-coverage/v1"
+                } else if window_refinement {
+                    "acoustic_resegmentation/decode-window/v1"
                 } else if partial_refinement {
                     "acoustic_resegmentation/partial-speech/v1"
                 } else {
