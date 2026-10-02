@@ -30,6 +30,92 @@ fn observe(
     )
 }
 
+fn stop_pcm(state: &mut AppleSealState, samples: usize) {
+    let pcm = vec![0.25; samples];
+    state.audio.push(&pcm);
+    let mut meter = CaptureLevelAccumulator::bound_to(&state.capture_energy);
+    meter.push_samples(&pcm);
+}
+
+#[test]
+fn stop_waits_for_last_physical_word_even_below_coverage_tolerance() {
+    let mut state = state();
+    // Five distinct PCM occurrences, with the last only 100 ms long.
+    stop_pcm(&mut state, 8_000);
+    let (tx, _) = mpsc::unbounded_channel();
+    for id in 0..4 {
+        observe(&mut state, &tx, id * 1_600, (id + 1) * 1_600, id + 1).unwrap();
+    }
+    assert_eq!(
+        state.acoustic_ledger.lock().unwrap().rendered_text(),
+        "Iwo Iwo Iwo Iwo"
+    );
+    assert_eq!(
+        publish_terminal_coverage(&state, &tx).status,
+        SealCoverageStatus::Complete
+    );
+    assert!(
+        !state.stop_document_settled(),
+        "100 ms of spoken PCM is still owed"
+    );
+    observe(&mut state, &tx, 6_400, 8_000, 5).unwrap();
+    assert!(state.stop_document_settled());
+    assert_eq!(
+        state.acoustic_ledger.lock().unwrap().rendered_text(),
+        "Iwo Iwo Iwo Iwo Iwo"
+    );
+}
+
+#[test]
+fn stop_does_not_equate_a_sealed_prefix_with_returned_whisper_work() {
+    let mut state = state();
+    stop_pcm(&mut state, 16_000);
+    let (tx, _) = mpsc::unbounded_channel();
+    observe(&mut state, &tx, 0, 16_000, 1).unwrap();
+    assert!(state.stop_document_settled());
+    let occurrence = OccurrenceIdentity::new(state.session_id.clone(), 1, 0, 16_000);
+    let job = TailPatchInFlight {
+        submission_sequence: 1,
+        utterance_id: 1,
+        request_identity: TailRequestIdentity {
+            request_id: 1,
+            range: crate::stt::tail_provider::TailSampleRange {
+                session: state.session_id.clone(),
+                capture_epoch: 1,
+                sample_start: 0,
+                sample_end: 16_000,
+            },
+        },
+        admit_sample_start: 0,
+        admit_sample_end: 16_000,
+        member_occurrences: vec![(1, occurrence.clone())],
+    };
+    state.refinement_submitted.insert((1, 1, 0, 16_000), job);
+    assert!(
+        !state.stop_document_settled(),
+        "Whisper has not returned yet"
+    );
+    state.refinement_submitted.clear();
+    state.formatter_in_flight.insert(occurrence.clone());
+    assert!(
+        !state.stop_document_settled(),
+        "a formatter callback is still owned"
+    );
+    state.formatter_in_flight.clear();
+    state.cloud_uncommitted.insert(occurrence);
+    assert!(
+        !state.stop_document_settled(),
+        "cloud still owes its final observation"
+    );
+    state.cloud_uncommitted.clear();
+    assert!(state.stop_document_settled());
+}
+
+#[test]
+fn stop_without_measured_audio_never_certifies_an_empty_speech_set() {
+    assert!(!state().stop_document_settled());
+}
+
 #[test]
 fn recovery_retention_head_before_120_seconds_remains_qualifiable() {
     let mut state = state();

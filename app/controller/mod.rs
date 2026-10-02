@@ -871,6 +871,18 @@ struct StopCanvasWait {
     armed_order: bool,
 }
 
+impl StopCanvasWait {
+    fn permits_first_delivery(&self, take_id: Option<&str>) -> bool {
+        !self.preempted
+            && self.live_finals_admitted
+            && self.snapshot.as_ref().is_some_and(|canvas| {
+                Some(canvas.session_id.as_str()) == take_id
+                    && canvas.has_committed_document
+                    && canvas.preview_only_words == 0
+            })
+    }
+}
+
 async fn await_live_finals_for_delivery(
     finals: impl std::future::Future<Output = bool>,
     snapshot: impl Fn() -> Option<VisibleCanvasSnapshot>,
@@ -2589,6 +2601,37 @@ impl RecordingController {
                 preempted: false,
             };
         }
+        if preempted {
+            // A new take does not authorize pasting the old take's unfinished
+            // paint. Its owned drain retains the audio and terminal document.
+            self.record_delivery_disposition(TranscriptDelivery::Retained)
+                .await;
+            return StopCanvasDelivery {
+                delivery: Ok(Some(TranscriptDelivery::Retained)),
+                preempted: true,
+            };
+        }
+        let committed_canvas = wait
+            .snapshot
+            .as_ref()
+            .is_some_and(|canvas| canvas.has_committed_document && canvas.preview_only_words == 0);
+        if !wait.permits_first_delivery(take_id) {
+            info!(
+                take_id,
+                stop_final_wait_ms = wait.stop_final_wait_ms,
+                stop_final_timeout = wait.stop_final_timeout,
+                live_finals_admitted = wait.live_finals_admitted,
+                committed_canvas,
+                "stop paste deferred until terminal text settlement"
+            );
+            // None leaves the single delivery claim for the existing terminal
+            // path. A paint timeout or recognizer close cannot settle a prefix
+            // and suppress the later, complete document.
+            return StopCanvasDelivery {
+                delivery: Ok(None),
+                preempted: false,
+            };
+        }
         let config = self.get_config().await;
         let delivery = self
             .settle_frozen_canvas_at_stop(
@@ -2611,7 +2654,7 @@ impl RecordingController {
                             if route == DeliveryRoute::ClipboardHold {
                                 return Self::hold_on_clipboard(&payload, target_app);
                             }
-                            if route == DeliveryRoute::DeferredInsert && !preempted {
+                            if route == DeliveryRoute::DeferredInsert {
                                 return self
                                     .arm_overlay_text(
                                         &payload,
@@ -2620,9 +2663,8 @@ impl RecordingController {
                                     )
                                     .await;
                             }
-                            let delivery = if preempted
-                                || !clipboard::synthetic_paste_preflight().can_post_events()
-                            {
+                            let can_post = clipboard::synthetic_paste_preflight().can_post_events();
+                            let delivery = if !can_post {
                                 clipboard::set_clipboard(&payload)?;
                                 info!(
                                     take_id,
@@ -7520,24 +7562,16 @@ mod refusal_recovery_tests {
         assert!(!line.contains("late_apple_words_"));
     }
 
-    /// No live final, no committed document. This exercises
-    /// the real snapshot, stop settlement and route with only the OS sink faked.
+    /// The production admission predicate is shared with the stop path. A
+    /// timeout releases archive settlement, never a preview-text paste.
     #[tokio::test(start_paused = true)]
-    async fn preview_only_timeout_pastes_raw_once_at_the_stop_bound() {
+    async fn fn_release_timeout_defers_first_paste_until_terminal_words() {
         let take = take(State::RecHold, false).await;
         take.emitter.on_capture_opened(TAKE, 7);
-        let mut mirror = stop_preview("ok wyślij");
-        if let EngineEvent::UnadmittedAppleWords { words, .. } = &mut mirror {
-            for word in words {
-                word.sample_end = 0;
-            }
-        }
-        take.emitter.on_event(&mirror);
-        let receipts = StopReceiptLog::default();
-        let _trace = receipts.subscribe();
-        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel::<()>();
+        take.emitter.set_literal_delivery(true);
+        take.emitter.on_event(&stop_preview("one two"));
         let wait = await_live_finals_for_delivery(
-            async { ack_rx.await.is_ok() },
+            std::future::pending::<bool>(),
             || take.emitter.visible_canvas_snapshot(),
             tokio::time::Instant::now(),
             take.emitter.visible_canvas_snapshot(),
@@ -7545,48 +7579,67 @@ mod refusal_recovery_tests {
             None,
         )
         .await;
-        let bound_ms = STOP_FINAL_BOUND.as_millis();
-        assert!((bound_ms..=bound_ms + 50).contains(&wait.stop_final_wait_ms));
         assert!(wait.stop_final_timeout);
-        assert_eq!(wait.snapshot.as_ref().unwrap().text, "ok wyślij");
+        assert!(!wait.permits_first_delivery(Some(TAKE)));
         let calls = AtomicUsize::new(0);
-        let settled = take
-            .controller
-            .settle_frozen_canvas_at_stop(
-                Some(TAKE),
-                Some(&take.emitter),
-                wait,
-                std::time::Instant::now(),
-                |text| stop_sink(&take.controller, text, &calls),
+        // No delivery claim is consumed while only the preview exists.
+        let settled = if wait.permits_first_delivery(Some(TAKE)) {
+            Some(
+                stop_sink(&take.controller, wait.snapshot.unwrap().text, &calls)
+                    .await
+                    .unwrap(),
             )
-            .await
-            .unwrap();
-        assert_eq!(settled, TranscriptDelivery::SinkAccepted);
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert!(
-            take.ledger
-                .lock()
-                .unwrap()
-                .manual_document_revisions()
-                .is_empty()
-        );
-        assert!(receipts.text().contains("light_plus=\"skipped_preview\""));
-        assert!(receipts.text().contains("stop_final_timeout=true"));
-        assert!(receipts.text().contains("preview_words_in_paste=2"));
-        assert!(
-            receipts
-                .text()
-                .contains(&format!("stop_final_wait_ms={bound_ms}"))
-        );
-        assert!(receipts.text().contains("painted_words_at_stop=2"));
-        assert!(receipts.text().contains("painted_words_at_snapshot=2"));
-        assert!(!receipts.text().contains("stop_paste_lost_visible_words"));
-        deliver_terminal_unless_settled(Some(settled), || async {
-            panic!("terminal tail attempted a second paste")
+        } else {
+            None
+        };
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let mutation = stop_mutation(&mut take.ledger.lock().unwrap(), "one two three four");
+        take.emitter.on_event(&mutation);
+        take.emitter.on_event(&stop_closed_phrase(4));
+        let canvas = take.emitter.visible_canvas_snapshot().unwrap();
+        assert!(canvas.has_committed_document);
+        assert_eq!(canvas.preview_only_words, 0);
+        let text = canvas.text;
+        assert_eq!(text, "one two three four");
+        let delivered = deliver_terminal_unless_settled(settled, || {
+            stop_sink(&take.controller, text.clone(), &calls)
         })
         .await
         .unwrap();
-        drop(ack_tx);
+        deliver_terminal_unless_settled(Some(delivered), || async {
+            panic!("terminal result attempted a second paste")
+        })
+        .await
+        .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fn_release_ack_cannot_authorize_preview_or_a_foreign_take() {
+        let take = take(State::RecHold, false).await;
+        take.emitter.on_capture_opened(TAKE, 7);
+        take.emitter.on_event(&stop_preview("one two"));
+        let mut wait = await_live_finals_for_delivery(
+            async { true },
+            || take.emitter.visible_canvas_snapshot(),
+            tokio::time::Instant::now(),
+            None,
+            true,
+            None,
+        )
+        .await;
+        assert!(!wait.permits_first_delivery(Some(TAKE)));
+        let mutation = stop_mutation(&mut take.ledger.lock().unwrap(), "one two three four");
+        take.emitter.on_event(&mutation);
+        take.emitter.on_event(&stop_closed_phrase(4));
+        wait.snapshot = take.emitter.visible_canvas_snapshot();
+        assert!(wait.permits_first_delivery(Some(TAKE)));
+        assert!(!wait.permits_first_delivery(Some("next-take")));
+        wait.preempted = true;
+        assert!(!wait.permits_first_delivery(Some(TAKE)));
+        wait.preempted = false;
+        wait.live_finals_admitted = false;
+        assert!(!wait.permits_first_delivery(Some(TAKE)));
     }
 
     /// First words arrive with a live final inside the stop bound. Delivery

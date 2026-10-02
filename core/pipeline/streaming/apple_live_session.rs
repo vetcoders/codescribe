@@ -3098,6 +3098,44 @@ impl AppleSealState {
         self.refinement_submitted.len() as u64
     }
 
+    /// Capture EOF is not a text barrier. A fast stop may hand off only after
+    /// every scheduled observer returned and every measured speech range has
+    /// a sealed label. Otherwise the terminal drain owns the first delivery.
+    fn stop_document_settled(&self) -> bool {
+        if !self.refinement_pending.is_empty()
+            || !self.refinement_submitted.is_empty()
+            || !self.pending_whisper_stubs.is_empty()
+            || !self.formatter_in_flight.is_empty()
+            || !self.cloud_inflight.is_empty()
+            || !self.cloud_uncommitted.is_empty()
+            || !self.cloud_commit_retry.is_empty()
+        {
+            return false;
+        }
+        let speech = coverage_speech_evidence(self);
+        let ledger = self
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !ledger
+            .pending_text_recoveries(&self.session_id, self.capture_epoch)
+            .is_empty()
+            || ledger.qualified_occurrences().any(|owner| {
+                owner.session == self.session_id
+                    && owner.capture_epoch == self.capture_epoch
+                    && !ledger.is_sealed(owner)
+            })
+        {
+            return false;
+        }
+        // The fast path cannot hide even a short pending speech tail behind
+        // the terminal coverage tolerance. Recovery decides that tail later.
+        ledger
+            .assess_seal_coverage(&self.session_id, self.capture_epoch, &speech, 0)
+            .status
+            .is_complete()
+    }
+
     /// One bounded nonblocking attempt per pending request, stopping at pressure.
     fn retry_refinements(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
         while let Some(mut request) = self.refinement_pending.pop_front() {
@@ -7880,10 +7918,16 @@ fn apple_stream_worker(
         Some(_) => false,
         None => true,
     };
+    // Flush the last held window before evaluating readiness. A final Apple
+    // callback says nothing about outstanding Whisper or recovery work.
+    let _ = state.flush_layer1_coalesce(&ev_tx);
+    state.close_admission_horizon(&ev_tx, u64::MAX);
     state.publish_unadmitted_words(&ev_tx);
-    if live_finals_complete && apple_final_received {
+    if live_finals_complete && apple_final_received && state.stop_document_settled() {
         let _ = live_finals_admitted.send(());
     } else {
+        // Release the controller immediately into terminal settlement. Do not
+        // spend its paint timeout before supplying the archive needed to drain.
         drop(live_finals_admitted);
     }
 
