@@ -49,7 +49,7 @@ struct DictationPreviewTimingTab: View {
           valueLabel: "\(values.emitWordsMax)"
         )
         PreviewTimingSlider(
-          title: "Interim cadence",
+          title: "Interim interval",
           value: $model.interimSecondsSlider,
           range: 1...30,
           step: 0.1,

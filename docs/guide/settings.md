@@ -37,7 +37,7 @@ This tab owns the transcript pipeline itself:
   - `Buffer delay`
   - `Typing speed`
   - `Words per tick`
-  - `Interim cadence`
+  - `Interim interval`
   - live preview panel showing:
     - when partial targets are published
     - how those targets would become visible on the overlay
