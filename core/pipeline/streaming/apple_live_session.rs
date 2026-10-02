@@ -20624,6 +20624,275 @@ mod relay_l1_overlap_admission_tests {
     }
 
     #[test]
+    fn forensic_completed_window_settles_measured_coarse_recovery() {
+        let session = "completed-debt-clock";
+        let mut lane = open(session);
+        let owner = OccurrenceIdentity::new(session, 1, 0, 24_000);
+        record_voiced_spans(&lane, 48_000, &[(6_000, 16_000)]);
+        record_silero(&mut lane, 48_000, Some((6_000, 16_000)));
+        stage(&mut lane, 1, owner.clone(), "hipoteza");
+        {
+            let mut ledger = lane.state.acoustic_ledger.lock().unwrap();
+            assert!(ledger.is_qualified(&owner));
+            assert!(ledger.require_text_recovery(&owner));
+            ledger.schedule_frontier(
+                owner.clone(),
+                [ObservationProducer::Apple, ObservationProducer::Whisper],
+            );
+            assert!(!ledger.note_frontier_return(&owner, ObservationProducer::Apple));
+            assert_eq!(
+                ledger.frontier_of(&owner).unwrap().open_producers(),
+                vec![ObservationProducer::Whisper]
+            );
+        }
+        let segments = [word_pin(session, "Iwo", 4_000, 18_000)];
+        let members = [(1, owner.clone())];
+        let routes = lane.state.route_overlap_pins(
+            &lane.tx,
+            AdmitWindow {
+                request_id: 12,
+                sample_start: 0,
+                sample_end: 48_000,
+            },
+            &members,
+            &segments,
+            LedgerObservationProducer::Whisper,
+        );
+        assert_eq!(routes[0].exclusive.len(), 1);
+        assert!(lane.state.admit_routed_words_with_decode_window(
+            &lane.tx,
+            1,
+            &owner,
+            (12, Some((0, 48_000))),
+            RoutedWords {
+                pins: &routes[0].exclusive,
+                neighbours: &[]
+            },
+            LedgerObservationProducer::Whisper,
+        ));
+        let speech = coverage_speech_evidence(&lane.state);
+        let mut ledger = lane.state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&owner), Some("Iwo"));
+        assert!(ledger.note_frontier_return(&owner, ObservationProducer::Whisper));
+        assert!(
+            !ledger.text_recovery_pending(&owner),
+            "the returned complete word window covers the measured speech"
+        );
+        let coverage = ledger.assess_seal_coverage(session, 1, &speech, 0);
+        assert_eq!(coverage.status, SealCoverageStatus::Complete);
+        assert!(ledger.record_seal_coverage(coverage));
+        assert!(ledger.seal_terminal(session, 1).is_ok());
+    }
+
+    #[test]
+    fn forensic_leading_silence_proves_capture_origin_word_recovery() {
+        let session = "forensic_leading_silence_proves_capture_origin_word_recovery";
+        let mut lane = open(session);
+        let owner = OccurrenceIdentity::new(session, 1, 0, 48_000);
+        record_voiced_spans(&lane, 48_000, &[(6_000, 16_000)]);
+        record_silero(&mut lane, 48_000, Some((6_000, 16_000)));
+        stage(&mut lane, 1, owner.clone(), "hipoteza");
+        {
+            let mut ledger = lane.state.acoustic_ledger.lock().unwrap();
+            assert!(ledger.is_qualified(&owner));
+            assert!(ledger.require_text_recovery(&owner));
+            ledger.schedule_frontier(
+                owner.clone(),
+                [ObservationProducer::Apple, ObservationProducer::Whisper],
+            );
+            assert!(!ledger.note_frontier_return(&owner, ObservationProducer::Apple));
+            assert_eq!(
+                ledger.frontier_of(&owner).unwrap().open_producers(),
+                vec![ObservationProducer::Whisper]
+            );
+        }
+        let segments = [word_pin(session, "Iwo", 0, 18_000)];
+        let members = [(1, owner.clone())];
+        let routes = lane.state.route_overlap_pins(
+            &lane.tx,
+            AdmitWindow {
+                request_id: 12,
+                sample_start: 0,
+                sample_end: 48_000,
+            },
+            &members,
+            &segments,
+            LedgerObservationProducer::Whisper,
+        );
+        assert_eq!(routes[0].exclusive.len(), 1);
+        assert!(lane.state.admit_routed_words_with_decode_window(
+            &lane.tx,
+            1,
+            &owner,
+            (12, Some((0, 48_000))),
+            RoutedWords {
+                pins: &routes[0].exclusive,
+                neighbours: &[]
+            },
+            LedgerObservationProducer::Whisper,
+        ));
+        let speech = coverage_speech_evidence(&lane.state);
+        let mut ledger = lane.state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&owner), Some("Iwo"));
+        assert!(ledger.note_frontier_return(&owner, ObservationProducer::Whisper));
+        assert!(
+            !ledger.text_recovery_pending(&owner),
+            "the returned complete word window covers the measured speech"
+        );
+        let coverage = ledger.assess_seal_coverage(session, 1, &speech, 0);
+        assert_eq!(coverage.status, SealCoverageStatus::Complete);
+        assert!(ledger.record_seal_coverage(coverage));
+        assert!(ledger.seal_terminal(session, 1).is_ok());
+    }
+
+    #[test]
+    fn forensic_trailing_silence_proves_decode_end_word_recovery() {
+        let session = "forensic_trailing_silence_proves_decode_end_word_recovery";
+        let mut lane = open(session);
+        let owner = OccurrenceIdentity::new(session, 1, 0, 48_000);
+        record_voiced_spans(&lane, 48_000, &[(6_000, 16_000)]);
+        record_silero(&mut lane, 48_000, Some((6_000, 16_000)));
+        stage(&mut lane, 1, owner.clone(), "hipoteza");
+        {
+            let mut ledger = lane.state.acoustic_ledger.lock().unwrap();
+            assert!(ledger.is_qualified(&owner));
+            assert!(ledger.require_text_recovery(&owner));
+            ledger.schedule_frontier(
+                owner.clone(),
+                [ObservationProducer::Apple, ObservationProducer::Whisper],
+            );
+            assert!(!ledger.note_frontier_return(&owner, ObservationProducer::Apple));
+            assert_eq!(
+                ledger.frontier_of(&owner).unwrap().open_producers(),
+                vec![ObservationProducer::Whisper]
+            );
+        }
+        let segments = [word_pin(session, "Iwo", 4_000, 48_000)];
+        let members = [(1, owner.clone())];
+        let routes = lane.state.route_overlap_pins(
+            &lane.tx,
+            AdmitWindow {
+                request_id: 12,
+                sample_start: 0,
+                sample_end: 48_000,
+            },
+            &members,
+            &segments,
+            LedgerObservationProducer::Whisper,
+        );
+        assert_eq!(routes[0].exclusive.len(), 1);
+        assert!(lane.state.admit_routed_words_with_decode_window(
+            &lane.tx,
+            1,
+            &owner,
+            (12, Some((0, 48_000))),
+            RoutedWords {
+                pins: &routes[0].exclusive,
+                neighbours: &[]
+            },
+            LedgerObservationProducer::Whisper,
+        ));
+        let speech = coverage_speech_evidence(&lane.state);
+        let mut ledger = lane.state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&owner), Some("Iwo"));
+        assert!(ledger.note_frontier_return(&owner, ObservationProducer::Whisper));
+        assert!(
+            !ledger.text_recovery_pending(&owner),
+            "the returned complete word window covers the measured speech"
+        );
+        let coverage = ledger.assess_seal_coverage(session, 1, &speech, 0);
+        assert_eq!(coverage.status, SealCoverageStatus::Complete);
+        assert!(ledger.record_seal_coverage(coverage));
+        assert!(ledger.seal_terminal(session, 1).is_ok());
+    }
+
+    #[test]
+    fn forensic_decode_fence_with_speech_remains_unsettled() {
+        for (session, speech_range, word_range) in [
+            ("voiced-leading-fence", (0, 16_000), (0, 18_000)),
+            ("voiced-trailing-fence", (6_000, 48_000), (4_000, 48_000)),
+        ] {
+            let mut lane = open(session);
+            let owner = OccurrenceIdentity::new(session, 1, 0, 48_000);
+            record_voiced_spans(&lane, 48_000, &[speech_range]);
+            record_silero(&mut lane, 48_000, Some(speech_range));
+            stage(&mut lane, 1, owner.clone(), "hipoteza");
+            let mut ledger = lane.state.acoustic_ledger.lock().unwrap();
+            assert!(ledger.require_text_recovery(&owner));
+            ledger.record_speech_evidence(&coverage_speech_evidence(&lane.state));
+            ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
+            let observation =
+                ObservationIdentity::new(ObservationProducer::Whisper, 19, 0, owner.clone());
+            let receipt = ledger.admit_word_slots(
+                &observation,
+                &[crate::pipeline::acoustic_ledger::WordPin::new(
+                    word_range.0,
+                    word_range.1,
+                    "Iwo",
+                )
+                .with_decode_window(0, 48_000)],
+            );
+            assert!(receipt.grants_mutation(), "{session}: {receipt:?}");
+            assert!(ledger.note_frontier_return(&owner, ObservationProducer::Whisper));
+            assert!(
+                ledger.text_recovery_pending(&owner),
+                "{session}: speech at decode fence cannot prove a whole word"
+            );
+            assert_eq!(
+                ledger.seal_terminal(session, 1),
+                Err(crate::pipeline::acoustic_ledger::SealRefusal::TextRecoveryPending)
+            );
+        }
+    }
+
+    #[test]
+    fn forensic_rejected_decode_window_cannot_discharge_recovery() {
+        use crate::pipeline::acoustic_ledger::{SealRefusal, WordPin};
+        let session = "refused-window-debt";
+        let mut lane = open(session);
+        let owner = OccurrenceIdentity::new(session, 1, 0, 48_000);
+        record_voiced_spans(&lane, 48_000, &[(6_000, 16_000)]);
+        record_silero(&mut lane, 48_000, Some((6_000, 16_000)));
+        stage(&mut lane, 1, owner.clone(), "hipoteza");
+        let mut ledger = lane.state.acoustic_ledger.lock().unwrap();
+        ledger.record_speech_evidence(&coverage_speech_evidence(&lane.state));
+        assert!(ledger.require_text_recovery(&owner));
+        ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
+        let initial = ObservationIdentity::new(ObservationProducer::Whisper, 91, 1, owner.clone());
+        let receipt = ledger.admit_word_slots(
+            &initial,
+            &[WordPin::new(4_000, 18_000, "Iwo").with_decode_window(0, 24_000)],
+        );
+        assert!(receipt.grants_mutation(), "initial: {receipt:?}");
+        assert!(ledger.text_recovery_pending(&owner));
+        let stale = ObservationIdentity::new(ObservationProducer::Whisper, 92, 0, owner.clone());
+        let before = ledger.slots_of(&owner).unwrap().to_vec();
+        let rejected = ledger.admit_word_slots(
+            &stale,
+            &[WordPin::new(4_000, 18_000, "inny").with_decode_window(0, 48_000)],
+        );
+        assert!(!rejected.grants_mutation(), "stale: {rejected:?}");
+        assert_eq!(ledger.slots_of(&owner).unwrap(), before);
+        assert!(ledger.text_recovery_pending(&owner));
+        let fresh = ObservationIdentity::new(ObservationProducer::Whisper, 93, 2, owner.clone());
+        let accepted = ledger.admit_word_slots(
+            &fresh,
+            &[WordPin::new(4_000, 18_000, "Kamil").with_decode_window(0, 24_000)],
+        );
+        assert!(accepted.grants_mutation(), "fresh: {accepted:?}");
+        assert_eq!(ledger.text_of(&owner), Some("Kamil"));
+        assert!(ledger.note_frontier_return(&owner, ObservationProducer::Whisper));
+        assert!(
+            ledger.text_recovery_pending(&owner),
+            "only the refused generation claimed the remaining audio window"
+        );
+        assert_eq!(
+            ledger.seal_terminal(session, 1),
+            Err(SealRefusal::TextRecoveryPending)
+        );
+    }
+
+    #[test]
     fn forensic_authority_formatter_observation_cannot_replace_a_qualified_raw_source() {
         let mut lane = open("raw-formatter-authority");
         let owner = OccurrenceIdentity::new("raw-formatter-authority", 1, 0, 48_000);
