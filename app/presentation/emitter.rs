@@ -6655,6 +6655,234 @@ mod tests {
         assert!(std::fs::read_to_string(bus_path).unwrap().is_empty());
     }
 
+    // Explicit human recovery must not require the failed recognizer to have
+    // committed a lexical floor. Its document receipt is not a word-to-PCM seal.
+    async fn forensic_empty_terminal_recovery(provenance: DocumentRevisionProvenance) {
+        let fixture = BusFixture::new("empty-recovery", false, "empty.jsonl", "");
+        let owner = OccurrenceIdentity::new("empty-recovery", 7, 0, 16_000);
+        let calibration = EnergyCalibration {
+            version: "empty-recovery-controlled".into(),
+            min_energy_integral: 1.0,
+            min_valley_samples: 1,
+        };
+        let evidence = AcousticEvidence {
+            occurrence: owner.clone(),
+            duration_ms: 1_000.0,
+            energy_integral: 10.0,
+            mean_rms_dbfs: -12.0,
+            peak_dbfs: -3.0,
+            vad_open_sample: Some(0),
+            vad_close_sample: Some(16_000),
+            evidence_calibration_version: calibration.version.clone(),
+        };
+        assert!(
+            fixture
+                .ledger
+                .lock()
+                .unwrap()
+                .qualify(&evidence, &calibration)
+                .is_qualified()
+        );
+        fixture.bus.publish_started();
+        let observed = Arc::new(StdMutex::new(Vec::new()));
+        let callback = Arc::clone(&observed);
+        let mut emitter = fixture.emitter(
+            None,
+            Some(Arc::new(move |projection| {
+                callback.lock().unwrap().push(projection.clone());
+            })),
+        );
+        emitter.set_literal_delivery(true);
+        emitter.on_capture_opened("empty-recovery", 7);
+        emitter.on_event(&partial_mirror(1, "hipoteza bez zatwierdzenia", 0, 16_000));
+        assert_eq!(
+            emitter
+                .visible_canvas_snapshot()
+                .expect("the capture owns its preview snapshot")
+                .text,
+            "hipoteza bez zatwierdzenia"
+        );
+        assert!(fixture.delivery.lock().await.is_empty());
+        assert!(fixture.ledger.lock().unwrap().text_of(&owner).is_none());
+        let intent = UserRevisionIntent {
+            session_id: "empty-recovery".into(),
+            source_revision: 0,
+            rendered_text: "Tekst odzyskany przez człowieka".into(),
+            provenance,
+        };
+        assert_eq!(
+            emitter.apply_user_revision(intent.clone()),
+            Err(UserRevisionRefusal::NotTerminal)
+        );
+        emitter.on_event(&EngineEvent::SessionFinalised {
+            session_id: "empty-recovery".into(),
+            layer_summary: LayerSummary::default(),
+        });
+        let terminal = fixture
+            .bus
+            .publish_ended(
+                TranscriptSessionEndReason::CoverageRefusedEmpty,
+                true,
+                TranscriptDelivery::Retained,
+            )
+            .expect("a failed empty take still has a terminal lifecycle");
+        assert!(terminal.terminal && terminal.lifecycle_terminal);
+        assert_eq!(terminal.reducer_revision, intent.source_revision);
+        assert!(terminal.rendered_text.is_empty());
+        assert!(
+            fixture.delivery.lock().await.is_empty(),
+            "a lifecycle event cannot commit preview"
+        );
+        let mut foreign = intent.clone();
+        foreign.session_id = "different-take".into();
+        assert!(emitter.apply_user_revision(foreign).is_err());
+        let mut stale = intent.clone();
+        stale.source_revision = 999;
+        assert!(emitter.apply_user_revision(stale).is_err());
+        assert!(
+            fixture
+                .ledger
+                .lock()
+                .unwrap()
+                .manual_document_revisions()
+                .is_empty()
+        );
+        let committed = emitter.apply_user_revision(intent.clone()).expect(
+            "explicit recovery must create the first human document after failed transcription",
+        );
+        assert_eq!(committed.session_id, intent.session_id);
+        assert_eq!(committed.source_revision, intent.source_revision);
+        assert_eq!(committed.revision, intent.source_revision + 1);
+        assert_eq!(committed.rendered_text, intent.rendered_text);
+        assert!(
+            committed
+                .provenance_receipt
+                .starts_with(provenance.as_str())
+        );
+        {
+            let ledger = fixture.ledger.lock().unwrap();
+            assert!(
+                ledger.text_of(&owner).is_none(),
+                "human recovery cannot invent acoustic labels"
+            );
+            assert!(
+                ledger.slots_of(&owner).is_none(),
+                "human recovery cannot mint word pins"
+            );
+            assert!(ledger.seal_of(&owner).is_none());
+            assert!(
+                ledger
+                    .terminal_finality("empty-recovery", 7)
+                    .into_refusal()
+                    .is_some()
+            );
+            let receipts = ledger.manual_document_revisions();
+            assert_eq!(receipts.len(), 1);
+            assert_eq!(receipts[0].rendered_text, intent.rendered_text);
+            assert_eq!(receipts[0].session_id, intent.session_id);
+            assert_eq!(receipts[0].revision, committed.revision);
+        }
+        {
+            let projections = observed.lock().unwrap();
+            let last = projections
+                .last()
+                .expect("the Bus must publish the authenticated manual document");
+            assert_eq!(last.session_id, intent.session_id);
+            assert_eq!(last.reducer_revision, committed.revision);
+            assert_eq!(last.rendered_text, intent.rendered_text);
+            assert!(last.terminal && !last.lifecycle_terminal);
+            assert!(
+                last.acoustic_receipts.is_empty(),
+                "manual-only recovery has no acoustic certification"
+            );
+        }
+        assert!(
+            emitter.apply_user_revision(intent.clone()).is_err(),
+            "CAS must reject the old source revision"
+        );
+        emitter.finish().await;
+        assert_eq!(fixture.delivery.lock().await.as_str(), intent.rendered_text);
+        let history = crate::presentation::transcript_bus::document_history_at(
+            &fixture.path,
+            &intent.session_id,
+        )
+        .unwrap();
+        assert_eq!(
+            history
+                .last()
+                .expect("manual recovery must survive history replay")
+                .rendered_text,
+            intent.rendered_text
+        );
+    }
+
+    #[tokio::test]
+    async fn forensic_empty_terminal_rejects_automatic_or_unowned_bootstrap() {
+        for owned in [false, true] {
+            let fixture = BusFixture::new("bootstrap", false, "bootstrap.jsonl", "");
+            fixture.bus.publish_started();
+            let mut emitter = fixture.emitter(None, None);
+            if owned {
+                emitter.on_capture_opened("bootstrap", 7);
+            }
+            emitter.on_event(&EngineEvent::SessionFinalised {
+                session_id: "bootstrap".into(),
+                layer_summary: LayerSummary::default(),
+            });
+            fixture
+                .bus
+                .publish_ended(
+                    TranscriptSessionEndReason::TranscriptionFailed,
+                    true,
+                    TranscriptDelivery::Retained,
+                )
+                .unwrap();
+            let provenances = if owned {
+                [
+                    DocumentRevisionProvenance::LightPlus,
+                    DocumentRevisionProvenance::Formatter,
+                ]
+            } else {
+                [
+                    DocumentRevisionProvenance::UserEdit,
+                    DocumentRevisionProvenance::Retranscribe,
+                ]
+            };
+            for provenance in provenances {
+                assert!(
+                    emitter
+                        .apply_user_revision(UserRevisionIntent {
+                            session_id: "bootstrap".into(),
+                            source_revision: 0,
+                            rendered_text: "Nieuprawniony pierwszy dokument".into(),
+                            provenance,
+                        })
+                        .is_err()
+                );
+            }
+            assert!(
+                fixture
+                    .ledger
+                    .lock()
+                    .unwrap()
+                    .manual_document_revisions()
+                    .is_empty()
+            );
+            emitter.finish().await;
+            assert!(fixture.delivery.lock().await.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn forensic_empty_terminal_allows_explicit_user_document() {
+        forensic_empty_terminal_recovery(DocumentRevisionProvenance::UserEdit).await;
+    }
+
+    #[tokio::test]
+    async fn forensic_empty_terminal_allows_explicit_button_retranscribe() {
+        forensic_empty_terminal_recovery(DocumentRevisionProvenance::Retranscribe).await;
+    }
+
     /// Effect witness for W4-T15: the request names a session/revision rather
     /// than text identity, Rust mints the next document revision and a
     /// `user-edit` ledger receipt, the Bus persists it after microphone
