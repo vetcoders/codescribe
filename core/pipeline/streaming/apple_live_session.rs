@@ -1786,8 +1786,9 @@ struct AppleSealState {
     layer1_coalesce: Layer1Coalesce,
     refinement_pending: VecDeque<TailPatchRequest>,
     refinement_submitted: BTreeMap<(u64, u64, u64, u64), TailPatchInFlight>,
-    /// Truncated last words remain evidence until a wider window or seal.
-    pending_whisper_stubs: Vec<(u64, OccurrenceIdentity, RoutedPin)>,
+    /// Edge words retain the authenticated decode request until admission or
+    /// an accounted same-PCM replacement. Terminal closure supplies no scope.
+    pending_whisper_stubs: Vec<(TailRequestIdentity, OccurrenceIdentity, RoutedPin)>,
     /// Incremented only after queue acceptance; never reused within this session.
     last_submission_sequence: u64,
     /// Latest completed window start or closed capture extent. Earlier jobs
@@ -3747,22 +3748,9 @@ impl AppleSealState {
         } else {
             exact_open_members.clone()
         };
-        if word_grain {
-            self.pending_whisper_stubs.retain(|(_, owner, stub)| {
-                !segments.iter().any(|segment| {
-                    let pin = OccurrenceIdentity::from(&segment.range);
-                    let gap = pin
-                        .sample_start
-                        .saturating_sub(stub.pin.sample_end)
-                        .max(stub.pin.sample_start.saturating_sub(pin.sample_end));
-                    pin.same_capture(owner)
-                        && pin.sample_end > stub.pin.sample_end
-                        && gap <= u64::from(self.sample_rate) / 4
-                        && crate::pipeline::acoustic_ledger::normalize_word_token(&segment.text)
-                            == crate::pipeline::acoustic_ledger::normalize_word_token(&stub.text)
-                })
-            });
-        }
+        // Pending words are retired by settle_whisper_stubs only after the
+        // ledger identifies an admitted same-span word or its source lineage.
+        // A later spelling, gap or estimated end cannot identify that speech.
         let mut routes = self.route_overlap_pins(
             ev_tx,
             AdmitWindow {
@@ -3790,7 +3778,7 @@ impl AppleSealState {
                     let stub = route.exclusive.remove(position);
                     self.keep_routed_visible(ev_tx, request_id, std::slice::from_ref(&stub));
                     self.pending_whisper_stubs
-                        .push((request_id, owner.clone(), stub));
+                        .push((job.request_identity.clone(), owner.clone(), stub));
                 }
             }
         }
@@ -4146,8 +4134,13 @@ impl AppleSealState {
         terminal: bool,
     ) {
         let pending = std::mem::take(&mut self.pending_whisper_stubs);
-        for (request, stub_owner, stub) in pending {
-            if &stub_owner == owner {
+        for (request_identity, stub_owner, stub) in pending {
+            let decode_range = OccurrenceIdentity::from(&request_identity.range);
+            if &stub_owner == owner
+                && decode_range.same_capture(owner)
+                && stub.pin.same_capture(owner)
+            {
+                let request = request_identity.request_id;
                 let superseded = {
                     let mut ledger = self
                         .acoustic_ledger
@@ -4200,14 +4193,21 @@ impl AppleSealState {
                     continue;
                 }
                 if !terminal {
-                    self.pending_whisper_stubs.push((request, stub_owner, stub));
+                    self.pending_whisper_stubs
+                        .push((request_identity, stub_owner, stub));
                     continue;
                 }
-                self.admit_routed_words(
+                // Only the matched word payload created this saved request.
+                // Reuse its actual fences; the terminal callback is not decode
+                // evidence and cannot extend the original word's PCM clocks.
+                self.admit_routed_words_with_decode_window(
                     ev_tx,
                     id,
                     owner,
-                    request,
+                    (
+                        request,
+                        Some((decode_range.sample_start, decode_range.sample_end)),
+                    ),
                     RoutedWords {
                         pins: std::slice::from_ref(&stub),
                         neighbours: &[],
@@ -4215,7 +4215,8 @@ impl AppleSealState {
                     LedgerObservationProducer::Whisper,
                 );
             } else {
-                self.pending_whisper_stubs.push((request, stub_owner, stub));
+                self.pending_whisper_stubs
+                    .push((request_identity, stub_owner, stub));
             }
         }
     }
