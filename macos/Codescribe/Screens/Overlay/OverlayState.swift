@@ -2251,6 +2251,7 @@ final class OverlayState {
       }
     }
     compactProjection = projection
+    onTranscriptPresentationChanged?()
   }
 
   func applyTranscriptProjection(_ projection: CsTranscriptProjectionEvent) {

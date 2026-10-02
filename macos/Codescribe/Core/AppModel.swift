@@ -323,10 +323,24 @@ final class OverlayController: ObservableObject {
   /// and unanimated; content keeps its existing reveal transition instead of
   /// morphing the glass panel or exporting hosting constraints.
   private func resizeForProjectedContent() {
-    guard automaticContentSizingEnabled, !state.isCollapsed, let panel else { return }
+    guard automaticContentSizingEnabled, !state.isCollapsed,
+      !state.isEditingTranscript, !state.isRevisionDraftDirty, let panel
+    else { return }
+    // Measure the same accepted snapshot the existing canvas paints. Human
+    // review fences automatic sizing; compact text never becomes delivery text.
+    let livePaint: CsCompactProjection?
+    if !state.terminal, state.mode == .listening || state.mode == .finalizing,
+      let paint = state.compactProjection,
+      state.latestTranscriptProjection == nil
+        || state.latestTranscriptProjection?.sessionId == paint.sessionId
+    {
+      livePaint = paint
+    } else {
+      livePaint = nil
+    }
     let screen = panel.screen ?? NSScreen.main
     let targetHeight = OverlayContentSizePolicy.preferredHeight(
-      for: state.activeText,
+      for: livePaint?.text ?? state.canvasText,
       width: panel.frame.width,
       textScale: textScale.scale,
       screen: screen,
