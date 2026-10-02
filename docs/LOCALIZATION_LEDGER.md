@@ -39,7 +39,7 @@ rest was plain `String` and invisible to any translation.
 | --------------------------------------------- | -------- |
 | Keys in `Localizable.xcstrings`               | 1296     |
 | Keys with a translator comment                | 383      |
-| Keys with English plural forms                | 20       |
+| Keys with English plural forms                | 23       |
 | Keys written as identifiers (`defaultValue:`) | 22       |
 | Permission prompts in `InfoPlist.xcstrings`   | 4        |
 | Swift sources in the app target / touched     | 128 / 75 |
@@ -321,7 +321,6 @@ product behaviour that code should not make by itself.
 | Single words with no room for a comment           | `Teach` (a field prompt and a button), `Local` / `Cloud` (engines), `Anchor`, `Open` / `Collapsed`, `Back`, `Copied`                                                                                                                                                                  | These go to SwiftUI APIs that take no comment. Same remedy: explicit keys where a translation needs it.                                                                                                          |
 | Five long near-identical sentences                | `OverlayCoverageStatus.unavailableSentence`                                                                                                                                                                                                                                           | R5 made each reason a whole sentence (75–90 characters, differing after "because"). Correct, but five rows to translate; a shorter restatement is a copy choice.                                                 |
 | Lane reset notice                                 | `SettingsViewModel.removeCustomProvider`                                                                                                                                                                                                                                              | Two whole keys, singular and plural, because the sentence names lanes without a count. Keep, or restate with a count.                                                                                            |
-| Sentences with three or four counts               | Voice Lab summaries: `%lld corrections (%lld vocabulary) · %lld unchanged takes · %lld rules in dictionary`, `%lld live rules (variant→canonical) · %lld with correction provenance · %lld store rows.`                                                                               | English reads the same for one and many, so they carry no forms yet. A language that inflects needs a substitution per count, or the line split into separate facts.                                             |
 | Polish words in English search rows               | §3                                                                                                                                                                                                                                                                                    | Keep `mikrofon` and `słownik` in English once Polish exists, or move them.                                                                                                                                       |
 | Integrity diagnostics inside a localized sentence | `AgentBridgeInstallationError.invalidManifest` reasons ("checksum mismatch for …", "symlink refused at …")                                                                                                                                                                            | Shown only for a damaged bundle. Left in English as diagnostics; say if they should be copy.                                                                                                                     |
 | Launch synchronization reasons                    | `RealAgentBridgeInstaller.requireSynchronizationOwnership` and the receipt check in `install` (seven reasons, e.g. "the receipt is not an ordinary managed file")                                                                                                                     | They travel inside the localized "Codescribe will not overwrite …" sentence, but the startup synchronization result is only logged, so they stay English as diagnostics. Wrap them if that result is ever shown. |
@@ -342,7 +341,6 @@ language until it moves to a format style.
 | `MessageList`                                           | zoom percentage; `worked · %@s` with a pre-formatted number and a glued unit                                                                                                                                                     |
 | `OverlayState.sessionTimerText`                         | clock built with `%d:%02d:%02d`                                                                                                                                                                                                  |
 | `OverlayEvidenceList`                                   | a bare count                                                                                                                                                                                                                     |
-| `OverlayTranscriptHistoryModel`                         | `%@ chars`: the number arrives formatted, so the noun cannot inflect (a test pins the grouping repair that forces this)                                                                                                          |
 | `VoiceLabPanel`                                         | `logprob %.2f`, `speech %.0f%%`                                                                                                                                                                                                  |
 | `OverlayCoverageStatus`                                 | uncovered-speech chip: duration as `%.1f` under `en_US_POSIX` with a glued `s` (pre-formatted, so the decimal point is fixed); positions and ranges as hand-built `m:ss` joined by `, ` (pinned by `OverlayRecordingLightTests`) |
 | `DictationPreviewTimingTab`                             | readout `ms · cps · words · s interim`                                                                                                                                                                                           |
@@ -432,9 +430,20 @@ English text:
 
 - Counted phrases inflect: `1 server`, `1 tool`, `1 turn`, `1 attachment`,
   `1 day left`, `1 occurrence`, `1 variant`, `1 correction on disk`,
-  `1 model discovered`, `1 live rule`, `1 recording` / `1 day` / `1 thread`
+  `1 model discovered`, `1 live rule`, `1 char`, `1 unchanged take`,
+  `1 store row`, `1 recording` / `1 day` / `1 thread`
   in the reset summary. Some of these read `1 servers` before.
 - Counts inside sentences are grouped for the locale: `5,000 recordings`.
+- The two multi-count Voice Lab summaries have independent plural substitutions
+  for every count. English needs singular nouns there too; the earlier claim
+  that those sentences read the same for one and many was incorrect.
+- Archive character counts keep their integer for plural selection and honor
+  the supplied locale, including the existing four-digit grouping. The
+  replacement attribute identifies the plural phrase, including its noun; only
+  the locale-formatted number inside it is regrouped. Noun forms and word order
+  stay in the catalog. Regression cases cover English
+  and Polish grouping across 999/1,000 and 9,999/10,000, and up to one million.
+- The helper file-pass comparison uppercases its display name with the locale.
 - The eight Polish strings in §6 are English.
 - The prompt restore tooltip no longer lowercases the prompt title.
 - The lane reset notice joins lane names with the locale's list format.

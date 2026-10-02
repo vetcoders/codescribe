@@ -35,9 +35,6 @@
     "%@ account" : {
       "comment" : "The placeholder is a vendor brand, e.g. ChatGPT"
     },
-    "%@ chars" : {
-      "comment" : "Length of an archived take; the placeholder is an already formatted number"
-    },
     "%@ custom provider" : {
 
     },
@@ -181,6 +178,29 @@
         }
       }
     },
+    "%lld chars" : {
+      "comment" : "Length of an archived take; the integer counts characters",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld char"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld chars"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "%lld configured" : {
 
     },
@@ -188,8 +208,90 @@
       "localizations" : {
         "en" : {
           "stringUnit" : {
-            "state" : "new",
-            "value" : "%1$lld corrections (%2$lld vocabulary) · %3$lld unchanged takes · %4$lld rules in dictionary"
+            "state" : "translated",
+            "value" : "%#@corrections@ (%#@vocabulary@) · %#@unchangedTakes@ · %#@rules@ in dictionary"
+          },
+          "substitutions" : {
+            "corrections" : {
+              "argNum" : 1,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg correction"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg corrections"
+                    }
+                  }
+                }
+              }
+            },
+            "vocabulary" : {
+              "argNum" : 2,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg vocabulary"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg vocabulary"
+                    }
+                  }
+                }
+              }
+            },
+            "unchangedTakes" : {
+              "argNum" : 3,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg unchanged take"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg unchanged takes"
+                    }
+                  }
+                }
+              }
+            },
+            "rules" : {
+              "argNum" : 4,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg rule"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg rules"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -220,8 +322,70 @@
       "localizations" : {
         "en" : {
           "stringUnit" : {
-            "state" : "new",
-            "value" : "%1$lld live rules (variant→canonical) · %2$lld with correction provenance · %3$lld store rows."
+            "state" : "translated",
+            "value" : "%#@rules@ (variant→canonical) · %#@provenance@ · %#@rows@."
+          },
+          "substitutions" : {
+            "rules" : {
+              "argNum" : 1,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg live rule"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg live rules"
+                    }
+                  }
+                }
+              }
+            },
+            "provenance" : {
+              "argNum" : 2,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg with correction provenance"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg with correction provenance"
+                    }
+                  }
+                }
+              }
+            },
+            "rows" : {
+              "argNum" : 3,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg store row"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg store rows"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }

@@ -57,7 +57,7 @@ final class OverlayTranscriptHistoryModel {
   }
 
   static func formattedCharacterCount(_ count: Int?, locale: Locale) -> String {
-    guard let count else { return String(localized: "Length unavailable") }
+    guard let count else { return String(localized: "Length unavailable", locale: locale) }
     let formatter = NumberFormatter()
     formatter.numberStyle = .decimal
     formatter.locale = locale
@@ -67,9 +67,19 @@ final class OverlayTranscriptHistoryModel {
       (1_000...9_999).contains(count) && !formatted.contains(separator)
       ? "\(formatted.prefix(1))\(separator)\(formatted.dropFirst())"
       : formatted
-    return String(
-      localized: "\(grouped) chars",
-      comment: "Length of an archived take; the placeholder is an already formatted number")
+    let localized = AttributedString(
+      localized: "\(count) chars",
+      options: .applyReplacementIndexAttribute,
+      locale: locale,
+      comment: "Length of an archived take; the integer counts characters")
+    // A plural replacement marks the whole phrase, including its noun. Locate
+    // the locale-formatted integer inside that replacement before regrouping it.
+    let localizedNumber = String(format: "%lld", locale: locale, count)
+    return localized.runs[\.replacementIndex].map { index, range in
+      let phrase = String(localized[range].characters)
+      guard index == 1, let numberRange = phrase.range(of: localizedNumber) else { return phrase }
+      return phrase.replacingCharacters(in: numberRange, with: grouped)
+    }.joined()
   }
 
   func select(_ entry: CsHistoryEntry) async {

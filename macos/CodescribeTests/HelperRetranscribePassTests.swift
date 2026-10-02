@@ -70,4 +70,15 @@ final class HelperRetranscribePassTests: XCTestCase {
       "Helper Full HQ file pass matches daily."
     )
   }
+
+  func testCompareUppercasesThePassNameForTheRequestedLocale() {
+    let turkish = HelperFilePass.compare(
+      daily: "daily", helper: "helper", pass: .fullHq, locale: Locale(identifier: "tr_TR"))
+    XCTAssertTrue(turkish.contains("HELPER FULL HQ FİLE PASS"), turkish)
+    XCTAssertFalse(turkish.contains("HELPER FULL HQ FILE PASS"), turkish)
+
+    let english = HelperFilePass.compare(
+      daily: "daily", helper: "helper", pass: .fullHq, locale: Locale(identifier: "en_US"))
+    XCTAssertTrue(english.contains("HELPER FULL HQ FILE PASS"), english)
+  }
 }

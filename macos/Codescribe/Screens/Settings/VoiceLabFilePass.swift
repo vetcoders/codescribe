@@ -28,15 +28,18 @@ enum HelperFilePass {
     return .success((pass, "\(pass.rawValue):\(archived.path)"))
   }
 
-  static func compare(daily: String, helper: String, pass: FileRetranscribePass) -> String {
+  static func compare(
+    daily: String, helper: String, pass: FileRetranscribePass, locale: Locale = .current
+  ) -> String {
     let left = daily.trimmingCharacters(in: .whitespacesAndNewlines)
     let right = helper.trimmingCharacters(in: .whitespacesAndNewlines)
     if left == right {
-      return String(localized: "Helper \(pass.visibleName) matches daily.")
+      return String(localized: "Helper \(pass.visibleName) matches daily.", locale: locale)
     }
     return String(
       localized:
-        "DAILY\n\(left)\n\nHELPER \(pass.visibleName.uppercased())\n\(right)\n\nDaily is unchanged until you save a correction."
+        "DAILY\n\(left)\n\nHELPER \(pass.visibleName.uppercased(with: locale))\n\(right)\n\nDaily is unchanged until you save a correction.",
+      locale: locale
     )
   }
 }

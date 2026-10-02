@@ -433,6 +433,38 @@ final class VoiceLabTests: XCTestCase {
     XCTAssertTrue(model.voiceLabEditPending.isEmpty)
   }
 
+  func testDictionaryHeadlineInflectsEachCountIndependently() {
+    let cases: [(Int, Int, Int, Int, String)] = [
+      (1, 1, 1, 1, "1 correction (1 vocabulary) · 1 unchanged take · 1 rule in dictionary"),
+      (1, 2, 3, 4, "1 correction (2 vocabulary) · 3 unchanged takes · 4 rules in dictionary"),
+      (2, 1, 3, 4, "2 corrections (1 vocabulary) · 3 unchanged takes · 4 rules in dictionary"),
+      (2, 3, 1, 4, "2 corrections (3 vocabulary) · 1 unchanged take · 4 rules in dictionary"),
+      (2, 3, 4, 1, "2 corrections (3 vocabulary) · 4 unchanged takes · 1 rule in dictionary"),
+    ]
+    for (corrections, vocabulary, takes, rules, expected) in cases {
+      XCTAssertEqual(
+        dictionaryHeadline(
+          corrections: corrections, vocabularyCorrections: vocabulary,
+          unchangedTakes: takes, rulesLearned: rules), expected)
+    }
+  }
+
+  func testDictionarySubtitleInflectsEachCountIndependently() {
+    let cases: [(Int, Int, Int, String)] = [
+      (1, 1, 1, "1 live rule (variant→canonical) · 1 with correction provenance · 1 store row."),
+      (1, 2, 3, "1 live rule (variant→canonical) · 2 with correction provenance · 3 store rows."),
+      (2, 1, 3, "2 live rules (variant→canonical) · 1 with correction provenance · 3 store rows."),
+      (2, 3, 1, "2 live rules (variant→canonical) · 3 with correction provenance · 1 store row."),
+      (2, 0, 0, "2 live rules (variant→canonical) · 0 with correction provenance · 0 store rows."),
+    ]
+    for (rules, corrections, rows, expected) in cases {
+      XCTAssertEqual(
+        dictionarySubtitle(
+          correctionsRecorded: 10, rulesLearned: rules,
+          taughtFromCorrections: corrections, totalEntries: rows), expected)
+    }
+  }
+
   func testDictionaryHeadlineHonestyForCorrectionSource() {
     XCTAssertTrue(
       dictionarySubtitle(
