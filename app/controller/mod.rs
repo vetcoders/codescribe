@@ -10097,10 +10097,13 @@ mod hold_start_terminal_lifecycle_falsifiers {
             .expect("delayed hold start scheduled");
         let scheduled_generation = controller.hold_start_generation.load(Ordering::SeqCst);
 
-        // Step virtual time until the task has passed its pre-lock checks and
-        // is parked on the recorder gate (the start guard is raised just
-        // before the session id is written, ahead of the recorder lock).
-        while !controller.start_transition_in_flight.load(Ordering::SeqCst) {
+        // Storage admission now awaits a blocking worker between the raised
+        // start guard and session publication. Reach the published session,
+        // not merely that earlier flag, before exercising this interleaving.
+        // The held recorder mutex still excludes Bus opening and RecHold.
+        while !controller.start_transition_in_flight.load(Ordering::SeqCst)
+            || controller.session_id.read().await.is_none()
+        {
             assert!(
                 !task.is_finished(),
                 "hold start finished before reaching the recorder gate"

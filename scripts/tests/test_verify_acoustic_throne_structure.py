@@ -2089,6 +2089,35 @@ class NeutralAstTests(unittest.TestCase):
                          without_metadata["invocation"]["input_sha256"])
         self.assertEqual(payload, original, "handoff must not mutate Loctree evidence")
 
+    def test_prepared_capture_stop_preserves_ownership_and_error_path(self):
+        positive = self.run_payload(self.payload)
+        self.assertTrue(positive["accepted"], "negative evidence needs an accepted control")
+        mutations = [
+            ("feed_release_missing", "let release = self.release_take_pcm_feed();", ""),
+            ("release_forged", "let release = self.release_take_pcm_feed();",
+             "let release = TakeFeedRelease::NoTakeFeed;"),
+            ("prepared_not_consumed", "self.prepared_capture_archive.take()",
+             "self.prepared_capture_archive.as_ref()"),
+            ("prepared_error_swallowed", "            prepared\n", "            Ok(None)\n"),
+            ("prepared_early_error", "            prepared\n", "            prepared?\n"),
+            ("ordinary_stop_early_error", "self.recorder.stop().await", "self.recorder.stop().await?"),
+            ("shared_capture_stopped", "TakeFeedRelease::CaptureShared => Ok(None)",
+             "TakeFeedRelease::CaptureShared => self.recorder.stop().await"),
+            ("release_duplicated", "match release {", "match self.release_take_pcm_feed() {"),
+            ("tail_bypassed", "self.complete_stop(stopped).await", "Ok((String::new(), None))"),
+            ("prepared_read_twice", "let stopped =", "let _ = self.prepared_capture_archive.take(); let stopped ="),
+        ]
+        for name, old, new in mutations:
+            with self.subTest(mutation=name):
+                evidence = self.run_payload(self.mutate("stop", old, new))
+                contracts = {row["symbol"]: row for row in evidence["contracts"]}
+                self.assertFalse(contracts["stop"]["accepted"], name)
+                self.assertTrue(contracts["stop"]["failures"], name)
+                self.assertFalse(evidence["accepted"], name)
+                for symbol, contract in contracts.items():
+                    if symbol != "stop":
+                        self.assertTrue(contract["accepted"], (name, symbol))
+
     def test_all_eleven_previous_mutants_rejected(self):
         mutations = [
             ("paste_before_guard", "execute_clipboard_paste", "let focus_confirmed = target_app", "clipboard::paste_and_restore(&paste_text)?; let focus_confirmed = target_app"),

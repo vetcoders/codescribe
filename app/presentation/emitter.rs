@@ -4018,7 +4018,14 @@ mod tests {
             assert_eq!(paint.sequence, index as u64 + 1);
             assert_eq!(paint.session_id, "take");
             assert_eq!(paint.capture_epoch, 7);
-            assert!(paint.text.split_whitespace().count() <= 5);
+            assert_eq!(
+                paint.text,
+                if index == 0 {
+                    ""
+                } else {
+                    "jeden dwa trzy cztery pięć sześć"
+                }
+            );
             let json = serde_json::to_string(paint).unwrap();
             assert_eq!(
                 *paint,
@@ -4028,7 +4035,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cursor_projects_five_words_and_acoustic_debt_without_delivery() {
+    async fn capture_projects_full_preview_and_acoustic_debt_without_delivery() {
         use codescribe_core::pipeline::contracts::{SpeechIntegrity, SpeechIntegrityPhase};
         let paints = Arc::new(StdMutex::new(Vec::new()));
         let observed = paints.clone();
@@ -4080,7 +4087,7 @@ mod tests {
         emitter.on_capture_opened("take", 7);
         assert_eq!(
             paints.lock().unwrap().last().unwrap(),
-            &("jeden dwa trzy cztery pięć".into(), false)
+            &("zero jeden dwa trzy cztery pięć".into(), false)
         );
         emitter.on_capture_opened("take", 8);
         foreign_first.capture_epoch = 6;
@@ -4105,7 +4112,7 @@ mod tests {
             });
             assert_eq!(
                 paints.lock().unwrap().last().unwrap(),
-                &("jeden dwa trzy cztery pięć".into(), true)
+                &("zero jeden dwa trzy cztery pięć".into(), true)
             );
             emitter.on_event(&partial_mirror(
                 evidence.sequence + 1,
@@ -4119,7 +4126,7 @@ mod tests {
             );
             emitter.paint_cursor("");
             assert_eq!(paints.lock().unwrap().last().unwrap(), &("…".into(), true));
-            emitter.paint_cursor("jeden dwa trzy cztery pięć");
+            emitter.paint_cursor("zero jeden dwa trzy cztery pięć");
             evidence.sequence += 1;
         }
         let before = paints.lock().unwrap().len();

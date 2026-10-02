@@ -2174,6 +2174,83 @@ fn optional_score(value: Option<f64>) -> String {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn corpus_parent_directory_keeps_owned_audio_until_discovery_is_released() {
+        use codescribe_core::config::AudioRetention;
+        use codescribe_core::state::history::audio_retention as retention;
+        use std::time::{Duration, SystemTime};
+
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("owned-store");
+        let id = "corpus-parent-retention";
+        retention::begin_capture(&root, id, AudioRetention::Hours24).unwrap();
+        fs::create_dir_all(root.join("sessions")).unwrap();
+        let path = root.join(format!("sessions/{id}.wav"));
+        let mut writer = hound::WavWriter::create(
+            &path,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 16_000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for sample in [0i16, 17, -33, 123] {
+            writer.write_sample(sample).unwrap();
+        }
+        writer.finalize().unwrap();
+        let capture = retention::capture(&root, id).unwrap();
+        capture.record(std::slice::from_ref(&path), false).unwrap();
+
+        // A legitimate --root can be an ancestor of the configured audio store.
+        // Discovery must retain the path for later matrix child passes.
+        let discovery = discover_corpus_with_read_root(
+            &[parent.path().to_owned()],
+            ReferencePolicy::Human,
+            None,
+            &root,
+        )
+        .unwrap();
+        assert_eq!(discovery.selected.len(), 1);
+        assert_eq!(discovery.selected[0].path, path);
+        retention::finish_capture(&root, id);
+        drop(capture);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        let receipt = root.join(format!("sessions/{id}.audio-retention.json"));
+        while !receipt.exists() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "capture receipt not published"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let eligible = SystemTime::now() + Duration::from_secs(86_410);
+        for _ in 0..20 {
+            let report = retention::maintain(&root, AudioRetention::Hours24, eligible).unwrap();
+            assert!(report.failures.is_empty(), "{report:?}");
+            assert_eq!(
+                report.expired, 0,
+                "discovery still owns the pathname: {report:?}"
+            );
+            assert!(path.exists());
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        drop(discovery);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let report = retention::maintain(&root, AudioRetention::Hours24, eligible).unwrap();
+            assert!(report.failures.is_empty(), "{report:?}");
+            if report.expired > 0 {
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "idle expiry failed");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(!path.exists());
+    }
+
     fn comparison_fixture() -> ProfileReport {
         let root = tempfile::tempdir().unwrap();
         let census = discover_corpus(&[root.path().to_owned()], ReferencePolicy::Human, None)
