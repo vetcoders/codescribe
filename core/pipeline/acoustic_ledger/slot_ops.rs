@@ -332,6 +332,50 @@ pub(super) fn repetition_target_ambiguous(sources: &[WordSlot], pins: &[WordSlot
 }
 
 impl AcousticLedger {
+    /// Jitter may move either fence, but may not borrow another word's centre
+    /// or turn one member of a partition into the whole source word.
+    pub(super) fn ordinary_word_target(
+        &self,
+        sources: &[WordSlot],
+        pins: &[WordSlot],
+        pin: &WordSlot,
+    ) -> Option<usize> {
+        let targets = sources
+            .iter()
+            .enumerate()
+            .filter(|(_, source)| same_pcm_slot(source, pin))
+            .collect::<Vec<_>>();
+        let [(index, source)] = targets.as_slice() else {
+            return None;
+        };
+        let source_mid = source.sample_start + (source.sample_end - source.sample_start) / 2;
+        let pin_mid = pin.sample_start + (pin.sample_end - pin.sample_start) / 2;
+        (self.word_pin_observations.contains(&source.observation)
+            && source.text.split_whitespace().count() == 1
+            && pin.text.split_whitespace().count() == 1
+            && self.slot_source_ranges(source).len() == 1
+            && self
+                .complete_decoded_words
+                .get(&source.observation)
+                .is_none_or(|ranges| {
+                    ranges.contains(&(source.sample_start, source.sample_end))
+                })
+            && source.sample_start <= pin_mid
+            && pin_mid < source.sample_end
+            && pin.sample_start <= source_mid
+            && source_mid < pin.sample_end
+            && pins
+                .iter()
+                .filter(|other| same_pcm_slot(source, other))
+                .count()
+                == 1
+            && sources.iter().enumerate().all(|(other_index, other)| {
+                let midpoint = other.sample_start + (other.sample_end - other.sample_start) / 2;
+                other_index == *index || midpoint < pin.sample_start || midpoint >= pin.sample_end
+            }))
+        .then_some(*index)
+    }
+
     /// Resolve connected intersections as one geometric operation. Slot count
     /// is not occurrence identity: several words may refine one coarse source.
     pub(super) fn resegment_word_slots(
@@ -352,39 +396,16 @@ impl AcousticLedger {
         let mut consumed = BTreeSet::new();
         let mut operations = Vec::new();
         let mut proposed_coverages = Vec::new();
-        let intersects = |a: &WordSlot, b: &WordSlot| {
-            a.sample_start < b.sample_end && b.sample_start < a.sample_end
-        };
         // One uniquely targeted measured word remains an ordinary correction.
         // Incidental overlap with a neighbour must not turn duration jitter
         // into a request to partition that neighbour's PCM.
         let ordinary_targets = pins
             .iter()
-            .map(|pin| {
-                let targets = prior
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, source)| same_pcm_slot(source, pin))
-                    .collect::<Vec<_>>();
-                if let [(index, source)] = targets.as_slice()
-                    && self.word_pin_observations.contains(&source.observation)
-                    && source.text.split_whitespace().count() == 1
-                    && pin.text.split_whitespace().count() == 1
-                    && pins
-                        .iter()
-                        .filter(|other| same_pcm_slot(source, other))
-                        .count()
-                        == 1
-                {
-                    Some(*index)
-                } else {
-                    None
-                }
-            })
+            .map(|pin| self.ordinary_word_target(&prior, &pins, pin))
             .collect::<Vec<_>>();
         let connected = |source: usize, pin: usize| {
             ordinary_targets[pin].map_or_else(
-                || intersects(&prior[source], &pins[pin]),
+                || same_pcm_slot(&prior[source], &pins[pin]),
                 |target| source == target,
             )
         };
@@ -417,7 +438,7 @@ impl AcousticLedger {
             if source_indices.is_empty() {
                 continue;
             }
-            let sources = source_indices
+            let mut sources = source_indices
                 .iter()
                 .map(|index| prior[*index].clone())
                 .collect::<Vec<_>>();
@@ -430,32 +451,18 @@ impl AcousticLedger {
                 !self.word_pin_observations.contains(&source.observation)
                     || (source.text.contains(char::is_whitespace)
                         && self.slot_source_ranges(source).len() == 1)
+                    || self
+                        .complete_decoded_words
+                        .get(&source.observation)
+                        .is_some_and(|ranges| {
+                            !ranges.contains(&(source.sample_start, source.sample_end))
+                        })
             };
             let all_coarse = sources.iter().all(coarse_source);
             if sources.len() == 1
                 && outputs.len() == 1
-                && ((sources[0].sample_start == outputs[0].sample_start
-                    && sources[0].sample_end == outputs[0].sample_end)
-                    || ordinary_targets[*word_indices.first().unwrap()].is_some())
+                && ordinary_targets[*word_indices.first().unwrap()].is_some()
             {
-                continue;
-            }
-            // A replay and a new word on separate PCM are not a split of the
-            // replay's source. Ordinary admission checks their edges separately.
-            let replayed_word = sources.len() == 1
-                && sources[0].text.split_whitespace().count() == 1
-                && outputs.iter().any(|word| {
-                    normalize_word_token(&word.text) == normalize_word_token(&sources[0].text)
-                });
-            let held_pin_split = sources.len() == 1
-                && sources[0].text.split_whitespace().count() == 1
-                && outputs.len() > 1
-                && outputs.iter().all(|word| {
-                    let midpoint =
-                        word.sample_start + word.sample_end.saturating_sub(word.sample_start) / 2;
-                    midpoint >= sources[0].sample_start && midpoint < sources[0].sample_end
-                });
-            if replayed_word && outputs.len() > 1 && !held_pin_split {
                 continue;
             }
             let authority = sources.iter().all(|source| {
@@ -464,35 +471,96 @@ impl AcousticLedger {
                         || (source.producer == observation.producer
                             && source.observation.generation < observation.generation))
             });
-            let geometry = source_indices.last().unwrap() - source_indices.first().unwrap() + 1
-                == sources.len()
+            let collapses_complete_words = outputs.iter().any(|word| {
+                sources
+                    .iter()
+                    .filter(|source| {
+                        let midpoint = source.sample_start
+                            + (source.sample_end - source.sample_start) / 2;
+                        word.sample_start <= midpoint
+                            && midpoint < word.sample_end
+                            && self
+                                .complete_decoded_words
+                                .get(&source.observation)
+                                .is_some_and(|ranges| {
+                                    ranges.contains(&(source.sample_start, source.sample_end))
+                                })
+                    })
+                    .count()
+                    > 1
+            });
+            let geometry = !collapses_complete_words
+                && source_indices.last().unwrap() - source_indices.first().unwrap() + 1
+                    == sources.len()
                 && outputs
                     .windows(2)
                     .all(|pair| pair[0].sample_end <= pair[1].sample_start);
-            let candidate = compose_label(&outputs);
-            let held = compose_label(&sources);
-            let alignment = preserve_group_content(&held, &candidate);
-            let accounted = alignment
-                .as_ref()
-                .is_ok_and(|(label, retained)| !retained && *label == candidate);
-            let coverage = sources
+            let mut coverage = sources
                 .iter()
                 .map(|source| self.group_speech_coverage(observation, source, &outputs))
                 .collect::<Option<Vec<_>>>();
-            // A coarse label can be refined without a speech snapshot only
-            // when every source token is accounted for. Original group PCM
-            // remains in the operation; child playback uses actual pin ranges.
+            if authority
+                && geometry
+                && all_coarse
+                && coverage.is_none()
+                && self.speech_evidence.is_some()
+            {
+                outputs.retain(|word| {
+                    if self
+                        .group_speech_coverage(observation, word, std::slice::from_ref(word))
+                        .is_some()
+                    {
+                        return true;
+                    }
+                    self.refuse_word_slot(
+                        observation,
+                        word,
+                        sources.clone(),
+                        "word_speech_unproven",
+                    );
+                    false
+                });
+                if outputs.is_empty() {
+                    consumed.extend(word_indices.iter().copied());
+                    continue;
+                }
+                sources.retain(|source| outputs.iter().any(|word| same_pcm_slot(source, word)));
+                coverage = sources
+                    .iter()
+                    .map(|source| self.group_speech_coverage(observation, source, &outputs))
+                    .collect::<Option<Vec<_>>>();
+            }
+            let candidate = compose_label(&outputs);
+            let held = compose_label(&sources);
+            // Individual heard words do not need to cover the rest of a
+            // coarse hypothesis. That remainder becomes explicit source debt;
+            // a complete measured word still requires complete accounting.
+            let partial_refinement = all_coarse
+                && coverage.is_none()
+                && outputs.iter().all(|word| {
+                    self.group_speech_coverage(observation, word, std::slice::from_ref(word))
+                        .is_some()
+                });
+            // With no observer snapshot, exact pin coverage may account for
+            // the source PCM. Spelling agreement supplies no missing geometry.
             // A present but unusable snapshot never acts as absent evidence.
-            let lexical_refinement =
-                sources.len() == 1 && all_coarse && accounted && self.speech_evidence.is_none();
+            let range_refinement = self.speech_evidence.is_none()
+                && sources.iter().all(|source| {
+                    let mut cursor = source.sample_start;
+                    for word in &outputs {
+                        if word.sample_start <= cursor && word.sample_end > cursor {
+                            cursor = word.sample_end;
+                        }
+                    }
+                    cursor >= source.sample_end
+                });
             let ambiguous = repetition_target_ambiguous(&sources, &outputs)
-                && !(all_coarse && (accounted || coverage.is_some()));
+                && !(coverage.is_some() || range_refinement || partial_refinement);
             let refusal = if !authority {
                 Some("protected_source")
             } else if !geometry
                 || ambiguous
-                || (held_pin_split && !all_coarse)
-                || (coverage.is_none() && !lexical_refinement)
+                || (coverage.is_none() && !range_refinement && !partial_refinement)
             {
                 Some("resegmentation_unaccounted_speech")
             } else {
@@ -504,9 +572,21 @@ impl AcousticLedger {
             if let Some(reason) = refusal {
                 self.retain_slot_alternative(observation, &candidate, sources, reason);
                 for word in &outputs {
-                    self.record_word_slot_refusal(observation, word);
+                    self.record_word_slot_refusal(observation, word, true);
                 }
                 continue;
+            }
+            if partial_refinement {
+                self.require_text_recovery(&observation.occurrence);
+                self.retain_slot_alternative(
+                    observation,
+                    &candidate,
+                    sources.clone(),
+                    "partial_group_speech_pending",
+                );
+                for source in &sources {
+                    self.retain_rejected_word_pin(observation, source);
+                }
             }
             let source_ranges = sources
                 .iter()
@@ -514,7 +594,13 @@ impl AcousticLedger {
                 .collect();
             let operation = SlotOperationReceipt {
                 observation: observation.clone(),
-                kind: if outputs.len() > sources.len() || sources.len() == 1 {
+                kind: if sources.len() == 1
+                    && outputs.len() == 1
+                    && sources[0].sample_start == outputs[0].sample_start
+                    && sources[0].sample_end == outputs[0].sample_end
+                {
+                    SlotOperationKind::Correct
+                } else if outputs.len() > sources.len() || sources.len() == 1 {
                     SlotOperationKind::Split
                 } else {
                     SlotOperationKind::Merge
@@ -524,8 +610,10 @@ impl AcousticLedger {
                 outputs: outputs.clone(),
                 rule_id: if coverage.is_some() {
                     "acoustic_resegmentation/speech-coverage/v1"
+                } else if partial_refinement {
+                    "acoustic_resegmentation/partial-speech/v1"
                 } else {
-                    "acoustic_resegmentation/content/v1"
+                    "acoustic_resegmentation/pin-coverage/v1"
                 }
                 .into(),
             };
@@ -584,15 +672,34 @@ impl AcousticLedger {
         source: &WordSlot,
         incoming: &[WordSlot],
     ) -> Option<(AcousticSpeechEvidence, Vec<SpeechPinCoverage>)> {
+        let range = OccurrenceIdentity::new(
+            &source.observation.occurrence.session,
+            source.observation.occurrence.capture_epoch,
+            source.sample_start,
+            source.sample_end,
+        );
+        self.speech_pin_coverage(observation, &range, incoming)
+    }
+
+    /// The same PCM accounting answers a source partition and whole-owner
+    /// recovery. An occurrence extent is a scope, never a fabricated word pin.
+    pub(super) fn speech_pin_coverage(
+        &self,
+        observation: &ObservationIdentity,
+        source: &OccurrenceIdentity,
+        incoming: &[WordSlot],
+    ) -> Option<(AcousticSpeechEvidence, Vec<SpeechPinCoverage>)> {
         use crate::audio::capture_receipt::CAPTURE_ENERGY_PRODUCER;
         use crate::pipeline::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER;
 
         let owner = &observation.occurrence;
         let speech = self.speech_evidence.as_ref()?;
         let observed = speech.availability().observed_samples()?;
-        if !speech
-            .identity()
-            .matches(&owner.session, owner.capture_epoch)
+        if !source.same_capture(owner)
+            || !source.is_anchored()
+            || !speech
+                .identity()
+                .matches(&owner.session, owner.capture_epoch)
             || !matches!(
                 speech.producer(),
                 CAPTURE_ENERGY_PRODUCER | SILERO_BOUNDARIES_PRODUCER
@@ -623,8 +730,8 @@ impl AcousticLedger {
             && &batch.observation == observation
         {
             for (assigned_owner, pin) in &batch.assignments {
-                // A candidate cannot lend itself additional geometry from the
-                // routing snapshot. Only a distinct, adjacent owner may do so.
+                // Routing is a proposal. Only a committed measured neighbour
+                // may lend its actual pin; qualification alone proves no words.
                 let midpoint = pin.sample_start.saturating_add(pin.sample_len() / 2);
                 if assigned_owner != owner
                     && assigned_owner.same_capture(owner)
@@ -636,8 +743,7 @@ impl AcousticLedger {
                     && midpoint < assigned_owner.sample_end
                     && (assigned_owner.sample_end <= owner.sample_start
                         || assigned_owner.sample_start >= owner.sample_end)
-                    && (self.committed.contains_key(assigned_owner)
-                        || self.is_qualified(assigned_owner))
+                    && self.committed.contains_key(assigned_owner)
                     && !self.is_sealed(assigned_owner)
                     && !self.word_deletions.iter().any(|deletion| {
                         let range = deletion.verdict.target();
@@ -654,7 +760,22 @@ impl AcousticLedger {
                         })
                     })
                 {
-                    pins.push((pin.clone(), assigned_owner.clone()));
+                    for slot in self.slots_of(assigned_owner).unwrap_or(&[]) {
+                        if self.word_pin_observations.contains(&slot.observation)
+                            && slot.sample_start == pin.sample_start.max(assigned_owner.sample_start)
+                            && slot.sample_end == pin.sample_end.min(assigned_owner.sample_end)
+                        {
+                            for range in self.slot_source_ranges(slot) {
+                                if range.same_capture(owner)
+                                    && range.is_anchored()
+                                    && range.sample_start >= pin.sample_start
+                                    && range.sample_end <= pin.sample_end
+                                {
+                                    pins.push((range, assigned_owner.clone()));
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
