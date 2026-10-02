@@ -138,7 +138,9 @@ microphone. It reaches the overlay as a typed
 copy. Guided calibration publishes `calibration_succeeded` (including the new
 profile version) or `calibration_failed` through the same IPC/listener lane.
 These passive status cards are not Bus rows and carry no occurrence, reducer,
-or acoustic receipt fields.
+or acoustic receipt fields. A card is shown even when the transcription overlay
+preference is off; it then leaves on the ordinary terminal auto-hide countdown,
+which the keep-visible pin does not suspend while that preference is off.
 
 `codescribe.transcript-evidence.v1` is the committed projection family. Every
 line is created only by `TranscriptBus::publish_revision(revision, ledger)` and

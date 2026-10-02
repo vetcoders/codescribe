@@ -281,6 +281,26 @@ final class TrayViewModelTests: XCTestCase {
     XCTAssertEqual(engine.currentToggleReads, 2)
   }
 
+  func testOverlayToggleTellsTheOverlayOwnerAfterTheWriteLanded() {
+    let engine = TrackingTrayEngine(
+      showDockIcon: true,
+      overlayEnabled: true,
+      pasteMode: .safe,
+      autoFormatLevel: .correction,
+      notesMode: false,
+      startInAssistive: false
+    )
+    let model = TrayViewModel(engine: engine)
+    model.refreshStatus()
+    var persistedAtNotice: [Bool] = []
+    model.onOverlayPreferenceChanged = { persistedAtNotice.append(engine.overlayEnabled) }
+
+    model.setOverlayEnabled(false)
+
+    XCTAssertEqual(persistedAtNotice, [false], "one notice, after the preference is on disk")
+    XCTAssertFalse(model.overlayEnabled)
+  }
+
   func testPasteModeWriteReconcilesSuccessAndFailureToPersistedTruth() {
     for persists in [true, false] {
       let engine = TrackingTrayEngine(

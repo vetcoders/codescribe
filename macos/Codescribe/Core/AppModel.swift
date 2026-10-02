@@ -55,6 +55,8 @@ final class AppModel: ObservableObject {
     // The composer is a gesture-only adapter over RecordingController. Right
     // Option, composer mic, Dictation, and Formatting share one recorder/STT.
     chat.dictation = RealComposerDictation(store: chat)
+    // The tray toggle only persists the preference; the panel's owner applies it.
+    tray.onOverlayPreferenceChanged = { [overlay] in overlay.overlayPreferenceChanged() }
     AgentPerf.log("app bootstrap (AppModel init)", since: bootstrapStart)
   }
 }
@@ -143,6 +145,7 @@ final class OverlayController: ObservableObject {
         }
       }
     state.engine = engine
+    state.transcriptOverlayEnabled = overlayEnabledProvider
     // Drive the tray status off the SAME authoritative recording lifecycle the
     // overlay already receives. The tray view-model otherwise only polls on
     // appear (and the popover is built once), so it stayed "Recording" after
@@ -201,7 +204,8 @@ final class OverlayController: ObservableObject {
     }
     // Admission and calibration outcomes are product feedback even when the
     // transcript overlay preference is off. The typed status is passive; this
-    // seam only brings its already-reduced card on screen.
+    // seam only brings its already-reduced card on screen. With the preference
+    // off the card leaves on the ordinary countdown; the pin does not hold it.
     state.onPresentationStatus = { [weak self] in self?.show() }
     state.onTranscriptPresentationChanged = { [weak self] in
       self?.resizeForProjectedContent()
@@ -253,6 +257,17 @@ final class OverlayController: ObservableObject {
       return
     }
     show()
+  }
+
+  /// The "Transcription Overlay" preference was written (tray toggle, Settings
+  /// preview preset). Off closes an overlay that is already on screen instead
+  /// of leaving it up until the next take; the persisted value is re-read, so
+  /// a rejected write closes nothing. On needs no action here: the next take
+  /// or status brings the panel back.
+  func overlayPreferenceChanged() {
+    guard !overlayEnabledProvider(), panel != nil else { return }
+    DictationOverlayGate.logger.info("overlay closed: tray toggle off")
+    hide()
   }
 
   func show() {

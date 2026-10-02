@@ -1075,6 +1075,14 @@ final class SettingsViewModel: ObservableObject {
   /// a spy without ever waking `AppModel.shared`.
   var onQuickStartDictation: () -> Void = { AppModel.shared.tray.toggleDictation() }
 
+  /// Overlay seam for the preview preset. A preset writes the "Transcription
+  /// Overlay" preference; the overlay's owner closes a panel already on screen
+  /// when it turns off. Dereferenced only after a preset write, so unit tests
+  /// can inject a spy without ever waking `AppModel.shared`.
+  var onOverlayPreferenceChanged: () -> Void = {
+    AppModel.shared.overlay.overlayPreferenceChanged()
+  }
+
   func performQuickStart(_ action: SettingsQuickStartAction) {
     switch action {
     case .testMic: section = .audio
@@ -2348,6 +2356,7 @@ final class SettingsViewModel: ObservableObject {
         ),
       ])
     }
+    onOverlayPreferenceChanged()
   }
 
   func setPreviewBufferDelayMs(_ value: UInt64) {

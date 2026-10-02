@@ -514,7 +514,7 @@ final class OverlayState {
     }
     expansionPreferenceError = nil
     keepVisibleBetweenTakes = engine.overlayKeepVisibleBetweenTakes()
-    if keepVisibleBetweenTakes {
+    if pinKeepsOverlayVisible {
       cancelAutoHide()
     } else if terminal {
       restartAutoHideCountdown()
@@ -1906,6 +1906,16 @@ final class OverlayState {
     terminal
   }
 
+  /// The "Transcription Overlay" preference, supplied by the panel's owner.
+  /// The pin keeps the transcript overlay between takes; with the preference
+  /// off there is no such overlay, so a status card shown despite it leaves on
+  /// the ordinary countdown instead of staying until closed by hand.
+  @ObservationIgnored var transcriptOverlayEnabled: () -> Bool = { true }
+
+  private var pinKeepsOverlayVisible: Bool {
+    keepVisibleBetweenTakes && transcriptOverlayEnabled()
+  }
+
   private var mayAutoSendRefusedAgentTake: Bool {
     agentSessionArmed && agentFinalTranscriptAppeared && !agentAutoSendCancelled
       && canSendToAgent
@@ -1917,7 +1927,7 @@ final class OverlayState {
       cancelAutoHide()
       return
     }
-    if keepVisibleBetweenTakes && !agentSessionArmed {
+    if pinKeepsOverlayVisible && !agentSessionArmed {
       cancelAutoHide()
       return
     }
@@ -1966,7 +1976,7 @@ final class OverlayState {
   private func evaluateAutoHideDeadline(rescheduleIfEarly: Bool, generation: UInt64) {
     guard generation == captureGeneration else { return }
     autoHideTask = nil
-    if keepVisibleBetweenTakes && !agentSessionArmed {
+    if pinKeepsOverlayVisible && !agentSessionArmed {
       cancelAutoHide()
       return
     }

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Collapse Dictation engine controls to one ASR mode, retire inert settings, and let Cloud reach its own admission checks.
 - Add the localization foundation for the macOS app: String Catalogs with English as the source language, catalog sync and lint tooling, and interface copy prepared for further languages (`docs/LOCALIZATION.md`). No translation ships yet. Tray status wording is now authored in the app; the Rust tray payload carries state only.
+- Turning the transcription overlay off closes an overlay already on screen, and a status card shown with the overlay off no longer stays up when "Keep visible between takes" is pinned.
 
 ## Release reality
 

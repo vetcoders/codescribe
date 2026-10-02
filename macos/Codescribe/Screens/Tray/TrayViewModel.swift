@@ -55,6 +55,9 @@ final class TrayViewModel: ObservableObject {
   // Navigation intents — bound by App.swift to the actual window/scene opens.
   var onIntent: (TrayIntent) -> Void = { _ in }
   var onDictationStartRequested: () -> Void = {}
+  /// Fired after the "Transcription Overlay" toggle is written, so the overlay's
+  /// owner can close a panel that is already on screen.
+  var onOverlayPreferenceChanged: () -> Void = {}
 
   // App-level actions — injected by App.swift. Defaults are best-effort / no-op
   // so the screen is fully interactive in isolation and in #Preview.
@@ -197,6 +200,7 @@ final class TrayViewModel: ObservableObject {
     }
     engine.setQuickToggle(.transcriptionOverlay, enabled: enabled)
     refreshStatus()
+    onOverlayPreferenceChanged()
   }
 
   /// Persisted paste mode. Re-read the complete tray snapshot after the
