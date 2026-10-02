@@ -869,6 +869,157 @@ async fn transcribe_multipart_request(url: &str, api_key: &str, form: Form) -> R
 /// Unit tests for audio preflight, retry classification, serde.
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn a_direct_cloud_file_reader_prevents_expiry_until_its_awaited_work_settles() {
+        use crate::config::{AudioRetention, Config};
+        use crate::state::history::audio_retention::{
+            begin_capture, capture, finish_capture, maintain,
+        };
+        use std::time::{Duration, SystemTime};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let name = "a_direct_cloud_file_reader_prevents_expiry_until_its_awaited_work_settles";
+        if std::env::var("CS_PRIVATE_CLOUD_READER_CHILD")
+            .ok()
+            .as_deref()
+            != Some(name)
+        {
+            let store = tempfile::tempdir().unwrap();
+            let test = format!(
+                "{}::{name}",
+                module_path!().strip_prefix("codescribe_core::").unwrap()
+            );
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([test, "--exact".into(), "--test-threads=1".into()])
+                .env("CS_PRIVATE_CLOUD_READER_CHILD", name)
+                .env("CODESCRIBE_DATA_DIR", store.path())
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success(),
+                "isolated direct reader failed: {stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                stdout.contains("1 passed; 0 failed"),
+                "one real selected test must run: {stdout}"
+            );
+            return;
+        }
+        let root = Config::config_dir();
+        let id = "11111111-1111-4111-8111-111111111111";
+        begin_capture(&root, id, AudioRetention::Forever).unwrap();
+        std::fs::create_dir_all(root.join("takes")).unwrap();
+        let source = root.join("takes/codescribe_recording_1.wav");
+        std::fs::write(&source, wav_bytes_from_pcm16(&vec![23; 16_000], 16_000)).unwrap();
+        let producer = capture(&root, id).unwrap();
+        producer
+            .record(std::slice::from_ref(&source), false)
+            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!(
+            "http://{}/v1/audio/transcriptions",
+            listener.local_addr().unwrap()
+        );
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            let body_start;
+            loop {
+                let mut chunk = [0_u8; 4096];
+                let count = stream.read(&mut chunk).await.unwrap();
+                assert!(count > 0);
+                bytes.extend_from_slice(&chunk[..count]);
+                if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                    body_start = end + 4;
+                    break;
+                }
+            }
+            let headers = String::from_utf8_lossy(&bytes[..body_start]);
+            let length: usize = headers
+                .lines()
+                .find_map(|line| {
+                    let (key, value) = line.split_once(':')?;
+                    key.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse().unwrap())
+                })
+                .unwrap();
+            while bytes.len() < body_start + length {
+                let mut chunk = [0_u8; 4096];
+                let count = stream.read(&mut chunk).await.unwrap();
+                assert!(count > 0);
+                bytes.extend_from_slice(&chunk[..count]);
+            }
+            ready_tx.send(()).unwrap();
+            tokio::time::timeout(Duration::from_secs(5), release_rx)
+                .await
+                .unwrap()
+                .unwrap();
+            let body = r#"{"text":"complete take"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let read_source = source.clone();
+        let reader =
+            tokio::spawn(
+                async move { transcribe_cloud(&read_source, Some("pl"), &endpoint, "").await },
+            );
+        tokio::time::timeout(Duration::from_secs(3), ready_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        finish_capture(&root, id);
+        drop(producer);
+        let receipt = root.join(format!("sessions/{id}.audio-retention.json"));
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while !receipt.exists() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "completion receipt did not publish"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let now = SystemTime::now() + Duration::from_secs(2 * 86_400);
+        let mut expired = 0;
+        let mut deferred = 0;
+        for _ in 0..20 {
+            let report = maintain(&root, AudioRetention::Hours24, now).unwrap();
+            assert!(report.failures.is_empty(), "{report:?}");
+            expired += report.expired;
+            deferred += report.deferred;
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        release_tx.send(()).unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(3), reader)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        server.await.unwrap();
+        assert_eq!(result.text, "complete take");
+        assert_eq!(
+            expired, 0,
+            "direct awaited cloud reader lost its owned source during the operation"
+        );
+        assert!(deferred > 0);
+        assert!(source.exists());
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while source.exists() {
+            let report = maintain(&root, AudioRetention::Hours24, now).unwrap();
+            assert!(report.failures.is_empty(), "{report:?}");
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "reader leaked its lease after completion"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
     #[test]
     fn short_pcm_is_one_segment() {
         let pcm = vec![1000i16; 16_000 * 30];

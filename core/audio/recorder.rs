@@ -1306,19 +1306,6 @@ pub fn spill_take_wav_for_tests(samples: &[i16], sample_rate: u32) -> Result<Pat
     Ok(path)
 }
 
-/// Parse `CODESCRIBE_AUDIO_SPILL`: ON by default; only `0`/`false`/`no`/`off`
-/// (case-insensitive) opt out.
-///
-/// Default ON because the operator decision (2026-08-10, option B) is that a
-/// streaming session must never lose audio to the RAM ring cap — a >5 min
-/// phone-call take archived without its head is worse than a temp file.
-#[cfg(test)]
-fn audio_spill_from_env_value(value: Option<&str>) -> bool {
-    value
-        .map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"))
-        .unwrap_or(true)
-}
-
 /// Disk spill for a streaming session: every captured chunk is forwarded to a
 /// dedicated writer thread over a channel (the CoreAudio callback only clones
 /// and sends — no disk I/O on the audio thread) and lands in a WAV via
@@ -1598,6 +1585,100 @@ pub fn wav_duration_secs(path: &Path) -> Option<f32> {
 mod tests {
     use super::*;
 
+    fn recovery_evidence(source: Option<PathBuf>) -> CaptureArchiveError {
+        CaptureArchiveError {
+            cause: "injected producer failure".into(),
+            source_path: source,
+            sample_rate: 16_000,
+            captured_samples: 4,
+            written_samples: 2,
+            unwritten_samples: Arc::new(vec![33, 44]),
+            buffer_start_offset: 3,
+            retained_samples: Arc::new(vec![44]),
+        }
+    }
+
+    #[test]
+    fn recovery_uses_each_confirmed_and_unconfirmed_sample_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("partial.wav");
+        // The writer may have physically emitted data not yet confirmed.
+        // Reconstruct from the confirmed prefix and its whole unconfirmed chunk.
+        write_wav_file(&path, &[11, 22, 33], 16_000, 1).unwrap();
+        let evidence = recovery_evidence(Some(path.clone()));
+        assert_eq!(evidence.complete_pcm().unwrap(), [11, 22, 33, 44]);
+        let mut conflict = evidence.clone();
+        conflict.retained_samples = Arc::new(vec![99]);
+        assert!(conflict.complete_pcm().is_err());
+        assert_eq!(hound::WavReader::open(path).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn recovery_refuses_missing_pcm_instead_of_joining_across_a_gap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("partial.wav");
+        write_wav_file(&path, &[11, 22], 16_000, 1).unwrap();
+        let mut evidence = recovery_evidence(Some(path));
+        evidence.unwritten_samples = Arc::new(Vec::new());
+        assert!(evidence.complete_pcm().is_err());
+    }
+
+    #[test]
+    fn recovery_requires_a_readable_native_prefix_or_a_complete_ram_take() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("partial.wav");
+        write_wav_file(&path, &[11], 16_000, 1).unwrap();
+        let mut evidence = recovery_evidence(Some(path.clone()));
+        assert!(
+            evidence.complete_pcm().is_err(),
+            "truncated prefix must refuse"
+        );
+        std::fs::remove_file(&path).unwrap();
+        write_wav_file(&path, &[11, 22], 8_000, 1).unwrap();
+        assert!(
+            evidence.complete_pcm().is_err(),
+            "foreign native rate must refuse"
+        );
+        evidence.buffer_start_offset = 0;
+        evidence.retained_samples = Arc::new(vec![11, 22, 33, 44]);
+        evidence.source_path = Some(dir.path().join("unreadable.wav"));
+        assert_eq!(evidence.complete_pcm().unwrap(), [11, 22, 33, 44]);
+        evidence.unwritten_samples = Arc::new(vec![33, 99]);
+        assert!(
+            evidence.complete_pcm().is_err(),
+            "conflicting full RAM evidence must refuse"
+        );
+    }
+
+    #[test]
+    fn recovery_acknowledgement_requires_the_original_capture_proof() {
+        let mut recorder = Recorder::with_config(RecorderConfig::default()).unwrap();
+        let mut evidence = recovery_evidence(None);
+        evidence.buffer_start_offset = 0;
+        evidence.retained_samples = Arc::new(vec![11, 22, 33, 44]);
+        recorder.buffer.lock().unwrap().extend([11, 22, 33, 44]);
+        recorder.archive_error = Some(evidence.clone());
+        // Path equality and equal PCM values do not confer capture ownership.
+        let mut foreign = evidence.clone();
+        foreign.retained_samples = Arc::new(evidence.retained_samples.as_ref().clone());
+        let path = PathBuf::from("proof-issued-only-after-retention.wav");
+        assert!(
+            recorder
+                .acknowledge_archive_recovery(&RecoveredCaptureArchive {
+                    path: path.clone(),
+                    evidence: foreign
+                })
+                .is_err()
+        );
+        assert_eq!(recorder.buffer.lock().unwrap().len(), 4);
+        assert!(recorder.archive_error().is_some());
+        let proof = RecoveredCaptureArchive { path, evidence };
+        recorder.acknowledge_archive_recovery(&proof).unwrap();
+        assert!(recorder.buffer.lock().unwrap().is_empty());
+        assert!(recorder.archive_error().is_none());
+        assert!(recorder.acknowledge_archive_recovery(&proof).is_err());
+    }
+
     #[test]
     fn spill_failure_after_ring_eviction_cannot_certify_a_shortened_take() {
         let dir = tempfile::tempdir().unwrap();
@@ -1838,16 +1919,6 @@ mod tests {
             .map(|s| s.expect("sample"))
             .collect();
         assert_eq!(read, pattern);
-    }
-
-    /// Spill defaults ON for streaming sessions; only explicit falsey opts out.
-    #[test]
-    fn audio_spill_env_parser_defaults_on() {
-        assert!(audio_spill_from_env_value(None));
-        for disabled in ["0", "false", "no", "off", "OFF"] {
-            assert!(!audio_spill_from_env_value(Some(disabled)));
-        }
-        assert!(audio_spill_from_env_value(Some("1")));
     }
 
     /// Default config tracks Silero hang_sec; SAMPLE_RATE/CHANNELS stay 16k mono.

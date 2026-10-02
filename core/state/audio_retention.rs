@@ -945,6 +945,63 @@ mod acceptance_tests {
     }
 
     #[tokio::test]
+    async fn alias_input_is_pinned_under_a_read_lease_until_the_owner_finishes() {
+        if isolated_child("alias_input_is_pinned_under_a_read_lease_until_the_owner_finishes") {
+            return;
+        }
+        let (root, capture_lease, files) = owned_take(AudioRetention::Off);
+        let (pinned, reader) =
+            AudioReadLease::acquire_for_path(&root, &root.join("last_session.wav")).unwrap();
+        assert_eq!(pinned, files[1].canonicalize().unwrap());
+        assert!(
+            reader.is_some(),
+            "an alias into owned storage must hold the root lock"
+        );
+        finish_capture(&root, ID);
+        drop(capture_lease);
+        let completed = completed_at(&root).await;
+        let report = maintain(&root, AudioRetention::Forever, completed).unwrap();
+        assert_eq!(report.expired, 0);
+        assert!(report.deferred > 0);
+        tokio::task::yield_now().await;
+        assert_eq!(hound::WavReader::open(&pinned).unwrap().len(), 4);
+        drop(reader);
+        assert_eq!(
+            expire_when_idle(&root, AudioRetention::Forever, completed)
+                .await
+                .expired,
+            1
+        );
+        assert!(!pinned.exists());
+    }
+
+    #[test]
+    fn external_inputs_never_hold_or_create_an_owned_audio_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let external = dir.path().join("external.wav");
+        std::fs::write(&external, b"external source remains independent").unwrap();
+        let absent_root = dir.path().join("absent-store");
+        let (resolved, lease) = AudioReadLease::acquire_for_path(&absent_root, &external).unwrap();
+        assert_eq!(resolved, external.canonicalize().unwrap());
+        assert!(lease.is_none());
+        assert!(!absent_root.exists());
+        let root = dir.path().join("existing-store");
+        std::fs::create_dir(&root).unwrap();
+        let (resolved, lease) = AudioReadLease::acquire_for_path(&root, &external).unwrap();
+        assert_eq!(resolved, external.canonicalize().unwrap());
+        assert!(lease.is_none());
+        let maintenance = maintain(&root, AudioRetention::Off, SystemTime::now()).unwrap();
+        assert_eq!(
+            maintenance.deferred, 0,
+            "external input cannot keep the owned root locked"
+        );
+        assert_eq!(
+            std::fs::read(external).unwrap(),
+            b"external source remains independent"
+        );
+    }
+
+    #[tokio::test]
     async fn finite_policy_expires_every_owned_audio_copy_at_the_boundary_and_keeps_text() {
         if isolated_child(
             "finite_policy_expires_every_owned_audio_copy_at_the_boundary_and_keeps_text",
