@@ -578,7 +578,11 @@ impl RecordingController {
             ChannelOpenMode::AttachedOnly => recorder.register_channel_feed().id,
             ChannelOpenMode::Live => {
                 let session_label = format!("agent-channel-{digit}-{}", uuid::Uuid::new_v4());
-                super::begin_audio_capture(&session_label, runtime_settings.values().audio_retention).await?;
+                super::begin_audio_capture(
+                    &session_label,
+                    runtime_settings.values().audio_retention,
+                )
+                .await?;
                 session_id = Some(session_label.clone());
                 let ledger = Arc::new(std::sync::Mutex::new(AcousticLedger::new()));
                 let sentence_pause = runtime_settings.values().light_plus_sentence_pause_sec;
@@ -762,7 +766,8 @@ impl RecordingController {
                 open.session_id.as_deref(),
                 path,
                 codescribe_core::state::SessionTranscriptArchive::Committed(&heard),
-            ).await;
+            )
+            .await;
         }
         let opened = crate::presentation::agent_ack::ChannelSessionLine {
             state: "open",
