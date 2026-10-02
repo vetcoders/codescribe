@@ -1190,6 +1190,9 @@ impl AcousticLedger {
             self.complete_decoded_words
                 .insert(observation.clone(), complete_words);
         }
+        let recovery_pending = self.text_recovery_pending(owner);
+        let admission_trail_start = self.trail.len();
+        let alternative_start = self.slot_alternatives.len();
         let mut slots = self.slots_of(owner).unwrap_or(&[]).to_vec();
         // A left-edge candidate cannot replace a complete word decoded across
         // that edge by an earlier window. Coarse labels and edge stubs supply
@@ -1303,7 +1306,7 @@ impl AcousticLedger {
                     .collect::<Vec<_>>(),
             );
             let partition = word.producer != ObservationProducer::ManualHuman
-                && (intersects.len() > 1
+                && ((intersects.len() > 1 && conflicts.len() != 1)
                     || conflicts.iter().any(|&index| {
                         incoming
                             .iter()
@@ -1317,10 +1320,13 @@ impl AcousticLedger {
                             || source.sample_end != word.sample_end)
                             && (!self.word_pin_observations.contains(&source.observation)
                                 || source.text.contains(char::is_whitespace)
-                                || source.sample_end - source.sample_start
-                                    != word.sample_end - word.sample_start)
+                                || word.text.contains(char::is_whitespace))
                     }));
-            let blocked = word.producer == ObservationProducer::Formatter
+            let blocked = (word.producer != ObservationProducer::ManualHuman
+                && intersects
+                    .iter()
+                    .any(|source| source.producer == ObservationProducer::ManualHuman))
+                || word.producer == ObservationProducer::Formatter
                 || (conflicts.is_empty()
                     && !matches!(
                         word.producer,
@@ -1398,9 +1404,9 @@ impl AcousticLedger {
                         "group_alignment/v1",
                     ));
                 }
-                // Equal-duration word-clock jitter preserves a held pin.
-                // A narrower fence pin requires the partition above and
-                // cannot inherit a coarse source's duration.
+                // A unique measured word target keeps its source identity
+                // across clock jitter, including a changed word duration.
+                // Coarse groups still require an explicit partition above.
                 word.sample_start = source.sample_start;
                 word.sample_end = source.sample_end;
                 let position = slots
@@ -1508,6 +1514,35 @@ impl AcousticLedger {
             let rejected =
                 self.next_word_observation(observation.producer, observation.request, owner);
             self.refuse_replacement(&rejected, &pin.text, RefuseReason::ConfirmedNoSpeech);
+        }
+        // A partial revision may improve the visible text without answering
+        // the whole occurrence's recovery. Retained source labels and refused
+        // pins cannot be promoted into a successful recovery by the batch.
+        let recovery_unresolved = self.trail[admission_trail_start..].iter().any(|entry| {
+            matches!(
+                entry.decision,
+                MutationReceipt::Refuse {
+                    reason: RefuseReason::SlotAdmissionRejected
+                        | RefuseReason::ConfirmedNoSpeech
+                        | RefuseReason::ClockLie,
+                    ..
+                }
+            )
+        }) || self.slot_alternatives[alternative_start..]
+            .iter()
+            .any(|alternative| alternative.reason == "window_start_clipped")
+            || resegments.iter().any(|operation| {
+                operation.rule_id == "acoustic_resegmentation/retained-token-runs/v1"
+                    || operation.rule_id == "acoustic_resegmentation/source-content/v2"
+            })
+            || self.slots_of(owner).is_some_and(|slots| {
+                slots.iter().any(|slot| {
+                    slot.producer != ObservationProducer::ManualHuman
+                        && slot.producer.authority_rank() < observation.producer.authority_rank()
+                })
+            });
+        if recovery_pending && recovery_unresolved {
+            self.pending_text_recovery.insert(owner.clone());
         }
         trace.finish(receipt, self)
     }

@@ -500,12 +500,9 @@ impl AcousticLedger {
                     && sources[0].sample_end == outputs[0].sample_end)
                     || (!coarse_source
                         && same_pcm_slot(&sources[0], &outputs[0])
-                        && sources[0].sample_end - sources[0].sample_start
-                            == outputs[0].sample_end - outputs[0].sample_start))
+                        && sources[0].text.split_whitespace().count() == 1
+                        && outputs[0].text.split_whitespace().count() == 1))
             {
-                continue;
-            }
-            if repetition_target_ambiguous(&sources, &outputs) {
                 continue;
             }
             // Distinguish a broad pin partitioned internally from a replay
@@ -538,11 +535,9 @@ impl AcousticLedger {
             });
             let geometry = source_indices.last().unwrap() - source_indices.first().unwrap() + 1
                 == sources.len()
-                && outputs.iter().enumerate().all(|(index, word)| {
-                    outputs[index + 1..]
-                        .iter()
-                        .all(|other| !same_pcm_slot(word, other))
-                });
+                && outputs
+                    .windows(2)
+                    .all(|pair| pair[0].sample_end <= pair[1].sample_start);
             if !geometry || !authority {
                 continue;
             }
@@ -556,7 +551,49 @@ impl AcousticLedger {
                 .iter()
                 .map(|source| self.group_speech_coverage(observation, source, &outputs))
                 .collect::<Option<Vec<_>>>();
-            // When measurements exist they must not contradict a refinement.
+            // A coarse source already owns its PCM as a group. When every
+            // source token is accounted for, gaps between finer word pins do
+            // not erase that provenance. Authenticate the source ranges and
+            // require measured speech to stay inside the offered word extent;
+            // speech beyond either edge still needs recovery. This receipt
+            // cites the held group, never an invented word clock in a gap.
+            let source_content_coverage = if coverage.is_none()
+                && accounted
+                && sources.iter().all(|source| {
+                    !self.word_pin_observations.contains(&source.observation)
+                        || (source.text.contains(char::is_whitespace)
+                            && self.slot_source_ranges(source).len() == 1)
+                })
+            {
+                sources
+                    .iter()
+                    .map(|source| {
+                        self.group_speech_coverage(
+                            observation,
+                            source,
+                            std::slice::from_ref(source),
+                        )
+                        .filter(|(_, parts)| {
+                            parts.iter().all(|part| {
+                                part.speech_range.sample_start >= pin_start
+                                    && part.speech_range.sample_end <= pin_end
+                            })
+                        })
+                    })
+                    .collect::<Option<Vec<_>>>()
+            } else {
+                None
+            };
+            // Disjoint measured children of a coarse source can be genuine
+            // repetitions. Equal labels do not make those separate PCM pins
+            // compete for the group's single provisional token.
+            if repetition_target_ambiguous(&sources, &outputs)
+                && !(coarse_source && (accounted || coverage.is_some()))
+            {
+                continue;
+            }
+            let source_content = source_content_coverage.is_some();
+            let coverage = coverage.or(source_content_coverage);
             // Without measured speech, complete lexical accounting is required.
             let measured = self.speech_evidence.as_ref().is_some_and(|speech| {
                 speech
@@ -599,6 +636,20 @@ impl AcousticLedger {
             if retained {
                 outputs.extend(residuals.into_iter().flatten().flatten());
                 outputs.sort_by_key(|word| (word.sample_start, word.sample_end));
+                // A retained run has group accuracy. It cannot claim the PCM
+                // of another measured child, even with a different label.
+                if outputs
+                    .windows(2)
+                    .any(|pair| pair[0].sample_end > pair[1].sample_start)
+                {
+                    self.retain_slot_alternative(
+                        observation,
+                        &candidate,
+                        sources,
+                        "residual_group_overlaps_word_pin",
+                    );
+                    continue;
+                }
             }
             // Only successful partitions consume pins. A refused cluster is
             // offered word by word and receives explicit recoverable receipts.
@@ -619,6 +670,8 @@ impl AcousticLedger {
                 outputs: outputs.clone(),
                 rule_id: if retained {
                     "acoustic_resegmentation/retained-token-runs/v1"
+                } else if source_content {
+                    "acoustic_resegmentation/source-content/v2"
                 } else if accounted {
                     "acoustic_resegmentation/content/v1"
                 } else {
@@ -639,7 +692,11 @@ impl AcousticLedger {
                             operation: operation.clone(),
                             speech,
                             coverage,
-                            rule_version: "group-speech-coverage/v1",
+                            rule_version: if source_content {
+                                "group-source-content-coverage/v2"
+                            } else {
+                                "group-speech-coverage/v1"
+                            },
                         });
                 }
             }

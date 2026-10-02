@@ -84,14 +84,20 @@ struct OverlayWarningCopy: Equatable, Sendable {
     _ coverage: CsProjectedSealCoverageReceipt, sampleRateHz: UInt32?
   ) -> OverlayWarningCopy {
     let ranges = coverage.uncoveredSpeechRanges.sorted { $0.sampleStart < $1.sampleStart }
-    guard let sampleRateHz, sampleRateHz > 0, !ranges.isEmpty,
-      ranges.allSatisfy({ $0.sampleEnd > $0.sampleStart })
-    else {
+    guard !ranges.isEmpty, ranges.allSatisfy({ $0.sampleEnd > $0.sampleStart }) else {
       return OverlayWarningCopy(
         owner: .coverage,
-        chip: "Speech had no words",
+        chip: "Text verification incomplete",
         sentence:
-          "Codescribe detected speech that no recognizer turned into words; its timing is unavailable for this take."
+          "Text verification is incomplete; this receipt provides no usable uncovered speech interval. You can review and recover the available text."
+      )
+    }
+    guard let sampleRateHz, sampleRateHz > 0 else {
+      return OverlayWarningCopy(
+        owner: .coverage,
+        chip: "Speech coverage incomplete",
+        sentence:
+          "Some measured speech is not covered by committed text; its timing is unavailable for this take. You can review and recover the available text."
       )
     }
     let rate = UInt64(sampleRateHz)
@@ -105,9 +111,9 @@ struct OverlayWarningCopy: Equatable, Sendable {
     }.joined(separator: ", ")
     return OverlayWarningCopy(
       owner: .coverage,
-      chip: "\(duration) s of speech had no words · \(positions)",
+      chip: "\(duration) s of speech not covered · \(positions)",
       sentence:
-        "Codescribe heard speech at \(intervals) that no recognizer turned into words — it may have been cut off, noise or the microphone."
+        "Committed text does not cover measured speech at \(intervals); you can review and recover the available text."
     )
   }
 
