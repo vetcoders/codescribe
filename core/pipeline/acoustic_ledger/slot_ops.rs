@@ -331,100 +331,6 @@ pub(super) fn repetition_target_ambiguous(sources: &[WordSlot], pins: &[WordSlot
     })
 }
 
-/// Retain unpaired lexical runs at group accuracy between measured anchors.
-/// No token receives an interpolated word clock. Ambiguous anchors or a run
-/// with no positive residual interval leave the partition to recovery.
-pub(super) fn residual_group_slots(source: &WordSlot, pins: &[WordSlot]) -> Option<Vec<WordSlot>> {
-    if source.text.contains('[')
-        || source.text.contains(']')
-        || pins
-            .iter()
-            .any(|pin| pin.text.split_whitespace().count() != 1)
-    {
-        return None;
-    }
-    let tokens = source.text.split_whitespace().collect::<Vec<_>>();
-    if tokens.len() > 256 || pins.len() > 256 {
-        return None;
-    }
-    let held = tokens
-        .iter()
-        .map(|token| normalize_word_token(token))
-        .collect::<Vec<_>>();
-    let candidate = pins
-        .iter()
-        .map(|pin| normalize_word_token(&pin.text))
-        .collect::<Vec<_>>();
-    let mut suffix = vec![vec![0; pins.len() + 1]; held.len() + 1];
-    let mut prefix = suffix.clone();
-    for i in (0..held.len()).rev() {
-        for j in (0..candidate.len()).rev() {
-            suffix[i][j] = if !held[i].is_empty() && held[i] == candidate[j] {
-                1 + suffix[i + 1][j + 1]
-            } else {
-                suffix[i + 1][j].max(suffix[i][j + 1])
-            };
-        }
-    }
-    for (i, token) in held.iter().enumerate() {
-        for (j, key) in candidate.iter().enumerate() {
-            prefix[i + 1][j + 1] = if !token.is_empty() && token == key {
-                1 + prefix[i][j]
-            } else {
-                prefix[i][j + 1].max(prefix[i + 1][j])
-            };
-        }
-    }
-    let mut anchors = Vec::new();
-    for (j, key) in candidate.iter().enumerate() {
-        let matches = held
-            .iter()
-            .enumerate()
-            .filter(|(i, token)| {
-                !key.is_empty()
-                    && *token == key
-                    && prefix[*i][j] + 1 + suffix[*i + 1][j + 1] == suffix[0][0]
-            })
-            .map(|(i, _)| i)
-            .collect::<Vec<_>>();
-        match matches.as_slice() {
-            [i] => anchors.push((*i, j)),
-            [] => {}
-            _ => return None,
-        }
-    }
-    if anchors.is_empty() || anchors.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
-        return None;
-    }
-    let mut residuals = Vec::new();
-    let mut first_token = 0;
-    let mut range_start = source.sample_start;
-    for (i, j) in anchors
-        .into_iter()
-        .chain(std::iter::once((tokens.len(), pins.len())))
-    {
-        if first_token < i {
-            let range_end = pins
-                .get(j)
-                .map_or(source.sample_end, |pin| pin.sample_start)
-                .min(source.sample_end);
-            if range_start >= range_end {
-                return None;
-            }
-            let mut retained = source.clone();
-            retained.text = tokens[first_token..i].join(" ");
-            retained.sample_start = range_start;
-            retained.sample_end = range_end;
-            residuals.push(retained);
-        }
-        if let Some(pin) = pins.get(j) {
-            range_start = pin.sample_end.max(source.sample_start);
-        }
-        first_token = i + 1;
-    }
-    Some(residuals)
-}
-
 impl AcousticLedger {
     /// Resolve connected intersections as one geometric operation. Slot count
     /// is not occurrence identity: several words may refine one coarse source.
@@ -433,21 +339,54 @@ impl AcousticLedger {
         observation: &ObservationIdentity,
         slots: &mut Vec<WordSlot>,
         incoming: &mut Vec<WordSlot>,
-    ) -> Vec<SlotOperationReceipt> {
+    ) -> (Vec<SlotOperationReceipt>, Vec<GroupSpeechCoverageReceipt>) {
         if !matches!(
             observation.producer,
             ObservationProducer::Whisper | ObservationProducer::CloudLive
         ) {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
         let prior = slots.clone();
         let pins = incoming.clone();
         let mut visited = BTreeSet::new();
         let mut consumed = BTreeSet::new();
         let mut operations = Vec::new();
-        let jitter = u64::from(self.capture_rate_hz.unwrap_or(16_000)) / 4;
+        let mut proposed_coverages = Vec::new();
         let intersects = |a: &WordSlot, b: &WordSlot| {
             a.sample_start < b.sample_end && b.sample_start < a.sample_end
+        };
+        // One uniquely targeted measured word remains an ordinary correction.
+        // Incidental overlap with a neighbour must not turn duration jitter
+        // into a request to partition that neighbour's PCM.
+        let ordinary_targets = pins
+            .iter()
+            .map(|pin| {
+                let targets = prior
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, source)| same_pcm_slot(source, pin))
+                    .collect::<Vec<_>>();
+                if let [(index, source)] = targets.as_slice()
+                    && self.word_pin_observations.contains(&source.observation)
+                    && source.text.split_whitespace().count() == 1
+                    && pin.text.split_whitespace().count() == 1
+                    && pins
+                        .iter()
+                        .filter(|other| same_pcm_slot(source, other))
+                        .count()
+                        == 1
+                {
+                    Some(*index)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        let connected = |source: usize, pin: usize| {
+            ordinary_targets[pin].map_or_else(
+                || intersects(&prior[source], &pins[pin]),
+                |target| source == target,
+            )
         };
         for seed in 0..pins.len() {
             if visited.contains(&seed) {
@@ -457,19 +396,13 @@ impl AcousticLedger {
             let mut source_indices = BTreeSet::new();
             loop {
                 let size = word_indices.len() + source_indices.len();
-                for (index, source) in prior.iter().enumerate() {
-                    if word_indices
-                        .iter()
-                        .any(|word| intersects(source, &pins[*word]))
-                    {
+                for index in 0..prior.len() {
+                    if word_indices.iter().any(|word| connected(index, *word)) {
                         source_indices.insert(index);
                     }
                 }
-                for (index, pin) in pins.iter().enumerate() {
-                    if source_indices
-                        .iter()
-                        .any(|source| intersects(&prior[*source], pin))
-                    {
+                for index in 0..pins.len() {
+                    if source_indices.iter().any(|source| connected(*source, index)) {
                         word_indices.insert(index);
                     }
                 }
@@ -490,23 +423,22 @@ impl AcousticLedger {
                 .map(|index| pins[*index].clone())
                 .collect::<Vec<_>>();
             outputs.sort_by_key(|word| (word.sample_start, word.sample_end));
-            let coarse_source = sources.len() == 1
-                && (!self.word_pin_observations.contains(&sources[0].observation)
-                    || (sources[0].text.contains(char::is_whitespace)
-                        && self.slot_source_ranges(&sources[0]).len() == 1));
+            let coarse_source = |source: &WordSlot| {
+                !self.word_pin_observations.contains(&source.observation)
+                    || (source.text.contains(char::is_whitespace)
+                        && self.slot_source_ranges(source).len() == 1)
+            };
+            let all_coarse = sources.iter().all(coarse_source);
             if sources.len() == 1
                 && outputs.len() == 1
                 && ((sources[0].sample_start == outputs[0].sample_start
                     && sources[0].sample_end == outputs[0].sample_end)
-                    || (!coarse_source
-                        && same_pcm_slot(&sources[0], &outputs[0])
-                        && sources[0].text.split_whitespace().count() == 1
-                        && outputs[0].text.split_whitespace().count() == 1))
+                    || ordinary_targets[*word_indices.first().unwrap()].is_some())
             {
                 continue;
             }
-            // Distinguish a broad pin partitioned internally from a replay
-            // plus a neighbour on separate PCM. Only the former needs Split.
+            // A replay and a new word on separate PCM are not a split of the
+            // replay's source. Ordinary admission checks their edges separately.
             let replayed_word = sources.len() == 1
                 && sources[0].text.split_whitespace().count() == 1
                 && outputs.iter().any(|word| {
@@ -523,10 +455,6 @@ impl AcousticLedger {
             if replayed_word && outputs.len() > 1 && !held_pin_split {
                 continue;
             }
-            let source_start = sources.iter().map(|word| word.sample_start).min().unwrap();
-            let source_end = sources.iter().map(|word| word.sample_end).max().unwrap();
-            let pin_start = outputs[0].sample_start;
-            let pin_end = outputs.iter().map(|word| word.sample_end).max().unwrap();
             let authority = sources.iter().all(|source| {
                 source.producer != ObservationProducer::ManualHuman
                     && (source.producer.authority_rank() < observation.producer.authority_rank()
@@ -538,9 +466,6 @@ impl AcousticLedger {
                 && outputs
                     .windows(2)
                     .all(|pair| pair[0].sample_end <= pair[1].sample_start);
-            if !geometry || !authority {
-                continue;
-            }
             let candidate = compose_label(&outputs);
             let held = compose_label(&sources);
             let alignment = preserve_group_content(&held, &candidate);
@@ -551,116 +476,44 @@ impl AcousticLedger {
                 .iter()
                 .map(|source| self.group_speech_coverage(observation, source, &outputs))
                 .collect::<Option<Vec<_>>>();
-            // A coarse source already owns its PCM as a group. When every
-            // source token is accounted for, gaps between finer word pins do
-            // not erase that provenance. Authenticate the source ranges and
-            // require measured speech to stay inside the offered word extent;
-            // speech beyond either edge still needs recovery. This receipt
-            // cites the held group, never an invented word clock in a gap.
-            let source_content_coverage = if coverage.is_none()
+            // A coarse label can be refined without a speech snapshot only
+            // when every source token is accounted for. Original group PCM
+            // remains in the operation; child playback uses actual pin ranges.
+            // A present but unusable snapshot never acts as absent evidence.
+            let lexical_refinement = sources.len() == 1
+                && all_coarse
                 && accounted
-                && sources.iter().all(|source| {
-                    !self.word_pin_observations.contains(&source.observation)
-                        || (source.text.contains(char::is_whitespace)
-                            && self.slot_source_ranges(source).len() == 1)
-                })
+                && self.speech_evidence.is_none();
+            let ambiguous = repetition_target_ambiguous(&sources, &outputs)
+                && !(all_coarse && (accounted || coverage.is_some()));
+            let refusal = if !authority {
+                Some("protected_source")
+            } else if !geometry
+                || ambiguous
+                || (held_pin_split && !all_coarse)
+                || (coverage.is_none() && !lexical_refinement)
             {
-                sources
-                    .iter()
-                    .map(|source| {
-                        self.group_speech_coverage(
-                            observation,
-                            source,
-                            std::slice::from_ref(source),
-                        )
-                        .filter(|(_, parts)| {
-                            parts.iter().all(|part| {
-                                part.speech_range.sample_start >= pin_start
-                                    && part.speech_range.sample_end <= pin_end
-                            })
-                        })
-                    })
-                    .collect::<Option<Vec<_>>>()
+                Some("resegmentation_unaccounted_speech")
             } else {
                 None
             };
-            // Disjoint measured children of a coarse source can be genuine
-            // repetitions. Equal labels do not make those separate PCM pins
-            // compete for the group's single provisional token.
-            if repetition_target_ambiguous(&sources, &outputs)
-                && !(coarse_source && (accounted || coverage.is_some()))
-            {
-                continue;
-            }
-            let source_content = source_content_coverage.is_some();
-            let coverage = coverage.or(source_content_coverage);
-            // Without measured speech, complete lexical accounting is required.
-            let measured = self.speech_evidence.as_ref().is_some_and(|speech| {
-                speech
-                    .availability()
-                    .observed_samples()
-                    .is_some_and(|end| end >= source_end)
-            });
-            let residuals = if coverage.is_none() && !accounted {
-                sources
-                    .iter()
-                    .map(|source| {
-                        let pins = outputs
-                            .iter()
-                            .filter(|pin| intersects(source, pin))
-                            .cloned()
-                            .collect::<Vec<_>>();
-                        residual_group_slots(source, &pins)
-                    })
-                    .collect::<Option<Vec<_>>>()
-            } else {
-                None
-            };
-            let retained = residuals
-                .as_ref()
-                .is_some_and(|groups| groups.iter().any(|group| !group.is_empty()));
-            let bounded = source_start.abs_diff(pin_start) <= jitter
-                && source_end.abs_diff(pin_end) <= jitter;
-            if !retained
-                && coverage.is_none()
-                && (!accounted || measured || (held_pin_split && !coarse_source) || !bounded)
-            {
-                self.retain_slot_alternative(
-                    observation,
-                    &candidate,
-                    sources,
-                    "resegmentation_unaccounted_speech",
-                );
-                continue;
-            }
-            if retained {
-                outputs.extend(residuals.into_iter().flatten().flatten());
-                outputs.sort_by_key(|word| (word.sample_start, word.sample_end));
-                // A retained run has group accuracy. It cannot claim the PCM
-                // of another measured child, even with a different label.
-                if outputs
-                    .windows(2)
-                    .any(|pair| pair[0].sample_end > pair[1].sample_start)
-                {
-                    self.retain_slot_alternative(
-                        observation,
-                        &candidate,
-                        sources,
-                        "residual_group_overlaps_word_pin",
-                    );
-                    continue;
-                }
-            }
-            // Only successful partitions consume pins. A refused cluster is
-            // offered word by word and receives explicit recoverable receipts.
+            // Resolve a refused cluster once. Re-offering each word would
+            // lose the combined candidate and its complete source provenance.
             consumed.extend(word_indices.iter().copied());
+            if let Some(reason) = refusal {
+                self.retain_slot_alternative(observation, &candidate, sources, reason);
+                for word in &outputs {
+                    self.record_word_slot_refusal(observation, word);
+                }
+                continue;
+            }
             let source_ranges = sources
                 .iter()
                 .flat_map(|source| self.slot_source_ranges(source))
                 .collect();
             let operation = SlotOperationReceipt {
                 observation: observation.clone(),
-                kind: if outputs.len() > sources.len() || retained || sources.len() == 1 {
+                kind: if outputs.len() > sources.len() || sources.len() == 1 {
                     SlotOperationKind::Split
                 } else {
                     SlotOperationKind::Merge
@@ -668,14 +521,10 @@ impl AcousticLedger {
                 source_ranges,
                 sources: sources.clone(),
                 outputs: outputs.clone(),
-                rule_id: if retained {
-                    "acoustic_resegmentation/retained-token-runs/v1"
-                } else if source_content {
-                    "acoustic_resegmentation/source-content/v2"
-                } else if accounted {
-                    "acoustic_resegmentation/content/v1"
-                } else {
+                rule_id: if coverage.is_some() {
                     "acoustic_resegmentation/speech-coverage/v1"
+                } else {
+                    "acoustic_resegmentation/content/v1"
                 }
                 .into(),
             };
@@ -687,17 +536,12 @@ impl AcousticLedger {
             );
             if let Some(coverage) = coverage {
                 for (speech, coverage) in coverage {
-                    self.group_speech_coverages
-                        .push(GroupSpeechCoverageReceipt {
-                            operation: operation.clone(),
-                            speech,
-                            coverage,
-                            rule_version: if source_content {
-                                "group-source-content-coverage/v2"
-                            } else {
-                                "group-speech-coverage/v1"
-                            },
-                        });
+                    proposed_coverages.push(GroupSpeechCoverageReceipt {
+                        operation: operation.clone(),
+                        speech,
+                        coverage,
+                        rule_version: "group-speech-coverage/v1",
+                    });
                 }
             }
             slots.retain(|source| !sources.contains(source));
@@ -711,7 +555,7 @@ impl AcousticLedger {
             .map(|(_, pin)| pin.clone())
             .collect();
         slots.sort_by_key(|word| (word.sample_start, word.sample_end));
-        operations
+        (operations, proposed_coverages)
     }
 
     /// Snapshot the existing capture observer; unavailable evidence replaces

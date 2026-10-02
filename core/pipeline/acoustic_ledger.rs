@@ -757,6 +757,9 @@ impl ConservationTally {
 pub struct AcousticLedger {
     committed: BTreeMap<OccurrenceIdentity, CommittedObservation>,
     slot_alternatives: Vec<SlotAlternative>,
+    /// Rejected PCM awaiting accepted word evidence, keyed by its exact owner.
+    /// Repeated observations of one range do not create additional debt pins.
+    rejected_word_pins: BTreeMap<OccurrenceIdentity, Vec<WordSlot>>,
     slot_operations: Vec<SlotOperationReceipt>,
     pub(super) speech_evidence: Option<AcousticSpeechEvidence>,
     assigned_word_pins: Option<slot_ops::AssignedWordPinBatch>,
@@ -859,6 +862,27 @@ impl AcousticLedger {
         sources: Vec<WordSlot>,
         reason: &'static str,
     ) {
+        self.retain_slot_alternative(observation, &word.text, sources, reason);
+        self.record_word_slot_refusal(observation, word);
+    }
+
+    /// Retain one physical rejected range regardless of repeated hypotheses.
+    fn retain_rejected_word_pin(&mut self, observation: &ObservationIdentity, word: &WordSlot) {
+        let rejected_pins = self
+            .rejected_word_pins
+            .entry(observation.occurrence.clone())
+            .or_default();
+        if !rejected_pins.iter().any(|pin| {
+            pin.sample_start == word.sample_start && pin.sample_end == word.sample_end
+        }) {
+            rejected_pins.push(word.clone());
+        }
+    }
+
+    /// Child receipts account for rejected PCM without replacing the offered
+    /// batch identity on the recoverable candidate.
+    fn record_word_slot_refusal(&mut self, observation: &ObservationIdentity, word: &WordSlot) {
+        self.retain_rejected_word_pin(observation, word);
         let owner = &observation.occurrence;
         let pin = OccurrenceIdentity::new(
             &owner.session,
@@ -875,7 +899,6 @@ impl AcousticLedger {
                 .checked_add(1)
                 .expect("word generation exhausted");
         }
-        self.retain_slot_alternative(&rejected, &word.text, sources, reason);
         self.refuse_replacement(&rejected, &word.text, RefuseReason::SlotAdmissionRejected);
     }
 
@@ -1260,7 +1283,8 @@ impl AcousticLedger {
                     word.sample_start,
                     word.sample_end,
                 );
-                self.retain_slot_alternative(&rejected, &word.text, sources, "clock_lie");
+                self.retain_slot_alternative(observation, &word.text, sources, "clock_lie");
+                self.retain_rejected_word_pin(observation, word);
                 self.offered_observations += 1;
                 self.answered.push(rejected.clone());
                 let decision = MutationReceipt::Refuse {
@@ -1271,7 +1295,8 @@ impl AcousticLedger {
                 false
             });
         }
-        let resegments = self.resegment_word_slots(observation, &mut slots, &mut incoming);
+        let (resegments, proposed_coverages) =
+            self.resegment_word_slots(observation, &mut slots, &mut incoming);
         let mut removed = resegments
             .iter()
             .flat_map(|op| op.sources.clone())
@@ -1494,6 +1519,9 @@ impl AcousticLedger {
             }
         }
         if receipt.grants_mutation() || matches!(receipt, MutationReceipt::Preserve { .. }) {
+            // Coverage describes committed operations only. A proposal that
+            // loses owner admission cannot publish a successful partition.
+            self.group_speech_coverages.extend(proposed_coverages);
             let reason = match observation.producer {
                 ObservationProducer::Whisper => Some(RefuseReason::ReplacedByWhisper),
                 ObservationProducer::CloudLive => Some(RefuseReason::ReplacedByCloudLive),
@@ -1531,10 +1559,6 @@ impl AcousticLedger {
         }) || self.slot_alternatives[alternative_start..]
             .iter()
             .any(|alternative| alternative.reason == "window_start_clipped")
-            || resegments.iter().any(|operation| {
-                operation.rule_id == "acoustic_resegmentation/retained-token-runs/v1"
-                    || operation.rule_id == "acoustic_resegmentation/source-content/v2"
-            })
             || self.slots_of(owner).is_some_and(|slots| {
                 slots.iter().any(|slot| {
                     slot.producer != ObservationProducer::ManualHuman
@@ -2089,7 +2113,83 @@ impl AcousticLedger {
             self.slot_operations.extend_from_slice(operations);
         }
         self.record_layer_decision(observation, text, &decision, None);
+        let accepted = decision.grants_mutation()
+            || (slot_revision && matches!(decision, MutationReceipt::Preserve { .. }));
         if authorized_recovery
+            && observation.producer == ObservationProducer::ManualHuman
+            && !slot_revision
+            && (decision.grants_mutation() || matches!(decision, MutationReceipt::Preserve { .. }))
+        {
+            // A whole-owner human decision can settle the whole text debt.
+            // A targeted human edit below settles only its addressed PCM.
+            self.rejected_word_pins.remove(&observation.occurrence);
+        } else if accepted {
+            let accepted_pins = self
+                .slots_of(&observation.occurrence)
+                .unwrap_or(&[])
+                .iter()
+                .filter(|pin| {
+                    pin.observation == *observation
+                        && self.word_pin_observations.contains(observation)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let unresolved = self
+                .rejected_word_pins
+                .get(&observation.occurrence)
+                .into_iter()
+                .flatten()
+                .filter(|rejected| {
+                    // Union only the newly accepted pins. Older held labels
+                    // cannot answer a rejected word by being echoed again.
+                    let mut cursor = rejected.sample_start;
+                    for pin in &accepted_pins {
+                        if pin.sample_start <= cursor && pin.sample_end > cursor {
+                            cursor = pin.sample_end;
+                        }
+                    }
+                    let confirmed_no_speech = self.word_deletions.iter().any(|deletion| {
+                        let target = deletion.verdict.target();
+                        deletion.operation.observation.occurrence == observation.occurrence
+                            && target.same_capture(&observation.occurrence)
+                            && target.sample_start <= rejected.sample_start
+                            && target.sample_end >= rejected.sample_end
+                    });
+                    cursor < rejected.sample_end
+                        && !confirmed_no_speech
+                        && self
+                            .group_speech_coverage(observation, rejected, &accepted_pins)
+                            .is_none_or(|(_, coverage)| {
+                                coverage.iter().any(|part| {
+                                    part.pin_owner != observation.occurrence
+                                })
+                            })
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if unresolved.is_empty() {
+                self.rejected_word_pins.remove(&observation.occurrence);
+            } else {
+                self.rejected_word_pins
+                    .insert(observation.occurrence.clone(), unresolved);
+            }
+        }
+        // Historical alternatives are recovery evidence, not merely UI copy.
+        // A later agreement or partial revision cannot discharge debt while
+        // an exact refused source remains held. Successful targeted revisions
+        // replace those sources; an explicit human decision may supersede them.
+        let retained_refused_source = observation.producer != ObservationProducer::ManualHuman
+            && self.slot_alternatives.iter().any(|alternative| {
+                alternative.observation.occurrence == observation.occurrence
+                    && alternative.reason != "resegmentation_source_label"
+                    && alternative.sources.iter().any(|source| {
+                        self.slots_of(&observation.occurrence)
+                            .is_some_and(|held| held.contains(source))
+                    })
+            });
+        if authorized_recovery
+            && !retained_refused_source
+            && !self.rejected_word_pins.contains_key(&observation.occurrence)
             && (decision.grants_mutation() || matches!(decision, MutationReceipt::Preserve { .. }))
         {
             self.pending_text_recovery.remove(&observation.occurrence);
