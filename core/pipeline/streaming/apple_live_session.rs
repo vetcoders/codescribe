@@ -20563,6 +20563,88 @@ mod relay_l1_overlap_admission_tests {
     }
 
     #[test]
+    fn forensic_authority_routed_word_retains_original_decode_clock_at_both_owner_edges() {
+        for (case, current, start, end) in
+            [("right", 0, 20_000, 26_000), ("left", 1, 22_000, 30_000)]
+        {
+            let session = format!("original-routed-{case}");
+            let mut lane = open(&session);
+            let owners = vec![
+                (1, OccurrenceIdentity::new(&session, 1, 0, 24_000)),
+                (2, OccurrenceIdentity::new(&session, 1, 24_000, 48_000)),
+            ];
+            for (id, owner) in &owners {
+                stage(&mut lane, *id, owner.clone(), "hipoteza");
+            }
+            let segments = vec![word_pin(&session, "granica", start, end)];
+            let routes = lane.state.route_overlap_pins(
+                &lane.tx,
+                AdmitWindow {
+                    request_id: 9,
+                    sample_start: 0,
+                    sample_end: 60_000,
+                },
+                &owners,
+                &segments,
+                LedgerObservationProducer::Whisper,
+            );
+            assert_eq!(routes[current].exclusive.len(), 1);
+            assert!(routes[1 - current].exclusive.is_empty());
+            let assignments = neighbour_pin_assignments(&owners, &routes, &segments, current);
+            let (id, owner) = &owners[current];
+            assert!(
+                lane.state.admit_routed_words_with_decode_window(
+                    &lane.tx,
+                    *id,
+                    owner,
+                    (9, Some((0, 60_000))),
+                    RoutedWords {
+                        pins: &routes[current].exclusive,
+                        neighbours: &assignments
+                    },
+                    LedgerObservationProducer::Whisper,
+                ),
+                "a complete decoded word reaches its qualified midpoint owner"
+            );
+            let ledger = lane.state.acoustic_ledger.lock().unwrap();
+            let words = ledger.slots_of(owner).unwrap();
+            assert_eq!(words.len(), 1);
+            assert_eq!(words[0].text, "granica");
+            let physical_sources = ledger.slot_source_ranges(&words[0]);
+            assert!(
+                physical_sources
+                    .iter()
+                    .any(|source| source.sample_start == start && source.sample_end == end),
+                "routing discarded original {case} clock {start}..{end}; remaining lineage={physical_sources:?}"
+            );
+            assert_eq!(words[0].sample_start, start.max(owner.sample_start));
+            assert_eq!(words[0].sample_end, end.min(owner.sample_end));
+        }
+    }
+
+    #[test]
+    fn forensic_authority_formatter_observation_cannot_replace_a_qualified_raw_source() {
+        let mut lane = open("raw-formatter-authority");
+        let owner = OccurrenceIdentity::new("raw-formatter-authority", 1, 0, 48_000);
+        stage(&mut lane, 1, owner.clone(), "źródłowe słowo");
+        let mut ledger = lane.state.acoustic_ledger.lock().unwrap();
+        assert!(ledger.is_qualified(&owner));
+        let original = ledger.slots_of(&owner).unwrap().to_vec();
+        let offered = ObservationIdentity::new(ObservationProducer::Formatter, 2, 1, owner.clone());
+        let receipt = ledger.admit_pinned_label(&offered, "modelowe zdanie", &[]);
+        assert!(
+            !receipt.grants_mutation(),
+            "formatter is a derived presentation observer"
+        );
+        assert_eq!(
+            ledger.slots_of(&owner).unwrap(),
+            original,
+            "an authenticated acoustic source must survive a formatter observation"
+        );
+        assert_eq!(ledger.text_of(&owner), Some("źródłowe słowo"));
+    }
+
+    #[test]
     fn energy_silence_with_silero_speech_routes_the_whisper_pin() {
         let mut lane = open("relay-silero-speech");
         record_energy(&lane, &[vec![0.0; 48_000]]);

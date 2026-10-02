@@ -382,6 +382,25 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.canvasText, "Apple mówi tak")
   }
 
+  func testForensicUnresolvedEvidenceSurvivesAuthenticatedTerminal() {
+    let state = OverlayState()
+    state.handleRecordingPreparing()
+    projectText("Zapisane słowa", to: state, sessionId: "unresolved-review")
+    let unresolved = CsUnanchoredEvidence(
+      sampleStart: 16_000, sampleEnd: 32_000, text: "Osobny nierozstrzygnięty dowód",
+      reason: "resegmentation_unaccounted_speech")
+    state.applyCompactProjection(
+      CsCompactProjection(
+        sessionId: "unresolved-review", captureEpoch: 1, sequence: 1,
+        text: "Zapisane słowa", degraded: false, evidence: [unresolved]))
+    XCTAssertEqual(state.liveEvidence, [unresolved])
+    projectText("Zapisane słowa", to: state, terminal: true, sessionId: "unresolved-review")
+    XCTAssertTrue(state.terminal)
+    XCTAssertEqual(state.liveEvidence, [unresolved], "Rust retained unresolved evidence for review")
+    XCTAssertEqual(state.canvasText, "Zapisane słowa", "evidence does not acquire document authority")
+    XCTAssertEqual(state.activeText, "Zapisane słowa", "evidence remains outside delivery")
+  }
+
   private var nextProjectionSequence: UInt64 = 0
 
   func testListenerQueuesLifecycleEventsInCallbackOrder() async {
