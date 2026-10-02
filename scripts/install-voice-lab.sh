@@ -33,6 +33,14 @@ fail() {
   exit 1
 }
 
+# The remote must be spelled canonically (lowercase vetcoders/voice-lab); a
+# refusal names the found origin and the one-line fix in the same transport.
+fail_origin() {
+  local src="$1" origin="$2" canonical="$VOICE_LAB_HTTPS"
+  [[ "$origin" == git@* || "$origin" == ssh://* ]] && canonical="$VOICE_LAB_SSH"
+  fail "${src} origin must be vetcoders/voice-lab (got ${origin:-none}); fix: git -C '${src}' remote set-url origin ${canonical}"
+}
+
 looks_like_voice_lab() {
   local root="$1"
   [[ -f "${root}/server.py" && -f "${root}/setup.sh" ]] &&
@@ -115,7 +123,7 @@ verify_checkout_access() {
   top="$(git -C "$src" rev-parse --show-toplevel 2>/dev/null)" || fail "Voice Lab must be a Git checkout"
   [[ "$(cd "$src" && pwd -P)" == "$(cd "$top" && pwd -P)" ]] || fail "Voice Lab must be the checkout root"
   origin="$(git -C "$src" remote get-url origin 2>/dev/null)" || fail "Voice Lab has no origin"
-  remote_is_voice_lab "$origin" || fail "Voice Lab origin must be vetcoders/voice-lab"
+  remote_is_voice_lab "$origin" || fail_origin "$src" "$origin"
   GIT_TERMINAL_PROMPT=0 git ls-remote "$origin" HEAD >/dev/null 2>&1 ||
     fail "private Voice Lab access could not be verified"
 }
@@ -130,7 +138,7 @@ ensure_checkout() {
       echo "==> updating ${src}"
       origin="$(git -C "$src" remote get-url origin 2>/dev/null || true)"
       [[ -n "$origin" ]] || fail "${src} has no origin"
-      remote_is_voice_lab "$origin" || fail "${src} origin is not vetcoders/voice-lab (got ${origin})"
+      remote_is_voice_lab "$origin" || fail_origin "$src" "$origin"
       git -C "$src" fetch --tags origin
       git -C "$src" checkout --quiet main
       git -C "$src" merge --ff-only origin/main
