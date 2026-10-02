@@ -631,27 +631,6 @@ impl AcousticLedger {
             .iter()
             .map(|pin| self.ordinary_word_target(&prior, &pins, pin))
             .collect::<Vec<_>>();
-        let connected = |source: usize, pin: usize| {
-            ordinary_targets[pin].map_or_else(
-                || {
-                    let held = &prior[source];
-                    let word = &pins[pin];
-                    let coarse = !self.word_pin_observations.contains(&held.observation)
-                        || held.text.split_whitespace().count() != 1
-                        || self
-                            .complete_decoded_words
-                            .get(&held.observation)
-                            .is_some_and(|ranges| {
-                                !ranges.contains(&(held.sample_start, held.sample_end))
-                            });
-                    self.pin_targets_source(held, word)
-                        || (coarse
-                            && held.sample_start < word.sample_end
-                            && word.sample_start < held.sample_end)
-                },
-                |target| source == target,
-            )
-        };
         for seed in 0..pins.len() {
             if visited.contains(&seed) {
                 continue;
@@ -659,6 +638,29 @@ impl AcousticLedger {
             let mut word_indices = BTreeSet::from([seed]);
             let mut source_indices = BTreeSet::new();
             loop {
+                // Borrow the ledger only while discovering this component.
+                // Refusals and alternatives are recorded after discovery.
+                let connected = |source: usize, pin: usize| {
+                    ordinary_targets[pin].map_or_else(
+                        || {
+                            let held = &prior[source];
+                            let word = &pins[pin];
+                            let coarse = !self.word_pin_observations.contains(&held.observation)
+                                || held.text.split_whitespace().count() != 1
+                                || self
+                                    .complete_decoded_words
+                                    .get(&held.observation)
+                                    .is_some_and(|ranges| {
+                                        !ranges.contains(&(held.sample_start, held.sample_end))
+                                    });
+                            self.pin_targets_source(held, word)
+                                || (coarse
+                                    && held.sample_start < word.sample_end
+                                    && word.sample_start < held.sample_end)
+                        },
+                        |target| source == target,
+                    )
+                };
                 let size = word_indices.len() + source_indices.len();
                 for index in 0..prior.len() {
                     if word_indices.iter().any(|word| connected(index, *word)) {
