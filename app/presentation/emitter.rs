@@ -9240,6 +9240,107 @@ mod tests {
         assert_eq!(tally.occurrences_held, 2);
     }
 
+    #[test]
+    fn forensic_unresolved_word_slot_candidate_remains_visible_as_evidence() {
+        use codescribe_core::pipeline::acoustic_ledger::WordPin;
+        let mut ledger = AcousticLedger::new();
+        let mut reducer = TranscriptReducer::default();
+        let owner = OccurrenceIdentity::new("candidate-evidence", 1, 0, 48_000);
+        let EngineEvent::LedgerMutation {
+            observation,
+            receipt,
+            ..
+        } = admitted_mutation(&mut ledger, owner.clone(), 1, "pierwsze słowa")
+        else {
+            unreachable!()
+        };
+        assert!(
+            reducer
+                .apply_ledger_mutation(&ledger, &observation, &receipt)
+                .is_some()
+        );
+        let offered = ObservationIdentity::new(ObservationProducer::Whisper, 2, 1, owner.clone());
+        let refusal = ledger
+            .admit_word_slots_for_tests(&offered, &[WordPin::new(16_000, 24_000, "dodatkowe")]);
+        assert!(
+            !refusal.grants_mutation(),
+            "this witness requires genuine unresolved admission"
+        );
+        assert!(
+            ledger
+                .slot_alternatives()
+                .iter()
+                .any(|alternative| alternative.candidate == "dodatkowe"),
+            "the real admission must retain its candidate"
+        );
+        assert!(
+            reducer
+                .apply_ledger_mutation(&ledger, &offered, &refusal)
+                .is_none()
+        );
+        assert_eq!(ledger.text_of(&owner), Some("pierwsze słowa"));
+        assert!(
+            reducer
+                .unanchored_evidence("candidate-evidence", 1)
+                .iter()
+                .any(|evidence| evidence
+                    .text
+                    .split_whitespace()
+                    .any(|word| word == "dodatkowe")),
+            "retaining a candidate only in the ledger trail does not expose it to the human"
+        );
+    }
+
+    #[test]
+    fn forensic_owner_seal_does_not_erase_unresolved_interior_evidence() {
+        let mut ledger = AcousticLedger::new();
+        let mut reducer = TranscriptReducer::default();
+        let owner = OccurrenceIdentity::new("seal-evidence", 1, 0, 48_000);
+        let EngineEvent::LedgerMutation {
+            observation,
+            receipt,
+            ..
+        } = admitted_mutation(&mut ledger, owner.clone(), 1, "pierwsze słowa")
+        else {
+            unreachable!()
+        };
+        assert!(
+            reducer
+                .apply_ledger_mutation(&ledger, &observation, &receipt)
+                .is_some()
+        );
+        let interior = OccurrenceIdentity::new("seal-evidence", 1, 16_000, 32_000);
+        let offered = ObservationIdentity::new(ObservationProducer::Whisper, 2, 1, interior);
+        let evidence = ledger.admit(&offered, "dodatkowe dowody");
+        assert!(matches!(
+            &evidence,
+            MutationReceipt::KeepVisibleUnanchored { .. }
+        ));
+        assert!(
+            reducer
+                .apply_ledger_mutation(&ledger, &offered, &evidence)
+                .is_none()
+        );
+        let before = reducer.unanchored_evidence("seal-evidence", 1);
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0].text, "dodatkowe dowody");
+        ledger.schedule_frontier(owner.clone(), [ObservationProducer::Apple]);
+        assert!(ledger.note_frontier_return(&owner, ObservationProducer::Apple));
+        let seal = ledger
+            .seal(&owner)
+            .expect("the original qualified source can seal")
+            .clone();
+        assert!(reducer.apply_ledger_seal(&seal).is_some());
+        assert_eq!(ledger.text_of(&owner), Some("pierwsze słowa"));
+        let after = reducer.unanchored_evidence("seal-evidence", 1);
+        assert_eq!(
+            after.len(),
+            1,
+            "containing a candidate's PCM range does not account for its words"
+        );
+        assert_eq!(after[0].text, "dodatkowe dowody");
+    }
+
     /// A later committed paint keeps unanchored evidence that no committed
     /// token covers. Delivery stays the committed words.
     #[tokio::test]
