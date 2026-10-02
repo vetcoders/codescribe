@@ -394,6 +394,62 @@ impl AcousticLedger {
         descendants.contains(pin)
     }
 
+    /// Estimated word fences do not decide whether the decoded PCM cut speech.
+    /// An accepted window with measured silent margins can account for work
+    /// without declaring its edge-timed words complete. Its committed outputs
+    /// must still account for every measured speech range inside that window.
+    fn decoded_window_speech_accounted(
+        &self,
+        observation: &ObservationIdentity,
+        start: u64,
+        end: u64,
+    ) -> bool {
+        let owner = &observation.occurrence;
+        if start >= end
+            || !self.is_qualified(owner)
+            || !self.word_pin_observations.contains(observation)
+            || !matches!(
+                observation.producer,
+                ObservationProducer::Whisper | ObservationProducer::CloudLive
+            )
+        {
+            return false;
+        }
+        let held = self.slots_of(owner).unwrap_or(&[]);
+        let outputs = self
+            .slot_operations
+            .iter()
+            .filter(|operation| &operation.observation == observation)
+            .flat_map(|operation| &operation.outputs)
+            .filter(|output| {
+                &output.observation == observation
+                    && output.text.split_whitespace().count() == 1
+                    && start <= output.sample_start
+                    && output.sample_end <= end
+                    && held.iter().any(|pin| {
+                        self.word_pin_observations.contains(&pin.observation)
+                            && pin.text.split_whitespace().count() == 1
+                            && pin.producer.authority_rank()
+                                >= observation.producer.authority_rank()
+                            && (pin == *output || self.slot_descends_from(pin, output))
+                    })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let window = OccurrenceIdentity::new(&owner.session, owner.capture_epoch, start, end);
+        let Some((speech, _)) = self.speech_pin_coverage(observation, &window, &outputs) else {
+            return false;
+        };
+        // Coverage authenticates identity, producer, contiguous measurement
+        // and extent. Require positive silence at both actual decode fences;
+        // a voiced range touching either fence supplies no silent margin.
+        speech.ranges().iter().all(|range| {
+            range.sample_end < start
+                || range.sample_start > end
+                || (start < range.sample_start && range.sample_end < end)
+        })
+    }
+
     /// Account decoder work over a source using accepted window receipts.
     /// A frontier return may be a timeout; it is never a successful decode.
     fn decoded_source_scope_accounted(
@@ -407,14 +463,15 @@ impl AcousticLedger {
         let mut windows = self
             .decoded_word_windows
             .iter()
-            .filter(|(candidate, _)| {
+            .filter(|(candidate, (start, end))| {
                 candidate.occurrence == observation.occurrence
                     && candidate.producer == observation.producer
                     && self.word_pin_observations.contains(*candidate)
-                    && self
+                    && (self
                         .complete_decoded_words
                         .get(*candidate)
                         .is_some_and(|pins| !pins.is_empty())
+                        || self.decoded_window_speech_accounted(candidate, *start, *end))
             })
             .map(|(_, window)| *window)
             .collect::<Vec<_>>();
