@@ -3777,8 +3777,11 @@ impl AppleSealState {
                 {
                     let stub = route.exclusive.remove(position);
                     self.keep_routed_visible(ev_tx, request_id, std::slice::from_ref(&stub));
-                    self.pending_whisper_stubs
-                        .push((job.request_identity.clone(), owner.clone(), stub));
+                    self.pending_whisper_stubs.push((
+                        job.request_identity.clone(),
+                        owner.clone(),
+                        stub,
+                    ));
                 }
             }
         }
