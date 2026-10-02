@@ -2400,6 +2400,11 @@ public func FfiConverterTypeCodescribeConfig_lower(_ value: CodescribeConfig) ->
 public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
 
     /**
+     * Acquire before native archive lookup; release after playback/read settles.
+     */
+    func acquireAudioReadLease() async throws  -> CsAudioReadLease
+
+    /**
      * Admission readiness of the next product recording — the same verdict
      * the controller applies before opening a microphone. Uses the live
      * controller's settings generation when one exists, otherwise one fresh
@@ -2790,6 +2795,26 @@ public convenience init() {
 
 
 
+
+    /**
+     * Acquire before native archive lookup; release after playback/read settles.
+     */
+open func acquireAudioReadLease()async throws  -> CsAudioReadLease  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_acquire_audio_read_lease(
+                    self.uniffiCloneHandle()
+
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_u64,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_u64,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_u64,
+            liftFunc: FfiConverterTypeCsAudioReadLease_lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
 
     /**
      * Admission readiness of the next product recording — the same verdict
@@ -6023,6 +6048,146 @@ public func FfiConverterTypeCsAppActionListener_lift(_ handle: UInt64) throws ->
 #endif
 public func FfiConverterTypeCsAppActionListener_lower(_ value: CsAppActionListener) -> UInt64 {
     return FfiConverterTypeCsAppActionListener.lower(value)
+}
+
+
+
+
+
+
+/**
+ * Native path reader lifetime over the existing history-owned root lease.
+ */
+public protocol CsAudioReadLeaseProtocol: AnyObject, Sendable {
+
+    /**
+     * Stop the native reader before releasing. Dropping the object also
+     * releases the lease, including error and cancelled acquisition paths.
+     */
+    func release()
+
+    /**
+     * The configured root protected by this lease, for native path lookup.
+     */
+    func rootDirectory()  -> String
+
+}
+/**
+ * Native path reader lifetime over the existing history-owned root lease.
+ */
+open class CsAudioReadLease: CsAudioReadLeaseProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_codescribe_ffi_fn_clone_csaudioreadlease(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        try! rustCall { uniffi_codescribe_ffi_fn_free_csaudioreadlease(handle, $0) }
+    }
+
+
+
+
+    /**
+     * Stop the native reader before releasing. Dropping the object also
+     * releases the lease, including error and cancelled acquisition paths.
+     */
+open func release()  {try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_csaudioreadlease_release(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+
+    /**
+     * The configured root protected by this lease, for native path lookup.
+     */
+open func rootDirectory() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_csaudioreadlease_root_directory(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+
+
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsAudioReadLease: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = CsAudioReadLease
+
+    public static func lift(_ handle: UInt64) throws -> CsAudioReadLease {
+        return CsAudioReadLease(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: CsAudioReadLease) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsAudioReadLease {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: CsAudioReadLease, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsAudioReadLease_lift(_ handle: UInt64) throws -> CsAudioReadLease {
+    return try FfiConverterTypeCsAudioReadLease.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsAudioReadLease_lower(_ value: CsAudioReadLease) -> UInt64 {
+    return FfiConverterTypeCsAudioReadLease.lower(value)
 }
 
 
@@ -12062,6 +12227,10 @@ public struct CsSettings: Equatable, Hashable {
     public var soundName: String
     public var soundVolume: Float
     public var audioInputDevice: String?
+    /**
+     * Effective settings-only storage policy for the next capture.
+     */
+    public var audioRetention: String
     public var historyEnabled: Bool
     public var quickNotesEnabled: Bool
     public var quickNotesSaveOnly: Bool
@@ -12155,7 +12324,10 @@ public struct CsSettings: Equatable, Hashable {
          */transcriptSendMode: String, transcriptTaggingEnabled: Bool, transcriptTagTemplate: String, aiMaxTokens: Int32, aiAssistiveMaxTokens: Int32, showTrayGlyph: Bool, showDockIcon: Bool, transcriptionOverlayEnabled: Bool, holdIndicator: Bool, holdBadgeSize: UInt32, holdBadgeOffsetX: Int32, holdBadgeOffsetY: Int32,
         /**
          * `OverlayPositionMode::as_str()` — `"snapped_top_right"` / `"custom"`.
-         */overlayPositionMode: String, overlayCustomX: Double?, overlayCustomY: Double?, beepOnStart: Bool, soundName: String, soundVolume: Float, audioInputDevice: String?, historyEnabled: Bool, quickNotesEnabled: Bool, quickNotesSaveOnly: Bool, useLocalStt: Bool, localModel: String, sttFileEndpoint: String?, sttLiveEndpoint: String?, restoreClipboard: Bool, restoreClipboardDelayMs: UInt64, startAtLogin: Bool, agentEnterSends: Bool, agentAutoSend: Bool, dumpAudioLogs: Bool,
+         */overlayPositionMode: String, overlayCustomX: Double?, overlayCustomY: Double?, beepOnStart: Bool, soundName: String, soundVolume: Float, audioInputDevice: String?,
+        /**
+         * Effective settings-only storage policy for the next capture.
+         */audioRetention: String, historyEnabled: Bool, quickNotesEnabled: Bool, quickNotesSaveOnly: Bool, useLocalStt: Bool, localModel: String, sttFileEndpoint: String?, sttLiveEndpoint: String?, restoreClipboard: Bool, restoreClipboardDelayMs: UInt64, startAtLogin: Bool, agentEnterSends: Bool, agentAutoSend: Bool, dumpAudioLogs: Bool,
         /**
          * Lane = full ProviderRef (vendor ID or `custom:<slug>`) + model; provider first.
          */llmFormattingProvider: String?, llmFormattingModel: String?, llmAssistiveProvider: String?, llmAssistiveModel: String?, formattingLevel: String?, whisperModel: String?,
@@ -12218,6 +12390,7 @@ public struct CsSettings: Equatable, Hashable {
         self.soundName = soundName
         self.soundVolume = soundVolume
         self.audioInputDevice = audioInputDevice
+        self.audioRetention = audioRetention
         self.historyEnabled = historyEnabled
         self.quickNotesEnabled = quickNotesEnabled
         self.quickNotesSaveOnly = quickNotesSaveOnly
@@ -12298,6 +12471,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 soundName: FfiConverterString.read(from: &buf),
                 soundVolume: FfiConverterFloat.read(from: &buf),
                 audioInputDevice: FfiConverterOptionString.read(from: &buf),
+                audioRetention: FfiConverterString.read(from: &buf),
                 historyEnabled: FfiConverterBool.read(from: &buf),
                 quickNotesEnabled: FfiConverterBool.read(from: &buf),
                 quickNotesSaveOnly: FfiConverterBool.read(from: &buf),
@@ -12366,6 +12540,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterString.write(value.soundName, into: &buf)
         FfiConverterFloat.write(value.soundVolume, into: &buf)
         FfiConverterOptionString.write(value.audioInputDevice, into: &buf)
+        FfiConverterString.write(value.audioRetention, into: &buf)
         FfiConverterBool.write(value.historyEnabled, into: &buf)
         FfiConverterBool.write(value.quickNotesEnabled, into: &buf)
         FfiConverterBool.write(value.quickNotesSaveOnly, into: &buf)
@@ -18178,6 +18353,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_update_custom_provider() != 2582) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_acquire_audio_read_lease() != 51675) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_admission_readiness() != 59942) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -18464,6 +18642,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_max_approvals_changed() != 29603) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_csaudioreadlease_release() != 6902) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_csaudioreadlease_root_directory() != 27395) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_csdocumenttoolhost_is_active() != 53329) {
