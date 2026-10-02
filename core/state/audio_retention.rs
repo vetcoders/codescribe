@@ -924,21 +924,33 @@ mod acceptance_tests {
         root: &Path,
         policy: AudioRetention,
         now: SystemTime,
-    ) -> MaintenanceReport {
+        files: &[PathBuf],
+    ) {
         // Completion writes its receipt before dropping the producer lease.
-        // Nonwaiting maintenance may also meet another bounded pass. Require
-        // actual eventual expiry once idle, rather than treating deferred as
-        // a deletion failure or dictating one-pass scheduling.
+        // Its background pass may expire the take before this explicit pass.
+        // Require actual eventual expiry of every owned copy and the receipt,
+        // without assigning that deletion to one particular maintenance call.
+        assert!(!files.is_empty(), "expiry must observe actual owned audio");
+        let receipt = root.join(format!("sessions/{ID}{SUFFIX}"));
         let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
         loop {
             let report = maintain(root, policy, now).unwrap();
             assert!(report.failures.is_empty(), "{report:?}");
-            if report.expired > 0 {
-                return report;
+            let missing = |path: &Path| {
+                std::fs::symlink_metadata(path)
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+            };
+            if files.iter().all(|path| missing(path)) && missing(&receipt) {
+                return;
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "idle expiry never completed: {report:?}"
+                "idle expiry never completed: {report:?}; take_exists={}, session_exists={}, daily_exists={}, receipt_exists={}",
+                root.join("takes/codescribe_recording_1.wav").exists(),
+                root.join(format!("sessions/{ID}.wav")).exists(),
+                root.join("transcriptions/2026-10-02/120000_probe_raw.wav")
+                    .exists(),
+                root.join(format!("sessions/{ID}{SUFFIX}")).exists()
             );
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
@@ -965,14 +977,12 @@ mod acceptance_tests {
         assert!(report.deferred > 0);
         tokio::task::yield_now().await;
         assert_eq!(hound::WavReader::open(&pinned).unwrap().len(), 4);
+        assert!(files.iter().all(|path| path.is_file()));
         drop(reader);
-        assert_eq!(
-            expire_when_idle(&root, AudioRetention::Forever, completed)
-                .await
-                .expired,
-            1
-        );
+        expire_when_idle(&root, AudioRetention::Forever, completed, &files).await;
+        assert!(files.iter().all(|path| !path.exists()));
         assert!(!pinned.exists());
+        assert!(std::fs::symlink_metadata(root.join("last_session.wav")).is_err());
     }
 
     #[test]
@@ -1020,14 +1030,13 @@ mod acceptance_tests {
         .unwrap();
         assert!(before.failures.is_empty());
         assert!(files.iter().all(|path| path.is_file()));
-        let due = expire_when_idle(
+        expire_when_idle(
             &root,
             AudioRetention::Hours24,
             completed + Duration::from_secs(86_400),
+            &files,
         )
         .await;
-        assert!(due.failures.is_empty(), "{due:?}");
-        assert_eq!(due.expired, 1);
         assert!(
             files.iter().all(|path| !path.exists()),
             "all hardlinks and copies must expire"
@@ -1089,9 +1098,7 @@ mod acceptance_tests {
             "the path must remain reopenable throughout the reader lease"
         );
         drop(reader);
-        let due = expire_when_idle(&root, AudioRetention::Forever, completed).await;
-        assert!(due.failures.is_empty(), "{due:?}");
-        assert_eq!(due.expired, 1);
+        expire_when_idle(&root, AudioRetention::Forever, completed, &files).await;
         assert!(files.iter().all(|path| !path.exists()));
     }
 
@@ -1108,21 +1115,32 @@ mod acceptance_tests {
         let outside = tempfile::tempdir().unwrap();
         let foreign = outside.path().join("foreign.wav");
         std::fs::write(&foreign, b"foreign bytes").unwrap();
+        let retained = [
+            std::fs::read(&files[0]).unwrap(),
+            std::fs::read(&files[2]).unwrap(),
+        ];
         std::fs::remove_file(&files[1]).unwrap();
         std::os::unix::fs::symlink(&foreign, &files[1]).unwrap();
-        let report = maintain(
-            &root,
-            AudioRetention::Hours24,
-            completed + Duration::from_secs(86_400),
-        )
-        .unwrap();
-        assert!(
-            !report.failures.is_empty(),
-            "a substituted audio member must refuse the entire deletion"
-        );
-        assert_eq!(report.expired, 0);
-        assert_eq!(std::fs::read(foreign).unwrap(), b"foreign bytes");
-        assert!(files[0].is_file());
-        assert!(files[2].is_file());
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let report = maintain(
+                &root,
+                AudioRetention::Hours24,
+                completed + Duration::from_secs(86_400),
+            )
+            .unwrap();
+            assert_eq!(report.expired, 0);
+            assert_eq!(std::fs::read(&foreign).unwrap(), b"foreign bytes");
+            assert_eq!(std::fs::read(&files[0]).unwrap(), retained[0]);
+            assert_eq!(std::fs::read(&files[2]).unwrap(), retained[1]);
+            if !report.failures.is_empty() {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "eligible substituted member never produced a refusal: {report:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
     }
 }
