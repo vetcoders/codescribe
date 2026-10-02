@@ -11,17 +11,16 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use reqwest::multipart::{Form, Part};
 use serde::{Deserialize, Serialize};
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
-use tokio::fs::File;
-use tokio::io::AsyncReadExt;
 use tracing::{debug, error, info, warn};
 
 use crate::pipeline::contracts::{TranscriptionConfidenceFlag, TranscriptionSource};
 
-/// Canonicalize path before async file operations (defense-in-depth).
-/// Uses sync std::fs::canonicalize which is fast, then async open.
+/// Canonicalize the pinned input on the file owner's blocking worker.
 fn canonicalize_path(path: &Path) -> Result<PathBuf> {
     path.canonicalize()
         .with_context(|| format!("Failed to resolve path: {}", path.display()))
@@ -228,7 +227,52 @@ pub async fn transcribe_cloud(
 ) -> Result<CloudTranscriptionVerdict> {
     info!("transcribe_cloud() START for path: {:?}", path);
 
-    transcribe_external(path, language, endpoint_url, api_key).await
+    let path = path.to_path_buf();
+    let language = language.map(str::to_owned);
+    let endpoint_url = endpoint_url.to_owned();
+    let api_key = api_key.to_owned();
+    let runtime = tokio::runtime::Handle::current();
+    // The entire pathname consumer lives on this worker. Dropping its awaiter
+    // cannot release the lease while auth, a later open, or a decode is pending.
+    tokio::task::spawn_blocking(move || {
+        runtime.block_on(transcribe_cloud_on_worker(
+            &path,
+            language.as_deref(),
+            &endpoint_url,
+            &api_key,
+        ))
+    })
+    .await
+    .context("cloud audio worker join error")?
+}
+
+/// File transport owner for an already-dispatched blocking workflow.
+/// Only blocking owners may poll this future: lease admission and every source
+/// open/decode are synchronous; auth and HTTP keep using the existing runtime.
+pub(crate) async fn transcribe_cloud_on_worker(
+    path: &Path,
+    language: Option<&str>,
+    endpoint_url: &str,
+    api_key: &str,
+) -> Result<CloudTranscriptionVerdict> {
+    #[cfg(unix)]
+    let (path, audio_lease) =
+        crate::state::history::audio_retention::AudioReadLease::acquire_for_path(
+            &crate::config::Config::config_dir(),
+            path,
+        )
+        .context("acquire cloud audio input lease")?;
+    #[cfg(unix)]
+    let path = path.as_path();
+    transcribe_external(
+        path,
+        language,
+        endpoint_url,
+        api_key,
+        #[cfg(unix)]
+        audio_lease,
+    )
+    .await
 }
 
 /// Check if an error is retryable (network issues, timeouts, server errors)
@@ -276,6 +320,7 @@ async fn transcribe_external(
     language: Option<&str>,
     endpoint_url: &str,
     api_key: &str,
+    #[cfg(unix)] audio_lease: Option<crate::state::history::audio_retention::AudioReadLease>,
 ) -> Result<CloudTranscriptionVerdict> {
     info!("Using external STT endpoint: {}", endpoint_url);
 
@@ -299,17 +344,23 @@ async fn transcribe_external(
     if endpoint_url.ends_with(":stream") {
         // NDJSON streaming HTTP: the file is decoded and sent in segments, so
         // the whole-file upload cap of the multipart lane does not apply.
-        transcribe_ndjson(endpoint_url, api_key, &canonical_path, language).await
+        transcribe_ndjson(
+            endpoint_url,
+            api_key,
+            &canonical_path,
+            language,
+            #[cfg(unix)]
+            audio_lease,
+        )
+        .await
     } else {
         // OpenAI-compatible multipart upload: one body, one backend cap.
         // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path (path canonicalized above)
-        let mut file = File::open(&canonical_path)
-            .await
-            .context("Failed to open audio file")?;
+        let mut file = File::open(&canonical_path).context("Failed to open audio file")?;
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer)
-            .await
             .context("Failed to read audio file")?;
+        drop(file);
         let filename = path
             .file_name()
             .and_then(|n| n.to_str())
@@ -330,12 +381,17 @@ async fn transcribe_external(
                     &canonical_path,
                     language,
                     filename,
+                    #[cfg(unix)]
+                    audio_lease,
                 )
                 .await;
             }
             error!("Audio validation failed: {}", validation_error);
             anyhow::bail!("Audio validation failed: {}", validation_error);
         }
+        // This lane now owns a detached buffer and will never reopen the path.
+        #[cfg(unix)]
+        drop(audio_lease);
         transcribe_multipart(endpoint_url, api_key, buffer, language, filename).await
     }
 }
@@ -368,13 +424,14 @@ async fn transcribe_ndjson(
     api_key: &str,
     path: &Path,
     language: Option<&str>,
+    #[cfg(unix)] audio_lease: Option<crate::state::history::audio_retention::AudioReadLease>,
 ) -> Result<CloudTranscriptionVerdict> {
     let start = Instant::now();
-    let decode_path = path.to_path_buf();
-    let (samples, sample_rate) =
-        tokio::task::spawn_blocking(move || crate::audio::load_audio_file(&decode_path))
-            .await
-            .context("audio decode task join error")??;
+    // This future is polled by the persistent cloud blocking worker; decode
+    // remains in that owner so there is no detached pathname reopen.
+    let (samples, sample_rate) = crate::audio::load_audio_file(path)?;
+    #[cfg(unix)]
+    drop(audio_lease);
     if samples.is_empty() {
         anyhow::bail!("Audio validation failed: {}", AudioValidationError::Empty);
     }
@@ -445,13 +502,14 @@ async fn transcribe_multipart_segmented(
     path: &Path,
     language: Option<&str>,
     filename: &str,
+    #[cfg(unix)] audio_lease: Option<crate::state::history::audio_retention::AudioReadLease>,
 ) -> Result<CloudTranscriptionVerdict> {
     let start = Instant::now();
-    let decode_path = path.to_path_buf();
-    let (samples, sample_rate) =
-        tokio::task::spawn_blocking(move || crate::audio::load_audio_file(&decode_path))
-            .await
-            .context("audio decode task join error")??;
+    // The cloud worker retains the source lease across the earlier size pass
+    // and this second open; decode completes before that owner can release it.
+    let (samples, sample_rate) = crate::audio::load_audio_file(path)?;
+    #[cfg(unix)]
+    drop(audio_lease);
     if samples.is_empty() {
         anyhow::bail!("Audio validation failed: {}", AudioValidationError::Empty);
     }

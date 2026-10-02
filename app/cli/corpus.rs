@@ -170,6 +170,9 @@ pub enum CorpusCommand {
     Worker {
         #[arg(long = "root", required = true)]
         roots: Vec<PathBuf>,
+        /// Source store identity, distinct from the profile's isolated runtime.
+        #[arg(long, hide = true)]
+        audio_read_root: Option<PathBuf>,
         #[arg(long)]
         out: PathBuf,
         #[arg(long)]
@@ -638,6 +641,7 @@ fn run(command: CorpusCommand, invocation: Invocation) -> Result<()> {
         ),
         CorpusCommand::Worker {
             roots,
+            audio_read_root,
             out,
             profile,
             runs,
@@ -653,6 +657,7 @@ fn run(command: CorpusCommand, invocation: Invocation) -> Result<()> {
                 .context("build replay runtime")?;
             runtime.block_on(run_worker(WorkerArgs {
                 roots,
+                audio_read_root,
                 out,
                 profile,
                 runs,
@@ -669,6 +674,8 @@ fn run(command: CorpusCommand, invocation: Invocation) -> Result<()> {
 struct Discovery {
     census: CorpusCensus,
     selected: Vec<Clip>,
+    #[cfg(unix)]
+    _audio_leases: Vec<codescribe_core::state::history::audio_retention::AudioReadLease>,
 }
 
 /// Exact input identity and complete executions are prerequisites even for
@@ -769,11 +776,40 @@ fn discover_corpus(
     policy: ReferencePolicy,
     max_recordings: Option<usize>,
 ) -> Result<Discovery> {
+    discover_corpus_with_read_root(
+        roots,
+        policy,
+        max_recordings,
+        &codescribe_core::config::Config::config_dir(),
+    )
+}
+
+fn discover_corpus_with_read_root(
+    roots: &[PathBuf],
+    policy: ReferencePolicy,
+    max_recordings: Option<usize>,
+    _audio_read_root: &Path,
+) -> Result<Discovery> {
     if roots.is_empty() {
         bail!("at least one corpus root is required");
     }
     let mut instances = Vec::new();
+    #[cfg(unix)]
+    let mut audio_leases = Vec::new();
     for root in roots {
+        #[cfg(unix)]
+        let (root, lease) =
+            codescribe_core::state::history::audio_retention::AudioReadLease::acquire_for_path(
+                _audio_read_root,
+                root,
+            )
+            .context("acquire corpus audio input lease")?;
+        #[cfg(unix)]
+        let root = root.as_path();
+        #[cfg(unix)]
+        if let Some(lease) = lease {
+            audio_leases.push(lease);
+        }
         if !root.is_dir() {
             bail!("corpus root is not a directory: {}", root.display());
         }
@@ -889,7 +925,12 @@ fn discover_corpus(
         reference_policy: policy.as_str().to_string(),
         privacy: PrivacyContract::default(),
     };
-    Ok(Discovery { census, selected })
+    Ok(Discovery {
+        census,
+        selected,
+        #[cfg(unix)]
+        _audio_leases: audio_leases,
+    })
 }
 
 fn walk_audio(directory: &Path, output: &mut Vec<PathBuf>) -> Result<()> {
@@ -987,6 +1028,7 @@ struct MatrixArgs {
 }
 
 fn run_matrix(args: MatrixArgs, invocation: &Invocation) -> Result<()> {
+    let audio_read_root = codescribe_core::config::Config::config_dir();
     if args.runs == 0 {
         bail!("--runs must be greater than zero");
     }
@@ -1026,6 +1068,8 @@ fn run_matrix(args: MatrixArgs, invocation: &Invocation) -> Result<()> {
         child.args(&invocation.prefix);
         child
             .arg("worker")
+            .arg("--audio-read-root")
+            .arg(&audio_read_root)
             .arg("--out")
             .arg(&profile_out)
             .arg("--profile")
@@ -1212,6 +1256,7 @@ fn configure_profile_environment(
 
 struct WorkerArgs {
     roots: Vec<PathBuf>,
+    audio_read_root: Option<PathBuf>,
     out: PathBuf,
     profile: ReplayProfile,
     runs: usize,
@@ -1223,13 +1268,30 @@ struct WorkerArgs {
 }
 
 async fn run_worker(args: WorkerArgs) -> Result<()> {
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || runtime.block_on(run_worker_on_blocking_thread(args)))
+        .await
+        .context("corpus audio worker join error")?
+}
+
+async fn run_worker_on_blocking_thread(args: WorkerArgs) -> Result<()> {
     if args.runs == 0 {
         bail!("--runs must be greater than zero");
     }
     validate_worker_environment(args.profile, &args.apple_bridge)?;
     codescribe_core::stt::apple_stt::ensure_noninteractive_ready(Some(&args.language))
         .context("noninteractive Apple STT preflight")?;
-    let discovery = discover_corpus(&args.roots, args.references, args.max_recordings)?;
+    let audio_read_root = args
+        .audio_read_root
+        .as_deref()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(codescribe_core::config::Config::config_dir);
+    let discovery = discover_corpus_with_read_root(
+        &args.roots,
+        args.references,
+        args.max_recordings,
+        &audio_read_root,
+    )?;
     if discovery.selected.is_empty() {
         bail!("worker selected no recordings");
     }

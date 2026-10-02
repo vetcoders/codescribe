@@ -343,6 +343,15 @@ fn classify_raw_semantics(
 /// Fails only when the corpus is empty or the paths escape the config root;
 /// per-entry problems are recorded as errors inside the report instead.
 pub async fn run(config: QualityReportConfig) -> Result<PathBuf> {
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || runtime.block_on(run_on_worker(config)))
+        .await
+        .context("report audio worker join error")?
+}
+
+// All source discovery, publication and later reads execute on this persistent
+// owner. Cancellation of the public awaiter does not detach an unleased reader.
+async fn run_on_worker(config: QualityReportConfig) -> Result<PathBuf> {
     let now: DateTime<Local> = Local::now();
     let generated_at = now.to_rfc3339();
 
@@ -355,6 +364,24 @@ pub async fn run(config: QualityReportConfig) -> Result<PathBuf> {
     );
 
     let config_root = Config::config_dir();
+    #[cfg(unix)]
+    let (input_path, input_lease) = {
+        let candidate = if config.input_dir.is_absolute() {
+            config.input_dir.clone()
+        } else {
+            config_root.join(&config.input_dir)
+        };
+        let (path, lease) =
+            crate::state::history::audio_retention::AudioReadLease::acquire_for_path(
+                &config_root,
+                &candidate,
+            )
+            .context("acquire report audio input lease")?;
+        (path, lease.map(std::sync::Arc::new))
+    };
+    #[cfg(unix)]
+    let input_root = resolve_input_root(&input_path, &config_root)?;
+    #[cfg(not(unix))]
     let input_root = resolve_input_root(&config.input_dir, &config_root)?;
     let output_root = resolve_output_root(&config.output_dir, &config_root)?;
 
@@ -412,7 +439,13 @@ pub async fn run(config: QualityReportConfig) -> Result<PathBuf> {
 
     let mut entries = Vec::new();
     let mut totals = Totals::default();
-    let mut cloud_jobs = prepare_cloud_jobs(&pairs, &config, &input_root);
+    let mut cloud_jobs = prepare_cloud_jobs(
+        &pairs,
+        &config,
+        &input_root,
+        #[cfg(unix)]
+        input_lease.clone(),
+    );
     let ctx = ProcessPairContext {
         config: &config,
         input_root: &input_root,
@@ -448,6 +481,9 @@ fn prepare_cloud_jobs(
     pairs: &[CorpusPair],
     config: &QualityReportConfig,
     input_root: &Path,
+    #[cfg(unix)] input_lease: Option<
+        std::sync::Arc<crate::state::history::audio_retention::AudioReadLease>,
+    >,
 ) -> CloudJobSet {
     if config.skip_cloud {
         return CloudJobSet::Disabled;
@@ -481,16 +517,38 @@ fn prepare_cloud_jobs(
 
         let endpoint = endpoint.clone();
         let api_key = api_key.clone();
+        // Capture a held guard before queuing, including the semaphore wait.
+        // If the report exits early, every independent job still owns protection.
+        #[cfg(unix)]
+        let audio_lease = input_lease.clone();
         let handle = tokio::spawn(async move {
-            let _permit = permitter
+            let permit = permitter
                 .acquire_owned()
                 .await
                 .map_err(|e| anyhow!("Cloud concurrency closed: {}", e))?;
-            let audio_canon =
-                safe_canonicalize_bounded(&audio_path, &input_root).with_context(|| {
-                    format!("Audio path escapes input root: {}", audio_path.display())
-                })?;
-            client::transcribe_cloud(&audio_canon, language.as_deref(), &endpoint, &api_key).await
+            let runtime = tokio::runtime::Handle::current();
+            // Move the inherited guard into the queued file owner before await.
+            // Semaphore waiters occupy no blocking threads.
+            tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                #[cfg(unix)]
+                let _audio_lease = audio_lease;
+                runtime.block_on(async move {
+                    let audio_canon =
+                        safe_canonicalize_bounded(&audio_path, &input_root).with_context(|| {
+                            format!("Audio path escapes input root: {}", audio_path.display())
+                        })?;
+                    client::transcribe_cloud_on_worker(
+                        &audio_canon,
+                        language.as_deref(),
+                        &endpoint,
+                        &api_key,
+                    )
+                    .await
+                })
+            })
+            .await
+            .context("report cloud audio worker join error")?
         });
 
         jobs.insert(id, handle);

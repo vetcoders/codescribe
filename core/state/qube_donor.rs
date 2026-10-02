@@ -54,6 +54,21 @@ pub fn persist_qube_donor_pair(
     delivered_text: &str,
     timestamp: DateTime<Local>,
 ) -> Result<Option<QubeDonorPaths>, String> {
+    // Keep this synchronous API, but acquire the filesystem lock and perform
+    // all source opens on a joined worker, never on the caller's executor.
+    std::thread::scope(|scope| {
+        scope
+            .spawn(move || persist_qube_donor_pair_on_worker(wav_src, delivered_text, timestamp))
+            .join()
+            .map_err(|_| "qube donor: audio worker panicked".to_string())?
+    })
+}
+
+fn persist_qube_donor_pair_on_worker(
+    wav_src: &Path,
+    delivered_text: &str,
+    timestamp: DateTime<Local>,
+) -> Result<Option<QubeDonorPaths>, String> {
     if !qube_donor_enabled() {
         return Ok(None);
     }
@@ -63,6 +78,16 @@ pub fn persist_qube_donor_pair(
         debug!("qube donor skipped: empty delivered transcript");
         return Ok(None);
     }
+
+    #[cfg(unix)]
+    let (wav_src, _audio_lease) =
+        crate::state::history::audio_retention::AudioReadLease::acquire_for_path(
+            &Config::config_dir(),
+            wav_src,
+        )
+        .map_err(|e| format!("qube donor: acquire audio input lease: {e}"))?;
+    #[cfg(unix)]
+    let wav_src = wav_src.as_path();
 
     if !wav_src.exists() {
         return Err(format!(

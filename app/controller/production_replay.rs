@@ -208,6 +208,33 @@ pub async fn replay_overlay_recording(
     settings: &UserSettings,
     lane: ProductionReplayLane,
 ) -> Result<ProductionOverlayReplay> {
+    let wav = wav.to_path_buf();
+    let settings = settings.clone();
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(unix)]
+        let (wav, _audio_lease) =
+            codescribe_core::state::history::audio_retention::AudioReadLease::acquire_for_path(
+                &codescribe_core::config::Config::config_dir(),
+                &wav,
+            )
+            .map_err(|_| anyhow!("acquire replay audio input lease failed"))?;
+        // Own the guard across both the initial decode and the later file final
+        // pass, even if the public future is cancelled while replay is pending.
+        runtime.block_on(replay_overlay_recording_on_worker(
+            &wav, language, &settings, lane,
+        ))
+    })
+    .await
+    .map_err(|_| anyhow!("replay audio worker join failed"))?
+}
+
+async fn replay_overlay_recording_on_worker(
+    wav: &Path,
+    language: Option<String>,
+    settings: &UserSettings,
+    lane: ProductionReplayLane,
+) -> Result<ProductionOverlayReplay> {
     let (samples, sample_rate) = codescribe_core::audio::load_audio_file(wav)
         .map_err(|_| anyhow!("load replay audio failed"))?;
     if samples.is_empty() {
