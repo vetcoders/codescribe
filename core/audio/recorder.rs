@@ -1679,6 +1679,102 @@ mod tests {
         assert!(recorder.acknowledge_archive_recovery(&proof).is_err());
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires a single-test child with RLIMIT_FSIZE=1024 and SIGXFSZ ignored"]
+    fn forensic_actual_spill_write_failure_keeps_complete_native_pcm() {
+        let mut limits = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_FSIZE, &mut limits) },
+            0
+        );
+        assert_eq!(
+            limits.rlim_cur, 1024,
+            "run only through the isolated fault harness"
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let sink = SpillSink::spawn(16_000, directory.path()).unwrap();
+        let prefix = (0..256).map(|n| n as i16 - 128).collect::<Vec<_>>();
+        let failed = (0..2048).map(|n| n as i16 - 1024).collect::<Vec<_>>();
+        let after_failure = vec![0; 1024];
+        let expected = prefix
+            .iter()
+            .chain(&failed)
+            .chain(&after_failure)
+            .copied()
+            .collect::<Vec<_>>();
+        sink.feed(prefix.clone());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while sink.written_samples.load(Ordering::SeqCst) < prefix.len() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "prefix must be confirmed before the disk fault"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(sink.written_samples.load(Ordering::SeqCst), prefix.len());
+        let path = sink.path.clone();
+        sink.feed(failed.clone());
+        sink.feed(after_failure.clone());
+        let mut recorder = Recorder::with_config(RecorderConfig::default()).unwrap();
+        recorder.actual_sample_rate = 16_000;
+        let retained = 63;
+        recorder
+            .buffer
+            .lock()
+            .unwrap()
+            .extend(expected[expected.len() - retained..].iter().copied());
+        recorder
+            .buffer_start_offset
+            .store(expected.len() - retained, Ordering::SeqCst);
+        recorder.spill = Some(sink);
+        let result = recorder.finalize_closed_capture(true);
+        assert!(
+            result.is_err(),
+            "an actual truncated disk write must never certify a complete take"
+        );
+        let error = result.unwrap_err();
+        let evidence = error.downcast_ref::<CaptureArchiveError>().unwrap();
+        assert_eq!(evidence.captured_samples, expected.len());
+        assert_eq!(evidence.written_samples, prefix.len());
+        assert_eq!(
+            evidence.unwritten_samples.as_slice(),
+            [&failed[..], &after_failure[..]].concat()
+        );
+        assert_eq!(
+            evidence.retained_samples.as_slice(),
+            &expected[expected.len() - retained..]
+        );
+        assert_eq!(evidence.source_path.as_deref(), Some(path.as_path()));
+        assert!(std::fs::metadata(&path).unwrap().len() <= 1024);
+        assert_eq!(
+            evidence.complete_pcm().unwrap(),
+            expected,
+            "disk prefix and unconfirmed queue must preserve every sample including silence and tail"
+        );
+        assert!(recorder.archive_error().is_some());
+        assert_eq!(recorder.buffer.lock().unwrap().len(), retained);
+        limits.rlim_cur = limits.rlim_max;
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_FSIZE, &limits) }, 0);
+        let recovered = evidence.recover_complete_archive().unwrap();
+        let decoded = hound::WavReader::open(recovered.path())
+            .unwrap()
+            .samples::<i16>()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(decoded, expected);
+        assert!(
+            path.is_file(),
+            "the failed original must stay recoverable until admission"
+        );
+        recorder.acknowledge_archive_recovery(&recovered).unwrap();
+        assert!(recorder.archive_error().is_none());
+        assert!(recorder.buffer.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn spill_failure_after_ring_eviction_cannot_certify_a_shortened_take() {
         let dir = tempfile::tempdir().unwrap();
