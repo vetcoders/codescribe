@@ -136,8 +136,8 @@ final class OverlayRecordingLightTests: XCTestCase {
         "No coverage measurement was recorded for this take."
       ),
       (
-        coverage(.incomplete, speech: 32_000, covered: 29_440), "Speech had no words",
-        "Codescribe detected speech that no recognizer turned into words; its timing is unavailable for this take."
+        coverage(.incomplete, speech: 32_000, covered: 29_440), "Text verification incomplete",
+        "Text verification is incomplete; this receipt provides no usable uncovered speech interval. You can review and recover the available text."
       ),
       (
         coverage(.unavailable, reason: .notObserved), "Speech coverage not measured",
@@ -174,25 +174,25 @@ final class OverlayRecordingLightTests: XCTestCase {
       return receipt
     }
     let one = OverlayWarningCopy.sealRefused(gaps([(576_000, 638_400)]), sampleRateHz: 48_000)
-    XCTAssertEqual(one.chip, "1.3 s of speech had no words · 0:12")
+    XCTAssertEqual(one.chip, "1.3 s of speech not covered · 0:12")
     XCTAssertEqual(
       one.sentence,
-      "Codescribe heard speech at 0:12–0:14 that no recognizer turned into words — it may have been cut off, noise or the microphone."
+      "Committed text does not cover measured speech at 0:12–0:14; you can review and recover the available text."
     )
     let two = OverlayWarningCopy.sealRefused(
       gaps([(928_000, 939_200), (192_000, 208_000)]), sampleRateHz: 16_000)
-    XCTAssertEqual(two.chip, "1.7 s of speech had no words · 0:12, 0:58")
+    XCTAssertEqual(two.chip, "1.7 s of speech not covered · 0:12, 0:58")
     let long = OverlayWarningCopy.sealRefused(gaps([(1_040_000, 1_056_000)]), sampleRateHz: 16_000)
-    XCTAssertEqual(long.chip, "1.0 s of speech had no words · 1:05")
+    XCTAssertEqual(long.chip, "1.0 s of speech not covered · 1:05")
     let tiny = OverlayWarningCopy.sealRefused(gaps([(0, 1_000)]), sampleRateHz: 48_000)
-    XCTAssertEqual(tiny.chip, "under 0.1 s of speech had no words · 0:00")
+    XCTAssertEqual(tiny.chip, "under 0.1 s of speech not covered · 0:00")
     for rate in [nil, UInt32(0)] {
       XCTAssertEqual(
         OverlayWarningCopy.sealRefused(gaps([(0, 16_000)]), sampleRateHz: rate).chip,
-        "Speech had no words", "no clock, no invented position")
+        "Speech coverage incomplete", "no clock, no invented position")
     }
     XCTAssertEqual(
-      OverlayWarningCopy.sealRefused(gaps([]), sampleRateHz: 16_000).chip, "Speech had no words")
+      OverlayWarningCopy.sealRefused(gaps([]), sampleRateHz: 16_000).chip, "Text verification incomplete")
   }
 
   /// The live chip reads the take's own clock from the receipt it shows.
@@ -213,7 +213,7 @@ final class OverlayRecordingLightTests: XCTestCase {
       reducerAction: "session_ended", canCopy: true, acousticReceipts: [acoustic],
       sealCoverage: receipt)
     state.applyTranscriptProjection(projection)
-    XCTAssertEqual(state.footerWarning?.chip, "1.3 s of speech had no words · 0:12")
+    XCTAssertEqual(state.footerWarning?.chip, "1.3 s of speech not covered · 0:12")
     XCTAssertEqual(state.coverageRefusalNotice, state.footerWarning?.sentence)
     XCTAssertTrue(state.coverageRefusalNotice?.contains("0:12–0:14") == true)
   }

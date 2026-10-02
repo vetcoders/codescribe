@@ -294,6 +294,8 @@ async fn transcribe_external(
         None
     };
     let api_key = auth.as_ref().map_or(api_key, |auth| auth.bearer.as_str());
+    #[cfg(test)]
+    tests::pause_before_cloud_source_open(&canonical_path).await;
     if endpoint_url.ends_with(":stream") {
         // NDJSON streaming HTTP: the file is decoded and sent in segments, so
         // the whole-file upload cap of the multipart lane does not apply.
@@ -869,15 +871,38 @@ async fn transcribe_multipart_request(url: &str, api_key: &str, form: Form) -> R
 /// Unit tests for audio preflight, retry classification, serde.
 #[cfg(test)]
 mod tests {
+    struct CloudSourceOpenBarrier {
+        arrived: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+    }
+
+    type CloudSourcePause = Option<(std::path::PathBuf, std::sync::Arc<CloudSourceOpenBarrier>)>;
+    static CLOUD_SOURCE_PAUSE: std::sync::Mutex<CloudSourcePause> = std::sync::Mutex::new(None);
+
+    // Private fault injection at the actual final pathname consumer. This is
+    // compiled only into tests and never creates an application state owner.
+    pub(super) async fn pause_before_cloud_source_open(path: &std::path::Path) {
+        let pause = CLOUD_SOURCE_PAUSE
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|(expected, _)| expected == path)
+            .map(|(_, pause)| pause.clone());
+        if let Some(pause) = pause {
+            pause.arrived.notify_one();
+            pause.release.notified().await;
+        }
+    }
+
     #[tokio::test]
-    async fn a_direct_cloud_file_reader_prevents_expiry_until_its_awaited_work_settles() {
+    async fn a_direct_cloud_reader_protects_its_path_until_the_last_source_open() {
         use crate::config::{AudioRetention, Config};
         use crate::state::history::audio_retention::{
             begin_capture, capture, finish_capture, maintain,
         };
         use std::time::{Duration, SystemTime};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let name = "a_direct_cloud_file_reader_prevents_expiry_until_its_awaited_work_settles";
+        let name = "a_direct_cloud_reader_protects_its_path_until_the_last_source_open";
         if std::env::var("CS_PRIVATE_CLOUD_READER_CHILD")
             .ok()
             .as_deref()
@@ -916,12 +941,16 @@ mod tests {
         producer
             .record(std::slice::from_ref(&source), false)
             .unwrap();
+        let pause = std::sync::Arc::new(CloudSourceOpenBarrier {
+            arrived: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        *CLOUD_SOURCE_PAUSE.lock().unwrap() = Some((source.canonicalize().unwrap(), pause.clone()));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!(
             "http://{}/v1/audio/transcriptions",
             listener.local_addr().unwrap()
         );
-        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
@@ -952,7 +981,6 @@ mod tests {
                 assert!(count > 0);
                 bytes.extend_from_slice(&chunk[..count]);
             }
-            ready_tx.send(()).unwrap();
             tokio::time::timeout(Duration::from_secs(5), release_rx)
                 .await
                 .unwrap()
@@ -969,9 +997,8 @@ mod tests {
             tokio::spawn(
                 async move { transcribe_cloud(&read_source, Some("pl"), &endpoint, "").await },
             );
-        tokio::time::timeout(Duration::from_secs(3), ready_rx)
+        tokio::time::timeout(Duration::from_secs(3), pause.arrived.notified())
             .await
-            .unwrap()
             .unwrap();
         finish_capture(&root, id);
         drop(producer);
@@ -995,18 +1022,20 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         release_tx.send(()).unwrap();
+        pause.release.notify_one();
         let result = tokio::time::timeout(Duration::from_secs(3), reader)
             .await
             .unwrap()
-            .unwrap()
             .unwrap();
-        server.await.unwrap();
-        assert_eq!(result.text, "complete take");
+        server.abort();
+        let _ = server.await;
+        *CLOUD_SOURCE_PAUSE.lock().unwrap() = None;
         assert_eq!(
             expired, 0,
-            "direct awaited cloud reader lost its owned source during the operation"
+            "the source expired before the cloud reader could open it"
         );
         assert!(deferred > 0);
+        assert_eq!(result.unwrap().text, "complete take");
         assert!(source.exists());
         let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
         while source.exists() {
