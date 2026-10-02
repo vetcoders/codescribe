@@ -1948,7 +1948,7 @@
 
     },
     "JetBrains Mono — meta 11" : {
-
+      "shouldTranslate" : false
     },
     "Jump to current" : {
 
@@ -1978,7 +1978,8 @@
       "comment" : "Settings tab: LLM request lanes"
     },
     "Lab" : {
-      "comment" : "Settings section: developer experiments"
+      "comment" : "Settings section: developer experiments",
+      "shouldTranslate" : false
     },
     "Lab mode" : {
       "shouldTranslate" : false
@@ -2268,7 +2269,7 @@
 
     },
     "Native container" : {
-
+      "shouldTranslate" : false
     },
     "Native substrate vs enrichment providers (IntelliJ optional)." : {
 
@@ -3374,10 +3375,10 @@
       "comment" : "The placeholder is a transcription engine name, e.g. Whisper"
     },
     "Space Grotesk — body 14" : {
-
+      "shouldTranslate" : false
     },
     "Space Grotesk — body 18" : {
-
+      "shouldTranslate" : false
     },
     "Spawn the server and list its tools" : {
 
@@ -3386,7 +3387,7 @@
       "comment" : "Read aloud"
     },
     "Speak in. Code out." : {
-
+      "shouldTranslate" : false
     },
     "Speak naturally" : {
 
@@ -3628,7 +3629,7 @@
       "comment" : "The placeholder is an input device name"
     },
     "System surfaces own their material and borders." : {
-
+      "shouldTranslate" : false
     },
     "Tag transcripts for AI agents" : {
 
@@ -4019,7 +4020,8 @@
       "shouldTranslate" : false
     },
     "Voice Lab…" : {
-      "comment" : "Tray row: opens the Voice Lab console"
+      "comment" : "Tray row: opens the Voice Lab console",
+      "shouldTranslate" : false
     },
     "Voice chat" : {
       "comment" : "Fallback title for a dictated thread"
@@ -4216,7 +4218,8 @@
       "comment" : "Setup chapter subtitle; Codescribe is the product name"
     },
     "You use dev power mode" : {
-      "comment" : "Corner mark on a developer build while Voice Lab power mode is on"
+      "comment" : "Corner mark on a developer build while Voice Lab power mode is on",
+      "shouldTranslate" : false
     },
     "You · %@" : {
 

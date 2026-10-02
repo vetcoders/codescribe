@@ -116,8 +116,9 @@ file paths, URLs, environment variable names, model and vendor identifiers,
 sample values, and glue such as `"\(a) · \(b)"` use `Text(verbatim:)` — or a
 non-literal `String` for other APIs.
 
-A screen that only developer builds show (the Lab pane) is different: its copy
-is ordinary English and is extracted like any other. Its keys carry
+Copy that only a developer build shows — the Lab pane, the rows behind
+`DeveloperSurface`, the samples in `DesignGallery` — is different: it is
+ordinary English and is extracted like any other. Its keys carry
 `shouldTranslate: false` in the catalog, so no translation is owed for them and
 the lint does not count them. The mark belongs to keys no shipped screen uses;
 remove it when one starts to.
