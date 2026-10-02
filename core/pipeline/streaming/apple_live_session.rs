@@ -21673,31 +21673,79 @@ mod relay_l1_overlap_admission_tests {
     }
 
     fn window_stub_waits_for_next_window(mode: BufferMode) {
-        let session = &mode.session("forensic-stub");
-        let (mut lane, owner, requests) = forensic_lane_in(mode, session, &[]);
-        let end = requests[0].provider_request.identity.range.sample_end;
+        let session = &mode.session("forensic-one-physical-word");
+        let (_, _, clock_requests) = forensic_lane_in(mode, "forensic-one-word-clock", &[]);
+        let end = clock_requests[0].provider_request.identity.range.sample_end;
+        let mut lane = open(session);
+        if mode == BufferMode::Adaptive {
+            lane.state.layer1_coalesce = Layer1Coalesce::adaptive();
+        }
+        let owner = OccurrenceIdentity::new(session, 1, 0, 200_000);
+        let mut input = piece(1, &owner, "");
+        input.audio.fill(0.0);
+        input.audio[(end - 3_500) as usize..(end + 1_500) as usize].fill(0.2);
+        record_energy(
+            &lane,
+            &input
+                .audio
+                .chunks(1_000)
+                .map(<[f32]>::to_vec)
+                .collect::<Vec<_>>(),
+        );
+        record_silero(&mut lane, 200_000, Some((end - 3_500, end + 1_500)));
+        qualify_unlabelled(&mut lane, &owner);
+        let pcm = input.audio.clone();
+        assert!(lane.state.enqueue_layer1_piece(&lane.tx, input));
+        let requests = take_requests(&mut lane.tail_rx);
+        assert!(requests.len() >= 2);
+        for request in &requests {
+            let range = &request.provider_request.identity.range;
+            assert_eq!(
+                request.audio,
+                pcm[range.sample_start as usize..range.sample_end as usize]
+            );
+        }
         lane.state.complete_whisper_window(
             &lane.tx,
             completion(
                 &requests[0],
-                vec![word_pin(session, "ludzi", end - 4_000, end)],
+                vec![word_pin(session, "Iwo", end - 4_000, end)],
             ),
             12.5,
         );
-        let events = drain(&mut lane.rx);
-        assert!(unanchored_label(&events, "ludzi"));
-        assert!(held_text(&lane, &owner).is_none_or(|text| !text.contains("ludzi")));
+        assert!(held_text(&lane, &owner).is_none_or(|text| !text.contains("Iwo")));
         lane.state.complete_whisper_window(
             &lane.tx,
             completion(
                 &requests[1],
-                vec![word_pin(session, "ludzi", end + 1_000, end + 36_000)],
+                vec![word_pin(session, "Iwo", end - 4_000, end + 2_000)],
             ),
             12.5,
         );
         lane.state
             .return_outstanding_whisper_without_label(&lane.tx);
-        assert_eq!(held_text(&lane, &owner).as_deref(), Some("ludzi"));
+        let ledger = lane.state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&owner), Some("Iwo"));
+        let slots = ledger.slots_of(&owner).unwrap();
+        assert_eq!(slots.len(), 1);
+        assert_eq!(
+            (slots[0].sample_start, slots[0].sample_end),
+            (end - 4_000, end + 2_000)
+        );
+        assert!(lane.state.pending_whisper_stubs.is_empty());
+        assert!(
+            ledger.layer_trail().iter().any(|entry| {
+                entry.candidate_label == "Iwo"
+                    && matches!(
+                        entry.decision,
+                        MutationReceipt::Refuse {
+                            reason: RefuseReason::ReplacedByWhisper,
+                            ..
+                        }
+                    )
+            }),
+            "the prior pin must receive an explicit same-PCM retirement receipt"
+        );
     }
 
     // Integrator (2026-10-01, take 2bcb99f9): the last word of a decode, cut
