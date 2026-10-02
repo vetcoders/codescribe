@@ -10414,7 +10414,13 @@ mod tests {
         let formatter =
             ObservationIdentity::new(ObservationProducer::Formatter, 2, 0, occurrence.clone());
         let receipt = ledger.lock().unwrap().admit(&formatter, "Iwo");
-        assert!(matches!(receipt, MutationReceipt::Preserve { .. }));
+        assert!(matches!(
+            receipt,
+            MutationReceipt::Refuse {
+                reason: codescribe_core::pipeline::acoustic_ledger::RefuseReason::AuthorityConflict,
+                ..
+            }
+        ));
         emitter.on_event(&EngineEvent::LedgerMutation {
             observation: formatter,
             label: "Iwo".into(),

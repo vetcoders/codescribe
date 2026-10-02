@@ -836,12 +836,25 @@ fn p0_b_terminal_seal_fences_automatic_mutation_but_allows_manual_provenance() {
         matches!(
             automatic,
             MutationReceipt::Refuse {
-                reason: RefuseReason::SealedReplay,
+                reason: RefuseReason::AuthorityConflict,
                 ..
             }
         ),
         "P0-B RED — missing ledger seal predicate/path: terminal Bus seal did not fence automatic formatter mutation; got {automatic:?}"
     );
+
+    // Formatter lacks Raw authority even before finality. Independently check
+    // that the terminal seal also fences an otherwise acoustic producer.
+    let acoustic =
+        ObservationIdentity::new(ObservationProducer::Whisper, 8_002, 1, occurrence.clone());
+    let acoustic_late = ledger.admit(&acoustic, "Ivo");
+    assert!(matches!(
+        acoustic_late,
+        MutationReceipt::Refuse {
+            reason: RefuseReason::SealedReplay,
+            ..
+        }
+    ));
 
     let manual = ObservationIdentity::new(ObservationProducer::ManualHuman, 9_001, 1, occurrence);
     assert!(
