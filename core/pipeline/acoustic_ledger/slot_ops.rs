@@ -2146,23 +2146,49 @@ mod slot_ops_tests {
                 "czy plan weryfikowałeś",
             );
             let sources = ledger.slots_of(&owner()).unwrap().to_vec();
-            if via_label {
-                ledger.admit_pinned_label(
-                    &observation(ObservationProducer::Formatter, 1),
-                    "czy weryfikowałeś dokładnie",
-                    &[],
-                );
+            let operations = ledger.slot_operations().len();
+            let formatter = observation(ObservationProducer::Formatter, 1);
+            let candidate = "czy weryfikowałeś dokładnie";
+            let receipt = if via_label {
+                ledger.admit_pinned_label(&formatter, candidate, &[])
             } else {
-                ledger.admit_word_slots(
-                    &observation(ObservationProducer::Formatter, 1),
-                    &[WordPin::new(0, 16_000, "czy weryfikowałeś dokładnie")],
-                );
-            }
+                ledger.admit_word_slots(&formatter, &[WordPin::new(0, 16_000, candidate)])
+            };
+            // Both entry paths deny Raw authority. A word batch records its
+            // protected-source refusal before the shared label decision.
+            let expected_reason = if via_label {
+                super::super::RefuseReason::AuthorityConflict
+            } else {
+                super::super::RefuseReason::SlotAdmissionRejected
+            };
+            assert!(matches!(
+                receipt,
+                MutationReceipt::Refuse {
+                    reason,
+                    ..
+                } if reason == expected_reason
+            ));
             assert_eq!(ledger.slots_of(&owner()).unwrap(), sources);
-            assert_eq!(
-                ledger.slot_alternatives().last().unwrap().reason,
-                "protected_source"
+            assert_eq!(ledger.slot_operations().len(), operations);
+            assert!(
+                ledger
+                    .layer_trail_for(&owner())
+                    .any(|entry| entry.producer() == ObservationProducer::Formatter
+                        && entry.candidate_label == candidate
+                        && matches!(
+                            entry.decision,
+                            MutationReceipt::Refuse {
+                                reason,
+                                ..
+                            } if reason == expected_reason
+                        ))
             );
+            if !via_label {
+                let alternative = ledger.slot_alternatives().last().unwrap();
+                assert_eq!(alternative.candidate, candidate);
+                assert_eq!(alternative.sources, sources);
+                assert_eq!(alternative.reason, "protected_source");
+            }
             assert_eq!(ledger.conservation().residue(), 0);
         }
     }
@@ -2486,6 +2512,7 @@ mod slot_ops_tests {
             WordPin::new(0, 1_000, "plan"),
             WordPin::new(2_000, 4_000, "weryfikowałeś"),
         ]);
+        let original = ledger.slots_of(&owner()).unwrap().to_vec();
         ledger.admit_word_slots(
             &observation(ObservationProducer::Whisper, 1),
             &[
@@ -2495,12 +2522,38 @@ mod slot_ops_tests {
         );
         assert_eq!(ledger.text_of(&owner()), Some("plan zweryfikowałeś kod"));
         let slots = ledger.slots_of(&owner()).unwrap();
-        assert_eq!((slots[1].sample_start, slots[1].sample_end), (2_000, 4_000));
-        assert_eq!(slots[1].producer, ObservationProducer::Whisper);
         assert_eq!(
-            ledger.slot_operations().last().unwrap().kind,
-            SlotOperationKind::Insert
+            slots[0], original[0],
+            "an omitted physical word remains held"
         );
+        assert_eq!((slots[1].sample_start, slots[1].sample_end), (2_050, 4_050));
+        let correction = ledger
+            .slot_operations()
+            .iter()
+            .find(|operation| {
+                operation.kind == SlotOperationKind::Correct
+                    && operation.outputs.contains(&slots[1])
+            })
+            .expect("the stronger word keeps an explicit correction lineage");
+        assert_eq!(correction.sources, vec![original[1].clone()]);
+        assert!(
+            correction
+                .source_ranges
+                .iter()
+                .any(|range| range.sample_start == 2_000 && range.sample_end == 4_000)
+        );
+        assert_eq!(slots[1].producer, ObservationProducer::Whisper);
+        let insertion = ledger
+            .slot_operations()
+            .iter()
+            .find(|operation| {
+                operation.kind == SlotOperationKind::Insert
+                    && operation.outputs == [slots[2].clone()]
+            })
+            .expect("the new word has its own insertion receipt");
+        assert!(insertion.sources.is_empty());
+        assert_eq!(slots[2].producer, ObservationProducer::Whisper);
+        assert_eq!((slots[2].sample_start, slots[2].sample_end), (5_000, 6_000));
         assert_eq!(ledger.conservation().residue(), 0);
     }
 
