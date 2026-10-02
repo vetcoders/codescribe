@@ -1580,6 +1580,27 @@ reload = "restart"
 category = "test"
 description = "Enable heavy local Whisper STT E2E suites"
 
+[vars.CS_PRIVATE_CLOUD_READER_CHILD]
+default = ""
+type = "string"
+reload = "restart"
+category = "test"
+description = "Integrator test-binary subprocess selector for isolated cloud source-reader acceptance. Read only in test code; leave unset outside that harness."
+
+[vars.CS_PRIVATE_RETENTION_CHILD]
+default = ""
+type = "string"
+reload = "restart"
+category = "test"
+description = "Integrator test-binary subprocess selector for isolated retention acceptance. Read only in test code; leave unset outside that harness."
+
+[vars.CS_PRIVATE_RECOVERY_CHILD]
+default = ""
+type = "string"
+reload = "restart"
+category = "test"
+description = "Integrator test-binary subprocess selector for isolated capture archive recovery acceptance. Read only in test code; leave unset outside that harness."
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # ASSISTIVE CONTEXT CAPTURE
 # ═══════════════════════════════════════════════════════════════════════════════
