@@ -17,8 +17,8 @@ use codescribe_core::pipeline::acoustic_ledger::{
     AcousticLedger, AcousticSerial, ConsultationPresentationInput, ConsultationPresentationReceipt,
     DocumentRevisionProvenance, IncrementalShapingInput, IncrementalShapingReceipt,
     LedgerSealReceipt, ManualDocumentRevisionReceipt, MutationReceipt, NoAuthorityReason,
-    ObservationIdentity, ObservationProducer, OccurrenceIdentity, RefuseReason, SealCoverageReceipt,
-    SlotAlternative, TranscriptComparisonReceipt,
+    ObservationIdentity, ObservationProducer, OccurrenceIdentity, RefuseReason,
+    SealCoverageReceipt, SlotAlternative, TranscriptComparisonReceipt,
 };
 use codescribe_core::pipeline::contracts::{
     ClosedApplePhrase, DeltaSink, EngineEvent, EventSink, SpeechIntegrity, SpeechIntegrityPhase,
@@ -1112,15 +1112,19 @@ impl TranscriptReducer {
             if let Some(owner) = self.evidence_covering(range, evidence.reason) {
                 paint
                     .visible_words
-                    .extend(evidence.text.split_whitespace().enumerate().map(|(offset, word)| {
-                        VisibleWord {
-                            word: word.to_string(),
-                            preview_rev: None,
-                            source: VisibleWordSource::Unanchored(evidence.observation.clone()),
-                            offset,
-                            covered_by: Some(owner.clone()),
-                        }
-                    }));
+                    .extend(
+                        evidence
+                            .text
+                            .split_whitespace()
+                            .enumerate()
+                            .map(|(offset, word)| VisibleWord {
+                                word: word.to_string(),
+                                preview_rev: None,
+                                source: VisibleWordSource::Unanchored(evidence.observation.clone()),
+                                offset,
+                                covered_by: Some(owner.clone()),
+                            }),
+                    );
             }
         }
         paint
@@ -1153,11 +1157,10 @@ impl TranscriptReducer {
         observation: &ObservationIdentity,
         receipt: &MutationReceipt,
     ) {
-        let Some(decision) = ledger
-            .layer_trail()
-            .iter()
-            .rev()
-            .find(|decision| decision.observation == *observation && decision.decision == *receipt)
+        let Some(decision) =
+            ledger.layer_trail().iter().rev().find(|decision| {
+                decision.observation == *observation && decision.decision == *receipt
+            })
         else {
             return;
         };
@@ -1173,7 +1176,11 @@ impl TranscriptReducer {
                 && receipt.grants_mutation()
                 && offered_owner == &observation.occurrence;
             let silence_disposition = ledger.word_deletions().iter().any(|deletion| {
-                deletion.operation.observation.occurrence.same_capture(range)
+                deletion
+                    .operation
+                    .observation
+                    .occurrence
+                    .same_capture(range)
                     && deletion.verdict.target() == range
             });
             // A different observation on overlapping audio is not an answer to
@@ -1287,7 +1294,10 @@ impl TranscriptReducer {
         receipt: &MutationReceipt,
     ) -> Option<TranscriptRevision> {
         let capture_owner = self.document_by_occurrence.keys().next().or_else(|| {
-            self.unanchored_evidence.keys().next().map(|(range, _)| range)
+            self.unanchored_evidence
+                .keys()
+                .next()
+                .map(|(range, _)| range)
         });
         if capture_owner.is_some_and(|owner| !owner.same_capture(&observation.occurrence)) {
             return None;
