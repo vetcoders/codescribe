@@ -798,27 +798,30 @@ fn discover_corpus_with_read_root(
     let mut audio_leases = Vec::new();
     for root in roots {
         #[cfg(unix)]
-        let (root, mut lease, owned_root) = match
-            codescribe_core::state::history::audio_retention::AudioReadLease::acquire_for_path(
+        let (root, mut lease, owned_root) =
+            match codescribe_core::state::history::audio_retention::AudioReadLease::acquire_for_path(
                 _audio_read_root,
                 _audio_read_root,
-            )
-        {
-            Ok((owned_root, lease)) => {
-                // Keep the pinned store locked while resolving a supplied root,
-                // including an alias or an ancestor of the store.
-                let root = root.canonicalize().context("resolve corpus root")?;
-                (root, lease, Some(owned_root))
-            }
-            Err(error)
-                if error
-                    .downcast_ref::<io::Error>()
-                    .is_some_and(|error| error.kind() == io::ErrorKind::NotFound) =>
-            {
-                (root.canonicalize().context("resolve corpus root")?, None, None)
-            }
-            Err(error) => return Err(error.context("acquire corpus audio input lease")),
-        };
+            ) {
+                Ok((owned_root, lease)) => {
+                    // Keep the pinned store locked while resolving a supplied root,
+                    // including an alias or an ancestor of the store.
+                    let root = root.canonicalize().context("resolve corpus root")?;
+                    (root, lease, Some(owned_root))
+                }
+                Err(error)
+                    if error
+                        .downcast_ref::<io::Error>()
+                        .is_some_and(|error| error.kind() == io::ErrorKind::NotFound) =>
+                {
+                    (
+                        root.canonicalize().context("resolve corpus root")?,
+                        None,
+                        None,
+                    )
+                }
+                Err(error) => return Err(error.context("acquire corpus audio input lease")),
+            };
         #[cfg(unix)]
         let root = root.as_path();
         #[cfg(unix)]
