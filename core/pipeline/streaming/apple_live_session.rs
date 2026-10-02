@@ -20687,7 +20687,21 @@ mod relay_l1_overlap_admission_tests {
             !ledger.text_recovery_pending(&owner),
             "successful PCM plus silent final fence must survive deferred-word admission"
         );
+        assert_eq!(
+            ledger.frontier_of(&owner).unwrap().open_producers(),
+            vec![ObservationProducer::Lexicon],
+            "the fixture's scheduled L2 has not returned yet"
+        );
+        assert!(!ledger.is_sealed(&owner), "an open L2 must prevent sealing");
+        drop(ledger);
+        close_lexicon(&mut lane, 1, &owner, "Iwo");
+        let ledger = lane.state.acoustic_ledger.lock().unwrap();
         assert!(ledger.is_sealed(&owner));
+        assert_eq!(ledger.text_of(&owner), Some("Iwo"));
+        assert_eq!(
+            ledger.slots_of(&owner).unwrap()[0].producer,
+            ObservationProducer::Whisper
+        );
     }
 
     #[test]
