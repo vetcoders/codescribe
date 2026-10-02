@@ -357,9 +357,7 @@ impl AcousticLedger {
             && self
                 .complete_decoded_words
                 .get(&source.observation)
-                .is_none_or(|ranges| {
-                    ranges.contains(&(source.sample_start, source.sample_end))
-                })
+                .is_none_or(|ranges| ranges.contains(&(source.sample_start, source.sample_end)))
             && source.sample_start <= pin_mid
             && pin_mid < source.sample_end
             && pin.sample_start <= source_mid
@@ -475,8 +473,8 @@ impl AcousticLedger {
                 sources
                     .iter()
                     .filter(|source| {
-                        let midpoint = source.sample_start
-                            + (source.sample_end - source.sample_start) / 2;
+                        let midpoint =
+                            source.sample_start + (source.sample_end - source.sample_start) / 2;
                         word.sample_start <= midpoint
                             && midpoint < word.sample_end
                             && self
@@ -762,7 +760,8 @@ impl AcousticLedger {
                 {
                     for slot in self.slots_of(assigned_owner).unwrap_or(&[]) {
                         if self.word_pin_observations.contains(&slot.observation)
-                            && slot.sample_start == pin.sample_start.max(assigned_owner.sample_start)
+                            && slot.sample_start
+                                == pin.sample_start.max(assigned_owner.sample_start)
                             && slot.sample_end == pin.sample_end.min(assigned_owner.sample_end)
                         {
                             for range in self.slot_source_ranges(slot) {

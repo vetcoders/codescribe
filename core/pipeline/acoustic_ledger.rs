@@ -2228,9 +2228,10 @@ impl AcousticLedger {
                             && alternative.sources.iter().any(|source| {
                                 source.sample_start == rejected.sample_start
                                     && source.sample_end == rejected.sample_end
-                                    && source.observation.occurrence.same_capture(
-                                        &rejected.observation.occurrence,
-                                    )
+                                    && source
+                                        .observation
+                                        .occurrence
+                                        .same_capture(&rejected.observation.occurrence)
                             })
                     });
                     let recovery_pins = if partial_source {
@@ -2295,13 +2296,13 @@ impl AcousticLedger {
                             && (source.producer != alternative.observation.producer
                                 || source.observation.generation
                                     < alternative.observation.generation)
-                            && self.slots_of(&observation.occurrence)
+                            && self
+                                .slots_of(&observation.occurrence)
                                 .is_some_and(|held| held.contains(source))
                     })
             });
-        let recovery_accounted = whole_owner_recovery
-            || !self.text_recovery_pending(&observation.occurrence)
-            || {
+        let recovery_accounted =
+            whole_owner_recovery || !self.text_recovery_pending(&observation.occurrence) || {
                 let pins = self
                     .slots_of(&observation.occurrence)
                     .unwrap_or(&[])
