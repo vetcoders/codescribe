@@ -112,14 +112,22 @@ pub(super) fn stop(g: &mut Grammar, body: &Block) {
                 "observational drop branch",
             ),
             (
-                parse_quote!(let stopped = match self.release_take_pcm_feed() {
-                    TakeFeedRelease::LastSubscriber | TakeFeedRelease::NoTakeFeed => {
-                        self.recorder.stop().await
+                parse_quote!(let release = self.release_take_pcm_feed();),
+                "release take feed before selecting capture archive result",
+            ),
+            (
+                parse_quote!(let stopped = if let Some(prepared) = self.prepared_capture_archive.take() {
+                    prepared
+                } else {
+                    match release {
+                        TakeFeedRelease::LastSubscriber | TakeFeedRelease::NoTakeFeed => {
+                            self.recorder.stop().await
+                        }
+                        TakeFeedRelease::CaptureShared => Ok(None),
                     }
-                    TakeFeedRelease::CaptureShared => Ok(None),
                 };),
-                "release take feed; only the last subscriber awaits recorder stop; \
-                 retain error without question-mark exit",
+                "consume prepared archive result unchanged, otherwise stop only unshared capture; \
+                 retain either result without question-mark exit",
             ),
             (
                 Stmt::Expr(parse_quote!(self.complete_stop(stopped).await), None),
