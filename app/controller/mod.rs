@@ -3793,9 +3793,18 @@ impl RecordingController {
                 Some(projection_callback),
             )
             .with_cursor_observer(Arc::new(move |projection| {
+                // The overlay receives the complete paint snapshot. Only the
+                // cursor badge shortens it to the same five-word tail as before.
+                let mut tail = projection
+                    .text
+                    .split_whitespace()
+                    .rev()
+                    .take(5)
+                    .collect::<Vec<_>>();
+                tail.reverse();
                 crate::os::hold_badge::update_transcript(
                     cursor_token,
-                    &projection.text,
+                    &tail.join(" "),
                     projection.degraded,
                 );
                 match serde_json::to_string(projection) {

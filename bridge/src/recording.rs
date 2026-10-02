@@ -367,6 +367,8 @@ pub struct CsCompactProjection {
     pub session_id: String,
     pub capture_epoch: u64,
     pub sequence: u64,
+    /// Full engine-composed ephemeral paint for the one live canvas. This is
+    /// independent of the committed transcript callback and delivery text.
     pub text: String,
     pub degraded: bool,
     /// Read-only unanchored text beside the canvas, in PCM order. Swift paints

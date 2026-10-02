@@ -33,7 +33,7 @@ use tracing::{debug, info};
 
 use super::transcript_bus::{TranscriptBus, TranscriptBusEvidenceEvent};
 
-/// Read-only cursor paint observer: bounded text and acoustic warning state.
+/// Read-only capture paint observer: full overlay text and acoustic warning state.
 pub type CursorObserver = Arc<dyn Fn(&CompactProjection) + Send + Sync>;
 
 /// Passive paint from one opened capture. Sequence 1 binds the display before
@@ -43,6 +43,8 @@ pub struct CompactProjection {
     pub session_id: String,
     pub capture_epoch: u64,
     pub sequence: u64,
+    /// Complete ephemeral canvas snapshot. Cursor surfaces bound this text at
+    /// their own paint boundary; no consumer may use it as committed delivery.
     pub text: String,
     pub degraded: bool,
     /// Every unanchored text of this capture, in PCM order. It is painted
@@ -2311,8 +2313,8 @@ pub struct PresentationEmitter {
     cursor_capture: std::sync::OnceLock<(String, u64)>,
     cursor_sequence: std::sync::Mutex<u64>,
     cursor_integrity: std::sync::Mutex<Option<SpeechIntegrity>>,
-    /// Last bounded paint, not a document or independently reconstructed delta.
-    cursor_tail: std::sync::Mutex<String>,
+    /// Last full paint, not a document or independently reconstructed delta.
+    cursor_paint: std::sync::Mutex<String>,
     active_presentation: Arc<std::sync::Mutex<bool>>,
     cmd_tx: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<EmitterCmd>>>,
     cmd_handle: Option<tokio::task::JoinHandle<()>>,
@@ -2600,7 +2602,7 @@ impl PresentationEmitter {
             cursor_capture: std::sync::OnceLock::new(),
             cursor_sequence: std::sync::Mutex::new(0),
             cursor_integrity: std::sync::Mutex::new(None),
-            cursor_tail: std::sync::Mutex::new(String::new()),
+            cursor_paint: std::sync::Mutex::new(String::new()),
             active_presentation,
             #[cfg(test)]
             paint_commands: std::sync::Mutex::new(Vec::new()),
@@ -2640,13 +2642,7 @@ impl PresentationEmitter {
         if self.cursor_observer.is_none() {
             return;
         }
-        let mut words = rendered
-            .split_whitespace()
-            .rev()
-            .take(5)
-            .collect::<Vec<_>>();
-        words.reverse();
-        *self.cursor_tail.lock().unwrap_or_else(|e| e.into_inner()) = words.join(" ");
+        *self.cursor_paint.lock().unwrap_or_else(|e| e.into_inner()) = rendered.to_owned();
         self.repaint_cursor();
     }
 
@@ -2678,7 +2674,7 @@ impl PresentationEmitter {
                     | SpeechIntegrityPhase::Unresolved
             )
         });
-        let tail = self.cursor_tail.lock().unwrap_or_else(|e| e.into_inner());
+        let paint = self.cursor_paint.lock().unwrap_or_else(|e| e.into_inner());
         // Snapshot under the sequence lock so a later sequence can never carry
         // older evidence. Callers never hold the reducer lock while painting.
         let state = self
@@ -2712,10 +2708,10 @@ impl PresentationEmitter {
                 sequence: next,
                 // Earlier recovery debt must not hide words arriving now. Amber
                 // stays authoritative until that debt is actually resolved.
-                text: if degraded && tail.is_empty() {
+                text: if degraded && paint.is_empty() {
                     "…".into()
                 } else {
-                    tail.clone()
+                    paint.clone()
                 },
                 degraded,
                 evidence,

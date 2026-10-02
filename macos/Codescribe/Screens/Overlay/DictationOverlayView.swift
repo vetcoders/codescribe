@@ -795,6 +795,25 @@ struct DictationOverlayView: View {
     }
   }
 
+  /// The accepted capture snapshot paints the same canvas while listening.
+  /// It never changes the committed text or the human revision draft. Session,
+  /// epoch and sequence admission remain in OverlayState's existing consumer.
+  private var livePaint: CsCompactProjection? {
+    guard !state.terminal, state.mode == .listening || state.mode == .finalizing,
+      !state.isEditingTranscript, !state.isRevisionDraftDirty,
+      let paint = state.compactProjection
+    else { return nil }
+    if let document = state.latestTranscriptProjection,
+      document.sessionId != paint.sessionId
+    {
+      return nil
+    }
+    // Exact committed bytes keep their confidence styling. Only a differing
+    // ephemeral snapshot needs uncommitted paint and invalidates those ranges.
+    guard !paint.text.utf8.elementsEqual(state.canvasText.utf8) else { return nil }
+    return paint
+  }
+
   /// Native live transcript: follows the newest words until the user clicks or
   /// selects an older phrase. The `NSTextView` keeps that selection stable across
   /// ongoing stream updates, so drag selection, Cmd-C and context-menu Copy work
@@ -803,8 +822,9 @@ struct DictationOverlayView: View {
   private var transcriptScroll: some View {
     VStack(alignment: .leading, spacing: 0) {
       LiveTranscriptTextView(
-        text: state.canvasText,
-        uncertainWords: state.canvasUncertainWords,
+        text: livePaint?.text ?? state.canvasText,
+        // Committed confidence ranges cannot index an ephemeral snapshot.
+        uncertainWords: livePaint == nil ? state.canvasUncertainWords : [],
         isEditable: state.isTranscriptEditable,
         appearance: palette.appearance,
         showsDiagnostics: showsDiagnostics,
@@ -818,6 +838,9 @@ struct DictationOverlayView: View {
         onPlayUncertainWord: { state.playUncertainWord($0) },
         onTeachUncertainWord: { state.teachUncertainWord($0, canonical: $1) }
       )
+      // Muted live paint is explicitly uncommitted; it is not a confidence
+      // warning and gains no editing or delivery capability from its display.
+      .opacity(livePaint == nil ? 1 : 0.65)
       .modifier(OverlayScrollEdgeEffects())
       .overlay(alignment: .bottomTrailing) {
         // The decorative caret yields to the real insertion point while the
@@ -831,7 +854,9 @@ struct DictationOverlayView: View {
       .frame(minHeight: transcriptMinHeight)
       .accessibilityIdentifier("overlay-transcript-area")
       .accessibilityHint(
-        state.isTranscriptEditable
+        livePaint != nil
+          ? "Live preview. Uncommitted words may change."
+          : state.isTranscriptEditable
           ? "Click to edit. Edits stay local until committed to the transcript ledger."
           : ""
       )
