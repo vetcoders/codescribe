@@ -7,6 +7,65 @@ use std::str::FromStr;
 
 use super::defaults::*;
 
+/// Explicit audio storage policy. Unknown persisted strings preserve audio.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioRetention {
+    /// Expire eligible completed audio after thirty days.
+    #[serde(rename = "30_days")]
+    Days30,
+    /// Expire eligible completed audio after seven days.
+    #[serde(rename = "7_days")]
+    Days7,
+    /// Expire eligible completed audio after twenty-four hours.
+    #[serde(rename = "24h")]
+    Hours24,
+    /// Discard future captures only after processing and readers settle.
+    Off,
+    /// Preserve audio without an age limit; unknown strings select this value.
+    #[default]
+    #[serde(other)]
+    Forever,
+}
+
+impl AudioRetention {
+    /// Settings wire values; this policy has no environment override.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Forever => "forever",
+            Self::Days30 => "30_days",
+            Self::Days7 => "7_days",
+            Self::Hours24 => "24h",
+            Self::Off => "off",
+        }
+    }
+
+    /// Only explicit finite choices expire previously completed owned takes.
+    pub const fn duration_seconds(self) -> Option<u64> {
+        match self {
+            Self::Days30 => Some(30 * 86400),
+            Self::Days7 => Some(7 * 86400),
+            Self::Hours24 => Some(86400),
+            Self::Forever | Self::Off => None,
+        }
+    }
+}
+
+impl FromStr for AudioRetention {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "forever" => Ok(Self::Forever),
+            "30_days" => Ok(Self::Days30),
+            "7_days" => Ok(Self::Days7),
+            "24h" => Ok(Self::Hours24),
+            "off" => Ok(Self::Off),
+            _ => Err("expected forever, 30_days, 7_days, 24h, or off".to_string()),
+        }
+    }
+}
+
 /// Automatic paste policy for Orient dictation (Hold Fn / Globe, Double Left
 /// Option, toggle Finish). One persisted choice, three modes — Founder
 /// 2026-09-25: "tryb safe / comfort / off … to będzie koniec dysputy".
@@ -678,6 +737,9 @@ pub struct Config {
     // ===== Audio =====
     /// Preferred audio input device name (cpal) (optional)
     pub audio_input_device: Option<String>,
+    /// Settings-only choice, frozen at capture start.
+    #[serde(default)]
+    pub audio_retention: AudioRetention,
 
     // ===== History =====
     /// Whether to keep transcription history
@@ -799,6 +861,7 @@ impl Default for Config {
             sound_name: default_sound_name(),
             sound_volume: default_sound_volume(),
             audio_input_device: None,
+            audio_retention: AudioRetention::Forever,
             history_enabled: default_history_enabled(),
             quick_notes_enabled: false,
             quick_notes_save_only: false,

@@ -1827,6 +1827,13 @@ final class SettingsViewModel: ObservableObject {
     }
   }
 
+  var audioRetention: String { settings.audioRetention }
+
+  func setAudioRetention(_ value: String) {
+    // The picker reflects the reloaded effective snapshot, including save failures.
+    persist("AUDIO_RETENTION", value)
+  }
+
   func setAudioInputDevice(_ device: String) {
     settings.audioInputDevice = device
     persist("AUDIO_INPUT_DEVICE", device)

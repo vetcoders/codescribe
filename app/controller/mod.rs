@@ -67,7 +67,7 @@ use crate::presentation::{
 use anyhow::{Context, Result};
 use codescribe_core::llm::ai_formatting::format_text_with_status_for_policy;
 use codescribe_core::pipeline::acoustic_ledger::DocumentRevisionProvenance;
-use codescribe_core::pipeline::contracts::{EngineEvent, EventSink};
+use codescribe_core::pipeline::contracts::EngineEvent;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -304,22 +304,91 @@ fn session_audio_path(root: &std::path::Path, session_id: &str) -> Option<std::p
     valid_session_audio_id(session_id).map(|id| root.join("sessions").join(format!("{id}.wav")))
 }
 
-/// Keep the take WAV under its Bus `session_id` so named followers never
-/// share or overwrite a single slot. Also refresh the latest-take alias.
-fn retain_session_audio(
+/// Freeze storage policy and acquire its read/processing fence before capture.
+async fn begin_audio_capture(id: &str, policy: codescribe_core::config::AudioRetention) -> Result<()> {
+    let root = Config::config_dir();
+    let id = id.to_owned();
+    tokio::task::spawn_blocking(move || {
+        codescribe_core::state::history::audio_retention::begin_capture(&root, &id, policy)
+    }).await.context("audio capture lease worker failed")?
+}
+
+fn finish_audio_capture(id: Option<&str>) {
+    if let Some(id) = retainable_session_id(id) {
+        codescribe_core::state::history::audio_retention::finish_capture(&Config::config_dir(), id);
+    }
+}
+
+/// Keep full audio independently of transcript outcome on a blocking worker.
+async fn retain_session_audio(
     session_id: Option<&str>,
     path: &std::path::Path,
     transcript: codescribe_core::state::SessionTranscriptArchive<'_>,
 ) {
-    if let Err(error) = retain_session_audio_at(
-        session_id,
-        path,
-        transcript,
-        &Config::config_dir(),
-        codescribe_core::state::archive_session_take_from_file,
-    ) {
-        warn!("{error:#}");
+    let lease = retainable_session_id(session_id).and_then(|id| {
+        codescribe_core::state::history::audio_retention::capture(&Config::config_dir(), id)
+    });
+    retain_session_audio_with_lease(session_id, path, transcript, lease).await;
+}
+
+async fn retain_session_audio_with_lease(
+    session_id: Option<&str>,
+    path: &std::path::Path,
+    transcript: codescribe_core::state::SessionTranscriptArchive<'_>,
+    lease: Option<Arc<codescribe_core::state::history::audio_retention::CaptureLease>>,
+) {
+    use codescribe_core::state::SessionTranscriptArchive;
+    let session_id = session_id.map(str::to_owned);
+    let path = path.to_path_buf();
+    let (text, unavailable) = match transcript {
+        SessionTranscriptArchive::Committed(text) => (Some(text.to_string()), false),
+        SessionTranscriptArchive::NoSpeech => (None, false),
+        SessionTranscriptArchive::Unavailable(reason) => (Some(reason.to_string()), true),
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        let transcript = if unavailable {
+            SessionTranscriptArchive::Unavailable(text.as_deref().unwrap_or_default())
+        } else if let Some(text) = text.as_deref() {
+            SessionTranscriptArchive::Committed(text)
+        } else {
+            SessionTranscriptArchive::NoSpeech
+        };
+        retain_owned_session_audio(session_id.as_deref(), &path, transcript, lease.as_deref())
+    }).await;
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::error!("{error:#}"),
+        Err(error) => tracing::error!(%error, "audio retention worker failed; source preserved"),
     }
+}
+
+fn retain_owned_session_audio(
+    session_id: Option<&str>,
+    path: &std::path::Path,
+    transcript: codescribe_core::state::SessionTranscriptArchive<'_>,
+    lease: Option<&codescribe_core::state::history::audio_retention::CaptureLease>,
+) -> Result<()> {
+    let root = Config::config_dir();
+    let mut daily_audio = None;
+    let result = retain_session_audio_at(session_id, path, transcript, &root, |source, text| {
+        daily_audio = codescribe_core::state::archive_session_take_from_file(source, text);
+        daily_audio.clone()
+    });
+    if let Some(lease) = lease {
+        if result.is_err() { lease.protect_retry(); }
+        let mut owned = vec![path.to_path_buf()];
+        if let Some(id) = retainable_session_id(session_id)
+            && let Some(session) = session_audio_path(&root, id)
+        {
+            owned.push(session);
+        }
+        if let Some(daily) = daily_audio { owned.push(daily); }
+        if let Err(error) = lease.record(&owned, false) {
+            lease.protect_retry();
+            return Err(error.context("audio ownership receipt refused; source preserved"));
+        }
+    }
+    result
 }
 
 /// Same archive/copy path for ordinary and failed takes. Attempt every owned
@@ -1018,7 +1087,7 @@ async fn stop_recorder_for_terminal(
                 );
                 match refusal.audio_path.as_deref() {
                     Some(path) => {
-                        retain_session_audio(session_id, path, refused_take_archive(&refusal))
+                        retain_session_audio(session_id, path, refused_take_archive(&refusal)).await
                     }
                     None => warn!("refused take has no audio path to retain"),
                 }
@@ -1026,22 +1095,31 @@ async fn stop_recorder_for_terminal(
             }
             Err(err) => {
                 if err.downcast_ref::<CaptureStopFailure>().is_some() {
-                    Err(recover_capture_stop_failure(
-                        err,
-                        session_id,
-                        (capture_session.as_deref(), capture_epoch),
-                        |id, path| {
-                            retain_session_audio_at(
-                                Some(id),
-                                path,
-                                codescribe_core::state::SessionTranscriptArchive::Unavailable(
-                                    "capture processing failed; committed text unavailable",
-                                ),
-                                &Config::config_dir(),
-                                codescribe_core::state::archive_session_take_from_file,
-                            )
-                        },
-                    ))
+                    let session_id = session_id.map(str::to_owned);
+                    let lease = retainable_session_id(session_id.as_deref()).and_then(|id| {
+                        codescribe_core::state::history::audio_retention::capture(&Config::config_dir(), id)
+                    });
+                    if let Some(lease) = lease.as_ref() { lease.protect_retry(); }
+                    let recovered = tokio::task::spawn_blocking(move || {
+                        recover_capture_stop_failure(
+                            err,
+                            session_id.as_deref(),
+                            (capture_session.as_deref(), capture_epoch),
+                            |id, path| {
+                                retain_owned_session_audio(
+                                    Some(id), path,
+                                    codescribe_core::state::SessionTranscriptArchive::Unavailable(
+                                        "capture processing failed; committed text unavailable",
+                                    ),
+                                    lease.as_deref(),
+                                )
+                            },
+                        )
+                    }).await;
+                    Err(match recovered {
+                        Ok(error) => error,
+                        Err(error) => anyhow::anyhow!("audio recovery worker failed: {error}"),
+                    })
                 } else {
                     Err(err.context("Failed to stop recorder"))
                 }
@@ -1542,6 +1620,9 @@ impl RecordingController {
         data_root: impl AsRef<std::path::Path>,
     ) -> Self {
         let config = runtime_settings.values();
+        if !cfg!(test) {
+            codescribe_core::state::history::audio_retention::start_maintenance();
+        }
         info!(
             "Initializing RecordingController (hold_delay={}ms, beep={}, language={:?})",
             config.hold_start_delay_ms, config.beep_on_start, config.whisper_language
@@ -2787,6 +2868,9 @@ impl RecordingController {
         let mut recorder = slot.replace(replacement).expect("recorder checked above");
         let bus = self.active_transcript_bus.write().await.take();
         let take_id = take_id.map(str::to_owned);
+        let retained_capture = retainable_session_id(take_id.as_deref()).and_then(|id| {
+            codescribe_core::state::history::audio_retention::capture(&Config::config_dir(), id)
+        });
         let delivery = *self.delivery_disposition.read().await;
         let task = tokio::spawn(async move {
             let stopped =
@@ -2796,11 +2880,12 @@ impl RecordingController {
             let reason = match &stopped {
                 Ok((text, path)) => {
                     if let Some(path) = path.as_deref() {
-                        retain_session_audio(
+                        retain_session_audio_with_lease(
                             take_id.as_deref(),
                             path,
                             codescribe_core::state::SessionTranscriptArchive::from_committed(text),
-                        );
+                            retained_capture.clone(),
+                        ).await;
                     }
                     TranscriptSessionEndReason::Completed
                 }
@@ -2819,6 +2904,7 @@ impl RecordingController {
             // the retired take, not to the new capture's overlay.
             Self::end_transcript_bus(&RwLock::new(bus), reason, wav_exists, delivery, None, None)
                 .await;
+            drop(retained_capture);
         });
         let mut tails = self
             .closed_capture_tails
@@ -3559,6 +3645,7 @@ impl RecordingController {
             Some(&self.event_broadcast),
         )
         .await;
+        finish_audio_capture(session_id.as_deref());
         *self.assistive_context.write().await = None;
         self.start_transition_in_flight
             .store(false, Ordering::SeqCst);
@@ -3641,7 +3728,8 @@ impl RecordingController {
         )
         .await;
         *session.active_presentation.write().await = None;
-        *session.session_id.write().await = None;
+        let aborted_id = session.session_id.write().await.take();
+        finish_audio_capture(aborted_id.as_deref());
         *session.assistive_context.write().await = None;
         *session.pre_overlay_frontmost_app.write().await = None;
         set_assistive_session(false);
@@ -3831,7 +3919,8 @@ impl RecordingController {
         *self.force_raw_mode.write().await = false;
         *self.force_ai_mode.write().await = false;
         *self.assistive_context.write().await = None;
-        *self.session_id.write().await = None;
+        let ended_id = self.session_id.write().await.take();
+        finish_audio_capture(ended_id.as_deref());
         self.assistive_loop_active.store(false, Ordering::SeqCst);
         self.toggle_user_has_text.store(false, Ordering::SeqCst);
         self.toggle_assistant_has_text
@@ -4883,6 +4972,10 @@ impl RecordingController {
 
             // Generate session ID
             let new_session_id = Uuid::new_v4().to_string();
+            if let Err(error) = begin_audio_capture(&new_session_id, config.audio_retention).await {
+                error!(%error, "capture storage lease refused; microphone remains closed");
+                return;
+            }
             *hold_session.session_id.write().await = Some(new_session_id.clone());
 
             info!("Starting hold recording (session={})", new_session_id);
@@ -5198,6 +5291,7 @@ impl RecordingController {
 
         // Generate session ID
         let new_session_id = Uuid::new_v4().to_string();
+        begin_audio_capture(&new_session_id, config.audio_retention).await?;
         *self.session_id.write().await = Some(new_session_id.clone());
 
         if is_assistive {
@@ -5588,7 +5682,6 @@ impl RecordingController {
                         .await;
                 }
             };
-            let settled = initial_delivery?;
             info!(
                 "stop_toggle_inner: PHASE 2 — recorder.stop() returned in {:?} (streaming_text={} chars, has_wav={})",
                 phase2.elapsed(),
@@ -5614,8 +5707,9 @@ impl RecordingController {
                     codescribe_core::state::SessionTranscriptArchive::from_committed(
                         streaming_text.as_str(),
                     ),
-                );
+                ).await;
             }
+            let settled = initial_delivery?;
             deliver_terminal_unless_settled(settled, || async {
                 self.deliver_stop_transcript(
                     session_id_snapshot.as_deref(),
@@ -6209,7 +6303,6 @@ impl RecordingController {
                     .await;
             }
         };
-        let settled = initial_delivery?;
 
         let streaming_text = if !assistive {
             self.select_paste_projection(streaming_text).await
@@ -6224,12 +6317,13 @@ impl RecordingController {
                 codescribe_core::state::SessionTranscriptArchive::from_committed(
                     streaming_text.as_str(),
                 ),
-            );
+            ).await;
         }
         // Ctrl-hold literal (`force_raw`) and the hold flavour are sink-time
         // facts already consumed when the emitter was built; delivery reads
         // only the frozen intent.
         let _ = (hold_mode, force_raw);
+        let settled = initial_delivery?;
         deliver_terminal_unless_settled(settled, || async {
             self.deliver_stop_transcript(
                 take_id.as_deref(),

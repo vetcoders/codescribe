@@ -143,6 +143,8 @@ pub struct CsSettings {
     pub sound_volume: f32,
     // ── Audio ──
     pub audio_input_device: Option<String>,
+    /// Effective settings-only storage policy for the next capture.
+    pub audio_retention: String,
     // ── History / quick notes ──
     pub history_enabled: bool,
     pub quick_notes_enabled: bool,
@@ -249,6 +251,7 @@ impl CsSettings {
             // Saved user choice from the same seal; live device truth stays on
             // `CsAudioInputSnapshot`.
             audio_input_device: setting_string(settings.audio_input_device.clone()),
+            audio_retention: config.audio_retention.as_str().to_string(),
             history_enabled: config.history_enabled,
             quick_notes_enabled: config.quick_notes_enabled,
             quick_notes_save_only: config.quick_notes_save_only,

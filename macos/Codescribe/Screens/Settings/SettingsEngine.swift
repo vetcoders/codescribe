@@ -815,6 +815,7 @@ extension CsSettings {
     soundName: "Tink",
     soundVolume: 0.6,
     audioInputDevice: nil,
+    audioRetention: "forever",
     historyEnabled: true,
     quickNotesEnabled: true,
     quickNotesSaveOnly: false,

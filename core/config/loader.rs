@@ -1490,6 +1490,9 @@ impl Config {
             self.audio_input_device = Some(v.clone());
         }
 
+        // Storage policy is settings-only: no hidden environment opt-out.
+        self.audio_retention = settings.audio_retention.unwrap_or_default();
+
         // Sound name
         apply_clone!("SOUND_NAME", self.sound_name, settings.sound_name);
 

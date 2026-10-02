@@ -14,6 +14,12 @@ use tracing::{error, info, warn};
 
 use crate::pipeline::take_truth::{TakeTruth, write_truth_sidecar};
 
+/// Audio policy maintenance belongs to this history owner; metadata is stored
+/// beside the existing session WAV, never in a second audio archive.
+#[cfg(unix)]
+#[path = "audio_retention.rs"]
+pub mod audio_retention;
+
 /// Audio containers an archived recording may use: `m4a` normally, `wav` when
 /// encoding failed and the raw copy was kept as a fallback.
 const AUDIO_ARCHIVE_EXTENSIONS: &[&str] = &["m4a", "wav"];
@@ -948,7 +954,7 @@ mod daily_archive {
 
     static NEXT_STAGE: AtomicU64 = AtomicU64::new(0);
 
-    fn open_at(dir: &File, name: &CStr, flags: libc::c_int) -> std::io::Result<File> {
+    pub(super) fn open_at(dir: &File, name: &CStr, flags: libc::c_int) -> std::io::Result<File> {
         if name.to_bytes().is_empty()
             || name.to_bytes().contains(&b'/')
             || matches!(name.to_bytes(), b"." | b"..")
@@ -974,7 +980,7 @@ mod daily_archive {
         Ok(unsafe { File::from_raw_fd(fd) })
     }
 
-    fn parent(path: &Path) -> Result<(File, CString)> {
+    pub(super) fn parent(path: &Path) -> Result<(File, CString)> {
         anyhow::ensure!(
             !path.components().any(|c| matches!(c, Component::ParentDir)),
             "archive refuses parent traversal"
@@ -1009,7 +1015,7 @@ mod daily_archive {
         Ok(source)
     }
 
-    fn subdir(dir: &File, name: &CStr) -> Result<File> {
+    pub(super) fn subdir(dir: &File, name: &CStr) -> Result<File> {
         // SAFETY: names come from fixed components or validated date/root leaves.
         if unsafe { libc::mkdirat(dir.as_raw_fd(), name.as_ptr(), 0o700) } < 0 {
             let error = std::io::Error::last_os_error();

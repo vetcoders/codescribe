@@ -578,6 +578,7 @@ impl RecordingController {
             ChannelOpenMode::AttachedOnly => recorder.register_channel_feed().id,
             ChannelOpenMode::Live => {
                 let session_label = format!("agent-channel-{digit}-{}", uuid::Uuid::new_v4());
+                super::begin_audio_capture(&session_label, runtime_settings.values().audio_retention).await?;
                 session_id = Some(session_label.clone());
                 let ledger = Arc::new(std::sync::Mutex::new(AcousticLedger::new()));
                 let sentence_pause = runtime_settings.values().light_plus_sentence_pause_sec;
@@ -663,6 +664,7 @@ impl RecordingController {
                 {
                     Ok(id) => id,
                     Err(error) => {
+                        super::finish_audio_capture(session_id.as_deref());
                         if channels.is_empty() {
                             hold_badge::hide_hold_badge();
                         }
@@ -760,7 +762,7 @@ impl RecordingController {
                 open.session_id.as_deref(),
                 path,
                 codescribe_core::state::SessionTranscriptArchive::Committed(&heard),
-            );
+            ).await;
         }
         let opened = crate::presentation::agent_ack::ChannelSessionLine {
             state: "open",
@@ -794,6 +796,7 @@ impl RecordingController {
                 "channel seal receipt was not appended"
             );
         }
+        super::finish_audio_capture(open.session_id.as_deref());
         let state = self.current_state().await;
         let channels = self.agent_channels.lock().await;
         if channels.is_empty() && state == super::State::Idle {

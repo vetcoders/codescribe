@@ -1,76 +1,157 @@
 # Take audio retention
 
-Where a take's PCM lives after the microphone closes. Identity is still the
-acoustic ledger (`OccurrenceIdentity`); these paths are storage, not identity
-keys. Silero alone decides speech vs silence.
+Complete captured PCM is preserved regardless of recognizer, formatter, seal,
+delivery or UI outcome. Only an explicitly persisted audio retention choice can
+expire a completed owned take. This source contract does not certify an
+installed build. Recorder completion/coverage remains the recorder's authority;
+occurrence identity and seal remain the acoustic ledger's authority.
 
-## Four locations
+## Settings and the immutable take policy
+
+Settings > Audio > Audio retention uses a picker with these exact labels:
+
+| Label | Persisted `audio.retention` | Completed audio policy |
+| --- | --- | --- |
+| Forever | `forever` | Preserve without an age limit (default) |
+| 30 days | `30_days` | Expire after 2,592,000 seconds |
+| 7 days | `7_days` | Expire after 604,800 seconds |
+| 24h | `24h` | Expire after 86,400 seconds |
+| Off | `off` | Discard future owned captures after processing/readers settle |
+
+The existing settings schema (version 3, also readable as version 2) contains
+`audio.retention`. The in-memory `UserSettings.audio_retention` projects into
+`Config.audio_retention` through the sole snapshot loader. `AUDIO_RETENTION` is
+only a settings write-router identifier; neither process environment nor `.env`
+can override or seed it. Missing/null/unknown strings resolve to Forever.
+Explicit malformed writes are rejected without changing the saved choice.
+There is no separate retention configuration store.
+
+The existing `CsSettings.audio_retention` DTO reports the effective next-take
+choice. Settings writes through `update_config`, reloads the snapshot on success,
+and shows the prior effective choice plus the existing error surface on failure.
+Root must regenerate Swift bindings for the new DTO field (`make app-bindings`).
+
+Hold, toggle and independent live Agent channels obtain their storage lease from
+the same immutable runtime snapshot before microphone admission. Attached-only
+channels reuse their owner's capture and do not invent another archive/policy.
+A choice changed during a take cannot discard that in-flight capture. Off never
+purges captures that started under another choice. A later finite choice applies
+to receipted completed audio, using its declared completion time; changing to
+Forever stops age expiration. No transcription mode or quality setting changes.
+
+## Existing audio locations
 
 ```
-mic ─► Recorder
-        ├─ spill / stop dump / segment snapshot
-        │     ~/.codescribe/takes/codescribe_recording_<ms>.wav
-        │     ~/.codescribe/takes/codescribe_segment_<ms>.wav
-        │
-        └─ retain_session_audio_at  (copy, never removes the source)
-              ├─ ~/.codescribe/sessions/<session_id>.wav
-              ├─ ~/.codescribe/last_session.wav
-              └─ ~/.codescribe/transcriptions/YYYY-MM-DD/*.m4a   (daily archive)
+Recorder full native PCM
+  ~/.codescribe/takes/codescribe_recording_<epoch_ms>.wav
+      └─ controller retention, independent of transcript success
+           ├─ sessions/<session_id>.wav (hardlink; pinned copy if links fail)
+           ├─ last_session.wav (relative symlink to latest spoken session)
+           └─ transcriptions/YYYY-MM-DD/HHMMSS_slug_kind.m4a or .wav
 ```
 
-Override the root with `CODESCRIBE_DATA_DIR` (already registered). No new env
-var.
+Daily transcript `.txt` and truth sidecars remain independent. Expiration never
+removes transcript text, drafts, diagnostic Bus rows, settings or user-selected
+external source files. `BUS_EVIDENCE_RETENTION_DAYS` still governs Bus evidence
+only. The existing registered `CODESCRIBE_DATA_DIR` selects the application root.
+No new archive, environment variable or dependency is introduced.
 
-### 1. `takes/` — scratch (this cut)
+Recorder segment/calibration snapshots are not admitted as completed full takes.
+CLI `--bus` copies retain their existing semantics and acquire no application
+capture completion receipt merely because a file was decoded. External CLI
+sources are never deletion candidates. Historic files without trustworthy
+completion/ownership metadata remain preserved; filename or mtime is not proof
+that a take completed. There is no automatic sweep of unreceipted files.
 
-`SpillSink` (streaming spill opened at start), the RAM-buffer dump at `stop`,
-and `snapshot_wav` all write under `Config::config_dir().join("takes")`.
-Filenames are unchanged: `codescribe_recording_<epoch_ms>.wav` and
-`codescribe_segment_<epoch_ms>.wav`. The directory is created on demand.
+## Lifecycle and protection
 
-This is the address that used to be `std::env::temp_dir()` (`/var/folders/.../T`
-on macOS). The OS no longer purges scratch on its own schedule.
+`core/state/history.rs` owns the bounded `audio_retention` module:
 
-### 2. `sessions/<session_id>.wav` — Bus copy
+- `begin_capture(root, session_id, policy)` runs on a blocking worker before
+  recorder start. It holds a shared advisory lock on the pinned data-root inode,
+  which excludes expiration across cooperating processes. A refused lease stops
+  microphone admission instead of silently dropping the storage guarantee.
+- Controller archival runs on `spawn_blocking` and is awaited. Full capture,
+  session link and daily audio are registered by object identity after the
+  existing publication path runs. A delivery error is propagated after archival.
+  Storage/capture failure protects recovery evidence and logs an error.
+- `finish_capture` is called by the existing terminal reset, failed-start unwind
+  and live-channel close. A detached stop tail holds its own `Arc<CaptureLease>`
+  across drain/retention after the successor resets the original session slot.
+  No archive/processing worker can be outrun by terminal reset.
+- Only the last lease's drop schedules completion metadata on a blocking worker.
+  The shared root lock remains held until publication finishes. The timestamp is
+  Unix seconds declared after capture/processing settlement. Unknown/zero/future
+  timestamps do not expire.
+- `AudioReadLease::acquire(root)` is the same shared root lock for owned audio
+  readers/retries. Acquire on a blocking worker **before** resolving/opening owned
+  audio, and hold through all decoding/processing/path-based retries. An open
+  file descriptor preserves its bytes even if a name is removed; that alone does
+  not protect a future path-based retry.
+- `start_maintenance` is invoked at controller startup and schedules a bounded
+  pass every 60 seconds on the blocking pool. Completion also schedules a pass.
+  Maintenance takes an exclusive nonblocking root lock and defers during any
+  active capture, processing or admitted read lease. It runs no directory walk
+  or conversion on an audio callback or the main UI.
 
-`retain_session_audio_at` (`app/controller/mod.rs`) copies the scratch file to
-`sessions/<session_id>.wav`. Bus-demux identity for a live take is that path.
-The source under `takes/` is **not** removed (contract with tests at
-`app/controller/mod.rs:7178–7377`).
+Completion metadata lives beside the existing session WAV as
+`sessions/<session_id>.audio-retention.json` (`codescribe.audio-retention.v1`).
+It is an ownership/completion receipt, never another audio archive or settings
+owner. It records the root inode, frozen capture choice, completion timestamp,
+retry protection and each published source/session/daily file's relative path,
+parent inode, file inode/device, byte length and modification timestamp.
+If publication, clock acquisition or ownership admission fails, audio stays.
 
-### 3. `last_session.wav` — latest-take alias
+## Expiration admission and failed deletion
 
-The same controller copy also refreshes `last_session.wav` as a latest-app-take
-alias for overlay / `codescribe transcribe last`. Third copy of the same bytes.
+Each pass visits at most 128 session-directory entries, keeping a pinned stream
+cursor between passes; it eventually rewinds. It never scans every take/daily
+file, and it runs no per-block scan. Reads of receipts are capped at 64 KiB and
+16 owned members. The current snapshot's finite choice expires eligible
+completed audio; prospective Off is determined by that capture's frozen choice.
+Capture/storage recovery protection prevents automatic deletion, including Off.
+Unresolved recovery protection is conservative and requires explicit repair;
+it is not silently cleared by a successful UI delivery.
 
-### 4. Daily m4a archive
+Every path must be a relative normal-component path under one of:
+`takes/codescribe_recording_<digits>.wav`, `sessions/<same session_id>.wav`, or a
+known daily `transcriptions/YYYY-MM-DD/HHMMSS_*.m4a|wav` publication. All directory
+walks use pinned descriptors and `O_NOFOLLOW`; regular file type, parent identity,
+file identity, length and modification time must still match. Root/ancestor
+replacement cannot redirect a held descriptor. No recursive deletion occurs.
 
-`core/state/history.rs` archives a take into
-`~/.codescribe/transcriptions/YYYY-MM-DD/` as paired `HHMMSS_slug_kind.m4a` +
-`.txt`. Unchanged by this cut.
+All members are validated before removal. The latest alias is removed only if it
+is the known relative symlink to this session; a successor's alias stays. Each
+admitted name moves to a deterministic `.expiry-<name>.tmp` in its pinned parent;
+the moved inode is checked before unlink. A substitution remains preserved and
+reported rather than deleted. A refused unlink keeps that pending name and the
+completion receipt. Later passes verify/retry pending names. Every admitted
+source, session hardlink and daily copy must disappear before the receipt is
+removed; deleting a single hardlink is not certified as full expiration.
 
-## CLI lane (`--bus`) identity
+Failures are retained in `MaintenanceReport.failures` and logged at error level;
+lease/refusal errors log preservation. Parent/entry substitution, clock doubt,
+corrupt metadata and incomplete ownership are conservative refusals. The
+cooperative root lock is not an access-control boundary against a same-user
+process deliberately editing the data directory. Automatic expiration is not
+secure erasure of storage blocks, snapshots or user-created external copies.
 
-`codescribe transcribe <file>` with the bus on (the default) retains the source
-as `sessions/<session_id>.wav`. Demux identity is that path. The CLI lane must
-not write `last_session.wav` — a file re-decode is not the last live take.
-Finder Quick Action uses `--no-bus` and is exempt.
+## Integrator admission boundaries
 
-## Growth until Phase 2
+This worker changes only source and static evidence. Build, tests, binding
+regeneration, installation and real stores are NOT_ASSESSED.
 
-Because retention copies and never deletes the scratch file, `takes/` grows by
-roughly what `/var/folders` used to hold. There is no janitor in this cut.
+Before accepting the complete reader contract, the integrator must wire
+`AudioReadLease` into owned-audio consumers outside this worker's source fence:
+CLI file/retry processing, the agent `transcribe_audio` tool, and bridge session
+retranscription/word-clip reads. Those unleased path-based operations are not
+certified protected by this source checkpoint. Full recorder retention failures
+belong to paired worker E; its WAV path and typed failure contracts stay intact.
 
-## Phase 2 — open Founder decision ⛔
-
-Not in this dispatch. Claude recommends; the Founder decides:
-
-- retention **moves** the take from `takes/` into `sessions/<session_id>.wav`
-  (`rename`, same volume) after all destinations succeeded, and keeps the
-  source only on failure;
-- `last_session.wav` becomes a **hardlink** to `sessions/<session_id>.wav`
-  instead of a third copy.
-
-Both change the "never remove the source" contract of `retain_session_audio_at`.
-
-_𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI_
+Integrator regression obligations include all five setting round-trips;
+unknown/missing/environment input; policy changes during a take; recognition,
+seal and paste failure; long full PCM coverage; all hardlinks/daily/alias copies;
+active capture/read/retry leases; bounded maintenance progress; future/unknown
+clocks; corrupt receipts; directory/file/symlink substitution; interrupted and
+failed unlink retries; preservation of text and external CLI sources. Use only
+isolated synthetic stores. No live store cleanup is authorized by this document.

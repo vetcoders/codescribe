@@ -18,7 +18,7 @@
 //! | Validation | [`SettingsSnapshotValidation`] | admit/refuse contract before snapshot seal |
 
 use super::types::{
-    Config, ModeBinding, PasteMode, ShortcutBinding, WorkMode, default_mode_bindings,
+    AudioRetention, Config, ModeBinding, PasteMode, ShortcutBinding, WorkMode, default_mode_bindings,
 };
 #[cfg(not(any(test, feature = "test-isolation")))]
 use directories::BaseDirs;
@@ -315,6 +315,8 @@ pub struct UserSettings {
     pub transcript_send_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audio_input_device: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_retention: Option<AudioRetention>,
     /// Product-owned arming of the mandatory Silero seal lane. Missing legacy
     /// values migrate to the supported production default (`true`). The
     /// `CODESCRIBE_SILERO_FUSION` power-user override is resolved only by the
@@ -1536,6 +1538,8 @@ struct EmissionV2 {
 struct AudioV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     input_device_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retention: Option<AudioRetention>,
     #[serde(
         default = "default_seal_lane_armed",
         skip_serializing_if = "Option::is_none"
@@ -1695,6 +1699,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "STT_LIVE_ENDPOINT",
     "TRANSCRIPT_SEND_MODE",
     "AUDIO_INPUT_DEVICE",
+    "AUDIO_RETENTION",
     SILERO_FUSION_ENV,
     "HISTORY_ENABLED",
     "QUICK_NOTES_ENABLED",
@@ -1880,6 +1885,7 @@ impl UserSettings {
             }),
             audio: Some(AudioV2 {
                 input_device_id: self.audio_input_device.clone(),
+                retention: self.audio_retention,
                 seal_lane_armed: self.seal_lane_armed,
                 feedback: Some(FeedbackV2 {
                     beep_on_start: self.beep_on_start,
@@ -2032,6 +2038,7 @@ impl UserSettings {
             stt_cloud_refine_endpoint: cloned!(v2.speech, engine, cloud_refine_endpoint),
             transcript_send_mode: cloned!(v2.interaction, send_mode),
             audio_input_device: cloned!(v2.audio, input_device_id),
+            audio_retention: copy!(v2.audio, retention),
             seal_lane_armed: v2
                 .audio
                 .as_ref()
@@ -2916,6 +2923,9 @@ impl UserSettings {
             }
             "TRANSCRIPT_SEND_MODE" => self.transcript_send_mode = Some(value.to_owned()),
             "AUDIO_INPUT_DEVICE" => self.audio_input_device = Some(value.to_owned()),
+            "AUDIO_RETENTION" => {
+                self.audio_retention = Some(value.parse::<AudioRetention>().map_err(anyhow::Error::msg)?);
+            }
             "SOUND_NAME" => self.sound_name = Some(value.to_owned()),
             "WHISPER_MODEL" => self.whisper_model = Some(value.to_owned()),
             "ONBOARDING_MODE" => self.onboarding_mode = Some(value.to_owned()),

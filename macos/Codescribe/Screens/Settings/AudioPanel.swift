@@ -322,6 +322,26 @@ struct AudioPanel: View {
         .padding(.top, CSSpace.control)
         .task { await model.refreshAdmission() }
 
+      SettingsSectionLabel("Audio retention")
+        .padding(.top, CSSpace.section)
+      VStack(alignment: .leading, spacing: CSSpace.control) {
+        Picker("Keep completed recordings", selection: Binding(
+          get: { model.audioRetention },
+          set: { model.setAudioRetention($0) }
+        )) {
+          Text("Forever").tag("forever")
+          Text("30 days").tag("30_days")
+          Text("7 days").tag("7_days")
+          Text("24h").tag("24h")
+          Text("Off").tag("off")
+        }
+        .pickerStyle(.menu)
+        Text("Off applies to new takes after processing finishes. Text history stays available. A take already in progress keeps its starting choice.")
+          .font(CSFont.ui(12))
+          .foregroundStyle(Color.secondary)
+      }
+      .padding(.top, CSSpace.control)
+
       SettingsSectionLabel("Sound feedback")
         .padding(.top, CSSpace.section)
       feedbackSection
