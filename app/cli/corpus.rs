@@ -2292,6 +2292,177 @@ mod tests {
         assert!(!path.exists());
     }
 
+    #[cfg(unix)]
+    async fn completed_corpus_audio(root: &Path, id: &str) -> PathBuf {
+        use codescribe_core::config::AudioRetention;
+        use codescribe_core::state::history::audio_retention as retention;
+        use std::time::Duration;
+
+        retention::begin_capture(root, id, AudioRetention::Hours24).unwrap();
+        fs::create_dir_all(root.join("sessions")).unwrap();
+        let audio = root.join(format!("sessions/{id}.wav"));
+        let mut writer = hound::WavWriter::create(
+            &audio,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 16_000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for sample in [0i16, 17, -33, 123] {
+            writer.write_sample(sample).unwrap();
+        }
+        writer.finalize().unwrap();
+        fs::write(
+            audio.with_file_name(format!("{id}_human_transcription.txt")),
+            "synthetic speech",
+        )
+        .unwrap();
+        let capture = retention::capture(root, id).unwrap();
+        capture.record(std::slice::from_ref(&audio), false).unwrap();
+        retention::finish_capture(root, id);
+        drop(capture);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while !root
+            .join(format!("sessions/{id}.audio-retention.json"))
+            .exists()
+        {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "completion receipt missing"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        audio
+    }
+
+    #[cfg(unix)]
+    async fn expire_corpus_audio(root: &Path, audio: &Path) {
+        use codescribe_core::config::AudioRetention;
+        use codescribe_core::state::history::audio_retention as retention;
+        use std::time::{Duration, SystemTime};
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        let eligible = SystemTime::now() + Duration::from_secs(86_410);
+        loop {
+            let report = retention::maintain(root, AudioRetention::Hours24, eligible).unwrap();
+            assert!(report.failures.is_empty(), "{report:?}");
+            if report.expired > 0 {
+                assert!(!audio.exists());
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "audio unexpectedly pinned: {report:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn corpus_read_root_shapes_protect_inputs_then_release_for_expiry() {
+        use codescribe_core::config::AudioRetention;
+        use codescribe_core::state::history::audio_retention as retention;
+        use std::time::{Duration, SystemTime};
+        for shape in ["equal", "descendant", "ancestor", "alias", "repeated"] {
+            let parent = tempfile::tempdir().unwrap();
+            let root = parent.path().join("owned-store");
+            let audio = completed_corpus_audio(&root, "corpus-shape-retention").await;
+            let roots = match shape {
+                "equal" => vec![root.clone()],
+                "descendant" => vec![root.join("sessions")],
+                "ancestor" => vec![parent.path().to_owned()],
+                "alias" => {
+                    let alias = parent.path().join("alias");
+                    std::os::unix::fs::symlink(&root, &alias).unwrap();
+                    vec![alias]
+                }
+                "repeated" => vec![
+                    parent.path().to_owned(),
+                    root.join("sessions"),
+                    root.clone(),
+                ],
+                _ => unreachable!(),
+            };
+            let discovery =
+                discover_corpus_with_read_root(&roots, ReferencePolicy::Human, None, &root)
+                    .unwrap();
+            assert_eq!(discovery.selected.len(), 1, "{shape}");
+            assert_eq!(
+                discovery.selected[0].path,
+                audio.canonicalize().unwrap(),
+                "{shape}"
+            );
+            let eligible = SystemTime::now() + Duration::from_secs(86_410);
+            for _ in 0..10 {
+                let report = retention::maintain(&root, AudioRetention::Hours24, eligible).unwrap();
+                assert!(report.failures.is_empty(), "{shape}: {report:?}");
+                assert_eq!(report.expired, 0, "{shape}: {report:?}");
+                assert!(audio.exists(), "{shape}");
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            drop(discovery);
+            expire_corpus_audio(&root, &audio).await;
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn corpus_unrelated_or_empty_discovery_does_not_pin_later_owned_audio() {
+        for shape in ["external", "empty-ancestor", "missing-store"] {
+            let parent = tempfile::tempdir().unwrap();
+            let root = parent.path().join("owned-store");
+            let external = tempfile::tempdir().unwrap();
+            let roots = if shape == "empty-ancestor" {
+                fs::create_dir(&root).unwrap();
+                vec![parent.path().to_owned()]
+            } else {
+                if shape == "external" {
+                    fs::create_dir(&root).unwrap();
+                }
+                vec![external.path().to_owned()]
+            };
+            let discovery =
+                discover_corpus_with_read_root(&roots, ReferencePolicy::Human, None, &root)
+                    .unwrap();
+            assert!(discovery.selected.is_empty(), "{shape}");
+            if shape == "missing-store" {
+                assert!(!root.exists());
+            }
+            let audio = completed_corpus_audio(&root, "corpus-unrelated-retention").await;
+            // Keep the unrelated Discovery alive while proving actual deletion.
+            expire_corpus_audio(&root, &audio).await;
+            assert!(discovery.selected.is_empty());
+            drop(discovery);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn corpus_discovery_failure_releases_owned_audio_after_resolution_and_reference_errors() {
+        for shape in ["missing-root", "file-root", "conflicting-reference"] {
+            let parent = tempfile::tempdir().unwrap();
+            let root = parent.path().join("owned-store");
+            let audio = completed_corpus_audio(&root, "corpus-error-retention").await;
+            let corpus_root = match shape {
+                "missing-root" => parent.path().join("does-not-exist"),
+                "file-root" => audio.clone(),
+                "conflicting-reference" => {
+                    fs::write(audio.with_file_name("corpus-error-retention_codescribe_raw_human_transcription_from_wav.txt"), "different speech").unwrap();
+                    parent.path().to_owned()
+                }
+                _ => unreachable!(),
+            };
+            let result =
+                discover_corpus_with_read_root(&[corpus_root], ReferencePolicy::Human, None, &root);
+            assert!(result.is_err(), "{shape}: discovery must refuse the input");
+            drop(result);
+            expire_corpus_audio(&root, &audio).await;
+        }
+    }
+
     fn comparison_fixture() -> ProfileReport {
         let root = tempfile::tempdir().unwrap();
         let census = discover_corpus(&[root.path().to_owned()], ReferencePolicy::Human, None)
