@@ -111,6 +111,10 @@ private func dictationTranscriberEnabled() -> Bool {
     }
 }
 
+if CommandLine.arguments.contains("--file-result-self-test") {
+    exit(runFileResultSelfTest())
+}
+
 if CommandLine.arguments.contains("--phrase-restart-self-test") {
     exit(runPhraseRestartVectorSelfTest())
 }
@@ -288,7 +292,7 @@ private func handle(request: BridgeRequest) async throws -> BridgeResponse {
         if deadlinePolicy == .wholeFile {
             let file = try AVAudioFile(forReading: URL(fileURLWithPath: audioPath))
             let seconds = Double(file.length) / max(file.processingFormat.sampleRate, 1.0)
-            try requireCompleteAppleFile(transcription, audioSeconds: seconds)
+            try validateAppleFileResult(transcription, audioSeconds: seconds)
         }
         return BridgeResponse(
             ok: true,
@@ -1566,6 +1570,7 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
 /// streaming. It intentionally reads the exact TSV compiled into the Rust
 /// mirror test, so fixture drift cannot make the two languages look aligned.
 private func runPhraseRestartVectorSelfTest() -> Int32 {
+    guard runFileResultSelfTest() == 0 else { return 1 }
     let source = URL(fileURLWithPath: #filePath)
     let root = source
         .deletingLastPathComponent()
@@ -1626,45 +1631,30 @@ private func runPhraseRestartVectorSelfTest() -> Int32 {
     }
 }
 
-/// File oracle admission is deliberately conservative: without PCM speech bounds,
-/// an uncovered interval may be silence OR lost speech. Never certify it as complete.
-/// The half-second tolerance accommodates word-boundary timestamps, not task deadlines.
-private func requireCompleteAppleFile(
+/// Validate recognition coordinates and reported processing, not speech recall.
+/// Successful analyzer EOF/task completion admits an observation. Word gaps
+/// are not lost-audio evidence: pauses need not contain recognized words.
+/// Only PCM speech evidence can assess missing speech in this result.
+private func validateAppleFileResult(
     _ payload: TranscriptionPayload, audioSeconds: Double, processedSeconds: Double? = nil,
     phraseCounts: String? = nil
 ) throws {
     let tolerance = 0.5
-    let segments = payload.segments.sorted { $0.startTs < $1.startTs }
-    var cursor = 0.0
-    var gaps: [String] = []
-    var invalid = false
-    for segment in segments {
-        guard segment.startTs.isFinite, segment.endTs.isFinite,
-            segment.startTs >= 0, segment.endTs > segment.startTs,
-            segment.endTs <= audioSeconds + tolerance else {
-            invalid = true
-            continue
-        }
-        if segment.startTs - cursor > tolerance {
-            gaps.append("\(cursor)..\(segment.startTs)")
-        }
-        cursor = max(cursor, segment.endTs)
+    let invalid = payload.segments.contains { segment in
+        !segment.startTs.isFinite || !segment.endTs.isFinite
+            || segment.startTs < 0 || segment.endTs <= segment.startTs
+            || segment.endTs > audioSeconds + tolerance
     }
-    if audioSeconds - cursor > tolerance {
-        gaps.append("\(cursor)..\(audioSeconds)")
-    }
-    // SF passes zero until it reports progress; analyzer callers verify file ranges here.
     let processingIncomplete = processedSeconds.map {
         !$0.isFinite || $0 < 0 || $0 + 0.05 < audioSeconds
     } ?? false
-    if !audioSeconds.isFinite || audioSeconds <= 0 || invalid || segments.isEmpty
-        || payload.text.isEmpty || !gaps.isEmpty || processingIncomplete {
+    if !audioSeconds.isFinite || audioSeconds <= 0 || invalid || processingIncomplete {
         throw BridgeError.runtime(
             "recognition_incomplete "
                 + appleFileCoverageDiagnostic(
                     payload, audioSeconds: audioSeconds, processedSeconds: processedSeconds,
                     phraseCounts: phraseCounts)
-                + " uncovered_ranges_seconds=[\(gaps.joined(separator: ","))] invalid_segments=\(invalid)")
+                + " invalid_segments=\(invalid)")
     }
 }
 
@@ -1887,7 +1877,7 @@ final class SfSpeechFileRecognitionDelegate: NSObject, SFSpeechRecognitionTaskDe
         let snapshot = snapshotForTerminal(outcome: successfully ? "task_success" : "task_failure")
         if successfully {
             do {
-                try requireCompleteAppleFile(
+                try validateAppleFileResult(
                     snapshot.payload, audioSeconds: audioSeconds, processedSeconds: snapshot.processed,
                     phraseCounts: snapshot.phraseCounts)
                 continuation.resume(returning: snapshot.payload)
@@ -2284,4 +2274,35 @@ private func normalizedLocaleIdentifier(_ identifier: String) -> String {
         .trimmingCharacters(in: .whitespacesAndNewlines)
         .replacingOccurrences(of: "_", with: "-")
         .lowercased()
+}
+
+/// Regression vectors exercise production validation without invoking recognition.
+private func runFileResultSelfTest() -> Int32 {
+    let word = TranscriptionPayload(text: "Iwo", segments: [
+        BridgeSegment(text: "Iwo", startTs: 1, endTs: 2)
+    ], backend: .dictationTranscriber)
+    let empty = TranscriptionPayload(text: "", segments: [], backend: .dictationTranscriber)
+    let invalid = TranscriptionPayload(text: "Iwo", segments: [
+        BridgeSegment(text: "Iwo", startTs: 2, endTs: 1)
+    ], backend: .sfSpeechRecognizer)
+    do {
+        try validateAppleFileResult(word, audioSeconds: 3)
+        try validateAppleFileResult(empty, audioSeconds: 3)
+        try validateAppleFileResult(word, audioSeconds: 3, processedSeconds: 3)
+        for (payload, seconds, processed) in [
+            (word, 3.0, Optional(1.0)), (invalid, 3.0, nil),
+            (word, Double.nan, nil)
+        ] {
+            do {
+                try validateAppleFileResult(payload, audioSeconds: seconds, processedSeconds: processed)
+                fputs("file_result_self_test accepted invalid result\n", stderr)
+                return 1
+            } catch { }
+        }
+        fputs("file_result_self_test PASS\n", stderr)
+        return 0
+    } catch {
+        fputs("file_result_self_test rejected observation: \(error)\n", stderr)
+        return 1
+    }
 }

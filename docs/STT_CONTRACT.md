@@ -26,6 +26,27 @@
 > or partial measurement does not (§3.z).
 > Planning report: internal plan `stt-apple-must-have` (operator artifact store, 2026-07-24).
 
+### File observations and Apple backend identity (2026-10-02)
+
+`transcribe` with `whole_file` returns a recognizer observation, not a ledger seal
+or a certificate that all speech was recognized. Successful analyzer EOF and
+SFSpeech task completion are processing events. `validateAppleFileResult`
+checks provided timestamps and any reported processing duration; it never
+requires a word in every interval. Empty recognition may be an observation;
+only capture-matched PCM speech evidence can assess omitted speech.
+
+The Apple file selector prefers installed SpeechTranscriber, then explicitly
+armed and installed DictationTranscriber, then on-device SFSpeech URL recognition.
+`CODESCRIBE_APPLE_DICTATION_TRANSCRIBER=1` enables DT in that file selection;
+`--apple` alone does not force DT. Live `stream` uses SFSpeech buffer recognition,
+not DT. The personal `stt --dt` oracle calls the native DT file API directly.
+Do not compare these paths under one unnamed “Apple” backend.
+
+The live bridge shutdown closes stdin, collects final events, then terminates
+and reaps a remaining child before joining its stdout reader. A blocking reader
+must not defeat the flush deadline. This process-level bound does not prove
+that every pending Whisper observation reached delivery.
+
 ---
 
 ## Agent speech synthesis (2026-09-08)

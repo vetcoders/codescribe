@@ -269,13 +269,17 @@ impl LiveStreamSession {
             }
         }
 
+        // A blocked stdout read ends only when the child closes its pipe.
+        // Reap the bridge before joining; otherwise the idle cutoff cannot
+        // bound finish when the child is alive but emits no more events.
+        if self.child.try_wait()?.is_none() {
+            let _ = self.child.kill();
+        }
+        let _ = self.child.wait();
         if let Some(handle) = self.reader.take() {
             let _ = handle.join();
         }
-        // Reap child; ignore exit code if we already have a Summary.
-        let _ = self.child.try_wait();
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        events.extend(self.poll_events());
 
         Ok(events)
     }
@@ -448,6 +452,46 @@ pub fn progressive_live_enabled() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finish_reaps_a_silent_bridge_before_joining_stdout() {
+        let mut child = Command::new("/bin/sleep")
+            .arg("30")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn synthetic bridge");
+        let stdout = child.stdout.take().expect("stdout");
+        let stdin = child.stdin.take();
+        let (tx, rx) = mpsc::channel();
+        let reader = thread::spawn(move || read_stream_stdout(stdout, tx));
+        // Bound the regression itself: old finish blocks until this watchdog
+        // terminates this synthetic process. It never targets an app process.
+        let pid = child.id();
+        let (cancel_tx, cancel_rx) = mpsc::channel();
+        let watchdog = thread::spawn(move || {
+            if cancel_rx.recv_timeout(Duration::from_secs(13)).is_err() {
+                let _ = Command::new("/bin/kill").arg(pid.to_string()).status();
+            }
+        });
+        static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let session = LiveStreamSession {
+            child,
+            stdin,
+            events_rx: rx,
+            reader: Some(reader),
+            _lock_guard: TEST_LOCK.lock().expect("test lock"),
+            sample_rate: 16_000,
+            frames_written: 0,
+        };
+        let started = std::time::Instant::now();
+        let events = session.finish().expect("finish");
+        let elapsed = started.elapsed();
+        let _ = cancel_tx.send(());
+        watchdog.join().expect("watchdog");
+        assert!(events.is_empty());
+        assert!(elapsed < Duration::from_secs(12), "finish took {elapsed:?}");
+    }
 
     /// Partial, phrase-final, and summary JSON lines map to the typed event enum.
     #[test]
