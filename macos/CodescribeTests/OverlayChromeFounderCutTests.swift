@@ -421,7 +421,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(tools.contains("actions.toggle()"))
     XCTAssertTrue(tools.contains(".onHover { actions.pointerChanged($0) }"))
     XCTAssertTrue(tools.contains(".focusable()"))
-    XCTAssertTrue(tools.contains("actions.phase == .open ? \"Open\" : \"Collapsed\""))
+    XCTAssertTrue(tools.contains("actions.phase == .open ? \"Expanded\" : \"Collapsed\""))
     XCTAssertTrue(tools.contains("overlay-retained-work-badge"))
     XCTAssertFalse(source.contains("togglePin"))
     XCTAssertFalse(source.contains("isPinned"))
@@ -490,7 +490,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(cap.contains("actions.toggle()"))
     XCTAssertTrue(cap.contains(".accessibilityIdentifier(\"overlay-tools-handle\")"))
     XCTAssertTrue(
-      cap.contains(".accessibilityValue(actions.phase == .open ? \"Open\" : \"Collapsed\")"))
+      cap.contains(".accessibilityValue(actions.phase == .open ? \"Expanded\" : \"Collapsed\")"))
     XCTAssertTrue(cap.contains("if state.hasRecoverableSupersededWork && actions.phase != .open {"))
     XCTAssertTrue(cap.contains("overlay-retained-work-badge"))
     XCTAssertTrue(containsGuardedIntentRail(tools))

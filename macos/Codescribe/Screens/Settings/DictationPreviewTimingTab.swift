@@ -79,7 +79,10 @@ extension PreviewTimingPreset {
     case .smooth: String(localized: "Smooth")
     case .snappy: String(localized: "Snappy")
     case .relaxed: String(localized: "Relaxed")
-    case .off: String(localized: "Off")
+    case .off:
+      String(
+        localized: "settings.previewTiming.preset.off", defaultValue: "Off",
+        comment: "Preview timing preset: pacing is turned off")
     case .custom: String(localized: "Custom")
     }
   }

@@ -232,21 +232,21 @@
                 }
               }
             },
-            "vocabulary" : {
-              "argNum" : 2,
+            "rules" : {
+              "argNum" : 4,
               "formatSpecifier" : "lld",
               "variations" : {
                 "plural" : {
                   "one" : {
                     "stringUnit" : {
                       "state" : "translated",
-                      "value" : "%arg vocabulary"
+                      "value" : "%arg rule"
                     }
                   },
                   "other" : {
                     "stringUnit" : {
                       "state" : "translated",
-                      "value" : "%arg vocabulary"
+                      "value" : "%arg rules"
                     }
                   }
                 }
@@ -272,21 +272,21 @@
                 }
               }
             },
-            "rules" : {
-              "argNum" : 4,
+            "vocabulary" : {
+              "argNum" : 2,
               "formatSpecifier" : "lld",
               "variations" : {
                 "plural" : {
                   "one" : {
                     "stringUnit" : {
                       "state" : "translated",
-                      "value" : "%arg rule"
+                      "value" : "%arg vocabulary"
                     }
                   },
                   "other" : {
                     "stringUnit" : {
                       "state" : "translated",
-                      "value" : "%arg rules"
+                      "value" : "%arg vocabulary"
                     }
                   }
                 }
@@ -326,26 +326,6 @@
             "value" : "%#@rules@ (variant→canonical) · %#@provenance@ · %#@rows@."
           },
           "substitutions" : {
-            "rules" : {
-              "argNum" : 1,
-              "formatSpecifier" : "lld",
-              "variations" : {
-                "plural" : {
-                  "one" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg live rule"
-                    }
-                  },
-                  "other" : {
-                    "stringUnit" : {
-                      "state" : "translated",
-                      "value" : "%arg live rules"
-                    }
-                  }
-                }
-              }
-            },
             "provenance" : {
               "argNum" : 2,
               "formatSpecifier" : "lld",
@@ -381,6 +361,26 @@
                     "stringUnit" : {
                       "state" : "translated",
                       "value" : "%arg store rows"
+                    }
+                  }
+                }
+              }
+            },
+            "rules" : {
+              "argNum" : 1,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg live rule"
+                    }
+                  },
+                  "other" : {
+                    "stringUnit" : {
+                      "state" : "translated",
+                      "value" : "%arg live rules"
                     }
                   }
                 }
@@ -593,9 +593,6 @@
     "A transcript revision cannot be empty" : {
 
     },
-    "ADD SERVER" : {
-
-    },
     "AI formatting" : {
 
     },
@@ -642,7 +639,7 @@
 
     },
     "Adaptive buffer (experimental)" : {
-
+      "shouldTranslate" : false
     },
     "Add" : {
 
@@ -661,6 +658,9 @@
     },
     "Add root" : {
 
+    },
+    "Add server" : {
+      "comment" : "MCP servers: header of the form that adds a server"
     },
     "Advanced" : {
 
@@ -738,7 +738,7 @@
       "comment" : "Setup step eyebrow"
     },
     "Allow" : {
-      "comment" : "Button: grant the microphone permission now\nTool permission level"
+      "comment" : "Tool permission level"
     },
     "Allow %@" : {
       "comment" : "Button on a permission step; %@ is a privacy scope such as Microphone"
@@ -781,7 +781,7 @@
 
     },
     "Anchor" : {
-
+      "comment" : "Overlay placement menu: header above the screen positions the overlay snaps to"
     },
     "Anonymous activation" : {
 
@@ -799,7 +799,7 @@
 
     },
     "Apple on-device (experimental)" : {
-
+      "shouldTranslate" : false
     },
     "Apple only" : {
       "comment" : "Dictation lane: on-device Apple Speech"
@@ -817,10 +817,10 @@
 
     },
     "Applies to the next formatting pass. The on-device model runs first; any failure falls back to the cloud provider. A .env value overrides this toggle." : {
-
+      "shouldTranslate" : false
     },
     "Applies to the next recording. Adaptive buffering preserves phrase boundaries within bounded audio and wait limits." : {
-
+      "shouldTranslate" : false
     },
     "Approve in browser…" : {
 
@@ -936,20 +936,8 @@
     "Built: %@" : {
       "comment" : "About panel provenance line; %@ is the build timestamp"
     },
-    "CHANGED" : {
-
-    },
     "CODESCRIBE_LAYERED_TRANSCRIPTION disables live refinement. Remove the diagnostic override from .env and restart." : {
       "comment" : "CODESCRIBE_LAYERED_TRANSCRIPTION is an environment variable name"
-    },
-    "CODING ASSISTANTS" : {
-
-    },
-    "CORRECTED ORIGINAL" : {
-
-    },
-    "CORRECTION" : {
-
     },
     "Cached initialize + tools/list result per configured server" : {
 
@@ -1024,6 +1012,9 @@
     },
     "Capture stays live until you stop it." : {
 
+    },
+    "Changed" : {
+      "comment" : "Dictionary: header above the words the correction changed"
     },
     "Channel status unavailable — last open state retained" : {
 
@@ -1128,7 +1119,7 @@
 
     },
     "Cloud provider" : {
-
+      "shouldTranslate" : false
     },
     "Cloud — live refinement through the Libraxis gateway. Requires your explicit consent to send audio off this Mac; the app stores no vendor keys." : {
 
@@ -1167,6 +1158,9 @@
     },
     "Codescribe will relaunch as a fresh install." : {
 
+    },
+    "Coding assistants" : {
+      "comment" : "Setup: eyebrow above the coding-assistant choices"
     },
     "Collapse" : {
       "comment" : "Fold the message back to its head"
@@ -1294,8 +1288,14 @@
     "Copy transcript" : {
 
     },
+    "Correct spelling" : {
+      "comment" : "Field prompt: type the word as it should be written"
+    },
     "Correct the original transcript" : {
 
+    },
+    "Corrected original" : {
+      "comment" : "Dictionary: header above the editor holding the corrected text"
     },
     "Correction" : {
       "comment" : "Formatting level: fix-ups only\nPrompt file: correction-only formatting"
@@ -1459,9 +1459,6 @@
         }
       }
     },
-    "DELIVERED AFTER FORMATTING · %lld CHARS" : {
-
-    },
     "Danger zone" : {
 
     },
@@ -1488,6 +1485,29 @@
     },
     "Deletes the provider row and its API key from the Keychain. Any request lane using it falls back to the default vendor." : {
 
+    },
+    "Delivered after formatting · %lld characters" : {
+      "comment" : "Dictionary: header above the text that was delivered; the count is its length",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Delivered after formatting · %lld character"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Delivered after formatting · %lld characters"
+                }
+              }
+            }
+          }
+        }
+      }
     },
     "Delivery interrupted" : {
 
@@ -1570,9 +1590,6 @@
     "Drops the retained previous take without recovering it" : {
 
     },
-    "EDITED · %lld CHARS" : {
-
-    },
     "Edit" : {
 
     },
@@ -1593,6 +1610,29 @@
     },
     "Edited on disk in mcp.json. Hand edits (env, custom fields) are preserved." : {
 
+    },
+    "Edited · %lld characters" : {
+      "comment" : "Dictionary: header above the text after the person's edit; the count is its length",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Edited · %lld character"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Edited · %lld characters"
+                }
+              }
+            }
+          }
+        }
+      }
     },
     "Edits the BASE prompt file. The core still appends its tuning prompt at runtime." : {
 
@@ -1691,7 +1731,7 @@
       "comment" : "Setup chapter subtitle"
     },
     "Fixed windows" : {
-
+      "shouldTranslate" : false
     },
     "Fold this message back to its head" : {
 
@@ -1937,17 +1977,14 @@
     "LLM lanes" : {
       "comment" : "Settings tab: LLM request lanes"
     },
-    "LOW CONFIDENCE" : {
-
-    },
     "Lab" : {
       "comment" : "Settings section: developer experiments"
     },
     "Lab mode" : {
-
+      "shouldTranslate" : false
     },
     "Lab mode is on. Overlay follows the tray toggle — Lab does not steal it." : {
-
+      "shouldTranslate" : false
     },
     "Language" : {
       "comment" : "Setup step eyebrow"
@@ -2000,9 +2037,6 @@
     "Load helper text into the correction editor without saving" : {
 
     },
-    "Local" : {
-
-    },
     "Local FP16 model (%@) for direct Whisper or Local power refinement." : {
 
     },
@@ -2030,6 +2064,9 @@
     "Local process" : {
 
     },
+    "Low confidence" : {
+      "comment" : "Dictionary badge: the engine was unsure here"
+    },
     "MCP connects your assistant to additional tools. You can add servers later in Settings." : {
 
     },
@@ -2052,6 +2089,9 @@
       "comment" : "Setup chapter heading"
     },
     "Manage MCP servers" : {
+
+    },
+    "Master switch. The Off level below always skips the LLM." : {
 
     },
     "Max" : {
@@ -2221,9 +2261,6 @@
     "Multilingual — detects the language as you speak." : {
       "comment" : "Detail under the Auto-detect dictation language choice"
     },
-    "NOT READY" : {
-
-    },
     "Name" : {
 
     },
@@ -2376,7 +2413,7 @@
 
     },
     "Off" : {
-      "comment" : "Formatting level: no AI formatting\nHold badge size: the badge is disabled\nPaste policy: never paste automatically\nToggle state\nTray keycap: this toggle is disabled"
+      "comment" : "Toggle state"
     },
     "Off by default. The event contains only the app version and macOS version — never audio or transcript text." : {
 
@@ -2410,7 +2447,7 @@
       "comment" : "Thread rail section"
     },
     "On" : {
-      "comment" : "Toggle state\nTray keycap: this toggle is enabled"
+      "comment" : "Toggle state"
     },
     "One gesture per mode. Changes apply immediately — no restart." : {
 
@@ -2437,7 +2474,7 @@
 
     },
     "Open Voice Lab" : {
-
+      "shouldTranslate" : false
     },
     "Open channel" : {
 
@@ -2464,7 +2501,7 @@
 
     },
     "Open the loopback Voice Lab. Production builds never show this panel." : {
-
+      "shouldTranslate" : false
     },
     "Open today's note" : {
 
@@ -2485,6 +2522,9 @@
       "comment" : "Recording light colour"
     },
     "Orange — processing after recording" : {
+
+    },
+    "Original audio is not available for this correction." : {
 
     },
     "Original file not available" : {
@@ -2691,11 +2731,28 @@
     "Quit codescribe" : {
       "comment" : "Tray row; codescribe is the product name, kept lowercase"
     },
-    "RAW STT · %lld CHARS" : {
-
-    },
-    "READY" : {
-
+    "Raw STT · %lld characters" : {
+      "comment" : "Dictionary: header above the text the recognizer produced; the count is its length",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Raw STT · %lld character"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Raw STT · %lld characters"
+                }
+              }
+            }
+          }
+        }
+      }
     },
     "Read error" : {
 
@@ -3573,9 +3630,6 @@
     "System surfaces own their material and borders." : {
 
     },
-    "THREADS" : {
-
-    },
     "Tag transcripts for AI agents" : {
 
     },
@@ -3662,7 +3716,7 @@
 
     },
     "Text formatting" : {
-
+      "shouldTranslate" : false
     },
     "The %@ pass returned no text" : {
       "comment" : "The placeholder is the name of the engine that ran the pass"
@@ -3768,6 +3822,9 @@
     },
     "Thread title" : {
 
+    },
+    "Threads" : {
+      "comment" : "Thread rail section eyebrow"
     },
     "Today" : {
       "comment" : "Thread rail section"
@@ -3880,9 +3937,6 @@
     "Typing speed" : {
 
     },
-    "UNREVIEWED" : {
-
-    },
     "Undo needs the recording engine" : {
 
     },
@@ -3906,6 +3960,9 @@
     },
     "Unpinned" : {
       "comment" : "Always-on-top state"
+    },
+    "Unreviewed" : {
+      "comment" : "Dictionary badge: the session closed before this take was reviewed"
     },
     "Untitled" : {
       "comment" : "Thread that carries no title"
@@ -3959,7 +4016,7 @@
 
     },
     "Voice Lab" : {
-
+      "shouldTranslate" : false
     },
     "Voice Lab…" : {
       "comment" : "Tray row: opens the Voice Lab console"
@@ -4102,7 +4159,7 @@
       "comment" : "Whisper is a product name; the parenthesis says it was not the chosen engine"
     },
     "Whisper buffering" : {
-
+      "shouldTranslate" : false
     },
     "Whisper context" : {
 
@@ -4224,6 +4281,18 @@
     "attach file / image" : {
       "comment" : "Composer hint: what can be attached"
     },
+    "audio.microphone.permission.allow" : {
+      "comment" : "Button: grant the microphone permission now",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Allow"
+          }
+        }
+      }
+    },
     "bearer token (optional, saved in Keychain)" : {
 
     },
@@ -4235,6 +4304,66 @@
     },
     "cannot open the installation lock" : {
       "comment" : "Reason clause appended to the atomic-installation failure sentence"
+    },
+    "chat.callout.caution" : {
+      "comment" : "Callout header in agent chat: an action with a risky outcome",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Caution"
+          }
+        }
+      }
+    },
+    "chat.callout.important" : {
+      "comment" : "Callout header in agent chat: something the reader must know",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Important"
+          }
+        }
+      }
+    },
+    "chat.callout.note" : {
+      "comment" : "Callout header in agent chat: a neutral aside",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Note"
+          }
+        }
+      }
+    },
+    "chat.callout.tip" : {
+      "comment" : "Callout header in agent chat: helpful advice",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Tip"
+          }
+        }
+      }
+    },
+    "chat.callout.warning" : {
+      "comment" : "Callout header in agent chat: needs attention to avoid a problem",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Warning"
+          }
+        }
+      }
     },
     "cloud" : {
       "comment" : "Retranscribe pass: the cloud engine"
@@ -4291,8 +4420,23 @@
     "denied" : {
       "comment" : "Permission row status, lower case"
     },
+    "dictionary.correction.header" : {
+      "comment" : "Dictionary: header of one correction card",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Correction"
+          }
+        }
+      }
+    },
     "disabled" : {
 
+    },
+    "disabled · AI formatting off" : {
+      "comment" : "Formatting status: the AI formatting master switch is off"
     },
     "disconnected — disabled" : {
 
@@ -4502,6 +4646,30 @@
         }
       }
     },
+    "overlay.retranscribe.cloud" : {
+      "comment" : "Button under Transcribe again: run the transcription in the cloud",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Cloud"
+          }
+        }
+      }
+    },
+    "overlay.retranscribe.local" : {
+      "comment" : "Button under Transcribe again: run the transcription on this Mac",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Local"
+          }
+        }
+      }
+    },
     "previous take copied" : {
 
     },
@@ -4594,6 +4762,54 @@
     },
     "set" : {
       "comment" : "Status chip: a value is stored"
+    },
+    "settings.formatting.level.off" : {
+      "comment" : "Formatting level: no AI formatting",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Off"
+          }
+        }
+      }
+    },
+    "settings.holdBadge.size.off" : {
+      "comment" : "Hold badge size: the badge is disabled",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Off"
+          }
+        }
+      }
+    },
+    "settings.paste.policy.off" : {
+      "comment" : "Paste policy: never paste automatically",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Off"
+          }
+        }
+      }
+    },
+    "settings.previewTiming.preset.off" : {
+      "comment" : "Preview timing preset: pacing is turned off",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Off"
+          }
+        }
+      }
     },
     "settings.search.section.agent" : {
       "comment" : "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely",
@@ -4889,8 +5105,35 @@
     "thinking…" : {
 
     },
+    "today %@" : {
+      "comment" : "Thread rail row: updated today; the placeholder is the time of day, e.g. 14:05"
+    },
     "tool" : {
       "comment" : "Tool activity row: a tool call is running"
+    },
+    "tray.keycap.off" : {
+      "comment" : "Tray keycap, a few letters wide: this toggle is disabled",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Off"
+          }
+        }
+      }
+    },
+    "tray.keycap.on" : {
+      "comment" : "Tray keycap, a few letters wide: this toggle is enabled",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "On"
+          }
+        }
+      }
     },
     "unavailable" : {
       "comment" : "Lane availability, lower case"

@@ -416,7 +416,7 @@ struct DictationOverlayView: View {
                 .focusable()
                 .focused($actionsFocused)
                 .accessibilityLabel(actions.controlTitle)
-                .accessibilityValue(actions.phase == .open ? "Open" : "Collapsed")
+                .accessibilityValue(actions.phase == .open ? "Expanded" : "Collapsed")
                 .accessibilityHint(
                   state.hasRecoverableSupersededWork
                     ? "Previous take available. Open actions to copy or discard it."

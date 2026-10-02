@@ -13,7 +13,7 @@ struct OverlayPlacementMenu: View {
         Text(error)
         Divider()
       }
-      Section("Anchor") {
+      Section {
         ForEach(OverlayAnchor.allCases) { anchor in
           Button {
             state.selectPlacementAnchor(anchor)
@@ -21,6 +21,10 @@ struct OverlayPlacementMenu: View {
             Label(anchor.label, systemImage: menuImage(for: anchor))
           }
         }
+      } header: {
+        Text(
+          "Anchor",
+          comment: "Overlay placement menu: header above the screen positions the overlay snaps to")
       }
 
       Divider()

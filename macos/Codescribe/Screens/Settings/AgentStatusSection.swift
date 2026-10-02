@@ -119,7 +119,8 @@ struct AgentStatusSection: View {
     let ready = model.agentReadiness.ready
     let accent = ready ? CSColor.olive : CSColor.terracotta
     let accentLight = ready ? CSColor.oliveLight : CSColor.terracotta
-    return Text(ready ? "READY" : "NOT READY")
+    return Text(ready ? "Ready" : "Not ready")
+      .textCase(.uppercase)
       .font(CSFont.mono(9, .semibold))
       .tracking(0.4)
       .foregroundStyle(accentLight)

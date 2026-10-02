@@ -318,7 +318,8 @@ private struct MCPAddServerForm: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 9) {
-      Text("ADD SERVER")
+      Text("Add server", comment: "MCP servers: header of the form that adds a server")
+        .textCase(.uppercase)
         .font(CSFont.mono(10, .semibold))
         .tracking(0.5)
         .foregroundStyle(Color.secondary)

@@ -287,6 +287,7 @@ struct MarkdownText: View {
       HStack(spacing: 6) {
         CSIconView(icon: kind.csIcon, size: s - 2, weight: .semibold)
         Text(kind.label)
+          .textCase(.uppercase)
           .font(CSFont.mono(s - 4, .semibold))
           .tracking(0.8)
       }
@@ -516,13 +517,30 @@ enum CalloutKind {
     }
   }
 
+  /// Header shown above the callout body. The `[!NOTE]` marker the model
+  /// writes stays the identity (`init(tag:)`); this is only what a person reads.
   var label: String {
     switch self {
-    case .note: return "NOTE"
-    case .tip: return "TIP"
-    case .important: return "IMPORTANT"
-    case .warning: return "WARNING"
-    case .caution: return "CAUTION"
+    case .note:
+      return String(
+        localized: "chat.callout.note", defaultValue: "Note",
+        comment: "Callout header in agent chat: a neutral aside")
+    case .tip:
+      return String(
+        localized: "chat.callout.tip", defaultValue: "Tip",
+        comment: "Callout header in agent chat: helpful advice")
+    case .important:
+      return String(
+        localized: "chat.callout.important", defaultValue: "Important",
+        comment: "Callout header in agent chat: something the reader must know")
+    case .warning:
+      return String(
+        localized: "chat.callout.warning", defaultValue: "Warning",
+        comment: "Callout header in agent chat: needs attention to avoid a problem")
+    case .caution:
+      return String(
+        localized: "chat.callout.caution", defaultValue: "Caution",
+        comment: "Callout header in agent chat: an action with a risky outcome")
     }
   }
 

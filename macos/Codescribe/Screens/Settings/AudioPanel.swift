@@ -580,7 +580,9 @@ struct AudioPanel: View {
 
   private var microphonePermissionActionTitle: String {
     model.permissions.microphone == .notDetermined
-      ? String(localized: "Allow", comment: "Button: grant the microphone permission now")
+      ? String(
+        localized: "audio.microphone.permission.allow", defaultValue: "Allow",
+        comment: "Button: grant the microphone permission now")
       : String(localized: "System Settings", comment: "Button: open the System Settings pane")
   }
 

@@ -38,7 +38,8 @@ struct CreatorPanel: View {
         LanguageIdentityRow(selection: languageBinding)
         SettingsControlRow(
           title: String(localized: "AI formatting"),
-          subtitle: "Compatibility gate; Off below always bypasses the LLM"
+          subtitle: String(
+            localized: "Master switch. The Off level below always skips the LLM.")
         ) {
           Toggle("", isOn: formattingEnabledBinding)
             .toggleStyle(.switch)

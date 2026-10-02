@@ -76,7 +76,12 @@ struct UncertainWordPopoverView: View {
             .accessibilityIdentifier("uncertain-word-play")
         }
         if model.canTeach {
-          TextField("Teach", text: $correction)
+          TextField(
+            String(
+              localized: "Correct spelling",
+              comment: "Field prompt: type the word as it should be written"),
+            text: $correction
+          )
             .textFieldStyle(.roundedBorder)
             .frame(minWidth: 90)
             .accessibilityIdentifier("uncertain-word-teach-field")

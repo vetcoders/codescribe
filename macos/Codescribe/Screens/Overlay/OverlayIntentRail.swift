@@ -201,13 +201,13 @@ struct OverlayIntentRail: View {
               .font(CSFont.ui(11, .medium))
             } else if intent == .retranscribe {
               HStack(spacing: 10) {
-                Button("Local") {
+                Button(OverlayRetranscribeCopy.local) {
                   close()
                   retranscribe(.fullHq)
                 }
                 .accessibilityIdentifier("overlay-retranscribe-hq")
                 if cloudRetranscribeConfigured {
-                  Button("Cloud") {
+                  Button(OverlayRetranscribeCopy.cloud) {
                     close()
                     retranscribe(.cloud)
                   }
@@ -408,4 +408,21 @@ extension OverlayIntent {
     }
   }
   var helpText: String { accessibilityLabel }
+}
+
+/// Engine buttons under "Transcribe again", shared by the intent rail and the
+/// coverage popover. They have their own keys: here the word answers "where
+/// should it run", while `Cloud` elsewhere names an engine.
+enum OverlayRetranscribeCopy {
+  static var local: String {
+    String(
+      localized: "overlay.retranscribe.local", defaultValue: "Local",
+      comment: "Button under Transcribe again: run the transcription on this Mac")
+  }
+
+  static var cloud: String {
+    String(
+      localized: "overlay.retranscribe.cloud", defaultValue: "Cloud",
+      comment: "Button under Transcribe again: run the transcription in the cloud")
+  }
 }

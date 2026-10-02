@@ -121,7 +121,10 @@ enum FormattingPolicyOption: String, CaseIterable, Identifiable {
   /// `update_config` persists, so the label never derives from it.
   var visibleName: String {
     switch self {
-    case .off: return String(localized: "Off", comment: "Formatting level: no AI formatting")
+    case .off:
+      return String(
+        localized: "settings.formatting.level.off", defaultValue: "Off",
+        comment: "Formatting level: no AI formatting")
     case .correction:
       return String(localized: "Correction", comment: "Formatting level: fix-ups only")
     case .smart:
@@ -163,7 +166,9 @@ enum HoldBadgeOption: CaseIterable, Identifiable, Equatable {
   }
   var visibleName: String {
     guard let size else {
-      return String(localized: "Off", comment: "Hold badge size: the badge is disabled")
+      return String(
+        localized: "settings.holdBadge.size.off", defaultValue: "Off",
+        comment: "Hold badge size: the badge is disabled")
     }
     return "\(size)px"
   }
@@ -251,7 +256,10 @@ extension CsPasteMode {
     case .safe: return String(localized: "Safe", comment: "Paste policy: cautious destinations")
     case .comfort:
       return String(localized: "Comfort", comment: "Paste policy: paste wherever the caret is")
-    case .off: return String(localized: "Off", comment: "Paste policy: never paste automatically")
+    case .off:
+      return String(
+        localized: "settings.paste.policy.off", defaultValue: "Off",
+        comment: "Paste policy: never paste automatically")
     }
   }
 
@@ -1902,7 +1910,11 @@ final class SettingsViewModel: ObservableObject {
   }
 
   var formattingDescription: String {
-    guard settings.aiFormattingEnabled else { return "disabled · compatibility gate" }
+    guard settings.aiFormattingEnabled else {
+      return String(
+        localized: "disabled · AI formatting off",
+        comment: "Formatting status: the AI formatting master switch is off")
+    }
     return FormattingPolicyOption(storedValue: settings.formattingLevel)?.visibleName
       ?? String(localized: "invalid policy", comment: "Formatting status: stored level is unknown")
   }

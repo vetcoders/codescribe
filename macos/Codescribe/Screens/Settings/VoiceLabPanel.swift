@@ -458,16 +458,22 @@ struct VoiceLabPanel: View {
         let row = corrections[safeIndex]
         VStack(alignment: .leading, spacing: 12) {
           HStack(spacing: 8) {
-            Text("CORRECTION")
-              .font(CSFont.mono(10.5, .semibold))
-              .foregroundStyle(row.isLowConfidence ? CSColor.terracotta : CSColor.oliveLight)
-              .accessibilityAddTraits(.isHeader)
-              .accessibilityLabel(
-                "Heard \(row.variant). Current correction \(row.editedText). Revision \(row.revision)."
-              )
-              .accessibilityIdentifier("dictionary-correction-summary")
+            Text(
+              String(
+                localized: "dictionary.correction.header", defaultValue: "Correction",
+                comment: "Dictionary: header of one correction card")
+            )
+            .textCase(.uppercase)
+            .font(CSFont.mono(10.5, .semibold))
+            .foregroundStyle(row.isLowConfidence ? CSColor.terracotta : CSColor.oliveLight)
+            .accessibilityAddTraits(.isHeader)
+            .accessibilityLabel(
+              "Heard \(row.variant). Current correction \(row.editedText). Revision \(row.revision)."
+            )
+            .accessibilityIdentifier("dictionary-correction-summary")
             if row.isLowConfidence {
-              Text("LOW CONFIDENCE")
+              Text("Low confidence", comment: "Dictionary badge: the engine was unsure here")
+                .textCase(.uppercase)
                 .font(CSFont.mono(9.5, .semibold))
                 .foregroundStyle(CSColor.terracotta)
                 .padding(.horizontal, 7)
@@ -477,8 +483,12 @@ struct VoiceLabPanel: View {
             // Deferred-correction desk: sessions closed without an
             // overlay edit land here as UNREVIEWED, awaiting Edit.
             if row.action == "close-unreviewed" {
-              Text("UNREVIEWED")
-                .font(CSFont.mono(9.5, .semibold))
+              Text(
+                "Unreviewed",
+                comment: "Dictionary badge: the session closed before this take was reviewed"
+              )
+              .textCase(.uppercase)
+              .font(CSFont.mono(9.5, .semibold))
                 .foregroundStyle(CSColor.chromeAccent)
                 .padding(.horizontal, 7)
                 .padding(.vertical, 3)
@@ -527,7 +537,8 @@ struct VoiceLabPanel: View {
             let major = majorDiffSpans(spans)
             let minor = minorDiffSpans(spans)
             VStack(alignment: .leading, spacing: 5) {
-              Text("CHANGED")
+              Text("Changed", comment: "Dictionary: header above the words the correction changed")
+                .textCase(.uppercase)
                 .font(CSFont.mono(10, .semibold))
                 .foregroundStyle(Color.secondary)
               VStack(alignment: .leading, spacing: 8) {
@@ -621,18 +632,22 @@ struct VoiceLabPanel: View {
           .accessibilityIdentifier("dictionary-full-transcript-toggle")
           if showFullText {
             VStack(alignment: .leading, spacing: 10) {
-              fullTextBlock("RAW STT · \(row.rawText.count) CHARS", text: row.rawText)
+              fullTextBlock("Raw STT · \(row.rawText.count) characters", text: row.rawText)
               fullTextBlock(
-                "DELIVERED AFTER FORMATTING · \(row.variant.count) CHARS", text: row.variant)
+                "Delivered after formatting · \(row.variant.count) characters", text: row.variant)
               if normalizedCorrectionText(row.editedText) != normalizedCorrectionText(row.variant) {
-                fullTextBlock("EDITED · \(row.editedText.count) CHARS", text: row.editedText)
+                fullTextBlock("Edited · \(row.editedText.count) characters", text: row.editedText)
               }
             }
           }
           if editor.correctionID == row.id {
             VStack(alignment: .leading, spacing: 8) {
-              Text("CORRECTED ORIGINAL")
-                .font(CSFont.mono(10, .semibold))
+              Text(
+                "Corrected original",
+                comment: "Dictionary: header above the editor holding the corrected text"
+              )
+              .textCase(.uppercase)
+              .font(CSFont.mono(10, .semibold))
                 .foregroundStyle(CSColor.chromeAccent)
               TextEditor(text: $editor.canonical)
                 .focused($focusedCorrectionID, equals: row.id)
@@ -771,7 +786,8 @@ struct VoiceLabPanel: View {
       let sound = NSSound(contentsOf: url, byReference: true)
     else {
       playingRowID = nil
-      playbackMessage = "Original audio is unavailable for this legacy correction."
+      playbackMessage = String(
+        localized: "Original audio is not available for this correction.")
       return
     }
     playbackDelegate.onFinish = { stopPlayback() }
@@ -928,6 +944,7 @@ struct VoiceLabPanel: View {
   private func fullTextBlock(_ title: LocalizedStringKey, text: String) -> some View {
     VStack(alignment: .leading, spacing: 5) {
       Text(title)
+        .textCase(.uppercase)
         .font(CSFont.mono(10, .semibold))
         .foregroundStyle(Color.secondary)
         .accessibilityAddTraits(.isHeader)

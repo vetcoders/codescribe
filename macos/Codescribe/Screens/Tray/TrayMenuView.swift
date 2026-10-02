@@ -297,8 +297,12 @@ struct TrayMenuView: View {
       icon: icon,
       title: title,
       shortcut: isOn
-        ? String(localized: "On", comment: "Tray keycap: this toggle is enabled")
-        : String(localized: "Off", comment: "Tray keycap: this toggle is disabled"),
+        ? String(
+          localized: "tray.keycap.on", defaultValue: "On",
+          comment: "Tray keycap, a few letters wide: this toggle is enabled")
+        : String(
+          localized: "tray.keycap.off", defaultValue: "Off",
+          comment: "Tray keycap, a few letters wide: this toggle is disabled"),
       shortcutColor: isOn ? onColor : CSColor.textFaintAlt
     ) { set(!isOn) }
   }

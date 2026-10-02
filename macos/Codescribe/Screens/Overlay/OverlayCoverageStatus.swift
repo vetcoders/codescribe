@@ -205,12 +205,12 @@ struct OverlayCoverageStatus: View {
         if canRetranscribe {
           Text("Transcribe again")
           HStack {
-            Button("Local") {
+            Button(OverlayRetranscribeCopy.local) {
               close()
               onRetranscribe(.fullHq)
             }
             if cloudConfigured {
-              Button("Cloud") {
+              Button(OverlayRetranscribeCopy.cloud) {
                 close()
                 onRetranscribe(.cloud)
               }

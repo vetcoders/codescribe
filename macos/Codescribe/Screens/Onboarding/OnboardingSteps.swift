@@ -324,7 +324,8 @@ struct AgenticReadinessStepView: View {
   /// reinstall/update or a safe deselection.
   private var agentBridgeSetup: some View {
     VStack(alignment: .leading, spacing: 10) {
-      Text("CODING ASSISTANTS")
+      Text("Coding assistants", comment: "Setup: eyebrow above the coding-assistant choices")
+        .textCase(.uppercase)
         .font(CSFont.mono(10, .semibold))
         .tracking(0.4)
         .foregroundStyle(CSColor.textFaint)
@@ -373,7 +374,8 @@ struct AgenticReadinessStepView: View {
   private func readinessPill(ready: Bool) -> some View {
     let accent = ready ? CSColor.olive : CSColor.terracotta
     let accentLight = ready ? CSColor.oliveLight : CSColor.terracottaLight
-    return Text(ready ? "READY" : "NOT READY")
+    return Text(ready ? "Ready" : "Not ready")
+      .textCase(.uppercase)
       .font(CSFont.mono(9, .semibold))
       .tracking(0.4)
       .foregroundStyle(accentLight)
@@ -623,33 +625,38 @@ struct DoneStepView: View {
 
       VStack(alignment: .leading, spacing: 8) {
         ForEach(summaryOrder) { kind in
-          summaryRow(kind.displayName, granted: model.permissions.state(kind).isGranted)
+          summaryRow(
+            kind.displayName,
+            done: model.permissions.state(kind).isGranted,
+            doneLabel: String(
+              localized: "granted", comment: "Permission status: this permission is granted"))
         }
         summaryRow(
           String(
             localized: "AI provider key",
             comment: "Summary row: whether an API key is stored for the chosen AI provider"),
-          granted: model.selectedProviderKeySet)
+          done: model.selectedProviderKeySet,
+          doneLabel: String(localized: "set", comment: "Status chip: a value is stored"))
       }
       .padding(.top, 6)
     }
   }
 
-  private func summaryRow(_ label: String, granted: Bool) -> some View {
+  private func summaryRow(_ label: String, done: Bool, doneLabel: String) -> some View {
     HStack(spacing: 10) {
       CSIconView(
-        icon: granted ? .checkCircleFill : .circleEmpty,
+        icon: done ? .checkCircleFill : .circleEmpty,
         size: 12,
         weight: .semibold,
-        color: granted ? CSColor.oliveLight : CSColor.textFaint
+        color: done ? CSColor.oliveLight : CSColor.textFaint
       )
       Text(label)
         .font(CSFont.ui(13))
         .foregroundStyle(CSColor.textBody)
       Spacer(minLength: 0)
-      Text(granted ? "granted" : "optional")
+      Text(done ? doneLabel : String(localized: "optional"))
         .font(CSFont.mono(10, .semibold))
-        .foregroundStyle(granted ? CSColor.oliveLight : CSColor.textFaint)
+        .foregroundStyle(done ? CSColor.oliveLight : CSColor.textFaint)
     }
   }
 }
