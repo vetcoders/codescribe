@@ -2118,6 +2118,32 @@ class NeutralAstTests(unittest.TestCase):
                     if symbol != "stop":
                         self.assertTrue(contract["accepted"], (name, symbol))
 
+    def test_terminal_publication_acknowledgement_cannot_be_forged(self):
+        positive = self.run_payload(self.payload)
+        self.assertTrue(positive["accepted"], "negative evidence needs an accepted control")
+        mutations = [
+            ("wrong_ack", "sink.wait_presentation_published(session_id, self.capture_epoch)",
+             "sink.wrong_ack(session_id, self.capture_epoch)"),
+            ("foreign_epoch", "sink.wait_presentation_published(session_id, self.capture_epoch)",
+             "sink.wait_presentation_published(session_id, 0)"),
+            ("sink_taken_before_ack", "self.event_sink.as_ref()", "self.event_sink.take()"),
+            ("timeout_forged_success", 'Err(anyhow!("presentation terminal drain timed out"))', "Ok(())"),
+            ("sink_discarded_on_failure", "if drain_failure.is_none()", "if true"),
+            ("drain_error_discarded", "(cause, drain) => cause.or(drain)", "(cause, _drain) => cause"),
+            ("archive_error_discarded", "Err(error) => (None, Some(error), task_failure)",
+             "Err(_error) => (None, None, task_failure)"),
+        ]
+        for name, old, new in mutations:
+            with self.subTest(mutation=name):
+                evidence = self.run_payload(self.mutate("complete_stop", old, new))
+                contracts = {row["symbol"]: row for row in evidence["contracts"]}
+                self.assertFalse(contracts["complete_stop"]["accepted"], name)
+                self.assertTrue(contracts["complete_stop"]["failures"], name)
+                self.assertFalse(evidence["accepted"], name)
+                for symbol, contract in contracts.items():
+                    if symbol != "complete_stop":
+                        self.assertTrue(contract["accepted"], (name, symbol))
+
     def test_all_eleven_previous_mutants_rejected(self):
         mutations = [
             ("paste_before_guard", "execute_clipboard_paste", "let focus_confirmed = target_app", "clipboard::paste_and_restore(&paste_text)?; let focus_confirmed = target_app"),
