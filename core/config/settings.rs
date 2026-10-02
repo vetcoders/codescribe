@@ -18,7 +18,8 @@
 //! | Validation | [`SettingsSnapshotValidation`] | admit/refuse contract before snapshot seal |
 
 use super::types::{
-    AudioRetention, Config, ModeBinding, PasteMode, ShortcutBinding, WorkMode, default_mode_bindings,
+    AudioRetention, Config, ModeBinding, PasteMode, ShortcutBinding, WorkMode,
+    default_mode_bindings,
 };
 #[cfg(not(any(test, feature = "test-isolation")))]
 use directories::BaseDirs;
@@ -2924,7 +2925,11 @@ impl UserSettings {
             "TRANSCRIPT_SEND_MODE" => self.transcript_send_mode = Some(value.to_owned()),
             "AUDIO_INPUT_DEVICE" => self.audio_input_device = Some(value.to_owned()),
             "AUDIO_RETENTION" => {
-                self.audio_retention = Some(value.parse::<AudioRetention>().map_err(anyhow::Error::msg)?);
+                self.audio_retention = Some(
+                    value
+                        .parse::<AudioRetention>()
+                        .map_err(anyhow::Error::msg)?,
+                );
             }
             "SOUND_NAME" => self.sound_name = Some(value.to_owned()),
             "WHISPER_MODEL" => self.whisper_model = Some(value.to_owned()),
@@ -3070,19 +3075,43 @@ mod tests {
 
     #[test]
     #[serial]
-    fn audio_retention_missing_or_unknown_choice_preserves_forever_on_disk() {
+    fn audio_retention_missing_or_unknown_choice_effectively_preserves_forever() {
         let dir = TempDir::new().unwrap();
         let _env = crate::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", dir.path());
         let path = UserSettings::settings_path();
-        for audio in [serde_json::json!({}), serde_json::json!({"retention":"unsupported"})] {
-            fs::write(&path, serde_json::to_vec(&serde_json::json!({
-                "schema_version":3, "audio":audio, "interaction":{"paste_mode":"off"}
-            })).unwrap()).unwrap();
+        for audio in [
+            serde_json::json!({}),
+            serde_json::json!({"retention":"unsupported"}),
+        ] {
+            fs::write(
+                &path,
+                serde_json::to_vec(&serde_json::json!({
+                    "schema_version":3, "audio":audio, "interaction":{"paste_mode":"off"}
+                }))
+                .unwrap(),
+            )
+            .unwrap();
             UserSettings::load().save().unwrap();
-            let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-            assert_eq!(saved.pointer("/audio/retention"), Some(&serde_json::json!("forever")));
-            assert_eq!(saved.pointer("/interaction/paste_mode"), Some(&serde_json::json!("off")),
-                       "retention cannot overwrite unrelated choices");
+            let saved: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            let snapshot = crate::config::Config::load_runtime_snapshot_without_keychain().unwrap();
+            assert_eq!(
+                snapshot.values().audio_retention,
+                crate::config::AudioRetention::Forever
+            );
+            // Missing input may stay absent on disk: the settings default is
+            // authoritative. An unknown explicit string must normalize safely.
+            if audio.get("retention").is_some() {
+                assert_eq!(
+                    saved.pointer("/audio/retention"),
+                    Some(&serde_json::json!("forever"))
+                );
+            }
+            assert_eq!(
+                saved.pointer("/interaction/paste_mode"),
+                Some(&serde_json::json!("off")),
+                "retention cannot overwrite unrelated choices"
+            );
         }
     }
 
@@ -3093,15 +3122,29 @@ mod tests {
         let _env = crate::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", dir.path());
         let path = UserSettings::settings_path();
         for choice in ["forever", "30_days", "7_days", "24h", "off"] {
-            fs::write(&path, serde_json::to_vec(&serde_json::json!({
-                "schema_version":3, "audio":{"retention":choice}
-            })).unwrap()).unwrap();
+            fs::write(
+                &path,
+                serde_json::to_vec(&serde_json::json!({
+                    "schema_version":3, "audio":{"retention":choice}
+                }))
+                .unwrap(),
+            )
+            .unwrap();
             UserSettings::load().save().unwrap();
-            let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-            assert_eq!(saved.pointer("/audio/retention"), Some(&serde_json::json!(choice)), "lost {choice}");
+            let saved: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(
+                saved.pointer("/audio/retention"),
+                Some(&serde_json::json!(choice)),
+                "lost {choice}"
+            );
             UserSettings::load().save().unwrap();
-            let reloaded: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-            assert_eq!(reloaded.pointer("/audio/retention"), Some(&serde_json::json!(choice)));
+            let reloaded: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(
+                reloaded.pointer("/audio/retention"),
+                Some(&serde_json::json!(choice))
+            );
         }
     }
 
