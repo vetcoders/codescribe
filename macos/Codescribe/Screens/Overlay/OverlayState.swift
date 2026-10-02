@@ -973,10 +973,18 @@ final class OverlayState {
   /// example a Whisper alternative the ledger refused as a whole-span
   /// replacement — in PCM order. They ride the capture-bound compact paint,
   /// never `formattedText`, so no canvas, copy, or delivery path reads them.
-  /// Live only: a terminal take shows its sealed document alone.
+  /// Capture completion does not settle alternatives. Keep the same capture's
+  /// evidence available for review until Rust removes it or a new capture resets paint.
   var liveEvidence: [CsUnanchoredEvidence] {
-    guard !terminal, mode == .listening || mode == .finalizing else { return [] }
-    return compactProjection?.evidence ?? []
+    guard let paint = compactProjection,
+      !retiredProjectionSessions.contains(paint.sessionId)
+    else { return [] }
+    if let document = latestTranscriptProjection {
+      guard document.sessionId == paint.sessionId,
+        document.captureEpoch == 0 || document.captureEpoch == paint.captureEpoch
+      else { return [] }
+    }
+    return paint.evidence
   }
 
   /// Post-take review owns the floating panel. The formatted / no-speech
@@ -2234,11 +2242,14 @@ final class OverlayState {
   /// Passive paint only. Neither capture admission nor document state is
   /// inferred from compact text. Sequence 1 comes from the opened recorder.
   func applyCompactProjection(_ projection: CsCompactProjection) {
-    guard recording || transcribing, !terminal,
-      !projection.sessionId.isEmpty, projection.captureEpoch > 0,
-      !retiredProjectionSessions.contains(projection.sessionId),
-      !endedProjectionSessions.contains(projection.sessionId)
+    guard !projection.sessionId.isEmpty, projection.captureEpoch > 0,
+      !retiredProjectionSessions.contains(projection.sessionId)
     else { return }
+    if let document = latestTranscriptProjection {
+      guard document.sessionId == projection.sessionId,
+        document.captureEpoch == 0 || document.captureEpoch == projection.captureEpoch
+      else { return }
+    }
     if let current = compactProjection {
       guard current.sessionId == projection.sessionId,
         current.captureEpoch == projection.captureEpoch,
@@ -2246,9 +2257,17 @@ final class OverlayState {
       else { return }
     } else {
       guard projection.sequence == 1 else { return }
-      if let current = latestTranscriptProjection {
-        guard current.sessionId == projection.sessionId else { return }
-      }
+    }
+    if terminal || endedProjectionSessions.contains(projection.sessionId) {
+      // Only the current terminal's capture can update review evidence. An
+      // epoch-free lifecycle needs an already bound compact capture; it cannot
+      // admit a new one. These snapshots never reopen recording or delivery.
+      guard let document = latestTranscriptProjection, document.terminal,
+        document.sessionId == projection.sessionId,
+        compactProjection != nil || document.captureEpoch == projection.captureEpoch
+      else { return }
+    } else {
+      guard recording || transcribing else { return }
     }
     compactProjection = projection
     onTranscriptPresentationChanged?()
@@ -2311,6 +2330,17 @@ final class OverlayState {
     let priorProjection = latestTranscriptProjection
     let isNewSession = priorProjection?.sessionId != projection.sessionId
     let draftWasDirty = isRevisionDraftDirty
+    // A text snapshot can arrive before its compact snapshot. Keep same-capture
+    // evidence through seals and terminals, but never carry foreign capture paint.
+    if let paint = compactProjection,
+      paint.sessionId != projection.sessionId
+        || (projection.captureEpoch > 0 && paint.captureEpoch != projection.captureEpoch)
+    {
+      if paint.sessionId != projection.sessionId {
+        retiredProjectionSessions.insert(paint.sessionId)
+      }
+      compactProjection = nil
+    }
     let revisionReceipt = projection.acousticReceipts
       .compactMap(\.manualEditReceipt)
       .first(where: { $0.hasPrefix("user-edit-") })
