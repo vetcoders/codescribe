@@ -376,4 +376,51 @@ mod tests {
         assert!(!rendered.contains(&basename));
         assert!(!rendered.contains(&path.display().to_string()));
     }
+
+    #[tokio::test]
+    #[ignore = "explicit private PCM replay; needs signed Apple bridge and cached local Whisper"]
+    async fn forensic_saved_pcm_produces_authenticated_projection() {
+        let wav = std::env::var("CODESCRIBE_STREAM_TEST_WAV")
+            .expect("explicitly select the private audio fixture");
+        let runtime = tokio::runtime::Handle::current();
+        tokio::task::spawn_blocking(move || runtime.block_on(async move {
+            let (samples, rate) = codescribe_core::audio::load_audio_file(Path::new(&wav))
+                .expect("selected fixture must decode");
+            let settings = UserSettings {
+                asr_mode: Some("local_power".into()),
+                ..UserSettings::default()
+            };
+            settings.save().expect("persist the isolated profile snapshot");
+            let session = replay_production_session(&samples, rate, Some("pl".into()), &settings)
+                .await.expect("production PCM session must return its evidence");
+            let warning_codes = session.events.iter().filter_map(|event| match event {
+                EngineEvent::Warning { code, .. } => Some(code.clone()),
+                _ => None,
+            }).collect::<Vec<_>>();
+            let previews = session.events.iter()
+                .filter(|event| matches!(event, EngineEvent::Preview { .. })).count();
+            let granted_mutations = session.events.iter().filter(|event| match event {
+                EngineEvent::LedgerMutation { receipt, .. } => receipt.grants_mutation(),
+                _ => false,
+            }).count();
+            let seal_events = session.events.iter()
+                .filter(|event| matches!(event, EngineEvent::LedgerSeal { .. })).count();
+            let mut ledger = session.acoustic_ledger.lock().unwrap();
+            let owners = ledger.occurrences().cloned().collect::<Vec<_>>();
+            let pending_recovery = owners.iter().filter(|owner| ledger.text_recovery_pending(owner)).count();
+            let committed_chars = owners.iter().map(|owner| ledger.text_of(owner).unwrap_or("").chars().count()).sum::<usize>();
+            let projection = project_ledger_truth(&session.events, &mut ledger);
+            eprintln!("forensic_pcm_evidence={}", serde_json::json!({
+                "samples": samples.len(), "rate": rate, "events": session.events.len(),
+                "previews": previews, "warning_codes": warning_codes,
+                "granted_mutations": granted_mutations, "seal_events": seal_events,
+                "owners": owners.len(), "committed_chars": committed_chars,
+                "pending_recovery": pending_recovery, "layer1_armed": session.layer1_armed,
+                "projection_nonempty": projection.as_ref().is_ok_and(|text| !text.trim().is_empty()),
+            }));
+            assert!(session.layer1_armed, "the selected isolated profile must arm Whisper");
+            assert!(projection.is_ok_and(|text| !text.trim().is_empty()),
+                "actual production PCM must create an authenticated transcript projection");
+        })).await.expect("diagnostic worker must join");
+    }
 }
