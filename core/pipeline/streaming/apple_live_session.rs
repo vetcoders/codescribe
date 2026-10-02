@@ -22135,59 +22135,161 @@ mod relay_l1_overlap_admission_tests {
     }
 
     #[test]
-    fn forensic_three_slots_resegment_to_two_with_exact_lineage() {
-        let session = "forensic-three-two";
-        let (mut lane, owner, requests) = forensic_lane(
-            session,
-            &[
-                ("zima", 10_000, 25_000),
-                ("usza", 25_000, 40_000),
-                ("rości", 40_000, 60_000),
-                ("dalej", 70_000, 80_000),
-            ],
+    fn forensic_measured_partition_keeps_each_source_lineage() {
+        measured_partition_keeps_each_source_lineage(34_000);
+    }
+
+    fn measured_partition_keeps_each_source_lineage(second_start: u64) {
+        use crate::pipeline::acoustic_ledger::WordPin;
+        let session = "forensic-physical-three-to-two";
+        let mut lane = open(session);
+        let owner = OccurrenceIdentity::new(session, 1, 0, 200_000);
+        let mut input = piece(1, &owner, "");
+        input.audio.fill(0.0);
+        let speech = [
+            (12_000, 24_000),
+            (27_000, 33_000),
+            (36_000, 58_000),
+            (72_000, 78_000),
+        ];
+        for &(start, end) in &speech {
+            input.audio[start as usize..end as usize].fill(0.2);
+        }
+        record_energy(
+            &lane,
+            &input
+                .audio
+                .chunks(1_000)
+                .map(<[f32]>::to_vec)
+                .collect::<Vec<_>>(),
         );
-        record_voiced_spans(&lane, 200_000, &[(12_000, 58_000)]);
+        use crate::audio::chunker::{VadBoundaryEvidence, VadBoundaryKind};
+        let mut fusion = SileroIngress::new(RATE, session.to_string(), 1);
+        assert!(fusion.vad_available());
+        fusion.note_observed_pcm(200_000, 200_000);
+        for &(start, end) in &speech {
+            fusion.observe_boundaries(&[
+                VadBoundaryEvidence {
+                    kind: VadBoundaryKind::SpeechStart,
+                    sample: start,
+                    speech_probability: 0.9,
+                },
+                VadBoundaryEvidence {
+                    kind: VadBoundaryKind::SpeechEnd,
+                    sample: end,
+                    speech_probability: 0.1,
+                },
+            ]);
+        }
+        lane.state.fusion = Some(fusion);
+        qualify_unlabelled(&mut lane, &owner);
+        let sources = {
+            let mut ledger = lane.state.acoustic_ledger.lock().unwrap();
+            let observation = ledger.next_word_observation(ObservationProducer::Apple, 1, &owner);
+            let receipt = ledger.admit_word_slots(
+                &observation,
+                &[
+                    WordPin::new(10_000, 25_000, "zima"),
+                    WordPin::new(25_000, 40_000, "usza"),
+                    WordPin::new(40_000, 60_000, "rości"),
+                    WordPin::new(70_000, 80_000, "dalej"),
+                ],
+            );
+            assert!(receipt.grants_mutation(), "{receipt:?}");
+            ledger.slots_of(&owner).unwrap()[..3].to_vec()
+        };
+        let pcm = input.audio.clone();
+        assert!(lane.state.enqueue_layer1_piece(&lane.tx, input));
+        let requests = take_requests(&mut lane.tail_rx);
+        assert!(!requests.is_empty());
+        for request in &requests {
+            let range = &request.provider_request.identity.range;
+            assert_eq!(
+                request.audio,
+                pcm[range.sample_start as usize..range.sample_end as usize]
+            );
+        }
+        let range = &requests[0].provider_request.identity.range;
+        assert!(range.sample_start <= 10_000 && range.sample_end >= 60_000);
         lane.state.complete_whisper_window(
             &lane.tx,
             completion(
                 &requests[0],
                 vec![
                     word_pin(session, "zimą", 12_000, 34_000),
-                    word_pin(session, "szarości", 33_000, 58_000),
+                    word_pin(session, "szarości", second_start, 58_000),
                 ],
             ),
             12.5,
         );
         let ledger = lane.state.acoustic_ledger.lock().unwrap();
         assert_eq!(ledger.text_of(&owner), Some("zimą szarości dalej"));
-        let operation = ledger
-            .slot_operations()
-            .iter()
-            .find(|operation| operation.rule_id == "acoustic_resegmentation/speech-coverage/v1")
-            .unwrap();
-        assert_eq!(
-            operation.kind,
-            crate::pipeline::acoustic_ledger::SlotOperationKind::Merge
-        );
-        assert_eq!(operation.sources.len(), 3);
-        assert_eq!(operation.outputs.len(), 2);
-        for slot in &operation.outputs {
-            let ranges = ledger.slot_source_ranges(slot);
-            assert_eq!(ranges.len(), 1);
+        let slots = ledger.slots_of(&owner).unwrap();
+        assert_eq!(slots.len(), 3);
+        for (slot, (text, start, end)) in slots.iter().zip([
+            ("zimą", 12_000, 34_000),
+            ("szarości", second_start, 58_000),
+            ("dalej", 70_000, 80_000),
+        ]) {
             assert_eq!(
-                (ranges[0].sample_start, ranges[0].sample_end),
-                (slot.sample_start, slot.sample_end)
+                (slot.text.as_str(), slot.sample_start, slot.sample_end),
+                (text, start, end)
             );
         }
-        assert_eq!(
-            operation
-                .source_ranges
+        let operations = ledger
+            .slot_operations()
+            .iter()
+            .filter(|operation| operation.observation == slots[0].observation)
+            .collect::<Vec<_>>();
+        assert!(!operations.is_empty());
+        for source in &sources {
+            let accounting = operations
                 .iter()
-                .map(|range| (range.sample_start, range.sample_end))
-                .collect::<Vec<_>>(),
-            vec![(10_000, 25_000), (25_000, 40_000), (40_000, 60_000)]
+                .filter(|operation| operation.sources.contains(source))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                accounting.len(),
+                1,
+                "each source pin must be accounted exactly once: {source:?}"
+            );
+            assert!(accounting[0].source_ranges.iter().any(|range| {
+                range.same_capture(&owner)
+                    && range.sample_start == source.sample_start
+                    && range.sample_end == source.sample_end
+            }));
+        }
+        assert_eq!(
+            operations
+                .iter()
+                .map(|operation| operation.sources.len())
+                .sum::<usize>(),
+            sources.len()
         );
+        let outputs = operations
+            .iter()
+            .flat_map(|operation| &operation.outputs)
+            .collect::<Vec<_>>();
+        assert_eq!(outputs.len(), 2);
+        for output in &outputs {
+            assert!(slots[..2].contains(output));
+            let original_pin =
+                OccurrenceIdentity::new(session, 1, output.sample_start, output.sample_end);
+            assert!(
+                ledger.slot_source_ranges(output).contains(&original_pin),
+                "the stronger physical word clock must survive in lineage"
+            );
+            assert_eq!(output.producer, ObservationProducer::Whisper);
+        }
+        for slot in &slots[..2] {
+            assert_eq!(outputs.iter().filter(|output| **output == slot).count(), 1);
+        }
         assert!(ledger.word_deletions().is_empty());
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    #[test]
+    fn forensic_three_slots_resegment_to_two_with_exact_lineage() {
+        measured_partition_keeps_each_source_lineage(33_000);
     }
 
     #[test]
