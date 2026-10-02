@@ -1034,6 +1034,21 @@ impl CodescribeHotkeys {
         .await?
     }
 
+    /// Acquire before native archive lookup; release after playback/read settles.
+    #[cfg(unix)]
+    pub async fn acquire_audio_read_lease(
+        &self,
+    ) -> Result<Arc<crate::recording::CsAudioReadLease>, CsError> {
+        application_runtime::run(async move {
+            tokio::task::spawn_blocking(crate::recording::CsAudioReadLease::acquire)
+                .await
+                .map_err(|e| CsError::Recording {
+                    msg: format!("audio lease worker join error: {e}"),
+                })?
+        })
+        .await?
+    }
+
     /// Stable path of the last retained session WAV, if it exists.
     pub fn last_session_audio_path(&self) -> Option<String> {
         crate::recording::last_session_audio_path()

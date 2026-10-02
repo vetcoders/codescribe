@@ -922,11 +922,18 @@ fn transcribe(file: &std::path::Path, options: FileTranscribeOptions<'_>) -> any
         engine,
     } = options;
 
-    anyhow::ensure!(file.exists(), "file not found: {}", file.display());
+    #[cfg(unix)]
+    let (source_path, _audio_read_lease) =
+        codescribe_core::state::history::audio_retention::AudioReadLease::acquire_for_path(
+            &codescribe_core::config::Config::config_dir(),
+            file,
+        )?;
     // Pin aliases such as last_session.wav once. A newer take must not swap
     // the audio between recognition, PCM inspection and the truth sidecar.
+    #[cfg(not(unix))]
     let source_path = file.canonicalize()?;
     let file = source_path.as_path();
+    anyhow::ensure!(file.exists(), "file not found: {}", file.display());
 
     // The bus is an observer, never a gate: a transcription that cannot be
     // published must still print. Every failure below is reported on stderr and

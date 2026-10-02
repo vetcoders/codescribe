@@ -20,6 +20,14 @@ use crate::safe_path;
 /// first decoded packet; an end-of-stream ends the loop normally, while any
 /// other decode error aborts with context.
 pub fn load_audio_file(path: &Path) -> Result<(Vec<f32>, u32)> {
+    #[cfg(unix)]
+    let (leased_path, _audio_read_lease) =
+        crate::state::history::audio_retention::AudioReadLease::acquire_for_path(
+            &crate::config::Config::config_dir(),
+            path,
+        )?;
+    #[cfg(unix)]
+    let path = leased_path.as_path();
     let src = safe_path::safe_open(path)?;
     let mss = MediaSourceStream::new(Box::new(src), Default::default());
 
@@ -117,6 +125,14 @@ pub fn slice_wav_i16(
     sample_end: u64,
     pad_ms: u32,
 ) -> Result<WavWindow> {
+    #[cfg(unix)]
+    let (leased_path, _audio_read_lease) =
+        crate::state::history::audio_retention::AudioReadLease::acquire_for_path(
+            &crate::config::Config::config_dir(),
+            path,
+        )?;
+    #[cfg(unix)]
+    let path = leased_path.as_path();
     let mut reader = hound::WavReader::open(path)
         .map_err(|e| anyhow!("Failed to open WAV {}: {}", path.display(), e))?;
     let spec = reader.spec();

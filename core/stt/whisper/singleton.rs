@@ -528,6 +528,14 @@ pub fn transcribe_file_verdict_observed(
     options: FileTranscriptionOptions,
     on_segments: &mut dyn FnMut(&[crate::pipeline::contracts::TranscriptSegment]) -> Result<()>,
 ) -> Result<TranscriptionVerdict> {
+    #[cfg(unix)]
+    let (leased_path, _audio_read_lease) =
+        crate::state::history::audio_retention::AudioReadLease::acquire_for_path(
+            &crate::config::Config::config_dir(),
+            path,
+        )?;
+    #[cfg(unix)]
+    let path = leased_path.as_path();
     with_engine_initial_prompt(file_transcription_initial_prompt(), |engine| {
         engine.transcribe_file_with_language_observed(path, language, options, on_segments)
     })

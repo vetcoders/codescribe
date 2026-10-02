@@ -302,9 +302,10 @@ func dictionarySubtitle(
 /// stop it (operator, 2026-08-09). The delegate flips the button back to Play
 /// when the file ends on its own.
 private final class VoiceLabPlaybackDelegate: NSObject, NSSoundDelegate {
-  var onFinish: (() -> Void)?
+  var onFinish: ((ObjectIdentifier) -> Void)?
   func sound(_ sound: NSSound, didFinishPlaying flag: Bool) {
-    DispatchQueue.main.async { self.onFinish?() }
+    let finished = ObjectIdentifier(sound)
+    DispatchQueue.main.async { self.onFinish?(finished) }
   }
 }
 
@@ -317,6 +318,8 @@ struct VoiceLabPanel: View {
   @State private var ruleCandidateIndex = 0
   @State private var showFullText = false
   @State private var playbackSound: NSSound?
+  @State private var playbackLease: CsAudioReadLease?
+  @State private var playbackTask: Task<Void, Never>?
   @State private var playbackMessage: String?
   @State private var playingRowID: String?
   @State private var helperCompare: String?
@@ -711,31 +714,33 @@ struct VoiceLabPanel: View {
   }
 
   private func startHelperRetranscribe(_ row: VoiceLabCorrectionRow) {
-    let archived = archivedAudioURL(configDir: model.configDir, rawText: row.rawText)
-    switch HelperFilePass.request(asrMode: model.asrModeId, archivedAudio: archived) {
-    case .failure(.noHelper):
-      helperText = nil
-      helperCompare = "No helper in Apple-only — pick Local power or Cloud."
-    case .failure(.noArchivedAudio):
-      helperText = nil
-      helperCompare = "No archived audio for this row — will not fall back to last_session.wav."
-    case .success(let (pass, prefixed)):
-      helperPending = true
-      helperText = nil
-      helperCompare = "Running \(pass.visibleName) on archived audio…"
-      Task { @MainActor in
-        defer { helperPending = false }
-        do {
+    helperPending = true
+    Task { @MainActor in
+      defer { helperPending = false }
+      do {
+        let lease = try await CodescribeHotkeys().acquireAudioReadLease()
+        defer { lease.release() }
+        try Task.checkCancellation()
+        let archived = archivedAudioURL(configDir: lease.rootDirectory(), rawText: row.rawText)
+        switch HelperFilePass.request(asrMode: model.asrModeId, archivedAudio: archived) {
+        case .failure(.noHelper):
+          helperText = nil
+          helperCompare = "No helper in Apple-only — pick Local power or Cloud."
+        case .failure(.noArchivedAudio):
+          helperText = nil
+          helperCompare = "No archived audio for this row — will not fall back to last_session.wav."
+        case .success(let (pass, prefixed)):
+          helperText = nil
+          helperCompare = "Running \(pass.visibleName) on archived audio…"
           let engine = AppModel.shared.overlay.state.engine ?? ControllerDictationEngine()
           let result = try await engine.transcribeFile(path: prefixed)
           let next = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
           helperText = next
           helperCompare = HelperFilePass.compare(daily: row.rawText, helper: next, pass: pass)
-        } catch {
-          helperText = nil
-          helperCompare =
-            "Helper \(pass.visibleName) failed: \(error.userFacingMessage)"
         }
+      } catch {
+        helperText = nil
+        helperCompare = "Helper file pass failed: \(error.userFacingMessage)"
       }
     }
   }
@@ -747,25 +752,48 @@ struct VoiceLabPanel: View {
       stopPlayback()
       return
     }
-    playbackSound?.stop()
-    guard let url = archivedAudioURL(configDir: model.configDir, rawText: row.rawText),
-      let sound = NSSound(contentsOf: url, byReference: true)
-    else {
-      playingRowID = nil
-      playbackMessage = "Original audio is unavailable for this legacy correction."
-      return
-    }
-    playbackDelegate.onFinish = { stopPlayback() }
-    sound.delegate = playbackDelegate
-    playbackSound = sound
+    stopPlayback()
     playingRowID = row.id
-    playbackMessage = "Playing \(url.lastPathComponent)"
-    sound.play()
+    playbackTask = Task { @MainActor in
+      do {
+        let lease = try await CodescribeHotkeys().acquireAudioReadLease()
+        var retainedForPlayback = false
+        defer { if !retainedForPlayback { lease.release() } }
+        guard !Task.isCancelled, playingRowID == row.id else { return }
+        guard let url = archivedAudioURL(configDir: lease.rootDirectory(), rawText: row.rawText),
+          let sound = NSSound(contentsOf: url, byReference: true)
+        else {
+          stopPlayback()
+          playbackMessage = "Original audio is unavailable for this correction."
+          return
+        }
+        playbackDelegate.onFinish = { finished in
+          if playbackSound.map(ObjectIdentifier.init) == finished { stopPlayback() }
+        }
+        sound.delegate = playbackDelegate
+        playbackLease = lease
+        retainedForPlayback = true
+        playbackSound = sound
+        playbackMessage = "Playing \(url.lastPathComponent)"
+        if !sound.play() {
+          stopPlayback()
+          playbackMessage = "Original audio could not be played."
+        }
+      } catch {
+        guard !Task.isCancelled else { return }
+        stopPlayback()
+        playbackMessage = error.userFacingMessage
+      }
+    }
   }
 
   private func stopPlayback() {
+    playbackTask?.cancel()
+    playbackTask = nil
     playbackSound?.stop()
     playbackSound = nil
+    playbackLease?.release()
+    playbackLease = nil
     playingRowID = nil
     playbackMessage = nil
   }

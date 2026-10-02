@@ -451,6 +451,14 @@ fn transcribe_file_with_backend(
     language: Option<&str>,
     policy: AppleDeadlinePolicy,
 ) -> Result<(RawTranscript, Option<AppleSttBackend>)> {
+    #[cfg(unix)]
+    let (leased_path, _audio_read_lease) =
+        crate::state::history::audio_retention::AudioReadLease::acquire_for_path(
+            &crate::config::Config::config_dir(),
+            path,
+        )?;
+    #[cfg(unix)]
+    let path = leased_path.as_path();
     init()?;
     let locale = resolved_locale(language);
     let audio_path = path.display().to_string();

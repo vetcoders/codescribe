@@ -645,6 +645,14 @@ impl LocalWhisperEngine {
         options: FileTranscriptionOptions,
         on_segments: &mut dyn FnMut(&[crate::pipeline::contracts::TranscriptSegment]) -> Result<()>,
     ) -> Result<TranscriptionVerdict> {
+        #[cfg(unix)]
+        let (leased_path, _audio_read_lease) =
+            crate::state::history::audio_retention::AudioReadLease::acquire_for_path(
+                &crate::config::Config::config_dir(),
+                path,
+            )?;
+        #[cfg(unix)]
+        let path = leased_path.as_path();
         let (samples, sample_rate) =
             audio_loader::load_audio_file(path).context("Failed to load audio file")?;
 
@@ -746,6 +754,14 @@ impl LocalWhisperEngine {
     /// Detect the spoken language of an audio file, returning its Whisper
     /// language code (e.g. `"pl"`).
     pub fn detect_language_file(&mut self, path: &Path) -> Result<String> {
+        #[cfg(unix)]
+        let (leased_path, _audio_read_lease) =
+            crate::state::history::audio_retention::AudioReadLease::acquire_for_path(
+                &crate::config::Config::config_dir(),
+                path,
+            )?;
+        #[cfg(unix)]
+        let path = leased_path.as_path();
         let (samples, sample_rate) =
             audio_loader::load_audio_file(path).context("Failed to load audio file")?;
         self.detect_language(&samples, sample_rate)

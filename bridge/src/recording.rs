@@ -917,8 +917,39 @@ async fn transcribe_session_file_with_settings(
     take_session_id: Option<String>,
     config: codescribe_core::config::Config,
 ) -> Result<CsTranscription, CsError> {
+    let runtime = tokio::runtime::Handle::current();
+    // The blocking job owns the lease even if the foreign caller cancels its
+    // await. All HQ/cloud path reopens must settle before that job releases it.
+    tokio::task::spawn_blocking(move || {
+        transcribe_session_file_on_worker(path, take_session_id, config, runtime)
+    })
+    .await
+    .map_err(|e| CsError::Recording {
+        msg: format!("transcribe_file task join error: {e}"),
+    })?
+}
+
+fn transcribe_session_file_on_worker(
+    path: String,
+    take_session_id: Option<String>,
+    config: codescribe_core::config::Config,
+    runtime: tokio::runtime::Handle,
+) -> Result<CsTranscription, CsError> {
     let (pass, file_path) = split_retranscribe_path(&path);
     let path = std::path::Path::new(&file_path);
+    #[cfg(unix)]
+    let root = codescribe_core::config::Config::config_dir();
+    #[cfg(unix)]
+    let _session_read_lease = if take_session_id.is_some() {
+        Some(
+            codescribe_core::state::history::audio_retention::AudioReadLease::acquire_existing(
+                &root,
+            )
+            .map_err(|e| CsError::Recording { msg: e.to_string() })?,
+        )
+    } else {
+        None
+    };
     if let Some(ref id) = take_session_id {
         let resolved = session_audio_path(id).ok_or_else(|| CsError::Recording {
             msg: format!("take {id} audio is unavailable"),
@@ -929,6 +960,15 @@ async fn transcribe_session_file_with_settings(
             });
         }
     }
+    #[cfg(unix)]
+    let (leased_path, _audio_read_lease) =
+        codescribe_core::state::history::audio_retention::AudioReadLease::acquire_for_path(
+            &root, path,
+        )
+        .map_err(|e| CsError::Recording { msg: e.to_string() })?;
+    #[cfg(unix)]
+    let file_path = leased_path.to_string_lossy().into_owned();
+    let path = std::path::Path::new(&file_path);
     let session_id = take_session_id.unwrap_or_else(|| {
         path.parent()
             .filter(|parent| parent.file_name().is_some_and(|name| name == "sessions"))
@@ -953,16 +993,8 @@ async fn transcribe_session_file_with_settings(
         "file pass started"
     );
     let result = match pass {
-        RetranscribePass::Hq => {
-            tokio::task::spawn_blocking(move || transcribe_file_hq(file_path, language))
-                .await
-                .unwrap_or_else(|e| {
-                    Err(CsError::Recording {
-                        msg: format!("transcribe_file task join error: {e}"),
-                    })
-                })
-        }
-        RetranscribePass::Cloud => transcribe_file_cloud(file_path, &config).await,
+        RetranscribePass::Hq => transcribe_file_hq(file_path, language),
+        RetranscribePass::Cloud => runtime.block_on(transcribe_file_cloud(file_path, &config)),
     };
     match &result {
         Ok(transcript) => tracing::info!(
@@ -981,6 +1013,49 @@ async fn transcribe_session_file_with_settings(
         ),
     }
     result
+}
+
+/// Native path reader lifetime over the existing history-owned root lease.
+#[cfg(unix)]
+#[derive(uniffi::Object, Debug)]
+pub struct CsAudioReadLease {
+    lease:
+        std::sync::Mutex<Option<codescribe_core::state::history::audio_retention::AudioReadLease>>,
+    root: String,
+}
+
+#[cfg(unix)]
+impl CsAudioReadLease {
+    pub(crate) fn acquire() -> Result<std::sync::Arc<Self>, CsError> {
+        let root = codescribe_core::config::Config::config_dir();
+        let lease =
+            codescribe_core::state::history::audio_retention::AudioReadLease::acquire_existing(
+                &root,
+            )
+            .map_err(|e| CsError::Recording { msg: e.to_string() })?;
+        Ok(std::sync::Arc::new(Self {
+            lease: std::sync::Mutex::new(Some(lease)),
+            root: root.to_string_lossy().into_owned(),
+        }))
+    }
+}
+
+#[cfg(unix)]
+#[uniffi::export]
+impl CsAudioReadLease {
+    /// The configured root protected by this lease, for native path lookup.
+    pub fn root_directory(&self) -> String {
+        self.root.clone()
+    }
+
+    /// Stop the native reader before releasing. Dropping the object also
+    /// releases the lease, including error and cancelled acquisition paths.
+    pub fn release(&self) {
+        self.lease
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+    }
 }
 
 /// `~/.codescribe/last_session.wav` when the last stop retained audio.
@@ -1034,14 +1109,23 @@ pub(crate) fn word_audio_clip(
     sample_end: u64,
     pad_ms: u32,
 ) -> Result<String, CsError> {
-    word_audio_clip_at(
-        &codescribe_core::config::Config::config_dir(),
-        session_id,
-        capture_epoch,
-        sample_start,
-        sample_end,
-        pad_ms,
-    )
+    let session_id = session_id.to_string();
+    crate::application_runtime::block_on(async move {
+        tokio::task::spawn_blocking(move || {
+            word_audio_clip_at(
+                &codescribe_core::config::Config::config_dir(),
+                &session_id,
+                capture_epoch,
+                sample_start,
+                sample_end,
+                pad_ms,
+            )
+        })
+        .await
+        .map_err(|e| CsError::Recording {
+            msg: format!("word audio worker join error: {e}"),
+        })?
+    })?
 }
 
 fn word_audio_clip_at(
@@ -1052,6 +1136,10 @@ fn word_audio_clip_at(
     sample_end: u64,
     pad_ms: u32,
 ) -> Result<String, CsError> {
+    #[cfg(unix)]
+    let _audio_read_lease =
+        codescribe_core::state::history::audio_retention::AudioReadLease::acquire_existing(root)
+            .map_err(|e| CsError::Recording { msg: e.to_string() })?;
     let source = session_audio_path_at(session_id, root).ok_or_else(|| CsError::Recording {
         msg: format!("no retained audio for session {session_id}"),
     })?;

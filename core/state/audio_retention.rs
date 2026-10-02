@@ -28,6 +28,48 @@ const MAX_RECEIPT_BYTES: u64 = 64 * 1024;
 pub struct AudioReadLease(File);
 
 impl AudioReadLease {
+    /// Pin an existing input while holding the configured root's shared lock.
+    /// Resolve aliases only after acquisition. External inputs release the
+    /// temporary lock and are never registered as captured audio.
+    pub fn acquire_for_path(root: &Path, path: &Path) -> Result<(PathBuf, Option<Self>)> {
+        let lease = match Self::acquire_existing(root) {
+            Ok(lease) => lease,
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                return Ok((path.canonicalize()?, None));
+            }
+            Err(error) => return Err(error.context("acquire audio input lease")),
+        };
+        let pinned = lease.0.metadata()?;
+        let resolved_root = root.canonicalize()?;
+        let resolved_path = path.canonicalize()?;
+        let current = std::fs::metadata(&resolved_root)?;
+        anyhow::ensure!(
+            pinned.dev() == current.dev() && pinned.ino() == current.ino(),
+            "audio input root changed during resolution"
+        );
+        if resolved_path.starts_with(&resolved_root) {
+            Ok((resolved_path, Some(lease)))
+        } else {
+            Ok((resolved_path, None))
+        }
+    }
+
+    /// Acquire on a blocking worker without creating any storage directory.
+    /// Use before resolving a session id or enumerating archived audio names.
+    pub fn acquire_existing(root: &Path) -> Result<Self> {
+        let (directory, leaf) = parent(root)?;
+        let file = open_at(&directory, &leaf, libc::O_RDONLY | libc::O_DIRECTORY)?;
+        // SAFETY: flock operates on this owned descriptor.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) } < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(Self(file))
+    }
+
     /// Acquire in a blocking worker before opening owned audio. The process's
     /// captures use the same lock; deletion takes its exclusive, nonwaiting side.
     pub fn acquire(root: &Path) -> Result<Self> {
@@ -610,7 +652,7 @@ fn quarantine_name(name: &CStr) -> Result<CString> {
 
 fn matching_stat(metadata: &libc::stat, device: u64, inode: u64, kind: libc::mode_t) -> bool {
     metadata.st_dev as u64 == device
-        && metadata.st_ino as u64 == inode
+        && u128::from(metadata.st_ino) == u128::from(inode)
         && metadata.st_mode & libc::S_IFMT == kind
 }
 
@@ -734,21 +776,13 @@ fn remove_alias(root: &File, id: &str) -> Result<()> {
             continue;
         }
         if name == pending.as_c_str() {
-            unlink_matching(
-                root,
-                name,
-                metadata.st_dev as u64,
-                metadata.st_ino as u64,
-                libc::S_IFLNK,
-            )?;
+            let inode = u64::try_from(u128::from(metadata.st_ino))
+                .context("audio alias inode exceeds receipt identity width")?;
+            unlink_matching(root, name, metadata.st_dev as u64, inode, libc::S_IFLNK)?;
         } else {
-            remove_entry(
-                root,
-                name,
-                metadata.st_dev as u64,
-                metadata.st_ino as u64,
-                true,
-            )?;
+            let inode = u64::try_from(u128::from(metadata.st_ino))
+                .context("audio alias inode exceeds receipt identity width")?;
+            remove_entry(root, name, metadata.st_dev as u64, inode, true)?;
         }
     }
     Ok(())

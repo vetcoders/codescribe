@@ -66,7 +66,13 @@ fn transcribe_audio_definition() -> ToolDefinition {
 /// path or a missing model is something the model can read and correct instead
 /// of a failed turn.
 async fn handle_transcribe_audio(input: Value) -> Vec<ToolResultContent> {
-    match transcribe_audio_from_input_with_engine(&input, &WhisperSingleton) {
+    let result = tokio::task::spawn_blocking(move || {
+        transcribe_audio_from_input_with_engine(&input, &WhisperSingleton)
+    })
+    .await
+    .context("audio transcription worker join error")
+    .and_then(|result| result);
+    match result {
         Ok(output) => vec![ToolResultContent::Text(output)],
         Err(error) => vec![ToolResultContent::Error(error.to_string())],
     }
@@ -96,7 +102,21 @@ fn transcribe_audio_from_input_with_engine(
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned);
 
+    #[cfg(unix)]
+    let (leased_path, _audio_read_lease) =
+        codescribe_core::state::history::audio_retention::AudioReadLease::acquire_for_path(
+            &codescribe_core::config::Config::config_dir(),
+            Path::new(path_str),
+        )?;
     let path = validate_audio_path(path_str)?;
+    #[cfg(unix)]
+    let path = {
+        // Keep the path gate, then read the alias pinned under the lease.
+        ensure_allowed_audio_path(&leased_path)?;
+        ensure_supported_audio_extension(&leased_path)?;
+        let _ = path;
+        leased_path
+    };
 
     engine.init().context(
         "Failed to initialize shared Whisper engine. If this build has no embedded model, set CODESCRIBE_MODEL_PATH to a complete Whisper model directory.",

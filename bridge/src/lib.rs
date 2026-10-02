@@ -81,6 +81,8 @@ pub use quality::{
     quality_diff_spans, quality_finalize_correction, quality_recent_listing,
     quality_rule_candidates, quality_teach_span,
 };
+#[cfg(unix)]
+pub use recording::CsAudioReadLease;
 pub use recording::{CsCaptureHandle, CsConditionalStop, CsTranscriptDelivery};
 pub use speech::{CsSpeechResult, speak_text, speech_availability, stop_speaking};
 pub use tray_status::{
