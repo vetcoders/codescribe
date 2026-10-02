@@ -519,7 +519,11 @@ impl Recorder {
         }
         anyhow::ensure!(
             self.spill.is_none()
-                && self.buffer.lock().unwrap_or_else(|e| e.into_inner()).is_empty(),
+                && self
+                    .buffer
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .is_empty(),
             "Previous capture still owns recoverable audio; finalize it before starting another take"
         );
 
@@ -577,7 +581,9 @@ impl Recorder {
         let spill_tx = if has_streaming_callback {
             let sink = SpillSink::spawn(native_sample_rate, &takes_dir()?)
                 .context("Cannot start streaming capture without a full audio archive")?;
-            let tx = sink.sender().context("Full audio archive has no sample sender")?;
+            let tx = sink
+                .sender()
+                .context("Full audio archive has no sample sender")?;
             self.spill = Some(sink);
             info!(
                 "Audio spill armed: full take survives the {}s ring cap",
@@ -664,12 +670,7 @@ impl Recorder {
                         } else {
                             buffer_cap_samples
                         };
-                        append_mono_i16_samples(
-                            &mut buf,
-                            &buffer_start_offset,
-                            &mono_i16,
-                            cap,
-                        );
+                        append_mono_i16_samples(&mut buf, &buffer_start_offset, &mono_i16, cap);
                     }
 
                     // Feed audio to local VAD (non-blocking)
@@ -790,7 +791,11 @@ impl Recorder {
         if !self.is_recording.load(Ordering::SeqCst) && self.stream.is_none() {
             warn!("Stop called but no active stream");
             return self.spill.is_some()
-                || !self.buffer.lock().unwrap_or_else(|e| e.into_inner()).is_empty();
+                || !self
+                    .buffer
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .is_empty();
         }
 
         info!("Stopping recording...");
@@ -1168,7 +1173,8 @@ impl SpillSink {
                     }
                     for sample in &chunk {
                         if let Err(error) = writer.write_sample(*sample) {
-                            let cause = format!("spill wav write {}: {error}", writer_path.display());
+                            let cause =
+                                format!("spill wav write {}: {error}", writer_path.display());
                             error!("{cause}; retaining unwritten PCM in memory");
                             failure = Some(cause);
                             break;
@@ -1400,18 +1406,121 @@ mod tests {
         recorder.buffer_start_offset.store(2, Ordering::SeqCst);
         recorder.spill = Some(SpillSink {
             tx: None,
-            handle: Some(std::thread::spawn(|| {
-                Err(anyhow::anyhow!("injected spill write failure"))
+            handle: Some(std::thread::spawn({
+                let partial = partial.clone();
+                move || {
+                    Err(CaptureArchiveError {
+                        cause: "injected spill write failure".into(),
+                        source_path: Some(partial),
+                        sample_rate: 16_000,
+                        captured_samples: 4,
+                        written_samples: 2,
+                        unwritten_samples: Arc::new(vec![33, 44]),
+                        buffer_start_offset: 0,
+                        retained_samples: Arc::new(Vec::new()),
+                    })
+                }
             })),
+            path: partial.clone(),
+            sample_rate: 16_000,
+            written_samples: Arc::new(AtomicUsize::new(2)),
+            send_failed: Arc::new(AtomicBool::new(false)),
         });
         let result = recorder.finalize_closed_capture(true);
         assert!(
             result.is_err(),
             "evicted ring cannot become a complete archive after writer failure: {result:?}"
         );
-        assert_eq!(recorder.buffer.lock().unwrap().len(), 2, "recoverable tail remains owned");
+        assert_eq!(
+            recorder.buffer.lock().unwrap().len(),
+            2,
+            "recoverable tail remains owned"
+        );
         assert_eq!(recorder.buffer_start_offset.load(Ordering::SeqCst), 2);
         assert!(partial.is_file(), "partial source must remain recoverable");
+        let failure = result.unwrap_err();
+        let evidence = failure.downcast_ref::<CaptureArchiveError>().unwrap();
+        assert_eq!(evidence.captured_samples, 4);
+        assert_eq!(evidence.written_samples, 2);
+        assert_eq!(evidence.unwritten_samples.as_slice(), &[33, 44]);
+        assert_eq!(evidence.retained_samples.as_slice(), &[33, 44]);
+        assert_eq!(evidence.source_path.as_deref(), Some(partial.as_path()));
+        let again = recorder.finalize_closed_capture(true).unwrap_err();
+        assert_eq!(again.to_string(), failure.to_string());
+        assert_eq!(recorder.buffer.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_complete_native_take_keeps_silence_and_every_sample_beyond_the_ring_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let rate = 1_000;
+        let mut expected = vec![0_i16; 305_000];
+        expected[0] = i16::MIN;
+        expected[42_000] = 73;
+        expected[300_000] = -912;
+        expected[304_999] = i16::MAX;
+        let mut recorder = Recorder::with_config(RecorderConfig::default()).unwrap();
+        recorder.actual_sample_rate = rate;
+        let sink = SpillSink::spawn(rate, dir.path()).unwrap();
+        for chunk in expected.chunks(1_000) {
+            sink.feed(chunk.to_vec());
+            append_mono_i16_samples(
+                &mut recorder.buffer.lock().unwrap(),
+                &recorder.buffer_start_offset,
+                chunk,
+                Some(streaming_buffer_cap_samples(rate)),
+            );
+        }
+        assert_eq!(recorder.buffer_start_offset.load(Ordering::SeqCst), 5_000);
+        recorder.spill = Some(sink);
+        let path = recorder.finalize_closed_capture(true).unwrap().unwrap();
+        let reader = hound::WavReader::open(path).unwrap();
+        assert_eq!(reader.spec().sample_rate, rate);
+        assert_eq!(reader.spec().channels, 1);
+        assert_eq!(reader.spec().bits_per_sample, 16);
+        let actual: Vec<i16> = reader.into_samples().collect::<Result<_, _>>().unwrap();
+        assert_eq!(
+            actual, expected,
+            "the archive must preserve head, silence and tail byte for byte"
+        );
+        assert!(recorder.buffer.lock().unwrap().is_empty());
+        assert!(recorder.finalize_closed_capture(false).unwrap().is_none());
+    }
+
+    #[test]
+    fn an_evicted_ring_without_a_full_archive_never_becomes_a_successful_take() {
+        let mut recorder = Recorder::with_config(RecorderConfig::default()).unwrap();
+        recorder.actual_sample_rate = 16_000;
+        recorder.buffer.lock().unwrap().extend([33, 44]);
+        recorder.buffer_start_offset.store(2, Ordering::SeqCst);
+        let result = recorder.finalize_closed_capture(true);
+        assert!(
+            result.is_err(),
+            "a missing head cannot be certified: {result:?}"
+        );
+        assert_eq!(
+            recorder
+                .buffer
+                .lock()
+                .unwrap()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            [33, 44]
+        );
+    }
+
+    #[test]
+    fn archive_admission_failure_is_reported_before_any_samples_can_be_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let impossible_directory = dir.path().join("file-not-directory");
+        std::fs::write(&impossible_directory, b"preserve this file").unwrap();
+        assert!(SpillSink::spawn(16_000, &impossible_directory).is_err());
+        assert_eq!(
+            std::fs::read(&impossible_directory).unwrap(),
+            b"preserve this file"
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]

@@ -7147,6 +7147,21 @@ mod refusal_recovery_tests {
         }
     }
 
+    fn stop_whisper_mutation(ledger: &mut AcousticLedger, text: &str) -> EngineEvent {
+        let observation = ObservationIdentity::new(
+            ObservationProducer::Whisper,
+            2,
+            0,
+            OccurrenceIdentity::new(TAKE, 7, 0, 16_000),
+        );
+        let receipt = ledger.admit(&observation, text);
+        EngineEvent::LedgerMutation {
+            observation,
+            label: text.into(),
+            receipt,
+        }
+    }
+
     async fn stop_sink(
         controller: &RecordingController,
         text: String,
@@ -7195,11 +7210,10 @@ mod refusal_recovery_tests {
         }
     }
 
-    async fn check_late_final_receipt(
+    async fn check_late_final_delivery(
         final_text: Option<&str>,
         in_bound: bool,
         during_sink: bool,
-        expected_missing: Option<usize>,
     ) {
         let take = take(State::RecHold, false).await;
         let pipeline = RecordingController::build_recording_event_sink(
@@ -7216,7 +7230,10 @@ mod refusal_recovery_tests {
         *take.controller.active_stop_receipt.write().await = Arc::clone(&pipeline.stop_receipt);
         pipeline.presentation.on_capture_opened(TAKE, 7);
         pipeline.presentation.set_literal_delivery(true);
-        pipeline.event_sink.on_event(&stop_preview("one two"));
+        // Positive delivery begins with real committed PCM provenance. The
+        // separate preview-only falsifiers continue to forbid preview paste.
+        let initial = stop_mutation(&mut take.ledger.lock().unwrap(), "one two");
+        pipeline.event_sink.on_event(&initial);
         let stopped_at = tokio::time::Instant::now();
         pipeline
             .stop_receipt
@@ -7227,7 +7244,7 @@ mod refusal_recovery_tests {
         let _trace = receipts.subscribe();
         let publish_final = || {
             if let Some(text) = final_text {
-                let mutation = stop_mutation(&mut take.ledger.lock().unwrap(), text);
+                let mutation = stop_whisper_mutation(&mut take.ledger.lock().unwrap(), text);
                 pipeline.event_sink.on_event(&mutation);
                 pipeline
                     .event_sink
@@ -7254,98 +7271,108 @@ mod refusal_recovery_tests {
         .await;
         assert_eq!(wait.stop_final_timeout, !in_bound);
         let calls = AtomicUsize::new(0);
-        let settled = take
-            .controller
-            .settle_frozen_canvas_at_stop(
-                Some(TAKE),
-                Some(&pipeline.presentation),
-                wait,
-                stopped_at.into_std(),
-                |text| {
-                    let controller = &take.controller;
-                    let calls = &calls;
-                    let publish_final = &publish_final;
-                    let receipts = &receipts;
-                    async move {
-                        if during_sink {
-                            tokio::time::sleep(Duration::from_secs(1)).await;
-                            publish_final();
-                            assert!(!receipts.text().contains("late_final_words_after_bound="));
-                        }
-                        stop_sink(controller, text, calls).await
-                    }
-                },
+        let first = if wait.permits_first_delivery(Some(TAKE)) {
+            Some(
+                take.controller
+                    .settle_frozen_canvas_at_stop(
+                        Some(TAKE),
+                        Some(&pipeline.presentation),
+                        wait,
+                        stopped_at.into_std(),
+                        |text| {
+                            let controller = &take.controller;
+                            let calls = &calls;
+                            let publish_final = &publish_final;
+                            async move {
+                                if during_sink {
+                                    tokio::time::sleep(Duration::from_secs(1)).await;
+                                    publish_final();
+                                }
+                                stop_sink(controller, text, calls).await
+                            }
+                        },
+                    )
+                    .await
+                    .unwrap(),
             )
-            .await
-            .unwrap();
-        if !in_bound && !during_sink {
+        } else {
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                0,
+                "timeout cannot settle the existing prefix"
+            );
+            None
+        };
+        if !in_bound {
             tokio::time::sleep(Duration::from_secs(1)).await;
             publish_final();
         }
-        if let Some(text) = final_text {
-            // A duplicate event and a later final must not produce another line.
+        let delivered = if let Some(text) = final_text {
+            let canvas = pipeline.presentation.visible_canvas_snapshot().unwrap();
+            assert_eq!(canvas.text, text);
+            assert!(canvas.has_committed_document);
+            assert_eq!(canvas.preview_only_words, 0);
+            let delivered = deliver_terminal_unless_settled(first, || {
+                stop_sink(&take.controller, canvas.text, &calls)
+            })
+            .await
+            .unwrap();
             pipeline.event_sink.on_event(&stop_live_final(text));
             pipeline
                 .event_sink
                 .on_event(&stop_live_final("another final"));
-            assert!(
+            assert_eq!(
                 pipeline
                     .presentation
                     .visible_canvas_snapshot()
                     .unwrap()
-                    .text
-                    .contains(text)
+                    .text,
+                text,
+                "raw final observations cannot rewrite committed text"
             );
-        }
-        deliver_terminal_unless_settled(Some(settled), || async {
-            panic!("late final attempted a second paste")
+            delivered
+        } else {
+            assert!(first.is_none());
+            TranscriptDelivery::Retained
+        };
+        deliver_terminal_unless_settled(Some(delivered), || async {
+            panic!("terminal delivery attempted a second paste")
         })
         .await
         .unwrap();
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        let log = receipts.text();
-        let lines: Vec<_> = log
-            .lines()
-            .filter(|line| line.contains("late_final_words_after_bound="))
-            .collect();
-        if let Some(expected) = expected_missing {
-            assert_eq!(lines.len(), 1, "{log}");
-            assert!(lines[0].contains(&format!("late_final_words_after_bound={expected}")));
-            assert!(lines[0].contains(&format!(
-                "late_final_after_bound_ms={}",
-                (STOP_FINAL_BOUND + Duration::from_secs(1)).as_millis(),
-            )));
-            assert!(lines[0].contains(&format!("take_id={TAKE}")));
-            assert!(!lines[0].contains("one two"));
-            assert!(!lines[0].contains("three four"));
-        } else {
-            assert!(lines.is_empty(), "{log}");
-        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            usize::from(final_text.is_some())
+        );
+        assert!(
+            !receipts.text().contains("late_final_words_after_bound="),
+            "a deferred first delivery is not a completed prefix paste"
+        );
     }
 
     #[tokio::test(start_paused = true)]
-    async fn late_final_counts_two_new_words_without_a_second_paste() {
-        check_late_final_receipt(Some("one two three four"), false, false, Some(2)).await;
+    async fn late_final_delivers_all_terminal_words_once_after_timeout() {
+        check_late_final_delivery(Some("one two three four"), false, false).await;
     }
 
     #[tokio::test(start_paused = true)]
-    async fn late_final_emits_zero_when_the_paste_already_has_its_words() {
-        check_late_final_receipt(Some("one two"), false, false, Some(0)).await;
+    async fn late_final_with_identical_words_does_not_duplicate_delivery() {
+        check_late_final_delivery(Some("one two"), false, false).await;
     }
 
     #[tokio::test(start_paused = true)]
     async fn in_bound_final_emits_no_late_receipt() {
-        check_late_final_receipt(Some("one two three four"), true, false, None).await;
+        check_late_final_delivery(Some("one two three four"), true, false).await;
     }
 
     #[tokio::test(start_paused = true)]
-    async fn timeout_without_a_final_emits_no_late_receipt() {
-        check_late_final_receipt(None, false, false, None).await;
+    async fn timeout_without_a_final_never_pastes_a_committed_prefix() {
+        check_late_final_delivery(None, false, false).await;
     }
 
     #[tokio::test(start_paused = true)]
     async fn final_racing_the_sink_joins_the_settlement_once() {
-        check_late_final_receipt(Some("one two three four"), false, true, Some(2)).await;
+        check_late_final_delivery(Some("one two three four"), true, true).await;
     }
 
     #[test]
@@ -7375,7 +7402,7 @@ mod refusal_recovery_tests {
     #[tokio::test(start_paused = true)]
     async fn stopped_copy_outcomes_remain_distinct() {
         // Inject the transport boundary, not clipboard or focus side effects.
-        // Changed, unconfirmed and preempted targets all return a copy result.
+        // Target copy/deferred outcomes require committed text; preemption retains it.
         for (outcome, frontmost, preempted, expected, receipt) in [
             (
                 OverlayPasteDelivery::Pasted,
@@ -7402,8 +7429,8 @@ mod refusal_recovery_tests {
                 OverlayPasteDelivery::CopiedToClipboard,
                 Some("original-editor"),
                 true,
-                TranscriptDelivery::CopiedToClipboard,
-                "copied",
+                TranscriptDelivery::Retained,
+                "retained",
             ),
             (
                 OverlayPasteDelivery::DeferredInsertArmed,
@@ -7415,12 +7442,14 @@ mod refusal_recovery_tests {
         ] {
             let take = take(State::RecHold, false).await;
             take.emitter.on_capture_opened(TAKE, 7);
-            take.emitter.on_event(&stop_preview("one two"));
+            take.emitter.set_literal_delivery(true);
+            let initial = stop_mutation(&mut take.ledger.lock().unwrap(), "one two");
+            take.emitter.on_event(&initial);
             let stopped_at = tokio::time::Instant::now();
             let stop_receipt = take.controller.active_stop_receipt.read().await.clone();
             stop_receipt.lock().unwrap().begin(Some(TAKE), stopped_at);
             let mut wait = await_live_finals_for_delivery(
-                std::future::pending::<bool>(),
+                async { true },
                 || take.emitter.visible_canvas_snapshot(),
                 stopped_at,
                 take.emitter.visible_canvas_snapshot(),
@@ -7458,7 +7487,7 @@ mod refusal_recovery_tests {
                 .unwrap();
             assert_eq!(settled, expected);
             assert_eq!(*take.controller.delivery_disposition.read().await, expected);
-            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert_eq!(calls.load(Ordering::SeqCst), usize::from(!preempted));
             let log = receipts.text();
             let settled_line = log
                 .lines()
@@ -7469,7 +7498,7 @@ mod refusal_recovery_tests {
                 .lock()
                 .unwrap()
                 .observe(&stop_live_final("one two three"));
-            assert!(receipts.text().contains("late_final_words_after_bound=1"));
+            assert!(!receipts.text().contains("late_final_words_after_bound="));
             assert_eq!(
                 deliver_terminal_unless_settled(Some(settled), || async {
                     panic!("settled delivery attempted again")
@@ -7585,15 +7614,17 @@ mod refusal_recovery_tests {
     async fn stopped_receipt_without_late_apple_keeps_base_bytes() {
         let take = take(State::RecHold, false).await;
         take.emitter.on_capture_opened(TAKE, 7);
-        take.emitter.on_event(&stop_preview("one two"));
+        take.emitter.set_literal_delivery(true);
+        let initial = stop_mutation(&mut take.ledger.lock().unwrap(), "one two");
+        take.emitter.on_event(&initial);
         let frozen = take.emitter.begin_stop_canvas().unwrap();
         assert_eq!(frozen.late_apple_word_counts(), (0, 0));
         let revision = frozen.revision;
         let wait = StopCanvasWait {
             snapshot: Some(frozen.clone()),
             stop_final_wait_ms: 2_000,
-            stop_final_timeout: true,
-            live_finals_admitted: false,
+            stop_final_timeout: false,
+            live_finals_admitted: true,
             painted_at_stop: Some(frozen),
             preempted: false,
             armed_order: true,
@@ -7619,7 +7650,7 @@ mod refusal_recovery_tests {
             .filter(|line| line.contains("stop canvas delivery settled"));
         let line = settled_lines.next().expect("settled receipt");
         assert!(settled_lines.next().is_none());
-        // fd916e2c7's receipt field order and bytes for this fixture. Only the
+        // Pin field order and values for this committed fixture. Only the
         // wall-clock duration varies; preserve its captured value verbatim.
         let (prefix, fields) = line.split_once("stop_to_delivery_ms=").unwrap();
         let target = module_path!()
@@ -7634,15 +7665,15 @@ mod refusal_recovery_tests {
         let expected = format!(
             concat!(
                 "{}stop_to_delivery_ms={} delivery=\"pasted\" ",
-                "stop_final_wait_ms=2000 stop_final_timeout=true live_finals_admitted=false ",
+                "stop_final_wait_ms=2000 stop_final_timeout=false live_finals_admitted=true ",
                 "painted_words_at_stop=2 painted_words_at_snapshot=2 ",
                 "superseded_by_partial_words=0 admitted_into_words=0 closed_by_final_words=0 ",
                 "retained_as_evidence_words=0 untimed_final_phrases=0 ",
                 "untimed_final_phrase_arrivals=Some([]) moved_to_pending_words=0 ",
                 "moved_to_unmatched_words=0 untimed_final_words=0 covered_by_committed_words=0 ",
                 "relabeled_in_place_words=0 reshaped_in_place_words=0 unaccounted=0 ",
-                "armed_order=true light_plus=\"skipped_preview\" capture_epoch=7 reducer_revision={} ",
-                "preview_only_words=2 preview_words_in_paste=2 paste_words=2 ",
+                "armed_order=true light_plus=\"literal\" capture_epoch=7 reducer_revision={} ",
+                "preview_only_words=0 preview_words_in_paste=0 paste_words=2 ",
                 "paste_periods=0 paste_commas=0 paste_qe=0"
             ),
             prefix, elapsed, revision
@@ -7738,8 +7769,10 @@ mod refusal_recovery_tests {
         let take = take(State::RecToggle, false).await;
         take.emitter.on_capture_opened(TAKE, 7);
         take.emitter.set_literal_delivery(true);
-        take.emitter.on_event(&stop_preview("last"));
-        let mutation = stop_mutation(&mut take.ledger.lock().unwrap(), "last complete words");
+        let initial = stop_mutation(&mut take.ledger.lock().unwrap(), "last");
+        take.emitter.on_event(&initial);
+        let mutation =
+            stop_whisper_mutation(&mut take.ledger.lock().unwrap(), "last complete words");
         let receipts = StopReceiptLog::default();
         let _trace = receipts.subscribe();
         let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
@@ -8055,7 +8088,8 @@ mod refusal_recovery_tests {
                 )
                 .await
                 .unwrap();
-            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            assert_eq!(settled, TranscriptDelivery::Retained);
             take.emitter.retire_presentation();
             let late_ui = AtomicUsize::new(0);
             take.emitter.with_active_presentation(|| {
@@ -8097,7 +8131,8 @@ mod refusal_recovery_tests {
             })
             .await
             .unwrap();
-            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            assert_eq!(settled, TranscriptDelivery::Retained);
             let tails = std::mem::take(&mut *take.controller.closed_capture_tails.lock().unwrap());
             for task in tails {
                 task.await.unwrap();
@@ -10028,6 +10063,97 @@ mod hold_start_terminal_lifecycle_falsifiers {
 mod capture_failure_recovery_tests {
     use super::*;
     use codescribe_core::state::SessionTranscriptArchive;
+
+    #[test]
+    fn an_archive_failure_recovers_confirmed_prefix_and_unconfirmed_pcm_before_retention() {
+        use codescribe_core::audio::recorder::CaptureArchiveError;
+        // The real recovery consumer may write a recovered archive. Run it in
+        // a child whose complete application store belongs to this test.
+        if std::env::var_os("CS_PRIVATE_RECOVERY_CHILD").is_none() {
+            let store = tempfile::tempdir().unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["controller::capture_failure_recovery_tests::an_archive_failure_recovers_confirmed_prefix_and_unconfirmed_pcm_before_retention", "--exact", "--test-threads=1"])
+                .env("CS_PRIVATE_RECOVERY_CHILD", "1")
+                .env("CODESCRIBE_DATA_DIR", store.path())
+                .output().unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success(),
+                "isolated recovery failed: {stdout}\n{stderr}"
+            );
+            assert!(
+                stdout.contains("1 passed; 0 failed"),
+                "the real recovery test must execute: {stdout}"
+            );
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("partial.wav");
+        let mut writer = hound::WavWriter::create(
+            &source,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 16_000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for sample in [11_i16, 22] {
+            writer.write_sample(sample).unwrap();
+        }
+        writer.finalize().unwrap();
+        let archive_error = CaptureArchiveError {
+            cause: "injected disk failure".into(),
+            source_path: Some(source.clone()),
+            sample_rate: 16_000,
+            captured_samples: 4,
+            written_samples: 2,
+            unwritten_samples: Arc::new(vec![33, 44]),
+            buffer_start_offset: 3,
+            retained_samples: Arc::new(vec![44]),
+        };
+        let error = anyhow::Error::new(CaptureStopFailure {
+            session_id: Some("capture-owner".into()),
+            capture_epoch: 7,
+            audio_path: None,
+            cause: archive_error.into(),
+            task_failure: None,
+        });
+        let called = std::cell::Cell::new(false);
+        let recovered = recover_capture_stop_failure(
+            error,
+            Some("capture-owner"),
+            (Some("capture-owner"), 7),
+            |id, path| {
+                assert_eq!(id, "capture-owner");
+                assert_ne!(
+                    path,
+                    source.as_path(),
+                    "a partial source must not be retained as complete"
+                );
+                let reader = hound::WavReader::open(path).unwrap();
+                assert_eq!(reader.spec().sample_rate, 16_000);
+                let samples: Vec<i16> = reader.into_samples().collect::<Result<_, _>>().unwrap();
+                assert_eq!(samples, [11, 22, 33, 44]);
+                called.set(true);
+                Ok(())
+            },
+        );
+        assert!(
+            called.get(),
+            "a recoverable full take must reach the real retention consumer"
+        );
+        assert!(
+            recovered.is::<CaptureStopFailure>(),
+            "recovery must preserve the processing error"
+        );
+        assert!(
+            source.is_file(),
+            "recovery never destroys its partial source"
+        );
+    }
 
     fn failure(path: Option<std::path::PathBuf>) -> anyhow::Error {
         anyhow::Error::new(CaptureStopFailure {
