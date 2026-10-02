@@ -367,6 +367,9 @@ pub struct StreamingRecorder {
     /// Agent-channel tasks. Separate from the take's `transcription_handle`.
     channel_tasks: Vec<ChannelTask>,
     captured_samples: Arc<AtomicU64>,
+    /// The existing capture owner's archive result, frozen before a closed
+    /// take can leave the controller slot. Consumed by its ordinary stop tail.
+    prepared_capture_archive: Option<Result<Option<std::path::PathBuf>>>,
     terminal_audio_sender: Option<
         std::sync::mpsc::Sender<
             Result<crate::pipeline::streaming::live_audio_buffer::FinalizedPcmArchive, String>,
@@ -456,6 +459,7 @@ impl StreamingRecorder {
             pcm_feeds: Arc::new(StdMutex::new(Vec::new())),
             channel_tasks: Vec::new(),
             captured_samples: Arc::new(AtomicU64::new(0)),
+            prepared_capture_archive: None,
             terminal_audio_sender: None,
             last_window_closed: None,
         })
@@ -492,6 +496,7 @@ impl StreamingRecorder {
             pcm_feeds: Arc::new(StdMutex::new(Vec::new())),
             channel_tasks: Vec::new(),
             captured_samples: Arc::new(AtomicU64::new(0)),
+            prepared_capture_archive: None,
             terminal_audio_sender: None,
             last_window_closed: None,
         })
@@ -703,6 +708,10 @@ impl StreamingRecorder {
     /// Uses `transcription_session` which emits `EngineEvent`s to the configured
     /// `event_sink`.
     pub async fn start_event_session(&mut self, language: Option<String>) -> Result<()> {
+        anyhow::ensure!(
+            self.prepared_capture_archive.is_none(),
+            "previous closed capture still owns its terminal archive result"
+        );
         let event_sink = self.event_sink.clone().ok_or_else(|| {
             anyhow!(
                 "start_event_session requires event_sink (set_event_sink(Some(...)) before start)"
@@ -1014,11 +1023,16 @@ impl StreamingRecorder {
         // physical stream stops only when no subscriber remains; a capture
         // shared with other subscribers stays open and owes this take no
         // whole-capture WAV.
-        let stopped = match self.release_take_pcm_feed() {
-            TakeFeedRelease::LastSubscriber | TakeFeedRelease::NoTakeFeed => {
-                self.recorder.stop().await
+        let release = self.release_take_pcm_feed();
+        let stopped = if let Some(prepared) = self.prepared_capture_archive.take() {
+            prepared
+        } else {
+            match release {
+                TakeFeedRelease::LastSubscriber | TakeFeedRelease::NoTakeFeed => {
+                    self.recorder.stop().await
+                }
+                TakeFeedRelease::CaptureShared => Ok(None),
             }
-            TakeFeedRelease::CaptureShared => Ok(None),
         };
         self.complete_stop(stopped).await
     }
@@ -1055,8 +1069,26 @@ impl StreamingRecorder {
         &mut self,
         was_active: bool,
     ) -> Result<(String, Option<std::path::PathBuf>)> {
-        let stopped = self.recorder.finalize_closed_capture(was_active);
+        let stopped = self
+            .prepared_capture_archive
+            .take()
+            .unwrap_or_else(|| self.recorder.finalize_closed_capture(was_active));
         self.complete_stop(stopped).await
+    }
+
+    /// A detached tail may own a complete saved file, never the only failed
+    /// PCM in RAM. Freeze finalization without waiting for recognition. Failure
+    /// stays queued for the ordinary typed stop/recovery consumer to handle.
+    pub fn prepare_closed_capture_archive(&mut self, was_active: bool) -> Result<()> {
+        anyhow::ensure!(!self.recorder.is_active(), "capture is still active");
+        if self.prepared_capture_archive.is_none() {
+            self.prepared_capture_archive = Some(self.recorder.finalize_closed_capture(was_active));
+        }
+        match self.prepared_capture_archive.as_ref() {
+            Some(Ok(_)) => Ok(()),
+            Some(Err(error)) => Err(anyhow!("closed capture archive unavailable: {error:#}")),
+            None => Err(anyhow!("closed capture archive result is missing")),
+        }
     }
 
     /// The production stop tail. Tests inject only the recorder's archive
@@ -2256,10 +2288,15 @@ mod capture_stop_failure_tests {
     impl crate::pipeline::contracts::EventSink for SynchronousTestPresentation {
         fn on_event(&self, _event: &EngineEvent) {}
         fn wait_presentation_published<'a>(
-            &'a self, session_id: &'a str, capture_epoch: u64,
+            &'a self,
+            session_id: &'a str,
+            capture_epoch: u64,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
             Box::pin(async move {
-                anyhow::ensure!(session_id == "capture-owner" && capture_epoch == 7, "foreign capture");
+                anyhow::ensure!(
+                    session_id == "capture-owner" && capture_epoch == 7,
+                    "foreign capture"
+                );
                 Ok(())
             })
         }
@@ -2273,10 +2310,15 @@ mod capture_stop_failure_tests {
     impl crate::pipeline::contracts::EventSink for ControlledTestPresentation {
         fn on_event(&self, _event: &EngineEvent) {}
         fn wait_presentation_published<'a>(
-            &'a self, session_id: &'a str, capture_epoch: u64,
+            &'a self,
+            session_id: &'a str,
+            capture_epoch: u64,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
             Box::pin(async move {
-                anyhow::ensure!(session_id == "capture-owner" && capture_epoch == 7, "foreign capture");
+                anyhow::ensure!(
+                    session_id == "capture-owner" && capture_epoch == 7,
+                    "foreign capture"
+                );
                 self.entered.notify_one();
                 self.release.notified().await;
                 Ok(())
@@ -2429,9 +2471,7 @@ mod capture_stop_failure_tests {
     #[tokio::test(start_paused = true)]
     async fn archive_failure_reaps_worker_and_preserves_both_errors_without_a_path() {
         let mut recorder = recorder();
-        recorder.set_event_sink(Some(Arc::new(
-            SynchronousTestPresentation,
-        )));
+        recorder.set_event_sink(Some(Arc::new(SynchronousTestPresentation)));
         let (sender, receiver) = std::sync::mpsc::channel();
         recorder.terminal_audio_sender = Some(sender);
         recorder.transcription_handle = Some(tokio::spawn(async {
@@ -2902,7 +2942,8 @@ mod capture_stop_failure_tests {
         let entered = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
         recorder.set_event_sink(Some(Arc::new(ControlledTestPresentation {
-            entered: entered.clone(), release: release.clone(),
+            entered: entered.clone(),
+            release: release.clone(),
         })));
         let audio = path.clone();
         let stopping = tokio::spawn(async move {
@@ -2929,7 +2970,8 @@ mod capture_stop_failure_tests {
         let mut recorder = recorder();
         let entered = Arc::new(tokio::sync::Notify::new());
         recorder.set_event_sink(Some(Arc::new(ControlledTestPresentation {
-            entered: entered.clone(), release: Arc::new(tokio::sync::Notify::new()),
+            entered: entered.clone(),
+            release: Arc::new(tokio::sync::Notify::new()),
         })));
         let audio = path.clone();
         let stopping = tokio::spawn(async move {
@@ -2943,7 +2985,10 @@ mod capture_stop_failure_tests {
         let failure = error.downcast_ref::<CaptureStopFailure>().unwrap();
         assert!(failure.cause.to_string().contains("timed out"));
         assert_eq!(failure.audio_path.as_deref(), Some(path.as_path()));
-        assert!(recorder.event_sink.is_some(), "uncompleted publication remains owned");
+        assert!(
+            recorder.event_sink.is_some(),
+            "uncompleted publication remains owned"
+        );
         assert_eq!(std::fs::read(path).unwrap(), wav);
     }
 
@@ -2955,12 +3000,14 @@ mod capture_stop_failure_tests {
         let mut recorder = recorder();
         recorder.capture_epoch = 8;
         recorder.set_event_sink(Some(Arc::new(SynchronousTestPresentation)));
-        let error = recorder.complete_stop(Ok(Some(path.clone()))).await.unwrap_err();
+        let error = recorder
+            .complete_stop(Ok(Some(path.clone())))
+            .await
+            .unwrap_err();
         let failure = error.downcast_ref::<CaptureStopFailure>().unwrap();
         assert!(failure.cause.to_string().contains("foreign capture"));
         assert_eq!(failure.capture_epoch, 8);
         assert!(recorder.event_sink.is_some());
         assert_eq!(std::fs::read(path).unwrap(), wav);
     }
-
 }

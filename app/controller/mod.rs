@@ -222,8 +222,6 @@ impl Drop for AtomicFlagGuard {
 /// Each variant is the truthful cause the terminal Bus line reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HoldStartAbort {
-    /// Apple Speech preflight refused before the microphone opened.
-    PreflightRefused,
     /// Acoustic admission refused before the microphone opened.
     AdmissionRefused,
     /// No recorder instance, or it could not reach a clean pre-start state.
@@ -239,10 +237,9 @@ impl HoldStartAbort {
     fn bus_reason(self) -> TranscriptSessionEndReason {
         match self {
             Self::Superseded => TranscriptSessionEndReason::StartSuperseded,
-            Self::PreflightRefused
-            | Self::AdmissionRefused
-            | Self::RecorderUnavailable
-            | Self::RecorderStartFailed => TranscriptSessionEndReason::StartFailed,
+            Self::AdmissionRefused | Self::RecorderUnavailable | Self::RecorderStartFailed => {
+                TranscriptSessionEndReason::StartFailed
+            }
         }
     }
 }
@@ -305,12 +302,17 @@ fn session_audio_path(root: &std::path::Path, session_id: &str) -> Option<std::p
 }
 
 /// Freeze storage policy and acquire its read/processing fence before capture.
-async fn begin_audio_capture(id: &str, policy: codescribe_core::config::AudioRetention) -> Result<()> {
+async fn begin_audio_capture(
+    id: &str,
+    policy: codescribe_core::config::AudioRetention,
+) -> Result<()> {
     let root = Config::config_dir();
     let id = id.to_owned();
     tokio::task::spawn_blocking(move || {
         codescribe_core::state::history::audio_retention::begin_capture(&root, &id, policy)
-    }).await.context("audio capture lease worker failed")?
+    })
+    .await
+    .context("audio capture lease worker failed")?
 }
 
 fn finish_audio_capture(id: Option<&str>) {
@@ -354,7 +356,8 @@ async fn retain_session_audio_with_lease(
             SessionTranscriptArchive::NoSpeech
         };
         retain_owned_session_audio(session_id.as_deref(), &path, transcript, lease.as_deref())
-    }).await;
+    })
+    .await;
     match result {
         Ok(Ok(())) => {}
         Ok(Err(error)) => tracing::error!("{error:#}"),
@@ -375,14 +378,18 @@ fn retain_owned_session_audio(
         daily_audio.clone()
     });
     if let Some(lease) = lease {
-        if result.is_err() { lease.protect_retry(); }
+        if result.is_err() {
+            lease.protect_retry();
+        }
         let mut owned = vec![path.to_path_buf()];
         if let Some(id) = retainable_session_id(session_id)
             && let Some(session) = session_audio_path(&root, id)
         {
             owned.push(session);
         }
-        if let Some(daily) = daily_audio { owned.push(daily); }
+        if let Some(daily) = daily_audio {
+            owned.push(daily);
+        }
         if let Err(error) = lease.record(&owned, false) {
             lease.protect_retry();
             return Err(error.context("audio ownership receipt refused; source preserved"));
@@ -694,7 +701,7 @@ fn publish_retained_audio(
 /// Both the controller id and the frozen recorder epoch must agree before any
 /// archive side effect. Context keeps the typed error and its original cause.
 fn recover_capture_stop_failure(
-    error: anyhow::Error,
+    mut error: anyhow::Error,
     session_id: Option<&str>,
     capture_identity: (Option<&str>, u64),
     retain: impl FnOnce(&str, &std::path::Path) -> Result<()>,
@@ -711,11 +718,40 @@ fn recover_capture_stop_failure(
     {
         return error.context("capture recovery refused: session/epoch identity mismatch");
     }
-    if let Some(path) = failure.audio_path.as_deref()
-        && let Err(archive_error) = retain(id.expect("identity checked"), path)
-    {
-        let message = format!("{archive_error:#}; original processing error: {error:#}");
-        return error.context(message);
+    let archive_failure = failure
+        .cause
+        .downcast_ref::<codescribe_core::audio::recorder::CaptureArchiveError>();
+    let recovered = match archive_failure {
+        Some(archive) => match archive.recover_complete_archive() {
+            Ok(recovered) => Some(recovered),
+            Err(recovery_error) => {
+                return error.context(format!(
+                    "CRITICAL: complete audio recovery failed: {recovery_error:#}; original PCM evidence remains protected"
+                ));
+            }
+        },
+        None => None,
+    };
+    let audio_path = recovered
+        .as_ref()
+        .map(|recovered| recovered.path().to_path_buf())
+        .or_else(|| failure.audio_path.clone());
+    if let Some(path) = audio_path {
+        if let Err(archive_error) = retain(id.expect("identity checked"), &path) {
+            let message = format!(
+                "CRITICAL: recovery retention failed for {}: {archive_error:#}; original processing error: {error:#}",
+                path.display(),
+            );
+            return error.context(message);
+        }
+        if let Some(recovered) = recovered {
+            if let Some(failure) = error.downcast_mut::<CaptureStopFailure>() {
+                failure.audio_path = Some(path);
+            }
+            // Only a successful retention consumer may return this core proof.
+            // The caller acknowledges it after any blocking worker has joined.
+            return error.context(recovered);
+        }
     }
     error
 }
@@ -1097,9 +1133,14 @@ async fn stop_recorder_for_terminal(
                 if err.downcast_ref::<CaptureStopFailure>().is_some() {
                     let session_id = session_id.map(str::to_owned);
                     let lease = retainable_session_id(session_id.as_deref()).and_then(|id| {
-                        codescribe_core::state::history::audio_retention::capture(&Config::config_dir(), id)
+                        codescribe_core::state::history::audio_retention::capture(
+                            &Config::config_dir(),
+                            id,
+                        )
                     });
-                    if let Some(lease) = lease.as_ref() { lease.protect_retry(); }
+                    if let Some(lease) = lease.as_ref() {
+                        lease.protect_retry();
+                    }
                     let recovered = tokio::task::spawn_blocking(move || {
                         recover_capture_stop_failure(
                             err,
@@ -1107,7 +1148,8 @@ async fn stop_recorder_for_terminal(
                             (capture_session.as_deref(), capture_epoch),
                             |id, path| {
                                 retain_owned_session_audio(
-                                    Some(id), path,
+                                    Some(id),
+                                    path,
                                     codescribe_core::state::SessionTranscriptArchive::Unavailable(
                                         "capture processing failed; committed text unavailable",
                                     ),
@@ -1115,11 +1157,22 @@ async fn stop_recorder_for_terminal(
                                 )
                             },
                         )
-                    }).await;
-                    Err(match recovered {
+                    })
+                    .await;
+                    let recovered = match recovered {
                         Ok(error) => error,
                         Err(error) => anyhow::anyhow!("audio recovery worker failed: {error}"),
-                    })
+                    };
+                    if let Some(proof) = recovered
+                        .downcast_ref::<codescribe_core::audio::recorder::RecoveredCaptureArchive>(
+                    ) && let Err(acknowledgement) =
+                        recorder.recorder.acknowledge_archive_recovery(proof)
+                    {
+                        return Err(recovered.context(format!(
+                            "CRITICAL: recovered audio ownership could not settle: {acknowledgement:#}"
+                        )));
+                    }
+                    Err(recovered)
                 } else {
                     Err(err.context("Failed to stop recorder"))
                 }
@@ -2330,20 +2383,22 @@ impl RecordingController {
         Self::broadcast_presentation_status(event_broadcast, &status);
     }
 
-    fn broadcast_apple_preflight_refusal(
+    fn broadcast_capture_transcription_warning(
         event_broadcast: &broadcast::Sender<IpcEvent>,
-        session_id: String,
-        error: &anyhow::Error,
+        blocker: &admission::AdmissionBlocker,
     ) {
-        crate::os::tray_status::update_tray_status(crate::os::tray_status::TrayStatus::Error);
-        let status = PresentationStatusProjection::admission_refused(
-            Some(session_id),
-            "admission_speech_recognition_unavailable",
-            format!(
-                "Apple dictation could not start: {error:#} — Enable Speech Recognition for Codescribe in System Settings › Privacy & Security › Speech Recognition."
-            ),
-        );
-        Self::broadcast_presentation_status(event_broadcast, &status);
+        warn!(%blocker, "transcription readiness unavailable; audio admission continues");
+        let _ = event_broadcast.send(IpcEvent {
+            timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            payload: IpcEventPayload::Engine(EngineEventWire::Warning {
+                code: "capture_transcription_unavailable".into(),
+                message: format!(
+                    "Audio recording remains available; transcription cannot qualify: {} {}",
+                    blocker.explanation(),
+                    blocker.action(),
+                ),
+            }),
+        });
     }
 
     /// Publish one non-transcript status over the same controller IPC stream as
@@ -2861,6 +2916,17 @@ impl RecordingController {
             "preemption requires closed capture"
         );
         let replacement = StreamingRecorder::with_config(recorder.recorder.config.clone())?;
+        if recorder.prepare_closed_capture_archive(was_active).is_err() {
+            // Do not replace this slot while it owns failed PCM. The ordinary
+            // stop consumes the frozen result, sends terminal failure to STT
+            // and attempts durable recovery before any controller reset.
+            return match stop_recorder_for_terminal(recorder, take_id, Some(was_active)).await {
+                Err(error) => Err(error),
+                Ok(_) => Err(anyhow::anyhow!(
+                    "closed capture archive failure lost its cause"
+                )),
+            };
+        }
         if let Some(emitter) = self.active_presentation.read().await.as_ref() {
             emitter.retire_presentation();
         }
@@ -2885,7 +2951,8 @@ impl RecordingController {
                             path,
                             codescribe_core::state::SessionTranscriptArchive::from_committed(text),
                             retained_capture.clone(),
-                        ).await;
+                        )
+                        .await;
                     }
                     TranscriptSessionEndReason::Completed
                 }
@@ -4998,36 +5065,9 @@ impl RecordingController {
                 is_assistive,
             );
 
-            // Apple live must-have: refuse start before audio when Speech is not
-            // ready (empty mid-take death is not an acceptable product mode).
-            // Runs BEFORE the recorder lock and on the blocking pool: the probe
-            // spawns a bridge child and can block on the Speech TCC dialog for
-            // as long as the user takes — holding the recorder mutex (or a
-            // runtime worker) for that window froze stop/tray/second-hotkey.
-            if !cfg!(test) {
-                let preflight =
-                    tokio::task::spawn_blocking(codescribe_core::stt::preflight_apple_live_ready)
-                        .await
-                        .unwrap_or_else(|join| {
-                            Err(anyhow::anyhow!("Apple STT preflight task panicked: {join}"))
-                        });
-                if let Err(e) = preflight {
-                    error!("Hold-start aborted (Apple STT preflight): {e:#}");
-                    Self::broadcast_apple_preflight_refusal(
-                        &event_broadcast,
-                        new_session_id.clone(),
-                        &e,
-                    );
-                    Self::unwind_hold_start(&hold_session, None, HoldStartAbort::PreflightRefused)
-                        .await;
-                    return;
-                }
-            }
-
-            // Acoustic admission must-have (same gate as toggle): refuse before
-            // the recorder lock and before any microphone opens. Hold has no
-            // return channel to the UI, so the refusal rides the engine
-            // Warning channel the bridge forwards as a terminal error.
+            // Speech readiness never owns audio admission. The live session
+            // starts behind capture; its failure cannot erase the requested take.
+            // Only microphone/device blockers below refuse the physical capture.
             if !cfg!(test) {
                 // `.clone()` (not `Arc::clone`) on purpose: C15D counts one
                 // recorder binding per start body; this is the same Arc.
@@ -5048,6 +5088,15 @@ impl RecordingController {
                         calibration_version = %grant.calibration_version,
                         "acoustic admission granted for hold start"
                     ),
+                    Err(blocker)
+                        if !matches!(
+                            blocker,
+                            admission::AdmissionBlocker::MicrophonePermissionUnavailable { .. }
+                                | admission::AdmissionBlocker::CaptureDeviceUnavailable { .. }
+                        ) =>
+                    {
+                        Self::broadcast_capture_transcription_warning(&event_broadcast, &blocker);
+                    }
                     Err(blocker) => {
                         error!("Hold-start refused (acoustic admission): {blocker}");
                         Self::broadcast_admission_refusal(
@@ -5327,35 +5376,9 @@ impl RecordingController {
             is_assistive,
         );
 
-        // Apple live must-have preflight, BEFORE the recorder lock and on the
-        // blocking pool: the probe spawns a bridge child and can block on the
-        // Speech TCC dialog indefinitely — holding the recorder mutex (or a
-        // runtime worker) for that window froze every other recorder surface.
-        if !cfg!(test) {
-            let preflight =
-                tokio::task::spawn_blocking(codescribe_core::stt::preflight_apple_live_ready)
-                    .await
-                    .unwrap_or_else(|join| {
-                        Err(anyhow::anyhow!("Apple STT preflight task panicked: {join}"))
-                    });
-            if let Err(e) = preflight {
-                // Must log the actual cause — silent "resetting flags" made padaka undiagnosable.
-                error!("Toggle-start aborted (Apple STT preflight): {e:#}");
-                Self::broadcast_apple_preflight_refusal(
-                    &self.event_broadcast,
-                    new_session_id.clone(),
-                    &e,
-                );
-                self.reset_session_after_start_failure("Toggle-start Apple STT preflight")
-                    .await;
-                return Err(e);
-            }
-        }
-
-        // Acoustic admission must-have: a take whose occurrences can never
-        // qualify (no measured calibration, seal lane disarmed) must be refused
-        // HERE, before the recorder lock and before any microphone opens — not
-        // recorded into a WAV that grows while the Bus stays on session_started.
+        // Speech readiness never owns audio admission. Recognition starts
+        // downstream of capture, with no Speech permission wait on this path.
+        // Calibration/seal readiness is a warning; capture failures still refuse.
         if !cfg!(test) {
             match self.admission_readiness().await {
                 Ok(grant) => info!(
@@ -5364,6 +5387,15 @@ impl RecordingController {
                     calibration_version = %grant.calibration_version,
                     "acoustic admission granted for toggle start"
                 ),
+                Err(blocker)
+                    if !matches!(
+                        blocker,
+                        admission::AdmissionBlocker::MicrophonePermissionUnavailable { .. }
+                            | admission::AdmissionBlocker::CaptureDeviceUnavailable { .. }
+                    ) =>
+                {
+                    Self::broadcast_capture_transcription_warning(&self.event_broadcast, &blocker);
+                }
                 Err(blocker) => {
                     error!("Toggle-start refused (acoustic admission): {blocker}");
                     Self::broadcast_admission_refusal(
@@ -6317,7 +6349,8 @@ impl RecordingController {
                 codescribe_core::state::SessionTranscriptArchive::from_committed(
                     streaming_text.as_str(),
                 ),
-            ).await;
+            )
+            .await;
         }
         // Ctrl-hold literal (`force_raw`) and the hold flavour are sink-time
         // facts already consumed when the emitter was built; delivery reads

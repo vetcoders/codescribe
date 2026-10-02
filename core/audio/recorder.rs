@@ -263,6 +263,170 @@ impl std::fmt::Debug for CaptureArchiveError {
 
 impl std::error::Error for CaptureArchiveError {}
 
+/// Recorder-issued proof of a complete, synced recovery file. The private
+/// evidence pins this proof to the failed capture that supplied the PCM.
+#[derive(Debug)]
+pub struct RecoveredCaptureArchive {
+    path: PathBuf,
+    evidence: CaptureArchiveError,
+}
+
+impl RecoveredCaptureArchive {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl std::fmt::Display for RecoveredCaptureArchive {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "complete captured audio recovery file at {}; original processing failure remains",
+            self.path.display(),
+        )
+    }
+}
+
+impl CaptureArchiveError {
+    /// Rebuild only a fully accounted native PCM take. A physical tail beyond
+    /// `written_samples` is unconfirmed and must never be spliced twice.
+    fn complete_pcm(&self) -> Result<Vec<i16>> {
+        anyhow::ensure!(self.sample_rate > 0, "recovery has no native sample rate");
+        anyhow::ensure!(self.captured_samples > 0, "recovery has no captured PCM");
+        anyhow::ensure!(
+            self.written_samples <= self.captured_samples,
+            "confirmed prefix exceeds the captured take"
+        );
+        let unconfirmed_end = self
+            .written_samples
+            .checked_add(self.unwritten_samples.len())
+            .context("unconfirmed PCM sample extent overflow")?;
+        let retained_end = self
+            .buffer_start_offset
+            .checked_add(self.retained_samples.len())
+            .context("retained PCM sample extent overflow")?;
+        anyhow::ensure!(
+            unconfirmed_end <= self.captured_samples && retained_end == self.captured_samples,
+            "recovery PCM extents disagree with the captured take"
+        );
+
+        // A complete RAM take needs no readable file at all. Still reconcile
+        // every unconfirmed sample; conflicting evidence must not become audio.
+        if self.buffer_start_offset == 0 {
+            anyhow::ensure!(
+                self.retained_samples[self.written_samples..unconfirmed_end]
+                    == self.unwritten_samples[..],
+                "unconfirmed recovery PCM disagrees with the complete RAM take"
+            );
+            return Ok(self.retained_samples.as_ref().clone());
+        }
+
+        let mut pcm = Vec::new();
+        if self.written_samples > 0 {
+            let path = self
+                .source_path
+                .as_deref()
+                .context("confirmed PCM has no source archive")?;
+            let mut reader = open_native_pcm_archive(path, self.sample_rate)?;
+            for sample in reader.samples::<i16>().take(self.written_samples) {
+                pcm.push(sample.context("confirmed PCM prefix is unreadable")?);
+            }
+            anyhow::ensure!(
+                pcm.len() == self.written_samples,
+                "source archive is shorter than its confirmed PCM prefix"
+            );
+        }
+        pcm.extend(self.unwritten_samples.iter().copied());
+        anyhow::ensure!(
+            self.buffer_start_offset <= pcm.len(),
+            "recovery has a missing PCM gap before the retained tail"
+        );
+        let overlap = pcm.len() - self.buffer_start_offset;
+        anyhow::ensure!(
+            pcm[self.buffer_start_offset..] == self.retained_samples[..overlap],
+            "overlapping recovery PCM disagrees"
+        );
+        pcm.extend(self.retained_samples[overlap..].iter().copied());
+        anyhow::ensure!(
+            pcm.len() == self.captured_samples,
+            "recovery does not cover the complete captured take"
+        );
+        Ok(pcm)
+    }
+
+    /// Publish a new full WAV for the existing retention consumer. Keep the
+    /// failed source untouched, even when reconstruction or publication fails.
+    pub fn recover_complete_archive(&self) -> Result<RecoveredCaptureArchive> {
+        let pcm = self.complete_pcm()?;
+        let directory = takes_dir()?;
+        let identity = uuid::Uuid::new_v4();
+        let pending = directory.join(format!(".codescribe_recovery_{identity}.pending"));
+        // Reuse the native take namespace admitted by the retention owner.
+        let published = directory.join(format!("codescribe_recording_{}.wav", identity.as_u128()));
+        write_wav_file(&pending, &pcm, self.sample_rate, CHANNELS)?;
+        let reader = open_native_pcm_archive(&pending, self.sample_rate)?;
+        verify_recovered_pcm(reader, &pcm)?;
+        // Exclusive linking publishes only the closed, synced and verified file.
+        // A collision or failed sync leaves both PCM evidence and source intact.
+        std::fs::hard_link(&pending, &published).context("publish recovered PCM archive")?;
+        std::fs::File::open(&directory)?.sync_all()?;
+        if let Err(error) = std::fs::remove_file(&pending) {
+            warn!(%error, "complete recovered archive published; pending link remains");
+        }
+        Ok(RecoveredCaptureArchive {
+            path: published,
+            evidence: self.clone(),
+        })
+    }
+}
+
+fn open_native_pcm_archive(
+    path: &Path,
+    sample_rate: u32,
+) -> Result<hound::WavReader<std::fs::File>> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .with_context(|| format!("open recovery PCM source {}", path.display()))?;
+    anyhow::ensure!(
+        file.metadata()?.is_file(),
+        "recovery PCM source is not a regular file"
+    );
+    let reader = hound::WavReader::new(file).context("read recovery PCM header")?;
+    let spec = reader.spec();
+    anyhow::ensure!(
+        spec.channels == CHANNELS
+            && spec.sample_rate == sample_rate
+            && spec.bits_per_sample == 16
+            && spec.sample_format == hound::SampleFormat::Int,
+        "recovery PCM source has a foreign format or native rate"
+    );
+    Ok(reader)
+}
+
+fn verify_recovered_pcm(mut reader: hound::WavReader<std::fs::File>, pcm: &[i16]) -> Result<()> {
+    anyhow::ensure!(
+        usize::try_from(reader.len()).ok() == Some(pcm.len()),
+        "recovered archive sample count disagrees"
+    );
+    let mut samples = reader.samples::<i16>();
+    for &expected in pcm {
+        let actual = samples
+            .next()
+            .context("recovered archive is physically truncated")??;
+        anyhow::ensure!(actual == expected, "recovered archive PCM disagrees");
+    }
+    anyhow::ensure!(samples.next().is_none(), "recovered archive has extra PCM");
+    reader
+        .into_inner()
+        .sync_all()
+        .context("sync complete recovered PCM")?;
+    Ok(())
+}
+
 /// Outcome of a non-stopping buffer snapshot. Recording stream remains active.
 ///
 /// Caller stores `end_offset` and passes it as `from_offset` in the next
@@ -956,6 +1120,45 @@ impl Recorder {
     /// Recovery receipt for an unsuccessful archive; starting a new take cannot erase it.
     pub fn archive_error(&self) -> Option<&CaptureArchiveError> {
         self.archive_error.as_ref()
+    }
+
+    /// Release the failed take only after its exact PCM reached durable storage
+    /// and the existing retention consumer succeeded. Errors keep the latch and
+    /// buffer intact, so another start cannot erase the only remaining audio.
+    pub fn acknowledge_archive_recovery(
+        &mut self,
+        recovered: &RecoveredCaptureArchive,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            !self.is_active() && self.spill.is_none(),
+            "capture must be closed before completing archive recovery"
+        );
+        let error = self
+            .archive_error
+            .as_ref()
+            .context("no failed take owns archive recovery")?;
+        let evidence = &recovered.evidence;
+        anyhow::ensure!(
+            error.sample_rate == evidence.sample_rate
+                && error.captured_samples == evidence.captured_samples
+                && error.written_samples == evidence.written_samples
+                && error.buffer_start_offset == evidence.buffer_start_offset
+                && error.source_path == evidence.source_path
+                && Arc::ptr_eq(&error.retained_samples, &evidence.retained_samples)
+                && Arc::ptr_eq(&error.unwritten_samples, &evidence.unwritten_samples),
+            "recovered archive proof belongs to a different failed capture"
+        );
+        self.last_duration = evidence.captured_samples as f32 / evidence.sample_rate as f32;
+        self.diagnostics.frames = evidence.captured_samples;
+        self.diagnostics.bytes = evidence.captured_samples * std::mem::size_of::<i16>();
+        self.diagnostics.duration_sec = self.last_duration;
+        self.buffer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        self.buffer_start_offset.store(0, Ordering::SeqCst);
+        self.archive_error = None;
+        Ok(())
     }
 
     fn retain_archive_error(&mut self, mut error: CaptureArchiveError) -> Result<Option<PathBuf>> {
