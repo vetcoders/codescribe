@@ -280,7 +280,6 @@ async fn transcribe_external(
     info!("Using external STT endpoint: {}", endpoint_url);
 
     let canonical_path = canonicalize_path(path)?;
-    let lang = language.unwrap_or("pl");
 
     // File lane only: `:stream` is the NDJSON variant, anything else is multipart.
     // Live sockets belong to the Live lane (`Config::stt_lane(SttLane::Live)`).
@@ -298,7 +297,7 @@ async fn transcribe_external(
     if endpoint_url.ends_with(":stream") {
         // NDJSON streaming HTTP: the file is decoded and sent in segments, so
         // the whole-file upload cap of the multipart lane does not apply.
-        transcribe_ndjson(endpoint_url, api_key, &canonical_path, lang).await
+        transcribe_ndjson(endpoint_url, api_key, &canonical_path, language).await
     } else {
         // OpenAI-compatible multipart upload: one body, one backend cap.
         // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path (path canonicalized above)
@@ -327,7 +326,7 @@ async fn transcribe_external(
                     endpoint_url,
                     api_key,
                     &canonical_path,
-                    lang,
+                    language,
                     filename,
                 )
                 .await;
@@ -335,7 +334,7 @@ async fn transcribe_external(
             error!("Audio validation failed: {}", validation_error);
             anyhow::bail!("Audio validation failed: {}", validation_error);
         }
-        transcribe_multipart(endpoint_url, api_key, buffer, lang, filename).await
+        transcribe_multipart(endpoint_url, api_key, buffer, language, filename).await
     }
 }
 
@@ -366,7 +365,7 @@ async fn transcribe_ndjson(
     url: &str,
     api_key: &str,
     path: &Path,
-    language: &str,
+    language: Option<&str>,
 ) -> Result<CloudTranscriptionVerdict> {
     let start = Instant::now();
     let decode_path = path.to_path_buf();
@@ -393,7 +392,7 @@ async fn transcribe_ndjson(
         pcm.len() as f64 / f64::from(NDJSON_SAMPLE_RATE),
         NDJSON_SAMPLE_RATE,
         segments.len(),
-        language
+        language.unwrap_or("auto")
     );
 
     let mut texts: Vec<String> = Vec::with_capacity(segments.len());
@@ -442,7 +441,7 @@ async fn transcribe_multipart_segmented(
     url: &str,
     api_key: &str,
     path: &Path,
-    language: &str,
+    language: Option<&str>,
     filename: &str,
 ) -> Result<CloudTranscriptionVerdict> {
     let start = Instant::now();
@@ -564,22 +563,22 @@ async fn transcribe_ndjson_segment(
     url: &str,
     api_key: &str,
     pcm: &[i16],
-    language: &str,
+    language: Option<&str>,
 ) -> Result<String> {
     use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 
     let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
     let mut body = String::with_capacity(bytes.len() * 4 / 3 + 1024);
-    body.push_str(
-        &serde_json::json!({
-            "type": "set",
-            "language": language,
-            "sample_rate": NDJSON_SAMPLE_RATE,
-            "encoding": "pcm16",
-            "vad": false
-        })
-        .to_string(),
-    );
+    let mut settings = serde_json::json!({
+        "type": "set",
+        "sample_rate": NDJSON_SAMPLE_RATE,
+        "encoding": "pcm16",
+        "vad": false
+    });
+    if let Some(language) = language {
+        settings["language"] = language.into();
+    }
+    body.push_str(&settings.to_string());
     body.push('\n');
     for chunk in bytes.chunks(NDJSON_CHUNK_BYTES) {
         body.push_str(
@@ -729,7 +728,7 @@ async fn transcribe_multipart(
     url: &str,
     api_key: &str,
     audio_data: Vec<u8>,
-    language: &str,
+    language: Option<&str>,
     filename: &str,
 ) -> Result<CloudTranscriptionVerdict> {
     let start = Instant::now();
@@ -738,7 +737,7 @@ async fn transcribe_multipart(
         "[Multipart STT] POST {} ({} bytes, lang={}, vocabulary={})",
         url,
         audio_data.len(),
-        language,
+        language.unwrap_or("auto"),
         vocabulary.unwrap_or("off")
     );
 
@@ -753,9 +752,10 @@ async fn transcribe_multipart(
             .context("Failed to set MIME type")?;
 
         let whisper_model = stt_model(url, std::env::var("WHISPER_MODEL").ok().as_deref());
-        let mut form = Form::new()
-            .part("file", file_part)
-            .text("language", language.to_string());
+        let mut form = Form::new().part("file", file_part);
+        if let Some(language) = language {
+            form = form.text("language", language.to_string());
+        }
         if let Some(model) = &whisper_model {
             form = form.text("model", model.clone());
         }

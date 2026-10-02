@@ -47,6 +47,16 @@ and reaps a remaining child before joining its stdout reader. A blocking reader
 must not defeat the flush deadline. This process-level bound does not prove
 that every pending Whisper observation reached delivery.
 
+Explicit overlay HQ and Cloud file actions resolve one immutable settings
+generation at button dispatch. Both pass `speech.language` through to STT:
+Polish sends `pl`, English sends `en`, and Auto leaves language detection enabled.
+HQ resolves settings without opening Keychain; Cloud uses the File lane from
+that same generation. This is the selected language at button dispatch, not a
+historical language receipt saved with an older take. A requested language is
+returned in `CsTranscription.language`; Auto returns `und` because this result
+type does not carry the decoder's detected language. A language hint does not
+certify recognition quality or authorize invented words on noise.
+
 ---
 
 ## Agent speech synthesis (2026-09-08)

@@ -898,6 +898,23 @@ pub(crate) async fn transcribe_session_file_with_identity(
     path: String,
     take_session_id: Option<String>,
 ) -> Result<CsTranscription, CsError> {
+    // Resolve one immutable settings generation for the explicit button pass.
+    // A local pass does not need credentials or a Keychain prompt.
+    let settings = match split_retranscribe_path(&path).0 {
+        RetranscribePass::Hq => {
+            codescribe_core::config::Config::load_runtime_snapshot_without_keychain()
+        }
+        RetranscribePass::Cloud => codescribe_core::config::Config::load_runtime_snapshot(),
+    }
+    .map_err(|e| CsError::Recording { msg: e.to_string() })?;
+    transcribe_session_file_with_settings(path, take_session_id, settings.values().clone()).await
+}
+
+async fn transcribe_session_file_with_settings(
+    path: String,
+    take_session_id: Option<String>,
+    config: codescribe_core::config::Config,
+) -> Result<CsTranscription, CsError> {
     let (pass, file_path) = split_retranscribe_path(&path);
     let path = std::path::Path::new(&file_path);
     if let Some(ref id) = take_session_id {
@@ -925,21 +942,25 @@ pub(crate) async fn transcribe_session_file_with_identity(
         RetranscribePass::Hq => "local_whisper_hq",
         RetranscribePass::Cloud => "cloud",
     };
+    let language = config.whisper_language;
     tracing::info!(
         pass = pass_name,
         session_id,
+        language = language.as_str(),
         ?audio_seconds,
         "file pass started"
     );
     let result = match pass {
-        RetranscribePass::Hq => tokio::task::spawn_blocking(move || transcribe_file_hq(file_path))
-            .await
-            .unwrap_or_else(|e| {
-                Err(CsError::Recording {
-                    msg: format!("transcribe_file task join error: {e}"),
+        RetranscribePass::Hq => {
+            tokio::task::spawn_blocking(move || transcribe_file_hq(file_path, language))
+                .await
+                .unwrap_or_else(|e| {
+                    Err(CsError::Recording {
+                        msg: format!("transcribe_file task join error: {e}"),
+                    })
                 })
-            }),
-        RetranscribePass::Cloud => transcribe_file_cloud(file_path).await,
+        }
+        RetranscribePass::Cloud => transcribe_file_cloud(file_path, &config).await,
     };
     match &result {
         Ok(transcript) => tracing::info!(
@@ -1090,12 +1111,18 @@ fn split_retranscribe_path(path: &str) -> (RetranscribePass, String) {
     }
 }
 
-fn transcribe_file_hq(path: String) -> Result<CsTranscription, CsError> {
-    let verdict = codescribe_core::stt::transcribe_file_verdict(std::path::Path::new(&path), None)
-        .map_err(|e| CsError::Recording { msg: e.to_string() })?;
+fn transcribe_file_hq(
+    path: String,
+    language: codescribe_core::config::Language,
+) -> Result<CsTranscription, CsError> {
+    let verdict = codescribe_core::stt::transcribe_file_verdict(
+        std::path::Path::new(&path),
+        language.whisper_hint(),
+    )
+    .map_err(|e| CsError::Recording { msg: e.to_string() })?;
     Ok(CsTranscription {
         text: verdict.text,
-        language: "und".to_string(),
+        language: language.whisper_hint().unwrap_or("und").to_string(),
     })
 }
 
@@ -1116,11 +1143,14 @@ pub(crate) fn cloud_file_lane(
     Ok(lane)
 }
 
-async fn transcribe_file_cloud(path: String) -> Result<CsTranscription, CsError> {
-    let lane = cloud_file_lane(&codescribe_core::config::Config::load())?;
+async fn transcribe_file_cloud(
+    path: String,
+    config: &codescribe_core::config::Config,
+) -> Result<CsTranscription, CsError> {
+    let lane = cloud_file_lane(config)?;
     let verdict = codescribe::client::transcribe_cloud(
         std::path::Path::new(&path),
-        None,
+        config.whisper_language.whisper_hint(),
         &lane.endpoint,
         lane.api_key.as_deref().unwrap_or_default(),
     )
@@ -1128,13 +1158,137 @@ async fn transcribe_file_cloud(path: String) -> Result<CsTranscription, CsError>
     .map_err(|e| CsError::Recording { msg: e.to_string() })?;
     Ok(CsTranscription {
         text: verdict.text,
-        language: "und".to_string(),
+        language: config
+            .whisper_language
+            .whisper_hint()
+            .unwrap_or("und")
+            .to_string(),
     })
 }
 
 #[cfg(test)]
 mod retranscribe_tests {
     use super::*;
+
+    /// Exercise button dispatch and both real file transports without credentials.
+    /// Explicit languages must reach the provider; Auto must remain unspecified.
+    #[tokio::test]
+    async fn file_button_pass_preserves_selected_language_in_provider_request() {
+        use codescribe_core::config::{Config, Language};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        for (language, streaming) in [Language::Polish, Language::English, Language::Auto]
+            .into_iter()
+            .flat_map(|language| [false, true].map(move |streaming| (language, streaming)))
+        {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut bytes = [0; 4096];
+                    let read = stream.read(&mut bytes).await.unwrap();
+                    assert!(read > 0, "provider request ended before its body");
+                    request.extend_from_slice(&bytes[..read]);
+                    if let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&request[..end]);
+                        let length: usize = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse().unwrap())
+                            })
+                            .expect("multipart request length");
+                        if request.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
+                }
+                let body = if streaming {
+                    "{\"type\":\"transcript.final\",\"text\":\"rozpoznane słowa\"}\n"
+                } else {
+                    r#"{"text":"rozpoznane słowa"}"#
+                };
+                stream.write_all(format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()
+                ).as_bytes()).await.unwrap();
+                String::from_utf8_lossy(&request).into_owned()
+            });
+            let temp = tempfile::tempdir().unwrap();
+            let wav = temp.path().join("speech.wav");
+            let spec = hound::WavSpec {
+                channels: 1,
+                sample_rate: 16000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            };
+            let mut writer = hound::WavWriter::create(&wav, spec).unwrap();
+            for _ in 0..1600 {
+                writer.write_sample(1000_i16).unwrap();
+            }
+            writer.finalize().unwrap();
+            let config = Config {
+                whisper_language: language,
+                stt_file_endpoint: Some(format!(
+                    "http://{address}/v1/audio/transcriptions{}",
+                    if streaming { ":stream" } else { "" }
+                )),
+                ..Default::default()
+            };
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                transcribe_session_file_with_settings(
+                    format!("cloud:{}", wav.display()),
+                    None,
+                    config,
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(result.text, "rozpoznane słowa");
+            assert_eq!(result.language, language.whisper_hint().unwrap_or("und"));
+            let request = server.await.unwrap();
+            if streaming {
+                let body = request.split_once("\r\n\r\n").unwrap().1;
+                let settings: serde_json::Value =
+                    serde_json::from_str(body.lines().next().unwrap()).unwrap();
+                assert_eq!(settings["type"], "set");
+                assert_eq!(settings["language"].as_str(), language.whisper_hint());
+                continue;
+            }
+            match language.whisper_hint() {
+                Some(code) => assert!(
+                    request.contains(&format!("name=\"language\"\r\n\r\n{code}\r\n")),
+                    "missing {code} in provider request"
+                ),
+                None => assert!(!request.contains("name=\"language\"")),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "real retained audio and local Whisper model"]
+    async fn local_file_button_pass_uses_configured_language_on_retained_audio() {
+        let wav = std::env::var("PROOF_WAV").expect("explicit PROOF_WAV required");
+        // The test-process fence must not read the account's live settings.
+        // Supply the confirmed setting explicitly at the same dispatch boundary.
+        let config = codescribe_core::config::Config {
+            whisper_language: codescribe_core::config::Language::Polish,
+            ..Default::default()
+        };
+        let result = transcribe_session_file_with_settings(format!("hq:{wav}"), None, config)
+            .await
+            .expect("local button pass");
+        assert_eq!(
+            result.language, "pl",
+            "explicit Polish must survive the local button pass"
+        );
+        assert!(!result.text.trim().is_empty());
+        eprintln!("HQ language={} text={:?}", result.language, result.text);
+    }
 
     #[test]
     fn session_audio_resolver_keeps_take_identity_and_cli_source() {
