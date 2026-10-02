@@ -31,7 +31,7 @@ AST_COMMAND = (
     "cargo", "run", "--offline", "--locked", "--package",
     "codescribe-structural-ast", "--bin", "codescribe-structural-ast", "--quiet",
 )
-AST_IDENTITY = "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=2"
+AST_IDENTITY = "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=3"
 AST_BODIES = {
     "paste_text_from_overlay": "app/controller/mod.rs",
     # The overlay early return calls `OverlayPasteResult::noop()`; the

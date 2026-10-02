@@ -2201,6 +2201,11 @@ mod tests {
             writer.write_sample(sample).unwrap();
         }
         writer.finalize().unwrap();
+        fs::write(
+            path.with_file_name(format!("{id}_human_transcription.txt")),
+            "synthetic speech",
+        )
+        .unwrap();
         let capture = retention::capture(&root, id).unwrap();
         capture.record(std::slice::from_ref(&path), false).unwrap();
 
@@ -2214,7 +2219,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(discovery.selected.len(), 1);
-        assert_eq!(discovery.selected[0].path, path);
+        assert_eq!(discovery.selected[0].path, path.canonicalize().unwrap());
         retention::finish_capture(&root, id);
         drop(capture);
         let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
