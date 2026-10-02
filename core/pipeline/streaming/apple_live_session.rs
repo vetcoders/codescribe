@@ -5009,7 +5009,7 @@ fn admit_late_apple_words(
                 let receipt = if ledger.matching_word_slot(&owner, &pin, &text, false) {
                     ledger.refuse_replayed_range(&observation, &text)
                 } else {
-                    ledger.refuse_replacement(&observation, &text, RefuseReason::SealedReplay)
+                    ledger.refuse_replacement(&observation, &text, RefuseReason::AuthorityConflict)
                 };
                 let _ = ev_tx.send(EngineEvent::LedgerMutation {
                     observation,
@@ -7296,6 +7296,7 @@ fn close_apple_phrase(
                     MutationReceipt::Refuse {
                         reason:
                             RefuseReason::SealedReplay
+                            | RefuseReason::AuthorityConflict
                             | RefuseReason::BatchDuplicate
                             | RefuseReason::ReplayedRangeIdentity,
                         ..
@@ -21189,6 +21190,134 @@ mod relay_l1_overlap_admission_tests {
             Some("bo nie jest"),
             "{mode:?}"
         );
+    }
+
+    #[test]
+    fn integrator_coarse_apple_slot_does_not_swallow_whisper_words() {
+        coarse_apple_slot_does_not_swallow_whisper_words(BufferMode::Windows);
+    }
+
+    #[test]
+    fn integrator_coarse_apple_slot_does_not_swallow_whisper_words_adaptive() {
+        coarse_apple_slot_does_not_swallow_whisper_words(BufferMode::Adaptive);
+    }
+
+    /// Field shape W14 of channel take fc40155d (2026-10-01): Apple held
+    /// "usunięcie tego jednego" and one 3.6 s token "Case". Whisper measured
+    /// six words there, the first crossing both Apple slots; all six were
+    /// refused as ambiguous and the seal read "usunięcie tego jednego Case
+    /// Foundation.".
+    fn coarse_apple_slot_does_not_swallow_whisper_words(mode: BufferMode) {
+        let session = &mode.session("integrator-coarse-slot");
+        let (mut lane, owner, requests) = forensic_lane_in(
+            mode,
+            session,
+            &[
+                ("usunięcie tego jednego", 4_000, 18_000),
+                ("Case", 20_000, 40_000),
+            ],
+        );
+        let range = &requests[0].provider_request.identity.range;
+        assert!(
+            range.sample_start <= 4_000 && range.sample_end >= 50_000,
+            "{mode:?}: window {}..{}",
+            range.sample_start,
+            range.sample_end
+        );
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![
+                    word_pin(session, "na", 17_000, 21_000),
+                    word_pin(session, "tym", 21_000, 23_000),
+                    word_pin(session, "naprawdę", 23_000, 27_000),
+                    word_pin(session, "jesteśmy", 27_000, 31_000),
+                    word_pin(session, "z", 31_000, 32_000),
+                    word_pin(session, "Technicznym", 32_000, 38_000),
+                    word_pin(session, "Foundation.", 40_500, 46_000),
+                ],
+            ),
+            12.5,
+        );
+        lane.state
+            .return_outstanding_whisper_without_label(&lane.tx);
+        let text = held_text(&lane, &owner).unwrap_or_default();
+        assert!(
+            text.contains("na tym naprawdę jesteśmy z Technicznym"),
+            "{mode:?}: measured Whisper words over held speech were dropped: {text:?}"
+        );
+        assert_eq!(text.matches("naprawdę").count(), 1, "{mode:?}: {text:?}");
+        assert_eq!(lane.state.session_conservation().residue(), 0, "{mode:?}");
+    }
+
+    #[test]
+    fn integrator_unpaired_held_tokens_do_not_veto_new_whisper_words() {
+        unpaired_held_tokens_do_not_veto_new_whisper_words(BufferMode::Windows);
+    }
+
+    #[test]
+    fn integrator_unpaired_held_tokens_do_not_veto_new_whisper_words_adaptive() {
+        unpaired_held_tokens_do_not_veto_new_whisper_words(BufferMode::Adaptive);
+    }
+
+    /// Field shape W27 of channel take fc40155d: one Apple slot spans the
+    /// window and opens with five tokens that belong to the previous window.
+    /// Whisper does not repeat them, so the group kept itself and vetoed the
+    /// eighteen words Whisper measured, among them "I właśnie tam bym teraz
+    /// wróciła". Neither description may lose a word.
+    fn unpaired_held_tokens_do_not_veto_new_whisper_words(mode: BufferMode) {
+        let session = &mode.session("integrator-unpaired-held");
+        let (mut lane, owner, requests) = forensic_lane_in(
+            mode,
+            session,
+            &[(
+                "powiedzieć tak albo nie żaden człowiek tak po polsku nie mówi",
+                4_000,
+                40_000,
+            )],
+        );
+        let range = &requests[0].provider_request.identity.range;
+        assert!(
+            range.sample_start <= 4_000 && range.sample_end >= 60_000,
+            "{mode:?}: window {}..{}",
+            range.sample_start,
+            range.sample_end
+        );
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![
+                    word_pin(session, "człowiek", 22_000, 25_000),
+                    word_pin(session, "tak", 25_000, 26_500),
+                    word_pin(session, "po", 26_500, 28_000),
+                    word_pin(session, "polsku", 28_000, 32_000),
+                    word_pin(session, "nie", 32_000, 34_000),
+                    word_pin(session, "mówi.", 34_000, 38_000),
+                    word_pin(session, "I", 42_000, 43_000),
+                    word_pin(session, "właśnie", 43_000, 46_000),
+                    word_pin(session, "tam", 46_000, 48_000),
+                    word_pin(session, "bym", 48_000, 50_000),
+                    word_pin(session, "teraz", 50_000, 53_000),
+                    word_pin(session, "wróciła.", 53_000, 57_000),
+                ],
+            ),
+            12.5,
+        );
+        lane.state
+            .return_outstanding_whisper_without_label(&lane.tx);
+        let text = held_text(&lane, &owner).unwrap_or_default();
+        assert!(
+            text.contains("I właśnie tam bym teraz wróciła"),
+            "{mode:?}: Whisper words outside the held tokens were vetoed: {text:?}"
+        );
+        assert!(
+            text.contains("powiedzieć tak albo nie żaden"),
+            "{mode:?}: a held token without a Whisper description was lost: {text:?}"
+        );
+        assert_eq!(text.matches("polsku").count(), 1, "{mode:?}: {text:?}");
+        assert_eq!(lane.state.session_conservation().residue(), 0, "{mode:?}");
     }
 
     // A real clock lie (held text far faster than speech) still cannot
