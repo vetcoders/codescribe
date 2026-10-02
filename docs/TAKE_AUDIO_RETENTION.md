@@ -10,13 +10,13 @@ occurrence identity and seal remain the acoustic ledger's authority.
 
 Settings > Audio > Audio retention uses a picker with these exact labels:
 
-| Label | Persisted `audio.retention` | Completed audio policy |
-| --- | --- | --- |
-| Forever | `forever` | Preserve without an age limit (default) |
-| 30 days | `30_days` | Expire after 2,592,000 seconds |
-| 7 days | `7_days` | Expire after 604,800 seconds |
-| 24h | `24h` | Expire after 86,400 seconds |
-| Off | `off` | Discard future owned captures after processing/readers settle |
+| Label   | Persisted `audio.retention` | Completed audio policy                                        |
+| ------- | --------------------------- | ------------------------------------------------------------- |
+| Forever | `forever`                   | Preserve without an age limit (default)                       |
+| 30 days | `30_days`                   | Expire after 2,592,000 seconds                                |
+| 7 days  | `7_days`                    | Expire after 604,800 seconds                                  |
+| 24h     | `24h`                       | Expire after 86,400 seconds                                   |
+| Off     | `off`                       | Discard future owned captures after processing/readers settle |
 
 The existing settings schema (version 3, also readable as version 2) contains
 `audio.retention`. The in-memory `UserSettings.audio_retention` projects into

@@ -19,14 +19,14 @@ Codescribe is designed with privacy as a core principle. Your audio is processed
 
 ### Always Local (Cannot Be Changed)
 
-| Component       | Location                                    | Notes                                  |
-| --------------- | ------------------------------------------- | -------------------------------------- |
-| Whisper model   | Runtime-resolved local path/cache           | Local STT still runs on-device         |
-| Audio recording | ~/.codescribe/takes/ + sessions/ + daily archive | Complete local audio; default Forever |
-| Transcripts     | ~/.codescribe/transcriptions/               | You control retention                  |
-| Configuration   | settings.json + optional ~/.codescribe/.env | GUI defaults plus power-user overrides |
-| API keys        | macOS Keychain                              | Secrets stay out of plaintext config   |
-| Prompts         | ~/.codescribe/prompts/                      | Your custom prompts                    |
+| Component       | Location                                         | Notes                                  |
+| --------------- | ------------------------------------------------ | -------------------------------------- |
+| Whisper model   | Runtime-resolved local path/cache                | Local STT still runs on-device         |
+| Audio recording | ~/.codescribe/takes/ + sessions/ + daily archive | Complete local audio; default Forever  |
+| Transcripts     | ~/.codescribe/transcriptions/                    | You control retention                  |
+| Configuration   | settings.json + optional ~/.codescribe/.env      | GUI defaults plus power-user overrides |
+| API keys        | macOS Keychain                                   | Secrets stay out of plaintext config   |
+| Prompts         | ~/.codescribe/prompts/                           | Your custom prompts                    |
 
 ### No Network Required For
 
