@@ -9,6 +9,11 @@ final class TrayPanel: NSPanel, NSWindowDelegate {
   private var outsideClickMonitor: Any?
   private var contentHeight: CGFloat = 460
   private var isDismissing = false
+  /// A mouse-down on the status button reaches the global monitor and the key
+  /// change before the button's action fires on mouse-up. Both yield to the
+  /// action while such a click is in flight, so the second click toggles the
+  /// menu off instead of closing it and reopening it a frame later.
+  private var anchorClickInFlight = false
   var onDismiss: () -> Void = {}
 
   init() {
@@ -39,6 +44,7 @@ final class TrayPanel: NSPanel, NSWindowDelegate {
     guard button.window != nil else { return }
     if contentViewController != nil { dismiss() }
     anchor = button
+    anchorClickInFlight = false
     contentViewController = NSHostingController(
       rootView: TrayPanelSurface(content: content()) { [weak self] height in
         guard let self, height.isFinite, height > 0 else { return }
@@ -60,13 +66,28 @@ final class TrayPanel: NSPanel, NSWindowDelegate {
     }
     outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(
       matching: [.leftMouseDown, .rightMouseDown]
-    ) { [weak self] _ in self?.dismiss() }
+    ) { [weak self] event in
+      // The status bar is not one of this app's windows, so its clicks arrive
+      // here with a nil window and a screen-space location.
+      self?.mouseDownOutside(at: event.locationInWindow)
+    }
+  }
+
+  /// A mouse-down outside the panel. One on the status button belongs to the
+  /// button's action, which toggles the menu; any other closes it.
+  func mouseDownOutside(at screenPoint: NSPoint) {
+    if let anchorRect, anchorRect.contains(screenPoint) {
+      anchorClickInFlight = true
+      return
+    }
+    dismiss()
   }
 
   func dismiss() {
     guard !isDismissing, contentViewController != nil else { return }
     isDismissing = true
     defer { isDismissing = false }
+    anchorClickInFlight = false
     if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
     if let outsideClickMonitor { NSEvent.removeMonitor(outsideClickMonitor) }
     clickMonitor = nil
@@ -84,13 +105,7 @@ final class TrayPanel: NSPanel, NSWindowDelegate {
 
   func windowDidResignKey(_ notification: Notification) {
     // The status-button action owns its second-click toggle.
-    if let event = NSApp.currentEvent,
-      event.type == .leftMouseDown || event.type == .leftMouseUp,
-      let anchor, event.window === anchor.window,
-      anchor.bounds.contains(anchor.convert(event.locationInWindow, from: nil))
-    {
-      return
-    }
+    if anchorClickInFlight { return }
     if let key = NSApp.keyWindow, key.parent === self { return }
     dismiss()
   }
