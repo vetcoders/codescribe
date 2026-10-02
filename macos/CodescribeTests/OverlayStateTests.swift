@@ -4024,12 +4024,18 @@ final class OverlayStateTests: XCTestCase {
     let state = OverlayState(nowProvider: { clock.now })
     var fronts = 0
     var outs = 0
+    var preferenceReads = 0
     let controller = makePreferenceController(
-      state: state, overlayEnabled: { false }, panel: NSPanel(),
+      state: state,
+      overlayEnabled: {
+        preferenceReads += 1
+        return false
+      }, panel: NSPanel(),
       frontCount: { fronts += 1 }, outCount: { outs += 1 })
     // Pin only after the controller's own attach, as in the pinned-close test.
     state.engine = engine
     state.setKeepVisibleBetweenTakes(true)
+    XCTAssertEqual(preferenceReads, 0, "building the controller reads no settings")
 
     state.applyPresentationStatus(refusalStatus())
     XCTAssertEqual(fronts, 1, "the card is product feedback even with the preference off")
@@ -4037,11 +4043,47 @@ final class OverlayStateTests: XCTestCase {
       try XCTUnwrap(state.autoHideDeadline), clock.now + OverlayState.autoHideDelaySeconds,
       "the pin keeps the transcript overlay, and there is none with the preference off")
 
+    state.setPointerHovering(true)
+    state.setPointerHovering(false)
     clock.now += OverlayState.autoHideDelaySeconds + 1
     state.fireAutoHideNowForTests()
     XCTAssertEqual(outs, 1)
     XCTAssertTrue(state.keepVisibleBetweenTakes, "the pin itself is not rewritten")
+    XCTAssertEqual(
+      preferenceReads, 1,
+      "one read when the card appears; hover-out and the countdown reuse that value")
     withExtendedLifetime(controller) {}
+  }
+
+  func testTurningThePreferenceOffKeepsATakeUnderReviewUntilTheDraftIsResolved() throws {
+    let clock = OverlayStateTestClock()
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState(nowProvider: { clock.now })
+    var overlayEnabled = true
+    var outs = 0
+    let controller = makePreferenceController(
+      state: state, overlayEnabled: { overlayEnabled }, panel: NSPanel(),
+      frontCount: {}, outCount: { outs += 1 })
+    state.engine = engine
+    state.setKeepVisibleBetweenTakes(true)
+    controller.showForRecording()
+    projectText("Ledger text", to: state, terminal: true, reducerRevision: 3)
+    state.beginTranscriptEdit()
+    state.updateRevisionDraft("Draft the user has not committed")
+    state.endTranscriptEdit()
+    XCTAssertTrue(state.isRevisionDraftDirty)
+
+    overlayEnabled = false
+    controller.overlayPreferenceChanged()
+    XCTAssertEqual(outs, 0, "an uncommitted draft is not closed out from under the user")
+
+    state.discardRevisionDraft()
+    XCTAssertEqual(
+      try XCTUnwrap(state.autoHideDeadline), clock.now + OverlayState.autoHideDelaySeconds,
+      "with the preference off the pin no longer holds the resolved take")
+    clock.now += OverlayState.autoHideDelaySeconds + 1
+    state.fireAutoHideNowForTests()
+    XCTAssertEqual(outs, 1)
   }
 
   func testPinningWithThePreferenceOffKeepsTheStatusCardCountdown() throws {
@@ -4049,7 +4091,7 @@ final class OverlayStateTests: XCTestCase {
     let engine = OverlayStateTestEngine()
     let state = OverlayState(nowProvider: { clock.now })
     state.engine = engine
-    state.transcriptOverlayEnabled = { false }
+    state.transcriptOverlayEnabled = false
     var closes = 0
     state.onClose = { closes += 1 }
 
@@ -4068,7 +4110,7 @@ final class OverlayStateTests: XCTestCase {
     let engine = OverlayStateTestEngine()
     let state = OverlayState(nowProvider: { clock.now })
     state.engine = engine
-    state.transcriptOverlayEnabled = { true }
+    state.transcriptOverlayEnabled = true
     state.setKeepVisibleBetweenTakes(true)
     var closes = 0
     state.onClose = { closes += 1 }

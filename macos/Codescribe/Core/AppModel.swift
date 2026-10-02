@@ -145,7 +145,6 @@ final class OverlayController: ObservableObject {
         }
       }
     state.engine = engine
-    state.transcriptOverlayEnabled = overlayEnabledProvider
     // Drive the tray status off the SAME authoritative recording lifecycle the
     // overlay already receives. The tray view-model otherwise only polls on
     // appear (and the popover is built once), so it stayed "Recording" after
@@ -206,7 +205,11 @@ final class OverlayController: ObservableObject {
     // transcript overlay preference is off. The typed status is passive; this
     // seam only brings its already-reduced card on screen. With the preference
     // off the card leaves on the ordinary countdown; the pin does not hold it.
-    state.onPresentationStatus = { [weak self] in self?.show() }
+    state.onPresentationStatus = { [weak self] in
+      guard let self else { return }
+      self.readOverlayPreference()
+      self.show()
+    }
     state.onTranscriptPresentationChanged = { [weak self] in
       self?.resizeForProjectedContent()
     }
@@ -251,7 +254,7 @@ final class OverlayController: ObservableObject {
       hide()
       return
     }
-    guard overlayEnabledProvider() else {
+    guard readOverlayPreference() else {
       DictationOverlayGate.logger.info("overlay suppressed: tray toggle off")
       if panel != nil { hide() }
       return
@@ -264,10 +267,26 @@ final class OverlayController: ObservableObject {
   /// of leaving it up until the next take; the persisted value is re-read, so
   /// a rejected write closes nothing. On needs no action here: the next take
   /// or status brings the panel back.
+  ///
+  /// A take under review (caret in the canvas, or an uncommitted draft) is not
+  /// closed out from under the user. Once the draft is committed or discarded
+  /// the ordinary countdown closes the panel, which the pin no longer holds.
   func overlayPreferenceChanged() {
-    guard !overlayEnabledProvider(), panel != nil else { return }
+    guard !readOverlayPreference(), panel != nil else { return }
+    guard !state.isEditingTranscript, !state.isRevisionDraftDirty else { return }
     DictationOverlayGate.logger.info("overlay closed: tray toggle off")
     hide()
+  }
+
+  /// Reads the persisted preference once and hands the same value to the
+  /// state's pin logic. The read loads the settings snapshot, so it happens
+  /// only where the preference decides something: a take start, a status card,
+  /// a preference write.
+  @discardableResult
+  private func readOverlayPreference() -> Bool {
+    let enabled = overlayEnabledProvider()
+    state.transcriptOverlayEnabled = enabled
+    return enabled
   }
 
   func show() {

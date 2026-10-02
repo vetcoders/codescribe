@@ -1906,14 +1906,16 @@ final class OverlayState {
     terminal
   }
 
-  /// The "Transcription Overlay" preference, supplied by the panel's owner.
+  /// The "Transcription Overlay" preference as the panel's owner last read it
+  /// (take start, status card, preference write). A plain value, never a
+  /// settings read: the countdown runs on hover-out and every terminal paint.
   /// The pin keeps the transcript overlay between takes; with the preference
   /// off there is no such overlay, so a status card shown despite it leaves on
   /// the ordinary countdown instead of staying until closed by hand.
-  @ObservationIgnored var transcriptOverlayEnabled: () -> Bool = { true }
+  @ObservationIgnored var transcriptOverlayEnabled = true
 
   private var pinKeepsOverlayVisible: Bool {
-    keepVisibleBetweenTakes && transcriptOverlayEnabled()
+    keepVisibleBetweenTakes && transcriptOverlayEnabled
   }
 
   private var mayAutoSendRefusedAgentTake: Bool {
