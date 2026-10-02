@@ -17,8 +17,8 @@ use codescribe_core::pipeline::acoustic_ledger::{
     AcousticLedger, AcousticSerial, ConsultationPresentationInput, ConsultationPresentationReceipt,
     DocumentRevisionProvenance, IncrementalShapingInput, IncrementalShapingReceipt,
     LedgerSealReceipt, ManualDocumentRevisionReceipt, MutationReceipt, NoAuthorityReason,
-    ObservationIdentity, ObservationProducer, OccurrenceIdentity, SealCoverageReceipt,
-    TranscriptComparisonReceipt,
+    ObservationIdentity, ObservationProducer, OccurrenceIdentity, RefuseReason, SealCoverageReceipt,
+    SlotAlternative, TranscriptComparisonReceipt,
 };
 use codescribe_core::pipeline::contracts::{
     ClosedApplePhrase, DeltaSink, EngineEvent, EventSink, SpeechIntegrity, SpeechIntegrityPhase,
@@ -49,15 +49,14 @@ pub struct CompactProjection {
     pub degraded: bool,
     /// Every unanchored text of this capture, in PCM order. It is painted
     /// beside the canvas, never inside the canvas string or the Bus. The
-    /// stop snapshot pastes uncovered evidence and accounts covered hypotheses
-    /// against their committed occurrence.
+    /// Refused alternatives remain outside the stop canvas and delivery.
     pub evidence: Vec<UnanchoredEvidence>,
 }
 
 /// Read-only text the ledger kept visible without mutation authority,
 /// anchored to its PCM range on the capture clock. `reason` is the ledger's
-/// [`NoAuthorityReason`] label. Its text is never compared with the canvas: a
-/// differing alternative wholly inside a committed token is shown, not
+/// no-authority or slot-alternative reason. Its text is never compared with
+/// the canvas: a differing alternative wholly inside a committed token is shown, not
 /// suppressed as a duplicate, because it is not canvas.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UnanchoredEvidence {
@@ -628,10 +627,19 @@ pub struct MissingVisibleWord {
     pub reason: String,
 }
 
+/// Ledger-owned evidence copied into the existing presentation surface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UnanchoredProjection {
+    text: String,
+    reason: &'static str,
+    observation: ObservationIdentity,
+    /// Exact ledger candidate and source provenance; never document authority.
+    alternative: Option<SlotAlternative>,
+}
+
 /// The one committed Rust document plus explicitly non-authoritative UI paint.
 /// Only `document_by_occurrence` can produce a committed revision. The Apple
-/// mirror is a full worker-owned snapshot, with no occurrence authority; it
-/// contributes to paint and stop delivery without entering the Transcript Bus.
+/// mirror contributes to paint and stop delivery without entering the Bus.
 #[derive(Debug, Clone, Default)]
 pub struct TranscriptReducer {
     preparing_light_plus: bool,
@@ -668,13 +676,10 @@ pub struct TranscriptReducer {
     terminal_sealed: bool,
     observed_seals: std::collections::BTreeSet<String>,
     applied_observations: Vec<ObservationIdentity>,
-    /// Read-only evidence. Late non-current Apple words add their exact label
-    /// to the pin key so re-delivery is idempotent and alternatives coexist.
-    /// Other reasons retain one entry per range and their seal lifetime.
-    unanchored_evidence: BTreeMap<
-        (OccurrenceIdentity, Option<String>),
-        (String, NoAuthorityReason, ObservationIdentity),
-    >,
+    /// Receipt identity keeps independent observations distinct on the same PCM.
+    unanchored_evidence: BTreeMap<(OccurrenceIdentity, String), UnanchoredProjection>,
+    /// Only new alternatives are examined at mutation publication, never paint.
+    next_slot_alternative: usize,
 }
 
 /// Sample a preview word is judged by. A zero-width phrase pin is the pin
@@ -864,15 +869,16 @@ impl TranscriptReducer {
         let mut fragments = self
             .unanchored_evidence
             .iter()
-            .filter(|((range, _), (_, reason, _))| {
-                *reason != NoAuthorityReason::LateAppleWordNotCurrent
-                    && self.evidence_covering(range, *reason).is_none()
+            .filter(|((range, _), evidence)| {
+                evidence.alternative.is_none()
+                    && evidence.reason != NoAuthorityReason::LateAppleWordNotCurrent.as_str()
+                    && self.evidence_covering(range, evidence.reason).is_none()
             })
-            .map(|((range, _), (text, _, observation))| {
+            .map(|((range, _), evidence)| {
                 (
                     range.sample_start,
-                    text.clone(),
-                    VisibleWordSource::Unanchored(observation.clone()),
+                    evidence.text.clone(),
+                    VisibleWordSource::Unanchored(evidence.observation.clone()),
                     true,
                 )
             })
@@ -926,10 +932,10 @@ impl TranscriptReducer {
     fn evidence_covering(
         &self,
         pin: &OccurrenceIdentity,
-        reason: NoAuthorityReason,
+        reason: &str,
     ) -> Option<&OccurrenceIdentity> {
         self.document_by_occurrence.keys().find(|owner| {
-            if reason != NoAuthorityReason::LateAppleWordNotCurrent {
+            if reason != NoAuthorityReason::LateAppleWordNotCurrent.as_str() {
                 return range_within(pin, owner);
             }
             let midpoint = pin.sample_start + pin.sample_len() / 2;
@@ -989,8 +995,9 @@ impl TranscriptReducer {
         let ledger_word_keys = self
             .unanchored_evidence
             .iter()
-            .flat_map(|((range, _), (text, _, _))| {
-                text.split_whitespace().map(move |word| {
+            .filter(|(_, evidence)| evidence.alternative.is_none())
+            .flat_map(|((range, _), evidence)| {
+                evidence.text.split_whitespace().map(move |word| {
                     (
                         range.sample_start,
                         range.sample_end,
@@ -1093,18 +1100,23 @@ impl TranscriptReducer {
         }
         // Evidence remains visible in its sidebar, even when committed speech
         // represents it in the paste. Keep that coverage receipt in both reads.
-        for ((range, _), (text, reason, observation)) in &self.unanchored_evidence {
-            if *reason == NoAuthorityReason::LateAppleWordNotCurrent {
+        for ((range, _), evidence) in &self.unanchored_evidence {
+            if evidence.alternative.is_some()
+                || evidence.reason == NoAuthorityReason::LateAppleWordNotCurrent.as_str()
+                || evidence.reason == NoAuthorityReason::OverlapWithoutWordPins.as_str()
+            {
+                // Ambiguous overlap is sidebar evidence. Geometric containment
+                // supplies neither a delivery floor nor an accounting receipt.
                 continue;
             }
-            if let Some(owner) = self.evidence_covering(range, *reason) {
+            if let Some(owner) = self.evidence_covering(range, evidence.reason) {
                 paint
                     .visible_words
-                    .extend(text.split_whitespace().enumerate().map(|(offset, word)| {
+                    .extend(evidence.text.split_whitespace().enumerate().map(|(offset, word)| {
                         VisibleWord {
                             word: word.to_string(),
                             preview_rev: None,
-                            source: VisibleWordSource::Unanchored(observation.clone()),
+                            source: VisibleWordSource::Unanchored(evidence.observation.clone()),
                             offset,
                             covered_by: Some(owner.clone()),
                         }
@@ -1126,16 +1138,48 @@ impl TranscriptReducer {
             .filter(|((occurrence, _), _)| {
                 occurrence.session == session_id && occurrence.capture_epoch == capture_epoch
             })
-            .map(|((occurrence, _), (label, reason, _))| UnanchoredEvidence {
+            .map(|((occurrence, _), evidence)| UnanchoredEvidence {
                 sample_start: occurrence.sample_start,
                 sample_end: occurrence.sample_end,
-                text: label.clone(),
-                reason: reason.as_str().to_string(),
+                text: evidence.text.clone(),
+                reason: evidence.reason.to_string(),
             })
             .collect()
     }
 
-    fn project_unanchored(&mut self, observation: &ObservationIdentity, receipt: &MutationReceipt) {
+    fn project_unanchored(
+        &mut self,
+        ledger: &AcousticLedger,
+        observation: &ObservationIdentity,
+        receipt: &MutationReceipt,
+    ) {
+        let Some(decision) = ledger
+            .layer_trail()
+            .iter()
+            .rev()
+            .find(|decision| decision.observation == *observation && decision.decision == *receipt)
+        else {
+            return;
+        };
+        // Silence is an authoritative disposition of this exact PCM. A seal
+        // is finality of committed speech and says nothing about its alternatives.
+        self.unanchored_evidence.retain(|(range, _), evidence| {
+            let offered_owner = evidence
+                .alternative
+                .as_ref()
+                .map_or(range, |alternative| &alternative.observation.occurrence);
+            let human_disposition = observation.producer == ObservationProducer::ManualHuman
+                && decision.is_evidence_backed()
+                && receipt.grants_mutation()
+                && offered_owner == &observation.occurrence;
+            let silence_disposition = ledger.word_deletions().iter().any(|deletion| {
+                deletion.operation.observation.occurrence.same_capture(range)
+                    && deletion.verdict.target() == range
+            });
+            // A different observation on overlapping audio is not an answer to
+            // this candidate, even if its label happens to be identical.
+            !human_disposition && !silence_disposition
+        });
         if let MutationReceipt::KeepVisibleUnanchored {
             occurrence,
             label,
@@ -1145,14 +1189,94 @@ impl TranscriptReducer {
             let label = label.trim();
             if !label.is_empty() {
                 self.unanchored_evidence.insert(
-                    (
-                        occurrence.clone(),
-                        (*reason == NoAuthorityReason::LateAppleWordNotCurrent)
-                            .then(|| label.to_string()),
-                    ),
-                    (label.to_string(), *reason, observation.clone()),
+                    (occurrence.clone(), decision.receipt_id.clone()),
+                    UnanchoredProjection {
+                        text: label.to_string(),
+                        reason: reason.as_str(),
+                        observation: observation.clone(),
+                        alternative: None,
+                    },
                 );
             }
+        }
+        if !decision.is_evidence_backed()
+            || matches!(
+                receipt,
+                MutationReceipt::Refuse {
+                    reason: RefuseReason::BatchDuplicate,
+                    ..
+                }
+            )
+        {
+            return;
+        }
+        for (index, alternative) in ledger
+            .slot_alternatives()
+            .iter()
+            .enumerate()
+            .skip(self.next_slot_alternative)
+        {
+            let unresolved = matches!(
+                alternative.reason,
+                "ambiguous_pcm_target"
+                    | "word_partition_requires_coverage"
+                    | "group_alignment_ambiguous"
+                    | "resegmentation_unaccounted_speech"
+                    | "overlapping_new_pins"
+                    | "word_speech_unproven"
+            );
+            let belongs = alternative.observation == *observation;
+            // Leave another queued observation's alternatives for its event.
+            // Irrelevant historical proposals cannot hold the cursor back.
+            if index == self.next_slot_alternative && (!unresolved || belongs) {
+                self.next_slot_alternative += 1;
+            }
+            if !unresolved || !belongs || alternative.candidate.trim().is_empty() {
+                continue;
+            }
+            // The alternative explicitly names this observation's group. It
+            // does not name a child refusal: matching labels cannot mint that
+            // missing relationship or a finer timestamp.
+            let candidate = &alternative.observation;
+            {
+                // A whole offered group owned by a stronger/newer source is
+                // already accounted. Use exact source ranges, including gaps.
+                let mut protected = alternative
+                    .sources
+                    .iter()
+                    .filter(|source| {
+                        source.producer == ObservationProducer::ManualHuman
+                            || source.producer.authority_rank()
+                                > observation.producer.authority_rank()
+                            || (source.producer == observation.producer
+                                && source.observation.generation >= observation.generation)
+                    })
+                    .flat_map(|source| ledger.slot_source_ranges(source))
+                    .filter(|range| range.same_capture(&candidate.occurrence))
+                    .collect::<Vec<_>>();
+                protected.sort_by_key(|range| (range.sample_start, range.sample_end));
+                let mut cursor = candidate.occurrence.sample_start;
+                for range in protected {
+                    if range.sample_start <= cursor && range.sample_end > cursor {
+                        cursor = range.sample_end;
+                    }
+                }
+                if cursor >= candidate.occurrence.sample_end {
+                    continue;
+                }
+            }
+            self.unanchored_evidence.insert(
+                (
+                    candidate.occurrence.clone(),
+                    format!("{}:slot-alternative-{index}", decision.receipt_id),
+                ),
+                UnanchoredProjection {
+                    text: alternative.candidate.clone(),
+                    reason: alternative.reason,
+                    observation: candidate.clone(),
+                    alternative: Some(alternative.clone()),
+                },
+            );
         }
     }
 
@@ -1162,8 +1286,14 @@ impl TranscriptReducer {
         observation: &ObservationIdentity,
         receipt: &MutationReceipt,
     ) -> Option<TranscriptRevision> {
+        let capture_owner = self.document_by_occurrence.keys().next().or_else(|| {
+            self.unanchored_evidence.keys().next().map(|(range, _)| range)
+        });
+        if capture_owner.is_some_and(|owner| !owner.same_capture(&observation.occurrence)) {
+            return None;
+        }
+        self.project_unanchored(ledger, observation, receipt);
         if matches!(receipt, MutationReceipt::KeepVisibleUnanchored { .. }) {
-            self.project_unanchored(observation, receipt);
             return None;
         }
         if !(receipt.grants_mutation() || matches!(receipt, MutationReceipt::Preserve { .. }))
@@ -1321,15 +1451,8 @@ impl TranscriptReducer {
                 entry.seal_receipt = Some(receipt.receipt_id.clone());
             }
         }
-        // A sealed committed token closes the alternatives painted inside it.
-        self.unanchored_evidence
-            .retain(|(evidence, _), (_, reason, _)| {
-                *reason == NoAuthorityReason::LateAppleWordNotCurrent
-                    || !receipt
-                        .sealed_occurrences
-                        .iter()
-                        .any(|sealed| range_within(evidence, sealed))
-            });
+        // Finality belongs to the committed source. Unresolved evidence keeps
+        // its own receipt until an authoritative disposition accounts for it.
         let occurrence = receipt.sealed_occurrences.first()?.clone();
         self.observed_seals.insert(receipt.receipt_id.clone());
         let terminal = !receipt.is_occurrence_seal();
@@ -1690,10 +1813,7 @@ impl TranscriptReducer {
     /// opens edit CAS before this event; a refused seal opens it here instead.
     fn mark_terminal_lifecycle(&mut self) {
         self.terminal = true;
-        // Stop can sample after SessionFinalised. These words still belong to
-        // this take's final paint and delivery, even without slot authority.
-        self.unanchored_evidence
-            .retain(|_, (_, reason, _)| *reason == NoAuthorityReason::LateAppleWordNotCurrent);
+        // Lifecycle closure is not a lexical or acoustic disposition.
     }
 
     /// Record ledger-computed session coverage without changing a single
@@ -3445,6 +3565,12 @@ impl EventSink for PresentationEmitter {
                 receipt,
                 ..
             } => {
+                if self.cursor_capture.get().is_some_and(|(session, epoch)| {
+                    session != &observation.occurrence.session
+                        || *epoch != observation.occurrence.capture_epoch
+                }) {
+                    return;
+                }
                 let Some(ledger) = &self.acoustic_ledger else {
                     return;
                 };
@@ -3460,10 +3586,15 @@ impl EventSink for PresentationEmitter {
                     .is_some_and(|id| id.starts_with("light-plus-"));
                 let before_paint = matches!(receipt, MutationReceipt::Preserve { .. })
                     .then(|| state.visible_projection());
+                let before_evidence = state.unanchored_evidence.len();
                 let revision = state.apply_ledger_mutation(&ledger, observation, receipt);
+                let evidence_changed = state.unanchored_evidence.len() != before_evidence;
                 let visible = state.visible_projection();
                 let coverage_changed = before_paint.is_some_and(|before| before != visible);
                 drop(state);
+                if evidence_changed {
+                    self.repaint_cursor();
+                }
                 if unanchored {
                     drop(ledger);
                     if !visible.trim().is_empty() {
