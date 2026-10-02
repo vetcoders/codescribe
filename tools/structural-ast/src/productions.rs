@@ -176,28 +176,44 @@ pub(super) fn complete(g: &mut Grammar, body: &Block) {
             "clear joined task handle",
         ),
         (
-            parse_quote!(if self.event_sink.is_some() {
-                let drain_deadline =
-                    tokio::time::Instant::now() + std::time::Duration::from_secs(3);
-                loop {
-                    let snapshot = self.transcript_buffer.lock().await.len();
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    if self.transcript_buffer.lock().await.len() == snapshot
-                        || tokio::time::Instant::now() >= drain_deadline
-                    {
-                        break;
-                    }
-                }
-            }),
-            "drain owned sink; only loop-local break",
+            parse_quote!(let drain_failure = match self.event_sink.as_ref() {
+                Some(sink) => match self.authority_session_id.as_deref() {
+                    Some(session_id) => tokio::time::timeout(
+                        std::time::Duration::from_secs(3),
+                        sink.wait_presentation_published(session_id, self.capture_epoch),
+                    )
+                    .await
+                    .unwrap_or_else(|_| Err(anyhow!("presentation terminal drain timed out")))
+                    .err(),
+                    None => Some(anyhow!(
+                        "presentation terminal drain has no capture identity"
+                    )),
+                },
+                None => None,
+            };),
+            "await publication acknowledgement for exact capture after producer join; retain drain failure",
         ),
-        (parse_quote!(self.event_sink = None;), "drop drained sink"),
+        (
+            parse_quote!(if drain_failure.is_none() {
+                self.event_sink = None;
+            }),
+            "drop sink only after successful publication acknowledgement or proven absence",
+        ),
         (
             parse_quote!(let (audio_path, cause, task_failure) = match stopped {
             Ok(path) => (path, task_failure, None),
             Err(error) => (None, Some(error), task_failure),
         };),
             "classify archive failure after shutdown",
+        ),
+        (
+            parse_quote!(let cause = match (cause, drain_failure) {
+                (Some(cause), Some(drain)) => {
+                    Some(cause.context(format!("presentation drain also failed: {drain:#}")))
+                }
+                (cause, drain) => cause.or(drain),
+            };),
+            "preserve primary archive or task cause with secondary drain context, or drain cause alone",
         ),
         (
             parse_quote!(if let Some(cause) = cause {

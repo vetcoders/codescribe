@@ -12,7 +12,7 @@ use syn::{Block, Expr, ImplItemFn, Stmt, parse_quote, visit::Visit};
 mod finality;
 mod productions;
 
-pub const IDENTITY: &str = "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=3";
+pub const IDENTITY: &str = "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=4";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
