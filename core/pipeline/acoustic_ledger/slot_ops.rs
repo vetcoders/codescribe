@@ -386,18 +386,42 @@ impl AcousticLedger {
         descendants.contains(pin)
     }
 
-    /// A returned producer scope or a completed decode window accounts for
-    /// transcription work. Word timestamps are not an energy-density map.
+    /// Account decoder work over a source using accepted window receipts.
+    /// A frontier return may be a timeout; it is never a successful decode.
+    fn decoded_source_scope_accounted(
+        &self,
+        observation: &ObservationIdentity,
+        source: &OccurrenceIdentity,
+    ) -> bool {
+        if !source.same_capture(&observation.occurrence) || !source.is_anchored() {
+            return false;
+        }
+        let mut windows = self.decoded_word_windows.iter().filter(|(candidate, _)| {
+            candidate.occurrence == observation.occurrence
+                && candidate.producer == observation.producer
+                && self.word_pin_observations.contains(*candidate)
+                && self.complete_decoded_words.get(*candidate).is_some_and(|pins| {
+                    !pins.is_empty()
+                })
+        }).map(|(_, window)| *window).collect::<Vec<_>>();
+        windows.sort_unstable();
+        let mut cursor = source.sample_start;
+        for (start, end) in windows {
+            if start <= cursor && end > cursor {
+                cursor = end;
+            }
+        }
+        cursor >= source.sample_end
+    }
+
+    /// Accepted decode windows account for transcription work. Frontier
+    /// closure owns sealing; word timestamps are not an energy-density map.
     pub(super) fn returned_word_scope_accounted(
         &self,
         observation: &ObservationIdentity,
     ) -> bool {
         let owner = &observation.occurrence;
-        let scope_returned = self.frontier_of(owner).is_some_and(|frontier| {
-            frontier.returned.contains(&observation.producer)
-        }) || self.decoded_word_windows.get(observation).is_some_and(|(start, end)| {
-            *start <= owner.sample_start && *end >= owner.sample_end
-        });
+        let scope_returned = self.decoded_source_scope_accounted(observation, owner);
         scope_returned
             && matches!(
                 observation.producer,
@@ -432,12 +456,12 @@ impl AcousticLedger {
                     && operation.sources.contains(source)
             });
             if let Some(operation) = partial {
-                let returned = self.frontier_of(owner).is_some_and(|frontier| {
-                    frontier.returned.contains(&operation.observation.producer)
-                }) || self.decoded_word_windows.get(&operation.observation)
-                    .is_some_and(|(start, end)| {
-                        *start <= source.sample_start && *end >= source.sample_end
-                    });
+                let source_range = OccurrenceIdentity::new(
+                    &owner.session, owner.capture_epoch, source.sample_start, source.sample_end,
+                );
+                let returned = self.decoded_source_scope_accounted(
+                    &operation.observation, &source_range,
+                );
                 let children_held = !operation.outputs.is_empty()
                     && operation.outputs.iter().all(|output| {
                         held.iter().any(|pin| {
