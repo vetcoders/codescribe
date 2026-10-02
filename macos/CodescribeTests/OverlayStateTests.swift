@@ -377,8 +377,15 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.canvasText, "Apple mówi tak", "evidence never enters the canvas")
     XCTAssertEqual(state.activeText, "Apple mówi tak", "nor the delivered text")
 
+    // Only an explicit same-capture source snapshot settles the evidence;
+    // ending the UI phase alone is not that disposition.
+    state.applyCompactProjection(
+      CsCompactProjection(
+        sessionId: "A", captureEpoch: 1, sequence: 2, text: "Apple mówi tak",
+        degraded: false, evidence: []))
+    XCTAssertTrue(state.liveEvidence.isEmpty, "Rust explicitly removed the resolved evidence")
     projectText("Apple mówi tak", to: state, terminal: true, sessionId: "A")
-    XCTAssertTrue(state.liveEvidence.isEmpty, "a terminal take shows its sealed document alone")
+    XCTAssertTrue(state.liveEvidence.isEmpty, "resolved evidence stays absent at terminal")
     XCTAssertEqual(state.canvasText, "Apple mówi tak")
   }
 
@@ -399,6 +406,52 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.liveEvidence, [unresolved], "Rust retained unresolved evidence for review")
     XCTAssertEqual(state.canvasText, "Zapisane słowa", "evidence does not acquire document authority")
     XCTAssertEqual(state.activeText, "Zapisane słowa", "evidence remains outside delivery")
+  }
+
+  func testForensicTerminalReviewFencesCaptureEpochSequenceAndExplicitRemoval() {
+    let state = OverlayState()
+    state.handleRecordingPreparing()
+    projectText("Przyjęty tekst", to: state, sessionId: "review-owner")
+    let unresolved = CsUnanchoredEvidence(
+      sampleStart: 8_000, sampleEnd: 14_000, text: "Nierozstrzygnięte słowo",
+      reason: "word_speech_unproven")
+    state.applyCompactProjection(
+      CsCompactProjection(
+        sessionId: "review-owner", captureEpoch: 1, sequence: 1,
+        text: "Przyjęty tekst", degraded: false, evidence: [unresolved]))
+    projectText("Przyjęty tekst", to: state, terminal: true, sessionId: "review-owner")
+    XCTAssertEqual(state.liveEvidence, [unresolved])
+    for (session, epoch) in [("foreign-capture", UInt64(1)), ("review-owner", UInt64(2))] {
+      state.applyCompactProjection(
+        CsCompactProjection(
+          sessionId: session, captureEpoch: epoch, sequence: 2,
+          text: "Nieuprawniona podmiana", degraded: false, evidence: []))
+      XCTAssertEqual(state.liveEvidence, [unresolved], "foreign capture cannot settle evidence")
+      XCTAssertTrue(state.terminal)
+      XCTAssertFalse(state.recording)
+      XCTAssertEqual(state.activeText, "Przyjęty tekst")
+    }
+    state.applyCompactProjection(
+      CsCompactProjection(
+        sessionId: "review-owner", captureEpoch: 1, sequence: 2,
+        text: "Przyjęty tekst", degraded: false, evidence: []))
+    XCTAssertTrue(state.liveEvidence.isEmpty, "an ordered source snapshot explicitly removed it")
+    state.applyCompactProjection(
+      CsCompactProjection(
+        sessionId: "review-owner", captureEpoch: 1, sequence: 1,
+        text: "Przyjęty tekst", degraded: false, evidence: [unresolved]))
+    XCTAssertTrue(state.liveEvidence.isEmpty, "stale evidence cannot return")
+    XCTAssertTrue(state.terminal)
+    XCTAssertFalse(state.recording)
+    XCTAssertEqual(state.canvasText, "Przyjęty tekst")
+    state.handleRecordingPreparing()
+    projectText("Nowe nagranie", to: state, sessionId: "next-owner")
+    state.applyCompactProjection(
+      CsCompactProjection(
+        sessionId: "review-owner", captureEpoch: 1, sequence: 3,
+        text: "Poprzednie nagranie", degraded: false, evidence: [unresolved]))
+    XCTAssertTrue(state.liveEvidence.isEmpty, "a retired capture cannot paint the next take")
+    XCTAssertEqual(state.activeText, "Nowe nagranie")
   }
 
   private var nextProjectionSequence: UInt64 = 0

@@ -3596,8 +3596,8 @@ mod tests {
 
     /// A differing alternative kept wholly inside a committed occurrence is
     /// reducer paint evidence only. The next committed revision the Bus
-    /// publishes carries the committed label, never the alternative, and the
-    /// seal of that occurrence closes the evidence.
+    /// publishes carries the committed label, never the alternative. A seal
+    /// does not settle an independent unresolved observation.
     #[test]
     fn differing_unanchored_alternative_never_enters_a_bus_revision() {
         use codescribe_core::pipeline::acoustic_ledger::NoAuthorityReason;
@@ -3655,9 +3655,10 @@ mod tests {
         assert!(events.iter().all(|event| {
             !event.rendered_text.contains("Whisper") && !event.label.contains("Whisper")
         }));
-        assert!(
-            reducer.unanchored_evidence("alternative-bus", 7).is_empty(),
-            "the seal over its range closed the evidence"
+        assert_eq!(
+            reducer.unanchored_evidence("alternative-bus", 7)[0].text,
+            "Whisper mówi inaczej",
+            "a containing seal leaves the alternative reviewable outside the Bus"
         );
         assert!(!std::fs::read_to_string(&path).unwrap().contains("Whisper"));
     }

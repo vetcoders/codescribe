@@ -9677,6 +9677,32 @@ mod tests {
         });
     }
 
+    /// Replay the same authenticated observation/receipt event, not a new
+    /// request that happens to contain the same spelling and PCM range.
+    fn replay_late_apple_into(
+        emitter: &PresentationEmitter,
+        ledger: &Arc<StdMutex<AcousticLedger>>,
+        request: u64,
+    ) {
+        let event = {
+            let ledger = ledger.lock().unwrap();
+            let decision = ledger
+                .layer_trail()
+                .iter()
+                .find(|decision| {
+                    decision.observation.producer == ObservationProducer::Apple
+                        && decision.observation.request == request
+                })
+                .expect("original authenticated Apple evidence");
+            EngineEvent::LedgerMutation {
+                observation: decision.observation.clone(),
+                label: decision.candidate_label.clone(),
+                receipt: decision.decision.clone(),
+            }
+        };
+        emitter.on_event(&event);
+    }
+
     #[tokio::test]
     async fn late_apple_evidence_uses_only_committed_slot_midpoints() {
         for mode in [
@@ -9710,15 +9736,9 @@ mod tests {
                 emitter.paint_commands.lock().unwrap().last(),
                 Some(&before.text)
             );
-            // A new observation identity for the same pin and word does not
-            // create another paint entry or invalidate the frozen provenance.
-            late_apple_into(
-                &emitter,
-                &ledger,
-                &OccurrenceIdentity::new("late", 7, 4_000, 8_000),
-                20,
-                "alpha",
-            );
+            // Replaying the actual observation event creates no new evidence
+            // and leaves the frozen provenance unchanged.
+            replay_late_apple_into(&emitter, &ledger, 2);
             assert_eq!(emitter.visible_canvas_snapshot().unwrap(), before);
             if mode != "owner_only" {
                 let observation =
@@ -9749,7 +9769,11 @@ mod tests {
                     }
                 };
                 if mode == "preserved_label" {
-                    assert!(matches!(receipt, MutationReceipt::Preserve { .. }));
+                    assert!(
+                        !receipt.grants_mutation(),
+                        "partial identical wording has no new authority"
+                    );
+                    assert_eq!(ledger.lock().unwrap().text_of(&owner), Some("document"));
                 }
                 emitter.on_event(&EngineEvent::LedgerMutation {
                     observation,
@@ -9774,21 +9798,57 @@ mod tests {
             assert_eq!(
                 evidence
                     .iter()
+                    .filter(|entry| {
+                        entry.reason == super::NoAuthorityReason::LateAppleWordNotCurrent.as_str()
+                    })
                     .map(|entry| (entry.sample_start, entry.sample_end, entry.text.as_str()))
                     .collect::<Vec<_>>(),
                 pins
             );
+            // A separate refused measured-word proposal is also reviewable.
+            // It cannot be mistaken for another Apple pin or pasted text.
+            for item in evidence.iter().filter(|entry| {
+                entry.reason != super::NoAuthorityReason::LateAppleWordNotCurrent.as_str()
+            }) {
+                let offered = match mode {
+                    "slot" | "slot_end" => "heard",
+                    "preserved_label" => "document",
+                    "omission" => "Whisper omitted them",
+                    _ => panic!("no additional producer was offered"),
+                };
+                assert_eq!(item.text, offered);
+                assert_eq!((item.sample_start, item.sample_end), (0, 64_000));
+                assert!(
+                    ledger
+                        .lock()
+                        .unwrap()
+                        .slot_alternatives()
+                        .iter()
+                        .any(|alternative| {
+                            alternative.candidate == offered
+                                && alternative.observation.occurrence == owner
+                        }),
+                    "the extra evidence belongs to an actual refused producer candidate"
+                );
+            }
             let missing = before.missing_words_from(&after);
             assert!(!missing.iter().any(|word| word.reason == "unaccounted"));
             assert!(missing.iter().all(|word| word.word != "beta"));
-            seal_into(&emitter, &ledger, &owner);
-            late_apple_into(
-                &emitter,
-                &ledger,
-                &OccurrenceIdentity::new("late", 7, 4_000, 8_000),
-                40,
-                "alpha",
-            );
+            // Partial pins in this fixture have no completed decode window.
+            // A pending recovery cannot be forced into a seal for a paint test.
+            if ledger.lock().unwrap().text_recovery_pending(&owner) {
+                let mut ledger = ledger.lock().unwrap();
+                ledger.schedule_frontier(owner.clone(), [ObservationProducer::Apple]);
+                assert!(ledger.note_frontier_return(&owner, ObservationProducer::Apple));
+                assert_eq!(
+                    ledger.seal(&owner).unwrap_err(),
+                    codescribe_core::pipeline::acoustic_ledger::SealRefusal::TextRecoveryPending
+                );
+                assert!(!ledger.is_sealed(&owner));
+            } else {
+                seal_into(&emitter, &ledger, &owner);
+            }
+            replay_late_apple_into(&emitter, &ledger, 2);
             emitter.on_event(&EngineEvent::SessionFinalised {
                 session_id: "late".into(),
                 layer_summary: LayerSummary::default(),
@@ -9829,13 +9889,7 @@ mod tests {
         let before = emitter.begin_stop_canvas().unwrap();
         assert_eq!(before.text, "document");
         assert_eq!(before.late_apple_word_counts(), (0, 0));
-        late_apple_into(
-            &emitter,
-            &ledger,
-            &OccurrenceIdentity::new("five-late", 7, 4_000, 8_000),
-            20,
-            "Iwo",
-        );
+        replay_late_apple_into(&emitter, &ledger, 2);
         assert_eq!(emitter.finish_stop_canvas().unwrap(), before);
         late_apple_into(
             &emitter,
@@ -9903,13 +9957,33 @@ mod tests {
             assert_eq!(frozen.text, "Document, exactly. uncovered");
             assert_eq!(frozen.preview_only_words, 1);
             assert_eq!(frozen.late_apple_word_counts(), (0, 0));
-            assert_eq!(
-                frozen.missing_words_from(&frozen),
-                vec![super::MissingVisibleWord {
-                    word: "covered".into(),
-                    reason: format!("covered_by_committed occurrence={owner:?}"),
-                }]
-            );
+            let missing = frozen.missing_words_from(&frozen);
+            if reason == super::NoAuthorityReason::OverlapWithoutWordPins {
+                assert!(
+                    missing.is_empty(),
+                    "ambiguous overlap has no delivery accounting"
+                );
+                assert!(
+                    !frozen
+                        .visible_words
+                        .iter()
+                        .any(|word| word.word == "covered")
+                );
+            } else {
+                assert_eq!(
+                    missing,
+                    vec![super::MissingVisibleWord {
+                        word: "covered".into(),
+                        reason: format!("covered_by_committed occurrence={owner:?}"),
+                    }]
+                );
+            }
+            let unresolved = emitter
+                .session_state
+                .lock()
+                .unwrap()
+                .unanchored_evidence("unchanged", 7);
+            assert_eq!(unresolved.len(), 2);
             assert_eq!(emitter.finish_stop_canvas().unwrap(), frozen);
             seal_into(&emitter, &ledger, &owner);
             assert_eq!(
@@ -9917,21 +9991,22 @@ mod tests {
                     .session_state
                     .lock()
                     .unwrap()
-                    .unanchored_evidence("unchanged", 7)
-                    .len(),
-                1
+                    .unanchored_evidence("unchanged", 7),
+                unresolved,
+                "a containing seal is not a disposition of unresolved evidence"
             );
             emitter.on_event(&EngineEvent::SessionFinalised {
                 session_id: "unchanged".into(),
                 layer_summary: LayerSummary::default(),
             });
-            assert!(
+            assert_eq!(
                 emitter
                     .session_state
                     .lock()
                     .unwrap()
-                    .unanchored_evidence("unchanged", 7)
-                    .is_empty()
+                    .unanchored_evidence("unchanged", 7),
+                unresolved,
+                "terminal lifecycle is not source accounting"
             );
             emitter.finish().await;
         }
@@ -9993,11 +10068,10 @@ mod tests {
         });
     }
 
-    /// Evidence survives later L0 and committed paints. A seal of a token that
-    /// does not cover it leaves it; the seal of the token over its range
-    /// closes it. Evidence no token covers stays until the lifecycle ends.
+    /// Evidence survives later L0 and committed paints, a containing seal,
+    /// and the terminal phase without gaining document or delivery authority.
     #[tokio::test]
-    async fn unanchored_evidence_lives_until_a_sealed_token_covers_it_or_the_session_ends() {
+    async fn unresolved_evidence_survives_seals_and_terminal_without_delivery_authority() {
         let session = "take";
         let paints = Arc::new(StdMutex::new(Vec::<super::CompactProjection>::new()));
         let observed = Arc::clone(&paints);
@@ -10012,8 +10086,8 @@ mod tests {
                 .with_cursor_observer(Arc::new(move |projection| {
                     observed.lock().unwrap().push(projection.clone());
                 }));
-        // Literal takes mint no live shape, so no committed paint follows a
-        // seal: the evidence the seal closes must leave the paint on its own.
+        // Literal takes mint no live shape: retained unresolved evidence must
+        // remain reviewable without depending on another committed paint.
         emitter.set_literal_delivery(true);
         emitter.on_capture_opened(session, 7);
         let evidence_texts = || {
@@ -10080,15 +10154,19 @@ mod tests {
         seal_into(&emitter, &ledger, &apple);
         assert_eq!(
             evidence_texts(),
-            ["między tokenami"],
-            "the seal of the token over its range closes it"
+            ["inna wersja", "między tokenami"],
+            "a containing seal does not settle these independent observations"
         );
 
         emitter.on_event(&EngineEvent::SessionFinalised {
             session_id: session.into(),
             layer_summary: LayerSummary::default(),
         });
-        assert!(evidence_texts().is_empty(), "the lifecycle end closes it");
+        assert_eq!(
+            evidence_texts(),
+            ["inna wersja", "między tokenami"],
+            "unresolved evidence remains available in terminal review"
+        );
         emitter.finish().await;
         let delivered = delivery.lock().await.clone();
         assert!(
