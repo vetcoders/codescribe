@@ -4160,8 +4160,11 @@ impl AppleSealState {
                             slot.producer == LedgerObservationProducer::Whisper
                                 && ledger.word_slot_targets_pin(slot, &stub.pin)
                                 && (ledger.complete_word_slot(slot)
-                                    || crate::pipeline::acoustic_ledger::normalize_word_token(&slot.text)
-                                        == crate::pipeline::acoustic_ledger::normalize_word_token(&stub.text))
+                                    || crate::pipeline::acoustic_ledger::normalize_word_token(
+                                        &slot.text,
+                                    ) == crate::pipeline::acoustic_ledger::normalize_word_token(
+                                        &stub.text,
+                                    ))
                         })
                         .cloned()
                         .collect::<Vec<_>>();
@@ -6311,7 +6314,10 @@ fn admit_debt_occurrence_recovery(
             || payload.identity.range.session != occurrence.session
             || payload.identity.range.capture_epoch != occurrence.capture_epoch
         {
-            warn_recovery(ev_tx, "recovery word batch has no authenticated decode range".into());
+            warn_recovery(
+                ev_tx,
+                "recovery word batch has no authenticated decode range".into(),
+            );
             return false;
         }
         let owners = state.word_owners();
@@ -6332,10 +6338,13 @@ fn admit_debt_occurrence_recovery(
                     ev_tx,
                     *id,
                     owner,
-                    (payload.identity.request_id, Some((
-                        payload.identity.range.sample_start,
-                        payload.identity.range.sample_end,
-                    ))),
+                    (
+                        payload.identity.request_id,
+                        Some((
+                            payload.identity.range.sample_start,
+                            payload.identity.range.sample_end,
+                        )),
+                    ),
                     RoutedWords {
                         pins: &route.exclusive,
                         neighbours: &neighbour_pin_assignments(

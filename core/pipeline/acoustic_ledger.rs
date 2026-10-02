@@ -618,7 +618,10 @@ fn edge_token_duplicate(
         && word.text.split_whitespace().count() == 1
         && held.text.split_whitespace().count() == 1
         && held.observation != word.observation
-        && held.observation.occurrence.same_capture(&word.observation.occurrence)
+        && held
+            .observation
+            .occurrence
+            .same_capture(&word.observation.occurrence)
         && normalized == normalize_word_token(&held.text)
         && ledger.pin_targets_source(held, word)
 }
@@ -1213,13 +1216,21 @@ impl AcousticLedger {
                 self,
             );
         }
-        let assignments = words.iter().filter(|pin| {
-            pin.sample_start < pin.sample_end && !pin.text.trim().is_empty()
-        }).map(|pin| {
-            (owner.clone(), OccurrenceIdentity::new(
-                &owner.session, owner.capture_epoch, pin.sample_start, pin.sample_end,
-            ))
-        }).collect::<Vec<_>>();
+        let assignments = words
+            .iter()
+            .filter(|pin| pin.sample_start < pin.sample_end && !pin.text.trim().is_empty())
+            .map(|pin| {
+                (
+                    owner.clone(),
+                    OccurrenceIdentity::new(
+                        &owner.session,
+                        owner.capture_epoch,
+                        pin.sample_start,
+                        pin.sample_end,
+                    ),
+                )
+            })
+            .collect::<Vec<_>>();
         if let Some(batch) = self.assigned_word_pins.as_mut()
             && batch.observation == *observation
         {
@@ -1253,9 +1264,10 @@ impl AcousticLedger {
             self.complete_decoded_words
                 .insert(observation.clone(), complete_words);
         }
-        if let Some((start, end)) = words.first().and_then(|pin| {
-            Some((pin.decode_sample_start?, pin.decode_sample_end?))
-        }) && start < end
+        if let Some((start, end)) = words
+            .first()
+            .and_then(|pin| Some((pin.decode_sample_start?, pin.decode_sample_end?)))
+            && start < end
             && words.iter().all(|pin| {
                 pin.decode_sample_start == Some(start)
                     && pin.decode_sample_end == Some(end)
@@ -1263,7 +1275,8 @@ impl AcousticLedger {
                     && pin.sample_end <= end
             })
         {
-            self.decoded_word_windows.insert(observation.clone(), (start, end));
+            self.decoded_word_windows
+                .insert(observation.clone(), (start, end));
         }
         let recovery_pending = self.text_recovery_pending(owner);
         let admission_trail_start = self.trail.len();
@@ -1371,9 +1384,7 @@ impl AcousticLedger {
             let conflicts = prior
                 .iter()
                 .enumerate()
-                .filter_map(|(index, held)| {
-                    self.pin_targets_source(held, &word).then_some(index)
-                })
+                .filter_map(|(index, held)| self.pin_targets_source(held, &word).then_some(index))
                 .collect::<Vec<_>>();
             let intersects = prior
                 .iter()
@@ -1505,7 +1516,10 @@ impl AcousticLedger {
                 // its predecessor while retaining that predecessor's exact ranges.
                 let mut source_ranges = self.slot_source_ranges(source);
                 let current_source = OccurrenceIdentity::new(
-                    &owner.session, owner.capture_epoch, source.sample_start, source.sample_end,
+                    &owner.session,
+                    owner.capture_epoch,
+                    source.sample_start,
+                    source.sample_end,
                 );
                 if !source_ranges.contains(&current_source) {
                     source_ranges.push(current_source);
@@ -2161,11 +2175,13 @@ impl AcousticLedger {
                     .as_ref()
                     .map(|source| self.slot_source_ranges(source))
                     .unwrap_or_else(|| {
-                        let original = self.assigned_word_pin_ranges(observation)
+                        let original = self
+                            .assigned_word_pin_ranges(observation)
                             .into_iter()
                             .filter(|(owner, pin)| {
                                 *owner == observation.occurrence
-                                    && pin.sample_start.max(owner.sample_start) == output.sample_start
+                                    && pin.sample_start.max(owner.sample_start)
+                                        == output.sample_start
                                     && pin.sample_end.min(owner.sample_end) == output.sample_end
                             })
                             .map(|(_, pin)| pin)
