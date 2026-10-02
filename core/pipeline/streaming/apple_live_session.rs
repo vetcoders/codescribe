@@ -20623,6 +20623,196 @@ mod relay_l1_overlap_admission_tests {
         }
     }
 
+    fn final_fence_lane(
+        session: &str,
+        speech_end: u64,
+    ) -> (Lane, OccurrenceIdentity, TailPatchRequest) {
+        let mut lane = open(session);
+        let owner = OccurrenceIdentity::new(session, 1, 0, 48_000);
+        let mut audio = vec![0.0_f32; 48_000];
+        audio[6_000..speech_end as usize].fill(0.2);
+        record_energy(
+            &lane,
+            &audio.chunks(1_000).map(<[f32]>::to_vec).collect::<Vec<_>>(),
+        );
+        record_silero(&mut lane, 48_000, Some((6_000, speech_end)));
+        stage(&mut lane, 1, owner.clone(), "hipoteza");
+        assert!(
+            lane.state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .require_text_recovery(&owner)
+        );
+        let mut input = piece(1, &owner, "hipoteza");
+        input.audio = audio;
+        let pcm = input.audio.clone();
+        assert!(lane.state.enqueue_layer1_piece(&lane.tx, input));
+        lane.state.flush_layer1_coalesce(&lane.tx);
+        let mut requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 1, "one complete bounded audio request");
+        let request = requests.pop().unwrap();
+        assert_eq!(
+            request.audio, pcm,
+            "capture energy and decoder consume identical PCM"
+        );
+        assert_eq!(
+            (
+                request.provider_request.identity.range.sample_start,
+                request.provider_request.identity.range.sample_end
+            ),
+            (0, 48_000)
+        );
+        (lane, owner, request)
+    }
+
+    #[test]
+    fn forensic_terminal_silent_fence_keeps_successful_decode_receipt() {
+        let session = "forensic-final-silent-fence";
+        let (mut lane, owner, request) = final_fence_lane(session, 16_000);
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(&request, vec![word_pin(session, "Iwo", 4_000, 48_000)]),
+            3.0,
+        );
+        lane.state
+            .return_outstanding_whisper_without_label(&lane.tx);
+        let ledger = lane.state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&owner), Some("Iwo"));
+        assert!(
+            !ledger.text_recovery_pending(&owner),
+            "successful PCM plus silent final fence must survive deferred-word admission"
+        );
+        assert!(ledger.is_sealed(&owner));
+    }
+
+    #[test]
+    fn forensic_terminal_voiced_fence_keeps_recovery_open() {
+        let session = "forensic-final-voiced-fence";
+        let (mut lane, owner, request) = final_fence_lane(session, 48_000);
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(&request, vec![word_pin(session, "Iwo", 4_000, 48_000)]),
+            3.0,
+        );
+        lane.state
+            .return_outstanding_whisper_without_label(&lane.tx);
+        let ledger = lane.state.acoustic_ledger.lock().unwrap();
+        assert!(ledger.text_recovery_pending(&owner));
+        assert!(
+            !ledger.is_sealed(&owner),
+            "speech reaching the actual fence cannot certify complete audio"
+        );
+    }
+
+    fn assert_separate_spoken_repetitions_order(reverse: bool) {
+        let session = if reverse {
+            "forensic-two-orders-reverse"
+        } else {
+            "forensic-two-orders-forward"
+        };
+        // Obtain the window clock from the existing scheduler before
+        // constructing this lane's one shared capture/provider PCM.
+        let (_, _, clock_requests) = forensic_lane("forensic-repeat-clock", &[]);
+        let end = clock_requests[0].provider_request.identity.range.sample_end;
+        let first = (end - 3_500, end - 500);
+        let second = (end + 2_000, end + 30_000);
+        let mut lane = open(session);
+        let owner = OccurrenceIdentity::new(session, 1, 0, 200_000);
+        qualify_unlabelled(&mut lane, &owner);
+        let mut input = piece(1, &owner, "");
+        input.audio.fill(0.0);
+        input.audio[first.0 as usize..first.1 as usize].fill(0.2);
+        input.audio[second.0 as usize..second.1 as usize].fill(0.2);
+        record_energy(
+            &lane,
+            &input
+                .audio
+                .chunks(1_000)
+                .map(<[f32]>::to_vec)
+                .collect::<Vec<_>>(),
+        );
+        let pcm = input.audio.clone();
+        assert!(lane.state.enqueue_layer1_piece(&lane.tx, input));
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), clock_requests.len());
+        assert!(
+            requests.len() >= 2,
+            "the fixture needs both physical windows"
+        );
+        assert_eq!(requests[0].provider_request.identity.range.sample_end, end);
+        for request in &requests {
+            let range = &request.provider_request.identity.range;
+            assert_eq!(
+                request.audio,
+                pcm[range.sample_start as usize..range.sample_end as usize],
+                "decode bounds must describe the same measured capture samples"
+            );
+        }
+        use crate::audio::chunker::{VadBoundaryEvidence, VadBoundaryKind};
+        let mut fusion = SileroIngress::new(RATE, session.to_string(), 1);
+        assert!(fusion.vad_available());
+        fusion.note_observed_pcm(200_000, 200_000);
+        fusion.observe_boundaries(&[
+            VadBoundaryEvidence {
+                kind: VadBoundaryKind::SpeechStart,
+                sample: first.0,
+                speech_probability: 0.9,
+            },
+            VadBoundaryEvidence {
+                kind: VadBoundaryKind::SpeechEnd,
+                sample: first.1,
+                speech_probability: 0.1,
+            },
+            VadBoundaryEvidence {
+                kind: VadBoundaryKind::SpeechStart,
+                sample: second.0,
+                speech_probability: 0.9,
+            },
+            VadBoundaryEvidence {
+                kind: VadBoundaryKind::SpeechEnd,
+                sample: second.1,
+                speech_probability: 0.1,
+            },
+        ]);
+        lane.state.fusion = Some(fusion);
+        let order = if reverse { [1, 0] } else { [0, 1] };
+        for index in order {
+            let pin = if index == 0 {
+                word_pin(session, "Iwo", end - 4_000, end)
+            } else {
+                word_pin(session, "Iwo", end + 1_000, end + 36_000)
+            };
+            lane.state.complete_whisper_window(
+                &lane.tx,
+                completion(&requests[index], vec![pin]),
+                12.5,
+            );
+        }
+        lane.state
+            .return_outstanding_whisper_without_label(&lane.tx);
+        let ledger = lane.state.acoustic_ledger.lock().unwrap();
+        assert_eq!(
+            ledger.text_of(&owner),
+            Some("Iwo Iwo"),
+            "independent measured spoken ranges must survive order reverse={reverse}"
+        );
+        let words = ledger.slots_of(&owner).unwrap();
+        assert_eq!(words.len(), 2);
+        assert!(words[0].sample_end < words[1].sample_start);
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    #[test]
+    fn forensic_separate_spoken_repetitions_forward() {
+        assert_separate_spoken_repetitions_order(false);
+    }
+
+    #[test]
+    fn forensic_separate_spoken_repetitions_reverse() {
+        assert_separate_spoken_repetitions_order(true);
+    }
+
     #[test]
     fn forensic_completed_window_settles_measured_coarse_recovery() {
         let session = "completed-debt-clock";
