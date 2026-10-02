@@ -861,10 +861,22 @@ impl AcousticLedger {
                     "partial_group_speech_pending",
                 );
             }
-            let source_ranges = sources
+            let mut source_ranges = sources
                 .iter()
                 .flat_map(|source| self.slot_source_ranges(source))
-                .collect();
+                .collect::<Vec<_>>();
+            for (owner, pin) in self.assigned_word_pin_ranges(observation) {
+                if owner == observation.occurrence
+                    && pin.same_capture(&owner)
+                    && outputs.iter().any(|output| {
+                        pin.sample_start.max(owner.sample_start) == output.sample_start
+                            && pin.sample_end.min(owner.sample_end) == output.sample_end
+                    })
+                    && !source_ranges.contains(&pin)
+                {
+                    source_ranges.push(pin);
+                }
+            }
             let operation = SlotOperationReceipt {
                 observation: observation.clone(),
                 kind: if sources.len() == 1
@@ -1198,6 +1210,11 @@ impl AcousticLedger {
         targets: &[SlotTarget],
         require_label_authority: bool,
     ) -> Result<Vec<WordSlot>, SlotOperationRefusal> {
+        // Geometric operations share Raw ownership with label admission;
+        // even a no-speech verdict cannot make Formatter an acoustic author.
+        if observation.producer == ObservationProducer::Formatter {
+            return Err(SlotOperationRefusal::ProducerNotAuthorized);
+        }
         if targets.is_empty() || self.answered.contains(observation) {
             return Err(SlotOperationRefusal::ReplayedObservation);
         }

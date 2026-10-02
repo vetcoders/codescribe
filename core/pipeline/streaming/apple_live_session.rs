@@ -1923,7 +1923,8 @@ enum SidePin {
     NoVoicedHop,
 }
 
-/// One timed pin routed to a single open member.
+/// One original timed pin routed to a single member. Only ledger slot
+/// projection clips it to that owner; routing must conserve its physical PCM.
 #[derive(Clone)]
 struct RoutedPin {
     index: usize,
@@ -3415,14 +3416,21 @@ impl AppleSealState {
                                         || (producer == LedgerObservationProducer::CloudLive
                                             && slot.producer
                                                 == LedgerObservationProducer::CloudLive))
-                                        && crate::pipeline::acoustic_ledger::same_word_pin(
-                                            pin.sample_start,
-                                            pin.sample_end,
-                                            text,
-                                            slot.sample_start,
-                                            slot.sample_end,
-                                            &slot.text,
-                                        )
+                                        && ledger.slot_source_ranges(slot).iter().any(|source| {
+                                            source.same_capture(owner)
+                                                && source.sample_start.max(owner.sample_start)
+                                                    == slot.sample_start
+                                                && source.sample_end.min(owner.sample_end)
+                                                    == slot.sample_end
+                                                && crate::pipeline::acoustic_ledger::same_word_pin(
+                                                    pin.sample_start,
+                                                    pin.sample_end,
+                                                    text,
+                                                    source.sample_start,
+                                                    source.sample_end,
+                                                    &slot.text,
+                                                )
+                                        })
                                 })
                             })
                     }) || routes.iter().any(|route| {
@@ -3472,13 +3480,9 @@ impl AppleSealState {
                 }
                 match class {
                     OverlapPinClass::ExclusiveTail { member_index } => {
-                        let owner = &open_members[member_index];
-                        let mut owned_pin = pin.clone();
-                        owned_pin.sample_start = owned_pin.sample_start.max(owner.sample_start);
-                        owned_pin.sample_end = owned_pin.sample_end.min(owner.sample_end);
                         routes[member_index].exclusive.push(RoutedPin {
                             index,
-                            pin: owned_pin,
+                            pin: pin.clone(),
                             text: text.to_string(),
                             confidence: segment.confidence,
                         });
@@ -3495,12 +3499,9 @@ impl AppleSealState {
                             && !ledger.is_sealed(owner)
                             && ledger.matching_word_slot(owner, &pin, text, true)
                         {
-                            let mut owned_pin = pin.clone();
-                            owned_pin.sample_start = owned_pin.sample_start.max(owner.sample_start);
-                            owned_pin.sample_end = owned_pin.sample_end.min(owner.sample_end);
                             routes[owner_index].exclusive.push(RoutedPin {
                                 index,
-                                pin: owned_pin,
+                                pin: pin.clone(),
                                 text: text.to_string(),
                                 confidence: segment.confidence,
                             });
