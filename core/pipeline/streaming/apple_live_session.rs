@@ -22471,7 +22471,7 @@ mod relay_l1_overlap_admission_tests {
     }
 
     #[test]
-    fn owned_word_is_clipped_without_lending_text_to_adjacent_member() {
+    fn owned_word_retains_original_clock_without_lending_text_to_adjacent_member() {
         let session = "adjacent-word-coverage";
         let mut lane = open(session);
         let first = OccurrenceIdentity::new(session, 1, 0, 64_000);
@@ -22499,7 +22499,10 @@ mod relay_l1_overlap_admission_tests {
         );
         assert_eq!(exclusive_label(&routes[0].exclusive), "first");
         assert_eq!(exclusive_label(&routes[1].exclusive), "second");
-        assert_eq!(routes[1].exclusive[0].pin.sample_start, second.sample_start);
+        // The route assigns one owner without destroying physical provenance.
+        // The two-edge admission witness separately checks bounded final slots.
+        assert_eq!(routes[1].exclusive[0].pin.sample_start, 62_000);
+        assert_eq!(routes[1].exclusive[0].pin.sample_end, 76_000);
         let receipt = admit_ledger_label(
             &mut lane.state,
             &lane.tx,
