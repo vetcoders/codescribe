@@ -851,7 +851,8 @@ impl codescribe_core::pipeline::contracts::EventSink for TakeExternalEventSink {
     }
 
     fn on_capture_opened(&self, session_id: &str, capture_epoch: u64) {
-        self.presentation.on_capture_opened(session_id, capture_epoch);
+        self.presentation
+            .on_capture_opened(session_id, capture_epoch);
         self.sink.on_capture_opened(session_id, capture_epoch);
     }
 
@@ -2998,8 +2999,12 @@ impl RecordingController {
             deliver(text.to_owned()).await?
         } else {
             if !text.trim().is_empty() || !missing_words.is_empty() {
-                warn!(take_id, unaccounted, closed_by_final_words,
-                    "stop canvas retained without committed delivery accounting");
+                warn!(
+                    take_id,
+                    unaccounted,
+                    closed_by_final_words,
+                    "stop canvas retained without committed delivery accounting"
+                );
                 self.publish_stop_warning(
                     "stop_canvas_accounting_unsettled",
                     "Recording stopped. Text and audio are retained for review; this stop projection could not authorize delivery.".to_string(),
@@ -7855,6 +7860,54 @@ mod refusal_recovery_tests {
         })
         .await
         .unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn phrase_closure_alone_cannot_authorize_a_prefix_paste() {
+        let take = take(State::RecHold, false).await;
+        take.emitter.on_capture_opened(TAKE, 7);
+        take.emitter.set_literal_delivery(true);
+        take.emitter.on_event(&stop_preview("three visible words"));
+        let at_stop = take.emitter.begin_stop_canvas().unwrap();
+        let mutation = stop_mutation(&mut take.ledger.lock().unwrap(), "shorter");
+        take.emitter.on_event(&mutation);
+        take.emitter.on_event(&stop_closed_phrase(1));
+        take.emitter.on_event(&EngineEvent::PreviewDisposition {
+            superseded_through_rev: 1,
+            final_disposition:
+                codescribe_core::pipeline::contracts::PreviewFinalDisposition::Admitted,
+            refused_evidence: Vec::new(),
+        });
+        let wait = await_live_finals_for_delivery(
+            async { true },
+            || take.emitter.finish_stop_canvas(),
+            tokio::time::Instant::now(),
+            Some(at_stop),
+            true,
+            None,
+        )
+        .await;
+        let calls = AtomicUsize::new(0);
+        let settled = take
+            .controller
+            .settle_frozen_canvas_at_stop(
+                Some(TAKE),
+                Some(&take.emitter),
+                wait,
+                std::time::Instant::now(),
+                |text| stop_sink(&take.controller, text, &calls),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "closure is not delivery lineage"
+        );
+        assert!(
+            !settled,
+            "a skipped prefix cannot suppress terminal delivery"
+        );
     }
 
     // A shorter final accounts for stopped words through the phrase closure.

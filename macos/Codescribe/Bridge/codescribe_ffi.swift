@@ -8604,6 +8604,10 @@ public struct CsCompactProjection: Equatable, Hashable {
     public var sessionId: String
     public var captureEpoch: UInt64
     public var sequence: UInt64
+    /**
+     * Full engine-composed ephemeral paint for the one live canvas. This is
+     * independent of the committed transcript callback and delivery text.
+     */
     public var text: String
     public var degraded: Bool
     /**
@@ -8614,7 +8618,11 @@ public struct CsCompactProjection: Equatable, Hashable {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(sessionId: String, captureEpoch: UInt64, sequence: UInt64, text: String, degraded: Bool,
+    public init(sessionId: String, captureEpoch: UInt64, sequence: UInt64,
+        /**
+         * Full engine-composed ephemeral paint for the one live canvas. This is
+         * independent of the committed transcript callback and delivery text.
+         */text: String, degraded: Bool,
         /**
          * Read-only unanchored text beside the canvas, in PCM order. Swift paints
          * it as secondary text; it is never canvas, Bus, or delivery bytes.

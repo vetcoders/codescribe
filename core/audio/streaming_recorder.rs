@@ -1110,7 +1110,9 @@ impl StreamingRecorder {
                 .await
                 .unwrap_or_else(|_| Err(anyhow!("presentation terminal drain timed out")))
                 .err(),
-                None => Some(anyhow!("presentation terminal drain has no capture identity")),
+                None => Some(anyhow!(
+                    "presentation terminal drain has no capture identity"
+                )),
             },
             None => None,
         };
@@ -2819,5 +2821,38 @@ mod capture_stop_failure_tests {
         assert_eq!(refused.audio_path.as_ref(), Some(&path));
         assert_eq!(std::fs::read(path).unwrap(), bytes);
         assert_released(&recorder);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unacknowledged_presentation_cannot_return_an_early_prefix_as_complete() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("retained.wav");
+        let bytes = write_wav(&path);
+        let mut recorder = recorder();
+        recorder.set_event_sink(Some(Arc::new(
+            crate::pipeline::sinks::CollectorEventSink::new(),
+        )));
+        *recorder.transcript_buffer.lock().await = "first".into();
+        let buffer = Arc::clone(&recorder.transcript_buffer);
+        let delayed = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            // Same byte length: size stability cannot prove publication.
+            *buffer.lock().await = "final".into();
+        });
+        let result = recorder.complete_stop(Ok(Some(path.clone()))).await;
+        assert!(
+            result.is_err(),
+            "unacknowledged publication returned {result:?}"
+        );
+        let error = result.unwrap_err();
+        let failure = error.downcast_ref::<CaptureStopFailure>().unwrap();
+        assert_eq!(failure.audio_path.as_deref(), Some(path.as_path()));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert!(
+            recorder.event_sink.is_some(),
+            "unfinished publication must remain owned"
+        );
+        delayed.await.unwrap();
+        assert_eq!(&*recorder.transcript_buffer.lock().await, "final");
     }
 }

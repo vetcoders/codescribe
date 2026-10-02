@@ -402,7 +402,10 @@ impl AcousticLedger {
                     }
                 }
                 for index in 0..pins.len() {
-                    if source_indices.iter().any(|source| connected(*source, index)) {
+                    if source_indices
+                        .iter()
+                        .any(|source| connected(*source, index))
+                    {
                         word_indices.insert(index);
                     }
                 }
@@ -480,10 +483,8 @@ impl AcousticLedger {
             // when every source token is accounted for. Original group PCM
             // remains in the operation; child playback uses actual pin ranges.
             // A present but unusable snapshot never acts as absent evidence.
-            let lexical_refinement = sources.len() == 1
-                && all_coarse
-                && accounted
-                && self.speech_evidence.is_none();
+            let lexical_refinement =
+                sources.len() == 1 && all_coarse && accounted && self.speech_evidence.is_none();
             let ambiguous = repetition_target_ambiguous(&sources, &outputs)
                 && !(all_coarse && (accounted || coverage.is_some()));
             let refusal = if !authority {

@@ -872,9 +872,10 @@ impl AcousticLedger {
             .rejected_word_pins
             .entry(observation.occurrence.clone())
             .or_default();
-        if !rejected_pins.iter().any(|pin| {
-            pin.sample_start == word.sample_start && pin.sample_end == word.sample_end
-        }) {
+        if !rejected_pins
+            .iter()
+            .any(|pin| pin.sample_start == word.sample_start && pin.sample_end == word.sample_end)
+        {
             rejected_pins.push(word.clone());
         }
     }
@@ -2160,9 +2161,9 @@ impl AcousticLedger {
                         && self
                             .group_speech_coverage(observation, rejected, &accepted_pins)
                             .is_none_or(|(_, coverage)| {
-                                coverage.iter().any(|part| {
-                                    part.pin_owner != observation.occurrence
-                                })
+                                coverage
+                                    .iter()
+                                    .any(|part| part.pin_owner != observation.occurrence)
                             })
                 })
                 .cloned()
@@ -2189,7 +2190,9 @@ impl AcousticLedger {
             });
         if authorized_recovery
             && !retained_refused_source
-            && !self.rejected_word_pins.contains_key(&observation.occurrence)
+            && !self
+                .rejected_word_pins
+                .contains_key(&observation.occurrence)
             && (decision.grants_mutation() || matches!(decision, MutationReceipt::Preserve { .. }))
         {
             self.pending_text_recovery.remove(&observation.occurrence);

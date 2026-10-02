@@ -1957,7 +1957,7 @@ final class OverlayStateTests: XCTestCase {
       state.canvasText, "Tekst poprawiony", "draft stays visible until the ledger answers")
     XCTAssertEqual(state.revision, 7)
     XCTAssertTrue(state.revisionCommitPending)
-    XCTAssertFalse(state.isTranscriptEditable, "no second edit while one is in flight")
+    XCTAssertTrue(state.isTranscriptEditable, "typing remains available while a revision is in flight")
     XCTAssertEqual(OverlayIntentRail.projectedIntents(for: state), [])
 
     projectText(
@@ -4361,7 +4361,7 @@ final class OverlayStateTests: XCTestCase {
 
   func testTypedCoverageExplainsIncompleteAndEveryUnavailableReasonWithoutChangingBytes() {
     let cases: [(CsProjectedSealCoverageReceipt, String, String)] = [
-      (coverage(.incomplete), "incomplete coverage", "no recognizer turned into words"),
+      (coverage(.incomplete), "incomplete coverage", "no usable uncovered speech interval"),
       (
         coverage(.unavailable, reason: .notObserved), "measurement unavailable",
         "no acoustic measurement was taken"
@@ -4508,6 +4508,64 @@ final class OverlayStateTests: XCTestCase {
     row.captureEpoch = 2
     state.applyTranscriptProjection(row)
     XCTAssertEqual(state.activeText, "first epoch second epoch second epoch")
+  }
+
+
+  func testLive1656CoverageDebtDoesNotClaimRecognizersFoundNoWords() {
+    let receipt = CsProjectedSealCoverageReceipt(
+      status: .incomplete, sampleRateHz: 16_000, unavailableReason: nil,
+      speechSamples: 374_784, coveredSamples: 374_784, uncoveredSpeechRanges: [],
+      maxUncoveredSamples: 0, incompleteThresholdSamples: 4_000,
+      speechProducer: "capture_energy", availability: "observed",
+      observedSamples: 400_000, coverageRatio: 1.0)
+    let warning = OverlayWarningCopy.sealRefused(receipt)
+    XCTAssertFalse(warning.chip.lowercased().contains("no words"))
+    XCTAssertFalse(warning.sentence.contains("no recognizer turned into words"))
+    XCTAssertEqual(warning.owner, .coverage)
+  }
+
+  func testLive1656MissingClockDoesNotDiagnoseMissingRecognizedWords() {
+    let warning = OverlayWarningCopy.sealRefused(coverage(.incomplete))
+    XCTAssertFalse(warning.chip.lowercased().contains("no words"))
+    XCTAssertFalse(warning.sentence.contains("no recognizer turned into words"))
+  }
+
+  func testLive1656TerminalWordsRemainManuallyEditableWithoutEngineSuccess() {
+    for phase in ["coverage_refused", "finalizing", "no_speech"] {
+      let state = OverlayState()
+      let words = "Słowa są moje — mogę je poprawić."
+      projectText(words, to: state, phase: phase, canCopy: true, terminal: true)
+      XCTAssertTrue(state.isTranscriptEditable, "terminal words must be editable: \(phase)")
+      state.beginTranscriptEdit()
+      XCTAssertTrue(state.isEditingTranscript)
+      XCTAssertEqual(state.canvasText, words)
+      XCTAssertFalse(state.canInsert, "editing cannot create a delivery seal")
+    }
+  }
+
+
+  func testLive1656AcceptedPreviewNotifiesLayoutWithoutAdmittingAWord() {
+    let state = OverlayState()
+    state.handleRecordingPreparing()
+    state.applyCompactProjection(CsCompactProjection(
+      sessionId: "layout-only", captureEpoch: 1, sequence: 1,
+      text: "", degraded: false, evidence: []))
+    var changes = 0
+    state.onTranscriptPresentationChanged = { changes += 1 }
+    let paint = CsCompactProjection(
+      sessionId: "layout-only", captureEpoch: 1, sequence: 2,
+      text: "Jedna tafla rośnie razem z podglądem.", degraded: false, evidence: [])
+    state.applyCompactProjection(paint)
+    XCTAssertEqual(changes, 1)
+    state.applyCompactProjection(paint)
+    state.applyCompactProjection(CsCompactProjection(
+      sessionId: "foreign", captureEpoch: 1, sequence: 99,
+      text: "wrong take", degraded: false, evidence: []))
+    XCTAssertEqual(changes, 1, "rejected paint must not trigger layout")
+    XCTAssertEqual(state.compactProjection, paint)
+    XCTAssertNil(state.latestTranscriptProjection)
+    XCTAssertTrue(state.formattedText.isEmpty)
+    XCTAssertFalse(state.canInsert)
   }
 
 }
