@@ -31,13 +31,13 @@ website, the docs, the CLI and model prompts are outside this ledger.
 
 ## 2. Where the app stands
 
-`Localizable.xcstrings` holds **1312 keys** (1289 translatable). Before this
+`Localizable.xcstrings` holds **1311 keys** (1288 translatable). Before this
 work the compiler extracted 468 — the literals SwiftUI localizes by itself; the
 rest was plain `String` and invisible to any translation.
 
 | Measure                                       | Count    |
 | --------------------------------------------- | -------- |
-| Keys in `Localizable.xcstrings`               | 1312     |
+| Keys in `Localizable.xcstrings`               | 1311     |
 | Keys with a translator comment                | 412      |
 | Keys with English plural forms                | 26       |
 | Keys written as identifiers (`defaultValue:`) | 37       |

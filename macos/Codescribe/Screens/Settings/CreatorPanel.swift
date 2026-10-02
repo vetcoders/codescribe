@@ -110,7 +110,7 @@ struct CreatorPanel: View {
         QuickStartCard(
           icon: .shortcuts,
           title: "Tune shortcuts",
-          subtitle: "Hotkeys & cadence",
+          subtitle: "Hotkeys",
           accessibilityId: "settings-quickstart-tune-shortcuts"
         ) { model.performQuickStart(.tuneShortcuts) }
       }
