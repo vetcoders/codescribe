@@ -21997,6 +21997,124 @@ mod relay_l1_overlap_admission_tests {
     }
 
     #[test]
+    fn forensic_terminal_frontier_deadline_windows() {
+        terminal_frontier_requires_successful_pcm(BufferMode::Windows, false, false);
+    }
+
+    #[test]
+    fn forensic_terminal_frontier_deadline_adaptive() {
+        terminal_frontier_requires_successful_pcm(BufferMode::Adaptive, false, false);
+    }
+
+    #[test]
+    fn forensic_terminal_frontier_voiced_fence_windows() {
+        terminal_frontier_requires_successful_pcm(BufferMode::Windows, true, true);
+    }
+
+    #[test]
+    fn forensic_terminal_frontier_voiced_fence_adaptive() {
+        terminal_frontier_requires_successful_pcm(BufferMode::Adaptive, true, true);
+    }
+
+    fn terminal_frontier_requires_successful_pcm(
+        mode: BufferMode,
+        decoded: bool,
+        voiced_fence: bool,
+    ) {
+        let session = &mode.session("forensic-terminal-frontier");
+        let mut lane = open(session);
+        if mode == BufferMode::Adaptive {
+            lane.state.layer1_coalesce = Layer1Coalesce::adaptive();
+        }
+        let owner = OccurrenceIdentity::new(session, 1, 0, 48_000);
+        let speech_end = if voiced_fence { 48_000 } else { 16_000 };
+        let mut input = piece(1, &owner, "hipoteza");
+        input.audio.fill(0.0);
+        input.audio[6_000..speech_end as usize].fill(0.2);
+        record_energy(
+            &lane,
+            &input
+                .audio
+                .chunks(1_000)
+                .map(<[f32]>::to_vec)
+                .collect::<Vec<_>>(),
+        );
+        record_silero(&mut lane, 48_000, Some((6_000, speech_end)));
+        stage(&mut lane, 1, owner.clone(), "hipoteza");
+        assert!(
+            lane.state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .require_text_recovery(&owner)
+        );
+        let pcm = input.audio.clone();
+        assert!(lane.state.enqueue_layer1_piece(&lane.tx, input));
+        lane.state.flush_layer1_coalesce(&lane.tx);
+        let mut requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 1);
+        let request = requests.pop().unwrap();
+        assert_eq!(request.audio, pcm);
+        let range = &request.provider_request.identity.range;
+        assert_eq!((range.sample_start, range.sample_end), (0, 48_000));
+        if decoded {
+            lane.state.complete_whisper_window(
+                &lane.tx,
+                completion(&request, vec![word_pin(session, "Iwo", 4_000, 48_000)]),
+                3.0,
+            );
+            assert!(unanchored_label(&drain(&mut lane.rx), "Iwo"));
+        }
+        lane.state
+            .return_outstanding_whisper_without_label(&lane.tx);
+        assert_eq!(lane.state.tail_patch_awaiting_completion(), 0);
+        assert!(lane.state.refinement_pending.is_empty());
+        {
+            let ledger = lane.state.acoustic_ledger.lock().unwrap();
+            assert_eq!(
+                ledger.frontier_of(&owner).unwrap().open_producers(),
+                vec![ObservationProducer::Lexicon]
+            );
+            assert!(
+                !ledger.is_sealed(&owner),
+                "actual scheduled L2 has not returned"
+            );
+        }
+        let label = if decoded { "Iwo" } else { "hipoteza" };
+        close_lexicon(&mut lane, 1, &owner, label);
+        let ledger = lane.state.acoustic_ledger.lock().unwrap();
+        assert!(
+            ledger
+                .frontier_of(&owner)
+                .unwrap()
+                .open_producers()
+                .is_empty()
+        );
+        if decoded && !voiced_fence {
+            assert_eq!(ledger.text_of(&owner), Some("Iwo"));
+            let slots = ledger.slots_of(&owner).unwrap();
+            assert_eq!(slots.len(), 1);
+            assert_eq!(slots[0].producer, ObservationProducer::Whisper);
+            assert_eq!(
+                (slots[0].sample_start, slots[0].sample_end),
+                (4_000, 48_000)
+            );
+            assert!(!ledger.text_recovery_pending(&owner));
+            assert!(ledger.is_sealed(&owner));
+            drop(ledger);
+            assert!(lane.state.stop_document_settled());
+        } else {
+            assert!(
+                ledger.text_recovery_pending(&owner),
+                "drained queue or speech-cut fence cannot certify decoder work"
+            );
+            assert!(!ledger.is_sealed(&owner));
+            drop(ledger);
+            assert!(!lane.state.stop_document_settled());
+        }
+    }
+
+    #[test]
     fn forensic_window_stub_is_accounted_at_seal() {
         window_stub_is_accounted_at_seal(BufferMode::Windows);
     }
@@ -22007,22 +22125,7 @@ mod relay_l1_overlap_admission_tests {
     }
 
     fn window_stub_is_accounted_at_seal(mode: BufferMode) {
-        let session = &mode.session("forensic-stub-seal");
-        let (mut lane, owner, requests) = forensic_lane_in(mode, session, &[]);
-        let end = requests[0].provider_request.identity.range.sample_end;
-        lane.state.complete_whisper_window(
-            &lane.tx,
-            completion(
-                &requests[0],
-                vec![word_pin(session, "ludzi", end - 4_000, end)],
-            ),
-            12.5,
-        );
-        assert!(unanchored_label(&drain(&mut lane.rx), "ludzi"));
-        lane.state
-            .return_outstanding_whisper_without_label(&lane.tx);
-        assert_eq!(held_text(&lane, &owner).as_deref(), Some("ludzi"));
-        assert!(lane.state.acoustic_ledger.lock().unwrap().is_sealed(&owner));
+        terminal_frontier_requires_successful_pcm(mode, true, false);
     }
 
     #[test]
