@@ -404,10 +404,13 @@ impl AgentSession {
                         }
                         let entry = pending_calls.entry(id.clone()).or_insert(PendingToolCall {
                             id,
-                            name,
+                            name: name.clone(),
                             args_buffer: String::new(),
                             arguments: None,
                         });
+                        // The provider may learn the name only at the terminal
+                        // item; Start can carry a still-empty placeholder.
+                        entry.name = name;
                         entry.arguments = Some(arguments);
                     }
                     AgentEvent::ResponseDone { response_id, clean } => {

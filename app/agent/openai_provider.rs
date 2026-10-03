@@ -266,7 +266,13 @@ impl AgentProvider for OpenAiProvider {
                 options.temperature
             },
             tools: build_tool_payload(tools),
-            store: codex_route.then_some(false),
+            // A response referenced by the next turn must be stored. Codex
+            // deliberately uses full replay with storage disabled instead.
+            store: if chain_enabled {
+                Some(true)
+            } else {
+                codex_route.then_some(false)
+            },
             stream: true,
         };
 

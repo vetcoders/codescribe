@@ -45,6 +45,8 @@ mod application_runtime;
 mod config;
 /// Live buffer tools supplied by an embedding document editor.
 mod document_agent;
+/// Workspace discovery and explicit document opening for an embedded session.
+mod workspace_agent;
 /// Global hotkey registration and app-action callbacks.
 mod hotkeys;
 /// CSK1 license state exposed to the Swift shell.
