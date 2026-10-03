@@ -323,6 +323,11 @@ language, add a gate that requires full coverage of every declared language
 
 ## 7. Tests
 
+On macOS, `scripts/tests/test_generate_swift_bindings.py` verifies that unchanged
+normalized outputs retain bytes, inode and nanosecond mtime, changed files are
+published, and failed generation or normalization leaves existing bindings
+untouched. It runs in `make verify`; other hosts skip this macOS producer test.
+
 The test scheme pins the interface language to English, so assertions on
 interface copy stay stable on any host and after more languages are added.
 `LocalizationFoundationTests` proves the pipeline end to end on the built app:
