@@ -118,9 +118,11 @@ final class AppTerminationCoordinator {
   private var replied = false
   private var deadlineTask: Task<Void, Never>?
 
-  init(deadline: @escaping @Sendable () async -> Void = {
-    try? await Task.sleep(for: .seconds(10))
-  }) {
+  init(
+    deadline: @escaping @Sendable () async -> Void = {
+      try? await Task.sleep(for: .seconds(10))
+    }
+  ) {
     self.deadline = deadline
   }
 
@@ -423,16 +425,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
         .foregroundColor: NSColor.secondaryLabelColor,
       ]
-      let credits = NSMutableAttributedString(
-        string: "Commit: \(commit)\nBuilt: \(builtAt)\n\n",
-        attributes: mono
-      )
+      let provenance =
+        String(
+          localized: "Commit: \(commit)",
+          comment: "About panel provenance line; %@ is the source commit of this build"
+        ) + "\n"
+        + String(
+          localized: "Built: \(builtAt)",
+          comment: "About panel provenance line; %@ is the build timestamp"
+        ) + "\n\n"
+      let credits = NSMutableAttributedString(string: provenance, attributes: mono)
       let privacy = NSAttributedString(
-        string: "Privacy Policy",
+        string: String(
+          localized: "Privacy Policy",
+          comment: "About panel link to the public privacy page"),
         attributes: mono.merging([.link: Self.privacyURL]) { _, new in new }
       )
       let terms = NSAttributedString(
-        string: "Terms of Use & EULA",
+        string: String(
+          localized: "Terms of Use & EULA",
+          comment: "About panel link to the public terms page; EULA = end-user licence agreement"),
         attributes: mono.merging([.link: Self.termsURL]) { _, new in new }
       )
       credits.append(privacy)
@@ -471,7 +483,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // (and the bridge's OS toast) so the action is never a silent no-op.
     model.tray.onSaveLastTranscript = { [weak self, notes, threads, model] in
       let text = Self.latestTranscriptText(threads) ?? ""
-      self?.saveToNote(tray: model.tray, emptyMessage: "No transcript to save") {
+      let emptyMessage = String(
+        localized: "No transcript to save",
+        comment: "Tray banner: there is no recent transcript to append to the daily note")
+      self?.saveToNote(tray: model.tray, emptyMessage: emptyMessage) {
         try notes.saveText(text: text)
       }
     }
@@ -482,7 +497,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // first, then fall back to the AX/clipboard path for other apps.
     model.tray.onSaveSelection = { [weak self, notes, model] in
       guard let self else { return }
-      self.saveToNote(tray: model.tray, emptyMessage: "No text selected") {
+      let emptyMessage = String(
+        localized: "No text selected",
+        comment: "Tray banner: no selection was found to append to the daily note")
+      self.saveToNote(tray: model.tray, emptyMessage: emptyMessage) {
         if let own = self.harvestAgentWindowSelection() {
           notesLog.info(
             "save selection: harvested \(own.count, privacy: .public) chars from agent window")
@@ -545,14 +563,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       let saved = try perform()
       if let saved, !saved.isEmpty {
         notesLog.info("note saved (\(saved.count, privacy: .public) chars)")
-        tray.showNoteStatus(.init(kind: .success, message: "Saved to daily note"))
+        tray.showNoteStatus(
+          .init(
+            kind: .success,
+            message: String(
+              localized: "Saved to daily note",
+              comment: "Tray banner: the text was appended to today's note")))
       } else {
         notesLog.info("note save: nothing to save")
         tray.showNoteStatus(.init(kind: .failure, message: emptyMessage))
       }
     } catch {
       notesLog.error("note save failed: \(error.localizedDescription, privacy: .public)")
-      tray.showNoteStatus(.init(kind: .failure, message: "Could not save note"))
+      tray.showNoteStatus(
+        .init(
+          kind: .failure,
+          message: String(
+            localized: "Could not save note",
+            comment: "Tray banner: writing the daily note failed")))
     }
   }
 
@@ -748,10 +776,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       button.image = statusItemImage()
       button.contentTintColor = hasUnreadAgentUpdate ? NSColor.systemYellow : nil
     }
+    let tooltip = trayStatus.tooltip
     button.toolTip =
       hasUnreadAgentUpdate
-      ? "\(trayStatus.status.tooltip) - agent reply ready"
-      : trayStatus.status.tooltip
+      ? String(
+        localized: "\(tooltip) - agent reply ready",
+        comment: "Menu bar tooltip while an unread agent reply waits; %@ is the status tooltip")
+      : tooltip
   }
 
   private func statusItemImage() -> NSImage? {
@@ -773,7 +804,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     let hosting = NSHostingController(rootView: root)
     let window = NSWindow(contentViewController: hosting)
-    window.title = "Agent"
+    window.title = String(localized: "Agent", comment: "Title of the agent chat window")
     window.setContentSize(NSSize(width: 1120, height: 720))
     window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
     window.titlebarAppearsTransparent = true

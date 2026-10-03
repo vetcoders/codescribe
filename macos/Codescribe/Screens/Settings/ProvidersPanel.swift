@@ -16,9 +16,11 @@ struct ProvidersPanel: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       SettingsPageHeader(
-        "Providers.",
-        blurb:
-          "Keys and endpoints. Vendors always use their factory endpoint; a custom provider is any host that speaks /v1/responses or /v1/messages. Which model each lane sends lives under Agent › Request lanes."
+        String(localized: "Providers."),
+        blurb: String(
+          localized:
+            "Keys and endpoints. Vendors always use their factory endpoint; a custom provider is any host that speaks /v1/responses or /v1/messages. Which model each lane sends lives under Agent › Request lanes."
+        )
       )
 
       if let notice = model.laneResetNotice {
@@ -26,7 +28,7 @@ struct ProvidersPanel: View {
           .padding(.top, 12)
       }
 
-      SettingsSectionLabel("Vendors")
+      SettingsSectionLabel(String(localized: "Vendors"))
         .padding(.top, CSSpace.section)
       VStack(spacing: 8) {
         ForEach(model.vendorProviders, id: \.id) { provider in
@@ -49,7 +51,7 @@ struct ProvidersPanel: View {
         .padding(.top, CSSpace.section)
 
       HStack(spacing: 8) {
-        Text("●").font(CSFont.mono(11, .medium)).foregroundStyle(CSColor.olive)
+        Text(verbatim: "●").font(CSFont.mono(11, .medium)).foregroundStyle(CSColor.olive)
         Text("secrets live only in the Keychain — presence shown, value hidden")
           .font(CSFont.mono(11, .medium))
           .foregroundStyle(Color.secondary)
@@ -153,7 +155,7 @@ struct ProviderCard: View {
       .accessibilityLabel("endpoint \(provider.endpoint)")
       // Custom hosts are key-optional: an absent key there is neutral, not an error.
       KeyRow(
-        model: model, account: provider.apiKeyAccount, label: "API key",
+        model: model, account: provider.apiKeyAccount, label: String(localized: "API key"),
         isSet: provider.apiKeySet, optional: !provider.keyRequired)
       if !isCustom, provider.accountLoginEnabled || provider.accountSignedIn {
         AccountLoginRow(
@@ -168,7 +170,11 @@ struct ProviderCard: View {
     }
     .settingsGroupedInset()
     .accessibilityElement(children: .contain)
-    .accessibilityLabel("\(provider.displayName) \(isCustom ? "custom provider" : "provider")")
+    .accessibilityLabel(
+      isCustom
+        ? Text("\(provider.displayName) custom provider")
+        : Text("\(provider.displayName) provider")
+    )
     .confirmationDialog(
       "Remove \(provider.displayName)?",
       isPresented: $confirmRemove,
@@ -196,7 +202,7 @@ struct CustomProvidersSection: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       HStack {
-        SettingsSectionLabel("Custom providers")
+        SettingsSectionLabel(String(localized: "Custom providers"))
         Spacer()
         Button(action: onAdd) {
           Label("Add custom provider", systemImage: "plus")
@@ -248,6 +254,10 @@ struct CustomProviderForm: View {
 
   private enum Field { case name, endpoint, key }
 
+  /// Sample values, not copy: they must read the same in every language.
+  private static let namePlaceholder = "e.g. Libraxis"
+  private static let endpointPlaceholder = "https://api.example.com/v1/responses"
+
   private var isEdit: Bool {
     if case .edit = target { return true }
     return false
@@ -269,7 +279,7 @@ struct CustomProviderForm: View {
         .foregroundStyle(Color.secondary)
 
       field("Name") {
-        TextField("e.g. Libraxis", text: $name)
+        TextField(Self.namePlaceholder, text: $name)
           .settingsInputChrome(isFocused: focus == .name)
           .focused($focus, equals: .name)
           .onSubmit { focus = .endpoint }
@@ -285,7 +295,7 @@ struct CustomProviderForm: View {
         .accessibilityLabel("Custom provider wire")
       }
       field("Endpoint") {
-        TextField("https://api.example.com/v1/responses", text: $endpoint)
+        TextField(Self.endpointPlaceholder, text: $endpoint)
           .settingsInputChrome(isFocused: focus == .endpoint)
           .focused($focus, equals: .endpoint)
           .onSubmit { focus = .key }
@@ -332,7 +342,7 @@ struct CustomProviderForm: View {
   }
 
   private func field<Control: View>(
-    _ title: String, @ViewBuilder control: () -> Control
+    _ title: LocalizedStringKey, @ViewBuilder control: () -> Control
   ) -> some View {
     VStack(alignment: .leading, spacing: 5) {
       Text(title)
@@ -373,7 +383,7 @@ struct SpeechToTextSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      SettingsSectionLabel("Speech-to-text Cloud Service")
+      SettingsSectionLabel(String(localized: "Speech-to-text Cloud Service"))
       Text("Your recordings leave your machine.")
         .font(CSFont.ui(12.5, .semibold))
         .foregroundStyle(CSColor.amber)
@@ -410,23 +420,29 @@ struct SttLaneCard: View {
         .foregroundStyle(Color.secondary)
         .fixedSize(horizontal: false, vertical: true)
       SettingsUrlRow(
-        title: "Endpoint",
+        title: String(localized: "Endpoint"),
         keyLabel: lane.endpointWireKey,
         current: lane.endpoint ?? "",
         placeholder: lane.placeholder,
-        help:
-          "Not a secret. Blank clears the lane; the bridge rejects a URL whose scheme does not fit this lane.",
+        help: String(
+          localized:
+            "Not a secret. Blank clears the lane; the bridge rejects a URL whose scheme does not fit this lane."
+        ),
         onSave: { model.setSttLaneEndpoint(lane.id, $0) }
       )
-      KeyRow(model: model, account: lane.keyAccount, label: "API key", isSet: lane.apiKeySet)
+      KeyRow(
+        model: model, account: lane.keyAccount, label: String(localized: "API key"),
+        isSet: lane.apiKeySet)
       if lane.id == "live" {
         SettingsUrlRow(
-          title: "Gateway session URL",
+          title: String(localized: "Gateway session URL"),
           keyLabel: "CODESCRIBE_ASR_GATEWAY_URL",
           current: model.asrGatewayUrl,
           placeholder: "https://…/session",
-          help:
-            "Session-mint endpoint for live Cloud Layer 1. Not the live socket above. Clearing restores unset.",
+          help: String(
+            localized:
+              "Session-mint endpoint for live Cloud Layer 1. Not the live socket above. Clearing restores unset."
+          ),
           onSave: { model.setAsrGatewayUrl($0) }
         )
       }
@@ -446,7 +462,7 @@ struct ServiceKeysSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      SettingsSectionLabel("Service keys")
+      SettingsSectionLabel(String(localized: "Service keys"))
       Text("GitHub token. Speech-to-text endpoints and keys live in the section above.")
         .font(CSFont.ui(11.5))
         .lineSpacing(2)

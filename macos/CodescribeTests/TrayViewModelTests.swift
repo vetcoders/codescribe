@@ -185,10 +185,14 @@ final class TrayViewModelTests: XCTestCase {
       (.preview(kind: .idle, tone: .neutral), 0x55663A, 0x9DB178),
       (.preview(kind: .listening, tone: .active), 0xFF3B30, 0xFF3B30),
       (.preview(kind: .processing, tone: .active), 0xB96A24, 0xF28C45),
-      (.preview(kind: .listening, tone: .active, indicatorMode: .assistive, assistive: true),
-       0x9B72F2, 0x9B72F2),
-      (.preview(kind: .processing, tone: .active, indicatorMode: .processing, assistive: false),
-       0xB96A24, 0xF28C45),
+      (
+        .preview(kind: .listening, tone: .active, indicatorMode: .assistive, assistive: true),
+        0x9B72F2, 0x9B72F2
+      ),
+      (
+        .preview(kind: .processing, tone: .active, indicatorMode: .processing, assistive: false),
+        0xB96A24, 0xF28C45
+      ),
     ]
     for (store, light, dark) in cases {
       for (name, expected) in [(NSAppearance.Name.aqua, light), (.darkAqua, dark)] {
@@ -224,7 +228,7 @@ final class TrayViewModelTests: XCTestCase {
       )
     }
 
-    let idle = TrayStatusStore.preview(kind: .idle, label: "Status: Idle")
+    let idle = TrayStatusStore.preview(kind: .idle)
     XCTAssertEqual(idle.compactLabel, "Idle")
     XCTAssertFalse(idle.showsDetailStatusRow)
   }
@@ -275,6 +279,26 @@ final class TrayViewModelTests: XCTestCase {
     XCTAssertFalse(model.overlayEnabled)
     XCTAssertEqual(engine.quickToggleWrites, [.transcriptionOverlay])
     XCTAssertEqual(engine.currentToggleReads, 2)
+  }
+
+  func testOverlayToggleTellsTheOverlayOwnerAfterTheWriteLanded() {
+    let engine = TrackingTrayEngine(
+      showDockIcon: true,
+      overlayEnabled: true,
+      pasteMode: .safe,
+      autoFormatLevel: .correction,
+      notesMode: false,
+      startInAssistive: false
+    )
+    let model = TrayViewModel(engine: engine)
+    model.refreshStatus()
+    var persistedAtNotice: [Bool] = []
+    model.onOverlayPreferenceChanged = { persistedAtNotice.append(engine.overlayEnabled) }
+
+    model.setOverlayEnabled(false)
+
+    XCTAssertEqual(persistedAtNotice, [false], "one notice, after the preference is on disk")
+    XCTAssertFalse(model.overlayEnabled)
   }
 
   func testPasteModeWriteReconcilesSuccessAndFailureToPersistedTruth() {

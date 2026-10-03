@@ -37,7 +37,7 @@ This tab owns the transcript pipeline itself:
   - `Buffer delay`
   - `Typing speed`
   - `Words per tick`
-  - `Interim cadence`
+  - `Interim interval`
   - live preview panel showing:
     - when partial targets are published
     - how those targets would become visible on the overlay
@@ -53,6 +53,8 @@ This tab owns the transcript pipeline itself:
 
 - When **Transcription overlay** is ON, the app is optimized for low-latency live preview.
 - When **Transcription overlay** is OFF, the floating preview is hidden and runtime uses a more buffered cadence to reduce local load.
+- Turning it OFF — from the tray toggle or the Settings preview preset — also closes an overlay that is already on screen; it does not wait for the next take. Two things stay: an open agent channel, whose live microphone stays visible, and a take you are correcting — while the caret is in the transcript or a draft is not committed, the overlay waits, then leaves after the usual five seconds once the draft is committed or discarded.
+- A blocked recording or a microphone calibration result still shows its status card with the overlay OFF. That card leaves by itself after the usual five seconds, even when **Keep visible between takes** is pinned: the pin keeps the transcript overlay, and with the overlay OFF there is none.
 - `USE_LOCAL_STT=0` changes the **committed transcript path after capture**; it does not move live preview to the cloud.
 - In the current build, **cloud STT is still post-capture**, not live cloud preview. The Settings UI states this explicitly.
 

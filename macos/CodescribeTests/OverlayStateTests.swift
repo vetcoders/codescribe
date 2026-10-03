@@ -3933,6 +3933,195 @@ final class OverlayStateTests: XCTestCase {
     withExtendedLifetime(controller) {}
   }
 
+  // MARK: The "Transcription Overlay" preference closes what is on screen
+
+  /// A controller whose preference can change mid-test, as the tray toggle and
+  /// the Settings preview preset change it in production.
+  private func makePreferenceController(
+    state: OverlayState,
+    overlayEnabled: @escaping () -> Bool,
+    panel: NSPanel,
+    frontCount: @escaping () -> Void,
+    outCount: @escaping () -> Void
+  ) -> OverlayController {
+    OverlayController(
+      state: state,
+      engine: nil,
+      overlayEnabledProvider: overlayEnabled,
+      assistiveStatusProvider: { false },
+      panelFactory: { _, _ in panel },
+      orderPanelFront: { _ in frontCount() },
+      orderPanelOut: { _ in outCount() }
+    )
+  }
+
+  func testTurningThePreferenceOffClosesTheOverlayAlreadyOnScreen() {
+    var overlayEnabled = true
+    var fronts = 0
+    var outs = 0
+    let controller = makePreferenceController(
+      state: OverlayState(), overlayEnabled: { overlayEnabled }, panel: NSPanel(),
+      frontCount: { fronts += 1 }, outCount: { outs += 1 })
+
+    controller.showForRecording()
+    XCTAssertEqual(fronts, 1)
+
+    controller.overlayPreferenceChanged()
+    XCTAssertEqual(outs, 0, "a write that left the preference on closes nothing")
+
+    overlayEnabled = false
+    controller.overlayPreferenceChanged()
+    XCTAssertEqual(outs, 1, "off takes effect now, not at the next take")
+    XCTAssertEqual(fronts, 1)
+  }
+
+  func testTurningThePreferenceOffBeforeAnyOverlayExistsBuildsNoPanel() {
+    var factoryCount = 0
+    var outs = 0
+    let controller = OverlayController(
+      state: OverlayState(),
+      engine: nil,
+      overlayEnabledProvider: { false },
+      assistiveStatusProvider: { false },
+      panelFactory: { _, _ in
+        factoryCount += 1
+        return NSPanel()
+      },
+      orderPanelFront: { _ in },
+      orderPanelOut: { _ in outs += 1 }
+    )
+
+    controller.overlayPreferenceChanged()
+    XCTAssertEqual(factoryCount, 0)
+    XCTAssertEqual(outs, 0)
+  }
+
+  func testTurningThePreferenceOffYieldsToAnOpenChannel() {
+    var overlayEnabled = true
+    var outs = 0
+    let state = OverlayState()
+    let controller = makePreferenceController(
+      state: state, overlayEnabled: { overlayEnabled }, panel: NSPanel(),
+      frontCount: {}, outCount: { outs += 1 })
+    controller.showForRecording()
+    state.applyChannelDelivery([
+      OverlayChannelDelivery(
+        channel: "1", agent: "james", deliveryID: nil, stage: nil, isOpen: true)
+    ])
+
+    overlayEnabled = false
+    controller.overlayPreferenceChanged()
+    XCTAssertEqual(outs, 0, "a channel's live microphone stays on screen")
+
+    state.applyChannelDelivery([])
+    controller.overlayPreferenceChanged()
+    XCTAssertEqual(outs, 1)
+  }
+
+  func testStatusCardShownWithThePreferenceOffLeavesOnTheCountdownDespiteThePin() throws {
+    let clock = OverlayStateTestClock()
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState(nowProvider: { clock.now })
+    var fronts = 0
+    var outs = 0
+    var preferenceReads = 0
+    let controller = makePreferenceController(
+      state: state,
+      overlayEnabled: {
+        preferenceReads += 1
+        return false
+      }, panel: NSPanel(),
+      frontCount: { fronts += 1 }, outCount: { outs += 1 })
+    // Pin only after the controller's own attach, as in the pinned-close test.
+    state.engine = engine
+    state.setKeepVisibleBetweenTakes(true)
+    XCTAssertEqual(preferenceReads, 0, "building the controller reads no settings")
+
+    state.applyPresentationStatus(refusalStatus())
+    XCTAssertEqual(fronts, 1, "the card is product feedback even with the preference off")
+    XCTAssertEqual(
+      try XCTUnwrap(state.autoHideDeadline), clock.now + OverlayState.autoHideDelaySeconds,
+      "the pin keeps the transcript overlay, and there is none with the preference off")
+
+    state.setPointerHovering(true)
+    state.setPointerHovering(false)
+    clock.now += OverlayState.autoHideDelaySeconds + 1
+    state.fireAutoHideNowForTests()
+    XCTAssertEqual(outs, 1)
+    XCTAssertTrue(state.keepVisibleBetweenTakes, "the pin itself is not rewritten")
+    XCTAssertEqual(
+      preferenceReads, 1,
+      "one read when the card appears; hover-out and the countdown reuse that value")
+    withExtendedLifetime(controller) {}
+  }
+
+  func testTurningThePreferenceOffKeepsATakeUnderReviewUntilTheDraftIsResolved() throws {
+    let clock = OverlayStateTestClock()
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState(nowProvider: { clock.now })
+    var overlayEnabled = true
+    var outs = 0
+    let controller = makePreferenceController(
+      state: state, overlayEnabled: { overlayEnabled }, panel: NSPanel(),
+      frontCount: {}, outCount: { outs += 1 })
+    state.engine = engine
+    state.setKeepVisibleBetweenTakes(true)
+    controller.showForRecording()
+    projectText("Ledger text", to: state, terminal: true, reducerRevision: 3)
+    state.beginTranscriptEdit()
+    state.updateRevisionDraft("Draft the user has not committed")
+    state.endTranscriptEdit()
+    XCTAssertTrue(state.isRevisionDraftDirty)
+
+    overlayEnabled = false
+    controller.overlayPreferenceChanged()
+    XCTAssertEqual(outs, 0, "an uncommitted draft is not closed out from under the user")
+
+    state.discardRevisionDraft()
+    XCTAssertEqual(
+      try XCTUnwrap(state.autoHideDeadline), clock.now + OverlayState.autoHideDelaySeconds,
+      "with the preference off the pin no longer holds the resolved take")
+    clock.now += OverlayState.autoHideDelaySeconds + 1
+    state.fireAutoHideNowForTests()
+    XCTAssertEqual(outs, 1)
+  }
+
+  func testPinningWithThePreferenceOffKeepsTheStatusCardCountdown() throws {
+    let clock = OverlayStateTestClock()
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState(nowProvider: { clock.now })
+    state.engine = engine
+    state.transcriptOverlayEnabled = false
+    var closes = 0
+    state.onClose = { closes += 1 }
+
+    state.applyPresentationStatus(refusalStatus())
+    state.setKeepVisibleBetweenTakes(true)
+    XCTAssertEqual(
+      try XCTUnwrap(state.autoHideDeadline), clock.now + OverlayState.autoHideDelaySeconds)
+
+    clock.now += OverlayState.autoHideDelaySeconds + 1
+    state.fireAutoHideNowForTests()
+    XCTAssertEqual(closes, 1)
+  }
+
+  func testPinStillHoldsAStatusCardWhileThePreferenceIsOn() {
+    let clock = OverlayStateTestClock()
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState(nowProvider: { clock.now })
+    state.engine = engine
+    state.transcriptOverlayEnabled = true
+    state.setKeepVisibleBetweenTakes(true)
+    var closes = 0
+    state.onClose = { closes += 1 }
+
+    state.applyPresentationStatus(refusalStatus())
+    XCTAssertNil(state.autoHideDeadline)
+    clock.now += OverlayState.autoHideDelaySeconds + 1
+    state.fireAutoHideNowForTests(armedDeadline: 0)
+    XCTAssertEqual(closes, 0)
+  }
+
   func testEnabledDictationStaysVisibleThroughCaptureAndSilence() {
     var fronts = 0
     var outs = 0

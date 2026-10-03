@@ -21,10 +21,10 @@ enum ComposerMicVisualState: CaseIterable, Equatable {
 
   var accessibilityLabel: String {
     switch self {
-    case .idle: return "Start voice input"
-    case .preparing: return "Preparing voice input"
-    case .recording: return "Stop voice input"
-    case .blocked: return "Microphone busy with shortcut dictation"
+    case .idle: return String(localized: "Start voice input")
+    case .preparing: return String(localized: "Preparing voice input")
+    case .recording: return String(localized: "Stop voice input")
+    case .blocked: return String(localized: "Microphone busy with shortcut dictation")
     }
   }
 
@@ -287,6 +287,7 @@ struct MarkdownText: View {
       HStack(spacing: 6) {
         CSIconView(icon: kind.csIcon, size: s - 2, weight: .semibold)
         Text(kind.label)
+          .textCase(.uppercase)
           .font(CSFont.mono(s - 4, .semibold))
           .tracking(0.8)
       }
@@ -516,13 +517,30 @@ enum CalloutKind {
     }
   }
 
+  /// Header shown above the callout body. The `[!NOTE]` marker the model
+  /// writes stays the identity (`init(tag:)`); this is only what a person reads.
   var label: String {
     switch self {
-    case .note: return "NOTE"
-    case .tip: return "TIP"
-    case .important: return "IMPORTANT"
-    case .warning: return "WARNING"
-    case .caution: return "CAUTION"
+    case .note:
+      return String(
+        localized: "chat.callout.note", defaultValue: "Note",
+        comment: "Callout header in agent chat: a neutral aside")
+    case .tip:
+      return String(
+        localized: "chat.callout.tip", defaultValue: "Tip",
+        comment: "Callout header in agent chat: helpful advice")
+    case .important:
+      return String(
+        localized: "chat.callout.important", defaultValue: "Important",
+        comment: "Callout header in agent chat: something the reader must know")
+    case .warning:
+      return String(
+        localized: "chat.callout.warning", defaultValue: "Warning",
+        comment: "Callout header in agent chat: needs attention to avoid a problem")
+    case .caution:
+      return String(
+        localized: "chat.callout.caution", defaultValue: "Caution",
+        comment: "Callout header in agent chat: an action with a risky outcome")
     }
   }
 
@@ -673,8 +691,12 @@ private struct CodeBlockView: View {
     } label: {
       HStack(spacing: 4) {
         CSIconView(icon: copied ? .check : .copy, size: 9)
-        Text(copied ? "copied" : "copy")
-          .font(CSFont.mono(10, .medium))
+        Text(
+          copied
+            ? String(localized: "copied", comment: "Button state after copying")
+            : String(localized: "copy", comment: "Button: copy this code block")
+        )
+        .font(CSFont.mono(10, .medium))
       }
       .foregroundStyle(copied ? CSColor.oliveLight : Color.secondary)
       .padding(.horizontal, 7)

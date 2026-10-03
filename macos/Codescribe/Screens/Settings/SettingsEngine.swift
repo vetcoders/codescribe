@@ -770,9 +770,13 @@ extension CsLanguage {
   /// Human-readable label for the language picker.
   var displayName: String {
     switch self {
-    case .auto: return "Auto"
-    case .polish: return "Polish"
-    case .english: return "English"
+    case .auto:
+      return String(
+        localized: "Auto",
+        comment: "Dictation language picker: detect the spoken language automatically"
+      )
+    case .polish: return String(localized: "Polish", comment: "Dictation language name")
+    case .english: return String(localized: "English", comment: "Dictation language name")
     }
   }
 }

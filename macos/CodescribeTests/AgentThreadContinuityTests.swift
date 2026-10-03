@@ -99,7 +99,8 @@ final class AgentThreadContinuityTests: XCTestCase {
         message.role == .you && message.text.contains("Ze względu")
       } == true)
     XCTAssertEqual(store.currentThread?.messages.last?.text, "odpowiedź")
-    XCTAssertNotEqual(store.currentThread?.title, "New thread", "adopted draft takes a real title")
+    XCTAssertNotEqual(
+      store.currentThread?.title, AgentChatStore.newThreadTitle, "adopted draft takes a real title")
   }
 
   func testCaptureOwnerSurvivesDoneQueuedRefreshAndSummonUntilExplicitSelection() {
@@ -226,6 +227,6 @@ final class AgentThreadContinuityTests: XCTestCase {
 
     XCTAssertNotEqual(store.selectedThreadID, secondID)
     XCTAssertNil(store.currentThread?.backendId)
-    XCTAssertEqual(store.currentThread?.title, "New thread")
+    XCTAssertEqual(store.currentThread?.title, AgentChatStore.newThreadTitle)
   }
 }

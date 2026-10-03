@@ -40,36 +40,6 @@ pub enum TrayStatus {
     HotkeyConflict,
 }
 
-impl TrayStatus {
-    /// Get the human-readable tooltip for this status
-    pub fn tooltip(&self) -> String {
-        match self {
-            TrayStatus::Starting => "Codescribe - Starting...".to_string(),
-            TrayStatus::Idle => "Codescribe - Ready".to_string(),
-            TrayStatus::Listening => "Codescribe - Recording...".to_string(),
-            TrayStatus::Thinking => "Codescribe - Processing...".to_string(),
-            TrayStatus::Success => "Codescribe - Done!".to_string(),
-            TrayStatus::Error => "Codescribe - Backend unavailable!".to_string(),
-            TrayStatus::Thermal => "Codescribe - Thermal throttling".to_string(),
-            TrayStatus::HotkeyConflict => "Codescribe - Hotkey conflict".to_string(),
-        }
-    }
-
-    /// Get the status line text for the menu
-    pub fn menu_label(&self) -> &'static str {
-        match self {
-            TrayStatus::Starting => "Status: Starting...",
-            TrayStatus::Idle => "Status: Idle",
-            TrayStatus::Listening => "Status: Recording...",
-            TrayStatus::Thinking => "Status: Processing...",
-            TrayStatus::Success => "Status: Done!",
-            TrayStatus::Error => "Status: Error",
-            TrayStatus::Thermal => "Status: Thermal throttling",
-            TrayStatus::HotkeyConflict => "Status: Hotkey conflict",
-        }
-    }
-}
-
 /// Tray status plus session lane. `assistive` is retained even while the visible
 /// status is idle/starting so the next Listening/Thinking beat can tint correctly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,34 +84,6 @@ impl TrayStatusSnapshot {
     pub fn is_assistive_visible(&self) -> bool {
         self.indicator_mode == BadgeMode::Assistive
             && matches!(self.status, TrayStatus::Starting | TrayStatus::Listening)
-    }
-
-    /// Lane-aware tooltip: agent wording while assistive is visible, otherwise
-    /// the plain [`TrayStatus`] text.
-    pub fn tooltip(&self) -> String {
-        if self.is_assistive_visible() {
-            match self.status {
-                TrayStatus::Listening => "Codescribe - Agent listening...".to_string(),
-                TrayStatus::Thinking => "Codescribe - Agent processing...".to_string(),
-                _ => self.status.tooltip(),
-            }
-        } else {
-            self.status.tooltip()
-        }
-    }
-
-    /// Lane-aware menu status line, mirroring
-    /// [`TrayStatusSnapshot::tooltip`].
-    pub fn menu_label(&self) -> &'static str {
-        if self.is_assistive_visible() {
-            match self.status {
-                TrayStatus::Listening => "Status: Agent listening...",
-                TrayStatus::Thinking => "Status: Agent processing...",
-                _ => self.status.menu_label(),
-            }
-        } else {
-            self.status.menu_label()
-        }
     }
 }
 

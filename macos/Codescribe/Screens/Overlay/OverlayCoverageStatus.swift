@@ -24,18 +24,22 @@ struct OverlayWarningCopy: Equatable, Sendable {
   /// Measured speech arrives below the advisory level (`AudioLevelMeter`).
   static let quietInput = OverlayWarningCopy(
     owner: .microphone,
-    chip: "Mic input is quiet",
-    sentence:
-      "Your speech is reaching the microphone very quietly, so words may be missed; move closer or run mic calibration."
+    chip: String(localized: "Mic input is quiet"),
+    sentence: String(
+      localized:
+        "Your speech is reaching the microphone very quietly, so words may be missed; move closer or run mic calibration."
+    )
   )
 
   /// The compact projection's `degraded`: the speech-integrity phase is
   /// stalled, recovering or unresolved.
   static let liveTranscriptBehind = OverlayWarningCopy(
     owner: .engine,
-    chip: "Transcriber catching up",
-    sentence:
-      "The engine heard speech it has not transcribed yet and is running a recovery pass; this is the engine catching up, not your microphone."
+    chip: String(localized: "Transcriber catching up"),
+    sentence: String(
+      localized:
+        "The engine heard speech it has not transcribed yet and is running a recovery pass; this is the engine catching up, not your microphone."
+    )
   )
 
   /// A take without a seal, explained from the seal-coverage
@@ -48,35 +52,57 @@ struct OverlayWarningCopy: Equatable, Sendable {
     case .incomplete:
       return incomplete(coverage, sampleRateHz: sampleRateHz)
     case .unavailable:
-      let reason: String
-      switch coverage.unavailableReason {
-      case .notObserved: reason = "no acoustic measurement was taken"
-      case .identityMismatch: reason = "the measurement did not match this take"
-      case .invalidMeasurement: reason = "the measurement could not be used"
-      case .partialObservation: reason = "the measurement covered only part of this take"
-      case .unknown, nil: reason = "the measurement was unavailable"
-      }
       return OverlayWarningCopy(
         owner: .coverage,
-        chip: "Speech coverage not measured",
-        sentence: "Speech coverage was not measured because \(reason).")
+        chip: String(localized: "Speech coverage not measured"),
+        sentence: unavailableSentence(coverage.unavailableReason))
     case .complete:
       return OverlayWarningCopy(
         owner: .coverage,
-        chip: "Take not sealed yet",
-        sentence:
-          "Speech coverage was measured as complete, but this take has no terminal seal."
+        chip: String(localized: "Take not sealed yet"),
+        sentence: String(
+          localized:
+            "Speech coverage was measured as complete, but this take has no terminal seal."
+        )
       )
     case .unknown:
       return unverified()
     }
   }
 
+  /// One whole sentence per reason: the reason is a clause, and a clause
+  /// cannot be translated apart from its sentence without fixing English
+  /// word order.
+  private static func unavailableSentence(
+    _ reason: CsCoverageUnavailableReason?
+  ) -> String {
+    switch reason {
+    case .notObserved:
+      return String(
+        localized: "Speech coverage was not measured because no acoustic measurement was taken.")
+    case .identityMismatch:
+      return String(
+        localized:
+          "Speech coverage was not measured because the measurement did not match this take.")
+    case .invalidMeasurement:
+      return String(
+        localized: "Speech coverage was not measured because the measurement could not be used.")
+    case .partialObservation:
+      return String(
+        localized:
+          "Speech coverage was not measured because the measurement covered only part of this take."
+      )
+    case .unknown, nil:
+      return String(
+        localized: "Speech coverage was not measured because the measurement was unavailable.")
+    }
+  }
+
   private static func unverified() -> OverlayWarningCopy {
     OverlayWarningCopy(
       owner: .coverage,
-      chip: "No coverage measurement for this take",
-      sentence: "No coverage measurement was recorded for this take.")
+      chip: String(localized: "No coverage measurement for this take"),
+      sentence: String(localized: "No coverage measurement was recorded for this take."))
   }
 
   /// Convert only with the measured capture clock; never assume a device rate.
@@ -89,15 +115,15 @@ struct OverlayWarningCopy: Equatable, Sendable {
     else {
       return OverlayWarningCopy(
         owner: .coverage,
-        chip: "Speech had no words",
-        sentence:
-          "Codescribe detected speech that no recognizer turned into words; its timing is unavailable for this take."
+        chip: String(localized: "Speech had no words"),
+        sentence: String(
+          localized:
+            "Codescribe detected speech that no recognizer turned into words; its timing is unavailable for this take."
+        )
       )
     }
     let rate = UInt64(sampleRateHz)
     let seconds = ranges.reduce(0.0) { $0 + Double($1.sampleEnd - $1.sampleStart) / Double(rate) }
-    let duration = seconds < 0.1 ? "under 0.1" : String(
-      format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), seconds)
     let positions = ranges.map { timestamp($0.sampleStart / rate) }.joined(separator: ", ")
     let intervals = ranges.map { range in
       let end = range.sampleEnd / rate + (range.sampleEnd % rate == 0 ? 0 : 1)
@@ -105,9 +131,29 @@ struct OverlayWarningCopy: Equatable, Sendable {
     }.joined(separator: ", ")
     return OverlayWarningCopy(
       owner: .coverage,
-      chip: "\(duration) s of speech had no words · \(positions)",
-      sentence:
-        "Codescribe heard speech at \(intervals) that no recognizer turned into words — it may have been cut off, noise or the microphone."
+      chip: durationChip(seconds: seconds, positions: positions),
+      sentence: String(
+        localized:
+          "Codescribe heard speech at \(intervals) that no recognizer turned into words — it may have been cut off, noise or the microphone.",
+        comment:
+          "The placeholder is a list of time ranges within the take, e.g. “0:12–0:14, 0:58–1:00”")
+    )
+  }
+
+  /// Two whole phrases: “under 0.1” is wording, not a number, so it cannot be
+  /// slotted into the measured phrase. The measured figure is pre-formatted.
+  private static func durationChip(seconds: Double, positions: String) -> String {
+    guard seconds >= 0.1 else {
+      return String(
+        localized: "under 0.1 s of speech had no words · \(positions)",
+        comment:
+          "“s” is seconds. The placeholder is a list of positions in the take, e.g. “0:12, 0:58”")
+    }
+    let duration = String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), seconds)
+    return String(
+      localized: "\(duration) s of speech had no words · \(positions)",
+      comment:
+        "“s” is seconds. First placeholder is a pre-formatted duration, e.g. “1.3”; second is a list of positions in the take, e.g. “0:12, 0:58”"
     )
   }
 
@@ -159,12 +205,12 @@ struct OverlayCoverageStatus: View {
         if canRetranscribe {
           Text("Transcribe again")
           HStack {
-            Button("Local") {
+            Button(OverlayRetranscribeCopy.local) {
               close()
               onRetranscribe(.fullHq)
             }
             if cloudConfigured {
-              Button("Cloud") {
+              Button(OverlayRetranscribeCopy.cloud) {
                 close()
                 onRetranscribe(.cloud)
               }

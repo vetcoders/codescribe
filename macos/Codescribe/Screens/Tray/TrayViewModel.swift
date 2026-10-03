@@ -55,6 +55,9 @@ final class TrayViewModel: ObservableObject {
   // Navigation intents — bound by App.swift to the actual window/scene opens.
   var onIntent: (TrayIntent) -> Void = { _ in }
   var onDictationStartRequested: () -> Void = {}
+  /// Fired after the "Transcription Overlay" toggle is written, so the overlay's
+  /// owner can close a panel that is already on screen.
+  var onOverlayPreferenceChanged: () -> Void = {}
 
   // App-level actions — injected by App.swift. Defaults are best-effort / no-op
   // so the screen is fully interactive in isolation and in #Preview.
@@ -98,8 +101,12 @@ final class TrayViewModel: ObservableObject {
 
   /// Olive "Idle" when stopped, terracotta "Recording" when live.
   var statusText: String {
-    if isStartingDictation { return "Starting" }
-    return isRecording ? "Recording" : "Idle"
+    if isStartingDictation {
+      return String(localized: "Starting", comment: "Tray status: a recording start is in flight")
+    }
+    return isRecording
+      ? String(localized: "Recording", comment: "Tray status: a recording is live")
+      : String(localized: "Idle", comment: "Tray status: ready, not recording")
   }
 
   /// Pull prompt-free runtime flags from the engine (call on appear).
@@ -193,6 +200,7 @@ final class TrayViewModel: ObservableObject {
     }
     engine.setQuickToggle(.transcriptionOverlay, enabled: enabled)
     refreshStatus()
+    onOverlayPreferenceChanged()
   }
 
   /// Persisted paste mode. Re-read the complete tray snapshot after the
@@ -276,7 +284,7 @@ final class TrayViewModel: ObservableObject {
     guard let text = engine?.transcriptText(forPath: path) else { return }
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(text, forType: .string)
-    showCopyStatus("Copied")
+    showCopyStatus(String(localized: "Copied", comment: "Tray banner: the transcript was copied"))
   }
 
   /// Reveal the folder holding the most recent transcript in Finder.
@@ -291,7 +299,7 @@ final class TrayViewModel: ObservableObject {
     guard let text = engine?.latestTranscriptText() else { return }
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(text, forType: .string)
-    showCopyStatus("Copied")
+    showCopyStatus(String(localized: "Copied", comment: "Tray banner: the transcript was copied"))
   }
 
   /// Flash a transient "Copied" banner beside the copy actions, then auto-clear

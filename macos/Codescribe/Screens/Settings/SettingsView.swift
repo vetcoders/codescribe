@@ -27,7 +27,7 @@ struct SettingsView: View {
     } detail: {
       detail
     }
-    .navigationTitle("")
+    .navigationTitle(Text(verbatim: ""))
     .toolbar {
       if #available(macOS 26.0, *) {
         brandToolbar.sharedBackgroundVisibility(.hidden)
@@ -66,7 +66,7 @@ struct SettingsView: View {
       HStack(spacing: 16) {
         Wordmark(size: 16)
           .fixedSize(horizontal: true, vertical: false)
-        Text("v\(model.appVersion)")
+        Text(verbatim: "v\(model.appVersion)")
           .font(CSFont.mono(10, .medium))
           .foregroundStyle(Color.secondary)
       }

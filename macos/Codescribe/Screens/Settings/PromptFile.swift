@@ -13,22 +13,48 @@ enum PromptFile: String, CaseIterable, Identifiable {
   /// Segment label.
   var title: String {
     switch self {
-    case .correction: "Correction"
-    case .smart: "Smart"
-    case .max: "Max"
-    case .assistive: "Assistive"
+    case .correction:
+      String(localized: "Correction", comment: "Prompt file: correction-only formatting")
+    case .smart: String(localized: "Smart", comment: "Prompt file: balanced transcript editing")
+    case .max: String(localized: "Max", comment: "Prompt file: maximum prose polish")
+    case .assistive:
+      String(localized: "Assistive", comment: "Prompt file: voice-assistant base prompt")
     }
   }
 
   /// Editor heading, also the subject of the restore confirmation.
-  var editorTitle: String { "\(title) prompt" }
+  var editorTitle: String {
+    switch self {
+    case .correction: String(localized: "Correction prompt")
+    case .smart: String(localized: "Smart prompt")
+    case .max: String(localized: "Max prompt")
+    case .assistive: String(localized: "Assistive prompt")
+    }
+  }
 
+  /// The parenthesised file names are identifiers on disk — keep them verbatim.
   var editorSubtitle: String {
     switch self {
-    case .correction: "Correction only AI formatting (formatting.txt)"
-    case .smart: "Balanced transcript editing (formatting-smart.txt)"
-    case .max: "Maximum supported prose polish (formatting-max.txt)"
-    case .assistive: "Base system prompt for the voice assistant (assistive.txt)"
+    case .correction:
+      String(
+        localized: "Correction only AI formatting (formatting.txt)",
+        comment: "formatting.txt is a file name — do not translate"
+      )
+    case .smart:
+      String(
+        localized: "Balanced transcript editing (formatting-smart.txt)",
+        comment: "formatting-smart.txt is a file name — do not translate"
+      )
+    case .max:
+      String(
+        localized: "Maximum supported prose polish (formatting-max.txt)",
+        comment: "formatting-max.txt is a file name — do not translate"
+      )
+    case .assistive:
+      String(
+        localized: "Base system prompt for the voice assistant (assistive.txt)",
+        comment: "assistive.txt is a file name — do not translate"
+      )
     }
   }
 

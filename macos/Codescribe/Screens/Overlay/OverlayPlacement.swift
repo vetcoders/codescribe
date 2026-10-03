@@ -21,14 +21,17 @@ enum OverlayAnchor: String, CaseIterable, Identifiable {
 
   var id: String { rawValue }
 
+  /// Display name for the anchor; `rawValue` stays the persisted identity.
   var label: String {
     switch self {
-    case .topLeft: return "Top Left"
-    case .topCenter: return "Top Center"
-    case .topRight: return "Top Right"
-    case .bottomLeft: return "Bottom Left"
-    case .bottomCenter: return "Bottom Center"
-    case .bottomRight: return "Bottom Right"
+    case .topLeft: return String(localized: "Top Left", comment: "Overlay screen anchor")
+    case .topCenter: return String(localized: "Top Center", comment: "Overlay screen anchor")
+    case .topRight: return String(localized: "Top Right", comment: "Overlay screen anchor")
+    case .bottomLeft: return String(localized: "Bottom Left", comment: "Overlay screen anchor")
+    case .bottomCenter:
+      return String(localized: "Bottom Center", comment: "Overlay screen anchor")
+    case .bottomRight:
+      return String(localized: "Bottom Right", comment: "Overlay screen anchor")
     }
   }
 

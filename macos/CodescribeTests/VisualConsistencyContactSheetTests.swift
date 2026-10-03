@@ -54,20 +54,19 @@ final class VisualConsistencyContactSheetTests: XCTestCase {
 
     #if DEBUG
       run.takeTray(
-        stateName: "idle", recording: false, kind: .idle, tone: .neutral, label: "Status: Idle",
+        stateName: "idle", recording: false, kind: .idle, tone: .neutral,
         scheme: .dark)
       run.takeTray(
-        stateName: "idle", recording: false, kind: .idle, tone: .neutral, label: "Status: Idle",
+        stateName: "idle", recording: false, kind: .idle, tone: .neutral,
         scheme: .light)
       run.takeTray(
-        stateName: "recording", recording: true, kind: .idle, tone: .neutral, label: "Status: Idle",
+        stateName: "recording", recording: true, kind: .idle, tone: .neutral,
         scheme: .dark)
       run.takeTray(
         stateName: "error",
         recording: false,
         kind: .error,
         tone: .critical,
-        label: "Status: Microphone unavailable",
         scheme: .light
       )
     #else
@@ -346,7 +345,6 @@ private final class SheetRun {
       recording: Bool,
       kind: CsTrayStatusKind,
       tone: CsTrayStatusTone,
-      label: String,
       scheme: EvidenceScheme
     ) {
       let model = TrayViewModel(engine: nil, isRecording: recording)
@@ -363,7 +361,7 @@ private final class SheetRun {
       model.onOpenTodayNote = {}
       model.onOpenLogFolder = {}
       model.onCopyDebugInfo = {}
-      let status = TrayStatusStore.preview(kind: kind, tone: tone, label: label)
+      let status = TrayStatusStore.preview(kind: kind, tone: tone)
       take(
         id: "tray-\(stateName)-identity-\(scheme.rawValue)",
         surface: "tray",
@@ -712,7 +710,8 @@ private final class SheetRun {
         report.transcriptUnderHeader = under
         expect(
           under,
-          "\(id) transcript content inset \(scroll.contentView.contentInsets.top) does not clear the header")
+          "\(id) transcript content inset \(scroll.contentView.contentInsets.top) does not clear the header"
+        )
       } else if state == "formatted" {
         report.transcriptUnderHeader = false
         failures.append("\(id) transcript has no enclosing scroll view")

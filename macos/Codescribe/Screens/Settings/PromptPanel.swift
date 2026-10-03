@@ -193,7 +193,7 @@ private struct PromptEditor: View {
     .csFocusRing()
     .font(CSFont.ui(11.5, .semibold))
     .foregroundStyle(Color.secondary)
-    .help("Restore only \(title.lowercased())")
+    .help("Restore only \(title)")
     .accessibilityHint("Requires confirmation and keeps a recoverable backup.")
   }
 
@@ -203,7 +203,7 @@ private struct PromptEditor: View {
         .font(CSFont.mono(10.5, .semibold))
         .foregroundStyle(
           snapshot?.source == "read_error" ? CSColor.danger : Color.secondary)
-      Text(snapshot?.path ?? "Path unavailable")
+      Text(pathDisplay)
         .font(CSFont.mono(10.5, .regular))
         .foregroundStyle(Color.secondary)
         .textSelection(.enabled)
@@ -216,7 +216,12 @@ private struct PromptEditor: View {
     .accessibilityElement(children: .combine)
     .accessibilityLabel("Prompt source")
     .accessibilityValue(
-      "\(promptSourceLabel(snapshot?.source)), \(snapshot?.path ?? "path unavailable")")
+      Text(verbatim: "\(promptSourceLabel(snapshot?.source)), \(pathDisplay)"))
+  }
+
+  /// Provenance path, or the authored fallback when no snapshot loaded.
+  private var pathDisplay: String {
+    snapshot?.path ?? String(localized: "Path unavailable")
   }
 
   @ViewBuilder
@@ -236,20 +241,27 @@ private struct PromptEditor: View {
       // Reuse the chat markdown renderer (MarkdownText, ChatComponents.swift):
       // it is dependency-free (DesignSystem tokens only) and carries headings,
       // bold/italic, lists, inline code, and fenced code blocks.
-      MarkdownText(raw: text.isEmpty ? "_No prompt set._" : text, size: 13)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(minHeight: 132, alignment: .topLeading)
-        .settingsGroupedInset(padding: CSSpace.md)
+      MarkdownText(
+        raw: text.isEmpty
+          ? String(
+            localized: "_No prompt set._",
+            comment: "Placeholder for an empty prompt file; underscores render as italic")
+          : text,
+        size: 13
+      )
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .frame(minHeight: 132, alignment: .topLeading)
+      .settingsGroupedInset(padding: CSSpace.md)
     }
   }
 }
 
 func promptSourceLabel(_ source: String?) -> String {
   switch source {
-  case "custom_file": return "Custom file"
-  case "built_in_fallback": return "Built-in fallback"
-  case "read_error": return "Read error"
-  default: return "Source unavailable"
+  case "custom_file": return String(localized: "Custom file")
+  case "built_in_fallback": return String(localized: "Built-in fallback")
+  case "read_error": return String(localized: "Read error")
+  default: return String(localized: "Source unavailable")
   }
 }
 

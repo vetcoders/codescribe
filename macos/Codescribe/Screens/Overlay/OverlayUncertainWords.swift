@@ -106,16 +106,19 @@ enum OverlayUncertainWordProjection {
 /// diagnostic-only (d8); the reasons below are all a daily user ever sees.
 enum UncertainWordCopy {
   static func reason(for word: OverlayUncertainWord) -> String {
-    if word.surfaceRewritten { return "Rewritten by your dictionary" }
+    if word.surfaceRewritten {
+      return String(localized: "Rewritten by your dictionary")
+    }
+    // `source` is the reducer's scale identity, never display text.
     switch word.source {
     case "whisper_token_logprob":
-      return "Whisper was unsure of this word"
+      return String(localized: "Whisper was unsure of this word")
     case "apple_segment_confidence":
-      return "Apple was unsure of this word"
+      return String(localized: "Apple was unsure of this word")
     case "vendor_word_probability":
-      return "The cloud transcriber was unsure of this word"
+      return String(localized: "The cloud transcriber was unsure of this word")
     default:
-      return "The transcriber was unsure of this word"
+      return String(localized: "The transcriber was unsure of this word")
     }
   }
 
@@ -123,10 +126,12 @@ enum UncertainWordCopy {
     let producer =
       switch word.producer {
       case "whisper": "Whisper"
-      case "cloud_live": "Cloud live"
+      case "cloud_live": String(localized: "Cloud live", comment: "Cloud streaming transcriber")
       default: word.producer
       }
-    return "Source: \(producer)"
+    return String(
+      localized: "Source: \(producer)",
+      comment: "The placeholder is a transcription engine name, e.g. Whisper")
   }
 
   static func diagnosticValue(for word: OverlayUncertainWord) -> String {

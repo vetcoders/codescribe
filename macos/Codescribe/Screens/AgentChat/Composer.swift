@@ -153,7 +153,7 @@ struct Composer: View {
       // Affordance row
       HStack(spacing: 16) {
         ForEach(affordances, id: \.self) { item in
-          Text(item)
+          Text(verbatim: "· \(item)")
             .font(CSFont.mono(10, .medium))
             .foregroundStyle(CSColor.textTertiary)
         }
@@ -287,7 +287,7 @@ struct Composer: View {
       let entries = ComposerPalette.filter(store.paletteEntries(for: command), by: filter)
       paletteList {
         if entries.isEmpty {
-          Text("Brak pozycji")
+          Text("No matches")
             .font(CSFont.ui(11.5, .regular))
             .foregroundStyle(CSColor.textTertiary)
             .padding(.horizontal, 12)
@@ -345,7 +345,7 @@ struct Composer: View {
         }
         Spacer(minLength: 8)
         if isCurrent {
-          Text("aktywny")
+          Text("active", comment: "Palette row: the entry currently in use")
             .font(CSFont.mono(10, .medium))
             .foregroundStyle(CSColor.chromeAccent)
         }
@@ -559,8 +559,8 @@ struct Composer: View {
     panel.allowsMultipleSelection = true
     panel.canChooseDirectories = false
     panel.canChooseFiles = true
-    panel.prompt = "Attach"
-    panel.message = "Attach images to send to the agent"
+    panel.prompt = String(localized: "Attach", comment: "Open panel confirm button")
+    panel.message = String(localized: "Attach images to send to the agent")
     // Restrict to the vision-supported image types the bridge actually loads.
     panel.allowedContentTypes = [.png, .jpeg, .gif, .webP, .bmp, .tiff]
     attachLog.info("pickAttachments: presenting NSOpenPanel (modeless begin)")
@@ -781,8 +781,8 @@ struct Composer: View {
   }
 
   private let affordances = [
-    "· streaming",
-    "· attach file / image",
+    String(localized: "streaming", comment: "Composer hint: the reply streams in live"),
+    String(localized: "attach file / image", comment: "Composer hint: what can be attached"),
   ]
 }
 
@@ -819,9 +819,9 @@ enum ComposerActionVisualState: Equatable {
 
   var accessibilityLabel: String {
     switch self {
-    case .send: return "Send message"
-    case .stop: return "Stop response"
-    case .stopping: return "Stopping response"
+    case .send: return String(localized: "Send message")
+    case .stop: return String(localized: "Stop response")
+    case .stopping: return String(localized: "Stopping response")
     }
   }
 

@@ -235,6 +235,26 @@ struct ToolLine: Identifiable, Hashable {
     )
   }
 
+  /// What the tool-activity row shows for `verb`. `verb` itself is identity:
+  /// tests match it and `technicalCopyText` writes it into the receipt. A verb
+  /// this screen did not author (preview rows such as "grep") renders as-is.
+  var verbLabel: String {
+    switch verb {
+    case "tool":
+      return String(localized: "tool", comment: "Tool activity row: a tool call is running")
+    case "ran":
+      return String(localized: "ran", comment: "Tool activity row: tool call finished")
+    case "failed":
+      return String(localized: "failed", comment: "Tool activity row: tool call failed")
+    case "ended":
+      return String(localized: "ended", comment: "Tool activity row: no result arrived")
+    case "stopped":
+      return String(localized: "stopped", comment: "Tool activity row: stopped by the user")
+    default:
+      return verb
+    }
+  }
+
   /// Plain-text technical dump for copy (name, status, duration, call id, summary).
   var technicalCopyText: String {
     ToolInspectPresentation.technicalCopy(
@@ -261,6 +281,8 @@ enum ToolInspectPresentation {
     return false
   }
 
+  /// Machine form of a tool-call status. Identity: it is matched in tests and
+  /// written into the copied technical receipt, so it stays English.
   static func statusLabel(for state: ToolLineState) -> String {
     switch state {
     case .running: return "running"
@@ -268,6 +290,18 @@ enum ToolInspectPresentation {
     case .failed: return "failed"
     case .cancelled: return "cancelled"
     case .unknown: return "ended"
+    }
+  }
+
+  /// What the inspect row shows for the same status.
+  static func statusDisplayLabel(for state: ToolLineState) -> String {
+    switch state {
+    case .running: return String(localized: "running", comment: "Tool call status")
+    case .succeeded: return String(localized: "succeeded", comment: "Tool call status")
+    case .failed: return String(localized: "failed", comment: "Tool call status")
+    case .cancelled: return String(localized: "cancelled", comment: "Tool call status")
+    case .unknown:
+      return String(localized: "ended", comment: "Tool call status: ended without a result")
     }
   }
 
@@ -1115,7 +1149,7 @@ final class AgentChatStore: ObservableObject {
   private var speechRequestID: UUID?
 
   var speechUnavailableReason: String? {
-    guard let engine else { return "Speech engine is unavailable." }
+    guard let engine else { return String(localized: "Speech engine is unavailable.") }
     return engine.speechAvailability()
   }
 
@@ -1124,7 +1158,7 @@ final class AgentChatStore: ObservableObject {
       !message.isThinking, !message.isStreaming, speakingMessageID == nil
     else { return }
     guard let engine else {
-      speechError = "Speech engine is unavailable."
+      speechError = String(localized: "Speech engine is unavailable.")
       return
     }
     if let reason = engine.speechAvailability() {
@@ -1188,9 +1222,10 @@ final class AgentChatStore: ObservableObject {
       append(
         ChatMessage(
           role: .tool,
-          timestamp: "now",
-          text: "Nie udało się zastosować „\(entry.title)”: "
-            + error.userFacingMessage
+          timestamp: Self.nowTimestamp,
+          text: String(
+            localized: "Couldn't apply “\(entry.title)”: \(error.userFacingMessage)",
+            comment: "Palette pick failed: the picked entry, then the reason it failed")
         ),
         to: threadID
       )
@@ -1285,21 +1320,23 @@ final class AgentChatStore: ObservableObject {
     if let threads {
       seeded = threads  // explicit (preview/mock)
     } else if threadsProvider != nil, !loadsThreadIndexEagerly {
-      seeded = [ChatThread(title: "New thread", meta: "now")]  // shell; index merges async
+      // shell; index merges async
+      seeded = [ChatThread(title: Self.newThreadTitle, meta: Self.nowTimestamp)]
       deferredIndexLoad = true
     } else if let threadsProvider {
       do {
         let real = try threadsProvider.listThreads()
-        seeded = real.isEmpty ? [ChatThread(title: "New thread", meta: "now")] : real
+        seeded =
+          real.isEmpty ? [ChatThread(title: Self.newThreadTitle, meta: Self.nowTimestamp)] : real
       } catch {
-        seeded = [ChatThread(title: "New thread", meta: "now")]
-        initialThreadError = "Could not load threads. Try refreshing the list."
+        seeded = [ChatThread(title: Self.newThreadTitle, meta: Self.nowTimestamp)]
+        initialThreadError = String(localized: "Could not load threads. Try refreshing the list.")
       }
     } else {
       seeded = Self.seedThreads()  // no provider → mock seed
     }
     if !seeded.isEmpty, ChatThread.preferredAgentThread(in: seeded) == nil {
-      seeded.insert(ChatThread(title: "New thread", meta: "now"), at: 0)
+      seeded.insert(ChatThread(title: Self.newThreadTitle, meta: Self.nowTimestamp), at: 0)
     }
     self.threads = seeded
     self.threadSearchError = initialThreadError
@@ -1349,7 +1386,8 @@ final class AgentChatStore: ObservableObject {
         }
       } catch {
         if self.threadListRevision == revision {
-          self.threadSearchError = "Could not load threads. Try refreshing the list."
+          self.threadSearchError = String(
+            localized: "Could not load threads. Try refreshing the list.")
         }
         return
       }
@@ -1458,7 +1496,7 @@ final class AgentChatStore: ObservableObject {
   /// the new thread. A fresh thread has no composition, so the box is empty
   /// because it belongs to nobody yet — not because it was cleared.
   func newThread() {
-    let t = ChatThread(title: "New thread", meta: "now", messages: [])
+    let t = ChatThread(title: Self.newThreadTitle, meta: Self.nowTimestamp, messages: [])
     threads.insert(t, at: 0)
     selectedThreadID = t.id
     threadListRevision &+= 1
@@ -1492,7 +1530,8 @@ final class AgentChatStore: ObservableObject {
       )
       if threadSearchError != nil { threadSearchError = nil }
     } catch {
-      let message = "Could not refresh threads. The previous list is still shown."
+      let message = String(
+        localized: "Could not refresh threads. The previous list is still shown.")
       if threadSearchError != message { threadSearchError = message }
     }
   }
@@ -1569,7 +1608,8 @@ final class AgentChatStore: ObservableObject {
     let hasActiveTurn =
       activeComposerTurn != nil || voiceTurnPhase != nil || dictationThreadID != nil
     guard trimmed.isEmpty || !hasActiveTurn else {
-      threadSearchError = "Finish the current turn before changing the thread search."
+      threadSearchError = String(
+        localized: "Finish the current turn before changing the thread search.")
       return
     }
     if trimmed.isEmpty {
@@ -1587,7 +1627,8 @@ final class AgentChatStore: ObservableObject {
           with: fallback, selectingBackendId: currentThread?.backendId,
           keepLocalDrafts: true
         )
-        threadSearchError = "Could not reload threads. The previous list was restored."
+        threadSearchError = String(
+          localized: "Could not reload threads. The previous list was restored.")
       }
       threadsBeforeSearch = nil
     } else {
@@ -1605,7 +1646,8 @@ final class AgentChatStore: ObservableObject {
         )
         threadSearchError = nil
       } catch {
-        threadSearchError = "Could not search threads. The previous list is still shown."
+        threadSearchError = String(
+          localized: "Could not search threads. The previous list is still shown.")
       }
     }
   }
@@ -1929,7 +1971,10 @@ final class AgentChatStore: ObservableObject {
       if let match = threads.first(where: { $0.backendId == turn.backendThreadID }) {
         resolvedID = match.id
       } else {
-        var thread = ChatThread(title: "Restored draft", meta: "now")
+        var thread = ChatThread(
+          title: String(localized: "Restored draft", comment: "Title of a rebuilt thread shell"),
+          meta: Self.nowTimestamp
+        )
         thread.backendId = turn.backendThreadID
         thread.messagesLoaded = true
         threads.insert(thread, at: 0)
@@ -1966,7 +2011,8 @@ final class AgentChatStore: ObservableObject {
     let sent = staged.map { MessageAttachment(name: $0.name, url: $0.url, type: $0.type) }
     persistAttachmentMetadata(sent, for: backendId, userTurnIndex: userTurnIndex)
     append(ChatMessage(role: .you, timestamp: now(), text: text, attachments: sent), to: threadID)
-    let assistant = ChatMessage(role: .assistant, timestamp: "now", text: "", isThinking: true)
+    let assistant = ChatMessage(
+      role: .assistant, timestamp: Self.nowTimestamp, text: "", isThinking: true)
     let assistantID = assistant.id
     append(assistant, to: threadID)
     let turnID = queued.id
@@ -1996,7 +2042,7 @@ final class AgentChatStore: ObservableObject {
       guard let engine else {
         finish(
           assistantID, in: threadID,
-          text: "Engine not wired yet.")
+          text: String(localized: "Engine not wired yet."))
         return
       }
       // Graceful unavailable path — the engine reports WHAT is missing
@@ -2079,7 +2125,7 @@ final class AgentChatStore: ObservableObject {
         if Task.isCancelled { return }
         finish(
           assistantID, in: threadID,
-          text: "Something went wrong: \(error.userFacingMessage)")
+          text: String(localized: "Something went wrong: \(error.userFacingMessage)"))
       }
     }
     inFlightSends[threadID] = InFlightSend(id: turnID, task: sendTask)
@@ -2373,13 +2419,16 @@ final class AgentChatStore: ObservableObject {
       threads[draftIndex].backendId = backendId
       threads[draftIndex].messagesLoaded = true  // freshly bound → in sync
       threads[draftIndex].title =
-        ThreadTitlePolicy.normalized(userTurn.text, limit: 48) ?? "Voice chat"
-      threads[draftIndex].meta = "now"
+        ThreadTitlePolicy.normalized(userTurn.text, limit: 48)
+        ?? String(localized: "Voice chat", comment: "Fallback title for a dictated thread")
+      threads[draftIndex].meta = Self.nowTimestamp
       threadID = threads[draftIndex].id
       isFirstExchange = true
     } else {
-      let title = ThreadTitlePolicy.normalized(userTurn.text, limit: 48) ?? "Voice chat"
-      var thread = ChatThread(title: title, meta: "now")
+      let title =
+        ThreadTitlePolicy.normalized(userTurn.text, limit: 48)
+        ?? String(localized: "Voice chat", comment: "Fallback title for a dictated thread")
+      var thread = ChatThread(title: title, meta: Self.nowTimestamp)
       thread.backendId = backendId
       thread.messagesLoaded = true  // freshly bound to a core id → in sync
       threads.insert(thread, at: 0)
@@ -2395,7 +2444,8 @@ final class AgentChatStore: ObservableObject {
     if !userTurn.text.isEmpty || userTurn.wireText != nil {
       append(userTurn, to: threadID)
     }
-    let assistant = ChatMessage(role: .assistant, timestamp: "now", text: "", isThinking: true)
+    let assistant = ChatMessage(
+      role: .assistant, timestamp: Self.nowTimestamp, text: "", isThinking: true)
     voiceTurnThreadID = threadID
     voiceAssistantID = assistant.id
     voiceTurnStartedAt = Date()
@@ -2541,7 +2591,8 @@ final class AgentChatStore: ObservableObject {
   func startDemoStreamIfNeeded() {
     guard !didStartDemo, let threadID = threads.first(where: { $0.isRestored })?.id else { return }
     didStartDemo = true
-    let demo = ChatMessage(role: .assistant, timestamp: "now", text: "", isThinking: true)
+    let demo = ChatMessage(
+      role: .assistant, timestamp: Self.nowTimestamp, text: "", isThinking: true)
     let id = demo.id
     append(demo, to: threadID)
     Task { @MainActor in
@@ -2774,7 +2825,10 @@ final class AgentChatStore: ObservableObject {
       } else {
         // Accepted for a thread that never reached disk (the app died
         // before its first stream persisted) — re-mint a bound shell.
-        var thread = ChatThread(title: "Restored draft", meta: "now")
+        var thread = ChatThread(
+          title: String(localized: "Restored draft", comment: "Title of a rebuilt thread shell"),
+          meta: Self.nowTimestamp
+        )
         thread.backendId = item.backendThreadID
         thread.messagesLoaded = true
         threads.insert(thread, at: 0)
@@ -3008,14 +3062,31 @@ final class AgentChatStore: ObservableObject {
     let count = lines.count
     let running = lines.filter { $0.state == .running }.count
     let cancelled = lines.filter { $0.state == .cancelled }.count
-    let noun = count == 1 ? "tool" : "tools"
     if running > 0 {
-      return "What I checked · \(running) running · \(count) \(noun)"
+      return String(
+        localized: "What I checked · \(running) running · \(count) tools",
+        comment: "Tool activity header: calls still running, then the total")
     }
     if cancelled > 0 {
-      return "What I checked · \(cancelled) stopped · \(count) \(noun)"
+      return String(
+        localized: "What I checked · \(cancelled) stopped · \(count) tools",
+        comment: "Tool activity header: calls stopped, then the total")
     }
-    return "What I checked · \(count) \(noun)"
+    return String(
+      localized: "What I checked · \(count) tools",
+      comment: "Tool activity header: how many tool calls the model made")
+  }
+
+  /// Default display title of a conversation nobody has named yet. Display
+  /// copy only — no production path compares a thread title against it.
+  static var newThreadTitle: String {
+    String(localized: "New thread", comment: "Default title of an unnamed conversation")
+  }
+
+  /// Display timestamp for a thread or message created just now, before any
+  /// clock reading exists for it.
+  static var nowTimestamp: String {
+    String(localized: "now", comment: "Timestamp of a thread or message created just now")
   }
 
   private func now() -> String { Self.timeFmt.string(from: Date()) }
@@ -3088,7 +3159,7 @@ final class AgentChatStore: ObservableObject {
 
     let resolved =
       next.isEmpty && !allowEmpty
-      ? [ChatThread(title: "New thread", meta: "now", messages: [])] : next
+      ? [ChatThread(title: Self.newThreadTitle, meta: Self.nowTimestamp, messages: [])] : next
     // Identical rail rows must not publish: an unchanged `threads =`
     // still tears down and rebuilds the whole window body (the 937189fd
     // lesson). Matched rows reuse existing instances (same ids), so

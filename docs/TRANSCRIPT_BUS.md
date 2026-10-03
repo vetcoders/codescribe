@@ -138,7 +138,9 @@ microphone. It reaches the overlay as a typed
 copy. Guided calibration publishes `calibration_succeeded` (including the new
 profile version) or `calibration_failed` through the same IPC/listener lane.
 These passive status cards are not Bus rows and carry no occurrence, reducer,
-or acoustic receipt fields.
+or acoustic receipt fields. A card is shown even when the transcription overlay
+preference is off; it then leaves on the ordinary terminal auto-hide countdown,
+which the keep-visible pin does not suspend while that preference is off.
 
 `codescribe.transcript-evidence.v1` is the committed projection family. Every
 line is created only by `TranscriptBus::publish_revision(revision, ledger)` and
@@ -543,7 +545,7 @@ shortcut and no disabled animation.
 
 One seam is not closable inside the receiver. `CsTrayStatusPayload`
 (`bridge/src/tray_status.rs`) carries `kind`, `tone`, `indicator_mode`,
-`assistive`, `tooltip`, `menu_label` and a monotonic tray `generation`, but no
+`assistive` and a monotonic tray `generation`, but no
 session or capture identity. `TrayStatusStore` already refuses non-monotonic
 ticks, so ordering is sound; what the payload cannot express is whether a current
 `assistive` reading belongs to the live capture or to a different route. The

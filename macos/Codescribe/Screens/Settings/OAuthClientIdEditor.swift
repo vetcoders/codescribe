@@ -12,9 +12,12 @@ struct OAuthClientIdEditor: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: CSSpace.sm) {
-      Text("\(accountBrand) OAuth client id")
-        .font(CSFont.ui(12.5, .semibold))
-        .foregroundStyle(Color.primary)
+      Text(
+        "\(accountBrand) OAuth client id",
+        comment: "Popover title; the placeholder is a vendor brand, e.g. ChatGPT"
+      )
+      .font(CSFont.ui(12.5, .semibold))
+      .foregroundStyle(Color.primary)
       Text("Optional override (settings.json) — empty restores the shipped default.")
         .font(CSFont.ui(11.5))
         .foregroundStyle(Color.secondary)

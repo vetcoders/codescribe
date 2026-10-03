@@ -421,7 +421,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(tools.contains("actions.toggle()"))
     XCTAssertTrue(tools.contains(".onHover { actions.pointerChanged($0) }"))
     XCTAssertTrue(tools.contains(".focusable()"))
-    XCTAssertTrue(tools.contains("actions.phase == .open ? \"Open\" : \"Collapsed\""))
+    XCTAssertTrue(tools.contains("actions.phase == .open ? \"Expanded\" : \"Collapsed\""))
     XCTAssertTrue(tools.contains("overlay-retained-work-badge"))
     XCTAssertFalse(source.contains("togglePin"))
     XCTAssertFalse(source.contains("isPinned"))
@@ -490,7 +490,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(cap.contains("actions.toggle()"))
     XCTAssertTrue(cap.contains(".accessibilityIdentifier(\"overlay-tools-handle\")"))
     XCTAssertTrue(
-      cap.contains(".accessibilityValue(actions.phase == .open ? \"Open\" : \"Collapsed\")"))
+      cap.contains(".accessibilityValue(actions.phase == .open ? \"Expanded\" : \"Collapsed\")"))
     XCTAssertTrue(cap.contains("if state.hasRecoverableSupersededWork && actions.phase != .open {"))
     XCTAssertTrue(cap.contains("overlay-retained-work-badge"))
     XCTAssertTrue(containsGuardedIntentRail(tools))
@@ -534,9 +534,12 @@ final class OverlayChromeFounderCutTests: XCTestCase {
 
   func testActionsHandleUsesPhaseForSymbolLabelAndTooltip() throws {
     let source = try overlaySource()
-    let handle = try section(of: source, from: "Button {\n                  actions.toggle()", to: "if actions.phase == .open {")
+    let handle = try section(
+      of: source, from: "Button {\n                  actions.toggle()",
+      to: "if actions.phase == .open {")
     XCTAssertTrue(handle.contains("Image(systemName: actions.controlSymbol)"))
-    XCTAssertTrue(handle.contains(".contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))"))
+    XCTAssertTrue(
+      handle.contains(".contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))"))
     XCTAssertTrue(handle.contains(".accessibilityLabel(actions.controlTitle)"))
     XCTAssertTrue(handle.contains("OverlayMiniTooltip(title: actions.controlTitle"))
     XCTAssertTrue(handle.contains(".accessibilityIdentifier(\"overlay-tools-handle\")"))
@@ -793,7 +796,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       let header = try headerSource(overlaySource())
       let close = try section(
         of: header, from: "Button {\n          state.relayIntent(.close)",
-        to: "Text(\"codescribe\")")
+        to: "Text(verbatim: \"codescribe\")")
       XCTAssertTrue(close.contains("ModeDot("))
       XCTAssertTrue(close.contains("color: CSColor.terracotta"))
       XCTAssertTrue(close.contains("if closeDotHovered {"))
@@ -820,7 +823,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let header = try headerSource(source)
     let close = try section(
       of: header, from: "Button {\n          state.relayIntent(.close)",
-      to: "Text(\"codescribe\")")
+      to: "Text(verbatim: \"codescribe\")")
     XCTAssertTrue(
       close.contains("state.relayIntent(.close)"),
       "The brand dot must relay the close intent")
@@ -848,7 +851,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(close.contains(".onHover { closeDotHovered = $0 }"))
     XCTAssertTrue(close.contains(".contentShape(Circle().inset(by: -8.5))"))
     XCTAssertFalse(close.contains(".frame("), "A frame would move the dot")
-    XCTAssertTrue(header.contains("Text(\"codescribe\")"))
+    XCTAssertTrue(header.contains("Text(verbatim: \"codescribe\")"))
     XCTAssertTrue(header.contains(".allowsHitTesting(false)"))
     // The brand block sits on an inert drag region so the dot answers clicks,
     // not window drags (Founder 19:18: the dot next to codescribe closes).
@@ -931,7 +934,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertEqual(after.previewSymbol, state.isCollapsed ? "chevron.down" : "chevron.up")
     XCTAssertNotEqual(before.previewSymbol, after.previewSymbol)
     XCTAssertEqual(
-      after.previewAccessibilityLabel, state.isCollapsed ? "Show live preview" : "Hide live preview")
+      after.previewAccessibilityLabel, state.isCollapsed ? "Show live preview" : "Hide live preview"
+    )
     after.togglePreview()
     XCTAssertEqual(state.isCollapsed, startedCollapsed)
 

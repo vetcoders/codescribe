@@ -16,12 +16,15 @@ struct UserPanel: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       SettingsPageHeader(
-        "Local by design.",
-        blurb: "No account is required. Your configuration and transcript history stay on this Mac."
+        String(localized: "Local by design."),
+        blurb: String(
+          localized:
+            "No account is required. Your configuration and transcript history stay on this Mac."
+        )
       )
       .onAppear { repairSummary = configRepairSummary() }
 
-      SettingsSectionLabel("Running build")
+      SettingsSectionLabel(String(localized: "Running build"))
         .padding(.top, CSSpace.section)
       VStack(spacing: 0) {
         infoRow("Version", "\(model.buildInfo.version) (\(model.buildInfo.build))")
@@ -40,7 +43,7 @@ struct UserPanel: View {
           .padding(.top, CSSpace.control)
       }
 
-      SettingsSectionLabel("Local data")
+      SettingsSectionLabel(String(localized: "Local data"))
         .padding(.top, CSSpace.section)
       VStack(spacing: 0) {
         pathRow("Config, logs & runtime data", model.configDir)
@@ -49,11 +52,12 @@ struct UserPanel: View {
       }
       .settingsGroupedInset()
 
-      SettingsSectionLabel("Anonymous activation")
+      SettingsSectionLabel(String(localized: "Anonymous activation"))
         .padding(.top, CSSpace.section)
       SettingsControlRow(
-        title: "Share anonymous activation ping",
-        subtitle: "Send one content-free event after your first successful dictation"
+        title: String(localized: "Share anonymous activation ping"),
+        subtitle: String(
+          localized: "Send one content-free event after your first successful dictation")
       ) {
         Toggle("", isOn: $activationPingOptIn)
           .toggleStyle(.switch)
@@ -71,11 +75,11 @@ struct UserPanel: View {
       .foregroundStyle(Color.secondary)
       .padding(.top, 7)
 
-      SettingsSectionLabel("Agent transcript tagging")
+      SettingsSectionLabel(String(localized: "Agent transcript tagging"))
         .padding(.top, CSSpace.section)
       SettingsControlRow(
-        title: "Tag transcripts for AI agents",
-        subtitle: "Wrap delivered dictation in an explicit source tag"
+        title: String(localized: "Tag transcripts for AI agents"),
+        subtitle: String(localized: "Wrap delivered dictation in an explicit source tag")
       ) {
         Toggle("", isOn: taggingBinding)
           .toggleStyle(.switch)
@@ -148,13 +152,13 @@ struct UserPanel: View {
         .accessibilityLabel("Transcript tag template preview")
         .accessibilityValue(model.transcriptTagPreview)
 
-      SettingsSectionLabel("Legal & docs")
+      SettingsSectionLabel(String(localized: "Legal & docs"))
         .padding(.top, CSSpace.section)
       VStack(alignment: .leading, spacing: 10) {
         Link(destination: Self.privacyURL) {
           HStack(spacing: 6) {
             Text("Privacy Policy")
-            Text("↗")
+            Text(verbatim: "↗")
           }
           .font(CSFont.mono(11, .semibold))
           .foregroundStyle(CSColor.chromeAccent)
@@ -164,7 +168,7 @@ struct UserPanel: View {
         Link(destination: Self.termsURL) {
           HStack(spacing: 6) {
             Text("Terms of Use & EULA")
-            Text("↗")
+            Text(verbatim: "↗")
           }
           .font(CSFont.mono(11, .semibold))
           .foregroundStyle(CSColor.chromeAccent)
@@ -174,7 +178,7 @@ struct UserPanel: View {
         Link(destination: Self.docsURL) {
           HStack(spacing: 6) {
             Text("Open Codescribe documentation")
-            Text("↗")
+            Text(verbatim: "↗")
           }
           .font(CSFont.mono(11, .semibold))
           .foregroundStyle(CSColor.chromeAccent)
@@ -207,7 +211,7 @@ struct UserPanel: View {
     )
   }
 
-  private func infoRow(_ label: String, _ value: String) -> some View {
+  private func infoRow(_ label: LocalizedStringKey, _ value: String) -> some View {
     HStack(spacing: 14) {
       Text(label)
         .font(CSFont.ui(12.5, .medium))
@@ -225,19 +229,20 @@ struct UserPanel: View {
     .padding(.vertical, CSSpace.md)
   }
 
-  private func pathRow(_ label: String, _ path: String) -> some View {
-    VStack(alignment: .leading, spacing: 5) {
+  private func pathRow(_ label: LocalizedStringKey, _ path: String) -> some View {
+    let display = path.isEmpty ? String(localized: "not loaded yet") : path
+    return VStack(alignment: .leading, spacing: 5) {
       Text(label)
         .font(CSFont.ui(12.5, .semibold))
         .foregroundStyle(Color.primary)
-      Text(path.isEmpty ? "not loaded yet" : path)
+      Text(display)
         .font(CSFont.mono(10.5, .regular))
         .foregroundStyle(Color.secondary)
         .textSelection(.enabled)
         .lineLimit(2)
         .truncationMode(.middle)
         .accessibilityLabel(label)
-        .accessibilityValue(path.isEmpty ? "not loaded yet" : path)
+        .accessibilityValue(display)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.horizontal, CSSpace.card)
@@ -262,13 +267,11 @@ private struct ResetAgentSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      SettingsSectionLabel("Reset Agent")
+      SettingsSectionLabel(String(localized: "Reset Agent"))
         .foregroundStyle(CSColor.danger)
 
       Text(
-        "Moves only Agent conversations, runtime identity, MCP and tool state to Trash. "
-          + "Agent provider and MCP connector secrets are deleted permanently. "
-          + "Recordings, transcriptions, dictionary, lexicon, quality reports, prompts, audio, hotkeys, dictation, license, and macOS permissions are preserved."
+        "Moves only Agent conversations, runtime identity, MCP and tool state to Trash. Agent provider and MCP connector secrets are deleted permanently. Recordings, transcriptions, dictionary, lexicon, quality reports, prompts, audio, hotkeys, dictation, license, and macOS permissions are preserved."
       )
       .font(CSFont.mono(11, .medium))
       .foregroundStyle(Color.secondary)
@@ -298,7 +301,8 @@ private struct ResetAgentSection: View {
       .padding(.top, 13)
       .accessibilityLabel("Reset Agent. Destructive action.")
       .accessibilityHint(
-        "Shows Agent-only impact and requires typing RESET AGENT before continuing.")
+        "Shows Agent-only impact and requires typing \(resetAgentConfirmationWord) before continuing."
+      )
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.horizontal, 16)
@@ -312,7 +316,7 @@ private struct ResetAgentSection: View {
         .strokeBorder(CSColor.danger.opacity(0.55), lineWidth: 1)
     )
     .alert("Reset Agent?", isPresented: $confirming) {
-      TextField("Type RESET AGENT to continue", text: $confirmationText)
+      TextField("Type \(resetAgentConfirmationWord) to continue", text: $confirmationText)
       Button("Cancel", role: .cancel) { confirmationText = "" }
       Button("Reset Agent", role: .destructive) { model.resetAgentData() }
         .disabled(!resetAgentConfirmationMatches(confirmationText))
@@ -334,13 +338,11 @@ private struct ResetAppDataSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      SettingsSectionLabel("Danger zone")
+      SettingsSectionLabel(String(localized: "Danger zone"))
         .foregroundStyle(CSColor.danger)
 
       Text(
-        "Moves recordings, transcript history, conversations, logs, preferences, "
-          + "and local configuration to Trash so they can be recovered. "
-          + "Your assistive.txt and formatting.txt base prompts are preserved by default."
+        "Moves recordings, transcript history, conversations, logs, preferences, and local configuration to Trash so they can be recovered. Your assistive.txt and formatting.txt base prompts are preserved by default."
       )
       .font(CSFont.mono(11, .medium))
       .foregroundStyle(Color.secondary)
@@ -389,7 +391,7 @@ private struct ResetAppDataSection: View {
       .padding(.top, 13)
       .accessibilityLabel("Reset app data. Destructive action.")
       .accessibilityHint(
-        "Shows the live impact, names whether base prompts are preserved, and requires typing RESET before data moves to Trash."
+        "Shows the live impact, names whether base prompts are preserved, and requires typing \(resetConfirmationWord) before data moves to Trash."
       )
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -404,7 +406,7 @@ private struct ResetAppDataSection: View {
         .strokeBorder(CSColor.danger.opacity(0.55), lineWidth: 1)
     )
     .alert("Move app data to Trash?", isPresented: $confirming) {
-      TextField("Type RESET to continue", text: $confirmationText)
+      TextField("Type \(resetConfirmationWord) to continue", text: $confirmationText)
       Button("Cancel", role: .cancel) {
         confirmationText = ""
       }

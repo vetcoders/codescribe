@@ -55,6 +55,7 @@ Codescribe-specific runtime laws, thrones of authority, release cadence, and can
 - `docs/HOTKEYS_CONTRACT.md` — gesty, ownership i tryby.
 - `docs/DELIVERY_ROUTE.md` — destination selection.
 - `docs/ENV_REGISTRY.toml` — rejestr zmiennych środowiskowych.
+- `docs/LOCALIZATION.md` — język interfejsu: String Catalogs, reguły pisania copy, ledger.
 
 Po zmianach w API Rust bridge regeneruj bindingi Swift przez `make app-bindings`.
 

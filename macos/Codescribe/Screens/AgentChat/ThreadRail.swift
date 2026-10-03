@@ -85,7 +85,8 @@ struct ThreadRail: View {
 
       // Section eyebrow
       HStack {
-        Text("THREADS")
+        Text("Threads", comment: "Thread rail section eyebrow")
+          .textCase(.uppercase)
           .font(CSFont.mono(10, .semibold))
           .tracking(1.0)
           .foregroundStyle(CSColor.textTertiary)
@@ -264,7 +265,10 @@ private struct ThreadRow: View {
         Button("Rename") {
           onBeginRename()
         }
-        Button(thread.isFavorite ? "Unfavorite" : "Favorite") {
+        Button(
+          thread.isFavorite
+            ? String(localized: "Unfavorite") : String(localized: "Favorite")
+        ) {
           onToggleFavorite()
         }
         Divider()
@@ -314,7 +318,10 @@ private struct ThreadRow: View {
           Button(action: onToggleFavorite) { favoriteLabel }
             .csFocusRing()
             .opacity(thread.isFavorite || isActive ? 1 : 0.38)
-            .help(thread.isFavorite ? "Unfavorite thread" : "Favorite thread")
+            .help(
+              thread.isFavorite
+                ? String(localized: "Unfavorite thread")
+                : String(localized: "Favorite thread"))
         }
       }
       HStack(spacing: 6) {
@@ -380,11 +387,12 @@ enum ThreadSection: CaseIterable, Hashable {
 
   var title: String {
     switch self {
-    case .today: "Today"
-    case .yesterday: "Yesterday"
-    case .thisWeek: "This week"
-    case .older: "Older"
-    case .maxConsultations: "Max consultations"
+    case .today: String(localized: "Today", comment: "Thread rail section")
+    case .yesterday: String(localized: "Yesterday", comment: "Thread rail section")
+    case .thisWeek: String(localized: "This week", comment: "Thread rail section")
+    case .older: String(localized: "Older", comment: "Thread rail section")
+    case .maxConsultations:
+      String(localized: "Max consultations", comment: "Thread rail section")
     }
   }
 
@@ -433,7 +441,9 @@ enum ThreadRailMeta {
     now: Date = Date(),
     calendar: Calendar = .current
   ) -> String {
-    guard let updatedAt else { return "Untitled thread" }
+    guard let updatedAt else {
+      return String(localized: "Untitled thread", comment: "Thread with no title")
+    }
     let relative = relativeTime(updatedAt, now: now, calendar: calendar)
     return relative.prefix(1).uppercased() + relative.dropFirst()
   }
@@ -467,30 +477,43 @@ enum ThreadRailMeta {
     return (head?.isEmpty == false) ? head! : meta
   }
 
-  /// "today HH:mm" / "yesterday" / "MMM d" — same shape the rail always used.
+  /// "today HH:mm" / "yesterday" / month and day — same shape the rail always
+  /// used. The words come from the catalog; the month name and the order of
+  /// month and day follow the calendar's locale. The time of day stays
+  /// `HH:mm`, like the other timestamps in the app.
   ///
   /// Formatters are cached: `DateFormatter()` construction is a full ICU
   /// engine init, and this runs once per rail row per refresh — a fresh
   /// instance here pinned the main thread for whole refresh storms (sample
   /// 2026-08-07 10:43, 42/93 samples under NSDateFormatter init). Main
   /// thread only, like every rail meta path.
-  private static let todayFormatter = makeFormatter("'today' HH:mm")
-  private static let monthDayFormatter = makeFormatter("MMM d")
-
-  private static func makeFormatter(_ format: String) -> DateFormatter {
+  private static let timeFormatter: DateFormatter = {
     let formatter = DateFormatter()
     formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.dateFormat = format
+    formatter.dateFormat = "HH:mm"
     return formatter
-  }
+  }()
+  private static let monthDayFormatter = DateFormatter()
 
   private static func relativeTime(_ date: Date, now: Date, calendar: Calendar) -> String {
     switch ThreadSection.section(for: date, now: now, calendar: calendar) {
     case .yesterday:
-      return "yesterday"
+      return String(localized: "yesterday", comment: "Thread rail row: updated yesterday")
     case .today:
-      return string(from: date, via: todayFormatter, calendar: calendar)
+      let time = string(from: date, via: timeFormatter, calendar: calendar)
+      return String(
+        localized: "today \(time)",
+        comment: "Thread rail row: updated today; the placeholder is the time of day, e.g. 14:05")
     case .thisWeek, .older, .maxConsultations:
+      // Same economy as the calendar below: a new locale regenerates the ICU
+      // pattern, so it is applied only when it differs.
+      let locale = calendar.locale ?? .current
+      if monthDayFormatter.dateFormat.isEmpty
+        || monthDayFormatter.locale.identifier != locale.identifier
+      {
+        monthDayFormatter.locale = locale
+        monthDayFormatter.setLocalizedDateFormatFromTemplate("MMMd")
+      }
       return string(from: date, via: monthDayFormatter, calendar: calendar)
     }
   }

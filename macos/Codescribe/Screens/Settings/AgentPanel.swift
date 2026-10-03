@@ -100,7 +100,7 @@ private struct LLMLaneEditor: View {
           .foregroundStyle(Color.secondary)
       }
 
-      SettingsControlRow(title: "Provider", subtitle: lane.providerKey) {
+      SettingsControlRow(title: String(localized: "Provider"), subtitle: lane.providerKey) {
         Menu {
           ForEach(model.providers, id: \.id) { provider in
             Button {
@@ -108,7 +108,7 @@ private struct LLMLaneEditor: View {
             } label: {
               // Availability dot: key or account present, or key-optional host.
               Label {
-                Text(provider.displayName + (provider.kind == "custom" ? "  ·  custom" : ""))
+                Text(providerMenuLabel(provider))
               } icon: {
                 Image(
                   systemName: provider.id == laneModel.providerId
@@ -128,7 +128,7 @@ private struct LLMLaneEditor: View {
         .accessibilityValue(laneModel.providerDisplayName)
       }
 
-      SettingsControlRow(title: "Model", subtitle: lane.modelKey) {
+      SettingsControlRow(title: String(localized: "Model"), subtitle: lane.modelKey) {
         VStack(alignment: .trailing, spacing: 8) {
           // Discovery state ("discovering…", cached, failed) is the footer line below.
           if laneModel.usesDiscoveredPicker {
@@ -199,6 +199,15 @@ private struct LLMLaneEditor: View {
       }
       .padding(.leading, 2)
     }
+  }
+
+  /// Provider name, plus a marker for a host the user added by hand. The
+  /// marker is copy; the separator around it is not.
+  private func providerMenuLabel(_ provider: CsProviderOption) -> String {
+    guard provider.kind == "custom" else { return provider.displayName }
+    let marker = String(
+      localized: "custom", comment: "Menu suffix: a provider the user added by hand")
+    return "\(provider.displayName)  ·  \(marker)"
   }
 
   private func saveModel() {
