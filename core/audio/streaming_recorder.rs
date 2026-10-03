@@ -2712,7 +2712,7 @@ mod capture_stop_failure_tests {
         }
         let speech = AcousticSpeechEvidence::measured(
             CaptureEvidenceIdentity::new("capture-owner", 7),
-            "synthetic_stop_observer",
+            crate::audio::capture_receipt::CAPTURE_ENERGY_PRODUCER,
             AcousticAvailability::Observed {
                 observed_samples: 4,
             },

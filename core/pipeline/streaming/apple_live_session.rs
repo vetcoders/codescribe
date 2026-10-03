@@ -11621,7 +11621,7 @@ mod rc_w2_acoustic_tests {
                 state.capture_epoch,
                 &AcousticSpeechEvidence::measured(
                     CaptureEvidenceIdentity::new(&state.session_id, state.capture_epoch),
-                    "fusion_utterances_counterfactual",
+                    crate::pipeline::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER,
                     AcousticAvailability::Observed {
                         observed_samples: state.audio.session_sample_end(),
                     },
@@ -19605,7 +19605,7 @@ mod live_refinement_admission_tests {
             }
             let speech = crate::audio::capture_receipt::AcousticSpeechEvidence::measured(
                 crate::audio::capture_receipt::CaptureEvidenceIdentity::new("live-admission", 7),
-                "test_observer",
+                crate::pipeline::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER,
                 crate::audio::capture_receipt::AcousticAvailability::Observed {
                     observed_samples: closed(3)
                         .utterances()

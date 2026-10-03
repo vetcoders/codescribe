@@ -7556,7 +7556,7 @@ mod tests {
     ) -> AcousticSpeechEvidence {
         AcousticSpeechEvidence::measured(
             CaptureEvidenceIdentity::new(session, capture_epoch),
-            "test_observer",
+            crate::audio::capture_receipt::CAPTURE_ENERGY_PRODUCER,
             AcousticAvailability::Observed { observed_samples },
             ranges,
         )

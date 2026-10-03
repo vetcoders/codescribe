@@ -8535,7 +8535,7 @@ mod refusal_recovery_tests {
             let mut ledger = take.ledger.lock().unwrap();
             let speech = AcousticSpeechEvidence::measured(
                 CaptureEvidenceIdentity::new(TAKE, 7),
-                "synthetic_complete_test",
+                codescribe_core::audio::capture_receipt::CAPTURE_ENERGY_PRODUCER,
                 AcousticAvailability::Observed {
                     observed_samples: 16_000,
                 },

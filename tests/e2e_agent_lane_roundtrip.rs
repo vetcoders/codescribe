@@ -233,7 +233,7 @@ async fn selected_agent_lane_roundtrip(lane: codescribe_core::config::RuntimeLlm
         }
         let speech = AcousticSpeechEvidence::measured(
             CaptureEvidenceIdentity::new("http-capture", 1),
-            "http-fixture",
+            codescribe_core::audio::capture_receipt::CAPTURE_ENERGY_PRODUCER,
             AcousticAvailability::Observed {
                 observed_samples: 32_000,
             },

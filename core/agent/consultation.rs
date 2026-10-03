@@ -857,7 +857,7 @@ mod tests {
         };
         AcousticSpeechEvidence::measured(
             CaptureEvidenceIdentity::new("capture", 1),
-            "synthetic-consultation",
+            crate::audio::capture_receipt::CAPTURE_ENERGY_PRODUCER,
             AcousticAvailability::Observed {
                 observed_samples: end,
             },
@@ -1293,7 +1293,7 @@ mod tests {
         ] {
             let invalid = AcousticSpeechEvidence::measured(
                 CaptureEvidenceIdentity::new(session, epoch),
-                "synthetic",
+                crate::audio::capture_receipt::CAPTURE_ENERGY_PRODUCER,
                 AcousticAvailability::Observed {
                     observed_samples: extent,
                 },
@@ -1308,7 +1308,7 @@ mod tests {
         );
         let measured = AcousticSpeechEvidence::measured(
             CaptureEvidenceIdentity::new("capture", 1),
-            "synthetic",
+            crate::audio::capture_receipt::CAPTURE_ENERGY_PRODUCER,
             AcousticAvailability::Observed {
                 observed_samples: 80_000,
             },
@@ -1320,7 +1320,7 @@ mod tests {
         );
         let later_speech = AcousticSpeechEvidence::measured(
             CaptureEvidenceIdentity::new("capture", 1),
-            "synthetic",
+            crate::audio::capture_receipt::CAPTURE_ENERGY_PRODUCER,
             AcousticAvailability::Observed {
                 observed_samples: 32_000,
             },
