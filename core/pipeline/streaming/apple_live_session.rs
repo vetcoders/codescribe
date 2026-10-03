@@ -19529,6 +19529,7 @@ mod live_refinement_admission_tests {
     #[test]
     fn blank_then_nonblank_apple_evidence_keeps_one_refinement_owner() {
         let (mut state, events, mut receiver, mut requests) = fixture(2);
+        forensic_live_transport_capture(&mut state);
         let ledger = closed(1);
         reconcile_silero_ledger(
             &mut state,
@@ -19556,6 +19557,11 @@ mod live_refinement_admission_tests {
         assert!(state.reconciled_silero.contains(&1));
         state.flush_layer1_coalesce(&events);
         let request = requests.try_recv().expect("one physical job");
+        request
+            .provider_request
+            .validate_pcm(&request.audio)
+            .expect("actual decoder PCM");
+        assert_eq!(request.audio, vec![0.25; 400]);
         assert!(requests.try_recv().is_err());
         assert_eq!(request.member_occurrences.len(), 1);
         let occurrence = &request.member_occurrences[0].1;
@@ -19563,7 +19569,11 @@ mod live_refinement_admission_tests {
             state.acoustic_ledger.lock().unwrap().text_of(occurrence),
             Some("hello")
         );
-        state.complete_whisper_window(&events, labelled_completion(&request), 20.0);
+        state.complete_whisper_window(
+            &events,
+            forensic_live_transport_word_completion(&request),
+            20.0,
+        );
         state.close_admission_horizon(&events, occurrence.sample_end);
         assert!(state.acoustic_ledger.lock().unwrap().is_sealed(occurrence));
         let emitted = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();

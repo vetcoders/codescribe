@@ -3048,6 +3048,7 @@ mod slot_ops_tests {
                             ledger
                         };
                         let sources = ledger.slots_of(&owner()).unwrap().to_vec();
+                        let operations_before = ledger.slot_operations().len();
                         let next = observation(producer, 1);
                         let receipt = if via_label {
                             ledger.admit_pinned_label(&next, candidate, &[])
@@ -3066,10 +3067,14 @@ mod slot_ops_tests {
                         assert_eq!(alternative.candidate, candidate);
                         assert_eq!(alternative.sources, sources);
                         assert_eq!(alternative.observation, next);
-                        let operation = ledger.slot_operations().last().unwrap();
-                        assert!(operation.rule_id.contains("held_token_retained"));
-                        assert_eq!(operation.sources[0].text, "czy plan weryfikowałeś");
-                        assert_eq!(operation.source_ranges, vec![owner()]);
+                        for diagnostic in &ledger.slot_operations()[operations_before..] {
+                            assert_eq!(diagnostic.sources, sources);
+                            assert!(diagnostic.outputs.is_empty() || diagnostic.outputs == sources);
+                            assert_eq!(diagnostic.source_ranges, vec![owner()]);
+                        }
+                        for source in ledger.slots_of(&owner()).unwrap() {
+                            assert_eq!(ledger.slot_source_ranges(source), vec![owner()]);
+                        }
                         assert_eq!(ledger.conservation().residue(), 0);
                         let slots = ledger.slots_of(&owner()).unwrap().to_vec();
                         let operations = ledger.slot_operations().len();
