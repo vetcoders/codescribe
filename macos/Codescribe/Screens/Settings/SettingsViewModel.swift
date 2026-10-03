@@ -551,7 +551,9 @@ func healthState(
   stt: Bool?,
   recording: Bool?,
   keys: SettingsKeyState,
-  agent: Bool?
+  agent: Bool?,
+  formatting: Bool? = nil,
+  formattingRequired: Bool = true
 ) -> SettingsHealthState {
   if stt == false {
     return SettingsHealthState(
@@ -577,8 +579,8 @@ func healthState(
     return SettingsHealthState(
       level: .degraded,
       message: String(
-        localized: "assistive lane: no key",
-        comment: "Settings health footer, lower case: no API key for the assistive lane"
+        localized: "assistive lane: credential missing",
+        comment: "Settings health footer, lower case: no supported account or API key"
       ),
       targetSection: .keys
     )
@@ -590,10 +592,19 @@ func healthState(
         localized: "assistive lane: not ready",
         comment: "Settings health footer, lower case"
       ),
-      targetSection: .engine
+      targetSection: .agent
     )
   }
-  if stt == nil || recording == nil || keys == .unknown || agent == nil {
+  if formattingRequired && formatting == false {
+    return SettingsHealthState(
+      level: .degraded,
+      message: String(localized: "formatting lane: unavailable", comment: "Settings health footer"),
+      targetSection: .agent
+    )
+  }
+  if stt == nil || recording == nil || keys == .unknown || agent == nil
+    || (formattingRequired && formatting == nil)
+  {
     return SettingsHealthState(
       level: .unknown,
       message: recording == nil
@@ -610,7 +621,9 @@ func healthState(
   }
   return SettingsHealthState(
     level: .healthy,
-    message: String(localized: "systems ready", comment: "Settings health footer, lower case"),
+    message: formattingRequired
+      ? String(localized: "speech, assistive and formatting setup ready", comment: "Settings health footer")
+      : String(localized: "speech and assistive setup ready · cloud formatting not required", comment: "Settings health footer"),
     targetSection: nil
   )
 }
@@ -790,9 +803,11 @@ struct LLMLaneModel {
   var resolvedModel: String { runtime.model }
   var modelOptions: [CsModelOption] { discovery.models }
 
-  /// Discovery drives the Menu only when it is fresh and non-empty; the Model ID
+  /// Discovery drives the Menu when it is fresh or cached and non-empty; the Model ID
   /// field stays beside it either way (custom hosts may publish no list).
-  var usesDiscoveredPicker: Bool { !modelOptions.isEmpty && discovery.status == "fresh" }
+  var usesDiscoveredPicker: Bool {
+    !modelOptions.isEmpty && ["fresh", "cached"].contains(discovery.status)
+  }
 
   /// `unavailableReason` arrives from the core and cannot be localized here.
   var availabilityDescription: String {
@@ -818,7 +833,7 @@ struct LLMLaneModel {
     case "fresh":
       let count = modelOptions.count
       return count == 0
-        ? String(localized: "no models returned by provider", comment: "Model discovery status")
+        ? String(localized: "No models returned. Enter a Model ID in Settings › Agent › LLM lanes.")
         : String(
           localized: "\(count) models discovered from provider",
           comment: "Model discovery status; needs a plural variation"
@@ -831,16 +846,23 @@ struct LLMLaneModel {
         )
       }
       return String(localized: "using cached models", comment: "Model discovery status")
-    case "no_key": return String(localized: "Add API key to discover models")
+    case "no_key":
+      if runtime.accountAuth {
+        return String(localized: "Account sign-in supports Assistive requests, but model discovery requires a provider API key. Keep the current model or enter a Model ID in Settings › Agent › LLM lanes.")
+      }
+      if lane == .formatting, provider?.accountSignedIn == true {
+        return String(localized: "Formatting requires this provider's API key; an Assistive account does not authorize it. Add the key in Settings › Providers.")
+      }
+      return String(localized: "Add this provider's API key in Settings › Providers to discover models, or enter a Model ID in Settings › Agent › LLM lanes.")
     case "loading": return String(localized: "discovering models…", comment: "In-progress status")
     default:
       if let message = discovery.message, !message.isEmpty {
         return String(
-          localized: "model discovery failed — \(message)",
+          localized: "Model discovery failed: \(message). Check Settings › Providers, then refresh models in Settings › Agent › LLM lanes.",
           comment: "The placeholder is a status message from the core"
         )
       }
-      return String(localized: "model discovery failed", comment: "Model discovery status")
+      return String(localized: "Model discovery failed. Check Settings › Providers, then refresh models in Settings › Agent › LLM lanes.")
     }
   }
 }
@@ -1200,6 +1222,7 @@ final class SettingsViewModel: ObservableObject {
   private let hotkeys: HotkeysEngine?
   private let licenseService: LicenseService
   private let runtimeLlmLaneProvider: (CsLlmLane) -> CsRuntimeLlmLane
+  private let audioRecordingStateProvider: () -> OverlayState?
   /// Sealed runtime lane projections for this refresh. `llmLane` is read from
   /// SwiftUI `body` (once per menu item); the FFI load is not.
   private var runtimeLaneCache: [LLMLane: CsRuntimeLlmLane] = [:]
@@ -1216,6 +1239,9 @@ final class SettingsViewModel: ObservableObject {
     buildInfo: AppBuildInfo = .current(),
     runtimeLlmLaneProvider: @escaping (CsLlmLane) -> CsRuntimeLlmLane = { lane in
       runtimeLlmLane(lane: lane)
+    },
+    audioRecordingStateProvider: @escaping () -> OverlayState? = {
+      AppModel.shared.overlay.state
     },
     servingStatusProvider: @escaping () -> LastServingVerdict? = {
       guard let verdict = currentServingVerdict() else { return nil }
@@ -1236,6 +1262,7 @@ final class SettingsViewModel: ObservableObject {
     self.licenseService = licenseService ?? .preview
     self.buildInfo = buildInfo
     self.runtimeLlmLaneProvider = runtimeLlmLaneProvider
+    self.audioRecordingStateProvider = audioRecordingStateProvider
     self.servingStatusProvider = servingStatusProvider
 
     // Reading the settings snapshot is passive: it does not write config
@@ -1436,6 +1463,7 @@ final class SettingsViewModel: ObservableObject {
   /// Cheap on-disk reads; used by the Agent panel's "Refresh" action so
   /// re-checking MCP does not disturb the rest of the panel.
   func refreshAgentStatus() {
+    runtimeLaneCache.removeAll()
     guard let agentStatus else { return }
     agentReadiness = agentStatus.agenticReadiness()
     mcpStatus = agentStatus.mcpStatus()
@@ -1855,8 +1883,8 @@ final class SettingsViewModel: ObservableObject {
 
   private var assistiveKeyState: SettingsKeyState {
     guard let provider = llmLane(.assistive).provider else { return .unknown }
-    let keyAvailable =
-      provider.accountSignedIn || provider.apiKeySet || !provider.keyRequired
+    let runtime = llmLane(.assistive).runtime
+    let keyAvailable = runtime.accountAuth || runtime.keyPresent || !provider.keyRequired
     return keyAvailable ? .available : .missing
   }
 
@@ -1865,8 +1893,31 @@ final class SettingsViewModel: ObservableObject {
       stt: sttHealthy,
       recording: admissionReadError == nil ? admission?.ready : nil,
       keys: assistiveKeyState,
-      agent: agentReadiness.ready
+      agent: agentReadiness.ready && llmLane(.assistive).runtime.available,
+      formatting: llmLane(.formatting).runtime.available,
+      formattingRequired: cloudFormattingRequired
     )
+  }
+
+  /// Enabled Formatting still exposes cloud requests even with on-device execution selected.
+  var cloudFormattingRequired: Bool {
+    settings.aiFormattingEnabled
+      && FormattingPolicyOption(storedValue: settings.formattingLevel) != .off
+  }
+
+  func laneUsageDescription(_ lane: LLMLane) -> String {
+    if lane == .assistive { return llmLane(lane).availabilityDescription }
+    if !settings.aiFormattingEnabled
+      || FormattingPolicyOption(storedValue: settings.formattingLevel) == .off
+    {
+      return String(localized: "Formatting is disabled. This lane is not required for readiness.")
+    }
+    if settings.formatOnDevice {
+      return String(
+        localized: "Apple on-device formatting is selected. Cloud requests still require this lane's credentials. \(llmLane(lane).availabilityDescription)",
+        comment: "The placeholder is the resolved cloud lane availability")
+    }
+    return llmLane(lane).availabilityDescription
   }
 
   /// Effective lane state: loader-sealed runtime truth + registry row +
@@ -2052,6 +2103,13 @@ final class SettingsViewModel: ObservableObject {
   }
 
   // MARK: - Audio (live hardware + existing settings contract)
+
+  /// Borrow the existing observable lifecycle only when Audio appears. Settings
+  /// never attaches a listener or opens a separate recorder; previews stay passive.
+  func audioRecordingState() -> OverlayState? {
+    guard engine != nil else { return nil }
+    return audioRecordingStateProvider()
+  }
 
   func refreshAudioInput() {
     guard let engine else { return }
@@ -2667,8 +2725,10 @@ final class SettingsViewModel: ObservableObject {
   var serviceKeyAccounts: [String] { engine?.serviceKeyAccounts() ?? [] }
 
   /// Lane-picker dot: credential present or key-optional host → green; else red.
-  static func availabilityTint(for provider: CsProviderOption) -> Color {
-    provider.apiKeySet || provider.accountSignedIn || !provider.keyRequired
+  static func availabilityTint(for provider: CsProviderOption, lane: LLMLane = .assistive) -> Color {
+    provider.apiKeySet
+      || (lane == .assistive && provider.wire == "responses" && provider.accountSignedIn)
+      || !provider.keyRequired
       ? CSColor.oliveLight : CSColor.terracotta
   }
 

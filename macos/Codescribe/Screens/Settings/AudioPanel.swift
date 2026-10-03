@@ -41,7 +41,10 @@ func audioReadinessSteps(
   input: CsAudioInputSnapshot,
   microphonePermission: PermissionState,
   admission: CsAdmissionReadiness?,
-  dictationShortcut: String
+  dictationShortcut: String,
+  recording isRecording: Bool? = false,
+  preparing: Bool = false,
+  processing: Bool = false
 ) -> [AudioReadinessStep] {
   let microphone: AudioInputDisplayState
   switch microphonePermission {
@@ -139,7 +142,35 @@ func audioReadinessSteps(
   }
 
   let recording: AudioReadinessStep
-  if microphonePermission != .granted {
+  if processing {
+    recording = AudioReadinessStep(
+      id: .recording,
+      tone: .fallback,
+      title: String(localized: "Finishing recording…"),
+      detail: String(localized: "The shared recorder is processing this take. Wait before starting another.")
+    )
+  } else if preparing {
+    recording = AudioReadinessStep(
+      id: .recording,
+      tone: .fallback,
+      title: String(localized: "Starting recording…"),
+      detail: String(localized: "The shared recorder is preparing this take.")
+    )
+  } else if isRecording == true {
+    recording = AudioReadinessStep(
+      id: .recording,
+      tone: .healthy,
+      title: String(localized: "Recording in progress"),
+      detail: String(localized: "Choose Stop recording or use your recording shortcut to finish this take.")
+    )
+  } else if isRecording == nil {
+    recording = AudioReadinessStep(
+      id: .recording,
+      tone: .fallback,
+      title: String(localized: "Checking recording activity…"),
+      detail: String(localized: "Waiting for the shared recorder's lifecycle.")
+    )
+  } else if microphonePermission != .granted {
     recording = AudioReadinessStep(
       id: .recording,
       tone: .unavailable,
@@ -324,6 +355,8 @@ func audioInputDisplayState(_ snapshot: CsAudioInputSnapshot) -> AudioInputDispl
 
 struct AudioPanel: View {
   @ObservedObject var model: SettingsViewModel
+  @State private var recordingState: OverlayState?
+  @State private var stopRequested = false
 
   private static let systemDefaultChoice = "__codescribe_system_default__"
 
@@ -358,7 +391,10 @@ struct AudioPanel: View {
         .id(SettingsAnchor.audioReadiness)
       admissionSection
         .padding(.top, CSSpace.control)
-        .task { await model.refreshAdmission() }
+        .task {
+          recordingState = model.audioRecordingState()
+          await model.refreshAdmission()
+        }
 
       SettingsSectionLabel(String(localized: "Sound feedback"))
         .padding(.top, CSSpace.section)
@@ -367,6 +403,12 @@ struct AudioPanel: View {
     }
     .padding(.horizontal, CSSpace.xl)
     .padding(.vertical, CSSpace.section)
+    .onChange(of: recordingState?.recording) { _, recording in
+      if recording == false { stopRequested = false }
+    }
+    .onChange(of: recordingState?.transcribing) { _, processing in
+      if processing == false { stopRequested = false }
+    }
   }
 
   private var inputDeviceSection: some View {
@@ -445,7 +487,10 @@ struct AudioPanel: View {
           input: model.audioInput,
           microphonePermission: model.permissions.microphone,
           admission: model.admission,
-          dictationShortcut: dictationShortcutLabel
+          dictationShortcut: dictationShortcutLabel,
+          recording: recordingState?.recording,
+          preparing: recordingState?.warmingUp == true,
+          processing: recordingProcessing
         )
       ) { step in
         readinessStep(step)
@@ -536,6 +581,9 @@ struct AudioPanel: View {
         .controlSize(.small)
         .disabled(
           model.calibrationPending
+            || recordingState == nil
+            || recordingState?.recording == true
+            || recordingProcessing
             || model.permissions.microphone != .granted
             || model.audioInput.runtimeDevice == nil
         )
@@ -557,20 +605,50 @@ struct AudioPanel: View {
             : sealLane.detail
         )
     case .recording:
-      Button("Start recording") {
-        model.performQuickStart(.openOverlay)
+      if recordingProcessing {
+        ProgressView()
+          .controlSize(.small)
+          .accessibilityLabel("Finishing recording")
+      } else if recordingState?.recording == true {
+        Button("Stop recording") {
+          guard !stopRequested else { return }
+          stopRequested = true
+          recordingState?.stop()
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.small)
+        .tint(CSColor.chromeAccent)
+        .disabled(
+          stopRequested || recordingState?.warmingUp == true
+            || recordingState?.transcribing == true || model.calibrationPending
+        )
+        .accessibilityHint("Stops the active take in the shared recorder")
+        .accessibilityIdentifier("audio-readiness-stop-recording")
+      } else {
+        Button("Start recording") {
+          guard canStartRecording else { return }
+          recordingState?.start()
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.small)
+        .tint(CSColor.chromeAccent)
+        .disabled(!canStartRecording)
+        .accessibilityHint("Starts a real dictation session in the shared recorder")
+        .accessibilityIdentifier("audio-readiness-start-recording")
       }
-      .buttonStyle(.borderedProminent)
-      .controlSize(.small)
-      .tint(CSColor.chromeAccent)
-      .disabled(!canStartRecording)
-      .accessibilityHint("Starts a real dictation session in the shared recorder")
-      .accessibilityIdentifier("audio-readiness-start-recording")
     }
   }
 
   private var canStartRecording: Bool {
     model.permissions.microphone == .granted && model.admission?.ready == true
+      && model.admissionReadError == nil && !model.calibrationPending
+      && recordingState?.recording == false && recordingState?.warmingUp == false
+      && !recordingProcessing
+  }
+
+  private var recordingProcessing: Bool {
+    recordingState?.transcribing == true
+      || (recordingState?.mode == .finalizing && recordingState?.terminal == false)
   }
 
   private var dictationShortcutLabel: String {
