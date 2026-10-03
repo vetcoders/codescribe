@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- Restored conversation tool cards retain saved call IDs and explicit success or failure for the existing inspector. Missing outcomes remain unknown; summaries and timing that were never saved stay absent.
 - Settings and Setup distinguish provider account sign-in from API keys, explain model discovery requirements, and scope readiness to speech, Assistive and enabled Formatting. Audio observes the shared recorder and offers Stop during an active take.
 - Overlay errors retain confirmed recording-start history after Stop, preserve projected text, and separate readable failure feedback from expandable diagnostics. Recovery actions distinguish the current take's audio from previous text and saved history.
 - Custom-provider endpoint validation identifies the field to correct without displaying the Rust/FFI error representation. Launch configuration warnings name environment keys needing review and mention backups only when they exist.
