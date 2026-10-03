@@ -590,18 +590,11 @@ struct AudioPanel: View {
           .accessibilityLabel("Calibration capture progress")
         }
         Button(model.calibrationPending ? "Measuring…" : "Calibrate") {
-          Task { await model.runCalibration() }
+          Task { await calibrateMicrophone(recordingState, tray: tray) }
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .disabled(
-          model.calibrationPending
-            || recordingState == nil
-            || recordingState?.recording == true
-            || recordingProcessing(recordingState)
-            || model.permissions.microphone != .granted
-            || model.audioInput.runtimeDevice == nil
-        )
+        .disabled(!canCalibrateMicrophone(recordingState, tray: tray))
         .accessibilityLabel("Calibrate microphone")
         .accessibilityHint("Measures about ten seconds of normal speech; audio is not kept")
       }
@@ -651,6 +644,21 @@ struct AudioPanel: View {
         .accessibilityIdentifier("audio-readiness-start-recording")
       }
     }
+  }
+
+  /// Same admission for the real calibration button and its action.
+  func canCalibrateMicrophone(
+    _ recordingState: OverlayState?, tray: TrayViewModel?
+  ) -> Bool {
+    !model.calibrationPending && recordingState?.recording == false
+      && tray?.isRecording == false && tray?.isStartingDictation == false
+      && !recordingProcessing(recordingState)
+      && model.permissions.microphone == .granted && model.audioInput.runtimeDevice != nil
+  }
+
+  func calibrateMicrophone(_ recordingState: OverlayState?, tray: TrayViewModel?) async {
+    guard canCalibrateMicrophone(recordingState, tray: tray) else { return }
+    await model.runCalibration()
   }
 
   /// Same action for the real button and integrator interaction witnesses.
