@@ -5866,9 +5866,264 @@ mod tests {
         );
     }
 
+    // Root-only forensic controls. These measure fixture PCM through the
+    // production capture accumulator and feed the real ledger admission path;
+    // they are not microphone/model acceptance or production calibration.
+    fn forensic_recovery_measured_ledger()
+    -> (AcousticLedger, OccurrenceIdentity, AcousticSpeechEvidence) {
+        use crate::audio::capture_receipt::{CaptureEnergyOwner, CaptureLevelAccumulator};
+        let owner = occ(0, 16_000);
+        let mut pcm = vec![0.0_f32; 16_000];
+        pcm[2_000..8_000].fill(0.2);
+        let energy = CaptureEnergyOwner::bind("s1", 1);
+        let mut writer = CaptureLevelAccumulator::bound_to(&energy);
+        for hop in pcm.chunks(1_000) {
+            writer.push_samples(hop);
+        }
+        let speech = energy.session_active_speech_ranges("s1", 1, 16_000);
+        assert_eq!(speech.ranges().len(), 1);
+        assert_eq!(
+            (
+                speech.ranges()[0].sample_start,
+                speech.ranges()[0].sample_end
+            ),
+            (2_000, 8_000)
+        );
+        let energy_integral = pcm
+            .iter()
+            .map(|sample| f64::from(*sample).powi(2))
+            .sum::<f64>();
+        let rms = (energy_integral / pcm.len() as f64).sqrt();
+        let calibration = EnergyCalibration::new("forensic-recovery-fixture", 1.0, 1);
+        let evidence = AcousticEvidence {
+            occurrence: owner.clone(),
+            duration_ms: 1_000.0,
+            energy_integral,
+            mean_rms_dbfs: 20.0 * rms.log10(),
+            peak_dbfs: 20.0 * 0.2_f64.log10(),
+            vad_open_sample: Some(0),
+            vad_close_sample: Some(16_000),
+            evidence_calibration_version: calibration.version.clone(),
+        };
+        let mut ledger = AcousticLedger::new();
+        ledger.bind_capture_rate(16_000);
+        assert!(ledger.qualify(&evidence, &calibration).is_qualified());
+        ledger.record_speech_evidence(&speech);
+        ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
+        (ledger, owner, speech)
+    }
+
+    fn forensic_recovery_word_pins(label: &str, window: Option<(u64, u64)>) -> Vec<WordPin> {
+        let words = label.split_whitespace().collect::<Vec<_>>();
+        assert!(!words.is_empty() && words.len() <= 6);
+        words
+            .iter()
+            .enumerate()
+            .map(|(i, text)| {
+                let start = 2_000 + 6_000 * i as u64 / words.len() as u64;
+                let end = 2_000 + 6_000 * (i + 1) as u64 / words.len() as u64;
+                let pin = WordPin::new(start, end, *text);
+                match window {
+                    Some((lo, hi)) => pin.with_decode_window(lo, hi),
+                    None => pin,
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn forensic_recovery_word_scope_distinguishes_missing_partial_and_full_decode() {
+        for window in [None, Some((0, 9_000)), Some((0, 16_000))] {
+            let (mut ledger, owner, speech) = forensic_recovery_measured_ledger();
+            assert!(
+                ledger
+                    .admit(
+                        &obs(ObservationProducer::Apple, 0, owner.clone()),
+                        "partial"
+                    )
+                    .grants_mutation()
+            );
+            assert!(ledger.require_text_recovery(&owner));
+            let foreign = ObservationIdentity::new(
+                ObservationProducer::Whisper,
+                42,
+                0,
+                OccurrenceIdentity::new("other-capture", 2, 0, 16_000),
+            );
+            ledger.admit_word_slots(&foreign, &forensic_recovery_word_pins("Iwo", window));
+            assert!(ledger.text_recovery_pending(&owner));
+            let observation =
+                ledger.next_word_observation(ObservationProducer::Whisper, 42, &owner);
+            let decision =
+                ledger.admit_word_slots(&observation, &forensic_recovery_word_pins("Iwo", window));
+            let full = window == Some((0, 16_000));
+            assert_eq!(
+                ledger.text_recovery_pending(&owner),
+                !full,
+                "{window:?}: {decision:?}"
+            );
+            assert!(!ledger.is_sealed(&owner), "an open producer is not a seal");
+            assert!(ledger.note_frontier_return(&owner, ObservationProducer::Whisper));
+            if full {
+                assert!(
+                    decision.grants_mutation()
+                        || matches!(decision, MutationReceipt::Preserve { .. })
+                );
+                assert_eq!(ledger.text_of(&owner), Some("Iwo"));
+                let slots = ledger.slots_of(&owner).unwrap();
+                assert_eq!(slots.len(), 1);
+                assert_eq!((slots[0].sample_start, slots[0].sample_end), (2_000, 8_000));
+                assert_eq!(slots[0].producer, ObservationProducer::Whisper);
+                let coverage = ledger.assess_seal_coverage("s1", 1, &speech, 0);
+                assert_eq!(coverage.coverage_ratio(), Some(1.0));
+                assert!(ledger.record_seal_coverage(coverage));
+                ledger.seal(&owner).expect("completed measured owner");
+                ledger
+                    .seal_terminal("s1", 1)
+                    .expect("completed measured take");
+            } else {
+                assert!(
+                    ledger.text_recovery_pending(&owner),
+                    "frontier return cannot complete missing decoder scope"
+                );
+                assert_eq!(ledger.seal(&owner), Err(SealRefusal::TextRecoveryPending));
+                assert_eq!(
+                    ledger.seal_terminal("s1", 1),
+                    Err(SealRefusal::TextRecoveryPending)
+                );
+            }
+            ledger.assert_slot_labels();
+            assert_eq!(ledger.conservation().residue(), 0);
+        }
+    }
+
+    #[test]
+    fn forensic_recovery_agreement_requires_fresh_word_scope_not_replay() {
+        let (mut ledger, owner, _) = forensic_recovery_measured_ledger();
+        ledger.admit(
+            &obs(ObservationProducer::Apple, 0, owner.clone()),
+            "same words",
+        );
+        assert!(ledger.require_text_recovery(&owner));
+        let label = obs(ObservationProducer::Whisper, 0, owner.clone());
+        assert!(matches!(
+            ledger.admit(&label, "same words"),
+            MutationReceipt::Preserve { .. }
+        ));
+        assert!(ledger.text_recovery_pending(&owner));
+        let pins = forensic_recovery_word_pins("same words", Some((0, 16_000)));
+        let word_observation =
+            ledger.next_word_observation(ObservationProducer::Whisper, 42, &owner);
+        assert!(matches!(
+            ledger.admit_word_slots(&word_observation, &pins),
+            MutationReceipt::Preserve { .. }
+        ));
+        assert!(!ledger.text_recovery_pending(&owner));
+        assert_eq!(ledger.text_of(&owner), Some("same words"));
+        assert!(ledger.require_text_recovery(&owner));
+        assert!(matches!(
+            ledger.admit_word_slots(&word_observation, &pins),
+            MutationReceipt::Refuse { .. }
+        ));
+        assert!(ledger.text_recovery_pending(&owner));
+        let stale = obs(ObservationProducer::Whisper, 0, owner.clone());
+        ledger.admit(&stale, "same words");
+        assert!(ledger.text_recovery_pending(&owner));
+        let fresh = ledger.next_word_observation(ObservationProducer::Whisper, 42, &owner);
+        assert!(fresh.generation > word_observation.generation);
+        assert!(matches!(
+            ledger.admit_word_slots(&fresh, &pins),
+            MutationReceipt::Preserve { .. }
+        ));
+        assert!(!ledger.text_recovery_pending(&owner));
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    #[test]
+    fn forensic_recovery_label_generation_and_explicit_human_authority() {
+        let (mut ledger, owner, _) = forensic_recovery_measured_ledger();
+        ledger.admit(
+            &obs(ObservationProducer::Whisper, 4, owner.clone()),
+            "heard words",
+        );
+        assert!(ledger.require_text_recovery(&owner));
+        ledger.admit(
+            &obs(ObservationProducer::Whisper, 3, owner.clone()),
+            "heard words",
+        );
+        assert!(ledger.text_recovery_pending(&owner));
+        ledger.admit(
+            &obs(ObservationProducer::Whisper, 5, owner.clone()),
+            "heard words",
+        );
+        assert!(
+            ledger.text_recovery_pending(&owner),
+            "fresh labels are not decoder-work receipts"
+        );
+        let fresh = ledger.next_word_observation(ObservationProducer::Whisper, 42, &owner);
+        ledger.admit_word_slots(
+            &fresh,
+            &forensic_recovery_word_pins("heard words", Some((0, 16_000))),
+        );
+        assert!(!ledger.text_recovery_pending(&owner));
+        let before = ledger.slots_of(&owner).unwrap().to_vec();
+        assert!(ledger.require_text_recovery(&owner));
+        ledger.admit(
+            &obs(ObservationProducer::Formatter, 6, owner.clone()),
+            "invented words",
+        );
+        assert_eq!(ledger.slots_of(&owner).unwrap(), before.as_slice());
+        assert!(ledger.text_recovery_pending(&owner));
+        ledger.admit(&obs(ObservationProducer::ManualHuman, 7, owner.clone()), "");
+        assert!(ledger.text_recovery_pending(&owner));
+        // The UI's whole-document edit enters the document-receipt corridor,
+        // not untargeted raw-label admission over already pinned words.
+        let revision = ledger
+            .record_manual_document_revision(
+                "s1",
+                0,
+                1,
+                "human words",
+                std::slice::from_ref(&owner),
+                DocumentRevisionProvenance::UserEdit,
+            )
+            .expect("explicit document edit over committed sources");
+        assert!(ledger.authenticates_manual_document_revision(&revision));
+        assert_eq!(revision.rendered_text, "human words");
+        assert_eq!(revision.source_occurrences, vec![owner.clone()]);
+        assert!(revision.source_seal_receipts.is_empty());
+        assert_eq!(ledger.slots_of(&owner).unwrap(), before.as_slice());
+        assert_eq!(ledger.text_of(&owner), Some("heard words"));
+        assert!(
+            ledger.text_recovery_pending(&owner),
+            "human document edits do not invent acoustic completion"
+        );
+        assert!(!ledger.is_sealed(&owner));
+        assert_eq!(ledger.conservation().residue(), 0);
+
+        // An explicit human decision on an unpinned provisional label keeps
+        // the separate whole-owner recovery permission exercised by the old
+        // agreement fixture. No acoustic word geometry is manufactured.
+        let (mut unpinned, owner, _) = forensic_recovery_measured_ledger();
+        unpinned.admit(
+            &obs(ObservationProducer::Apple, 0, owner.clone()),
+            "same words",
+        );
+        assert!(unpinned.require_text_recovery(&owner));
+        unpinned.admit(&obs(ObservationProducer::ManualHuman, 3, owner.clone()), "");
+        assert!(unpinned.text_recovery_pending(&owner));
+        unpinned.admit(
+            &obs(ObservationProducer::ManualHuman, 4, owner.clone()),
+            "human words",
+        );
+        assert!(!unpinned.text_recovery_pending(&owner));
+        assert_eq!(unpinned.text_of(&owner), Some("human words"));
+        assert_eq!(unpinned.conservation().residue(), 0);
+    }
+
     #[test]
     fn text_recovery_debt_resolves_only_after_exact_authorized_observation() {
-        let (mut ledger, occurrence) = whisper_only_qualified_ledger();
+        let (mut ledger, occurrence, speech) = forensic_recovery_measured_ledger();
         ledger.admit(
             &obs(ObservationProducer::Apple, 0, occurrence.clone()),
             "partial",
@@ -5890,11 +6145,25 @@ mod tests {
             "entire recovered utterance",
         );
         assert!(repaired.grants_mutation());
+        assert!(
+            ledger.text_recovery_pending(&occurrence),
+            "an exact label is not returned decoder work"
+        );
+        let observation =
+            ledger.next_word_observation(ObservationProducer::Whisper, 7, &occurrence);
+        let words = ledger.admit_word_slots(
+            &observation,
+            &forensic_recovery_word_pins("entire recovered utterance", Some((0, 16_000))),
+        );
+        assert!(words.grants_mutation() || matches!(words, MutationReceipt::Preserve { .. }));
         assert!(!ledger.text_recovery_pending(&occurrence));
         ledger.note_frontier_return(&occurrence, ObservationProducer::Whisper);
-        let coverage = ledger.assess_seal_coverage("s1", 1, &debt_speech(), 0);
+        let coverage = ledger.assess_seal_coverage("s1", 1, &speech, 0);
         assert_eq!(coverage.coverage_ratio(), Some(1.0));
         assert!(ledger.record_seal_coverage(coverage));
+        ledger
+            .seal(&occurrence)
+            .expect("returned measured occurrence");
         assert!(ledger.seal_terminal("s1", 1).is_ok());
         assert!(!ledger.require_text_recovery(&occurrence));
         assert!(!ledger.require_text_recovery(&occ(32_000, 48_000)));
@@ -5913,21 +6182,31 @@ mod tests {
             ledger.admit(&whisper, "same words"),
             MutationReceipt::Preserve { .. }
         ));
-        assert!(!ledger.text_recovery_pending(&occurrence));
+        assert!(
+            ledger.text_recovery_pending(&occurrence),
+            "label agreement alone does not settle audio"
+        );
         assert!(ledger.require_text_recovery(&occurrence));
         assert!(matches!(
             ledger.admit(&whisper, "same words"),
             MutationReceipt::Refuse { .. }
         ));
         assert!(ledger.text_recovery_pending(&occurrence));
-        ledger.admit(
-            &obs(ObservationProducer::Formatter, 1, occurrence.clone()),
-            "polished words",
-        );
+        assert!(matches!(
+            ledger.admit(
+                &obs(ObservationProducer::Formatter, 1, occurrence.clone()),
+                "polished words",
+            ),
+            MutationReceipt::Refuse {
+                reason: RefuseReason::AuthorityConflict,
+                ..
+            }
+        ));
+        assert_eq!(ledger.text_of(&occurrence), Some("same words"));
         assert!(matches!(
             ledger.admit(
                 &obs(ObservationProducer::Whisper, 2, occurrence.clone()),
-                "polished words"
+                "same words"
             ),
             MutationReceipt::Preserve { .. }
         ));
@@ -5942,6 +6221,7 @@ mod tests {
             "human words",
         );
         assert!(!ledger.text_recovery_pending(&occurrence));
+        forensic_recovery_agreement_requires_fresh_word_scope_not_replay();
     }
 
     #[test]
@@ -5977,7 +6257,7 @@ mod tests {
 
     #[test]
     fn text_recovery_debt_requires_new_same_lane_generation() {
-        let (mut ledger, occurrence) = whisper_only_qualified_ledger();
+        let (mut ledger, occurrence, _) = forensic_recovery_measured_ledger();
         ledger.admit(
             &obs(ObservationProducer::Whisper, 4, occurrence.clone()),
             "heard words",
@@ -5997,6 +6277,18 @@ mod tests {
             ),
             MutationReceipt::Preserve { .. }
         ));
+        assert!(
+            ledger.text_recovery_pending(&occurrence),
+            "new label generations still owe decoder scope"
+        );
+        let observation =
+            ledger.next_word_observation(ObservationProducer::Whisper, 7, &occurrence);
+        assert!(observation.generation > 5);
+        let returned = ledger.admit_word_slots(
+            &observation,
+            &forensic_recovery_word_pins("heard words", Some((0, 16_000))),
+        );
+        assert!(returned.grants_mutation() || matches!(returned, MutationReceipt::Preserve { .. }));
         assert!(!ledger.text_recovery_pending(&occurrence));
     }
 
