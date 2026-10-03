@@ -411,8 +411,15 @@ pub fn account_status(provider: ProviderKind) -> AccountAuthStatus {
 
 /// Passive UI metadata: this never opens the credential store.
 pub fn cached_account_status(provider: ProviderKind) -> AccountAuthStatus {
-    let tokens = cached_account_tokens(provider).ok();
-    project_account_status(provider, tokens)
+    match account_status_snapshot(provider) {
+        Ok(status) => status,
+        Err(_) => AccountAuthStatus {
+            provider,
+            signed_in: false,
+            client_id_configured: client_id_for_provider(provider).is_ok(),
+            message: "Account access unavailable. Remove the stored account and sign in again.".into(),
+        },
+    }
 }
 
 /// Strict UI refresh preserves storage/corruption errors rather than sign-out.
@@ -472,7 +479,7 @@ pub fn client_id_for_provider(provider: ProviderKind) -> Result<String, AccountA
 /// today OpenAI's Codex CLI app id and xAI's Grok CLI id (both disclosed in
 /// `NOTICE`). Anthropic stays gated on the operator pasting their own.
 fn configured_client_id_for(config: ProviderOAuthConfig) -> Option<String> {
-    let settings = UserSettings::load();
+    let settings = UserSettings::load_projection();
     (config.client_id_from_settings)(&settings)
         .and_then(non_empty_trimmed)
         .or_else(|| {

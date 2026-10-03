@@ -139,7 +139,7 @@ protocol SettingsEngine {
 
 extension SettingsEngine {
   func providerAccessSnapshot() async throws -> CsProviderAccessSnapshot {
-    CsProviderAccessSnapshot(providers: availableProviders(), keyStatus: keyStatus(), sttLanes: sttLanes(), revision: 0)
+    CsProviderAccessSnapshot(providers: availableProviders(), accountErrors: [:], keyStatus: keyStatus(), sttLanes: sttLanes(), revision: 0)
   }
   func providerAccessRevision() -> UInt64 { 0 }
   func setApiKeyAsync(account: String, secret: String) async throws { try setApiKey(account: account, secret: secret) }

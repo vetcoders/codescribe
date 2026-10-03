@@ -49,6 +49,12 @@ struct SettingsView: View {
       await model.refreshAdmission()
     }
     .background(HostingWindowReader { hostWindow = $0 })
+    .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { notification in
+      guard let window = notification.object as? NSWindow,
+        window === hostWindow, window.isVisible
+      else { return }
+      model.refreshProviderAccess()
+    }
     .onReceive(
       NotificationCenter.default.publisher(
         for: SettingsDeepLink.pendingSectionDidChange, object: SettingsDeepLink.shared)

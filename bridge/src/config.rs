@@ -462,6 +462,7 @@ pub struct CsProviderOption {
 #[derive(uniffi::Record)]
 pub struct CsProviderAccessSnapshot {
     pub providers: Vec<CsProviderOption>,
+    pub account_errors: std::collections::HashMap<String, String>,
     pub key_status: CsKeyStatus,
     pub stt_lanes: Vec<CsSttLane>,
     pub revision: u64,
@@ -994,14 +995,20 @@ impl CodescribeConfig {
         }
         let registry = ProviderRegistry::from_settings(&UserSettings::load());
         let mut providers = Vec::new();
+        let mut account_errors = std::collections::HashMap::new();
         for provider in registry.all() {
-            if let Some(vendor) = provider.oauth_vendor {
-                account_auth::account_status_snapshot(vendor).map_err(provider_error)?;
+            let account_unavailable = provider.oauth_vendor
+                .is_some_and(|vendor| account_auth::account_status_snapshot(vendor).is_err());
+            let option = provider_option(provider);
+            if account_unavailable {
+                // Never expose token JSON or its decoder details in public UI metadata.
+                account_errors.insert(option.id.clone(), option.account_status_message.clone());
             }
-            providers.push(provider_option(provider));
+            providers.push(option);
         }
         Ok(CsProviderAccessSnapshot {
             providers,
+            account_errors,
             key_status: self.key_status(),
             stt_lanes: self.stt_lanes(),
             revision,
@@ -1014,7 +1021,7 @@ impl CodescribeConfig {
     }
 
     pub fn available_providers(&self) -> Vec<CsProviderOption> {
-        ProviderRegistry::from_settings(&UserSettings::load())
+        ProviderRegistry::from_settings(&UserSettings::load_projection())
             .all()
             .into_iter()
             .map(provider_option)
@@ -1328,11 +1335,11 @@ impl CodescribeConfig {
 
     /// Availability of the same file lane used by explicit cloud retranscription.
     pub fn cloud_file_retranscription_available(&self) -> bool {
-        crate::recording::cloud_file_lane(&Config::load()).is_ok()
+        crate::recording::cloud_file_lane(&Config::load_without_keychain()).is_ok()
     }
 
     pub fn stt_lanes(&self) -> Vec<CsSttLane> {
-        let settings = UserSettings::load();
+        let settings = UserSettings::load_projection();
         SttLane::ALL
             .into_iter()
             .map(|lane| CsSttLane {
@@ -1513,7 +1520,7 @@ impl CodescribeConfig {
     /// First-run operating lane chosen during onboarding (`"basic"` /
     /// `"agentic"`), or `None` when not yet chosen.
     pub fn onboarding_mode(&self) -> Option<String> {
-        UserSettings::load().onboarding_mode
+        UserSettings::load_projection().onboarding_mode
     }
 
     /// Persist the onboarding operating lane. Routes to settings.json via the
@@ -2573,7 +2580,7 @@ fn validate_provider_setting(key: &str, value: &str) -> Result<(), CsError> {
         return Err(provider_error("removed: models live on lanes"));
     }
     if matches!(key, "LLM_FORMATTING_PROVIDER" | "LLM_ASSISTIVE_PROVIDER") {
-        resolve_catalog_provider(&UserSettings::load(), value)?;
+        resolve_catalog_provider(&UserSettings::load_projection(), value)?;
     }
     Ok(())
 }

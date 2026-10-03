@@ -806,8 +806,6 @@ impl Config {
                 return (Self::default(), UserSettings::default());
             }
         };
-        let _bootstrap_guard = Self::config_env_bootstrap_guard();
-        let seed_process_env = Self::can_seed_process_env();
         let env_path = Self::env_path();
         crate::test_isolation::assert_test_read_allowed(&env_path);
         let mut file_env_vars: Option<HashMap<String, String>> = None;
@@ -825,28 +823,25 @@ impl Config {
         }
 
         // One-time import from legacy .env-only installs into settings.json.
-        let deferred_settings =
-            super::migrate::migrate_if_needed(file_env_vars.as_ref(), populate_keychain);
-        if deferred_settings.is_none() {
+        let deferred_settings = if populate_keychain {
+            super::migrate::migrate_if_needed(file_env_vars.as_ref(), true)
+        } else { None };
+        if populate_keychain && deferred_settings.is_none() {
             super::migrate::migrate_agent_workspace_roots_if_needed(file_env_vars.as_ref());
-        }
-
-        // Optional .env remains available for env-managed / power-user keys, but
-        // promoted settings are intentionally excluded so stale ~/.codescribe/.env
-        // cannot shadow user choices persisted in settings.json.
-        if let Some(vars) = file_env_vars.as_ref() {
-            Self::inject_file_env_for_runtime(vars);
         }
 
         // Load API keys from Keychain (only if not already set by .env).
         if populate_keychain {
-            super::keychain::populate_env_from_keychain(seed_process_env);
+            super::keychain::populate_env_from_keychain(false);
         }
 
         // Load user settings from JSON. A legacy LLM lane layout migrates
         // inside `load`; its Keychain key moves are applied here, the only
         // place allowed to touch the bundle during a load.
-        let mut user_settings = deferred_settings.unwrap_or_else(UserSettings::load);
+        let mut user_settings = deferred_settings.unwrap_or_else(|| {
+            if populate_keychain { UserSettings::load() }
+            else { UserSettings::load_projection() }
+        });
         if populate_keychain && !user_settings.pending_key_moves.is_empty() {
             match super::settings::UserSettings::settle_pending_key_moves() {
                 Ok(changed) => {
@@ -855,6 +850,18 @@ impl Config {
                 }
                 Err(error) => warn!("Legacy LLM key relocation remains pending: {error}"),
             }
+        }
+
+        // Only process-env publication owns this lease. File transactions and
+        // Security calls finish before it is taken, so passive readers cannot
+        // inherit their wait through the bootstrap mutex.
+        let _bootstrap_guard = Self::config_env_bootstrap_guard();
+        let seed_process_env = Self::can_seed_process_env();
+        if let Some(vars) = file_env_vars.as_ref() {
+            Self::inject_file_env_for_runtime(vars);
+        }
+        if populate_keychain {
+            super::keychain::seed_cached_bundle_env(seed_process_env);
         }
 
         let mut config = Self::default();
@@ -908,7 +915,7 @@ impl Config {
         (config, user_settings)
     }
 
-    /// Hold the bootstrap lock for the duration of a load. Skipped under `cfg(test)`,
+    /// Hold the bootstrap lock only for process-env publication and capture. Skipped under `cfg(test)`,
     /// where each test intentionally re-runs bootstrap against its own temp dir.
     fn config_env_bootstrap_guard() -> Option<std::sync::MutexGuard<'static, ()>> {
         if cfg!(test) {

@@ -309,12 +309,12 @@ pub fn advance_bundle_revision() {
     cache.revision = cache.revision.wrapping_add(1);
 }
 
-/// Explicit acquisition boundary for UI refresh, executed off the main thread.
-/// A failure retains its cause and is retried at most once per five seconds.
-/// Waiting or cancelled UI callers never release the physical I/O mutex.
+/// Demand acquisition reuses a completed positive bundle without taking I/O.
+/// Cold reads belong off the main thread and retain failures for bounded retry.
+/// Explicit UI refresh uses `refresh_bundle` to report current storage failures.
 pub fn ensure_bundle_loaded() -> Result<()> {
-    note_credential_acquisition("refresh bundle");
-    if is_test_env() {
+    note_credential_acquisition("ensure bundle");
+    if is_test_env() || read_bundle_cache().is_some() {
         return Ok(());
     }
     let _io = bundle_io();
@@ -401,6 +401,9 @@ fn decode_bundle(bytes: &[u8]) -> Option<KeychainBundle> {
 /// A successful read populates the cache; a decode failure retains its error for retry.
 fn load_bundle() -> Option<KeychainBundle> {
     note_credential_acquisition("read bundle");
+    // Runtime consumers keep using the last completed bundle during another I/O.
+    // Explicit refresh still owns acquisition and reports its storage failures.
+    if let Some(bundle) = read_bundle_cache() { return Some(bundle); }
     let _io = bundle_io();
     match read_bundle_locked(false) {
         Ok(bundle) => bundle,
@@ -769,6 +772,9 @@ pub fn delete_key(account: &str) -> Result<()> {
 /// bundle is already open, so no settings load ever has to.
 pub(crate) fn retry_stt_key_fan_out() -> usize {
     use crate::stt::SttLane;
+    if cached_bundle_secret("STT_API_KEY").is_none() {
+        return 0;
+    }
     fan_out_key(
         "STT_API_KEY",
         &[SttLane::File.key_account(), SttLane::Live.key_account()],
@@ -794,6 +800,14 @@ pub fn populate_env_from_keychain(seed_process_env: bool) {
     retry_stt_key_fan_out();
     let bundle = read_bundle_cache().unwrap_or(bundle);
     seed_bundle_env(&bundle, seed_process_env);
+}
+
+/// Mirror only an already completed bundle while the config bootstrap owns env.
+/// This never acquires the physical credential I/O lease.
+pub(crate) fn seed_cached_bundle_env(seed_process_env: bool) {
+    if let Some(bundle) = read_bundle_cache() {
+        seed_bundle_env(&bundle, seed_process_env);
+    }
 }
 
 fn seed_bundle_env(bundle: &KeychainBundle, seed_process_env: bool) {

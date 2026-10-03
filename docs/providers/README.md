@@ -73,3 +73,35 @@ Cancellation or a hidden view cannot interrupt a synchronous Security call or
 release its physical I/O slot. Owned operations finish before their pending state
 clears. These scheduling rules do not change Keychain service names, item access
 controls, OAuth/API-key selection, or provider endpoint contracts.
+
+### Committed settings projections and transaction leases
+
+Passive Settings, Setup, account metadata and retranscription availability read
+`UserSettings::load_projection`: the same document parser and normalization used
+by the settings writer, over the atomically committed file. This read neither
+acquires the settings credential transaction lease nor persists repairs or
+schema/import migrations. It observes a coherent committed document while an
+explicit credential edit is waiting for Security, including durable import
+cancellation published before that edit. It does not use a substitute cache or
+interpret a busy lease as missing settings.
+
+The existing settings transaction lease continues to serialize import
+settlement, explicit credential intent and their persistence. Failure to persist
+cancellation still forbids the secret edit; failed secret writes retain durable
+cancellation and pending failed imports. Authorized loader acquisition owns
+migration persistence. Its file/credential work completes before taking the env
+bootstrap mutex; only env publication and cache-based config capture hold that
+mutex. Completed bundle values can be mirrored during the one bootstrap window
+without starting Security I/O under the mutex. Warm runtime bundle reads return
+from the positive cache before the physical I/O mutex; strict explicit refresh
+continues to acquire that mutex and report failures.
+
+`CsProviderAccessSnapshot.account_errors` isolates an unavailable OAuth account
+record by provider ID. Decoder details and token JSON do not enter public error
+metadata. A malformed record does not hide the registry, unrelated API keys,
+custom providers or STT controls. The affected account reports unavailable and
+offers Sign out to remove the stored record, then a new sign-in; it is not
+presented as a confirmed signed-out account. Whole-bundle acquisition failures
+remain distinct from these individual record errors. Snapshots also cover STT
+endpoints, so a local endpoint edit advances the view-model generation before
+publication and rejects an older in-flight endpoint projection.

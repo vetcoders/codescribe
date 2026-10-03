@@ -1216,6 +1216,7 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var providerMutationPending = false
   @Published private(set) var providerAccessResolved = false
   @Published private(set) var providerAccessError: String?
+  @Published private(set) var providerAccountErrors: [String: String] = [:]
   private var providerAccessGeneration: UInt64 = 0
   private var providerRefreshRequested = false
 
@@ -1923,6 +1924,9 @@ final class SettingsViewModel: ObservableObject {
     guard providerAccessResolved, providerAccessError == nil else { return .unknown }
     guard let provider = llmLane(.assistive).provider else { return .unknown }
     let runtime = llmLane(.assistive).runtime
+    if providerAccountErrors[runtime.providerId] != nil, !runtime.keyPresent, provider.keyRequired {
+      return .unknown
+    }
     let keyAvailable = runtime.accountAuth || runtime.keyPresent || !provider.keyRequired
     return keyAvailable ? .available : .missing
   }
@@ -1932,7 +1936,7 @@ final class SettingsViewModel: ObservableObject {
       stt: sttHealthy,
       recording: admissionReadError == nil ? admission?.ready : nil,
       keys: assistiveKeyState,
-      agent: providerAccessResolved && providerAccessError == nil
+      agent: providerAccessResolved && providerAccessError == nil && assistiveKeyState != .unknown
         ? agentReadiness.ready && llmLane(.assistive).runtime.available : nil,
       formatting: providerAccessResolved && providerAccessError == nil
         ? llmLane(.formatting).runtime.available : nil,
@@ -1985,6 +1989,7 @@ final class SettingsViewModel: ObservableObject {
         ?? CsModelDiscovery.sample(for: runtime.providerId),
       credentialAccessResolved: providerAccessResolved,
       credentialAccessError: providerAccessError
+        ?? (lane == .assistive && !runtime.keyPresent ? providerAccountErrors[runtime.providerId] : nil)
     )
   }
 
@@ -2689,6 +2694,7 @@ final class SettingsViewModel: ObservableObject {
   /// clears; the bridge validates the scheme per lane and a rejection lands in `lastError`.
   func setSttLaneEndpoint(_ id: String, _ value: String) {
     guard let lane = sttLanes.first(where: { $0.id == id }) else { return }
+    providerAccessGeneration &+= 1
     persist(lane.endpointWireKey, value.trimmingCharacters(in: .whitespaces))
     if let engine { sttLanes = engine.sttLanes() }
   }
@@ -2805,7 +2811,9 @@ final class SettingsViewModel: ObservableObject {
         guard generation == providerAccessGeneration,
           snapshot.revision == engine.providerAccessRevision()
         else { providerRefreshRequested = true; return }
+        applyLoadedSettings(engine.loadSettings())
         providers = snapshot.providers
+        providerAccountErrors = snapshot.accountErrors
         keyStatus = snapshot.keyStatus
         sttLanes = snapshot.sttLanes
         providerAccessResolved = true

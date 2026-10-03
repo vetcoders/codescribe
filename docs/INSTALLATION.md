@@ -118,7 +118,11 @@ bypass Keychain protection. Native acceptance must exercise the real signed
 application with actual Keychain access; a harness that disables Keychain cannot
 prove responsiveness or authorization behavior. Check cold access, denied access,
 focus changes during a pending call, and save/remove completion without changing
-existing item ACLs or services as part of that check.
+existing item ACLs or services as part of that check. Also keep a real store
+write/import paused while opening Settings, account metadata and the palette:
+passive reads must not inherit a wait through config/settings transaction locks.
+Check an edited STT endpoint against an older delayed snapshot and confirm that
+one malformed account leaves its Sign out and other credential controls usable.
 
 Filesystem configuration is also shared by ordinary app launches; the test
 runner supplies an isolated data directory. A distinct bundle ID does not

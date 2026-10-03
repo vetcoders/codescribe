@@ -184,7 +184,15 @@ struct ProviderCard: View {
       KeyRow(
         model: model, account: provider.apiKeyAccount, label: String(localized: "API key"),
         isSet: provider.apiKeySet, optional: !provider.keyRequired)
-      if !isCustom, provider.accountLoginEnabled || provider.accountSignedIn {
+      if let error = model.providerAccountErrors[provider.id] {
+        Text("Account access unavailable")
+          .font(CSFont.ui(12, .semibold))
+        Text(error).font(CSFont.ui(11.5)).textSelection(.enabled)
+        SettingsChipButton("Sign out", tint: CSColor.terracotta) {
+          model.signOutAccount(providerId: provider.id)
+        }
+        .accessibilityLabel("Sign out \(provider.displayName)")
+      } else if !isCustom, provider.accountLoginEnabled || provider.accountSignedIn {
         AccountLoginRow(
           provider: provider,
           loginPending: model.accountLoginPending.contains(provider.id),

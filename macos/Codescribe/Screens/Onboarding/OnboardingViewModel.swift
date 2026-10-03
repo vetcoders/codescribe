@@ -139,6 +139,7 @@ final class OnboardingViewModel: ObservableObject {
   @Published private(set) var providerMutationPending = false
   @Published private(set) var providerAccessResolved = false
   @Published private(set) var providerAccessError: String?
+  @Published private(set) var providerAccountErrors: [String: String] = [:]
   private var providerAccessGeneration: UInt64 = 0
   private var providerRefreshRequested = false
   @Published var selectedProviderId: String
@@ -277,6 +278,10 @@ final class OnboardingViewModel: ObservableObject {
 
   private func refreshReadinessState() {
     guard providerAccessResolved else { return }
+    if selectedProviderAccountError != nil, !selectedProviderKeySet {
+      readiness = nil
+      return
+    }
     readiness = agentStatus.agenticReadiness()
     mcpStatus = agentStatus.mcpStatus()
     agentBridgeStatus = agentBridge.status()
@@ -333,6 +338,7 @@ final class OnboardingViewModel: ObservableObject {
           snapshot.revision == engine.providerAccessRevision()
         else { providerRefreshRequested = true; return }
         providers = snapshot.providers
+        providerAccountErrors = snapshot.accountErrors
         keyStatus = snapshot.keyStatus
         providerAccessResolved = true
         providerAccessError = nil
@@ -545,6 +551,8 @@ final class OnboardingViewModel: ObservableObject {
     selectedProvider?.apiKeySet == true
   }
 
+  var selectedProviderAccountError: String? { providerAccountErrors[selectedProviderId] }
+
   var selectedProviderAccountConnected: Bool {
     selectedProvider?.accountSignedIn == true
   }
@@ -568,6 +576,9 @@ final class OnboardingViewModel: ObservableObject {
       return String(localized: "Checking provider access… You can continue with Basic dictation.")
     }
 
+    if selectedProviderAccountError != nil {
+      return String(localized: "Provider account access is unavailable. Remove the stored account in Settings › Providers, then sign in again.")
+    }
     if selectedProviderAccountConnected && selectedProviderKeySet {
       return String(
         localized:

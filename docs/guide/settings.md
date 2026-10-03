@@ -104,6 +104,11 @@ changes, the earlier save does not clear the new text or advance to the next
 step. Save or Continue again to submit the current draft. Basic dictation remains
 available while credential access is unresolved.
 
+If one stored account cannot be decoded, its card shows **Account access
+unavailable** with **Sign out** to remove that account before signing in again.
+Other provider, API-key and STT controls remain available. This account state is
+not a confirmed “not connected” result.
+
 ### Account access and API keys
 
 Setup, its completion summary and the provider cards distinguish these states:

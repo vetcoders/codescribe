@@ -557,7 +557,9 @@ struct ApiKeyStepView: View {
           Text("Provider account")
           Spacer(minLength: 0)
           Text(
-            model.selectedProviderAccountConnected
+            model.selectedProviderAccountError != nil
+              ? String(localized: "Account access unavailable")
+              : model.selectedProviderAccountConnected
               ? String(localized: "connected") : String(localized: "not connected")
           )
         }
@@ -696,7 +698,7 @@ struct DoneStepView: View {
               comment: "Summary row: whether an API key is stored for the chosen AI provider"),
             done: model.selectedProviderKeySet,
             doneLabel: String(localized: "set", comment: "Status chip: a value is stored"))
-          if model.selectedProviderHasAccountAccess {
+          if model.selectedProviderHasAccountAccess, model.selectedProviderAccountError == nil {
             summaryRow(
               String(localized: "Provider account"),
               done: model.selectedProviderAccountConnected,

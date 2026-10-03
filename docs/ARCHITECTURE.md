@@ -246,6 +246,14 @@ Permission refreshes do not start credential acquisition. See
 for cache states and retry ownership, and [Settings](guide/settings.md) for the
 pending/error UI contract.
 
+Settings projections parse the committed atomic document through the existing
+`UserSettings` authority without its credential transaction lease. The writer
+retains serialization of cancellation, import settlement and persistence; a
+passive UI read does not become a waiting writer. The config bootstrap mutex
+covers env publication and cache-based capture only, after all credential work.
+Individual OAuth record errors travel as provider-indexed snapshot metadata,
+leaving independent registry and recovery controls usable.
+
 ### Controller State Machine
 
 ```rust
