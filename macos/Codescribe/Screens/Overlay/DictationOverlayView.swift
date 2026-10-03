@@ -741,6 +741,7 @@ struct DictationOverlayView: View {
     if state.isRevisionDraftDirty { return String(localized: "Draft · not committed") }
     if let notice = state.toast { return notice }
     if let status = state.presentationStatus { return status.headline }
+    if state.errorDiagnosticDetail != nil { return state.errorFooterSummary }
     if state.mode == .error {
       return state.errorMessage
         ?? (state.activeText.isEmpty
@@ -764,10 +765,20 @@ struct DictationOverlayView: View {
           .foregroundStyle(palette.primaryText.color)
           .accessibilityIdentifier("overlay-footer-notice")
       } detail: { _ in
-        VStack(alignment: .leading, spacing: 8) {
-          Text(message).fixedSize(horizontal: false, vertical: true)
-          transcriptStatus
+        ScrollView {
+          VStack(alignment: .leading, spacing: 8) {
+            if state.presentationStatus != nil {
+              transcriptStatus
+            } else if state.errorDiagnosticDetail != nil || state.mode == .error {
+              errorBody
+            } else if state.mode == .noSpeech {
+              noSpeechBody
+            } else {
+              Text(message).fixedSize(horizontal: false, vertical: true)
+            }
+          }
         }
+        .frame(maxHeight: 320)
       }
     } else if bottomChromeSlots.showsCoverageWarning, let warning = state.footerWarning {
       OverlayCoverageStatus(
@@ -909,9 +920,14 @@ struct DictationOverlayView: View {
           .csFont(15, .medium)
           .foregroundStyle(palette.bodyText.color)
           .fixedSize(horizontal: false, vertical: true)
-        Text("Nothing was captured this session.")
+        Text("No transcript was produced for this take.")
           .csMono(11, .medium)
           .foregroundStyle(palette.mutedText.color)
+          .fixedSize(horizontal: false, vertical: true)
+        Text(state.currentTakeRecoveryDetail)
+          .csMono(11, .medium)
+          .foregroundStyle(palette.mutedText.color)
+          .fixedSize(horizontal: false, vertical: true)
       }
       Spacer(minLength: 0)
     }
@@ -945,8 +961,24 @@ struct DictationOverlayView: View {
           Text(state.errorLifecycleDetail)
             .csMono(11, .medium)
             .foregroundStyle(palette.mutedText.color)
+            .fixedSize(horizontal: false, vertical: true)
         }
         Spacer(minLength: 0)
+      }
+      if state.errorDiagnosticDetail != nil {
+        Text(state.currentTakeRecoveryDetail)
+          .csMono(11, .medium)
+          .foregroundStyle(palette.mutedText.color)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      if let diagnostic = state.errorDiagnosticDetail {
+        DisclosureGroup("Diagnostic details") {
+          Text(verbatim: diagnostic)
+            .csMono(10, .medium)
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityIdentifier("overlay-error-diagnostics")
       }
     }
     .frame(maxWidth: .infinity, minHeight: bodyMinHeight, alignment: .leading)

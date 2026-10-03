@@ -188,6 +188,42 @@ Delivery uses `DeliveryRoute` resolved from explicit operator intent. OS focus
 alone does not select the destination. Dictation, Agent, and Assistive modes
 share the same transcript authority even when their destinations differ.
 
+### Overlay failure feedback and take recovery
+
+The overlay remembers the controller's `recordingStarted` callback for the
+current capture generation. `recordingPreparing` expresses intent only. Stop
+and abort preserve that history; the next capture boundary clears it. A
+post-Stop error therefore describes a transcription that did not finish rather
+than a recording that never started. This history selects explanatory copy
+only: it never owns the microphone, transcript phase, finality or action bits.
+
+Start failures, no-speech outcomes and interrupted transcription have distinct
+messages. A failure with projected text keeps those exact words and explains
+that they may be incomplete. No-speech copy describes the absent transcript,
+without claiming that no audio was captured. A short footer opens one
+scrollable detail panel; raw engine text is under **Diagnostic details**.
+Complete measured coverage with refused finality says **Completion unconfirmed**;
+it does not grant acceptance or certify a complete document.
+
+**Transcribe this take again** targets the visible projection's `sessionId`.
+The engine resolves `sessionAudioPath(sessionId:)`, `transcribeTake` checks the
+audio identity, and the result returns through `commitRetranscribeRevision`.
+The overlay refreshes audio availability on lifecycle/projection events and
+when actions open, never while painting. Available audio is disclosed only
+after that exact take lookup succeeds. The producer's `canRetranscribe` bit
+still owns permission; absent identity or permission does not enable a retry.
+The local and configured cloud choices remain explicit user actions.
+
+**Previous take** copies or discards retained text (including any unsaved edit)
+from an earlier take; it does not transcribe the current audio. **Transcription
+history** browses saved takes. Neither path silently substitutes an earlier
+recording for the current failed take.
+
+Source changes for this feedback require catalog synchronization by the
+integrator, lifecycle regression coverage (especially errors after Stop), and
+native acceptance of the details and same-take recovery path. Structural source
+inspection alone does not verify recovery success.
+
 ## Normal live route versus explicit non-live work
 
 | Surface                              | Microphone / authority status                                                                                               |

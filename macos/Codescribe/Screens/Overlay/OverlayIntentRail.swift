@@ -150,6 +150,7 @@ struct OverlayIntentRail: View {
       } detail: { _ in
         OverlayTranscriptHistory()
       }
+      .accessibilityHint("Browse saved takes; this does not retry the current take")
       if intents.contains(.recoverSuperseded) || intents.contains(.discardSuperseded) {
         OverlayHoverControl(
           id: "overlay-previous-take-menu", title: String(localized: "Previous take"),
@@ -159,6 +160,8 @@ struct OverlayIntentRail: View {
           Image(systemName: OverlayControlSymbols.previousTake).frame(width: 24, height: 24)
         } detail: { close in
           VStack(alignment: .leading, spacing: 8) {
+            Text("This is retained text from an earlier take, including any unsaved edit. It is separate from the current take's audio.")
+              .fixedSize(horizontal: false, vertical: true)
             if intents.contains(.recoverSuperseded) {
               Button(OverlayIntent.recoverSuperseded.accessibilityLabel) {
                 close()
@@ -200,23 +203,28 @@ struct OverlayIntentRail: View {
               .controlSize(.small)
               .font(CSFont.ui(11, .medium))
             } else if intent == .retranscribe {
-              HStack(spacing: 10) {
-                Button(OverlayRetranscribeCopy.local) {
-                  close()
-                  retranscribe(.fullHq)
-                }
-                .accessibilityIdentifier("overlay-retranscribe-hq")
-                if cloudRetranscribeConfigured {
-                  Button(OverlayRetranscribeCopy.cloud) {
+              VStack(alignment: .leading, spacing: 8) {
+                Text("Transcribe this take again")
+                Text("Uses audio from the take currently shown in the overlay.")
+                  .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 10) {
+                  Button(OverlayRetranscribeCopy.local) {
                     close()
-                    retranscribe(.cloud)
+                    retranscribe(.fullHq)
                   }
-                  .accessibilityIdentifier("overlay-retranscribe-cloud")
+                  .accessibilityIdentifier("overlay-retranscribe-hq")
+                  if cloudRetranscribeConfigured {
+                    Button(OverlayRetranscribeCopy.cloud) {
+                      close()
+                      retranscribe(.cloud)
+                    }
+                    .accessibilityIdentifier("overlay-retranscribe-cloud")
+                  }
                 }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .font(CSFont.ui(11, .medium))
               }
-              .buttonStyle(.borderless)
-              .controlSize(.small)
-              .font(CSFont.ui(11, .medium))
             } else {
               Text(intent.accessibilityLabel)
             }
@@ -355,7 +363,7 @@ extension OverlayIntent {
     case .discardRevision: String(localized: "Discard transcript draft")
     case .copy: String(localized: "Copy transcript")
     case .insertPaste: String(localized: "Insert transcript")
-    case .retranscribe: String(localized: "Retranscribe recording")
+    case .retranscribe: String(localized: "Transcribe this take again")
     case .undoRetranscribe: String(localized: "Undo retranscribe")
     case .format: String(localized: "Format transcript")
     case .sendToAgent: String(localized: "Send transcript to Agent")
@@ -375,7 +383,8 @@ extension OverlayIntent {
     case .copy: String(localized: "Copies the projected transcript")
     case .insertPaste:
       String(localized: "Sends the projected transcript to the selected destination")
-    case .retranscribe: String(localized: "Requests another transcription of this recording")
+    case .retranscribe:
+      String(localized: "Uses audio from the take currently shown in the overlay")
     case .undoRetranscribe:
       String(localized: "Restores the transcript this retranscribe replaced, as a new revision")
     case .format: String(localized: "Requests formatting between takes")

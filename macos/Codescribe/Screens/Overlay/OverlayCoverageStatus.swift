@@ -59,10 +59,10 @@ struct OverlayWarningCopy: Equatable, Sendable {
     case .complete:
       return OverlayWarningCopy(
         owner: .coverage,
-        chip: String(localized: "Take not sealed yet"),
+        chip: String(localized: "Completion unconfirmed"),
         sentence: String(
           localized:
-            "Speech coverage was measured as complete, but this take has no terminal seal."
+            "All measured speech has words, but Codescribe could not confirm that this transcription finished."
         )
       )
     case .unknown:
@@ -203,7 +203,9 @@ struct OverlayCoverageStatus: View {
           Text(diagnosticDetail).font(CSFont.mono(10, .medium))
         }
         if canRetranscribe {
-          Text("Transcribe again")
+          Text("Transcribe this take again")
+          Text("Uses audio from the take currently shown in the overlay.")
+            .fixedSize(horizontal: false, vertical: true)
           HStack {
             Button(OverlayRetranscribeCopy.local) {
               close()
