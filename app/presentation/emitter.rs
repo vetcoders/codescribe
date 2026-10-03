@@ -786,6 +786,13 @@ pub struct TranscriptReducer {
     /// computational memory keyed by the occurrence and its shaping inputs.
     /// It does not mint a revision, a seal, or a ledger receipt.
     shaping_evaluations: BTreeMap<OccurrenceIdentity, ShapingEvaluation>,
+    /// First owner whose memo or committed shape may no longer match the
+    /// document. Owners strictly before it stay valid. `None` means every
+    /// current owner is settled. The cursor grants no mutation or seal authority.
+    shaping_affected_from: Option<OccurrenceIdentity>,
+    /// Pause bits used for the settled memos. A different tick pause starts at
+    /// the earliest memo instead of trusting [`Self::shaping_affected_from`].
+    shaping_pause_bits: Option<u32>,
     consultation_presentations: Vec<ConsultationPresentationReceipt>,
     revision: u64,
     /// The worker publishes complete replacements. Revision orders snapshots,
@@ -1558,10 +1565,13 @@ impl TranscriptReducer {
                 .map(|edit| edit.receipt_id.clone()),
         };
         let _serial_receipt = Self::encode_serial(serial);
-        // A later observer that changes this occurrence's words invalidates the
-        // shape taken from the old ones. Only this occurrence loses its shape:
-        // its neighbours keep theirs, which is the whole difference between
-        // incremental presentation and a global override.
+        // A changed label drops this owner and every later owner. Their left
+        // context includes this presentation. A same-label edit keeps the
+        // settled prefix and the suffix unless the next sentence break moved.
+        let previous_label = self
+            .document_by_occurrence
+            .get(&observation.occurrence)
+            .map(|existing| existing.label.clone());
         if self
             .shaped_by_occurrence
             .get(&observation.occurrence)
@@ -1569,13 +1579,14 @@ impl TranscriptReducer {
         {
             self.shaped_by_occurrence.remove(&observation.occurrence);
         }
+        let label_changed = previous_label.as_deref() != Some(entry.label.as_str());
         self.document_by_occurrence
             .insert(observation.occurrence.clone(), entry.clone());
         self.committed_slot_ranges.insert(
             observation.occurrence.clone(),
             ledger.committed_word_pin_ranges(&observation.occurrence),
         );
-        self.invalidate_stale_shapes();
+        self.invalidate_for_document_edit(&observation.occurrence, label_changed, ledger);
         let action = if observation.producer == ObservationProducer::ManualHuman {
             ReducerAction::ApplyManualEdit { entry }
         } else {
@@ -1698,6 +1709,10 @@ impl TranscriptReducer {
         }
         self.shaped_by_occurrence.clear();
         self.shaping_evaluations.clear();
+        self.shaping_pause_bits = None;
+        // The manual document owns presentation until a later ledger edit
+        // clears it. The cursor then starts at the first physical owner.
+        self.shaping_affected_from = self.document_by_occurrence.keys().next().cloned();
         self.manual_document_revision_receipt = Some(receipt.receipt_id.clone());
         Ok(self.revision_for_action(ReducerAction::ApplyUserRevision { receipt }))
     }
@@ -1829,29 +1844,34 @@ impl TranscriptReducer {
         Ok(source_occurrences)
     }
 
-    /// Sentence break for one occurrence. Uses the previous same-epoch gap and
-    /// that occurrence's ledger duration. It does not build left-context text.
+    /// Sentence break for one occurrence. The previous same-epoch owner is the
+    /// ordered predecessor, not a walk of the prefix. It does not build
+    /// left-context text.
     fn sentence_break_before(
         &self,
         occurrence: &OccurrenceIdentity,
         ledger: &AcousticLedger,
         sentence_pause_sec: f32,
     ) -> bool {
-        self.document_by_occurrence
-            .keys()
-            .take_while(|key| *key < occurrence)
-            .last()
-            .filter(|previous| previous.capture_epoch == occurrence.capture_epoch)
-            .and_then(|previous| {
-                let serial = ledger.serial_of(previous)?;
-                let samples = previous.sample_end.checked_sub(previous.sample_start)?;
-                let gap = occurrence.sample_start.checked_sub(previous.sample_end)?;
-                (samples > 0).then_some(
-                    gap as f64 * serial.duration_ms / samples as f64
-                        >= f64::from(sentence_pause_sec) * 1000.0,
-                )
-            })
-            .unwrap_or(false)
+        let Some((previous, _)) = self.document_by_occurrence.range(..occurrence).next_back()
+        else {
+            return false;
+        };
+        if previous.capture_epoch != occurrence.capture_epoch {
+            return false;
+        }
+        let Some(serial) = ledger.serial_of(previous) else {
+            return false;
+        };
+        let Some(samples) = previous.sample_end.checked_sub(previous.sample_start) else {
+            return false;
+        };
+        let Some(gap) = occurrence.sample_start.checked_sub(previous.sample_end) else {
+            return false;
+        };
+        samples > 0
+            && gap as f64 * serial.duration_ms / samples as f64
+                >= f64::from(sentence_pause_sec) * 1000.0
     }
 
     /// Exact computational hit. A hit is an unchanged evaluation only. A stored
@@ -1878,9 +1898,9 @@ impl TranscriptReducer {
     ///
     /// A committed shape with the same source label is the existing
     /// already-shaped guard. A computational memo is stable only while its
-    /// label, pause, and recomputed sentence break still match. Left context
-    /// is trusted here because [`Self::invalidate_stale_shapes`] drops the memo
-    /// when the rebuilt prefix digest diverges.
+    /// label, pause, and predecessor sentence break still match. Left context
+    /// is trusted here because a document edit drops memos from the edited
+    /// owner forward, so a settled prefix is not hashed again.
     fn owner_shaping_stable(
         &self,
         occurrence: &OccurrenceIdentity,
@@ -1911,33 +1931,107 @@ impl TranscriptReducer {
     /// First owner a non-terminal tick must evaluate.
     ///
     /// Empty `named` does not mean "shape nothing": a new admission still
-    /// starts at the first owner that is not shaping-stable. A named seal
-    /// starts at the earlier of that owner and the earliest named occurrence,
-    /// so a stable prefix is not rebuilt.
+    /// starts at the affected cursor. A named seal checks that bounded set
+    /// and the cursor. A stable named owner with no invalidated suffix is
+    /// not a start, so the tick does not walk the document.
     fn first_incremental_shaping_owner(
         &self,
         named: &[OccurrenceIdentity],
         sentence_pause_sec: f32,
         ledger: &AcousticLedger,
     ) -> Option<OccurrenceIdentity> {
-        let earliest_named = named
+        if self.manual_rendered_text.is_some() || self.document_by_occurrence.is_empty() {
+            return None;
+        }
+        let pause_bits = sentence_pause_sec.to_bits();
+        let pause_drift = self
+            .shaping_pause_bits
+            .is_some_and(|bits| bits != pause_bits);
+        let earliest_unstable = if pause_drift {
+            self.shaping_evaluations
+                .keys()
+                .next()
+                .cloned()
+                .or_else(|| self.affected_shaping_owner())
+        } else {
+            self.affected_shaping_owner()
+        };
+        let mut named_needs_work: Option<OccurrenceIdentity> = None;
+        for occurrence in named
             .iter()
             .filter(|occurrence| self.document_by_occurrence.contains_key(*occurrence))
-            .min()
-            .cloned();
-        let earliest_unstable = self
-            .document_by_occurrence
-            .keys()
-            .find(|occurrence| {
-                !self.owner_shaping_stable(occurrence, sentence_pause_sec, ledger)
-            })
-            .cloned();
-        match (earliest_named, earliest_unstable) {
+        {
+            let needs_work =
+                !self.owner_shaping_stable(occurrence, sentence_pause_sec, ledger);
+            if !needs_work {
+                continue;
+            }
+            named_needs_work = Some(match named_needs_work {
+                Some(existing) if &existing < occurrence => existing,
+                _ => occurrence.clone(),
+            });
+        }
+        match (named_needs_work, earliest_unstable) {
             (Some(named), Some(unstable)) => Some(if named < unstable { named } else { unstable }),
             (Some(named), None) => Some(named),
             (None, Some(unstable)) => Some(unstable),
             (None, None) => None,
         }
+    }
+
+    /// First document owner at or after the affected cursor.
+    fn affected_shaping_owner(&self) -> Option<OccurrenceIdentity> {
+        let from = self.shaping_affected_from.as_ref()?;
+        self.document_by_occurrence
+            .range(from.clone()..)
+            .next()
+            .map(|(key, _)| key.clone())
+    }
+
+    fn next_owner_after(&self, occurrence: &OccurrenceIdentity) -> Option<OccurrenceIdentity> {
+        self.document_by_occurrence
+            .range((
+                std::ops::Bound::Excluded(occurrence),
+                std::ops::Bound::Unbounded,
+            ))
+            .next()
+            .map(|(key, _)| key.clone())
+    }
+
+    /// Drop computational memory and committed shapes from `from` forward.
+    /// `BTreeMap::split_off` is the ordered boundary. It does not hash prefixes.
+    fn drop_shaping_from(&mut self, from: &OccurrenceIdentity) {
+        let _ = self.shaping_evaluations.split_off(from);
+        let _ = self.shaped_by_occurrence.split_off(from);
+    }
+
+    fn mark_shaping_affected(&mut self, from: &OccurrenceIdentity) {
+        self.shaping_affected_from = Some(match self.shaping_affected_from.take() {
+            Some(existing) if &existing < from => existing,
+            _ => from.clone(),
+        });
+    }
+
+    /// A same-label edit can still change the successor's sentence break when
+    /// the predecessor serial duration moves. One successor, one predecessor.
+    fn successor_break_drifted(
+        &self,
+        occurrence: &OccurrenceIdentity,
+        ledger: &AcousticLedger,
+    ) -> bool {
+        let Some(successor) = self.next_owner_after(occurrence) else {
+            return false;
+        };
+        let (pause, stored_break) = {
+            let Some(memo) = self.shaping_evaluations.get(&successor) else {
+                return false;
+            };
+            (
+                f32::from_bits(memo.sentence_pause_bits),
+                memo.sentence_break_before,
+            )
+        };
+        self.sentence_break_before(&successor, ledger, pause) != stored_break
     }
 
     fn remember_unchanged_shaping(
@@ -1949,6 +2043,7 @@ impl TranscriptReducer {
         sentence_pause_bits: u32,
         shaped_text: String,
     ) {
+        self.shaping_pause_bits = Some(sentence_pause_bits);
         self.shaping_evaluations.insert(
             occurrence.clone(),
             ShapingEvaluation {
@@ -2073,7 +2168,7 @@ impl TranscriptReducer {
             .map_err(IncrementalShapingRefusal::LedgerRefusal)?;
         self.shaped_by_occurrence
             .insert(occurrence.clone(), receipt.clone());
-        self.invalidate_stale_shapes();
+        self.invalidate_shaped_suffix(occurrence);
         Ok(self.revision_for_action(ReducerAction::ApplyIncrementalShaping { receipt }))
     }
 
@@ -2313,46 +2408,41 @@ impl TranscriptReducer {
         rendered
     }
 
-    /// Drop dependent shapes when insertion/relabel changes their exact left
-    /// context. Historical ledger receipts remain immutable and inspectable.
-    /// Computational memos for a diverging prefix are dropped in the same walk.
-    fn invalidate_stale_shapes(&mut self) {
+    /// Record the ordered invalidation boundary for one document edit.
+    ///
+    /// A new or relabelled owner drops computational memory and committed
+    /// shapes from that owner forward. A same-label edit drops the successor
+    /// only when its stored sentence break no longer matches the predecessor.
+    /// Settled owners before the boundary are not hashed. Historical ledger
+    /// receipts stay immutable.
+    fn invalidate_for_document_edit(
+        &mut self,
+        occurrence: &OccurrenceIdentity,
+        label_changed: bool,
+        ledger: &AcousticLedger,
+    ) {
         self.consultation_presentations
             .retain(|receipt| group_matches_entries(receipt, self.document_by_occurrence.values()));
+        if label_changed {
+            self.drop_shaping_from(occurrence);
+            self.mark_shaping_affected(occurrence);
+            return;
+        }
+        if self.successor_break_drifted(occurrence, ledger)
+            && let Some(successor) = self.next_owner_after(occurrence)
         {
-            let document = &self.document_by_occurrence;
-            self.shaping_evaluations.retain(|occurrence, memo| {
-                document.get(occurrence).is_some_and(|entry| {
-                    entry.label == memo.source_label && memo.occurrence == *occurrence
-                })
-            });
+            self.drop_shaping_from(&successor);
+            self.mark_shaping_affected(&successor);
         }
-        let mut left = String::new();
-        for (occurrence, entry) in &self.document_by_occurrence {
-            if self
-                .shaped_by_occurrence
-                .get(occurrence)
-                .is_some_and(|shape| {
-                    shape.source_label != entry.label || shape.left_context != left
-                })
-            {
-                self.shaped_by_occurrence.remove(occurrence);
-            }
-            let left_hash = shaping_context_sha256(&left);
-            if self
-                .shaping_evaluations
-                .get(occurrence)
-                .is_some_and(|memo| memo.left_context_sha256 != left_hash)
-            {
-                self.shaping_evaluations.remove(occurrence);
-            }
-            let text = self
-                .shaped_by_occurrence
-                .get(occurrence)
-                .map(|shape| shape.shaped_text.as_str())
-                .unwrap_or(&entry.label);
-            append_exact_fragment(&mut left, text);
-        }
+    }
+
+    /// A committed shape changes the left context of every later owner.
+    fn invalidate_shaped_suffix(&mut self, occurrence: &OccurrenceIdentity) {
+        let Some(successor) = self.next_owner_after(occurrence) else {
+            return;
+        };
+        self.drop_shaping_from(&successor);
+        self.mark_shaping_affected(&successor);
     }
 
     /// The presentation bytes for one entry: its committed shape while that
@@ -3569,13 +3659,23 @@ impl PresentationEmitter {
         if state.delivery_selection.is_some() {
             return None;
         }
+        let pause = self.sentence_pause_sec;
+        // A bounded seal with no invalidated suffix has nothing to compute.
+        // Proving that before the clone skips the reducer, the ledger, and
+        // the preparation thread. A terminal pass still shapes the document.
+        if !terminal
+            && state
+                .first_incremental_shaping_owner(named_occurrences, pause, ledger)
+                .is_none()
+        {
+            return None;
+        }
         let source_revision = state.revision;
         let source_derived_count = state.derived_projections.len();
         let mut candidate = state.clone();
         candidate.preparing_light_plus = true;
         drop(state);
         let mut candidate_ledger = ledger.clone();
-        let pause = self.sentence_pause_sec;
         let named_occurrences = named_occurrences.to_vec();
         let prepared = budget.prepare(move |worker_budget| {
             let mut revisions = Vec::new();
@@ -3589,55 +3689,53 @@ impl PresentationEmitter {
                         Err(_) => return None,
                     }
                 }
-            } else {
-                {
-                    let document = &candidate.document_by_occurrence;
-                    candidate.shaping_evaluations.retain(|occurrence, memo| {
-                        document.get(occurrence).is_some_and(|entry| {
-                            entry.label == memo.source_label && memo.occurrence == *occurrence
-                        })
-                    });
-                }
-                let start = candidate.first_incremental_shaping_owner(
-                    &named_occurrences,
-                    pause,
-                    &candidate_ledger,
-                );
-                if let Some(start) = start {
-                    let mut presentation_changed = false;
-                    let owners = candidate
-                        .document_by_occurrence
-                        .keys()
-                        .cloned()
-                        .collect::<Vec<_>>();
-                    for occurrence in owners {
-                        if worker_budget.expired() {
-                            return None;
-                        }
-                        let named_owner = named_occurrences.iter().any(|item| item == &occurrence);
-                        if !presentation_changed && occurrence < start && !named_owner {
-                            continue;
-                        }
-                        if !presentation_changed
-                            && occurrence > start
-                            && !named_owner
-                            && candidate.owner_shaping_stable(
-                                &occurrence,
-                                pause,
-                                &candidate_ledger,
-                            )
-                        {
-                            continue;
-                        }
-                        if let Ok(revision) = candidate.apply_incremental_shaping_with_pause(
-                            &mut candidate_ledger,
-                            &occurrence,
-                            pause,
-                        ) {
+            } else if let Some(start) = candidate.first_incremental_shaping_owner(
+                &named_occurrences,
+                pause,
+                &candidate_ledger,
+            ) {
+                let mut presentation_changed = false;
+                let mut unresolved = None;
+                let owners = candidate
+                    .document_by_occurrence
+                    .range(start.clone()..)
+                    .map(|(key, _)| key.clone())
+                    .collect::<Vec<_>>();
+                for occurrence in owners {
+                    if worker_budget.expired() {
+                        return None;
+                    }
+                    if !presentation_changed
+                        && occurrence != start
+                        && candidate.owner_shaping_stable(&occurrence, pause, &candidate_ledger)
+                    {
+                        continue;
+                    }
+                    match candidate.apply_incremental_shaping_with_pause(
+                        &mut candidate_ledger,
+                        &occurrence,
+                        pause,
+                    ) {
+                        Ok(revision) => {
                             revisions.push(revision);
                             presentation_changed = true;
                         }
+                        Err(
+                            IncrementalShapingRefusal::Unchanged
+                            | IncrementalShapingRefusal::AlreadyShaped,
+                        ) => {}
+                        Err(_) => {
+                            if unresolved.is_none() {
+                                unresolved = Some(occurrence);
+                            }
+                        }
                     }
+                }
+                if unresolved.is_none() {
+                    candidate.shaping_affected_from = None;
+                    candidate.shaping_pause_bits = Some(pause.to_bits());
+                } else {
+                    candidate.shaping_affected_from = unresolved;
                 }
             }
             if worker_budget.expired() {
@@ -3677,6 +3775,10 @@ impl PresentationEmitter {
             state
                 .shaping_evaluations
                 .clone_from(&candidate.shaping_evaluations);
+            state
+                .shaping_affected_from
+                .clone_from(&candidate.shaping_affected_from);
+            state.shaping_pause_bits = candidate.shaping_pause_bits;
             return None;
         }
         let mut state = self
