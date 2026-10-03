@@ -173,4 +173,28 @@ mod tests {
         let unknown = LastServingVerdict::from_live_session("live_moshi");
         assert_eq!(unknown.engine, "live_moshi");
     }
+
+    /// A path-loaded Whisper is the only route that earns `fallback_used`.
+    /// Apple (or any other label) must not inherit an earlier Whisper path
+    /// load, and an embedded Whisper load must not present as a fallback.
+    #[test]
+    fn path_loaded_whisper_stamps_fallback_only_for_whisper() {
+        let whisper_from_path =
+            LastServingVerdict::from_live_session_observing_whisper_path("live_whisper", true);
+        assert_eq!(whisper_from_path.engine, "local_whisper");
+        assert!(whisper_from_path.fallback_used);
+
+        let whisper_embedded =
+            LastServingVerdict::from_live_session_observing_whisper_path("live_whisper", false);
+        assert!(!whisper_embedded.fallback_used);
+
+        let apple_with_stale_path_bit =
+            LastServingVerdict::from_live_session_observing_whisper_path("live_apple", true);
+        assert_eq!(apple_with_stale_path_bit.engine, "local_apple");
+        assert!(!apple_with_stale_path_bit.fallback_used);
+
+        let unknown_with_path_bit =
+            LastServingVerdict::from_live_session_observing_whisper_path("live_moshi", true);
+        assert!(!unknown_with_path_bit.fallback_used);
+    }
 }

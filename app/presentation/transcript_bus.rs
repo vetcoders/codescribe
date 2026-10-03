@@ -3906,4 +3906,24 @@ mod tests {
         );
         assert!(!std::fs::read_to_string(&path).unwrap().contains("Whisper"));
     }
+
+    /// Evidence appends stop at the byte ceiling; a sparse `set_len` stands in
+    /// for a real half-gigabyte file. Below the ceiling and on a missing file
+    /// the append stays allowed (a metadata failure must not drop evidence).
+    #[test]
+    fn evidence_append_refused_only_at_byte_ceiling() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let at_ceiling = dir.path().join("bus-at-ceiling.jsonl");
+        let file = std::fs::File::create(&at_ceiling).expect("create");
+        file.set_len(super::EVIDENCE_APPEND_CEILING_BYTES)
+            .expect("sparse grow");
+        assert!(super::TranscriptBus::evidence_append_refused(&at_ceiling));
+
+        let below = dir.path().join("bus-below.jsonl");
+        std::fs::write(&below, b"{}\n").expect("small write");
+        assert!(!super::TranscriptBus::evidence_append_refused(&below));
+
+        let missing = dir.path().join("bus-missing.jsonl");
+        assert!(!super::TranscriptBus::evidence_append_refused(&missing));
+    }
 }
