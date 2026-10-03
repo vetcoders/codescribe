@@ -26,7 +26,7 @@ struct ToolServerTab: View {
           .lineLimit(1)
           .truncationMode(.middle)
         Spacer(minLength: 0)
-        Text("\(count)")
+        Text(verbatim: "\(count)")
           .font(CSFont.mono(10, .medium))
           .foregroundStyle(Color.secondary)
           .padding(.horizontal, CSSpace.xs)

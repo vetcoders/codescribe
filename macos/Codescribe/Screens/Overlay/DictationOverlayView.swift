@@ -88,15 +88,22 @@ struct OverlayRecordingControls: View {
     case nil: canFinish || isFinalizing ? palette.errorStatus.color : palette.listeningStatus.color
     }
   }
-  var recordingStatusValue: String { recordingLight?.name ?? (isFinalizing ? "Transcribing" : "Ready") }
+  var recordingStatusValue: String {
+    recordingLight?.name
+      ?? (isFinalizing ? String(localized: "Transcribing") : String(localized: "Ready"))
+  }
   var showsStop: Bool { canFinish }
   var recordingSymbol: String { canFinish || isFinalizing ? "stop.fill" : "mic.fill" }
-  var recordingLabel: String { canFinish || isFinalizing ? "Stop recording" : "Start dictation" }
+  var recordingLabel: String {
+    canFinish || isFinalizing
+      ? String(localized: "Stop recording") : String(localized: "Start dictation")
+  }
   var recordingIdentifier: String {
     canFinish || isFinalizing ? "overlay-stop-recording" : "overlay-start-recording"
   }
   var previewAccessibilityLabel: String {
-    isPreviewCollapsed ? "Show live preview" : "Hide live preview"
+    isPreviewCollapsed
+      ? String(localized: "Show live preview") : String(localized: "Hide live preview")
   }
   /// The chevron points where the transcript goes on click: ^ folds it into
   /// the bar, v unfolds it.
@@ -409,7 +416,7 @@ struct DictationOverlayView: View {
                 .focusable()
                 .focused($actionsFocused)
                 .accessibilityLabel(actions.controlTitle)
-                .accessibilityValue(actions.phase == .open ? "Open" : "Collapsed")
+                .accessibilityValue(actions.phase == .open ? "Expanded" : "Collapsed")
                 .accessibilityHint(
                   state.hasRecoverableSupersededWork
                     ? "Previous take available. Open actions to copy or discard it."
@@ -597,7 +604,8 @@ struct DictationOverlayView: View {
         .accessibilityLabel(OverlayIntent.close.accessibilityLabel)
         .accessibilityIdentifier("overlay-brand-close-dot")
 
-        Text("codescribe")
+        // The wordmark is the product name, never translated copy.
+        Text(verbatim: "codescribe")
           .font(CSFont.ui(compact ? 12 : 15, .bold))
           .tracking(-0.3)
           .foregroundStyle(palette.primaryText.color)
@@ -728,14 +736,16 @@ struct DictationOverlayView: View {
     if let error = state.revisionCommitError ?? state.formatterError ?? state.recoveryFailure {
       return error
     }
-    if state.formatterCommitPending { return "Formatting revision…" }
-    if state.revisionCommitPending { return "Committing revision…" }
-    if state.isRevisionDraftDirty { return "Draft · not committed" }
+    if state.formatterCommitPending { return String(localized: "Formatting revision…") }
+    if state.revisionCommitPending { return String(localized: "Committing revision…") }
+    if state.isRevisionDraftDirty { return String(localized: "Draft · not committed") }
     if let notice = state.toast { return notice }
     if let status = state.presentationStatus { return status.headline }
     if state.mode == .error {
       return state.errorMessage
-        ?? (state.activeText.isEmpty ? "Transcription failed" : "Delivery interrupted")
+        ?? (state.activeText.isEmpty
+          ? String(localized: "Transcription failed")
+          : String(localized: "Delivery interrupted"))
     }
     if state.mode == .noSpeech { return state.noSpeechNotice }
     return nil
@@ -853,12 +863,13 @@ struct DictationOverlayView: View {
       }
       .frame(minHeight: transcriptMinHeight)
       .accessibilityIdentifier("overlay-transcript-area")
+      // The empty branch is absence of a hint, not copy, so it stays verbatim.
       .accessibilityHint(
         livePaint != nil
-          ? "Live preview. Uncommitted words may change."
+          ? Text("Live preview. Uncommitted words may change.")
           : state.isTranscriptEditable
-          ? "Click to edit. Edits stay local until committed to the transcript ledger."
-          : ""
+          ? Text("Click to edit. Edits stay local until committed to the transcript ledger.")
+          : Text(verbatim: "")
       )
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -948,8 +959,10 @@ struct DictationOverlayView: View {
           Text(
             state.errorMessage
               ?? (state.retainedComposerDelivery != nil
-                ? "Delivery interrupted — the transcript is still here"
-                : state.activeText.isEmpty ? "Transcription failed" : "Delivery interrupted")
+                ? String(localized: "Delivery interrupted — the transcript is still here")
+                : state.activeText.isEmpty
+                  ? String(localized: "Transcription failed")
+                  : String(localized: "Delivery interrupted"))
           )
           .csFont(15, .medium)
           .foregroundStyle(palette.bodyText.color)

@@ -937,9 +937,16 @@ final class SettingsTruthTests: XCTestCase {
       batches.append(entries)
     })
     let model = SettingsViewModel(engine: engine)
+    var overlayPreferenceNotices = 0
+    model.onOverlayPreferenceChanged = { overlayPreferenceNotices += 1 }
+
+    model.applyPreviewTimingPreset(.custom)
+    XCTAssertEqual(batches.count, 0)
+    XCTAssertEqual(overlayPreferenceNotices, 0, "Custom writes nothing and announces nothing")
 
     model.applyPreviewTimingPreset(.smooth)
 
+    XCTAssertEqual(overlayPreferenceNotices, 1)
     XCTAssertEqual(batches.count, 1)
     let values = Dictionary(uniqueKeysWithValues: batches[0].map { ($0.key, $0.value) })
     XCTAssertEqual(values["TRANSCRIPTION_OVERLAY_ENABLED"], "1")
@@ -952,6 +959,9 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(batches.count, 2)
     XCTAssertEqual(batches[1].map(\.key), ["TRANSCRIPTION_OVERLAY_ENABLED"])
     XCTAssertEqual(batches[1].map(\.value), ["0"])
+    XCTAssertEqual(
+      overlayPreferenceNotices, 2,
+      "Off tells the overlay's owner, so a panel already on screen can close")
   }
 
   /// Agent owns the one lane-edit grammar: a lane binds a provider (through
@@ -1310,7 +1320,7 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(model.resetPreview.audioFiles, 5_000)
     XCTAssertEqual(
       model.resetImpactDescription(includeKeys: false, includePrompts: false),
-      "Moves 5000 recordings from 42 days, 17 threads (512.0 MB) to Trash. "
+      "Moves 5,000 recordings from 42 days, 17 threads (512.0 MB) to Trash. "
         + "Your assistive.txt and three formatting prompt files will be preserved. "
         + "Codescribe will relaunch as a fresh install."
     )
@@ -1571,6 +1581,13 @@ final class SettingsTruthTests: XCTestCase {
     )
     XCTAssertEqual(model.activeSTT, "Apple")
     XCTAssertFalse(model.activeSTT.contains("Smart final pass"))
+
+    let labels = ["streaming_whisper": "Streaming Whisper", "cloud_stt": "Cloud"]
+    for (engine, label) in labels {
+      let verdict = LastServingVerdict(
+        engine: engine, routingMode: "smart", disposition: nil, fallbackUsed: false)
+      XCTAssertEqual(formatActiveSTT(lastServing: verdict), label)
+    }
     XCTAssertFalse(model.activeSTT.contains("Not yet served"))
   }
 

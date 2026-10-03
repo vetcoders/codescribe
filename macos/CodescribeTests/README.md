@@ -1,6 +1,6 @@
 # CodescribeTests — what runs, and how
 
-Swift unit tests for the SwiftUI front-end. **337 tests, executed by
+Swift unit tests for the SwiftUI front-end. **893 tests, executed by
 `make test-swift`.**
 
 ```bash
@@ -137,8 +137,8 @@ should branch on non-zero, not on the specific code.
 
 ## Coverage this actually buys
 
-337 tests across 30 Swift files, including the two surfaces the W12 plan could
-previously only verify by compilation:
+893 tests across 71 Swift files (2026-10-01), including the two surfaces the
+W12 plan could previously only verify by compilation:
 
 - `OverlayStateTests.swift` — admission of complete Rust-owned transcript
   projections, sequence/session fences, acoustic-receipt requirements, and
@@ -146,6 +146,15 @@ previously only verify by compilation:
   corrections, patches, and transcript markers are already reduced upstream.
 - `ComposerMicTests.swift` — the composer `onReplaceRange` path, including the
   `firstIndex` → `lastIndex` alignment. 11 tests.
+- `LocalizationFoundationTests.swift` — the String Catalog reaches the built
+  app: development language, catalog-backed permission prompts, plural
+  selection, per-count inflection inside one sentence, and identifier keys
+  resolving to their English text. 6 tests.
+
+The scheme runs the suite in English (`test.language: en` in `project.yml`), so
+assertions on copy do not depend on the host's language. A test that scans
+Swift source for a literal breaks when that literal is rewrapped — see
+`docs/LOCALIZATION.md` §7.
 
 `make test-swift` is **not** part of `make check`: it needs Xcode and a built
 ffi dylib, and the self-hosted CI runners are cargo-only. Wiring it into CI

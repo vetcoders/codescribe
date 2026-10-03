@@ -13855,19 +13855,15 @@ public struct CsTrayStatusPayload: Equatable, Hashable {
     public var tone: CsTrayStatusTone
     public var indicatorMode: CsIndicatorMode
     public var assistive: Bool
-    public var tooltip: String
-    public var menuLabel: String
     public var generation: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(kind: CsTrayStatusKind, tone: CsTrayStatusTone, indicatorMode: CsIndicatorMode, assistive: Bool, tooltip: String, menuLabel: String, generation: UInt64) {
+    public init(kind: CsTrayStatusKind, tone: CsTrayStatusTone, indicatorMode: CsIndicatorMode, assistive: Bool, generation: UInt64) {
         self.kind = kind
         self.tone = tone
         self.indicatorMode = indicatorMode
         self.assistive = assistive
-        self.tooltip = tooltip
-        self.menuLabel = menuLabel
         self.generation = generation
     }
 
@@ -13889,8 +13885,6 @@ public struct FfiConverterTypeCsTrayStatusPayload: FfiConverterRustBuffer {
                 tone: FfiConverterTypeCsTrayStatusTone.read(from: &buf),
                 indicatorMode: FfiConverterTypeCsIndicatorMode.read(from: &buf),
                 assistive: FfiConverterBool.read(from: &buf),
-                tooltip: FfiConverterString.read(from: &buf),
-                menuLabel: FfiConverterString.read(from: &buf),
                 generation: FfiConverterUInt64.read(from: &buf)
         )
     }
@@ -13900,8 +13894,6 @@ public struct FfiConverterTypeCsTrayStatusPayload: FfiConverterRustBuffer {
         FfiConverterTypeCsTrayStatusTone.write(value.tone, into: &buf)
         FfiConverterTypeCsIndicatorMode.write(value.indicatorMode, into: &buf)
         FfiConverterBool.write(value.assistive, into: &buf)
-        FfiConverterString.write(value.tooltip, into: &buf)
-        FfiConverterString.write(value.menuLabel, into: &buf)
         FfiConverterUInt64.write(value.generation, into: &buf)
     }
 }

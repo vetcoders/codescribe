@@ -7,12 +7,12 @@ struct DictationEngineTab: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      SettingsSectionLabel("Runtime truth · read-only rows")
+      SettingsSectionLabel(String(localized: "Runtime truth · read-only rows"))
       DictationRuntimeRows(model: model)
         .padding(.top, CSSpace.control)
         .onAppear { model.refreshServingStatus() }
 
-      SettingsSectionLabel("Engine controls")
+      SettingsSectionLabel(String(localized: "Engine controls"))
         .padding(.top, CSSpace.section)
       DictationEngineControls(model: model)
         .padding(.top, CSSpace.control)

@@ -177,12 +177,13 @@ struct ComposerTextView: NSViewRepresentable {
       height: CGFloat.greatestFiniteMagnitude
     )
     textView.string = text
-    textView.placeholder = "Type a message…"
+    textView.placeholder = String(localized: "Type a message…", comment: "Composer placeholder")
     textView.font = ComposerTextLayout.composerFont(size: 13.5 * textScale)
     textView.textColor = .labelColor
     textView.insertionPointColor = NSColor(CSColor.terracotta)
     textView.setAccessibilityIdentifier(ComposerAccessibility.textViewIdentifier)
-    textView.setAccessibilityLabel("Message")
+    textView.setAccessibilityLabel(
+      String(localized: "Message", comment: "Accessibility label of the composer field"))
     textView.onKeyDown = { [weak coordinator = context.coordinator, weak textView] event in
       guard let coordinator, let textView else { return false }
       return coordinator.handleKeyDown(event, in: textView)

@@ -17,13 +17,19 @@ struct PermissionMatrixCell: View {
       HStack(spacing: 10) {
         CSIconView(
           icon: granted ? .success : .warning, size: 11, weight: .semibold, color: accentLight)
-        Text(kind.rawValue)
+        Text(kind.displayName)
           .font(CSFont.ui(12.5, .medium))
           .foregroundStyle(Color.primary)
           .frame(maxWidth: .infinity, alignment: .leading)
-        Text(granted ? "granted" : state.label)
-          .font(CSFont.mono(10, .semibold))
-          .foregroundStyle(accentLight)
+        Text(
+          granted
+            ? String(
+              localized: "granted",
+              comment: "Permission status: this permission is granted")
+            : state.label
+        )
+        .font(CSFont.mono(10, .semibold))
+        .foregroundStyle(accentLight)
       }
       .padding(.horizontal, 14)
       .padding(.vertical, 11)
@@ -36,7 +42,7 @@ struct PermissionMatrixCell: View {
     }
     .buttonStyle(.plain)
     .csFocusRing()
-    .accessibilityHint(granted ? "Already granted." : "Grants \(kind.rawValue) access.")
+    .accessibilityHint(granted ? "Already granted." : "Grants \(kind.displayName) access.")
   }
 
   private func grant() {

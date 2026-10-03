@@ -13,22 +13,22 @@ struct OnboardingView: View {
 
   var body: some View {
     content
-    .frame(minWidth: 680, minHeight: 560)
-    .background {
-      Group {
-        if reduceTransparency {
-          Color(nsColor: .windowBackgroundColor)
-        } else if #available(macOS 26, *) {
-          Color.clear.glassEffect(.regular, in: .rect(cornerRadius: 0))
-        } else {
-          Rectangle().fill(.regularMaterial)
+      .frame(minWidth: 680, minHeight: 560)
+      .background {
+        Group {
+          if reduceTransparency {
+            Color(nsColor: .windowBackgroundColor)
+          } else if #available(macOS 26, *) {
+            Color.clear.glassEffect(.regular, in: .rect(cornerRadius: 0))
+          } else {
+            Rectangle().fill(.regularMaterial)
+          }
         }
+        .ignoresSafeArea()
       }
-      .ignoresSafeArea()
-    }
-    .csFocusPolicy()
-    .controlSize(.regular)
-    .onAppear { model.refreshForCurrentStep() }
+      .csFocusPolicy()
+      .controlSize(.regular)
+      .onAppear { model.refreshForCurrentStep() }
   }
 
   private var content: some View {
@@ -48,20 +48,42 @@ struct OnboardingView: View {
   private var chapter: (title: String, symbol: String, purpose: String) {
     switch model.step {
     case .welcome, .mode:
-      return ("Your voice, a new possibility", "waveform", "First, choose what you want to do.")
+      return (
+        String(localized: "Your voice, a new possibility", comment: "Setup chapter heading"),
+        "waveform",
+        String(localized: "First, choose what you want to do.", comment: "Setup chapter subtitle")
+      )
     case .permission:
-      return ("Make the connection", "hand.raised", "You decide what Codescribe can access.")
+      return (
+        String(localized: "Make the connection", comment: "Setup chapter heading"),
+        "hand.raised",
+        String(
+          localized: "You decide what Codescribe can access.",
+          comment: "Setup chapter subtitle; Codescribe is the product name")
+      )
     case .language, .apiKey, .hotkeyMode:
       return (
-        "Make it yours", "slider.horizontal.3",
-        "Your language. Your shortcuts. Your way of working."
+        String(localized: "Make it yours", comment: "Setup chapter heading"),
+        "slider.horizontal.3",
+        String(
+          localized: "Your language. Your shortcuts. Your way of working.",
+          comment: "Setup chapter subtitle")
       )
     case .agenticReadiness:
-      return ("Give your voice tools", "sparkles", "Connect the assistants you want to work with.")
+      return (
+        String(localized: "Give your voice tools", comment: "Setup chapter heading"),
+        "sparkles",
+        String(
+          localized: "Connect the assistants you want to work with.",
+          comment: "Setup chapter subtitle")
+      )
     case .done:
       return (
-        "Your next thought starts here", "checkmark",
-        "Setup is complete. Your voice takes it from here."
+        String(localized: "Your next thought starts here", comment: "Setup chapter heading"),
+        "checkmark",
+        String(
+          localized: "Setup is complete. Your voice takes it from here.",
+          comment: "Setup chapter subtitle")
       )
     }
   }

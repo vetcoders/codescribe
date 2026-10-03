@@ -234,7 +234,7 @@ pub(super) fn repair_settings(path: &Path, pack: Option<&Path>) -> RepairReceipt
                 else {
                     continue;
                 };
-                // The legacy endpoint is only a seed for the one-shot lane
+                // The single-endpoint field is only a seed for the one-shot lane
                 // migration, and the typed serializer drops it on every save.
                 // Re-seeding it after the lanes exist made each settings save
                 // mint a fresh backup (285 on one machine, 2026-09-29), so it
@@ -553,7 +553,7 @@ mod tests {
         let path = dir.path().join("settings.json");
         let pack = dir.path().join("pack.json");
         // The one-shot migration already produced a live lane; the typed
-        // serializer then dropped the legacy key on an ordinary save.
+        // serializer then dropped the single-endpoint key on an ordinary save.
         fs::write(
             &path,
             r#"{"schema_version":3,"speech":{"engine":{"live_transcription_endpoint":"wss://example.test/v1/audio/transcribe"}}}"#,

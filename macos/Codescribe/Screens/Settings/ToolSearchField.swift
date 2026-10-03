@@ -30,7 +30,7 @@ struct ToolSearchField: View {
         CSFocusOutline(isFocused: searchFocused, cornerRadius: CSSpace.sm)
       }
 
-      Text("^[\(serverCount) server](inflect: true)")
+      Text("\(serverCount) servers")
         .font(CSFont.mono(10, .medium))
         .foregroundStyle(Color.secondary)
     }

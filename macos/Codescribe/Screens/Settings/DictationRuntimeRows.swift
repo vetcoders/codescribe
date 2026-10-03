@@ -7,15 +7,15 @@ struct DictationRuntimeRows: View {
   var body: some View {
     VStack(spacing: 0) {
       RuntimeRow(
-        key: "Active STT", value: model.activeSTT,
+        key: String(localized: "Active STT"), value: model.activeSTT,
         tint: true, trailing: .dot(model.sttHealthy ? CSColor.oliveLight : CSColor.amber))
       divider
       RuntimeRow(
-        key: "STT model (preference)", value: model.sttModelDescription,
+        key: String(localized: "STT model (preference)"), value: model.sttModelDescription,
         tint: false, mono: true, trailing: .none)
       divider
       RuntimeRow(
-        key: "Whisper language", value: model.whisperLanguageCode,
+        key: String(localized: "Whisper language"), value: model.whisperLanguageCode,
         tint: true, mono: true, trailing: .none)
     }
     .clipShape(.rect(cornerRadius: CSRadius.composer))

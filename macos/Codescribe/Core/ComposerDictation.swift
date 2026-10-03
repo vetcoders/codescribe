@@ -72,7 +72,8 @@ final class RealComposerDictation: ComposerDictating {
           store.applyComposerStopOutcome(outcome, requestID: request, handle: handle)
         } catch {
           store.reportComposerStopFailure(
-            "Couldn't change recording: \(error.userFacingMessage)", requestID: request,
+            String(localized: "Couldn't change recording: \(error.userFacingMessage)"),
+            requestID: request,
             handle: handle)
         }
         // The terminal projection consumer must deliver before releasing the
@@ -95,7 +96,8 @@ final class RealComposerDictation: ComposerDictating {
         guard store.isCurrentComposerCaptureRequest(requestID) else { return }
         dictationLog.error(
           "Agent voice capture gesture failed: \(error.localizedDescription, privacy: .public)")
-        store.reportDictationFailure("Couldn't change recording: \(error.userFacingMessage)")
+        store.reportDictationFailure(
+          String(localized: "Couldn't change recording: \(error.userFacingMessage)"))
       }
     }
   }

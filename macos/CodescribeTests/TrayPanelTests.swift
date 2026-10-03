@@ -67,6 +67,69 @@ final class TrayPanelTests: XCTestCase {
     XCTAssertFalse(panel.isVisible)
   }
 
+  func testSecondClickOnTheStatusButtonIsLeftToTheButtonAction() {
+    let (button, onButton) = makeStatusButton()
+    let panel = TrayPanel()
+    var dismissals = 0
+    panel.onDismiss = { dismissals += 1 }
+    panel.present(from: button) { Text("Menu") }
+
+    // The status bar's mouse-down reaches the global monitor and the key
+    // change before the button's action fires; neither may close the menu.
+    panel.mouseDownOutside(at: onButton)
+    panel.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: panel))
+    XCTAssertNotNil(panel.contentViewController)
+    XCTAssertEqual(dismissals, 0)
+
+    // The action's toggle closes it exactly once.
+    panel.dismiss()
+    XCTAssertNil(panel.contentViewController)
+    XCTAssertEqual(dismissals, 1)
+  }
+
+  func testClickAwayFromTheStatusButtonClosesTheMenu() {
+    let (button, onButton) = makeStatusButton()
+    let panel = TrayPanel()
+    var dismissals = 0
+    panel.onDismiss = { dismissals += 1 }
+    panel.present(from: button) { Text("Menu") }
+    panel.mouseDownOutside(at: NSPoint(x: onButton.x + 400, y: onButton.y - 300))
+    XCTAssertNil(panel.contentViewController)
+    XCTAssertEqual(dismissals, 1)
+  }
+
+  func testToggleClickDoesNotOutliveTheMenuItClosed() {
+    let (button, onButton) = makeStatusButton()
+    let panel = TrayPanel()
+    var dismissals = 0
+    panel.onDismiss = { dismissals += 1 }
+    panel.present(from: button) { Text("Menu") }
+    panel.mouseDownOutside(at: onButton)
+    panel.dismiss()
+    XCTAssertEqual(dismissals, 1)
+
+    // Reopened by a later click, a keyboard app switch closes it again.
+    panel.present(from: button) { Text("Menu") }
+    panel.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: panel))
+    XCTAssertNil(panel.contentViewController)
+    XCTAssertEqual(dismissals, 2)
+  }
+
+  /// A button hosted in a window, like the status item's, and its screen-space centre.
+  private func makeStatusButton() -> (NSButton, NSPoint) {
+    let window = NSWindow(
+      contentRect: NSRect(x: 300, y: 700, width: 80, height: 24),
+      styleMask: .borderless, backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    hostWindows.append(window)
+    let button = NSButton(frame: NSRect(x: 0, y: 0, width: 80, height: 24))
+    window.contentView = button
+    let rect = window.convertToScreen(button.convert(button.bounds, to: nil))
+    return (button, NSPoint(x: rect.midX, y: rect.midY))
+  }
+
+  private var hostWindows: [NSWindow] = []
+
   func testKeyboardAppSwitchDismissesWithoutAMouseClick() {
     let panel = TrayPanel()
     panel.contentViewController = NSHostingController(rootView: Text("Menu"))

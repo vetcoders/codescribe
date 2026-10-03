@@ -15,7 +15,10 @@ struct OverlayActionsPresentation {
   var controlSymbol: String {
     phase == .open ? OverlayControlSymbols.closeActions : OverlayControlSymbols.actions
   }
-  var controlTitle: String { phase == .open ? "Close actions" : "More actions" }
+  var controlTitle: String {
+    phase == .open
+      ? String(localized: "Close actions") : String(localized: "More actions")
+  }
   private(set) var pointerInside = false
   private(set) var panelPresented = false
   private(set) var keyboardFocused = false
@@ -66,7 +69,9 @@ struct OverlayActionsPresentation {
   }
 
   static func finishingLabel(mode: OverlayMode, transcribing: Bool, terminal: Bool) -> String? {
-    !terminal && (transcribing || mode == .finalizing) ? "Finishing…" : nil
+    guard !terminal, transcribing || mode == .finalizing else { return nil }
+    return String(
+      localized: "Finishing…", comment: "Overlay cap while the take is transcribed")
   }
 }
 
@@ -137,7 +142,8 @@ struct OverlayIntentRail: View {
   var body: some View {
     HStack(spacing: 2) {
       OverlayHoverControl(
-        id: "overlay-history-menu", title: "Transcription history", palette: palette,
+        id: "overlay-history-menu", title: String(localized: "Transcription history"),
+        palette: palette,
         presented: $presented
       ) {
         Image(systemName: OverlayControlSymbols.history).frame(width: 24, height: 24)
@@ -146,7 +152,8 @@ struct OverlayIntentRail: View {
       }
       if intents.contains(.recoverSuperseded) || intents.contains(.discardSuperseded) {
         OverlayHoverControl(
-          id: "overlay-previous-take-menu", title: "Previous take", palette: palette,
+          id: "overlay-previous-take-menu", title: String(localized: "Previous take"),
+          palette: palette,
           presented: $presented
         ) {
           Image(systemName: OverlayControlSymbols.previousTake).frame(width: 24, height: 24)
@@ -194,13 +201,13 @@ struct OverlayIntentRail: View {
               .font(CSFont.ui(11, .medium))
             } else if intent == .retranscribe {
               HStack(spacing: 10) {
-                Button("Local") {
+                Button(OverlayRetranscribeCopy.local) {
                   close()
                   retranscribe(.fullHq)
                 }
                 .accessibilityIdentifier("overlay-retranscribe-hq")
                 if cloudRetranscribeConfigured {
-                  Button("Cloud") {
+                  Button(OverlayRetranscribeCopy.cloud) {
                     close()
                     retranscribe(.cloud)
                   }
@@ -342,38 +349,44 @@ struct OverlayIntentRail: View {
 extension OverlayIntent {
   var accessibilityLabel: String {
     switch self {
-    case .startRecording: "Start dictation"
-    case .finish: "Finish recording"
-    case .commitRevision: "Commit transcript revision"
-    case .discardRevision: "Discard transcript draft"
-    case .copy: "Copy transcript"
-    case .insertPaste: "Insert transcript"
-    case .retranscribe: "Retranscribe recording"
-    case .undoRetranscribe: "Undo retranscribe"
-    case .format: "Format transcript"
-    case .sendToAgent: "Send transcript to Agent"
-    case .recoverSuperseded: "Copy previous take to clipboard"
-    case .discardSuperseded: "Discard previous take"
-    case .close: "Close overlay"
+    case .startRecording: String(localized: "Start dictation")
+    case .finish: String(localized: "Finish recording")
+    case .commitRevision: String(localized: "Commit transcript revision")
+    case .discardRevision: String(localized: "Discard transcript draft")
+    case .copy: String(localized: "Copy transcript")
+    case .insertPaste: String(localized: "Insert transcript")
+    case .retranscribe: String(localized: "Retranscribe recording")
+    case .undoRetranscribe: String(localized: "Undo retranscribe")
+    case .format: String(localized: "Format transcript")
+    case .sendToAgent: String(localized: "Send transcript to Agent")
+    case .recoverSuperseded: String(localized: "Copy previous take to clipboard")
+    case .discardSuperseded: String(localized: "Discard previous take")
+    case .close: String(localized: "Close overlay")
     }
   }
 
   var accessibilityHint: String {
     switch self {
-    case .startRecording: "Starts a new take in the current dictation mode"
-    case .finish: "Stops capture and requests the final projection"
-    case .commitRevision: "Commits this draft through the transcript ledger"
-    case .discardRevision: "Restores the latest projected transcript"
-    case .copy: "Copies the projected transcript"
-    case .insertPaste: "Sends the projected transcript to the selected destination"
-    case .retranscribe: "Requests another transcription of this recording"
-    case .undoRetranscribe: "Restores the transcript this retranscribe replaced, as a new revision"
-    case .format: "Requests formatting between takes"
-    case .sendToAgent: "Sends the accepted transcript to Agent"
+    case .startRecording:
+      String(localized: "Starts a new take in the current dictation mode")
+    case .finish: String(localized: "Stops capture and requests the final projection")
+    case .commitRevision: String(localized: "Commits this draft through the transcript ledger")
+    case .discardRevision: String(localized: "Restores the latest projected transcript")
+    case .copy: String(localized: "Copies the projected transcript")
+    case .insertPaste:
+      String(localized: "Sends the projected transcript to the selected destination")
+    case .retranscribe: String(localized: "Requests another transcription of this recording")
+    case .undoRetranscribe:
+      String(localized: "Restores the transcript this retranscribe replaced, as a new revision")
+    case .format: String(localized: "Requests formatting between takes")
+    case .sendToAgent: String(localized: "Sends the accepted transcript to Agent")
     case .recoverSuperseded:
-      "Copies the retained previous take, including any unsaved edit, to the clipboard"
-    case .discardSuperseded: "Drops the retained previous take without recovering it"
-    case .close: "Closes the dictation overlay"
+      String(
+        localized:
+          "Copies the retained previous take, including any unsaved edit, to the clipboard")
+    case .discardSuperseded:
+      String(localized: "Drops the retained previous take without recovering it")
+    case .close: String(localized: "Closes the dictation overlay")
     }
   }
 
@@ -395,4 +408,21 @@ extension OverlayIntent {
     }
   }
   var helpText: String { accessibilityLabel }
+}
+
+/// Engine buttons under "Transcribe again", shared by the intent rail and the
+/// coverage popover. They have their own keys: here the word answers "where
+/// should it run", while `Cloud` elsewhere names an engine.
+enum OverlayRetranscribeCopy {
+  static var local: String {
+    String(
+      localized: "overlay.retranscribe.local", defaultValue: "Local",
+      comment: "Button under Transcribe again: run the transcription on this Mac")
+  }
+
+  static var cloud: String {
+    String(
+      localized: "overlay.retranscribe.cloud", defaultValue: "Cloud",
+      comment: "Button under Transcribe again: run the transcription in the cloud")
+  }
 }

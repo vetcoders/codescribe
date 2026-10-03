@@ -40,7 +40,7 @@ struct AgentBridgeInstallationStatus: Equatable {
     bundleVersion: nil,
     installedClients: [],
     installedPaths: [],
-    detail: "The signed app does not contain the agent bridge payload."
+    detail: String(localized: "The signed app does not contain the agent bridge payload.")
   )
 }
 
@@ -65,15 +65,29 @@ enum AgentBridgeInstallationError: LocalizedError {
   var errorDescription: String? {
     switch self {
     case .selectionRequired:
-      return "Select Codex, Claude Code, or both before installing."
+      return String(
+        localized: "Select Codex, Claude Code, or both before installing.",
+        comment: "Codex and Claude Code are product names — do not translate"
+      )
     case .payloadUnavailable:
-      return "The app bundle does not contain the Codescribe agent bridge payload."
+      return String(
+        localized: "The app bundle does not contain the Codescribe agent bridge payload."
+      )
     case .invalidManifest(let reason):
-      return "The bundled agent bridge failed checksum verification: \(reason)"
+      return String(
+        localized: "The bundled agent bridge failed checksum verification: \(reason)",
+        comment: "The placeholder is a technical diagnostic produced by the installer"
+      )
     case .conflict(let path, let reason):
-      return "Codescribe will not overwrite \(path): \(reason)"
+      return String(
+        localized: "Codescribe will not overwrite \(path): \(reason)",
+        comment: "First placeholder is a file path, second a technical diagnostic"
+      )
     case .transaction(let reason):
-      return "Agent bridge installation could not be completed atomically: \(reason)"
+      return String(
+        localized: "Agent bridge installation could not be completed atomically: \(reason)",
+        comment: "The placeholder is a technical diagnostic produced by the installer"
+      )
     }
   }
 }
@@ -223,17 +237,28 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
           if recorded, receipt.managedID == marker.managedID,
             receipt.installedPaths[client.rawValue] == destination.standardizedFileURL.path
           {
-            evidence = "receipt and managed folder found."
+            evidence = String(
+              localized: "receipt and managed folder found.",
+              comment: "Installer evidence, follows \"<client name>: \" on one line"
+            )
           } else {
-            evidence = "managed folder found, receipt differs — Update will re-adopt it."
+            evidence = String(
+              localized: "managed folder found, receipt differs — Update will re-adopt it.",
+              comment: "Update is the button label on the Agent settings panel"
+            )
           }
         } else {
-          evidence =
-            "managed folder found, receipt missing or unreadable — Update will re-adopt it."
+          evidence = String(
+            localized:
+              "managed folder found, receipt missing or unreadable — Update will re-adopt it.",
+            comment: "Update is the button label on the Agent settings panel"
+          )
         }
       } else {
-        evidence =
-          "receipt found, managed folder missing or invalid — existing unowned folders will not be overwritten."
+        evidence = String(
+          localized:
+            "receipt found, managed folder missing or invalid — existing unowned folders will not be overwritten."
+        )
       }
       details.append("\(client.displayName): \(evidence)")
     }
@@ -243,7 +268,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       installedClients: clients,
       installedPaths: paths,
       detail: details.isEmpty
-        ? "Ready to install after you select an agent client."
+        ? String(localized: "Ready to install after you select an agent client.")
         : details.joined(separator: "\n")
     )
   }
@@ -609,9 +634,15 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
         }
       }
       if !recoveryFailures.isEmpty {
+        let failure = error.localizedDescription
+        let preserve = recoveryFailures.joined(separator: "\n")
         throw AgentBridgeInstallationError.transaction(
-          error.localizedDescription + "\nRollback incomplete. Preserve these paths for recovery:\n"
-            + recoveryFailures.joined(separator: "\n")
+          String(
+            localized:
+              "\(failure)\nRollback incomplete. Preserve these paths for recovery:\n\(preserve)",
+            comment:
+              "First placeholder is the underlying failure, second a newline-separated path list"
+          )
         )
       }
       if let typed = error as? AgentBridgeInstallationError {
@@ -659,7 +690,11 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     let path = bridgeRoot.appendingPathComponent("installation.lock").path
     let descriptor = Darwin.open(path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600))
     guard descriptor >= 0 else {
-      throw AgentBridgeInstallationError.transaction("cannot open the installation lock")
+      throw AgentBridgeInstallationError.transaction(
+        String(
+          localized: "cannot open the installation lock",
+          comment: "Reason clause appended to the atomic-installation failure sentence"
+        ))
     }
     var metadata = stat()
     guard Darwin.fstat(descriptor, &metadata) == 0,
@@ -668,7 +703,11 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     else {
       _ = Darwin.close(descriptor)
       throw AgentBridgeInstallationError.transaction(
-        "another installation is active or its lock is unavailable; try again after it finishes")
+        String(
+          localized:
+            "another installation is active or its lock is unavailable; try again after it finishes",
+          comment: "Reason clause appended to the atomic-installation failure sentence"
+        ))
     }
     return descriptor
   }
@@ -689,8 +728,11 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     else {
       throw AgentBridgeInstallationError.conflict(
         path: destination.path,
-        reason:
-          "manual adoption requires an ordinary skill folder with SKILL.md and no managed marker"
+        reason: String(
+          localized:
+            "manual adoption requires an ordinary skill folder with SKILL.md and no managed marker",
+          comment: "SKILL.md is a file name — keep it verbatim"
+        )
       )
     }
   }
@@ -901,8 +943,10 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     guard managedMarker(destination: destination, client: client) != nil else {
       throw AgentBridgeInstallationError.conflict(
         path: destination.path,
-        reason:
-          "the Codescribe-managed marker is missing or does not match this client and bridge root"
+        reason: String(
+          localized:
+            "the Codescribe-managed marker is missing or does not match this client and bridge root"
+        )
       )
     }
   }

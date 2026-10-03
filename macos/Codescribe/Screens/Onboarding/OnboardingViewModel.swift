@@ -25,8 +25,10 @@ enum OnboardingModeChoice: String, CaseIterable {
 
   var label: String {
     switch self {
-    case .basic: return "Basic"
-    case .agentic: return "Agentic"
+    case .basic:
+      return String(localized: "Basic", comment: "Operating lane: dictation only")
+    case .agentic:
+      return String(localized: "Agentic", comment: "Operating lane: dictation plus an AI agent")
     }
   }
 
@@ -46,17 +48,29 @@ enum HotkeyModeChoice: String, CaseIterable {
 
   var label: String {
     switch self {
-    case .hold: return "Hold to talk"
-    case .toggle: return "Hands-off (toggle)"
-    case .both: return "Hybrid (both)"
+    case .hold:
+      return String(localized: "Hold to talk", comment: "Hotkey preset name")
+    case .toggle:
+      return String(localized: "Hands-off (toggle)", comment: "Hotkey preset name")
+    case .both:
+      return String(localized: "Hybrid (both)", comment: "Hotkey preset name: hold and toggle")
     }
   }
 
   var summary: String {
     switch self {
-    case .hold: return "Press and hold Fn/Globe while you speak; release to stop."
-    case .toggle: return "Double-tap Left/Right Option to start, tap again to stop."
-    case .both: return "Hold Fn/Globe to dictate, or double-tap Option to toggle."
+    case .hold:
+      return String(
+        localized: "Press and hold Fn/Globe while you speak; release to stop.",
+        comment: "Hotkey preset detail; Fn and Globe are the key caps on a Mac keyboard")
+    case .toggle:
+      return String(
+        localized: "Double-tap Left/Right Option to start, tap again to stop.",
+        comment: "Hotkey preset detail; Option is the key cap on a Mac keyboard")
+    case .both:
+      return String(
+        localized: "Hold Fn/Globe to dictate, or double-tap Option to toggle.",
+        comment: "Hotkey preset detail; Fn, Globe and Option are Mac key caps")
     }
   }
 
@@ -174,26 +188,48 @@ final class OnboardingViewModel: ObservableObject {
 
   /// Human-readable "Step N of M" — permission steps are still counted by their
   /// absolute flow index so the bar never jumps.
-  var progressLabel: String { "Step \(stepIndex + 1) of \(totalSteps)" }
+  var progressLabel: String {
+    String(
+      localized: "Step \(stepIndex + 1) of \(totalSteps)",
+      comment: "Setup wizard progress; first %lld is the current step, second the total"
+    )
+  }
 
   var isDone: Bool { step == .done }
 
   /// Primary-button label: "Finish" on Done, "Continue" everywhere else.
-  var primaryLabel: String { isDone ? "Finish" : "Continue" }
+  var primaryLabel: String {
+    isDone
+      ? String(localized: "Finish", comment: "Setup wizard button: close the wizard")
+      : String(localized: "Continue", comment: "Setup wizard button: go to the next step")
+  }
 
   var selectedProvider: CsProviderOption? {
     providers.first { $0.id == selectedProviderId } ?? providers.first
   }
 
-  var agentBridgeTitle: String { "Connect Codescribe to your agent." }
+  var agentBridgeTitle: String {
+    String(
+      localized: "Connect Codescribe to your agent.",
+      comment: "Setup step heading; Codescribe is the product name")
+  }
 
   var agentBridgeExplanation: String {
-    "The named agent can hear live drafts and reply during the pause. Installation, "
-      + "commits, deletion, and every other state-changing action wait for transcript_sealed."
+    String(
+      localized:
+        "The named agent can hear live drafts and reply during the pause. Installation, commits, deletion, and every other state-changing action wait for transcript_sealed.",
+      comment: "Setup step explanation; transcript_sealed is an event name, keep it verbatim"
+    )
   }
 
   var agentBridgeButtonTitle: String {
-    agentBridgeStatus.installedClients.isEmpty ? "Install selected" : "Update selected"
+    agentBridgeStatus.installedClients.isEmpty
+      ? String(
+        localized: "Install selected",
+        comment: "Button: install the bridge for the checked coding assistants")
+      : String(
+        localized: "Update selected",
+        comment: "Button: update the bridge for the checked coding assistants")
   }
 
   // MARK: - Lifecycle refresh
