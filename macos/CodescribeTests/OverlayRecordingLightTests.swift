@@ -7,6 +7,98 @@ import XCTest
 /// colour has a name, and every warning says whose fact it is.
 @MainActor
 final class OverlayRecordingLightTests: XCTestCase {
+  func testProductionFooterDoesNotExposeSealDiagnostics() {
+    XCTAssertFalse(
+      DeveloperSurface.isEnabled(), "The XCTest host is the production-surface control")
+    let slots = OverlayBottomChromeSlots(
+      mode: .coverageRefused, hasPresentationStatus: false, isCollapsed: false)
+    XCTAssertEqual(
+      slots.ordered, [.rail],
+      "Unverified seal diagnostics are power-mode details, not a production footer")
+  }
+
+  func testQuietMicrophoneAdvisoryRemainsUserFacing() {
+    let slots = OverlayBottomChromeSlots(
+      mode: .listening, hasPresentationStatus: false, isCollapsed: false,
+      hasLowInputSignal: true)
+    XCTAssertEqual(slots.ordered, [.rail, .coverageWarning])
+    XCTAssertEqual(OverlayWarningCopy.quietInput.owner, .microphone)
+  }
+
+  func testCoverageDiagnosticsCannotDisplaceAnActionableStatus() {
+    for mode in [OverlayMode.coverageRefused, .error, .noSpeech] {
+      let slots = OverlayBottomChromeSlots(
+        mode: mode, hasPresentationStatus: true, isCollapsed: false)
+      XCTAssertEqual(slots.ordered, [.rail])
+    }
+    XCTAssertEqual(
+      OverlayBottomChromeSlots(
+        mode: .coverageRefused, hasPresentationStatus: false, isCollapsed: true
+      ).ordered, [])
+  }
+
+  func testTechnicalCoverageRequiresBothDeveloperBuildAndLabToggle() {
+    for developerBuild in [false, true] {
+      for labEnabled in [false, true] {
+        let power = DeveloperSurface.isPowerModeEnabled(
+          labMode: labEnabled, surfaceEnabled: developerBuild)
+        let slots = OverlayBottomChromeSlots(
+          mode: .coverageRefused, hasPresentationStatus: false, isCollapsed: false,
+          showsDiagnostics: power)
+        XCTAssertEqual(
+          slots.ordered,
+          developerBuild && labEnabled ? [.rail, .coverageWarning] : [.rail],
+          "developer build=\(developerBuild), lab=\(labEnabled)")
+        let quiet = OverlayBottomChromeSlots(
+          mode: .listening, hasPresentationStatus: false, isCollapsed: false,
+          hasLowInputSignal: true, showsDiagnostics: power)
+        XCTAssertEqual(quiet.ordered, [.rail, .coverageWarning])
+      }
+    }
+  }
+
+  func testDeveloperCoverageDiagnosticsRespectCollapseAndActionableStatus() {
+    for collapsed in [false, true] {
+      for actionableStatus in [false, true] {
+        let slots = OverlayBottomChromeSlots(
+          mode: .coverageRefused, hasPresentationStatus: actionableStatus,
+          isCollapsed: collapsed, showsDiagnostics: true)
+        XCTAssertEqual(
+          slots.ordered,
+          collapsed ? [] : actionableStatus ? [.rail] : [.rail, .coverageWarning])
+      }
+    }
+  }
+
+  func testDiagnosticVisibilityDoesNotChangeTranscriptAuthorityOrRecoveryActions() {
+    let state = OverlayState()
+    let acoustic = projectedAcousticReceipt(
+      serial: "diagnostic-visibility-1", sessionId: "diagnostic-visibility", sampleStart: 0,
+      sampleEnd: 16000, wordEvidence: ["diagnostic-word"], layerDecisions: ["diagnostic-layer"])
+    let projection = transcriptProjection(
+      sequence: 1, emittedAt: "2026-10-03T00:00:00Z", sessionId: "diagnostic-visibility",
+      renderedText: "Retained words remain editable", phase: "coverage_refused", terminal: true,
+      reducerAction: "session_ended", canCopy: true, acousticReceipts: [acoustic],
+      sealCoverage: coverage(.incomplete, speech: 32000, covered: 16000))
+    state.applyTranscriptProjection(projection)
+    let text = state.activeText
+    let revision = state.revision
+    let notice = state.coverageRefusalNotice
+    let intents = OverlayIntentRail.projectedIntents(for: state)
+    XCTAssertFalse(text.isEmpty)
+    XCTAssertTrue(state.isTranscriptEditable)
+    XCTAssertNotNil(notice)
+    for power in [false, true] {
+      _ = OverlayBottomChromeSlots(
+        mode: state.mode, hasPresentationStatus: false,
+        isCollapsed: false, showsDiagnostics: power)
+      XCTAssertEqual(state.activeText, text)
+      XCTAssertEqual(state.revision, revision)
+      XCTAssertEqual(state.coverageRefusalNotice, notice)
+      XCTAssertEqual(OverlayIntentRail.projectedIntents(for: state), intents)
+      XCTAssertTrue(state.isTranscriptEditable)
+    }
+  }
 
   // MARK: One table: state → colour → name
 
@@ -192,7 +284,8 @@ final class OverlayRecordingLightTests: XCTestCase {
         "Speech coverage incomplete", "no clock, no invented position")
     }
     XCTAssertEqual(
-      OverlayWarningCopy.sealRefused(gaps([]), sampleRateHz: 16_000).chip, "Text verification incomplete")
+      OverlayWarningCopy.sealRefused(gaps([]), sampleRateHz: 16_000).chip,
+      "Text verification incomplete")
   }
 
   /// The live chip reads the take's own clock from the receipt it shows.
@@ -284,8 +377,10 @@ final class OverlayRecordingLightTests: XCTestCase {
       XCTAssertEqual(control.recordingSymbol, "stop.fill", "\(light)")
       XCTAssertEqual(control.recordingStatusValue, light.name)
       XCTAssertEqual(control.recordingDisabled, light == .processing)
-      XCTAssertEqual(control.recordingTint,
-        light == .holdToTalk || light == .handsFree ? OverlayAppearancePalette.dark.errorStatus.color : light.color)
+      XCTAssertEqual(
+        control.recordingTint,
+        light == .holdToTalk || light == .handsFree
+          ? OverlayAppearancePalette.dark.errorStatus.color : light.color)
       control.activateRecordingControl()
       XCTAssertEqual(intents, light == .processing ? [] : [.finish])
       XCTAssertEqual(OverlayRecordingControls.controlDiameter, 22)

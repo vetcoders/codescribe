@@ -386,7 +386,7 @@ final class OverlayIntentRailTests: XCTestCase {
     state.toggleCollapsed()
     let slots = OverlayBottomChromeSlots(
       mode: state.mode, hasPresentationStatus: state.presentationStatus != nil,
-      isCollapsed: state.isCollapsed)
+      isCollapsed: state.isCollapsed, showsDiagnostics: true)
 
     XCTAssertEqual(state.mode, .coverageRefused)
     XCTAssertEqual(slots.ordered, [.rail, .coverageWarning])

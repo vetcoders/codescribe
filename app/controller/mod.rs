@@ -3017,17 +3017,24 @@ impl RecordingController {
             Some(snapshot) if !snapshot.text.trim().is_empty() => {
                 let presentation = presentation
                     .ok_or_else(|| anyhow::anyhow!("stop canvas has no presentation owner"))?;
+                // Label only after this single call. An accepted stop revision
+                // replaces `revision` on the returned snapshot; the same snapshot
+                // comes back when Light+ commits nothing. Preview and literal
+                // stay the states the shaper already refused to rewrite.
+                let offered_revision = snapshot.revision;
+                let snapshot = presentation
+                    .shape_frozen_canvas_at_stop(snapshot)
+                    .map_err(|error| anyhow::anyhow!("Light+ stop revision refused: {error}"))?;
                 let light_plus =
                     if snapshot.preview_only_words > 0 || !snapshot.has_committed_document {
                         "skipped_preview"
                     } else if presentation.literal_delivery() {
                         "literal"
-                    } else {
+                    } else if snapshot.revision != offered_revision {
                         "applied"
+                    } else {
+                        "unchanged"
                     };
-                let snapshot = presentation
-                    .shape_frozen_canvas_at_stop(snapshot)
-                    .map_err(|error| anyhow::anyhow!("Light+ stop revision refused: {error}"))?;
                 (Some(snapshot), light_plus)
             }
             snapshot => {
@@ -7156,6 +7163,74 @@ mod terminal_delivery_target_falsifiers {
 /// test shortcut is evidence for these terminal decisions.
 #[cfg(test)]
 mod refusal_recovery_tests {
+    #[tokio::test]
+    async fn stop_light_plus_noop_is_not_reported_as_applied() {
+        let take = take(State::RecHold, false).await;
+        take.emitter.on_capture_opened(TAKE, 7);
+        take.emitter.set_literal_delivery(false);
+        let initial = stop_mutation(&mut take.ledger.lock().unwrap(), "Gotowy tekst.");
+        take.emitter.on_event(&initial);
+        let frozen = take.emitter.begin_stop_canvas().unwrap();
+        assert_eq!(frozen.preview_only_words, 0);
+        assert!(frozen.has_committed_document);
+        let revision = frozen.revision;
+        let before = take
+            .ledger
+            .lock()
+            .unwrap()
+            .manual_document_revisions()
+            .len();
+        let wait = StopCanvasWait {
+            snapshot: Some(frozen.clone()),
+            stop_final_wait_ms: 0,
+            stop_final_timeout: false,
+            live_finals_admitted: true,
+            painted_at_stop: Some(frozen),
+            preempted: false,
+            armed_order: true,
+        };
+        let receipts = StopReceiptLog::default();
+        let _trace = receipts.subscribe();
+        let settled = take
+            .controller
+            .settle_frozen_canvas_at_stop(
+                Some(TAKE),
+                Some(&take.emitter),
+                wait,
+                std::time::Instant::now(),
+                |text| async move {
+                    assert_eq!(text, "Gotowy tekst.");
+                    Ok(TranscriptDelivery::SinkAccepted)
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(settled, TranscriptDelivery::SinkAccepted);
+        assert_eq!(
+            take.ledger
+                .lock()
+                .unwrap()
+                .manual_document_revisions()
+                .len(),
+            before
+        );
+        assert_eq!(
+            take.emitter.visible_canvas_snapshot().unwrap().revision,
+            revision
+        );
+        let log = receipts.text();
+        let lines = log
+            .lines()
+            .filter(|line| line.contains("stop canvas delivery settled"))
+            .collect::<Vec<_>>();
+        assert_eq!(lines.len(), 1, "{log}");
+        assert!(
+            !lines[0].contains("light_plus=\"applied\""),
+            "A no-op did not mint a Light+ receipt: {}",
+            lines[0]
+        );
+    }
+
     use super::*;
     use crate::presentation::transcript_bus::{
         ProjectedSealCoverageReceipt, TranscriptBusEvidenceEvent, TranscriptProjectionPhase,
