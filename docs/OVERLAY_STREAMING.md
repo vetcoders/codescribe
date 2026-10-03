@@ -188,6 +188,22 @@ Delivery uses `DeliveryRoute` resolved from explicit operator intent. OS focus
 alone does not select the destination. Dictation, Agent, and Assistive modes
 share the same transcript authority even when their destinations differ.
 
+### Overlay panel placement
+
+`OverlayController` is the sole placement writer. Choosing an anchor is an
+immediate positioning command: `OverlayState` persists the selection, exits
+Free motion, and invokes the controller. Selecting the already-selected anchor
+also exits Free motion and reapplies placement. The controller derives size
+and origin together and writes the frame synchronously, whether the panel is
+visible or hidden, inside `isApplyingFrame`. Placement does not use an animator
+proxy; its later frame writes would outlive that programmatic-move guard.
+
+An ordinary drag preserves the selected anchor and saves the drop point.
+Anchored placement is reapplied on every show. Explicit **Free motion** restores
+the saved drop point, clamped to the visible screen. Programmatic placement
+does not count as a user drag or overwrite that saved point. Size persistence
+and content resizing remain independent of the placement choice.
+
 ### Overlay failure feedback and take recovery
 
 The overlay remembers the controller's `recordingStarted` callback for the
