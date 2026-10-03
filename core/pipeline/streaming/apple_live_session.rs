@@ -10969,6 +10969,306 @@ mod rc_w2_acoustic_tests {
         state
     }
 
+    // Root-owned stop controls: capture, measurement and decode share one PCM.
+    fn forensic_stop_recovery_capture(
+        session: &str,
+        unowned_burst: bool,
+    ) -> (AppleSealState, Vec<OccurrenceIdentity>, Vec<f32>) {
+        let stride = at(3.5);
+        let gap_start = 5 * stride + at(0.5);
+        let gap_end = gap_start + at(1.0);
+        let end = if unowned_burst {
+            gap_end
+        } else {
+            4 * stride + at(2.0)
+        } + at(0.5);
+        let mut pcm = vec![0.0; end as usize];
+        for index in 0..5 {
+            let start = index * stride + at(0.6);
+            let end = index * stride + at(1.2);
+            pcm[start as usize..end as usize].fill(0.25);
+        }
+        if unowned_burst {
+            pcm[gap_start as usize..gap_end as usize].fill(0.25);
+        }
+        let mut state = state_for(session, 0.0);
+        state.audio.push(&pcm);
+        let mut writer = CaptureLevelAccumulator::bound_to(&state.capture_energy);
+        for chunk in pcm.chunks(320) {
+            writer.push_samples(chunk);
+        }
+        let speech = coverage_speech_evidence(&state);
+        assert_eq!(speech.producer(), CAPTURE_ENERGY_PRODUCER);
+        assert_eq!(speech.availability().observed_samples(), Some(end));
+        assert_eq!(speech.ranges().len(), 5 + usize::from(unowned_burst));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let owners = (0..5)
+            .map(|index| {
+                let start = index * stride;
+                commit_debt_occurrence(
+                    &mut state,
+                    &tx,
+                    start,
+                    start + at(2.0),
+                    &format!("apple{index}"),
+                )
+            })
+            .collect();
+        (state, owners, pcm)
+    }
+
+    fn forensic_stop_recovery_word(
+        request: &TailProviderRequest,
+        owner: &OccurrenceIdentity,
+    ) -> TailProviderPayload {
+        let mut payload = gap_payload(request);
+        payload.segments[0].grain = crate::stt::tail_provider::TailSegmentGrain::Word;
+        payload.segments[0].range.sample_start = owner.sample_start + at(0.6);
+        payload.segments[0].range.sample_end = owner.sample_start + at(1.2);
+        payload.evidence.segment_grain = crate::stt::tail_provider::TailSegmentGrain::Word;
+        payload
+    }
+
+    #[test]
+    fn forensic_stop_recovery_words_settle_each_source_after_live_deadline() {
+        for expired in [false, true] {
+            for unowned in [false, true] {
+                let (mut state, owners, pcm) =
+                    forensic_stop_recovery_capture("stop-word-scope", unowned);
+                let sources = {
+                    let ledger = state.acoustic_ledger.lock().unwrap();
+                    owners
+                        .iter()
+                        .map(|owner| ledger.slots_of(owner).unwrap()[0].clone())
+                        .collect::<Vec<_>>()
+                };
+                let speech = coverage_speech_evidence(&state);
+                let target_owners = owners.clone();
+                let target_gaps = speech.ranges().to_vec();
+                let expected_pcm = pcm.clone();
+                let calls = Arc::new(Mutex::new(Vec::new()));
+                let recorded = Arc::clone(&calls);
+                let execution = LocalExecutionOwner::default();
+                if expired {
+                    execution.begin_drain(Duration::ZERO);
+                    assert!(execution.check().is_err());
+                }
+                let (tx, mut rx) = mpsc::unbounded_channel();
+                let receipt = repair_terminal_seal_coverage_with(
+                    &mut state,
+                    &tx,
+                    Some("pl"),
+                    &execution,
+                    move |request, samples, control| {
+                        control.check()?;
+                        request.validate_pcm(samples)?;
+                        let range = &request.identity.range;
+                        assert_eq!(
+                            samples,
+                            &expected_pcm[range.sample_start as usize..range.sample_end as usize]
+                        );
+                        recorded.lock().unwrap().push(range.clone());
+                        if let Some(owner) = target_owners
+                            .iter()
+                            .find(|owner| owner.sample_end == range.sample_end)
+                        {
+                            Ok(forensic_stop_recovery_word(request, owner))
+                        } else {
+                            let gap = target_gaps
+                                .iter()
+                                .find(|gap| gap.sample_end == range.sample_end)
+                                .expect("only measured unowned speech may request extra work");
+                            let mut payload = gap_payload(request);
+                            payload.segments[0].range = gap.clone();
+                            Ok(payload)
+                        }
+                    },
+                );
+                let calls = calls.lock().unwrap();
+                assert_eq!(calls.len(), 5 + usize::from(unowned));
+                for (call, owner) in calls.iter().take(5).zip(&owners) {
+                    assert_eq!(call.sample_end, owner.sample_end);
+                    assert_eq!(
+                        call.sample_start,
+                        owner.sample_end.saturating_sub(8 * u64::from(RATE))
+                    );
+                    assert!(call.sample_start <= owner.sample_start);
+                }
+                assert_eq!(
+                    receipt.status,
+                    SealCoverageStatus::Complete,
+                    "expired={expired}/unowned={unowned}: {receipt:?}"
+                );
+                assert_eq!(receipt.coverage_ratio(), Some(1.0));
+                let mut ledger = state.acoustic_ledger.lock().unwrap();
+                assert!(
+                    ledger
+                        .pending_text_recoveries(&state.session_id, state.capture_epoch)
+                        .is_empty()
+                );
+                for (owner, source) in owners.iter().zip(&sources) {
+                    assert!(ledger.is_sealed(owner));
+                    assert_eq!(ledger.text_of(owner), Some("Iwo"));
+                    let slots = ledger.slots_of(owner).unwrap();
+                    assert_eq!(slots.len(), 1);
+                    assert_eq!(
+                        (slots[0].sample_start, slots[0].sample_end),
+                        (owner.sample_start + at(0.6), owner.sample_start + at(1.2))
+                    );
+                    assert_eq!(slots[0].producer, LedgerObservationProducer::Whisper);
+                    let accounting = ledger
+                        .slot_operations()
+                        .iter()
+                        .filter(|op| {
+                            op.observation.producer == LedgerObservationProducer::Whisper
+                                && op.sources.contains(source)
+                        })
+                        .collect::<Vec<_>>();
+                    assert_eq!(
+                        accounting.len(),
+                        1,
+                        "each physical source is accounted once"
+                    );
+                    assert!(accounting[0].source_ranges.contains(owner));
+                    assert!(accounting[0].outputs.contains(&slots[0]));
+                }
+                assert!(
+                    ledger
+                        .seal_terminal(&state.session_id, state.capture_epoch)
+                        .is_ok()
+                );
+                assert_eq!(ledger.conservation().residue(), 0);
+                drop(ledger);
+                let seals = std::iter::from_fn(|| rx.try_recv().ok())
+                    .filter_map(|event| match event {
+                        EngineEvent::LedgerSeal { receipt } => Some(receipt),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(seals.len(), 5 + usize::from(unowned));
+                assert_eq!(state.session_conservation().residue(), 0);
+                assert!(
+                    execution.check().is_ok(),
+                    "recovery replaces the expired live budget"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn forensic_stop_recovery_unproved_returns_keep_source_debt() {
+        for expired in [false, true] {
+            for defect in [
+                "phrase",
+                "segmentless",
+                "foreign_envelope",
+                "foreign_pin",
+                "reversed",
+                "empty",
+                "outside",
+                "failed",
+            ] {
+                let (mut state, owners, pcm) =
+                    forensic_stop_recovery_capture("stop-unproved-scope", false);
+                let target_owners = owners.clone();
+                let calls = Arc::new(Mutex::new(Vec::new()));
+                let recorded = Arc::clone(&calls);
+                let execution = LocalExecutionOwner::default();
+                if expired {
+                    execution.begin_drain(Duration::ZERO);
+                    assert!(execution.check().is_err());
+                }
+                let (tx, mut rx) = mpsc::unbounded_channel();
+                let receipt = repair_terminal_seal_coverage_with(
+                    &mut state,
+                    &tx,
+                    None,
+                    &execution,
+                    move |request, samples, control| {
+                        control.check()?;
+                        request.validate_pcm(samples)?;
+                        let range = &request.identity.range;
+                        assert_eq!(
+                            samples,
+                            &pcm[range.sample_start as usize..range.sample_end as usize]
+                        );
+                        recorded.lock().unwrap().push(range.clone());
+                        if defect == "failed" {
+                            return Err(anyhow::anyhow!("supplied decoder failure"));
+                        }
+                        let owner = target_owners
+                            .iter()
+                            .find(|owner| owner.sample_end == range.sample_end)
+                            .expect("pending source must not be retried as a gap");
+                        let mut payload = forensic_stop_recovery_word(request, owner);
+                        match defect {
+                            "phrase" => {
+                                payload.segments[0].grain =
+                                    crate::stt::tail_provider::TailSegmentGrain::Phrase;
+                                payload.evidence.segment_grain =
+                                    crate::stt::tail_provider::TailSegmentGrain::Phrase;
+                            }
+                            "segmentless" => payload.segments.clear(),
+                            "foreign_envelope" => payload.identity.request_id += 1,
+                            "foreign_pin" => payload.segments[0].range.capture_epoch += 1,
+                            "reversed" => {
+                                payload.segments[0].range.sample_start =
+                                    payload.segments[0].range.sample_end + 1
+                            }
+                            "empty" => {
+                                payload.text.clear();
+                                payload.segments[0].text.clear();
+                            }
+                            "outside" => {
+                                payload.segments[0].range.sample_end = range.sample_end + 1
+                            }
+                            _ => unreachable!(),
+                        }
+                        Ok(payload)
+                    },
+                );
+                assert_eq!(calls.lock().unwrap().len(), 5, "{expired}/{defect}");
+                assert_eq!(
+                    receipt.status,
+                    SealCoverageStatus::Incomplete,
+                    "{expired}/{defect}: {receipt:?}"
+                );
+                let mut ledger = state.acoustic_ledger.lock().unwrap();
+                assert_eq!(
+                    ledger.pending_text_recoveries(&state.session_id, state.capture_epoch),
+                    owners
+                );
+                for (index, owner) in owners.iter().enumerate() {
+                    assert!(ledger.text_recovery_pending(owner));
+                    assert!(!ledger.is_sealed(owner));
+                    let expected = if defect == "phrase" {
+                        "Iwo".to_string()
+                    } else {
+                        format!("apple{index}")
+                    };
+                    assert_eq!(
+                        ledger.text_of(owner),
+                        Some(expected.as_str()),
+                        "{expired}/{defect}"
+                    );
+                }
+                assert_eq!(
+                    ledger.seal_terminal(&state.session_id, state.capture_epoch),
+                    Err(SealRefusal::TextRecoveryPending)
+                );
+                assert_eq!(ledger.conservation().residue(), 0);
+                drop(ledger);
+                assert!(
+                    !std::iter::from_fn(|| rx.try_recv().ok()).any(|event| matches!(
+                        event,
+                        EngineEvent::LedgerSeal { .. } | EngineEvent::UtteranceFinal { .. }
+                    ))
+                );
+                assert_eq!(state.session_conservation().residue(), 0);
+            }
+        }
+    }
+
     fn crossing(kind: VadBoundaryKind, sample: u64) -> VadBoundaryEvidence {
         VadBoundaryEvidence {
             kind,
@@ -11228,12 +11528,14 @@ mod rc_w2_acoustic_tests {
 
     #[test]
     fn debt_stop_path_recovers_each_occurrence_span_not_its_speech_subrange() {
-        let (mut state, occurrences) = five_debt_occurrences("debt-span");
+        let (mut state, occurrences, pcm) = forensic_stop_recovery_capture("debt-span", true);
+        let target_owners = occurrences.clone();
         let occurrence_ends = occurrences
             .iter()
             .map(|occurrence| occurrence.sample_end)
             .collect::<Vec<_>>();
         let speech = coverage_speech_evidence(&state).ranges().to_vec();
+        let expected_pcm = pcm;
         let calls = Arc::new(Mutex::new(Vec::new()));
         let observed = Arc::clone(&calls);
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -11246,18 +11548,24 @@ mod rc_w2_acoustic_tests {
             move |request, pcm, control| {
                 control.check()?;
                 request.validate_pcm(pcm)?;
+                assert_eq!(
+                    pcm,
+                    &expected_pcm[request.identity.range.sample_start as usize
+                        ..request.identity.range.sample_end as usize]
+                );
                 observed
                     .lock()
                     .unwrap()
                     .push(request.identity.range.clone());
                 let mut payload = gap_payload(request);
                 let end = request.identity.range.sample_end;
-                let start = request.identity.range.sample_start;
+
                 if occurrence_ends.contains(&end) {
-                    payload.segments[0].range.sample_start = end.saturating_sub(at(2.0)).max(start);
-                    payload.segments[0].grain = crate::stt::tail_provider::TailSegmentGrain::Word;
-                    payload.evidence.segment_grain =
-                        crate::stt::tail_provider::TailSegmentGrain::Word;
+                    let owner = target_owners
+                        .iter()
+                        .find(|owner| owner.sample_end == end)
+                        .expect("requested original owner");
+                    payload = forensic_stop_recovery_word(request, owner);
                 } else if let Some(gap) = speech.iter().find(|gap| gap.sample_end == end) {
                     payload.segments[0].range = gap.clone();
                 }
@@ -11312,12 +11620,15 @@ mod rc_w2_acoustic_tests {
     /// An expired live deadline must not cancel the recovery phase.
     #[test]
     fn debt_recovery_runs_after_the_live_drain_deadline_expired() {
-        let (mut state, occurrences) = five_debt_occurrences("debt-after-drain");
+        let (mut state, occurrences, pcm) =
+            forensic_stop_recovery_capture("debt-after-drain", true);
+        let target_owners = occurrences.clone();
         let occurrence_ends = occurrences
             .iter()
             .map(|occurrence| occurrence.sample_end)
             .collect::<Vec<_>>();
         let speech = coverage_speech_evidence(&state).ranges().to_vec();
+        let expected_pcm = pcm;
         let execution = LocalExecutionOwner::default();
         execution.begin_drain(Duration::ZERO);
         let (tx, _rx) = mpsc::unbounded_channel();
@@ -11329,11 +11640,20 @@ mod rc_w2_acoustic_tests {
             move |request, pcm, control| {
                 control.check()?;
                 request.validate_pcm(pcm)?;
+                assert_eq!(
+                    pcm,
+                    &expected_pcm[request.identity.range.sample_start as usize
+                        ..request.identity.range.sample_end as usize]
+                );
                 let end = request.identity.range.sample_end;
-                let start = request.identity.range.sample_start;
+
                 let mut payload = gap_payload(request);
                 if occurrence_ends.contains(&end) {
-                    payload.segments[0].range.sample_start = end.saturating_sub(at(2.0)).max(start);
+                    let owner = target_owners
+                        .iter()
+                        .find(|owner| owner.sample_end == end)
+                        .expect("requested original owner");
+                    payload = forensic_stop_recovery_word(request, owner);
                 } else if let Some(gap) = speech.iter().find(|gap| gap.sample_end == end) {
                     payload.segments[0].range = gap.clone();
                 }
