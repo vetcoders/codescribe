@@ -763,8 +763,12 @@ impl AcousticLedger {
             let all_coarse = sources.iter().all(coarse_source);
             if sources.len() == 1
                 && outputs.len() == 1
-                && ordinary_targets[*word_indices.first().unwrap()].is_some()
+                && (ordinary_targets[*word_indices.first().unwrap()].is_some()
+                    || (sources[0].sample_start == outputs[0].sample_start
+                        && sources[0].sample_end == outputs[0].sample_end))
             {
+                // An unchanged group extent supplies no child boundaries.
+                // Its label must pass content preservation in ordinary admission.
                 continue;
             }
             let authority = sources.iter().all(|source| {
@@ -874,7 +878,11 @@ impl AcousticLedger {
             // With no observer snapshot, exact pin coverage may account for
             // the source PCM. Spelling agreement supplies no missing geometry.
             // A present but unusable snapshot never acts as absent evidence.
-            let range_refinement = self.speech_evidence.is_none()
+            let range_refinement = all_coarse
+                && self.speech_evidence.is_none()
+                && outputs
+                    .iter()
+                    .all(|word| word.text.split_whitespace().count() == 1)
                 && sources.iter().all(|source| {
                     let mut cursor = source.sample_start;
                     for word in &outputs {
@@ -884,9 +892,19 @@ impl AcousticLedger {
                     }
                     cursor >= source.sample_end
                 });
+            // Sparse child pins may retain every held label without claiming
+            // speech coverage. Missing or ambiguous tokens still refuse the cut.
+            let content_refinement = all_coarse
+                && self.speech_evidence.is_none()
+                && outputs
+                    .iter()
+                    .all(|word| word.text.split_whitespace().count() == 1)
+                && preserve_group_content(&held, &candidate)
+                    .is_ok_and(|(_, retained)| !retained);
             let ambiguous = repetition_target_ambiguous(&sources, &outputs)
                 && !(coverage.is_some()
                     || range_refinement
+                    || content_refinement
                     || partial_refinement
                     || window_refinement);
             let refusal = if !authority {
@@ -895,6 +913,7 @@ impl AcousticLedger {
                 || ambiguous
                 || (coverage.is_none()
                     && !range_refinement
+                    && !content_refinement
                     && !partial_refinement
                     && !window_refinement)
             {
@@ -958,6 +977,8 @@ impl AcousticLedger {
                     "acoustic_resegmentation/decode-window/v1"
                 } else if partial_refinement {
                     "acoustic_resegmentation/partial-speech/v1"
+                } else if content_refinement && !range_refinement {
+                    "acoustic_resegmentation/content-preserved/v1"
                 } else {
                     "acoustic_resegmentation/pin-coverage/v1"
                 }
@@ -1199,6 +1220,9 @@ impl AcousticLedger {
                 .iter_mut()
                 .find(|slot| SlotTarget::from(&**slot) == *target)
                 .ok_or(SlotOperationRefusal::StaleTarget)?;
+            if output.text == rule.canonical {
+                continue;
+            }
             output.text = rule.canonical.clone();
             output.producer = observation.producer;
             output.observation = observation.clone();
