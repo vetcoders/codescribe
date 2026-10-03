@@ -2893,6 +2893,87 @@ mod slot_ops_tests {
         }
     }
 
+    // Root-only independent Relay controls for the div0 admission boundary.
+    #[test]
+    fn forensic_div0_complete_decode_can_replace_a_coarse_apple_hypothesis() {
+        for producer in [ObservationProducer::Whisper, ObservationProducer::CloudLive] {
+            for pinned in [false, true] {
+                let (mut ledger, owner, pcm) = forensic_split_empty_capture("coarse-pencil");
+                let first =
+                    ObservationIdentity::new(ObservationProducer::Apple, 930, 0, owner.clone());
+                let receipt = if pinned {
+                    ledger.admit_word_slots(
+                        &first,
+                        &[WordPin::new(
+                            owner.sample_start,
+                            owner.sample_end,
+                            "czy plan weryfikowałeś",
+                        )],
+                    )
+                } else {
+                    ledger.admit(&first, "czy plan weryfikowałeś")
+                };
+                assert!(receipt.grants_mutation());
+                let source = ledger.slots_of(&owner).unwrap()[0].clone();
+                assert!(!ledger.complete_word_slot(&source));
+                ledger.schedule_frontier(owner.clone(), [producer]);
+                assert!(ledger.require_text_recovery(&owner));
+                let next = ledger.next_word_observation(producer, 931, &owner);
+                let receipt = ledger.admit_word_slots(
+                    &next,
+                    &[WordPin::new(owner.sample_start, owner.sample_end, "tak")
+                        .with_decode_window(0, pcm.len() as u64)],
+                );
+                assert!(
+                    receipt.grants_mutation(),
+                    "{producer:?}/pinned={pinned}: {receipt:?}"
+                );
+                assert_eq!(
+                    ledger.text_of(&owner),
+                    Some("tak"),
+                    "a coarse Apple pencil is not a lexical floor"
+                );
+                let output = &ledger.slots_of(&owner).unwrap()[0];
+                assert_eq!(output.producer, producer);
+                assert_eq!(
+                    (output.sample_start, output.sample_end),
+                    (owner.sample_start, owner.sample_end)
+                );
+                assert!(ledger.slot_descends_from(output, &source));
+                assert!(ledger.complete_word_slot(output));
+                assert!(!ledger.text_recovery_pending(&owner));
+                assert_eq!(ledger.conservation().residue(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn forensic_div0_unbounded_label_cannot_append_to_a_complete_word_source() {
+        for producer in [ObservationProducer::Whisper, ObservationProducer::CloudLive] {
+            for pending in [false, true] {
+                let (mut ledger, owner, _) = forensic_merge_capture("word-authority", 1);
+                let before = ledger.slots_of(&owner).unwrap().to_vec();
+                assert!(ledger.complete_word_slot(&before[0]));
+                assert_eq!(ledger.text_of(&owner), Some("Iwo"));
+                if pending {
+                    assert!(ledger.require_text_recovery(&owner));
+                }
+                let candidate = ledger.next_word_observation(producer, 941, &owner);
+                let operations = ledger.slot_operations().len();
+                let receipt = ledger.admit(&candidate, "Iwo plan");
+                assert!(
+                    !receipt.grants_mutation(),
+                    "a label without Word/decode targets has no authority over completed pins: {producer:?}/pending={pending}: {receipt:?}"
+                );
+                assert_eq!(ledger.text_of(&owner), Some("Iwo"));
+                assert_eq!(ledger.slots_of(&owner).unwrap(), before);
+                assert_eq!(ledger.slot_operations().len(), operations);
+                assert_eq!(ledger.text_recovery_pending(&owner), pending);
+                assert_eq!(ledger.conservation().residue(), 0);
+            }
+        }
+    }
+
     fn owner() -> OccurrenceIdentity {
         OccurrenceIdentity::new("slot-test", 1, 0, 16_000)
     }
