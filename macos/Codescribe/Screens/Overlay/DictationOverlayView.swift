@@ -25,13 +25,15 @@ struct OverlayBottomChromeSlots: Equatable {
 
   init(
     mode: OverlayMode, hasPresentationStatus: Bool, isCollapsed: Bool,
-    hasLowInputSignal: Bool = false
+    hasLowInputSignal: Bool = false, showsDiagnostics: Bool = false
   ) {
+    // Seal refusal is a technical diagnostic and stays hidden unless the caller
+    // explicitly passes developer power mode. Quiet-mic advice is product copy.
+    let technicalCoverageRefused = mode == .coverageRefused && showsDiagnostics
+    let lowInputAdvisory = mode == .listening && hasLowInputSignal
     if isCollapsed {
       ordered = []
-    } else if !hasPresentationStatus
-      && (mode == .coverageRefused || (mode == .listening && hasLowInputSignal))
-    {
+    } else if !hasPresentationStatus && (technicalCoverageRefused || lowInputAdvisory) {
       ordered = [.rail, .coverageWarning]
     } else {
       ordered = [.rail]
@@ -275,7 +277,8 @@ struct DictationOverlayView: View {
   private var bottomChromeSlots: OverlayBottomChromeSlots {
     OverlayBottomChromeSlots(
       mode: state.mode, hasPresentationStatus: state.presentationStatus != nil,
-      isCollapsed: state.isCollapsed, hasLowInputSignal: state.levelMeter.hasLowInputSignal)
+      isCollapsed: state.isCollapsed, hasLowInputSignal: state.levelMeter.hasLowInputSignal,
+      showsDiagnostics: showsDiagnostics)
   }
   private var projectedIntents: [OverlayIntent] {
     OverlayIntentRail.projectedIntents(for: state)
