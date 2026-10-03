@@ -15,13 +15,44 @@ use codescribe_core::agent::{
 };
 use codescribe_core::attachment::{MAX_VISION_IMAGE_BYTES, load_image_for_vision};
 use codescribe_core::config::RuntimeSettingsSnapshot;
+use codescribe_core::llm::provider::{ProviderKind, provider_supports_vision};
 use tokio::task::AbortHandle;
 
 use crate::document_agent::{
     CsDocumentProvider, CsDocumentToolHost, DOCUMENT_AGENT_PROMPT, DocumentAgentContext,
     document_tool_registry,
 };
+use crate::workspace_agent::{WORKSPACE_AGENT_PROMPT, workspace_tool_registry};
 use crate::{CsError, application_runtime};
+
+/// Which embedded menu a hosted turn offers. Desktop replies pass `None`
+/// and keep the full native tool set. The document menu and the workspace
+/// menu are separate sessions; neither replaces the other.
+enum HostedSession {
+    Document(DocumentAgentContext),
+    Workspace(DocumentAgentContext),
+}
+
+impl HostedSession {
+    fn provider(&self) -> Option<&CsDocumentProvider> {
+        match self {
+            Self::Document(context) | Self::Workspace(context) => context.provider.as_ref(),
+        }
+    }
+
+    fn host(&self) -> &Arc<dyn CsDocumentToolHost> {
+        match self {
+            Self::Document(context) | Self::Workspace(context) => &context.host,
+        }
+    }
+
+    fn system_prompt(&self) -> &'static str {
+        match self {
+            Self::Document(_) => DOCUMENT_AGENT_PROMPT,
+            Self::Workspace(_) => WORKSPACE_AGENT_PROMPT,
+        }
+    }
+}
 
 /// Maximum number of image attachments the composer may forward in one message.
 /// Matches the live app controller's `MAX_AGENT_VISION_IMAGES` so both send paths
@@ -363,10 +394,138 @@ impl CodescribeAgent {
                     thread_id,
                     Vec::new(),
                     listener,
-                    Some(DocumentAgentContext {
+                    Some(HostedSession::Document(DocumentAgentContext {
                         host: document,
                         provider,
-                    }),
+                    })),
+                )
+                .await
+        })
+        .await?
+    }
+
+    /// The document-scoped loop with composer image attachments forwarded as
+    /// real vision input. Attachments reuse the single composer validation
+    /// (`validate_composer_attachments` over core's `load_image_for_vision`),
+    /// all-or-nothing and gated on the vision capability of the provider this
+    /// session will actually use — a readable error, never a silent drop. The
+    /// tool registry stays the exact document registry: an attachment is
+    /// message input, never a filesystem or desktop capability.
+    pub async fn stream_document_with_attachments(
+        &self,
+        text: String,
+        thread_id: String,
+        attachments: Vec<CsAttachment>,
+        document: Arc<dyn CsDocumentToolHost>,
+        provider: Option<CsDocumentProvider>,
+        listener: Arc<dyn CsAgentListener>,
+    ) -> Result<String, CsError> {
+        if codescribe_core::config::runtime_host::selected().is_none() {
+            return Err(CsError::Config {
+                msg: "document agent requires an embedding host identity".into(),
+            });
+        }
+        let agent = self.clone();
+        application_runtime::run(async move {
+            let settings = agent.current_settings();
+            let supports_vision = match provider.as_ref() {
+                Some(configuration) => explicit_provider_supports_vision(configuration),
+                None => {
+                    let lane = settings.llm_lanes().assistive();
+                    lane.supports_vision(lane.model())
+                }
+            };
+            let images = validate_composer_attachments(&attachments, supports_vision)?;
+            agent
+                .run_stream(
+                    text,
+                    thread_id,
+                    images,
+                    listener,
+                    Some(HostedSession::Document(DocumentAgentContext {
+                        host: document,
+                        provider,
+                    })),
+                )
+                .await
+        })
+        .await?
+    }
+
+    /// Run the same agent loop against the embedding app's workspace.
+    /// Workspace discovery and explicit document opening use the same host
+    /// callback and standard live-buffer tools as [`Self::stream_document`].
+    /// The host owns membership, tab routing, revisions and undo.
+    pub async fn stream_workspace(
+        &self,
+        text: String,
+        thread_id: String,
+        workspace: Arc<dyn CsDocumentToolHost>,
+        provider: Option<CsDocumentProvider>,
+        listener: Arc<dyn CsAgentListener>,
+    ) -> Result<String, CsError> {
+        if codescribe_core::config::runtime_host::selected().is_none() {
+            return Err(CsError::Config {
+                msg: "workspace agent requires an embedding host identity".into(),
+            });
+        }
+        let agent = self.clone();
+        application_runtime::run(async move {
+            agent
+                .run_stream(
+                    text,
+                    thread_id,
+                    Vec::new(),
+                    listener,
+                    Some(HostedSession::Workspace(DocumentAgentContext {
+                        host: workspace,
+                        provider,
+                    })),
+                )
+                .await
+        })
+        .await?
+    }
+
+    /// The workspace-scoped loop with composer image attachments forwarded as
+    /// real vision input. Same attachment contract as
+    /// [`Self::stream_document_with_attachments`]; the registry stays the exact
+    /// workspace registry (workspace discovery + live-buffer document tools).
+    pub async fn stream_workspace_with_attachments(
+        &self,
+        text: String,
+        thread_id: String,
+        attachments: Vec<CsAttachment>,
+        workspace: Arc<dyn CsDocumentToolHost>,
+        provider: Option<CsDocumentProvider>,
+        listener: Arc<dyn CsAgentListener>,
+    ) -> Result<String, CsError> {
+        if codescribe_core::config::runtime_host::selected().is_none() {
+            return Err(CsError::Config {
+                msg: "workspace agent requires an embedding host identity".into(),
+            });
+        }
+        let agent = self.clone();
+        application_runtime::run(async move {
+            let settings = agent.current_settings();
+            let supports_vision = match provider.as_ref() {
+                Some(configuration) => explicit_provider_supports_vision(configuration),
+                None => {
+                    let lane = settings.llm_lanes().assistive();
+                    lane.supports_vision(lane.model())
+                }
+            };
+            let images = validate_composer_attachments(&attachments, supports_vision)?;
+            agent
+                .run_stream(
+                    text,
+                    thread_id,
+                    images,
+                    listener,
+                    Some(HostedSession::Workspace(DocumentAgentContext {
+                        host: workspace,
+                        provider,
+                    })),
                 )
                 .await
         })
@@ -404,8 +563,9 @@ impl CodescribeAgent {
 }
 
 impl CodescribeAgent {
-    /// Shared streaming core behind [`stream_reply`] and
-    /// [`stream_reply_with_attachments`]. `attachments` are already loaded +
+    /// Shared streaming core behind [`stream_reply`],
+    /// [`stream_reply_with_attachments`], [`stream_document`] and
+    /// [`stream_workspace`]. `attachments` are already loaded +
     /// validated `ImageAttachment`s (empty for the text-only path).
     async fn run_stream(
         &self,
@@ -413,16 +573,14 @@ impl CodescribeAgent {
         thread_id: String,
         attachments: Vec<ImageAttachment>,
         listener: Arc<dyn CsAgentListener>,
-        document: Option<DocumentAgentContext>,
+        hosted: Option<HostedSession>,
     ) -> Result<String, CsError> {
         // One fresh seal for the WHOLE turn: lane identity, provider
         // credential, stream options and persistence labels all read the same
         // generation, and a key saved in Settings reaches the next send.
         let settings = self.current_settings();
         let assistive_lane = settings.llm_lanes().assistive();
-        let explicit_provider = document
-            .as_ref()
-            .and_then(|context| context.provider.as_ref());
+        let explicit_provider = hosted.as_ref().and_then(HostedSession::provider);
         let provider = match explicit_provider {
             Some(configuration) => configuration.build(settings.ai_execution().request_timing())?,
             None => codescribe::agent::create_provider_for_lane(
@@ -436,10 +594,11 @@ impl CodescribeAgent {
         let model = explicit_provider
             .map(|p| p.model.clone())
             .unwrap_or_else(|| assistive_lane.model().to_string());
-        let active_document = document.as_ref().map(|context| Arc::clone(&context.host));
-        let is_document_session = document.is_some();
-        let registry = match document {
-            Some(context) => document_tool_registry(context.host)?,
+        let active_document = hosted.as_ref().map(|session| Arc::clone(session.host()));
+        let system_prompt = hosted.as_ref().map(HostedSession::system_prompt);
+        let registry = match hosted {
+            Some(HostedSession::Document(context)) => document_tool_registry(context.host)?,
+            Some(HostedSession::Workspace(context)) => workspace_tool_registry(context.host)?,
             None => codescribe::agent::tools::configured_registry(),
         };
         let (ui_tx, ui_rx) = tokio::sync::mpsc::channel::<AgentUiEvent>(64);
@@ -480,10 +639,10 @@ impl CodescribeAgent {
         // controller path uses (build_agent_stream_options), so a Swift chat send
         // is not stripped of the WORKSPACE-augmented assistive prompt and the
         // configured `ai_assistive_max_tokens`.
-        let options = if is_document_session {
+        let options = if let Some(system_prompt) = system_prompt {
             StreamOptions {
                 model: model.clone(),
-                system_prompt: Some(DOCUMENT_AGENT_PROMPT.into()),
+                system_prompt: Some(system_prompt.into()),
                 max_tokens: u32::try_from(settings.values().ai_assistive_max_tokens)
                     .ok()
                     .filter(|value| *value > 0),
@@ -779,6 +938,23 @@ fn compose_agent_system_prompt(assistive_prompt: &str) -> String {
     let doctrine = codescribe::agent::tools::doctrine::review_doctrine_prompt_section();
     let api_truth = codescribe::agent::tools::api_truth::responses_api_prompt_section();
     format!("{assistive_prompt}\n\n{workspace}\n\n{doctrine}\n\n{api_truth}")
+}
+
+/// Vision gate for an explicit scoped-session provider: the declared wire
+/// family answers through core's capability policy, the same source the
+/// assistive lane consults for the embedded default. An unrecognized wire is
+/// refused here and again in `CsDocumentProvider::build` — never guessed
+/// permissive, because a wrong guess would silently drop the images.
+fn explicit_provider_supports_vision(configuration: &CsDocumentProvider) -> bool {
+    match configuration.wire.as_str() {
+        "openai-responses" => {
+            provider_supports_vision(ProviderKind::OpenAiResponses, &configuration.model)
+        }
+        "anthropic-messages" => {
+            provider_supports_vision(ProviderKind::AnthropicMessages, &configuration.model)
+        }
+        _ => false,
+    }
 }
 
 /// Load + validate composer attachments into vision `ImageAttachment`s.

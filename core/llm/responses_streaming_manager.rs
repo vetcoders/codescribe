@@ -1070,7 +1070,8 @@ fn is_private_ipv6(ip: Ipv6Addr) -> bool {
 /// The wire spreads one call across several events that do not all carry the
 /// same identifiers: the opening `output_item.added` has the item id and name,
 /// while argument deltas may only carry `item_id` or only `call_id`. These maps
-/// let later events recover the identity established by the first one.
+/// let later events recover the identity established by the first one. The
+/// terminal `function_call` item may replace that name, call id, and arguments.
 #[derive(Debug, Clone, Default)]
 struct ToolCallTracker {
     /// Item id → call identity, for events keyed by item rather than call.
@@ -1113,6 +1114,17 @@ fn parse_agent_event(
             chunk.delta.clone().map(AgentEvent::ReasoningDelta)
         }
         "response.output_item.added" => parse_tool_call_start(chunk, tracker),
+        "response.output_item.done" => {
+            if chunk
+                .item
+                .as_ref()
+                .is_some_and(|item| item.item_type == "function_call")
+            {
+                parse_tool_call_ready(chunk, tracker)
+            } else {
+                None
+            }
+        }
         "response.function_call_arguments.delta" => parse_tool_call_args_delta(chunk, tracker),
         "response.function_call_arguments.done" => parse_tool_call_ready(chunk, tracker),
         "response.completed" | "response.done" => {
@@ -1337,6 +1349,12 @@ fn parse_tool_call_ready(chunk: &StreamChunk, tracker: &mut ToolCallTracker) -> 
     let raw_arguments = chunk
         .arguments
         .as_deref()
+        .or_else(|| {
+            chunk
+                .item
+                .as_ref()
+                .and_then(|item| item.arguments.as_deref())
+        })
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
@@ -1362,11 +1380,14 @@ fn parse_tool_call_ready(chunk: &StreamChunk, tracker: &mut ToolCallTracker) -> 
 }
 
 /// Recover `(call_id, tool_name)` for a chunk that may identify its call by
-/// `call_id`, by `item_id`, or not at all.
+/// `call_id`, by `item_id`, by those fields on the nested output item, or not
+/// at all.
 ///
-/// Direct `call_id` wins; otherwise the `item_id` is looked up in the tracker,
-/// and an unknown item id is used as its own call id so the call still reaches
-/// the agent loop instead of vanishing. `None` only when neither id is present.
+/// Direct `call_id` wins, including a call id carried only on the item;
+/// otherwise the `item_id` is looked up in the tracker, and an unknown item id
+/// is used as its own call id so the call still reaches the agent loop instead
+/// of vanishing. A non-empty name on the chunk or item replaces the name stored
+/// at start. `None` only when neither id is present.
 fn resolve_call_id_and_name(
     chunk: &StreamChunk,
     tracker: &ToolCallTracker,
@@ -1374,12 +1395,14 @@ fn resolve_call_id_and_name(
     if let Some(call_id) = chunk
         .call_id
         .as_deref()
+        .or_else(|| chunk.item.as_ref().and_then(|item| item.call_id.as_deref()))
         .map(str::trim)
         .filter(|id| !id.is_empty())
     {
         let name = chunk
             .name
             .as_deref()
+            .or_else(|| chunk.item.as_ref().and_then(|item| item.name.as_deref()))
             .map(str::trim)
             .filter(|name| !name.is_empty())
             .map(ToString::to_string)
@@ -1391,11 +1414,20 @@ fn resolve_call_id_and_name(
     if let Some(item_id) = chunk
         .item_id
         .as_deref()
+        .or_else(|| chunk.item.as_ref().and_then(|item| item.id.as_deref()))
         .map(str::trim)
         .filter(|id| !id.is_empty())
     {
         if let Some(meta) = tracker.by_item_id.get(item_id) {
-            return Some((meta.call_id.clone(), meta.name.clone()));
+            let name = chunk
+                .name
+                .as_deref()
+                .or_else(|| chunk.item.as_ref().and_then(|item| item.name.as_deref()))
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .unwrap_or(&meta.name)
+                .to_string();
+            return Some((meta.call_id.clone(), name));
         }
         return Some((item_id.to_string(), "unknown_tool".to_string()));
     }
@@ -1632,6 +1664,8 @@ struct StreamItem {
     call_id: Option<String>,
     #[serde(default)]
     name: Option<String>,
+    #[serde(default)]
+    arguments: Option<String>,
 }
 
 /// Lifecycle diagnostics consume only the part kind; terminal text is read by
