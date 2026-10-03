@@ -77,7 +77,8 @@ final class CloudPrivacyCopyTests: XCTestCase {
           for entry in entries { applyWrite(entry.key, entry.value) }
         },
         updateConfigObserver: applyWrite
-      )
+      ),
+      permissionProbe: MockPermissionProbe()
     )
     XCTAssertEqual(model.asrModeId, "apple_only")
     model.setAsrMode("cloud")

@@ -141,9 +141,9 @@ Pass the existing `MockPermissionProbe` explicitly when constructing
 `SettingsViewModel` in settings and provider unit fixtures. The native probe
 enumerates TCC-protected user directories for its Full Disk Access heuristic;
 that filesystem operation can block even when the test never requests a grant.
-The `ProvidersPanelTests` and `SettingsTruthTests` fixtures use deterministic
-permission snapshots. Tests for denied or undetermined permissions must pass
-those explicit states rather than depend on the host. Real OS permission
+The settings, provider, Cloud privacy, tray and Voice Lab unit fixtures use
+deterministic permission snapshots. Tests for denied or undetermined permissions
+must pass those explicit states rather than depend on the host. Real OS permission
 behavior belongs to native acceptance, with the normal time budgets retained.
 
 ## Coverage this actually buys
