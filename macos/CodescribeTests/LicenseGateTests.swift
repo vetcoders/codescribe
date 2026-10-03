@@ -4,7 +4,7 @@ import XCTest
 
 @MainActor
 final class LicenseGateTests: XCTestCase {
-  func testUnlicensedBlocksAgenticAndActiveUnlocksIt() {
+  func testUnlicensedBlocksAgenticAndActiveUnlocksIt() async {
     let service = LicenseService(
       keychain: nil,
       autoload: true,
@@ -21,7 +21,9 @@ final class LicenseGateTests: XCTestCase {
     XCTAssertEqual(store.draft, "paid agent turn")
     XCTAssertTrue(store.queuedTurns.isEmpty)
 
-    XCTAssertTrue(service.activate(LicenseTestFixture.devKey))
+    await awaitCondition { !service.isBusy }
+    let activated = await service.activate(LicenseTestFixture.devKey)
+    XCTAssertTrue(activated)
     XCTAssertFalse(store.isAgenticLocked)
     XCTAssertTrue(store.canSend)
   }

@@ -989,7 +989,9 @@ impl CodescribeConfig {
         // through the existing loader; passive UI projections leave them pending.
         let _ = Config::load_runtime_snapshot().map_err(provider_error)?;
         let revision = keychain::bundle_revision();
-        if revision != previous_revision { invalidate_runtime_snapshot_cache(); }
+        if revision != previous_revision {
+            invalidate_runtime_snapshot_cache();
+        }
         let registry = ProviderRegistry::from_settings(&UserSettings::load());
         let mut providers = Vec::new();
         for provider in registry.all() {
@@ -2507,7 +2509,9 @@ fn resolve_catalog_provider(
 }
 
 fn provider_option(provider: ResolvedProvider) -> CsProviderOption {
-    let status = provider.oauth_vendor.map(account_auth::cached_account_status);
+    let status = provider
+        .oauth_vendor
+        .map(account_auth::cached_account_status);
     CsProviderOption {
         id: provider.reference.as_string(),
         kind: if provider.reference.custom_id().is_some() {

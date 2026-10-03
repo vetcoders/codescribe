@@ -416,7 +416,9 @@ pub fn cached_account_status(provider: ProviderKind) -> AccountAuthStatus {
 }
 
 /// Strict UI refresh preserves storage/corruption errors rather than sign-out.
-pub fn account_status_snapshot(provider: ProviderKind) -> Result<AccountAuthStatus, AccountAuthError> {
+pub fn account_status_snapshot(
+    provider: ProviderKind,
+) -> Result<AccountAuthStatus, AccountAuthError> {
     let tokens = match cached_account_tokens(provider) {
         Ok(tokens) => Some(tokens),
         Err(AccountAuthError::NotSignedIn(_)) => None,
@@ -425,7 +427,10 @@ pub fn account_status_snapshot(provider: ProviderKind) -> Result<AccountAuthStat
     Ok(project_account_status(provider, tokens))
 }
 
-fn project_account_status(provider: ProviderKind, tokens: Option<AccountTokens>) -> AccountAuthStatus {
+fn project_account_status(
+    provider: ProviderKind,
+    tokens: Option<AccountTokens>,
+) -> AccountAuthStatus {
     let client_id_configured = client_id_for_provider(provider).is_ok();
     let signed_in = tokens.is_some();
     let message = if !client_id_configured {
@@ -665,9 +670,12 @@ async fn verify_responses_write_access_at(
 pub fn load_account_tokens(provider: ProviderKind) -> Result<AccountTokens, AccountAuthError> {
     ensure_provider_supported(provider)?;
     let account = token_account(provider)?;
-    if std::env::var(account).ok().filter(|value| !value.trim().is_empty()).is_none() {
-        ensure_bundle_loaded()
-            .map_err(|error| AccountAuthError::Storage(format!("{error:#}")))?;
+    if std::env::var(account)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .is_none()
+    {
+        ensure_bundle_loaded().map_err(|error| AccountAuthError::Storage(format!("{error:#}")))?;
     }
     cached_account_tokens(provider)
 }

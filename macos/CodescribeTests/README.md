@@ -10,6 +10,16 @@ make test-swift SWIFT_TEST_ARGS='-only-testing:CodescribeTests/OverlayStateTests
 The target lives in the root `Makefile`; read its comment block before invoking
 `xcodebuild` by hand, because two of the traps below cost this plan a stage.
 
+## Credential operation fixtures
+
+License storage fixtures are Sendable and lock-protected because production
+storage now runs on a background queue. Assertions await physical completion;
+controllable read/write continuations distinguish pending, durable success,
+denial and stale revisions. The fixtures verify cold loading, preserved license
+payload without extending grace/expiry, failed save/delete, provider draft and
+step retention, and snapshot coalescing. Every injected permission probe stays
+synthetic; no real credential is used by these unit fixtures.
+
 ## Invocation traps
 
 1. **`CODE_SIGN_IDENTITY="-" xcodebuild …` does nothing.** xcodebuild reads

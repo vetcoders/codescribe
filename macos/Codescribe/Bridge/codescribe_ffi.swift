@@ -1064,8 +1064,8 @@ public protocol CodescribeAgentStatusProtocol: AnyObject, Sendable {
     /**
      * Agentic-lane readiness. `ready` is the core capability gate (assistive
      * provider + its API key + native tools); the MCP rows are informational.
-     * Loads `Config` first so Keychain-backed keys are populated into env and the
-     * core gate sees real key presence (mirrors `available_providers`).
+     * Projects files, env and the existing credential cache. The explicit
+     * background provider-access refresh acquires credentials before publication.
      */
     func agenticReadiness()  -> CsAgenticReadiness
 
@@ -1148,8 +1148,8 @@ public convenience init() {
     /**
      * Agentic-lane readiness. `ready` is the core capability gate (assistive
      * provider + its API key + native tools); the MCP rows are informational.
-     * Loads `Config` first so Keychain-backed keys are populated into env and the
-     * core gate sees real key presence (mirrors `available_providers`).
+     * Projects files, env and the existing credential cache. The explicit
+     * background provider-access refresh acquires credentials before publication.
      */
 open func agenticReadiness() -> CsAgenticReadiness  {
     return try!  FfiConverterTypeCsAgenticReadiness_lift(try! rustCall() {
@@ -1377,6 +1377,16 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
      */
     func overlayKeepVisibleBetweenTakes()  -> Bool
 
+    /**
+     * Cache-only revision check; it never waits for credential I/O.
+     */
+    func providerAccessRevision()  -> UInt64
+
+    /**
+     * Explicit credential acquisition. Swift executes this off MainActor.
+     */
+    func providerAccessSnapshot() throws  -> CsProviderAccessSnapshot
+
     func removeCustomProvider(id: String) throws  -> CsCustomProviderRemoval
 
     /**
@@ -1553,8 +1563,8 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
     func testApiKey(account: String) throws  -> CsApiKeyProbeResult
 
     /**
-     * Lightweight tray-only settings read. Unlike `load_settings`, this never
-     * populates the Keychain, so it never prompts just because the user opened
+     * Lightweight tray-only settings read uses files, env and cached credentials.
+     * It never prompts just because the user opened
      * the menu. Projects from one keychain-free runtime snapshot.
      */
     func trayToggles()  -> CsTrayToggles
@@ -1927,6 +1937,28 @@ open func overlayKeepVisibleBetweenTakes() -> Bool  {
 })
 }
 
+    /**
+     * Cache-only revision check; it never waits for credential I/O.
+     */
+open func providerAccessRevision() -> UInt64  {
+    return try!  FfiConverterUInt64.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribeconfig_provider_access_revision(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
+     * Explicit credential acquisition. Swift executes this off MainActor.
+     */
+open func providerAccessSnapshot()throws  -> CsProviderAccessSnapshot  {
+    return try  FfiConverterTypeCsProviderAccessSnapshot_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_method_codescribeconfig_provider_access_snapshot(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
 open func removeCustomProvider(id: String)throws  -> CsCustomProviderRemoval  {
     return try  FfiConverterTypeCsCustomProviderRemoval_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_method_codescribeconfig_remove_custom_provider(
@@ -2290,8 +2322,8 @@ open func testApiKey(account: String)throws  -> CsApiKeyProbeResult  {
 }
 
     /**
-     * Lightweight tray-only settings read. Unlike `load_settings`, this never
-     * populates the Keychain, so it never prompts just because the user opened
+     * Lightweight tray-only settings read uses files, env and cached credentials.
+     * It never prompts just because the user opened
      * the menu. Projects from one keychain-free runtime snapshot.
      */
 open func trayToggles() -> CsTrayToggles  {
@@ -11425,6 +11457,69 @@ public func FfiConverterTypeCsPromptSnapshot_lower(_ value: CsPromptSnapshot) ->
 
 
 /**
+ * Secret-free credential projection captured at one cache revision.
+ */
+public struct CsProviderAccessSnapshot: Equatable, Hashable {
+    public var providers: [CsProviderOption]
+    public var keyStatus: CsKeyStatus
+    public var sttLanes: [CsSttLane]
+    public var revision: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(providers: [CsProviderOption], keyStatus: CsKeyStatus, sttLanes: [CsSttLane], revision: UInt64) {
+        self.providers = providers
+        self.keyStatus = keyStatus
+        self.sttLanes = sttLanes
+        self.revision = revision
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsProviderAccessSnapshot: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsProviderAccessSnapshot: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsProviderAccessSnapshot {
+        return
+            try CsProviderAccessSnapshot(
+                providers: FfiConverterSequenceTypeCsProviderOption.read(from: &buf),
+                keyStatus: FfiConverterTypeCsKeyStatus.read(from: &buf),
+                sttLanes: FfiConverterSequenceTypeCsSttLane.read(from: &buf),
+                revision: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsProviderAccessSnapshot, into buf: inout [UInt8]) {
+        FfiConverterSequenceTypeCsProviderOption.write(value.providers, into: &buf)
+        FfiConverterTypeCsKeyStatus.write(value.keyStatus, into: &buf)
+        FfiConverterSequenceTypeCsSttLane.write(value.sttLanes, into: &buf)
+        FfiConverterUInt64.write(value.revision, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsProviderAccessSnapshot_lift(_ buf: RustBuffer) throws -> CsProviderAccessSnapshot {
+    return try FfiConverterTypeCsProviderAccessSnapshot.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsProviderAccessSnapshot_lower(_ value: CsProviderAccessSnapshot) -> RustBuffer {
+    return FfiConverterTypeCsProviderAccessSnapshot.lower(value)
+}
+
+
+/**
  * Provider identity and credential presence; never a returned secret.
  */
 public struct CsProviderOption: Equatable, Hashable {
@@ -17979,7 +18074,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_stream_reply_with_attachments() != 7965) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeagentstatus_agentic_readiness() != 27253) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeagentstatus_agentic_readiness() != 2261) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeagentstatus_capability_matrix() != 24926) {
@@ -18058,6 +18153,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_overlay_keep_visible_between_takes() != 3434) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_provider_access_revision() != 35789) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_provider_access_snapshot() != 34624) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_remove_custom_provider() != 11187) {
@@ -18150,7 +18251,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_test_api_key() != 41767) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_tray_toggles() != 33834) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_tray_toggles() != 2766) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_update_config() != 45382) {

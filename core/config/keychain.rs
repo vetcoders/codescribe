@@ -260,7 +260,9 @@ static PROCESS_ENV_SEEDS: OnceLock<RwLock<BTreeMap<String, String>>> = OnceLock:
 static POPULATE_ONCE: Once = Once::new();
 
 fn bundle_io() -> MutexGuard<'static, ()> {
-    BUNDLE_IO.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    BUNDLE_IO
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn bundle_cache() -> &'static RwLock<BundleCache> {
@@ -268,7 +270,11 @@ fn bundle_cache() -> &'static RwLock<BundleCache> {
 }
 
 fn read_bundle_cache() -> Option<KeychainBundle> {
-    bundle_cache().read().unwrap_or_else(|e| e.into_inner()).bundle.clone()
+    bundle_cache()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .bundle
+        .clone()
 }
 
 fn write_bundle_cache(bundle: Option<KeychainBundle>) {
@@ -282,12 +288,18 @@ fn write_bundle_cache(bundle: Option<KeychainBundle>) {
 
 fn cache_missing_bundle() {
     write_bundle_cache(None);
-    bundle_cache().write().unwrap_or_else(|e| e.into_inner()).checked = true;
+    bundle_cache()
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .checked = true;
 }
 
 /// A projection can reject results captured before a later credential mutation.
 pub fn bundle_revision() -> u64 {
-    bundle_cache().read().unwrap_or_else(|e| e.into_inner()).revision
+    bundle_cache()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .revision
 }
 
 /// Mark a successful provider-config or explicit env-token mutation as newer
@@ -302,7 +314,9 @@ pub fn advance_bundle_revision() {
 /// Waiting or cancelled UI callers never release the physical I/O mutex.
 pub fn ensure_bundle_loaded() -> Result<()> {
     note_credential_acquisition("refresh bundle");
-    if is_test_env() { return Ok(()); }
+    if is_test_env() {
+        return Ok(());
+    }
     let _io = bundle_io();
     read_bundle_locked(false).map(|_| ())
 }
@@ -312,7 +326,9 @@ pub fn ensure_bundle_loaded() -> Result<()> {
 /// This is the same cache and physical I/O lease as runtime secret acquisition.
 pub fn refresh_bundle() -> Result<()> {
     note_credential_acquisition("refresh bundle");
-    if is_test_env() { return Ok(()); }
+    if is_test_env() {
+        return Ok(());
+    }
     let _io = bundle_io();
     read_bundle_locked(true).map(|_| ())
 }
@@ -400,9 +416,15 @@ fn read_bundle_locked(refresh: bool) -> Result<Option<KeychainBundle>> {
     {
         let cache = bundle_cache().read().unwrap_or_else(|e| e.into_inner());
         if let Some((message, retry_after)) = &cache.unavailable {
-            if Instant::now() < *retry_after { anyhow::bail!("{message}"); }
-        } else if cache.checked && ((!refresh && cache.bundle.is_some())
-            || cache.checked_at.is_some_and(|at| at.elapsed() < Duration::from_secs(5))) {
+            if Instant::now() < *retry_after {
+                anyhow::bail!("{message}");
+            }
+        } else if cache.checked
+            && ((!refresh && cache.bundle.is_some())
+                || cache
+                    .checked_at
+                    .is_some_and(|at| at.elapsed() < Duration::from_secs(5)))
+        {
             return Ok(cache.bundle.clone());
         }
     }
@@ -418,7 +440,10 @@ fn read_bundle_locked(refresh: bool) -> Result<Option<KeychainBundle>> {
         Ok(None) => cache_missing_bundle(),
         Err(error) => {
             let mut cache = bundle_cache().write().unwrap_or_else(|e| e.into_inner());
-            cache.unavailable = Some((format!("{error:#}"), Instant::now() + Duration::from_secs(5)));
+            cache.unavailable = Some((
+                format!("{error:#}"),
+                Instant::now() + Duration::from_secs(5),
+            ));
             cache.revision = cache.revision.wrapping_add(1);
         }
     }
