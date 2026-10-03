@@ -1643,10 +1643,35 @@ mod tests {
             }
             "group-split" => {
                 ledger.admit(&apple, "na prawdę");
-                ledger.admit_word_slots(&whisper, &children);
+                // Decode scope proves the coarse owner was examined; word clocks
+                // stay inside that scope and retain their own physical gap.
+                let mut scoped_children = children.clone();
+                scoped_children[0].sample_start = 2_000;
+                scoped_children[0].sample_end = 6_000;
+                scoped_children[1].sample_start = 8_000;
+                scoped_children[1].sample_end = 12_000;
+                let scoped_children = scoped_children.map(|pin| pin.with_decode_window(0, 16_000));
+                let receipt = ledger.admit_word_slots(&whisper, &scoped_children);
+                // The lexical projection is unchanged; the accepted slot
+                // operation still records its new word geometry.
                 assert_eq!(
-                    ledger.slot_operations().last().unwrap().kind,
-                    SlotOperationKind::Split
+                    receipt,
+                    MutationReceipt::Preserve {
+                        occurrence: owner.clone(),
+                        held_by: ObservationProducer::Apple,
+                    }
+                );
+                assert_eq!(ledger.text_of(&owner), Some("na prawdę"));
+                let operation = ledger.slot_operations().last().unwrap();
+                assert_eq!(operation.kind, SlotOperationKind::Split);
+                assert_eq!(operation.source_ranges[0], owner);
+                assert_eq!(
+                    operation
+                        .outputs
+                        .iter()
+                        .map(|slot| (slot.sample_start, slot.sample_end))
+                        .collect::<Vec<_>>(),
+                    [(2_000, 6_000), (8_000, 12_000)]
                 );
             }
             "explicit-split" => {
@@ -1895,12 +1920,28 @@ mod tests {
                 "weryfikowałeś",
                 &[WordPin::new(0, 16_000, "weryfikowałeś")],
             );
-            ledger.admit_pinned_label(
+            // A word correction supplies its PCM pin, rather than granting
+            // whole-label text the authority to replace an existing word.
+            let receipt = ledger.admit_word_slots(
                 &ObservationIdentity::new(ObservationProducer::Whisper, 2, 1, owner.clone()),
-                "zweryfikowałeś",
-                &[],
+                &[WordPin::new(0, 16_000, "zweryfikowałeś")],
             );
+            assert!(receipt.grants_mutation());
             assert_eq!(ledger.text_of(&owner), Some("zweryfikowałeś"));
+            let operation = ledger.slot_operations().last().unwrap();
+            assert_eq!(operation.kind, SlotOperationKind::Correct);
+            assert_eq!(
+                operation.source_ranges.as_slice(),
+                std::slice::from_ref(&owner)
+            );
+            assert_eq!(operation.outputs.len(), 1);
+            assert_eq!(
+                (
+                    operation.outputs[0].sample_start,
+                    operation.outputs[0].sample_end
+                ),
+                (0, 16_000)
+            );
         }
         assert!(
             !ledger.slot_operations().is_empty(),
