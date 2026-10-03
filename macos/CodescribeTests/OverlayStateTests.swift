@@ -2775,6 +2775,44 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(OverlayIntentRail.projectedIntents(for: state), [.close])
   }
 
+  func testPostStopFailureDoesNotClaimRecordingNeverStarted() {
+    let state = OverlayState()
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    state.handleRecordingFinalising()
+    state.finishControllerRecording()
+    state.handleError(message: "transcription_failed: controlled failure")
+
+    XCTAssertFalse(state.recording)
+    XCTAssertEqual(state.errorLifecycleDetail, "Recording started, but transcription did not finish.")
+    XCTAssertEqual(state.errorMessage, "Couldn't finish transcription")
+    XCTAssertEqual(state.errorDiagnosticDetail, "transcription_failed: controlled failure")
+  }
+
+  func testNewCaptureDoesNotInheritPreviousSuccessfulStart() {
+    let state = OverlayState()
+    state.handleRecordingStarted()
+    state.finishControllerRecording()
+    state.handleRecordingPreparing()
+    state.handleError(message: "capture_start_failed: controlled failure")
+
+    XCTAssertEqual(state.errorLifecycleDetail, "Recording did not start.")
+    XCTAssertEqual(state.errorFooterSummary, "Recording failed")
+    XCTAssertFalse(state.captureDidStart)
+  }
+
+  func testDuplicatePreparingDoesNotEraseConfirmedStartHistory() {
+    let state = OverlayState()
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    state.handleRecordingPreparing()
+    state.finishControllerRecording()
+    state.handleError(message: "transcription_failed: controlled failure")
+
+    XCTAssertTrue(state.captureDidStart)
+    XCTAssertEqual(state.errorLifecycleDetail, "Recording started, but transcription did not finish.")
+  }
+
   func testHandleErrorSurfacesFriendlySpeechAuthToast() {
     let state = OverlayState()
     state.handleError(
@@ -2820,7 +2858,7 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.statusText, "listening")
     XCTAssertTrue(stopped, "stop parity must fire — no zombie Recording pill")
     XCTAssertEqual(state.activeText, "zdanie pierwsze")
-    XCTAssertEqual(state.toast, "Dictation failed — transcript kept")
+    XCTAssertEqual(state.toast, "Transcription incomplete")
   }
 
   /// A worse retranscription must never be a one-way door (operator,
@@ -2930,7 +2968,7 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(delivered.count, 1, "the failed take must reach the composer join")
     XCTAssertEqual(delivered.first?.text, "zdanie pierwsze")
     XCTAssertEqual(delivered.first?.sessionId, "failed-take-join")
-    XCTAssertEqual(state.toast, "Dictation failed — transcript kept")
+    XCTAssertEqual(state.toast, "Transcription incomplete")
 
     state.handleError(message: "transcription_failed: engine gave up mid-take")
     XCTAssertEqual(delivered.count, 1, "a duplicate terminal must not insert a second copy")
@@ -2940,7 +2978,8 @@ final class OverlayStateTests: XCTestCase {
     let state = OverlayState()
     state.handleError(message: "layer1_lane_degraded: Layer 1 lane fell back")
     XCTAssertEqual(state.mode, .listening)
-    XCTAssertEqual(state.errorMessage, "layer1_lane_degraded: Layer 1 lane fell back")
+    XCTAssertEqual(state.errorDiagnosticDetail, "layer1_lane_degraded: Layer 1 lane fell back")
+    XCTAssertEqual(state.errorMessage, "Couldn't start recording")
   }
 
   @MainActor

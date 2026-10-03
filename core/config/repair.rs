@@ -425,6 +425,61 @@ mod tests {
     use super::*;
 
     #[test]
+    fn repair_summary_names_env_keys_without_an_empty_backup_claim() {
+        let receipt = RepairReceipt {
+            actions: vec![
+                RepairAction::UnknownEnvKey { key: "UNKNOWN_AUDIO_KEY".into() },
+                RepairAction::PrecedenceNote { key: "FORMATTING_LEVEL".into() },
+            ],
+            ..RepairReceipt::default()
+        };
+        let summary = receipt.summary().unwrap();
+        assert!(summary.contains("0 repairs"), "{summary}");
+        assert!(summary.contains("2 env key(s)"), "{summary}");
+        assert!(summary.contains("UNKNOWN_AUDIO_KEY"), "{summary}");
+        assert!(summary.contains("FORMATTING_LEVEL"), "{summary}");
+        assert!(!summary.contains("backup"), "{summary}");
+    }
+
+    #[test]
+    fn repair_summary_keeps_backups_but_never_exposes_repaired_values() {
+        let receipt = RepairReceipt {
+            actions: vec![
+                RepairAction::FieldReset {
+                    field: "ui.chat_zoom".into(),
+                    from: serde_json::json!("secret-before-marker"),
+                    to: serde_json::json!("secret-after-marker"),
+                },
+                RepairAction::UnknownEnvKey { key: "UNKNOWN_AUDIO_KEY".into() },
+            ],
+            backups: vec![PathBuf::from("/private/tmp/settings.bak-first"), PathBuf::from("/private/tmp/settings.bak-second")],
+            ..RepairReceipt::default()
+        };
+        let summary = receipt.summary().unwrap();
+        assert!(summary.contains("1 repairs"), "{summary}");
+        assert!(summary.contains("1 env key(s)"), "{summary}");
+        assert!(summary.contains("UNKNOWN_AUDIO_KEY"), "{summary}");
+        assert!(summary.contains("settings.bak-first, /private/tmp/settings.bak-second"), "{summary}");
+        assert!(!summary.contains("secret-"), "{summary}");
+    }
+
+    #[test]
+    fn repair_summary_handles_repairs_without_backups_and_prioritizes_refusal() {
+        let mut receipt = RepairReceipt {
+            actions: vec![RepairAction::SeededFromPack { field: "speech.engine".into() }],
+            ..RepairReceipt::default()
+        };
+        let summary = receipt.summary().unwrap();
+        assert!(summary.contains("1 changes"), "{summary}");
+        assert!(!summary.contains("backup"), "{summary}");
+        receipt.unrepairable.push(ConfigUnrepairable { path: PathBuf::from("/private/tmp/settings.json"), reason: "unsupported schema".into() });
+        let summary = receipt.summary().unwrap();
+        assert!(summary.contains("unsupported schema"), "{summary}");
+        assert!(!summary.contains("repaired"), "{summary}");
+        assert_eq!(RepairReceipt::default().summary(), None);
+    }
+
+    #[test]
     fn repair_preserves_intent_and_original_bytes_and_is_idempotent() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
