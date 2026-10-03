@@ -598,6 +598,13 @@ class PlaybackQueueTests(unittest.TestCase):
             DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor)
         )
         self.bus.write_text("")
+        # Erasing history is not a terminal receipt for the observed live take.
+        self.assertFalse(
+            DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor)
+        )
+        self.bus.write_text(
+            json.dumps({"status": "session_ended", "session_id": "second"}) + "\n"
+        )
         self.assertTrue(
             DEMUX.installation_idle(self.bus, sealed_is_idle=False, cursor=cursor)
         )
@@ -754,6 +761,100 @@ class PlaybackQueueTests(unittest.TestCase):
         self.assertFalse(paths[0].exists())
         lock = self.hold_lock()
         fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+# Root-owned independent lifecycle controls, frozen before source reception.
+def forensic_cold_wait_respects_deadline():
+    with tempfile.TemporaryDirectory(prefix="cs-L30-budget-",dir="/private/tmp") as d:
+        root=Path(d);bus=root/"events.jsonl"
+        rows=[dict(schema="forensic.synthetic.diagnostic.v1",session_id="closed-history",status="diagnostic") for _ in range(200)]
+        bus.write_text("".join(json.dumps(row)+"\n" for row in rows))
+        clock=[0.0];parsed=[0];loads=DEMUX.json.loads
+        def slow_loads(value,*a,**kw):
+            out=loads(value,*a,**kw);clock[0]+=1.0;parsed[0]+=1;return out
+        with patch.object(DEMUX.time,"monotonic",side_effect=lambda:clock[0]),patch.object(DEMUX.json,"loads",side_effect=slow_loads):
+            allowed=DEMUX._wait_for_take_end(bus,{},bridge_root=root)
+        assert not allowed, f"expired take wait authorized playback: elapsed={clock[0]}, limit={DEMUX.TAKE_WAIT_SECONDS}, rows={parsed[0]}"
+        assert clock[0] <= DEMUX.TAKE_WAIT_SECONDS+1.0, f"deadline did not interrupt reader: {clock[0]}"
+        return dict(elapsed=clock[0],rows=parsed[0])
+def forensic_cold_and_incremental_current_take_remains_busy():
+    with tempfile.TemporaryDirectory(prefix="cs-L30-busy-",dir="/private/tmp") as d:
+        root=Path(d);bus=root/"events.jsonl"
+        rows=[dict(status="session_started",session_id="real-live-app")]
+        rows += [dict(status="diagnostic",session_id="closed-history") for _ in range(200)]
+        rows += [dict(status="session_ended",session_id="unrelated-session")]
+        bus.write_text("".join(json.dumps(row)+"\n" for row in rows))
+        cursor={};assert not DEMUX.installation_idle(bus,cursor=cursor,bridge_root=root)
+        assert not DEMUX.installation_idle(bus,cursor=cursor,bridge_root=root)
+        with bus.open("a") as f:f.write(json.dumps(dict(status="session_ended",session_id="real-live-app"))+"\n")
+        assert DEMUX.installation_idle(bus,cursor=cursor,bridge_root=root)
+        return dict(early_open_retained=True,unrelated_terminal_cannot_clear=True,exact_terminal_releases=True)
+def forensic_short_idle_wait_is_eligible():
+    with tempfile.TemporaryDirectory(prefix="cs-L30-idle-",dir="/private/tmp") as d:
+        root=Path(d);bus=root/"events.jsonl"
+        bus.write_text(json.dumps(dict(status="session_started",session_id="finished"))+"\n"+json.dumps(dict(status="session_ended",session_id="finished"))+"\n")
+        assert DEMUX._wait_for_take_end(bus,{},bridge_root=root)
+        return dict(valid_idle=True)
+def forensic_successive_fresh_playbacks_reuse_canonical_history():
+    with tempfile.TemporaryDirectory(prefix="cs-L32-replies-",dir="/private/tmp") as d:
+        root=Path(d);bus=root/"events.jsonl"
+        bus.write_text("".join(json.dumps(dict(status="diagnostic",session_id="history"))+"\n" for _ in range(1000)))
+        loads=DEMUX.json.loads;parsed=[0]
+        def counted(value,*a,**kw):parsed[0]+=1;return loads(value,*a,**kw)
+        with patch.object(DEMUX.json,"loads",side_effect=counted):
+            assert DEMUX._wait_for_take_end(bus,{},bridge_root=root)
+            first=parsed[0];parsed[0]=0
+            assert DEMUX._wait_for_take_end(bus,{},bridge_root=root)
+            second=parsed[0]
+        assert second <= 10, f"fresh next reply reparsed complete historical bus: first={first}, second={second}"
+        return dict(initial_parsed=first,next_reply_parsed=second)
+def forensic_lifecycle_rotation_truncation_and_partial_tail_stay_safe():
+    with tempfile.TemporaryDirectory(prefix="cs-L32-lifecycle-",dir="/private/tmp") as d:
+        root=Path(d);bus=root/"events.jsonl";cursor={}
+        def row(status,sid):return json.dumps(dict(status=status,session_id=sid))+"\n"
+        bus.write_text(row("session_started","old")+row("session_ended","old"))
+        assert DEMUX.installation_idle(bus,cursor=cursor,bridge_root=root)
+        replacement=root/"replacement";replacement.write_text(row("session_started","new"));replacement.replace(bus)
+        assert not DEMUX.installation_idle(bus,cursor=cursor,bridge_root=root)
+        with bus.open("a") as f:f.write(row("session_ended","new"))
+        assert DEMUX.installation_idle(bus,cursor=cursor,bridge_root=root)
+        bus.write_text(row("session_started","short"))
+        assert not DEMUX.installation_idle(bus,cursor=cursor,bridge_root=root)
+        with bus.open("a") as f:f.write('{"status":"session_ended","session_id":"short"}')
+        assert not DEMUX.installation_idle(bus,cursor=cursor,bridge_root=root)
+        with bus.open("a") as f:f.write("\n")
+        assert DEMUX.installation_idle(bus,cursor=cursor,bridge_root=root)
+        return dict(rotation=True,truncation=True,partial_tail=True)
+def forensic_unended_take_survives_bus_truncation_until_exact_terminal():
+    with tempfile.TemporaryDirectory(prefix="cs-L34-unended-",dir="/private/tmp") as d:
+        root=Path(d);bus=root/"events.jsonl";cursor={}
+        bus.write_text(json.dumps(dict(status="session_started",session_id="unended"))+"\n")
+        assert not DEMUX.installation_idle(bus,cursor=cursor,bridge_root=root)
+        bus.write_text("")
+        assert not DEMUX.installation_idle(bus,cursor=cursor,bridge_root=root), "truncation is not a terminal receipt for a previously observed active take"
+        bus.write_text(json.dumps(dict(status="session_ended",session_id="unended"))+"\n")
+        assert DEMUX.installation_idle(bus,cursor=cursor,bridge_root=root), "exact terminal receipt must still release it"
+        return dict(unended_preserved=True,exact_terminal_releases=True)
+
+class LifecycleForensicsTests(unittest.TestCase):
+    def test_cold_wait_respects_deadline(self):
+        forensic_cold_wait_respects_deadline()
+
+    def test_cold_and_incremental_current_take_remains_busy(self):
+        forensic_cold_and_incremental_current_take_remains_busy()
+
+    def test_short_idle_wait_is_eligible(self):
+        forensic_short_idle_wait_is_eligible()
+
+    def test_successive_fresh_playbacks_reuse_canonical_history(self):
+        forensic_successive_fresh_playbacks_reuse_canonical_history()
+
+    def test_lifecycle_rotation_truncation_and_partial_tail_stay_safe(self):
+        forensic_lifecycle_rotation_truncation_and_partial_tail_stay_safe()
+
+    def test_unended_take_survives_bus_truncation_until_exact_terminal(self):
+        forensic_unended_take_survives_bus_truncation_until_exact_terminal()
+
 
 
 if __name__ == "__main__":

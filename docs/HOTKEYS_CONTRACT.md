@@ -235,6 +235,16 @@ Selection is captured in the trigger handler, never at send time. Rust remains
 the indicator/tray authority, while the transcription overlay is exclusive to
 Dictation and Formatting.
 
+After capture completion, retained reducer text is editable in the same native
+canvas even when coverage is refused or a later document observation is
+nonterminal. Document observations cannot reopen that capture; new controller
+admission resets completion and retires the outgoing session. Live compact
+preview stays read-only and is never promoted into an editable document.
+Typing remains a local draft until the existing authenticated revision owner
+accepts it. Blur, late observations, pending or rejected commits keep those
+bytes; a successor capture moves unsaved edits to the existing recovery owner.
+Editing alone grants no seal, microphone admission, Agent send or delivery right.
+
 ---
 
 ### 3. Conversation Mode (Moshi Full‑Duplex) — experimental

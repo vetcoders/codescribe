@@ -809,7 +809,8 @@ struct DictationOverlayView: View {
   /// It never changes the committed text or the human revision draft. Session,
   /// epoch and sequence admission remain in OverlayState's existing consumer.
   private var livePaint: CsCompactProjection? {
-    guard !state.terminal, state.mode == .listening || state.mode == .finalizing,
+    guard !state.finalized, !state.terminal,
+      state.mode == .listening || state.mode == .finalizing,
       !state.isEditingTranscript, !state.isRevisionDraftDirty,
       let paint = state.compactProjection
     else { return nil }

@@ -6338,6 +6338,158 @@ mod tests {
         emitter.finish().await;
     }
 
+    // Root-only presentation controls: relabel permission is explicit.
+    #[tokio::test]
+    async fn forensic_presenter_unproven_acoustic_omission_cannot_close_stop_words() {
+        for producer in [ObservationProducer::Whisper, ObservationProducer::CloudLive] {
+            let (mut emitter, ledger) = mirror_take();
+            let occurrence = OccurrenceIdentity::new("take", 7, 0, 16_000);
+            let initial = admitted_mutation(
+                &mut ledger.lock().unwrap(),
+                occurrence.clone(),
+                981,
+                "old label words",
+            );
+            emitter.on_event(&initial);
+            let stopped = emitter.begin_stop_canvas().unwrap();
+            let source = ledger
+                .lock()
+                .unwrap()
+                .slots_of(&occurrence)
+                .unwrap()
+                .to_vec();
+            let observation = ObservationIdentity::new(producer, 982, 0, occurrence.clone());
+            let receipt = ledger.lock().unwrap().admit(&observation, "new label");
+            assert!(!receipt.grants_mutation(), "{producer:?}: {receipt:?}");
+            emitter.on_event(&EngineEvent::LedgerMutation {
+                observation,
+                label: "new label".into(),
+                receipt,
+            });
+            let final_canvas = emitter.finish_stop_canvas().unwrap();
+            assert_eq!(final_canvas, stopped);
+            assert!(stopped.missing_words_from(&final_canvas).is_empty());
+            assert_eq!(
+                ledger.lock().unwrap().slots_of(&occurrence).unwrap(),
+                source
+            );
+            assert_eq!(ledger.lock().unwrap().conservation().residue(), 0);
+            emitter.finish().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn forensic_presenter_explicit_human_relabel_accounts_for_source_words() {
+        let (mut emitter, ledger) = mirror_take();
+        let occurrence = OccurrenceIdentity::new("take", 7, 0, 16_000);
+        let initial = admitted_mutation(
+            &mut ledger.lock().unwrap(),
+            occurrence.clone(),
+            991,
+            "old label words",
+        );
+        emitter.on_event(&initial);
+        let stopped = emitter.begin_stop_canvas().unwrap();
+        let observation =
+            ObservationIdentity::new(ObservationProducer::ManualHuman, 992, 0, occurrence.clone());
+        let receipt = ledger.lock().unwrap().admit(&observation, "new label");
+        assert!(matches!(receipt, MutationReceipt::Correct { .. }));
+        emitter.on_event(&EngineEvent::LedgerMutation {
+            observation,
+            label: "new label".into(),
+            receipt,
+        });
+        let final_canvas = emitter.finish_stop_canvas().unwrap();
+        assert_eq!(final_canvas.text, "new label");
+        let missing = stopped.missing_words_from(&final_canvas);
+        assert_eq!(missing.len(), 3);
+        assert!(
+            missing
+                .iter()
+                .all(|word| word.reason == format!("relabeled_in_place occurrence={occurrence:?}"))
+        );
+        assert_eq!(
+            ledger.lock().unwrap().slots_of(&occurrence).unwrap()[0].producer,
+            ObservationProducer::ManualHuman
+        );
+        assert_eq!(ledger.lock().unwrap().conservation().residue(), 0);
+        emitter.finish().await;
+    }
+
+    #[tokio::test]
+    async fn forensic_presenter_complete_decode_relabels_coarse_source_without_word_floor() {
+        use codescribe_core::pipeline::acoustic_ledger::WordPin;
+        for producer in [ObservationProducer::Whisper, ObservationProducer::CloudLive] {
+            for offset in [0, 16_000] {
+                let (mut emitter, ledger) = mirror_take();
+                let occurrence = OccurrenceIdentity::new("take", 7, offset, offset + 16_000);
+                let initial = admitted_mutation(
+                    &mut ledger.lock().unwrap(),
+                    occurrence.clone(),
+                    993,
+                    "old label words",
+                );
+                emitter.on_event(&initial);
+                let stopped = emitter.begin_stop_canvas().unwrap();
+                let source = ledger
+                    .lock()
+                    .unwrap()
+                    .slots_of(&occurrence)
+                    .unwrap()
+                    .to_vec();
+                let observation = ObservationIdentity::new(producer, 994, 0, occurrence.clone());
+                let receipt = ledger.lock().unwrap().admit_word_slots_for_tests(
+                    &observation,
+                    &[
+                        WordPin::new(offset + 1_000, offset + 7_000, "new")
+                            .with_decode_window(0, offset + 32_000),
+                        WordPin::new(offset + 8_000, offset + 15_000, "label")
+                            .with_decode_window(0, offset + 32_000),
+                    ],
+                );
+                assert!(
+                    matches!(receipt, MutationReceipt::Correct { .. }),
+                    "{receipt:?}"
+                );
+                {
+                    let ledger = ledger.lock().unwrap();
+                    let operation = ledger.slot_operations().last().unwrap();
+                    assert_eq!(operation.sources, source);
+                    assert_eq!(
+                        operation.source_ranges,
+                        [
+                            occurrence.clone(),
+                            OccurrenceIdentity::new("take", 7, offset + 1_000, offset + 7_000),
+                            OccurrenceIdentity::new("take", 7, offset + 8_000, offset + 15_000),
+                        ]
+                    );
+                    assert_eq!(operation.outputs.len(), 2);
+                    assert!(
+                        operation
+                            .outputs
+                            .iter()
+                            .all(|slot| slot.producer == producer)
+                    );
+                }
+                emitter.on_event(&EngineEvent::LedgerMutation {
+                    observation,
+                    label: "new label".into(),
+                    receipt,
+                });
+                let final_canvas = emitter.finish_stop_canvas().unwrap();
+                assert_eq!(final_canvas.text, "new label");
+                let missing = stopped.missing_words_from(&final_canvas);
+                assert_eq!(missing.len(), 3);
+                assert!(
+                    missing.iter().all(|word| word.reason
+                        == format!("relabeled_in_place occurrence={occurrence:?}"))
+                );
+                assert_eq!(ledger.lock().unwrap().conservation().residue(), 0);
+                emitter.finish().await;
+            }
+        }
+    }
+
     #[tokio::test]
     async fn relabel_in_place_during_the_wait_is_accounted_not_a_defect() {
         let (mut emitter, ledger) = mirror_take();
@@ -6397,7 +6549,25 @@ mod tests {
         emitter.on_event(&EngineEvent::LedgerSeal { receipt });
         let observation =
             ObservationIdentity::new(ObservationProducer::Whisper, 4, 0, occurrences[1].clone());
-        let receipt = ledger.lock().unwrap().admit(&observation, "new label");
+        // This acoustic revision carries complete Word/decode evidence;
+        // a shorter whole-label proposal alone cannot retire source wording.
+        let receipt = ledger.lock().unwrap().admit_word_slots_for_tests(
+            &observation,
+            &[
+                codescribe_core::pipeline::acoustic_ledger::WordPin::new(
+                    occurrences[1].sample_start + 1_000,
+                    occurrences[1].sample_start + 7_000,
+                    "new",
+                )
+                .with_decode_window(0, occurrences[1].sample_end + 16_000),
+                codescribe_core::pipeline::acoustic_ledger::WordPin::new(
+                    occurrences[1].sample_start + 8_000,
+                    occurrences[1].sample_end - 1_000,
+                    "label",
+                )
+                .with_decode_window(0, occurrences[1].sample_end + 16_000),
+            ],
+        );
         assert!(matches!(receipt, MutationReceipt::Correct { .. }));
         emitter.on_event(&EngineEvent::LedgerMutation {
             observation,
@@ -6514,7 +6684,25 @@ mod tests {
         assert!(plain.missing_words_from(&stopped).is_empty());
         let observation =
             ObservationIdentity::new(ObservationProducer::Whisper, 3, 0, first.clone());
-        let receipt = ledger.lock().unwrap().admit(&observation, "new label");
+        // This acoustic revision carries complete Word/decode evidence;
+        // a shorter whole-label proposal alone cannot retire source wording.
+        let receipt = ledger.lock().unwrap().admit_word_slots_for_tests(
+            &observation,
+            &[
+                codescribe_core::pipeline::acoustic_ledger::WordPin::new(
+                    first.sample_start + 1_000,
+                    first.sample_start + 7_000,
+                    "new",
+                )
+                .with_decode_window(0, first.sample_end + 16_000),
+                codescribe_core::pipeline::acoustic_ledger::WordPin::new(
+                    first.sample_start + 8_000,
+                    first.sample_end - 1_000,
+                    "label",
+                )
+                .with_decode_window(0, first.sample_end + 16_000),
+            ],
+        );
         assert!(matches!(receipt, MutationReceipt::Correct { .. }));
         emitter.on_event(&EngineEvent::LedgerMutation {
             observation,

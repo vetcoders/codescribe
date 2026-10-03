@@ -4933,4 +4933,62 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertFalse(state.canInsert)
   }
 
+  func testStoppedCaptureRemainsEditableAfterLateDocumentObservation() {
+    let state = OverlayState()
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    projectText(
+      "Moje słowa", to: state, phase: "finalizing", canCopy: true,
+      terminal: false, lifecycleTerminal: false)
+    state.finishControllerRecording()
+    XCTAssertTrue(state.finalized)
+    XCTAssertTrue(state.isTranscriptEditable)
+    // A later document/coverage observation has no authority to restart the microphone.
+    projectText(
+      "Moje słowa do poprawy", to: state, phase: "coverage_refused", canCopy: true,
+      terminal: false, lifecycleTerminal: false)
+    XCTAssertFalse(state.recording)
+    XCTAssertTrue(state.finalized, "document update cannot revoke observed capture completion")
+    XCTAssertTrue(
+      state.isTranscriptEditable,
+      "visible stopped-take words remain editable without an acoustic seal")
+    state.beginTranscriptEdit()
+    state.updateRevisionDraft("Moja ręczna poprawka")
+    XCTAssertTrue(state.isEditingTranscript)
+    XCTAssertTrue(state.isRevisionDraftDirty)
+    XCTAssertEqual(state.canvasText, "Moja ręczna poprawka")
+    XCTAssertFalse(state.canInsert, "human typing cannot fabricate a delivery seal")
+  }
+
+  func testDocumentSealDoesNotEnableEditingDuringActiveCapture() {
+    let state = OverlayState()
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    projectText(
+      "Jeszcze mówię", to: state, phase: "formatted", canCopy: true,
+      terminal: true, lifecycleTerminal: false)
+    XCTAssertTrue(state.recording)
+    XCTAssertFalse(state.finalized)
+    XCTAssertFalse(state.isTranscriptEditable, "document seal is not capture completion")
+    state.beginTranscriptEdit()
+    XCTAssertFalse(state.isEditingTranscript)
+    state.updateRevisionDraft("nieuprawniona poprawka")
+    XCTAssertNotEqual(state.canvasText, "nieuprawniona poprawka")
+    state.finishControllerRecording()
+  }
+
+  func testNewCaptureResetsCompletedEditPermission() {
+    let state = OverlayState()
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    projectText(
+      "Zakończone słowa", to: state, phase: "coverage_refused", canCopy: true,
+      terminal: false, lifecycleTerminal: false)
+    state.finishControllerRecording()
+    XCTAssertTrue(state.isTranscriptEditable)
+    state.handleRecordingPreparing()
+    XCTAssertFalse(state.finalized)
+    XCTAssertFalse(
+      state.isTranscriptEditable, "new capture cannot inherit completed-take editing rights")
+  }
 }

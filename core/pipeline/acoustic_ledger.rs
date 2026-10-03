@@ -63,7 +63,9 @@ fn unix_epoch_millis() -> Option<u64> {
 
 use sha2::{Digest, Sha256};
 
-use crate::audio::capture_receipt::{AcousticAvailability, AcousticSpeechEvidence};
+use crate::audio::capture_receipt::{
+    AcousticAvailability, AcousticSpeechEvidence, CaptureEnergyOwner,
+};
 use crate::quality::engine_contract::is_clock_lie;
 use crate::stt::tail_provider::TailSampleRange;
 
@@ -744,6 +746,15 @@ impl ConservationTally {
     }
 }
 
+/// The capture writer remains authoritative; a bounded retained-PCM quiet
+/// receipt only refines its block-level measurement at one decoder fence.
+#[derive(Debug, Clone)]
+struct DecodeFenceEnergy {
+    owner: CaptureEnergyOwner,
+    captured_samples: u64,
+    quiet_range: Option<OccurrenceIdentity>,
+}
+
 /// Ledger of committed acoustic occurrences.
 ///
 /// Text is never a key here. The only key is [`OccurrenceIdentity`].
@@ -756,16 +767,21 @@ pub struct AcousticLedger {
     rejected_word_pins: BTreeMap<OccurrenceIdentity, Vec<WordSlot>>,
     slot_operations: Vec<SlotOperationReceipt>,
     pub(super) speech_evidence: Option<AcousticSpeechEvidence>,
+    /// Shared capture observer and actual extent, used only to adjudicate a
+    /// decoder fence. Cloning the handle does not create another observer.
+    decode_fence_energy: Option<DecodeFenceEnergy>,
     assigned_word_pins: Option<slot_ops::AssignedWordPinBatch>,
     group_speech_coverages: Vec<GroupSpeechCoverageReceipt>,
     word_deletions: Vec<WordDeletionReceipt>,
     /// Provenance only: label-wide slots do not prove individual word pins.
     word_pin_observations: std::collections::HashSet<ObservationIdentity>,
-    /// Slot projections whose original words were decoded strictly inside both
-    /// window fences. An empty entry records only incomplete edge pins.
+    /// Slot projections whose original words have complete decoder-fence
+    /// evidence. An empty entry records only incomplete edge pins.
     complete_decoded_words: std::collections::HashMap<ObservationIdentity, Vec<(u64, u64)>>,
     /// Actual decoder fences, distinct from owner clipping and word geometry.
     decoded_word_windows: std::collections::HashMap<ObservationIdentity, (u64, u64)>,
+    /// Matched successful empty finals; these observations mint no Word.
+    successful_empty_decodes: std::collections::HashSet<ObservationIdentity>,
     answered: Vec<ObservationIdentity>,
     kept_visible: usize,
     evidence: BTreeMap<OccurrenceIdentity, AcousticSerial>,
@@ -883,6 +899,49 @@ impl AcousticLedger {
         } else {
             rejected_pins.push(word.clone());
         }
+    }
+
+    /// Carry a saved decoder-edge candidate into the existing rejected-pin
+    /// accounting at terminal drain. Its window is provenance, not success.
+    pub(crate) fn retain_rejected_decode_word(
+        &mut self,
+        observation: &ObservationIdentity,
+        pin: &WordPin,
+    ) {
+        let owner = &observation.occurrence;
+        let (Some(start), Some(end)) = (pin.decode_sample_start, pin.decode_sample_end) else {
+            return;
+        };
+        if observation.producer != ObservationProducer::Whisper
+            || !self.is_qualified(owner)
+            || self.is_sealed(owner)
+            || start >= end
+            || pin.sample_start < start
+            || pin.sample_start >= pin.sample_end
+            || pin.sample_end > end
+        {
+            return;
+        }
+        let word = WordSlot {
+            sample_start: pin.sample_start,
+            sample_end: pin.sample_end,
+            text: pin.text.clone(),
+            producer: observation.producer,
+            observation: observation.clone(),
+            witness: SlotWitness::Unwitnessed,
+            confidence: pin.confidence,
+            surface_rewritten: pin.surface_rewritten,
+        };
+        self.decoded_word_windows
+            .insert(observation.clone(), (start, end));
+        self.complete_decoded_words
+            .insert(observation.clone(), Vec::new());
+        self.refuse_word_slot(
+            observation,
+            &word,
+            vec![word.clone()],
+            "decode_window_clipped",
+        );
     }
 
     /// Child receipts account for rejected PCM without replacing the offered
@@ -1064,15 +1123,24 @@ impl AcousticLedger {
             .iter()
             .filter(|prior| prior.producer == producer && &prior.occurrence == occurrence)
             .max_by_key(|prior| prior.generation);
+        // Successful non-mutating work reserves its generation without
+        // becoming an answered lexical observation or changing its request.
+        let generation = self
+            .answered
+            .iter()
+            .chain(self.successful_empty_decodes.iter())
+            .filter(|prior| prior.producer == producer && &prior.occurrence == occurrence)
+            .map(|prior| prior.generation)
+            .max()
+            .map_or(0, |generation| {
+                generation
+                    .checked_add(1)
+                    .expect("word generation exhausted")
+            });
         ObservationIdentity::new(
             producer,
             prior.map_or(request, |prior| prior.request),
-            prior.map_or(0, |prior| {
-                prior
-                    .generation
-                    .checked_add(1)
-                    .expect("word generation exhausted")
-            }),
+            generation,
             occurrence.clone(),
         )
     }
@@ -1165,6 +1233,99 @@ impl AcousticLedger {
                 .join(" ");
             return self.refuse_replacement(observation, &candidate, RefuseReason::BatchDuplicate);
         }
+        let admission_trail_start = self.trail.len();
+        let offered_words = words;
+        // Declared decoder fences must contain the original PCM. Owner
+        // clipping cannot turn a contradictory declaration into evidence.
+        let mut admissible_words = Vec::new();
+        let mut declared_bounds_refused = false;
+        for pin in offered_words {
+            if observation.producer != ObservationProducer::ManualHuman
+                && let (Some(start), Some(end)) = (pin.decode_sample_start, pin.decode_sample_end)
+                && (pin.sample_start >= pin.sample_end
+                    || start >= end
+                    || start > pin.sample_start
+                    || pin.sample_end > end)
+            {
+                declared_bounds_refused = true;
+                let sources = self
+                    .slots_of(owner)
+                    .unwrap_or(&[])
+                    .iter()
+                    .filter(|source| {
+                        pin.sample_start < pin.sample_end
+                            && self.slot_source_ranges(source).iter().any(|range| {
+                                range.same_capture(owner)
+                                    && range.sample_start < pin.sample_end
+                                    && pin.sample_start < range.sample_end
+                            })
+                    })
+                    .cloned()
+                    .collect();
+                self.retain_slot_alternative(
+                    observation,
+                    &pin.text,
+                    sources,
+                    "contradictory_decode_bounds",
+                );
+                let target = OccurrenceIdentity::new(
+                    &owner.session,
+                    owner.capture_epoch,
+                    pin.sample_start,
+                    pin.sample_end,
+                );
+                let mut rejected =
+                    self.next_word_observation(observation.producer, observation.request, &target);
+                // Even a whole-owner refusal is a child, not the batch answer.
+                // Use the supplied coordinates only for diagnostics; an empty
+                // or reversed pin cannot enter measured-word geometry or debt.
+                if rejected == *observation {
+                    rejected.generation = rejected
+                        .generation
+                        .checked_add(1)
+                        .expect("word generation exhausted");
+                }
+                self.refuse_replacement(&rejected, &pin.text, RefuseReason::SlotAdmissionRejected);
+                continue;
+            }
+            admissible_words.push(pin.clone());
+        }
+        let words = admissible_words.as_slice();
+        // Routing may have proposed this owner's pins before admission. Keep
+        // only admissible declarations; committed neighbours retain their own
+        // source authentication in the coverage owner.
+        if declared_bounds_refused
+            && let Some(batch) = self.assigned_word_pins.as_mut()
+            && batch.observation == *observation
+        {
+            batch.assignments.retain(|(pin_owner, pin)| {
+                words.iter().any(|word| {
+                    pin.same_capture(owner)
+                        && pin.sample_start == word.sample_start
+                        && pin.sample_end == word.sample_end
+                }) || (pin_owner != owner
+                    && !offered_words.iter().any(|word| {
+                        pin.same_capture(owner)
+                            && pin.sample_start == word.sample_start
+                            && pin.sample_end == word.sample_end
+                    }))
+            });
+        }
+        if declared_bounds_refused && words.is_empty() {
+            let candidate = offered_words
+                .iter()
+                .map(|pin| pin.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            return trace.finish(
+                self.refuse_replacement(
+                    observation,
+                    &candidate,
+                    RefuseReason::SlotAdmissionRejected,
+                ),
+                self,
+            );
+        }
         let mut incoming = Vec::new();
         let mut no_speech_refused = Vec::new();
         for pin in words {
@@ -1250,9 +1411,20 @@ impl AcousticLedger {
             .filter(|pin| {
                 pin.decode_sample_start
                     .is_some_and(|start| start < pin.sample_start)
-                    && pin
-                        .decode_sample_end
-                        .is_some_and(|end| pin.sample_end < end)
+                    && pin.decode_sample_end.is_some_and(|end| {
+                        if observation.producer == ObservationProducer::Whisper {
+                            pin.sample_end <= end
+                                && !self.decode_word_fence_incomplete(
+                                    owner,
+                                    pin.decode_sample_start.unwrap(),
+                                    end,
+                                    pin.sample_start,
+                                    pin.sample_end,
+                                )
+                        } else {
+                            pin.sample_end < end
+                        }
+                    })
                     && pin.sample_start < pin.sample_end
                     && pin.text.split_whitespace().count() == 1
             })
@@ -1287,7 +1459,6 @@ impl AcousticLedger {
                 .insert(observation.clone(), (start, end));
         }
         let recovery_pending = self.text_recovery_pending(owner);
-        let admission_trail_start = self.trail.len();
         let mut slots = self.slots_of(owner).unwrap_or(&[]).to_vec();
         // A candidate at either decode fence cannot replace a complete word
         // decoded across that fence. Check original PCM, not owner clipping.
@@ -1621,7 +1792,7 @@ impl AcousticLedger {
                 .iter()
                 .any(|entry| matches!(entry.decision, MutationReceipt::Refuse { .. }))
             {
-                let candidate = words
+                let candidate = offered_words
                     .iter()
                     .map(|pin| pin.text.as_str())
                     .collect::<Vec<_>>()
@@ -2122,16 +2293,9 @@ impl AcousticLedger {
                     .any(|source| self.word_pin_observations.contains(&source.observation))
             });
         let whole_owner_recovery = slots.is_none() && !slot_revision;
-        let authorized_recovery = (slots.is_some()
-            || !has_pinned_sources
-            || (self.text_of(&observation.occurrence) == Some(text)
-                && self
-                    .slots_of(&observation.occurrence)
-                    .is_some_and(|sources| {
-                        sources.len() == 1
-                            && sources[0].sample_start == observation.occurrence.sample_start
-                            && sources[0].sample_end == observation.occurrence.sample_end
-                    })))
+        // A source extent is not a returned Word target. A whole-label
+        // observation cannot acquire pinned authority or settle its debt.
+        let authorized_recovery = (slots.is_some() || !has_pinned_sources)
             && !text.trim().is_empty()
             && matches!(
                 observation.producer,
@@ -2394,6 +2558,18 @@ impl AcousticLedger {
         // qualification, producer rank or seal state. Keep its proposal in the
         // decision trail without inserting or replacing acoustic content.
         if observation.producer == ObservationProducer::Formatter {
+            if !has_word_pins
+                && let Some(held) = self.committed.get(&observation.occurrence).cloned()
+                && held.slots.len() == 1
+                && held.label != text
+            {
+                self.retain_slot_alternative(
+                    observation,
+                    text,
+                    held.slots,
+                    "whole_label_has_no_word_targets",
+                );
+            }
             return MutationReceipt::Refuse {
                 occurrence: observation.occurrence.clone(),
                 reason: RefuseReason::AuthorityConflict,
@@ -2526,16 +2702,85 @@ impl AcousticLedger {
                     current.producer = observation.producer;
                     current.generation = observation.generation;
                 } else {
-                    self.committed.insert(
-                        observation.occurrence.clone(),
-                        CommittedObservation::from_label(observation, text),
-                    );
+                    let single_source = held.slots.len() == 1
+                        && held.slots[0].sample_start == observation.occurrence.sample_start
+                        && held.slots[0].sample_end == observation.occurrence.sample_end;
+                    // Explicit recovery may replace an occurrence-only hypothesis.
+                    // It supplies no word targets and cannot settle decoder debt.
+                    let recovering_label = single_source
+                        && self.pending_text_recovery.contains(&observation.occurrence)
+                        && !self
+                            .word_pin_observations
+                            .contains(&held.slots[0].observation)
+                        && matches!(
+                            observation.producer,
+                            ObservationProducer::Whisper | ObservationProducer::CloudLive
+                        );
+                    if single_source
+                        && !recovering_label
+                        && observation.producer != ObservationProducer::ManualHuman
+                    {
+                        let source = &held.slots[0];
+                        let alignment = slot_ops::preserve_group_content(&source.text, text);
+                        let (label, retained, reason) = match alignment {
+                            Ok((label, retained)) => (label, retained, "held_token_retained"),
+                            Err(reason) => (source.text.clone(), true, reason),
+                        };
+                        if retained {
+                            self.retain_slot_alternative(
+                                observation,
+                                text,
+                                held.slots.clone(),
+                                reason,
+                            );
+                            self.slot_operations.push(SlotOperationReceipt {
+                                observation: observation.clone(),
+                                kind: SlotOperationKind::Correct,
+                                sources: held.slots.clone(),
+                                outputs: held.slots.clone(),
+                                source_ranges: self.slot_source_ranges(source),
+                                rule_id: format!("{reason}/held_token_retained/v1"),
+                            });
+                            return MutationReceipt::Preserve {
+                                occurrence: observation.occurrence.clone(),
+                                held_by: held.producer,
+                            };
+                        }
+                        let mut output = source.clone();
+                        output.text = label;
+                        output.producer = observation.producer;
+                        output.observation = observation.clone();
+                        let source_ranges = self.slot_source_ranges(source);
+                        let mut current = held.clone();
+                        current.producer = observation.producer;
+                        current.generation = observation.generation;
+                        current.slots = vec![output.clone()];
+                        current.recompose();
+                        self.committed
+                            .insert(observation.occurrence.clone(), current);
+                        self.slot_operations.push(SlotOperationReceipt {
+                            observation: observation.clone(),
+                            kind: SlotOperationKind::Correct,
+                            sources: held.slots.clone(),
+                            outputs: vec![output],
+                            source_ranges,
+                            rule_id: "group_alignment/v1".into(),
+                        });
+                    } else {
+                        self.committed.insert(
+                            observation.occurrence.clone(),
+                            CommittedObservation::from_label(observation, text),
+                        );
+                    }
                 }
                 return MutationReceipt::Correct {
                     occurrence: observation.occurrence.clone(),
                     from: held.producer,
                     to: observation.producer,
                 };
+            }
+            if !has_word_pins && held.slots.len() == 1 {
+                self.retain_slot_alternative(observation, text, held.slots, "protected_source");
             }
             return MutationReceipt::Refuse {
                 occurrence: observation.occurrence.clone(),
