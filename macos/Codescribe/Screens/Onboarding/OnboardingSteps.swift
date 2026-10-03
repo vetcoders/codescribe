@@ -293,18 +293,25 @@ struct AgenticReadinessStepView: View {
               .textSelection(.enabled)
           }
           if model.providerAccessResolved, model.providerAccessError == nil, let readiness = model.readiness {
+            SettingsSectionLabel(String(localized: "Agent readiness"))
             readinessPill(ready: readiness.ready)
             Text(
               "Agent readiness covers Assistive access and native tools. Cloud Formatting is configured separately in Settings › Agent › LLM lanes."
             )
             .font(.callout)
             .foregroundStyle(.secondary)
+            // Core orders verdict, provider, native tools and workspace roots first.
+            // Optional MCP has its own status report below.
+            statusCard(rows: Array(readiness.rows.prefix(4)), valueLineLimit: nil)
+              .accessibilityIdentifier("onboarding-agent-readiness-core-status")
           }
           Text(model.providerAccessDescription)
             .font(.callout)
             .foregroundStyle(.secondary)
           if let mcpStatus = model.mcpStatus {
+            SettingsSectionLabel(String(localized: "MCP servers"))
             statusCard(rows: mcpStatus.rows)
+              .accessibilityIdentifier("onboarding-mcp-status")
           }
           Button("Refresh") { model.refreshReadiness() }.csAction()
         }.padding(.top, 8)
@@ -405,7 +412,7 @@ struct AgenticReadinessStepView: View {
   }
 
   @ViewBuilder
-  private func statusCard(rows: [CsMcpStatusRow]) -> some View {
+  private func statusCard(rows: [CsMcpStatusRow], valueLineLimit: Int? = 2) -> some View {
     VStack(spacing: 0) {
       ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
         if index > 0 {
@@ -419,7 +426,8 @@ struct AgenticReadinessStepView: View {
           Text(row.value)
             .font(CSFont.ui(12, .semibold))
             .foregroundStyle(.primary)
-            .lineLimit(2)
+            .lineLimit(valueLineLimit)
+            .fixedSize(horizontal: false, vertical: valueLineLimit == nil)
             .frame(maxWidth: .infinity, alignment: .leading)
           Circle().fill(row.tone.dotColor).frame(width: 7, height: 7)
         }

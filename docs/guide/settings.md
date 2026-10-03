@@ -154,8 +154,13 @@ so enabled Formatting remains part of setup readiness. The footer does not
 certify on-device execution.
 
 Agent capabilities readiness in Setup covers Assistive access and native tools.
-MCP status is separate and optional. The wizard presents account/key presence
-separately from that capability verdict; it does not label an account as a key.
+Expand **Connection details** to see the core verdict, provider access, native
+tools and workspace-root status with the complete reported reason. Native-tool
+or workspace failures remain visible even when credentials are valid. These core
+rows appear separately from **MCP servers**, whose status is optional. The wizard
+presents account/key presence separately from that capability verdict; it does
+not label an account as a key. While provider access is unresolved or unavailable,
+the wizard keeps its pending/error presentation instead of showing a core verdict.
 
 Prompt files live in `~/.codescribe/prompts/`.
 
