@@ -21738,8 +21738,128 @@ mod relay_l1_overlap_admission_tests {
     #[test]
     fn distinct_pad_words_are_admitted_to_their_owner() {
         let mut lane = open("relay-word-join");
+        // Keep the 4 s decode windows and 1 s overlap: the owned stride is 3 s.
+        // Use a valid 3 s minimum context, with capture already present at dispatch.
+        lane.state.whisper_context_window_sec = 3.0;
+        let pcm = vec![0.2_f32; 160_000];
+        lane.state.audio.push(&pcm);
+        record_energy(
+            &lane,
+            &pcm.chunks(320).map(<[f32]>::to_vec).collect::<Vec<_>>(),
+        );
         let (occurrence, requests) = launch_long(&mut lane, "ras stary");
+        let speech = coverage_speech_evidence(&lane.state);
+        assert_eq!(
+            speech.availability().observed_samples(),
+            Some(pcm.len() as u64)
+        );
+        for request in &requests {
+            let frame = &request.provider_request.identity.range;
+            assert_eq!(
+                request.audio,
+                pcm[frame.sample_start as usize..frame.sample_end as usize]
+            );
+            request
+                .provider_request
+                .validate_pcm(&request.audio)
+                .unwrap();
+        }
         let session = "relay-word-join";
+        let windows = [
+            vec![
+                word_pin(session, "raz", 8_000, 40_000),
+                word_pin(session, "stary", 50_000, 62_000),
+            ],
+            vec![
+                word_pin(session, "nowy", 50_000, 62_000),
+                word_pin(session, "dwa", 70_000, 90_000),
+                word_pin(session, "ogon", 100_000, 110_000),
+            ],
+            vec![word_pin(session, "trzy", 100_000, 150_000)],
+        ];
+        let mut events = Vec::new();
+        for (request, segments) in requests.iter().zip(windows) {
+            lane.state
+                .complete_whisper_window(&lane.tx, completion(request, segments), 8.0);
+            events.extend(drain(&mut lane.rx));
+        }
+        assert!(
+            !replay_refusal(&events, "stary"),
+            "step 4: the earlier window's word in the shared second is replay, whatever its text"
+        );
+        assert!(
+            !replay_refusal(&events, "ogon"),
+            "step 4: a word past this window's admit is replay, not a second token"
+        );
+        assert_eq!(
+            mutation_count(&events),
+            3,
+            "step 7: exclusive-remainder words join the whole span once"
+        );
+        assert_eq!(
+            held_text(&lane, &occurrence).as_deref(),
+            Some("raz nowy dwa trzy")
+        );
+        assert_eq!(
+            held_count(&lane),
+            1,
+            "replay must not mint a duplicate token"
+        );
+        assert_replaced_slot_evidence(&lane, &occurrence, &["stary", "ogon"]);
+        assert_conserved(&lane, None);
+    }
+
+    #[test]
+    fn private_context_extension_preserves_owned_windows_and_words() {
+        let mut lane = open("relay-word-context");
+        assert_eq!(lane.state.whisper_context_window_sec, 8.0);
+        let pcm = vec![0.2_f32; 160_000];
+        lane.state.audio.push(&pcm);
+        record_energy(
+            &lane,
+            &pcm.chunks(320).map(<[f32]>::to_vec).collect::<Vec<_>>(),
+        );
+        let occurrence = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, 160_000);
+        stage(&mut lane, 1, occurrence.clone(), "ras stary");
+        assert!(
+            lane.state
+                .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, "ras stary"))
+        );
+        close_lexicon(&mut lane, 1, &occurrence, "ras stary");
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 3);
+        let decoder = [(0, 64_000), (0, 112_000), (32_000, 160_000)];
+        let owned = [(0, 48_000), (48_000, 96_000), (96_000, 160_000)];
+        for (index, request) in requests.iter().enumerate() {
+            let frame = &request.provider_request.identity.range;
+            assert_eq!((frame.sample_start, frame.sample_end), decoder[index]);
+            assert_eq!(
+                (request.admit_sample_start, request.admit_sample_end),
+                owned[index]
+            );
+            assert_eq!(
+                request.audio.len() as u64,
+                frame.sample_end - frame.sample_start
+            );
+        }
+        let speech = coverage_speech_evidence(&lane.state);
+        assert_eq!(
+            speech.availability().observed_samples(),
+            Some(pcm.len() as u64)
+        );
+        for request in &requests {
+            let frame = &request.provider_request.identity.range;
+            assert_eq!(
+                request.audio,
+                pcm[frame.sample_start as usize..frame.sample_end as usize]
+            );
+            request
+                .provider_request
+                .validate_pcm(&request.audio)
+                .unwrap();
+        }
+        let session = "relay-word-context";
         let windows = [
             vec![
                 word_pin(session, "raz", 8_000, 40_000),
