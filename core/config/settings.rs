@@ -2181,7 +2181,8 @@ impl UserSettings {
         Self::settings_dir().join("settings.json")
     }
 
-    /// Loads settings from disk. Returns `Default` on any error.
+    /// Writer-capable settings load, including first file import preparation.
+    /// This persists intent without acquiring credentials; passive UI uses `load_projection`.
     pub fn load() -> Self {
         super::loader::note_startup_acquisition("user settings file");
         let _data_io = match super::storage_reset::begin_app_data_io() {
@@ -2209,8 +2210,72 @@ impl UserSettings {
         Self::load_document(false)
     }
 
+    /// Prepare the first import under the same lease as ordinary document writes.
+    /// A failed initial persistence returns the candidate for the acquiring loader.
+    pub(super) fn prepare_initial_env_import(
+        file_env: Option<&std::collections::HashMap<String, String>>,
+    ) -> Option<Self> {
+        let _data_io = match super::storage_reset::begin_app_data_io() {
+            Ok(guard) => guard,
+            Err(error) => {
+                warn!(%error, "Initial settings import unavailable during app-data reset");
+                return None;
+            }
+        };
+        let _settings_io = settings_io_lock();
+        if Self::settings_path().exists() {
+            return None;
+        }
+        let settings = super::migrate::prepare_env_import(file_env)?;
+        if let Err(error) = settings.save_unlocked() {
+            warn!(%error, "Initial settings import remains uncommitted");
+            return Some(settings);
+        }
+        info!("Imported settings and recorded credential migration intent");
+        None
+    }
+
+    /// Read the canonical source only while preparing a first writer transaction.
+    /// Secret values stay in the local file snapshot, never in settings.json.
+    fn first_env_import_candidate() -> anyhow::Result<Option<Self>> {
+        let env_path = super::Config::env_path();
+        crate::test_isolation::assert_test_read_allowed(&env_path);
+        let values = match super::Config::parse_env_file(&env_path) {
+            Ok(values) => values,
+            Err(error) if error.downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        Ok(super::migrate::prepare_env_import(Some(&values)))
+    }
+
+    /// Promoted config edits must prepare the first import before creating a file.
+    /// Source/read/persistence failures refuse the edit instead of losing import intent.
+    pub(super) fn load_for_edit() -> anyhow::Result<Self> {
+        let _data_io = super::storage_reset::begin_app_data_io()?;
+        let _settings_io = settings_io_lock();
+        if Self::read_persisted_settings()?.is_none()
+            && let Some(settings) = Self::first_env_import_candidate()?
+        {
+            settings.save_unlocked()?;
+        }
+        Ok(Self::load_document(true))
+    }
+
     /// Load while the settings transaction lock and app-data admission are held.
     fn load_unlocked() -> Self {
+        if !Self::settings_path().exists() {
+            match Self::first_env_import_candidate() {
+                Ok(Some(settings)) => {
+                    if let Err(error) = settings.save_unlocked() {
+                        warn!(%error, "Initial settings import remains uncommitted");
+                        return Self::from_v2(settings.to_v2());
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => warn!(%error, "Initial settings import unavailable"),
+            }
+        }
         Self::load_document(true)
     }
 
@@ -2425,8 +2490,16 @@ impl UserSettings {
     ) -> anyhow::Result<T> {
         let _data_io = super::storage_reset::begin_app_data_io()?;
         let _settings_io = settings_io_lock();
-        let mut latest = Self::read_persisted_settings()?.unwrap_or_default();
-        if latest.cancel_pending_credential_imports(account) {
+        let durable = Self::read_persisted_settings()?;
+        let initial_import = if durable.is_none() {
+            Self::first_env_import_candidate()?
+        } else {
+            None
+        };
+        let initial_import_prepared = initial_import.is_some();
+        let mut latest = durable.or(initial_import).unwrap_or_default();
+        let cancelled = latest.cancel_pending_credential_imports(account);
+        if initial_import_prepared || cancelled {
             // Cancellation is durable even if the following explicit store
             // action fails. A failed cancellation forbids that store action.
             persist(&latest)?;

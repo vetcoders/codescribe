@@ -249,7 +249,12 @@ pending/error UI contract.
 Settings projections parse the committed atomic document through the existing
 `UserSettings` authority without its credential transaction lease. The writer
 retains serialization of cancellation, import settlement and persistence; a
-passive UI read does not become a waiting writer. The config bootstrap mutex
+passive UI read does not become a waiting writer. Capability matrix also uses
+committed settings for workspace roots through the shared root resolver. First
+settings writer loads and acquiring imports serialize initial `.env` preparation
+under the same transaction lease before publishing the document. Promoted
+settings and secret-free pending rows survive an edit before credential access.
+The config bootstrap mutex
 covers env publication and cache-based capture only, after all credential work.
 Individual OAuth record errors travel as provider-indexed snapshot metadata,
 leaving independent registry and recovery controls usable.

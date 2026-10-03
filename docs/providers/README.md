@@ -88,8 +88,18 @@ interpret a busy lease as missing settings.
 The existing settings transaction lease continues to serialize import
 settlement, explicit credential intent and their persistence. Failure to persist
 cancellation still forbids the secret edit; failed secret writes retain durable
-cancellation and pending failed imports. Authorized loader acquisition owns
-migration persistence. Its file/credential work completes before taking the env
+cancellation and pending failed imports. First writer-capable settings loads
+prepare the initial `.env` import under that same lease, using the migration
+module's single builder. The existence check, promoted settings and secret-free
+pending account rows are persisted together before the ordinary edit. A
+concurrent authorized initial load cannot replace an already created document.
+Promoted single and batch config edits refuse source or initial persistence errors
+instead of creating a document that omits the pending import.
+Explicit credential edits also prepare this first intent and durably cancel
+their own destination before performing Security I/O. Secret settlement remains
+owned by authorized acquisition; passive reads do not prepare or settle imports.
+An existing document without pending rows never causes a new secret import.
+The loader's file/credential work completes before taking the env
 bootstrap mutex; only env publication and cache-based config capture hold that
 mutex. Completed bundle values can be mirrored during the one bootstrap window
 without starting Security I/O under the mutex. Warm runtime bundle reads return
@@ -105,3 +115,8 @@ presented as a confirmed signed-out account. Whole-bundle acquisition failures
 remain distinct from these individual record errors. Snapshots also cover STT
 endpoints, so a local endpoint edit advances the view-model generation before
 publication and rejects an older in-flight endpoint projection.
+
+Capability matrix uses `effective_agent_workspace_roots_projection`, which
+feeds committed settings into the same root resolver as writer-capable callers.
+Root precedence, normalization and the default workspace are unchanged. This
+passive connector-health read does not acquire the settings transaction lease.

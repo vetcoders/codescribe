@@ -224,7 +224,7 @@ fn live_connector_health() -> ConnectorHealth {
         }
     }
 
-    let workspace_roots = Config::effective_agent_workspace_roots()
+    let workspace_roots = Config::effective_agent_workspace_roots_projection()
         .into_iter()
         .map(|root| {
             if let Some(rest) = root.strip_prefix("~/") {

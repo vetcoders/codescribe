@@ -123,6 +123,10 @@ write/import paused while opening Settings, account metadata and the palette:
 passive reads must not inherit a wait through config/settings transaction locks.
 Check an edited STT endpoint against an older delayed snapshot and confirm that
 one malformed account leaves its Sign out and other credential controls usable.
+Include capability matrix connector health while a credential write is paused.
+For an installation with only `.env`, save an ordinary setting before provider
+access, then acquire credentials: imported settings, the user's edit and pending
+imports must survive. Repeat with concurrent initial acquisition and first write.
 
 Filesystem configuration is also shared by ordinary app launches; the test
 runner supplies an isolated data directory. A distinct bundle ID does not

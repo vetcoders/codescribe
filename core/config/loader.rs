@@ -1011,7 +1011,16 @@ impl Config {
     /// mask a live Settings write. The migration pass copies legacy `.env`
     /// roots into `settings.json` before this resolver runs.
     pub fn effective_agent_workspace_roots() -> Vec<String> {
-        let settings = super::settings::UserSettings::load();
+        Self::agent_workspace_roots_from_settings(super::settings::UserSettings::load())
+    }
+
+    /// Passive connector health reads committed settings without a writer lease.
+    /// Root precedence, normalization and defaults use the same resolver.
+    pub fn effective_agent_workspace_roots_projection() -> Vec<String> {
+        Self::agent_workspace_roots_from_settings(super::settings::UserSettings::load_projection())
+    }
+
+    fn agent_workspace_roots_from_settings(settings: UserSettings) -> Vec<String> {
         let persisted =
             normalize_agent_workspace_roots(settings.agent_workspace_roots.unwrap_or_default());
         if !persisted.is_empty() {
@@ -1645,7 +1654,7 @@ impl Config {
         let is_regular = super::settings::is_promoted_key(key);
 
         if is_regular {
-            let mut settings = super::settings::UserSettings::load();
+            let mut settings = super::settings::UserSettings::load_for_edit()?;
             if Self::apply_optional_override(&mut settings, key, value) {
                 settings.save()?;
                 return Ok(());
@@ -1720,7 +1729,10 @@ impl Config {
             let is_regular = super::settings::is_promoted_key(key);
 
             if is_regular {
-                let settings_ref = settings.get_or_insert_with(super::settings::UserSettings::load);
+                if settings.is_none() {
+                    settings = Some(super::settings::UserSettings::load_for_edit()?);
+                }
+                let settings_ref = settings.as_mut().expect("promoted settings initialized");
                 if Self::apply_optional_override(settings_ref, key, value) {
                     continue;
                 }
