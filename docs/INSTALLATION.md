@@ -133,6 +133,12 @@ new credentials must resolve from cache without another process-env seed.
 Exercise this ordering with the core using its production bootstrap lifetime;
 the unit harness intentionally keeps its per-case env permission open. Repair fixtures
 must call an admitted startup writer before requiring repair actions or backups.
+Separately, Keychain-free startup snapshots must refuse schema 99, malformed JSON
+and an unreadable existing settings document: require a non-empty unrepairable
+receipt, an unarmed seal, unchanged source bytes and no backup/reset/persistence
+or credential acquisition. Keep the negative credential-lease witness active.
+Known-field normalization may occur in memory; verify that it leaves the source
+untouched and does not claim executed repair actions.
 
 Filesystem configuration is also shared by ordinary app launches; the test
 runner supplies an isolated data directory. A distinct bundle ID does not

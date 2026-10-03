@@ -129,7 +129,17 @@ feeds committed settings into the same root resolver as writer-capable callers.
 Root precedence, normalization and the default workspace are unchanged. This
 passive connector-health read does not acquire the settings transaction lease.
 
-Passive projections do not execute settings repair. Launch repair receipts must
-be obtained from an admitted writer-capable settings/acquiring loader, then
-observed through the runtime snapshot. Requesting a passive snapshot alone does
-not authorize document recreation, backup or pack seeding.
+Passive projections and the repair writer share one settings analysis grammar.
+Known-field normalization can occur in memory, without asserting a persisted
+repair. Unsupported schema versions, malformed JSON requiring file recreation,
+and non-NotFound read failures add a secret-free refusal to the existing launch
+receipt before runtime capture. The sealed snapshot remains unarmed when that
+receipt contains an unrepairable refusal, even without Keychain acquisition.
+A missing document still uses the pure initial `.env` projection.
+
+Executed repair actions and backup receipts require an admitted writer-capable
+settings/acquiring loader. The writer alone reads an operator pack, creates a
+backup, resets/recreates the document and persists its validated candidate.
+Requesting a passive snapshot authorizes none of those operations. Refusals keep
+the existing process-lifetime diagnostic/quarantine behavior; passive normalized
+values do not erase an earlier recorded refusal.

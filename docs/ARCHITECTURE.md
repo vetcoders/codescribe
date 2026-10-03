@@ -250,7 +250,10 @@ Settings projections parse the committed atomic document through the existing
 `UserSettings` authority without its credential transaction lease. With no
 settings document, the same import builder supplies an in-memory `.env`
 projection; that preview neither prepares a durable import nor performs repair.
-The writer
+Projection and repair share one analysis grammar. An existing malformed,
+unsupported or unreadable document records a refusal before capture, keeping
+the runtime seal disarmed. Safe known-field normalization is in-memory only;
+projection never reports a backup or completed repair. The writer
 retains serialization of cancellation, import settlement and persistence; a
 passive UI read does not become a waiting writer. Capability matrix also uses
 committed settings for workspace roots through the shared root resolver. First

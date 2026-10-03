@@ -2294,7 +2294,7 @@ impl UserSettings {
             ));
         }
         match fs::read_to_string(&path) {
-            Ok(contents) => match serde_json::from_str::<serde_json::Value>(&contents) {
+            Ok(contents) => match super::repair::project_settings(&path, contents.as_bytes()) {
                 Ok(value) => {
                     let retired_paste_mode = Self::retired_auto_paste(&value);
                     let value_for_legacy = value.clone();
@@ -2387,6 +2387,9 @@ impl UserSettings {
             },
             Err(e) => {
                 debug!("Settings document unavailable at {} ({e})", path.display());
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    super::repair::record_projection_refusal(&path);
+                }
                 let mut settings = Self::default();
                 if e.kind() == std::io::ErrorKind::NotFound {
                     if persist_migrations {

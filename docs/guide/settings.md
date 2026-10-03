@@ -215,6 +215,12 @@ opening Settings alone projects the imported choices without acquiring
 credentials or creating `settings.json`. The pending import becomes durable
 when the first writer prepares it, not when the preview appears.
 
+Malformed JSON, unsupported schema versions and an unreadable existing settings
+file produce a configuration refusal even in a Keychain-free snapshot. The
+runtime seal remains disarmed; a read-only check preserves the original file
+without creating a backup or silently replacing it. Safe field normalization can
+appear in the preview, while persistent repair belongs to the writer.
+
 Common overrides:
 
 - `USE_LOCAL_STT`
