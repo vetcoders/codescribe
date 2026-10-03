@@ -1476,7 +1476,7 @@ mod tests {
             .iter_mut()
             .find(|operation| operation.kind == "split")
             .expect("recorded split lineage");
-        assert_eq!(split.source_ranges.len(), 1);
+        assert_eq!(split.source_ranges.len(), 3);
         split.source_ranges[0].sample_end -= 1;
         assert_replay_refused_before_projection(&forged);
         let mut foreign = rows.clone();
