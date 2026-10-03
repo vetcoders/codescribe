@@ -626,6 +626,9 @@
     "Account" : {
       "comment" : "Sidebar group of settings sections"
     },
+    "Account access unavailable" : {
+
+    },
     "Account connected and API key configured. Supported Assistive requests can use the account; Formatting and model discovery use the provider API key." : {
 
     },
@@ -1074,6 +1077,18 @@
 
     },
     "Checking calibration…" : {
+
+    },
+    "Checking license…" : {
+
+    },
+    "Checking license… Basic dictation remains free." : {
+
+    },
+    "Checking provider access…" : {
+
+    },
+    "Checking provider access… You can continue with Basic dictation." : {
 
     },
     "Checking recording activity…" : {
@@ -2083,6 +2098,15 @@
     "License" : {
       "comment" : "Settings section"
     },
+    "License access is unavailable. Retry in Settings › License. Basic dictation remains free." : {
+
+    },
+    "License access is unavailable. The last verified license still follows its original expiry." : {
+
+    },
+    "License access unavailable" : {
+
+    },
     "License status" : {
 
     },
@@ -2798,7 +2822,25 @@
     "Provider API key" : {
       "comment" : "Summary row: whether an API key is stored for the chosen AI provider"
     },
+    "Provider access is still being updated." : {
+
+    },
+    "Provider access is unavailable. No credential status has been confirmed." : {
+
+    },
+    "Provider access is unavailable. Retry to check account and API key status." : {
+
+    },
+    "Provider access is unavailable. The last checked values are shown below." : {
+
+    },
+    "Provider access unavailable" : {
+
+    },
     "Provider account" : {
+
+    },
+    "Provider account access is unavailable. Remove the stored account in Settings › Providers, then sign in again." : {
 
     },
     "Provider and model per request path. Endpoints and keys live on Providers; the resolved runtime truth is below the editors." : {
@@ -2975,6 +3017,9 @@
 
     },
     "Refresh pending requests" : {
+
+    },
+    "Refresh provider access" : {
 
     },
     "Refresh status" : {
@@ -3158,6 +3203,12 @@
     "Retranscription needs the recording engine" : {
 
     },
+    "Retry license access" : {
+
+    },
+    "Retry provider access" : {
+
+    },
     "Reveal in Finder" : {
 
     },
@@ -3294,6 +3345,9 @@
 
     },
     "Saving correction" : {
+
+    },
+    "Saving provider…" : {
 
     },
     "Screen Recording" : {
@@ -3463,6 +3517,9 @@
 
     },
     "Sign out" : {
+
+    },
+    "Sign out %@" : {
 
     },
     "Sign out of %@" : {
@@ -4138,6 +4195,9 @@
 
     },
     "Updates through" : {
+
+    },
+    "Updating provider access…" : {
 
     },
     "Use %@ or choose Start recording." : {

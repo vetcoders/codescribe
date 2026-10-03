@@ -210,3 +210,13 @@ one follow-up and keep the committed endpoint visible. Per-account errors keep
 the registry, independent API keys and STT controls available; a successful
 read clears the account error. The existing preview engine exposes one optional
 async snapshot loader for these deterministic tests.
+
+Credential projection witnesses also live in the Rust settings, Keychain,
+account-auth and agent-status unit suites. They pause a real credential
+transaction lease while calling the production passive readers, warm bundle
+reader and capability matrix. Initial import is exercised before and after a
+first config write, concurrently with it, and through failed persistence and
+explicit account cancellation. Malformed account metadata must preserve
+independent API/STT keys without exposing the stored payload. These tests
+prove ordering and lease boundaries; they do not reproduce SecurityServer
+latency or replace signed native acceptance.

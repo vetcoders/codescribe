@@ -875,6 +875,35 @@ fn now_unix() -> i64 {
 /// Unit tests for client-id resolution, keychain isolation, and registry shape.
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[serial]
+    fn credential_projection_malformed_account_is_unknown_and_preserves_other_credentials() {
+        let (_settings_guard, _directory) = isolated_settings_dir("credential_projection");
+        let _key = EnvGuard::remove("LLM_OPENAI_API_KEY");
+        let _stt = EnvGuard::remove("STT_FILE_API_KEY");
+        let _tokens = EnvGuard::remove(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
+        let _cache = crate::config::keychain::test_support::install_bundle(&[
+            (
+                OPENAI_ACCOUNT_TOKENS_ACCOUNT,
+                "{synthetic-private-token-json",
+            ),
+            ("LLM_OPENAI_API_KEY", "synthetic-independent-api-key"),
+            ("STT_FILE_API_KEY", "synthetic-independent-stt-key"),
+        ]);
+        let probe = crate::config::keychain::CredentialAcquisitionProbe::forbid();
+        let strict = account_status_snapshot(ProviderKind::OpenAiResponses);
+        assert!(matches!(strict, Err(AccountAuthError::Storage(_))));
+        let display = cached_account_status(ProviderKind::OpenAiResponses);
+        assert!(!display.signed_in);
+        assert_eq!(
+            display.message,
+            "Account access unavailable. Remove the stored account and sign in again."
+        );
+        assert!(!display.message.contains("synthetic-private-token-json"));
+        assert!(crate::config::keychain::key_present("LLM_OPENAI_API_KEY"));
+        assert!(crate::config::keychain::key_present("STT_FILE_API_KEY"));
+        assert!(probe.attempts().is_empty());
+    }
     use super::*;
     use serial_test::serial;
 

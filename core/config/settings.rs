@@ -2242,8 +2242,13 @@ impl UserSettings {
         crate::test_isolation::assert_test_read_allowed(&env_path);
         let values = match super::Config::parse_env_file(&env_path) {
             Ok(values) => values,
-            Err(error) if error.downcast_ref::<std::io::Error>()
-                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) => return Ok(None),
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                return Ok(None);
+            }
             Err(error) => return Err(error),
         };
         Ok(super::migrate::prepare_env_import(Some(&values)))
@@ -3169,6 +3174,207 @@ fn remove_json_keys_at(
 /// disk. All tests are `#[serial]`: the data dir is selected by process env.
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[serial]
+    fn credential_projection_import_and_first_write_preserve_config_in_both_orders() {
+        for import_first in [false, true] {
+            let _root = setup_isolated_data_dir();
+            let env = crate::config::Config::env_path();
+            fs::write(
+                &env,
+                "WHISPER_LANGUAGE=pl\nLLM_OPENAI_API_KEY=synthetic-import-order\n",
+            )
+            .unwrap();
+            let values = crate::config::Config::parse_env_file(&env).unwrap();
+            if import_first {
+                crate::config::migrate::migrate_if_needed(Some(&values), false);
+            }
+            crate::config::Config::load_without_keychain()
+                .save_to_env("SOUND_VOLUME", "0.37")
+                .unwrap();
+            if !import_first {
+                crate::config::migrate::migrate_if_needed(Some(&values), false);
+            }
+            let saved = UserSettings::load_projection();
+            assert_eq!(saved.whisper_language.as_deref(), Some("pl"));
+            assert_eq!(saved.sound_volume, Some(0.37));
+            assert_eq!(saved.pending_env_key_imports.len(), 1);
+            assert_eq!(
+                saved.pending_env_key_imports[0].target,
+                "LLM_OPENAI_API_KEY"
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn credential_projection_concurrent_initial_import_cannot_replace_first_config_edit() {
+        let _root = setup_isolated_data_dir();
+        let env = crate::config::Config::env_path();
+        fs::write(
+            &env,
+            "WHISPER_LANGUAGE=pl\nLLM_OPENAI_API_KEY=synthetic-import-race\n",
+        )
+        .unwrap();
+        let values = crate::config::Config::parse_env_file(&env).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let acquiring_barrier = barrier.clone();
+        let acquiring = std::thread::spawn(move || {
+            acquiring_barrier.wait();
+            crate::config::migrate::migrate_if_needed(Some(&values), false);
+        });
+        let editing_barrier = barrier.clone();
+        let editing = std::thread::spawn(move || {
+            editing_barrier.wait();
+            crate::config::Config::load_without_keychain().save_to_env("SOUND_VOLUME", "0.61")
+        });
+        barrier.wait();
+        acquiring.join().unwrap();
+        editing.join().unwrap().unwrap();
+        let saved = UserSettings::load_projection();
+        assert_eq!(saved.whisper_language.as_deref(), Some("pl"));
+        assert_eq!(saved.sound_volume, Some(0.61));
+        assert_eq!(saved.pending_env_key_imports.len(), 1);
+        assert_eq!(
+            saved.pending_env_key_imports[0].target,
+            "LLM_OPENAI_API_KEY"
+        );
+    }
+    #[test]
+    #[serial]
+    fn credential_projection_reads_committed_settings_during_pending_edit() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let root = setup_isolated_data_dir();
+        let committed_root = root.path().join("workspace").to_string_lossy().to_string();
+        UserSettings {
+            whisper_language: Some("pl".into()),
+            agent_workspace_roots: Some(vec![committed_root.clone()]),
+            ..Default::default()
+        }
+        .save()
+        .unwrap();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            UserSettings::with_credential_edit("LLM_OPENAI_API_KEY", |_| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                Ok(())
+            })
+        });
+        let entered = entered_rx.recv_timeout(Duration::from_secs(2));
+        let (read_tx, read_rx) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let settings = UserSettings::load_projection();
+            let roots = crate::config::Config::effective_agent_workspace_roots_projection();
+            read_tx.send((settings.whisper_language, roots)).unwrap();
+        });
+        let projected = read_rx.recv_timeout(Duration::from_secs(1));
+        release_tx.send(()).unwrap();
+        writer.join().unwrap().unwrap();
+        reader.join().unwrap();
+        entered.unwrap();
+        let (language, roots) =
+            projected.expect("passive readers must finish while edit owns its lease");
+        assert_eq!(language.as_deref(), Some("pl"));
+        assert_eq!(roots, vec![committed_root]);
+    }
+
+    #[test]
+    #[serial]
+    fn credential_projection_normalizes_retired_fields_without_writing() {
+        let _root = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        let bytes = br#"{"schema_version":3,"interaction":{"auto_paste_enabled":false}}"#;
+        fs::write(&path, bytes).unwrap();
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        let projected = UserSettings::load_projection();
+        assert_eq!(projected.paste_mode, Some(PasteMode::Off));
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), modified);
+        assert!(
+            !UserSettings::settings_dir()
+                .join("settings.v1.bak.json")
+                .exists()
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn credential_projection_first_settings_write_preserves_file_import_intent() {
+        let _root = setup_isolated_data_dir();
+        let env = crate::config::Config::env_path();
+        let original = "WHISPER_LANGUAGE=pl\nLLM_OPENAI_API_KEY=synthetic-first-import-key\n";
+        fs::write(&env, original).unwrap();
+        let config = crate::config::Config::load_without_keychain();
+        assert!(
+            !UserSettings::settings_path().exists(),
+            "a passive read does not persist import"
+        );
+        config.save_to_env("SOUND_VOLUME", "0.50").unwrap();
+        let saved = UserSettings::load_projection();
+        assert_eq!(saved.whisper_language.as_deref(), Some("pl"));
+        assert_eq!(saved.sound_volume, Some(0.5));
+        assert_eq!(saved.pending_env_key_imports.len(), 1);
+        assert_eq!(
+            saved.pending_env_key_imports[0].target,
+            "LLM_OPENAI_API_KEY"
+        );
+        assert_eq!(saved.pending_env_key_imports[0].env_path, env);
+        assert_eq!(fs::read_to_string(&env).unwrap(), original);
+        assert!(
+            !fs::read_to_string(UserSettings::settings_path())
+                .unwrap()
+                .contains("synthetic-first-import-key")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn credential_projection_explicit_edit_prepares_import_and_durably_cancels_its_account() {
+        let _root = setup_isolated_data_dir();
+        fs::write(crate::config::Config::env_path(),
+            "WHISPER_LANGUAGE=pl\nLLM_OPENAI_API_KEY=synthetic-openai\nLLM_ANTHROPIC_API_KEY=synthetic-anthropic\n").unwrap();
+        let result: anyhow::Result<()> =
+            UserSettings::with_credential_edit("LLM_OPENAI_API_KEY", |_| {
+                anyhow::bail!("synthetic storage refusal")
+            });
+        assert!(result.is_err());
+        let saved = UserSettings::load_projection();
+        assert_eq!(saved.whisper_language.as_deref(), Some("pl"));
+        assert_eq!(saved.pending_env_key_imports.len(), 1);
+        assert_eq!(
+            saved.pending_env_key_imports[0].target,
+            "LLM_ANTHROPIC_API_KEY"
+        );
+        let bytes = fs::read_to_string(UserSettings::settings_path()).unwrap();
+        assert!(!bytes.contains("synthetic-openai"));
+        assert!(!bytes.contains("synthetic-anthropic"));
+    }
+
+    #[test]
+    #[serial]
+    fn credential_projection_failed_initial_intent_persistence_forbids_secret_edit() {
+        let _root = setup_isolated_data_dir();
+        fs::write(
+            crate::config::Config::env_path(),
+            "WHISPER_LANGUAGE=pl\nLLM_ANTHROPIC_API_KEY=synthetic-import\n",
+        )
+        .unwrap();
+        let called = std::cell::Cell::new(false);
+        let result = UserSettings::with_credential_edit_persistence(
+            "LLM_OPENAI_API_KEY",
+            |_| {
+                called.set(true);
+                Ok(())
+            },
+            |_| anyhow::bail!("synthetic initial persistence refusal"),
+        );
+        assert!(result.is_err());
+        assert!(!called.get());
+        assert!(!UserSettings::settings_path().exists());
+    }
     use super::{
         DEFAULT_SEAL_LANE_ARMED, FormattingPolicy, SILERO_FUSION_ENV, UserSettings, is_promoted_key,
     };

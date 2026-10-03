@@ -36,7 +36,8 @@ pub fn migrate_if_needed(
     if let Some(settings) = UserSettings::prepare_initial_env_import(file_env) {
         return Some(settings);
     }
-    if acquire_credentials && UserSettings::settings_path().exists()
+    if acquire_credentials
+        && UserSettings::settings_path().exists()
         && let Err(error) = UserSettings::settle_pending_env_key_imports()
     {
         tracing::warn!(%error, "Credential import remains pending");

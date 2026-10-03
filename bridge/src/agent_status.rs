@@ -252,6 +252,63 @@ fn live_connector_health() -> ConnectorHealth {
 /// UniFFI mapping contracts: tone/row fidelity and probe non-empty degradation.
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[serial_test::serial]
+    fn credential_projection_capability_matrix_finishes_while_secret_edit_owns_settings() {
+        use codescribe_core::config::UserSettings;
+        use std::sync::mpsc;
+        use std::time::Duration;
+        struct RestoreDataDir(Option<std::ffi::OsString>);
+        impl Drop for RestoreDataDir {
+            fn drop(&mut self) {
+                // SAFETY: this fixture is serial; all spawned readers have joined.
+                unsafe {
+                    if let Some(value) = self.0.take() {
+                        std::env::set_var("CODESCRIBE_DATA_DIR", value);
+                    } else {
+                        std::env::remove_var("CODESCRIBE_DATA_DIR");
+                    }
+                }
+            }
+        }
+        let root = tempfile::TempDir::new().unwrap();
+        let _restore = RestoreDataDir(std::env::var_os("CODESCRIBE_DATA_DIR"));
+        // SAFETY: this fixture is serial and no thread has started yet.
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", root.path());
+        }
+        UserSettings {
+            agent_workspace_roots: Some(vec![root.path().to_string_lossy().to_string()]),
+            ..Default::default()
+        }
+        .save()
+        .unwrap();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            UserSettings::with_credential_edit("LLM_OPENAI_API_KEY", |_| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                Ok(())
+            })
+        });
+        let entered = entered_rx.recv_timeout(Duration::from_secs(2));
+        let (read_tx, read_rx) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let probe = codescribe_core::config::keychain::CredentialAcquisitionProbe::forbid();
+            let rows = CodescribeAgentStatus::default().capability_matrix();
+            read_tx.send((rows.len(), probe.attempts())).unwrap();
+        });
+        let read = read_rx.recv_timeout(Duration::from_secs(1));
+        release_tx.send(()).unwrap();
+        writer.join().unwrap().unwrap();
+        reader.join().unwrap();
+        entered.unwrap();
+        let (count, attempts) =
+            read.expect("the real capability bridge must not wait on a pending credential edit");
+        assert!(count > 0);
+        assert!(attempts.is_empty());
+    }
     use super::*;
     use codescribe::agent::tools::mcp::{McpRowTone, McpStatusRow};
 

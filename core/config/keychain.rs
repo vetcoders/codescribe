@@ -836,6 +836,39 @@ fn seed_bundle_env(bundle: &KeychainBundle, seed_process_env: bool) {
 #[cfg(test)]
 mod tests {
     #[test]
+    #[serial_test::serial]
+    fn credential_projection_warm_bundle_and_empty_stt_move_do_not_wait_on_io() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let _cache =
+            super::test_support::install_bundle(&[("LLM_OPENAI_API_KEY", "synthetic-warm-key")]);
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let io_owner = std::thread::spawn(move || {
+            let _io = super::bundle_io();
+            entered_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        });
+        let entered = entered_rx.recv_timeout(Duration::from_secs(2));
+        let (read_tx, read_rx) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let bundle = super::load_bundle().unwrap();
+            let unchanged = super::retry_stt_key_fan_out();
+            read_tx
+                .send((bundle.keys.get("LLM_OPENAI_API_KEY").cloned(), unchanged))
+                .unwrap();
+        });
+        let read = read_rx.recv_timeout(Duration::from_secs(1));
+        release_tx.send(()).unwrap();
+        io_owner.join().unwrap();
+        reader.join().unwrap();
+        entered.unwrap();
+        let (key, unchanged) =
+            read.expect("warm cache read must complete before physical I/O returns");
+        assert_eq!(key.as_deref(), Some("synthetic-warm-key"));
+        assert_eq!(unchanged, 0);
+    }
+    #[test]
     fn cargo_test_binaries_are_recognised_whatever_the_target_dir_is_called() {
         use std::path::Path;
         for test_binary in [
