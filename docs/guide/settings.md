@@ -98,7 +98,10 @@ Permission checklist changes refresh permissions and hotkeys separately.
 Saving or removing credentials and custom providers shows pending work. A
 successful storage operation precedes publication of the new credential state;
 an error does not become a false “not configured” result. Setup waits for a
-pasted key to save before Continue leaves that step. Basic dictation remains
+pasted key to save before Continue leaves that step. Its provider picker stays
+locked during the save. You can edit the key draft while waiting; if the draft
+changes, the earlier save does not clear the new text or advance to the next
+step. Save or Continue again to submit the current draft. Basic dictation remains
 available while credential access is unresolved.
 
 ### Account access and API keys

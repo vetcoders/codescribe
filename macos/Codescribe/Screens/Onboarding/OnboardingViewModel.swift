@@ -531,6 +531,7 @@ final class OnboardingViewModel: ObservableObject {
   // MARK: - API-key step actions
 
   func selectProvider(_ id: String) {
+    guard !providerMutationPending else { return }
     selectedProviderId = id
     do {
       try engine.updateConfig(key: "LLM_ASSISTIVE_PROVIDER", value: id)
@@ -604,7 +605,9 @@ final class OnboardingViewModel: ObservableObject {
   }
 
   func saveApiKey(advanceOnSuccess: Bool = false) {
-    let trimmed = apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+    let submitted = apiKeyDraft
+    let providerId = selectedProviderId
+    let trimmed = submitted.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty, let account = selectedProvider?.apiKeyAccount,
       !providerMutationPending
     else { return }
@@ -618,9 +621,12 @@ final class OnboardingViewModel: ObservableObject {
       }
       do {
         try await engine.setApiKeyAsync(account: account, secret: trimmed)
-        if apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed { apiKeyDraft = "" }
+        let stillCurrent = apiKeyDraft == submitted
+          && selectedProviderId == providerId
+          && selectedProvider?.apiKeyAccount == account
+        if stillCurrent { apiKeyDraft = "" }
         lastError = nil
-        if advanceOnSuccess { advanceAfterCommit() }
+        if advanceOnSuccess, stillCurrent, step == .apiKey { advanceAfterCommit() }
       } catch { lastError = error.userFacingMessage }
     }
   }

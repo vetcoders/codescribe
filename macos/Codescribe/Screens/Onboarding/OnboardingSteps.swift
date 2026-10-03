@@ -596,6 +596,7 @@ struct ApiKeyStepView: View {
           .foregroundStyle(.primary)
       }
       .menuStyle(.borderlessButton)
+      .disabled(model.providerMutationPending)
       Spacer(minLength: 0)
     }
     .padding(.vertical, 12)
