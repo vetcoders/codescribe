@@ -302,7 +302,10 @@ fn analyze_settings(
 pub(super) fn project_settings(path: &Path, bytes: &[u8]) -> anyhow::Result<Value> {
     let result = analyze_settings(Some(bytes), || Ok(None)).and_then(|(value, plan)| {
         anyhow::ensure!(
-            !plan.actions.iter().any(|action| matches!(action, RepairAction::FileRecreated { .. })),
+            !plan
+                .actions
+                .iter()
+                .any(|action| matches!(action, RepairAction::FileRecreated { .. })),
             "invalid JSON requires admitted writer repair; source left untouched"
         );
         Ok(value)
@@ -322,7 +325,9 @@ fn refusal_receipt(path: &Path) -> RepairReceipt {
     RepairReceipt {
         unrepairable: vec![ConfigUnrepairable {
             path: path.into(),
-            reason: "settings admission refused; inspect file schema, field types and filesystem access".into(),
+            reason:
+                "settings admission refused; inspect file schema, field types and filesystem access"
+                    .into(),
         }],
         ..RepairReceipt::default()
     }
@@ -358,7 +363,9 @@ pub(super) fn repair_settings(path: &Path, pack: Option<&Path>) -> RepairReceipt
     })();
     if outcome.is_err() {
         receipt.actions.clear();
-        receipt.unrepairable.extend(refusal_receipt(path).unrepairable);
+        receipt
+            .unrepairable
+            .extend(refusal_receipt(path).unrepairable);
     }
     receipt
 }

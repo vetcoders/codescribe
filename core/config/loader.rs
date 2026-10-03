@@ -2144,6 +2144,9 @@ mod tests {
         set_env_for_test("CODESCRIBE_DATA_DIR", dir.path());
         fs::write(dir.path().join("settings.json"), r#"{"schema_version":3}"#).unwrap();
         let _empty = super::super::keychain::test_support::install_bundle(&[]);
+        // Close the bundle's one-shot publication with an empty warm cache.
+        // This unit witness cannot depend on which serial fixture consumed Once.
+        super::super::keychain::seed_cached_bundle_env(true);
         let first = Config::load_without_keychain();
         assert!(first.stt_file_api_key.is_none());
         let _acquired = super::super::keychain::test_support::install_bundle(&[
@@ -2154,12 +2157,7 @@ mod tests {
         let loaded = Config::load();
         assert_eq!(loaded.stt_file_api_key.as_deref(), Some("synthetic-file"));
         assert_eq!(loaded.stt_live_api_key.as_deref(), Some("synthetic-live"));
-        // Unit bootstrap deliberately reopens env publication for each fixture.
-        // The dependency-mode bridge witness proves the closed production window.
-        assert_eq!(
-            std::env::var("STT_FILE_API_KEY").as_deref(),
-            Ok("synthetic-file")
-        );
+        assert!(std::env::var_os("STT_FILE_API_KEY").is_none());
         set_env_for_test("STT_FILE_API_KEY", "synthetic-explicit");
         let probe = super::super::keychain::CredentialAcquisitionProbe::forbid();
         let loaded = Config::load_without_keychain();
