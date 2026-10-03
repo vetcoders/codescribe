@@ -2184,6 +2184,39 @@ impl AppleSealState {
         }
     }
 
+    /// Resolve one full alignment-uncertainty interval inside the issued edge.
+    /// Keep no waveform in the ledger or on individual Words.
+    fn record_decode_fence_measurement(
+        &self,
+        ledger: &mut AcousticLedger,
+        decode_window: Option<(u64, u64)>,
+    ) {
+        let resolution = u64::from(self.sample_rate).div_ceil(50).saturating_add(1);
+        let edge = decode_window.and_then(|(start, end)| {
+            let edge_start = end.checked_sub(resolution)?;
+            (edge_start >= start)
+                .then(|| self.window_by_samples(edge_start, end))
+                .flatten()
+                .filter(|window| window.sample_start == edge_start && window.sample_end == end)
+        });
+        let range = edge.as_ref().map(|window| {
+            OccurrenceIdentity::new(
+                &self.session_id,
+                self.capture_epoch,
+                window.sample_start,
+                window.sample_end,
+            )
+        });
+        ledger.record_decode_fence_energy(
+            &self.capture_energy,
+            self.audio.session_sample_end(),
+            range
+                .as_ref()
+                .zip(edge.as_ref())
+                .map(|(range, window)| (range, window.samples.as_slice())),
+        );
+    }
+
     fn new_for_session(sample_rate: u32, session_id: String, capture_epoch: u64) -> Self {
         let session_id_for_energy = session_id.clone();
         let speech_progress = SpeechProgress::new(session_id.clone(), capture_epoch, sample_rate);
@@ -3776,12 +3809,35 @@ impl AppleSealState {
             segments,
             LedgerObservationProducer::Whisper,
         );
-        // Only the final word touching the actual decode fence is truncated.
-        // Its original PCM remains evidence; it cannot mint a slot yet.
-        if word_grain
-            && let Some(last) = segments.last()
-            && last.range.sample_end == job.request_identity.range.sample_end
-        {
+        // Timestamp quantisation can hide a cut just inside the actual
+        // decoder fence. The same acoustic predicate owns ledger completeness.
+        let edge_incomplete = if word_grain {
+            let speech = coverage_speech_evidence(self);
+            let mut ledger = self
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            ledger.record_speech_evidence(&speech);
+            self.record_decode_fence_measurement(
+                &mut ledger,
+                Some((
+                    job.request_identity.range.sample_start,
+                    job.request_identity.range.sample_end,
+                )),
+            );
+            segments.last().is_some_and(|last| {
+                ledger.decode_word_fence_incomplete(
+                    &OccurrenceIdentity::from(&job.request_identity.range),
+                    job.request_identity.range.sample_start,
+                    job.request_identity.range.sample_end,
+                    last.range.sample_start,
+                    last.range.sample_end,
+                )
+            })
+        } else {
+            false
+        };
+        if edge_incomplete {
             let last_index = segments.len() - 1;
             for ((_, owner), route) in owners.iter().zip(&mut routes) {
                 if let Some(position) = route
@@ -3791,6 +3847,10 @@ impl AppleSealState {
                 {
                     let stub = route.exclusive.remove(position);
                     self.keep_routed_visible(ev_tx, request_id, std::slice::from_ref(&stub));
+                    self.acoustic_ledger
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .require_text_recovery(owner);
                     self.pending_whisper_stubs.push((
                         job.request_identity.clone(),
                         owner.clone(),
@@ -3822,6 +3882,50 @@ impl AppleSealState {
                         },
                         LedgerObservationProducer::Whisper,
                     );
+                }
+                continue;
+            }
+            // Successful empty work has its own issued decode scope. The
+            // quiet new admit range need not repeat earlier accepted Words.
+            if payload.as_ref().is_some_and(|payload| {
+                payload.text.trim().is_empty()
+                    && payload.segments.is_empty()
+                    && payload.evidence.source
+                        == crate::stt::tail_provider::TailEvidenceSource::Whisper
+                    && payload.evidence.stability
+                        == crate::stt::tail_provider::TailEvidenceStability::Final
+            }) {
+                let speech = coverage_speech_evidence(self);
+                let accounted = {
+                    let mut ledger = self
+                        .acoustic_ledger
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut observation = ledger.next_word_observation(
+                        LedgerObservationProducer::Whisper,
+                        request_id,
+                        occurrence,
+                    );
+                    // This work receipt names this issued request, not the
+                    // prior lexical observation's request or decoder extent.
+                    observation.request = request_id;
+                    ledger.record_speech_evidence(&speech);
+                    ledger.record_empty_decode_work(
+                        &observation,
+                        &OccurrenceIdentity::from(&job.request_identity.range),
+                    )
+                };
+                if accounted {
+                    self.refresh_pending_label(*member_id, occurrence);
+                    self.refinement_receipt(occurrence, "completed");
+                } else {
+                    // Successful work is retained for later Word evidence;
+                    // an empty payload never answers a lexical observation.
+                    self.acoustic_ledger
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .require_text_recovery(occurrence);
+                    self.refinement_receipt(occurrence, RefinementFailure::NoLabel.code());
                 }
                 continue;
             }
@@ -4095,6 +4199,12 @@ impl AppleSealState {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let observation = ledger.next_word_observation(producer, request, owner);
             ledger.record_speech_evidence(&speech);
+            self.record_decode_fence_measurement(
+                &mut ledger,
+                (producer == LedgerObservationProducer::Whisper)
+                    .then_some(decode_window)
+                    .flatten(),
+            );
             ledger.record_assigned_word_pins(&observation, neighbours);
             let receipt = ledger.admit_word_slots(&observation, &words);
             let label = match &receipt {
@@ -4127,7 +4237,7 @@ impl AppleSealState {
     fn settle_whisper_stubs(
         &mut self,
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
-        id: u64,
+        _id: u64,
         owner: &OccurrenceIdentity,
         terminal: bool,
     ) {
@@ -4151,12 +4261,7 @@ impl AppleSealState {
                         .filter(|slot| {
                             slot.producer == LedgerObservationProducer::Whisper
                                 && ledger.word_slot_targets_pin(slot, &stub.pin)
-                                && (ledger.complete_word_slot(slot)
-                                    || crate::pipeline::acoustic_ledger::normalize_word_token(
-                                        &slot.text,
-                                    ) == crate::pipeline::acoustic_ledger::normalize_word_token(
-                                        &stub.text,
-                                    ))
+                                && ledger.complete_word_slot(slot)
                         })
                         .cloned()
                         .collect::<Vec<_>>();
@@ -4195,23 +4300,40 @@ impl AppleSealState {
                         .push((request_identity, stub_owner, stub));
                     continue;
                 }
-                // Only the matched word payload created this saved request.
-                // Reuse its actual fences; the terminal callback is not decode
-                // evidence and cannot extend the original word's PCM clocks.
-                self.admit_routed_words_with_decode_window(
-                    ev_tx,
-                    id,
-                    owner,
-                    (
+                // Terminal drain is not whole-word evidence. Keep the edge
+                // hypothesis visible and its owner unresolved without admission.
+                self.keep_routed_visible(ev_tx, request, std::slice::from_ref(&stub));
+                let (observation, receipt) = {
+                    let mut ledger = self
+                        .acoustic_ledger
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    ledger.require_text_recovery(owner);
+                    let observation = ledger.next_word_observation(
+                        LedgerObservationProducer::Whisper,
                         request,
-                        Some((decode_range.sample_start, decode_range.sample_end)),
-                    ),
-                    RoutedWords {
-                        pins: std::slice::from_ref(&stub),
-                        neighbours: &[],
-                    },
-                    LedgerObservationProducer::Whisper,
-                );
+                        owner,
+                    );
+                    let mut pin = crate::pipeline::acoustic_ledger::WordPin::new(
+                        stub.pin.sample_start,
+                        stub.pin.sample_end,
+                        stub.text.clone(),
+                    )
+                    .with_decode_window(decode_range.sample_start, decode_range.sample_end);
+                    pin.confidence = stub.confidence;
+                    ledger.retain_rejected_decode_word(&observation, &pin);
+                    let receipt = ledger.refuse_replacement(
+                        &observation,
+                        &stub.text,
+                        RefuseReason::UnrecoveredSpeech,
+                    );
+                    (observation, receipt)
+                };
+                let _ = ev_tx.send(EngineEvent::LedgerMutation {
+                    observation,
+                    label: stub.text.clone(),
+                    receipt,
+                });
             } else {
                 self.pending_whisper_stubs
                     .push((request_identity, stub_owner, stub));
@@ -22036,6 +22158,8 @@ mod relay_l1_overlap_admission_tests {
                 .collect::<Vec<_>>(),
         );
         let pcm = input.audio.clone();
+        lane.state.audio.push(&pcm);
+        assert_eq!(lane.state.audio.session_sample_end(), pcm.len() as u64);
         assert!(lane.state.enqueue_layer1_piece(&lane.tx, input));
         let requests = take_requests(&mut lane.tail_rx);
         assert_eq!(requests.len(), clock_requests.len());
@@ -23541,7 +23665,18 @@ mod relay_l1_overlap_admission_tests {
                 completion(&request, vec![word_pin(session, "Iwo", 4_000, 48_000)]),
                 3.0,
             );
-            assert!(unanchored_label(&drain(&mut lane.rx), "Iwo"));
+            let returned_events = drain(&mut lane.rx);
+            if voiced_fence {
+                assert!(unanchored_label(&returned_events, "Iwo"));
+                assert_eq!(held_text(&lane, &owner).as_deref(), Some("hipoteza"));
+            } else {
+                assert_eq!(held_text(&lane, &owner).as_deref(), Some("Iwo"));
+                assert!(!unanchored_label(&returned_events, "Iwo"));
+                let ledger = lane.state.acoustic_ledger.lock().unwrap();
+                assert!(!ledger.text_recovery_pending(&owner));
+                assert!(ledger.word_deletions().is_empty());
+                assert_eq!(ledger.conservation().residue(), 0);
+            }
         }
         lane.state
             .return_outstanding_whisper_without_label(&lane.tx);
@@ -24636,6 +24771,579 @@ mod relay_l1_overlap_admission_tests {
         ledger.assert_slot_labels();
     }
 
+    // Root-owned stop proof: real retained PCM/request ranges, supplied Words.
+    // A timeout closes obligations, never successful decoder work.
+    #[test]
+    fn forensic_l44_cancel_retains_word_and_unreturned_source_debt() {
+        for mode in BufferMode::BOTH {
+            let session = mode.session("l44-cancel");
+            let (mut lane, owner, requests, _) =
+                forensic_boundary_capture(mode, &session, 0, LONG_SAMPLES, 0, &[(44_000, 51_000)]);
+            assert!(requests.len() >= 2);
+            lane.state.complete_whisper_window(
+                &lane.tx,
+                completion(
+                    &requests[0],
+                    vec![word_pin(&session, "szew", 44_000, 51_000)],
+                ),
+                9.5,
+            );
+            let before = lane
+                .state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .slots_of(&owner)
+                .unwrap()
+                .to_vec();
+            assert_eq!(held_text(&lane, &owner).as_deref(), Some("szew"));
+            let _ = drain(&mut lane.rx);
+            lane.state
+                .return_outstanding_whisper_without_label(&lane.tx);
+            let events = drain(&mut lane.rx);
+            let ledger = lane.state.acoustic_ledger.lock().unwrap();
+            assert_eq!(ledger.text_of(&owner), Some("szew"));
+            assert_eq!(ledger.slots_of(&owner).unwrap(), before);
+            assert!(ledger.text_recovery_pending(&owner));
+            assert!(!ledger.is_sealed(&owner));
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| matches!(event, EngineEvent::LedgerSeal { .. }))
+            );
+            assert!(ledger.word_deletions().is_empty());
+            ledger.assert_slot_labels();
+            assert_eq!(ledger.conservation().residue(), 0);
+        }
+    }
+
+    fn forensic_l44_complete_blank_windows_case(missing_speech: bool) {
+        for mode in BufferMode::BOTH {
+            let session = mode.session(if missing_speech {
+                "l44-blank-voiced"
+            } else {
+                "l44-blank-quiet"
+            });
+            let mut voiced = vec![(44_000, 51_000)];
+            if missing_speech {
+                voiced.push((140_000, 148_000));
+            }
+            let (mut lane, owner, requests, _) =
+                forensic_boundary_capture(mode, &session, 0, LONG_SAMPLES, 0, &voiced);
+            assert!(requests.len() >= 2);
+            let speech = coverage_speech_evidence(&lane.state);
+            assert!(requests[0].provider_request.identity.range.sample_end < 140_000);
+            assert!(
+                speech
+                    .ranges()
+                    .iter()
+                    .any(|range| range.sample_start < 51_000 && range.sample_end > 44_000)
+            );
+            if !missing_speech {
+                assert!(speech.ranges().iter().all(|range| range.sample_end
+                    < requests[0].provider_request.identity.range.sample_end));
+            }
+            lane.state.complete_whisper_window(
+                &lane.tx,
+                completion(
+                    &requests[0],
+                    vec![word_pin(&session, "szew", 44_000, 51_000)],
+                ),
+                9.5,
+            );
+            assert_eq!(held_text(&lane, &owner).as_deref(), Some("szew"));
+            let source_slots = lane
+                .state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .slots_of(&owner)
+                .unwrap()
+                .to_vec();
+            let mut events = drain(&mut lane.rx);
+            for request in &requests[1..] {
+                // Every final carries the issued identity and exact PCM range.
+                // No invented Word pin stands in for a successful empty decode.
+                lane.state
+                    .complete_whisper_window(&lane.tx, completion(request, vec![]), 9.5);
+                events.extend(drain(&mut lane.rx));
+            }
+            assert_eq!(lane.state.tail_patch_awaiting_completion(), 0);
+            lane.state
+                .return_outstanding_whisper_without_label(&lane.tx);
+            events.extend(drain(&mut lane.rx));
+            let ledger = lane.state.acoustic_ledger.lock().unwrap();
+            assert_eq!(ledger.text_of(&owner), Some("szew"));
+            assert_eq!(ledger.slots_of(&owner).unwrap(), source_slots);
+            assert!(ledger.word_deletions().is_empty());
+            eprintln!(
+                "L44 {mode:?} missing={missing_speech} pending={} sealed={} speech={:?} warnings={}",
+                ledger.text_recovery_pending(&owner),
+                ledger.is_sealed(&owner),
+                speech.ranges(),
+                warning_lines(&events)
+            );
+            assert_eq!(ledger.text_recovery_pending(&owner), missing_speech);
+            assert_eq!(ledger.is_sealed(&owner), !missing_speech);
+            if missing_speech {
+                assert!(
+                    !events
+                        .iter()
+                        .any(|event| matches!(event, EngineEvent::LedgerSeal { .. }))
+                );
+            }
+            ledger.assert_slot_labels();
+            assert_eq!(ledger.conservation().residue(), 0);
+        }
+    }
+
+    #[test]
+    fn forensic_l44_blank_final_on_measured_quiet_accounts_work_without_word() {
+        forensic_l44_complete_blank_windows_case(false);
+    }
+
+    #[test]
+    fn forensic_l44_blank_final_over_untranscribed_speech_cannot_seal() {
+        forensic_l44_complete_blank_windows_case(true);
+    }
+
+    fn forensic_l45_near_decode_fence_case(continues: bool) {
+        for mode in BufferMode::BOTH {
+            let (_, _, clock) = forensic_lane_in(mode, "l45-clock", &[]);
+            let end = clock[0].provider_request.identity.range.sample_end;
+            let session = mode.session(if continues {
+                "l45-fence-voiced"
+            } else {
+                "l45-fence-quiet"
+            });
+            let voiced_end = if continues { end + 1_500 } else { end - 640 };
+            let (mut lane, owner, requests, _) = forensic_boundary_capture(
+                mode,
+                &session,
+                0,
+                200_000,
+                0,
+                &[(end - 3_500, voiced_end)],
+            );
+            assert!(requests.len() >= 2);
+            assert_eq!(requests[0].provider_request.identity.range.sample_end, end);
+            assert!(requests[1].provider_request.identity.range.sample_start <= end - 4_000);
+            // Word time quantization: it stops 8 ms before the PCM fence at 16 kHz.
+            // The continuing-speech case is still cut mid-word in the fixture.
+            lane.state.complete_whisper_window(
+                &lane.tx,
+                completion(
+                    &requests[0],
+                    vec![word_pin(&session, "Iwo", end - 4_000, end - 128)],
+                ),
+                12.5,
+            );
+            let first_events = drain(&mut lane.rx);
+            eprintln!(
+                "L45 {mode:?} continues={continues} decode_end={end} raw={:?} stubs={} warnings={}",
+                held_text(&lane, &owner),
+                lane.state.pending_whisper_stubs.len(),
+                warning_lines(&first_events)
+            );
+            if continues {
+                assert!(
+                    held_text(&lane, &owner).is_none_or(|text| !text.contains("Iwo")),
+                    "an incomplete boundary hypothesis must stay visible without Word mutation"
+                );
+                assert!(unanchored_label(&first_events, "Iwo"));
+                assert!(!lane.state.pending_whisper_stubs.is_empty());
+            } else {
+                assert_eq!(
+                    held_text(&lane, &owner).as_deref(),
+                    Some("Iwo"),
+                    "measured quiet at the fence must not force a blanket wait"
+                );
+                assert!(lane.state.pending_whisper_stubs.is_empty());
+            }
+            if continues {
+                lane.state.complete_whisper_window(
+                    &lane.tx,
+                    completion(
+                        &requests[1],
+                        vec![word_pin(&session, "Iwo", end - 4_000, end + 2_000)],
+                    ),
+                    12.5,
+                );
+                let ledger = lane.state.acoustic_ledger.lock().unwrap();
+                assert_eq!(ledger.text_of(&owner), Some("Iwo"));
+                let words = ledger.slots_of(&owner).unwrap();
+                assert_eq!(words.len(), 1);
+                assert_eq!(
+                    (words[0].sample_start, words[0].sample_end),
+                    (end - 4_000, end + 2_000)
+                );
+                assert!(lane.state.pending_whisper_stubs.is_empty());
+                assert!(ledger.word_deletions().is_empty());
+                ledger.assert_slot_labels();
+                assert_eq!(ledger.conservation().residue(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn forensic_l45_quantized_edge_over_continuing_speech_waits_for_whole_word() {
+        forensic_l45_near_decode_fence_case(true);
+    }
+
+    #[test]
+    fn forensic_l45_quantized_edge_with_quiet_margin_commits_without_delay() {
+        forensic_l45_near_decode_fence_case(false);
+    }
+
+    #[test]
+    fn forensic_l47_invalid_empty_returns_do_not_lend_decoded_scope() {
+        for mode in BufferMode::BOTH {
+            for invalid in [
+                "missing_payload",
+                "foreign_payload_identity",
+                "wrong_engine_family",
+            ] {
+                let session = mode.session(&format!("l47-{invalid}"));
+                let (mut lane, owner, requests, _) = forensic_boundary_capture(
+                    mode,
+                    &session,
+                    0,
+                    LONG_SAMPLES,
+                    0,
+                    &[(44_000, 51_000)],
+                );
+                assert!(requests.len() >= 2);
+                lane.state.complete_whisper_window(
+                    &lane.tx,
+                    completion(
+                        &requests[0],
+                        vec![word_pin(&session, "szew", 44_000, 51_000)],
+                    ),
+                    9.5,
+                );
+                assert_eq!(held_text(&lane, &owner).as_deref(), Some("szew"));
+                let before = lane
+                    .state
+                    .acoustic_ledger
+                    .lock()
+                    .unwrap()
+                    .slots_of(&owner)
+                    .unwrap()
+                    .to_vec();
+                let _ = drain(&mut lane.rx);
+                for request in &requests[1..] {
+                    let mut reply = completion(request, vec![]);
+                    match invalid {
+                        "missing_payload" => reply.payload = None,
+                        "foreign_payload_identity" => {
+                            reply.payload.as_mut().unwrap().identity.range.session =
+                                "foreign".into()
+                        }
+                        "wrong_engine_family" => {
+                            reply.payload.as_mut().unwrap().evidence.source =
+                                TailEvidenceSource::AppleSpeech
+                        }
+                        _ => unreachable!(),
+                    }
+                    lane.state.complete_whisper_window(&lane.tx, reply, 9.5);
+                }
+                lane.state
+                    .return_outstanding_whisper_without_label(&lane.tx);
+                let events = drain(&mut lane.rx);
+                let ledger = lane.state.acoustic_ledger.lock().unwrap();
+                assert_eq!(ledger.text_of(&owner), Some("szew"), "{mode:?}: {invalid}");
+                assert_eq!(ledger.slots_of(&owner).unwrap(), before);
+                assert!(ledger.text_recovery_pending(&owner), "{mode:?}: {invalid}");
+                assert!(!ledger.is_sealed(&owner), "{mode:?}: {invalid}");
+                assert!(
+                    !events
+                        .iter()
+                        .any(|event| matches!(event, EngineEvent::LedgerSeal { .. }))
+                );
+                assert!(ledger.word_deletions().is_empty());
+                ledger.assert_slot_labels();
+                assert_eq!(ledger.conservation().residue(), 0);
+            }
+        }
+    }
+
+    fn forensic_l50_reverse_blank_windows_case(missing_speech: bool) {
+        for mode in BufferMode::BOTH {
+            let session = mode.session(if missing_speech {
+                "l50-reverse-voiced"
+            } else {
+                "l50-reverse-quiet"
+            });
+            let mut voiced = vec![(44_000, 51_000)];
+            if missing_speech {
+                voiced.push((140_000, 148_000));
+            }
+            let (mut lane, owner, requests, _) =
+                forensic_boundary_capture(mode, &session, 0, LONG_SAMPLES, 0, &voiced);
+            assert!(requests.len() >= 2);
+            let speech = coverage_speech_evidence(&lane.state);
+            assert!(requests[0].provider_request.identity.range.sample_end < 140_000);
+            assert!(
+                speech
+                    .ranges()
+                    .iter()
+                    .any(|range| range.sample_start < 51_000 && range.sample_end > 44_000)
+            );
+            if !missing_speech {
+                assert!(speech.ranges().iter().all(|range| range.sample_end
+                    < requests[0].provider_request.identity.range.sample_end));
+            }
+            let mut events = drain(&mut lane.rx);
+            for request in &requests[1..] {
+                // Every final carries the issued identity and exact PCM range.
+                // No invented Word pin stands in for a successful empty decode.
+                lane.state
+                    .complete_whisper_window(&lane.tx, completion(request, vec![]), 9.5);
+                events.extend(drain(&mut lane.rx));
+            }
+            lane.state.complete_whisper_window(
+                &lane.tx,
+                completion(
+                    &requests[0],
+                    vec![word_pin(&session, "szew", 44_000, 51_000)],
+                ),
+                9.5,
+            );
+            assert_eq!(held_text(&lane, &owner).as_deref(), Some("szew"));
+            let source_slots = lane
+                .state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .slots_of(&owner)
+                .unwrap()
+                .to_vec();
+            events.extend(drain(&mut lane.rx));
+            assert_eq!(lane.state.tail_patch_awaiting_completion(), 0);
+            lane.state
+                .return_outstanding_whisper_without_label(&lane.tx);
+            events.extend(drain(&mut lane.rx));
+            let ledger = lane.state.acoustic_ledger.lock().unwrap();
+            assert_eq!(ledger.text_of(&owner), Some("szew"));
+            assert_eq!(ledger.slots_of(&owner).unwrap(), source_slots);
+            assert!(ledger.word_deletions().is_empty());
+            eprintln!(
+                "L50 {mode:?} missing={missing_speech} pending={} sealed={} speech={:?} warnings={}",
+                ledger.text_recovery_pending(&owner),
+                ledger.is_sealed(&owner),
+                speech.ranges(),
+                warning_lines(&events)
+            );
+            assert_eq!(ledger.text_recovery_pending(&owner), missing_speech);
+            assert_eq!(ledger.is_sealed(&owner), !missing_speech);
+            if missing_speech {
+                assert!(
+                    !events
+                        .iter()
+                        .any(|event| matches!(event, EngineEvent::LedgerSeal { .. }))
+                );
+            }
+            ledger.assert_slot_labels();
+            assert_eq!(ledger.conservation().residue(), 0);
+        }
+    }
+
+    #[test]
+    fn forensic_l50_empty_returns_before_words_still_settle_accounted_quiet() {
+        forensic_l50_reverse_blank_windows_case(false);
+    }
+
+    #[test]
+    fn forensic_l50_empty_returns_before_words_keep_untranscribed_voice_debt() {
+        forensic_l50_reverse_blank_windows_case(true);
+    }
+
+    #[test]
+    fn forensic_l54_accepted_prefix_cannot_launder_an_unfinished_edge_word() {
+        for mode in BufferMode::BOTH {
+            let (_, _, clock) = forensic_lane_in(mode, "l54-clock", &[]);
+            let end = clock[0].provider_request.identity.range.sample_end;
+            let session = mode.session("l54-prefix-edge");
+            let (mut lane, owner, requests, _) = forensic_boundary_capture(
+                mode,
+                &session,
+                0,
+                200_000,
+                0,
+                &[(end - 8_000, end - 6_000), (end - 3_500, end + 1_500)],
+            );
+            assert_eq!(requests[0].provider_request.identity.range.sample_end, end);
+            lane.state.complete_whisper_window(
+                &lane.tx,
+                completion(
+                    &requests[0],
+                    vec![
+                        word_pin(&session, "tak", end - 8_000, end - 6_000),
+                        word_pin(&session, "Iwo", end - 4_000, end - 128),
+                    ],
+                ),
+                12.5,
+            );
+            assert_eq!(held_text(&lane, &owner).as_deref(), Some("tak"));
+            let source = lane
+                .state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .slots_of(&owner)
+                .unwrap()
+                .to_vec();
+            assert!(unanchored_label(&drain(&mut lane.rx), "Iwo"));
+            lane.state
+                .return_outstanding_whisper_without_label(&lane.tx);
+            let events = drain(&mut lane.rx);
+            let ledger = lane.state.acoustic_ledger.lock().unwrap();
+            assert_eq!(ledger.text_of(&owner), Some("tak"));
+            assert_eq!(ledger.slots_of(&owner).unwrap(), source);
+            assert!(ledger.text_recovery_pending(&owner));
+            assert!(!ledger.is_sealed(&owner));
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| matches!(e, EngineEvent::LedgerSeal { .. }))
+            );
+            assert!(ledger.word_deletions().is_empty());
+            assert_eq!(ledger.conservation().residue(), 0);
+            ledger.assert_slot_labels();
+        }
+    }
+
+    fn forensic_l65_invalid_capture_fence_case(mode: BufferMode, invalid_position: usize) {
+        let session = &mode.session("l65-invalid-capture-fence");
+        let decoded = true;
+        let voiced_fence = true;
+        let mut lane = open(session);
+        if mode == BufferMode::Adaptive {
+            lane.state.layer1_coalesce = Layer1Coalesce::adaptive();
+        }
+        let owner = OccurrenceIdentity::new(session, 1, 0, 48_000);
+        let speech_end = 16_000;
+        let mut input = piece(1, &owner, "hipoteza");
+        input.audio.fill(0.0);
+        input.audio[6_000..speech_end as usize].fill(0.2);
+        input.audio[invalid_position] = f32::NAN;
+        record_energy(
+            &lane,
+            &input
+                .audio
+                .chunks(1_000)
+                .map(<[f32]>::to_vec)
+                .collect::<Vec<_>>(),
+        );
+        record_silero(&mut lane, 48_000, Some((6_000, speech_end)));
+        stage(&mut lane, 1, owner.clone(), "hipoteza");
+        assert!(
+            lane.state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .require_text_recovery(&owner)
+        );
+        let pcm = input.audio.clone();
+        lane.state.audio.push(&pcm);
+        assert_eq!(lane.state.audio.session_sample_end(), pcm.len() as u64);
+        assert!(lane.state.enqueue_layer1_piece(&lane.tx, input));
+        lane.state.flush_layer1_coalesce(&lane.tx);
+        let mut requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 1);
+        let request = requests.pop().unwrap();
+        assert_eq!(request.audio.len(), pcm.len());
+        assert!(
+            request
+                .audio
+                .iter()
+                .zip(&pcm)
+                .all(|(a, b)| a.to_bits() == b.to_bits())
+        );
+        let range = &request.provider_request.identity.range;
+        assert_eq!((range.sample_start, range.sample_end), (0, 48_000));
+        if decoded {
+            lane.state.complete_whisper_window(
+                &lane.tx,
+                completion(&request, vec![word_pin(session, "Iwo", 4_000, 48_000)]),
+                3.0,
+            );
+            let returned_events = drain(&mut lane.rx);
+            if voiced_fence {
+                assert!(unanchored_label(&returned_events, "Iwo"));
+                assert_eq!(held_text(&lane, &owner).as_deref(), Some("hipoteza"));
+            } else {
+                assert_eq!(
+                    held_text(&lane, &owner).as_deref(),
+                    Some("Iwo"),
+                    "positive measured quiet must admit now, before terminal frontier drain"
+                );
+                assert!(!unanchored_label(&returned_events, "Iwo"));
+                let ledger = lane.state.acoustic_ledger.lock().unwrap();
+                assert!(!ledger.text_recovery_pending(&owner));
+                assert!(ledger.word_deletions().is_empty());
+                assert_eq!(ledger.conservation().residue(), 0);
+            }
+        }
+        lane.state
+            .return_outstanding_whisper_without_label(&lane.tx);
+        assert_eq!(lane.state.tail_patch_awaiting_completion(), 0);
+        assert!(lane.state.refinement_pending.is_empty());
+        {
+            let ledger = lane.state.acoustic_ledger.lock().unwrap();
+            assert_eq!(
+                ledger.frontier_of(&owner).unwrap().open_producers(),
+                vec![ObservationProducer::Lexicon]
+            );
+            assert!(
+                !ledger.is_sealed(&owner),
+                "actual scheduled L2 has not returned"
+            );
+        }
+        let label = if decoded { "Iwo" } else { "hipoteza" };
+        close_lexicon(&mut lane, 1, &owner, label);
+        let ledger = lane.state.acoustic_ledger.lock().unwrap();
+        assert!(
+            ledger
+                .frontier_of(&owner)
+                .unwrap()
+                .open_producers()
+                .is_empty()
+        );
+        if decoded && !voiced_fence {
+            assert_eq!(ledger.text_of(&owner), Some("Iwo"));
+            let slots = ledger.slots_of(&owner).unwrap();
+            assert_eq!(slots.len(), 1);
+            assert_eq!(slots[0].producer, ObservationProducer::Whisper);
+            assert_eq!(
+                (slots[0].sample_start, slots[0].sample_end),
+                (4_000, 48_000)
+            );
+            assert!(!ledger.text_recovery_pending(&owner));
+            assert!(ledger.is_sealed(&owner));
+            drop(ledger);
+            assert!(lane.state.stop_document_settled());
+        } else {
+            assert!(
+                ledger.text_recovery_pending(&owner),
+                "drained queue or speech-cut fence cannot certify decoder work"
+            );
+            assert!(!ledger.is_sealed(&owner));
+            drop(ledger);
+            assert!(!lane.state.stop_document_settled());
+        }
+    }
+
+    #[test]
+    fn forensic_l65_invalid_capture_never_becomes_quiet_fence() {
+        for mode in BufferMode::BOTH {
+            // Invalid PCM both inside and outside any narrow edge query:
+            // downstream silence cannot overrule the original capture writer.
+            for invalid_position in [1_000, 47_990] {
+                forensic_l65_invalid_capture_fence_case(mode, invalid_position);
+            }
+        }
+    }
     #[test]
     fn stop_keeps_already_admitted_word_slots() {
         let session = "seam-stop-slots";

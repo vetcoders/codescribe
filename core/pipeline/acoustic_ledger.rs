@@ -63,7 +63,9 @@ fn unix_epoch_millis() -> Option<u64> {
 
 use sha2::{Digest, Sha256};
 
-use crate::audio::capture_receipt::{AcousticAvailability, AcousticSpeechEvidence};
+use crate::audio::capture_receipt::{
+    AcousticAvailability, AcousticSpeechEvidence, CaptureEnergyOwner,
+};
 use crate::quality::engine_contract::is_clock_lie;
 use crate::stt::tail_provider::TailSampleRange;
 
@@ -744,6 +746,15 @@ impl ConservationTally {
     }
 }
 
+/// The capture writer remains authoritative; a bounded retained-PCM quiet
+/// receipt only refines its block-level measurement at one decoder fence.
+#[derive(Debug, Clone)]
+struct DecodeFenceEnergy {
+    owner: CaptureEnergyOwner,
+    captured_samples: u64,
+    quiet_range: Option<OccurrenceIdentity>,
+}
+
 /// Ledger of committed acoustic occurrences.
 ///
 /// Text is never a key here. The only key is [`OccurrenceIdentity`].
@@ -756,16 +767,21 @@ pub struct AcousticLedger {
     rejected_word_pins: BTreeMap<OccurrenceIdentity, Vec<WordSlot>>,
     slot_operations: Vec<SlotOperationReceipt>,
     pub(super) speech_evidence: Option<AcousticSpeechEvidence>,
+    /// Shared capture observer and actual extent, used only to adjudicate a
+    /// decoder fence. Cloning the handle does not create another observer.
+    decode_fence_energy: Option<DecodeFenceEnergy>,
     assigned_word_pins: Option<slot_ops::AssignedWordPinBatch>,
     group_speech_coverages: Vec<GroupSpeechCoverageReceipt>,
     word_deletions: Vec<WordDeletionReceipt>,
     /// Provenance only: label-wide slots do not prove individual word pins.
     word_pin_observations: std::collections::HashSet<ObservationIdentity>,
-    /// Slot projections whose original words were decoded strictly inside both
-    /// window fences. An empty entry records only incomplete edge pins.
+    /// Slot projections whose original words have complete decoder-fence
+    /// evidence. An empty entry records only incomplete edge pins.
     complete_decoded_words: std::collections::HashMap<ObservationIdentity, Vec<(u64, u64)>>,
     /// Actual decoder fences, distinct from owner clipping and word geometry.
     decoded_word_windows: std::collections::HashMap<ObservationIdentity, (u64, u64)>,
+    /// Matched successful empty finals; these observations mint no Word.
+    successful_empty_decodes: std::collections::HashSet<ObservationIdentity>,
     answered: Vec<ObservationIdentity>,
     kept_visible: usize,
     evidence: BTreeMap<OccurrenceIdentity, AcousticSerial>,
@@ -883,6 +899,49 @@ impl AcousticLedger {
         } else {
             rejected_pins.push(word.clone());
         }
+    }
+
+    /// Carry a saved decoder-edge candidate into the existing rejected-pin
+    /// accounting at terminal drain. Its window is provenance, not success.
+    pub(crate) fn retain_rejected_decode_word(
+        &mut self,
+        observation: &ObservationIdentity,
+        pin: &WordPin,
+    ) {
+        let owner = &observation.occurrence;
+        let (Some(start), Some(end)) = (pin.decode_sample_start, pin.decode_sample_end) else {
+            return;
+        };
+        if observation.producer != ObservationProducer::Whisper
+            || !self.is_qualified(owner)
+            || self.is_sealed(owner)
+            || start >= end
+            || pin.sample_start < start
+            || pin.sample_start >= pin.sample_end
+            || pin.sample_end > end
+        {
+            return;
+        }
+        let word = WordSlot {
+            sample_start: pin.sample_start,
+            sample_end: pin.sample_end,
+            text: pin.text.clone(),
+            producer: observation.producer,
+            observation: observation.clone(),
+            witness: SlotWitness::Unwitnessed,
+            confidence: pin.confidence,
+            surface_rewritten: pin.surface_rewritten,
+        };
+        self.decoded_word_windows
+            .insert(observation.clone(), (start, end));
+        self.complete_decoded_words
+            .insert(observation.clone(), Vec::new());
+        self.refuse_word_slot(
+            observation,
+            &word,
+            vec![word.clone()],
+            "decode_window_clipped",
+        );
     }
 
     /// Child receipts account for rejected PCM without replacing the offered
@@ -1064,15 +1123,24 @@ impl AcousticLedger {
             .iter()
             .filter(|prior| prior.producer == producer && &prior.occurrence == occurrence)
             .max_by_key(|prior| prior.generation);
+        // Successful non-mutating work reserves its generation without
+        // becoming an answered lexical observation or changing its request.
+        let generation = self
+            .answered
+            .iter()
+            .chain(self.successful_empty_decodes.iter())
+            .filter(|prior| prior.producer == producer && &prior.occurrence == occurrence)
+            .map(|prior| prior.generation)
+            .max()
+            .map_or(0, |generation| {
+                generation
+                    .checked_add(1)
+                    .expect("word generation exhausted")
+            });
         ObservationIdentity::new(
             producer,
             prior.map_or(request, |prior| prior.request),
-            prior.map_or(0, |prior| {
-                prior
-                    .generation
-                    .checked_add(1)
-                    .expect("word generation exhausted")
-            }),
+            generation,
             occurrence.clone(),
         )
     }
@@ -1343,9 +1411,20 @@ impl AcousticLedger {
             .filter(|pin| {
                 pin.decode_sample_start
                     .is_some_and(|start| start < pin.sample_start)
-                    && pin
-                        .decode_sample_end
-                        .is_some_and(|end| pin.sample_end < end)
+                    && pin.decode_sample_end.is_some_and(|end| {
+                        if observation.producer == ObservationProducer::Whisper {
+                            pin.sample_end <= end
+                                && !self.decode_word_fence_incomplete(
+                                    owner,
+                                    pin.decode_sample_start.unwrap(),
+                                    end,
+                                    pin.sample_start,
+                                    pin.sample_end,
+                                )
+                        } else {
+                            pin.sample_end < end
+                        }
+                    })
                     && pin.sample_start < pin.sample_end
                     && pin.text.split_whitespace().count() == 1
             })

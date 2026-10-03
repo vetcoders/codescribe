@@ -394,6 +394,180 @@ impl AcousticLedger {
         descendants.contains(pin)
     }
 
+    /// Authenticate the existing acoustic observer for a bounded PCM scope.
+    fn measured_speech_for(&self, source: &OccurrenceIdentity) -> Option<&AcousticSpeechEvidence> {
+        use crate::audio::capture_receipt::CAPTURE_ENERGY_PRODUCER;
+        use crate::pipeline::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER;
+
+        let speech = self.speech_evidence.as_ref()?;
+        let observed = speech.availability().observed_samples()?;
+        (source.is_anchored()
+            && speech
+                .identity()
+                .matches(&source.session, source.capture_epoch)
+            && matches!(
+                speech.producer(),
+                CAPTURE_ENERGY_PRODUCER | SILERO_BOUNDARIES_PRODUCER
+            )
+            && observed >= source.sample_end
+            && speech.ranges().iter().all(|range| {
+                let range = OccurrenceIdentity::from(range);
+                range.same_capture(source) && range.is_anchored() && range.sample_end <= observed
+            }))
+        .then_some(speech)
+    }
+
+    /// Whisper Word alignment uses 20 ms encoder frames (word_pins.rs),
+    /// converted onto the capture clock with at most one sample of rounding.
+    /// This uncertainty is geometry, never a wait or an extension of issued PCM.
+    pub(crate) fn decode_word_fence_incomplete(
+        &self,
+        owner: &OccurrenceIdentity,
+        start: u64,
+        end: u64,
+        word_start: u64,
+        word_end: u64,
+    ) -> bool {
+        if start >= end || word_start < start || word_start >= word_end || word_end > end {
+            return true;
+        }
+        let resolution = u64::from(self.capture_rate_hz.unwrap_or(16_000))
+            .div_ceil(50)
+            .saturating_add(1);
+        if end - word_end > resolution {
+            return false;
+        }
+        let window = OccurrenceIdentity::new(&owner.session, owner.capture_epoch, start, end);
+        let Some(speech) = self.measured_speech_for(&window) else {
+            // Keep the exact-edge safeguard. Missing measurement cannot
+            // establish that speech crossed a strictly interior Word fence.
+            return word_end == end;
+        };
+        let crosses = speech
+            .ranges()
+            .iter()
+            .any(|range| range.sample_start < word_end && range.sample_end >= end);
+        if !crosses {
+            return false;
+        }
+        let Some(energy) = &self.decode_fence_energy else {
+            return true;
+        };
+        if energy.captured_samples < end {
+            return true;
+        }
+        // Clipping a classified capture block does not measure its quiet end.
+        // Authenticate the writer over the entire bounded uncertainty before
+        // consulting the exact retained PCM receipt. A finite downstream view
+        // cannot overrule missing, foreign, invalid or discontinuous capture.
+        let edge_start = end.saturating_sub(resolution).max(start);
+        if energy
+            .owner
+            .voiced_hops_in(&window.session, window.capture_epoch, edge_start, end)
+            .is_none()
+        {
+            return true;
+        }
+        !energy.quiet_range.as_ref().is_some_and(|quiet| {
+            quiet.same_capture(&window)
+                && quiet.sample_start == edge_start
+                && quiet.sample_end == end
+                && quiet.sample_end - quiet.sample_start == resolution
+        })
+    }
+
+    /// An empty final can account only for measured quiet or speech already
+    /// covered by accepted Word/source evidence. It supplies no lexical pin.
+    fn empty_decode_scope_accounted(
+        &self,
+        observation: &ObservationIdentity,
+        start: u64,
+        end: u64,
+    ) -> bool {
+        let owner = &observation.occurrence;
+        let window = OccurrenceIdentity::new(&owner.session, owner.capture_epoch, start, end);
+        let Some(speech) = self.measured_speech_for(&window) else {
+            return false;
+        };
+        let mut accounted = Vec::new();
+        for (held_owner, committed) in &self.committed {
+            if !held_owner.same_capture(owner) {
+                continue;
+            }
+            for pin in &committed.slots {
+                if !self.word_pin_observations.contains(&pin.observation)
+                    || pin.producer.authority_rank() < observation.producer.authority_rank()
+                    || !self.complete_word_slot(pin)
+                {
+                    continue;
+                }
+                accounted.extend(
+                    self.slot_source_ranges(pin)
+                        .into_iter()
+                        .map(|range| (range.sample_start, range.sample_end)),
+                );
+                // Preserve sparse Word timestamp accounting from an accepted
+                // complete decode, but never lend a rejected/partial scope.
+                if !self.rejected_word_pins.contains_key(held_owner)
+                    && committed
+                        .slots
+                        .iter()
+                        .all(|held| self.complete_word_slot(held))
+                    && let Some(&(lo, hi)) = self.decoded_word_windows.get(&pin.observation)
+                {
+                    accounted.push((lo, hi));
+                }
+            }
+        }
+        accounted.sort_unstable();
+        speech.ranges().iter().all(|range| {
+            let mut cursor = range.sample_start.max(start);
+            let limit = range.sample_end.min(end);
+            for &(lo, hi) in &accounted {
+                if lo <= cursor && hi > cursor {
+                    cursor = hi;
+                }
+            }
+            cursor >= limit
+        })
+    }
+
+    /// Called only for the exact launched, matched successful empty final.
+    /// Preserve its work identity even before accepted Words account for its
+    /// measured speech. The return value describes current scope accounting.
+    pub(crate) fn record_empty_decode_work(
+        &mut self,
+        observation: &ObservationIdentity,
+        decode: &OccurrenceIdentity,
+    ) -> bool {
+        let owner = &observation.occurrence;
+        if observation.producer != ObservationProducer::Whisper
+            || !decode.same_capture(owner)
+            || !self.is_qualified(owner)
+            || self.is_sealed(owner)
+            || self.answered.contains(observation)
+            || self.successful_empty_decodes.contains(observation)
+            || self.decoded_word_windows.contains_key(observation)
+            || decode.sample_start >= owner.sample_end
+            || decode.sample_end <= owner.sample_start
+            || self.measured_speech_for(decode).is_none()
+        {
+            return false;
+        }
+        self.successful_empty_decodes.insert(observation.clone());
+        self.decoded_word_windows.insert(
+            observation.clone(),
+            (decode.sample_start, decode.sample_end),
+        );
+        let accounted =
+            self.empty_decode_scope_accounted(observation, decode.sample_start, decode.sample_end);
+        if !accounted {
+            self.require_text_recovery(owner);
+        }
+        self.reconcile_returned_word_debt(owner);
+        accounted
+    }
+
     /// Estimated word fences do not decide whether the decoded PCM cut speech.
     /// An accepted window with measured silent margins can account for work
     /// without declaring its edge-timed words complete. Its committed outputs
@@ -464,9 +638,15 @@ impl AcousticLedger {
             .decoded_word_windows
             .iter()
             .filter(|(candidate, (start, end))| {
-                candidate.occurrence == observation.occurrence
-                    && candidate.producer == observation.producer
-                    && self.word_pin_observations.contains(*candidate)
+                if candidate.occurrence != observation.occurrence
+                    || candidate.producer != observation.producer
+                {
+                    return false;
+                }
+                if self.successful_empty_decodes.contains(*candidate) {
+                    return self.empty_decode_scope_accounted(candidate, *start, *end);
+                }
+                self.word_pin_observations.contains(*candidate)
                     && (self
                         .complete_decoded_words
                         .get(*candidate)
@@ -495,7 +675,8 @@ impl AcousticLedger {
                 observation.producer,
                 ObservationProducer::Whisper | ObservationProducer::CloudLive
             )
-            && self.word_pin_observations.contains(observation)
+            && (self.word_pin_observations.contains(observation)
+                || self.successful_empty_decodes.contains(observation))
             && self.slots_of(owner).is_some_and(|pins| {
                 !pins.is_empty()
                     && pins.iter().all(|pin| {
@@ -557,6 +738,13 @@ impl AcousticLedger {
                         });
                     return !returned || !children_held || held.contains(source);
                 }
+                // This alternative names the actual saved candidate itself,
+                // rather than a complete held source rejected by another pin.
+                let awaits_whole_word = self.slot_alternatives.iter().any(|alternative| {
+                    alternative.observation == source.observation
+                        && alternative.reason == "decode_window_clipped"
+                        && alternative.sources.contains(source)
+                });
                 let targets = held
                     .iter()
                     .filter(|pin| {
@@ -569,6 +757,9 @@ impl AcousticLedger {
                                 || (pin.producer == source.producer
                                     && pin.observation.generation > source.observation.generation))
                             && self.pin_targets_source(source, pin)
+                            && (!awaits_whole_word
+                                || pin.producer == ObservationProducer::ManualHuman
+                                || self.complete_word_slot(pin))
                             && rejected.iter().all(|other| {
                                 !self.pin_targets_source(other, pin)
                                     || (other.sample_start == source.sample_start
@@ -1036,6 +1227,46 @@ impl AcousticLedger {
         self.speech_evidence = Some(speech.clone());
     }
 
+    /// Retain the existing capture owner and a bounded exact-PCM quiet receipt.
+    /// Coverage and successful source-work accounting keep their own snapshot.
+    pub(crate) fn record_decode_fence_energy(
+        &mut self,
+        energy: &crate::audio::capture_receipt::CaptureEnergyOwner,
+        captured_samples: u64,
+        edge: Option<(&OccurrenceIdentity, &[f32])>,
+    ) {
+        use crate::audio::capture_receipt::ACTIVE_SPEECH_LINEAR_FLOOR;
+
+        let resolution = u64::from(self.capture_rate_hz.unwrap_or(16_000))
+            .div_ceil(50)
+            .saturating_add(1);
+        let quiet_range = edge.and_then(|(range, samples)| {
+            if !range.is_anchored()
+                || !energy
+                    .identity()
+                    .matches(&range.session, range.capture_epoch)
+                || range.sample_end > captured_samples
+                || range.sample_end - range.sample_start != resolution
+                || samples.len() as u64 != resolution
+                || samples.iter().any(|sample| !sample.is_finite())
+            {
+                return None;
+            }
+            // Same sum-of-squares RMS and active floor as push_samples, now
+            // over actual edge PCM. A single zero crossing cannot prove quiet.
+            let sum_sq = samples.iter().fold(0.0_f64, |sum, sample| {
+                sum + f64::from(*sample) * f64::from(*sample)
+            });
+            let rms = (sum_sq / samples.len() as f64).sqrt() as f32;
+            (rms.is_finite() && rms < ACTIVE_SPEECH_LINEAR_FLOOR).then(|| range.clone())
+        });
+        self.decode_fence_energy = Some(DecodeFenceEnergy {
+            owner: energy.clone(),
+            captured_samples,
+            quiet_range,
+        });
+    }
+
     /// One routed batch's original word geometry, before clipping at owner
     /// edges. Only an assignment for this exact admission may cover a neighbour.
     pub fn record_assigned_word_pins(
@@ -1072,29 +1303,12 @@ impl AcousticLedger {
         source: &OccurrenceIdentity,
         incoming: &[WordSlot],
     ) -> Option<(AcousticSpeechEvidence, Vec<SpeechPinCoverage>)> {
-        use crate::audio::capture_receipt::CAPTURE_ENERGY_PRODUCER;
-        use crate::pipeline::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER;
-
         let owner = &observation.occurrence;
-        let speech = self.speech_evidence.as_ref()?;
-        let observed = speech.availability().observed_samples()?;
-        if !source.same_capture(owner)
-            || !source.is_anchored()
-            || !speech
-                .identity()
-                .matches(&owner.session, owner.capture_epoch)
-            || !matches!(
-                speech.producer(),
-                CAPTURE_ENERGY_PRODUCER | SILERO_BOUNDARIES_PRODUCER
-            )
-            || observed < source.sample_end
-            || speech.ranges().iter().any(|range| {
-                let range = OccurrenceIdentity::from(range);
-                !range.same_capture(owner) || !range.is_anchored() || range.sample_end > observed
-            })
-        {
+        if !source.same_capture(owner) {
             return None;
         }
+        let speech = self.measured_speech_for(source)?;
+        let observed = speech.availability().observed_samples()?;
         let mut pins = incoming
             .iter()
             .map(|word| {
@@ -2156,6 +2370,26 @@ mod slot_ops_tests {
             .with_decode_window(owner.sample_start, owner.sample_end)
     }
 
+    fn forensic_relay_word_with_actual_quiet_margin(
+        owner: &OccurrenceIdentity,
+        text: &str,
+        pcm: &[f32],
+    ) -> WordPin {
+        assert!(owner.sample_start >= 320 && owner.sample_end + 320 <= pcm.len() as u64);
+        assert!(
+            pcm[owner.sample_start as usize - 320..owner.sample_start as usize]
+                .iter()
+                .all(|sample| *sample == 0.0)
+        );
+        assert!(
+            pcm[owner.sample_end as usize..owner.sample_end as usize + 320]
+                .iter()
+                .all(|sample| *sample == 0.0)
+        );
+        forensic_relay_word(owner, text)
+            .with_decode_window(owner.sample_start - 320, owner.sample_end + 320)
+    }
+
     #[test]
     fn forensic_relay_five_coarse_hypotheses_allow_heard_word_without_losing_source() {
         for producer in [ObservationProducer::Whisper, ObservationProducer::CloudLive] {
@@ -2189,7 +2423,7 @@ mod slot_ops_tests {
                         ledger.schedule_frontier(owner.clone(), [producer]);
                         assert!(ledger.require_text_recovery(owner));
                         let next = ledger.next_word_observation(producer, 102, owner);
-                        let pin = forensic_relay_word(owner, "Iwo");
+                        let pin = forensic_relay_word_with_actual_quiet_margin(owner, "Iwo", &pcm);
                         assert!(
                             pcm[owner.sample_start as usize..owner.sample_end as usize]
                                 .iter()
@@ -2256,13 +2490,18 @@ mod slot_ops_tests {
     fn forensic_relay_five_word_sources_survive_empty_and_decode_cut_until_recovery() {
         for producer in [ObservationProducer::Whisper, ObservationProducer::CloudLive] {
             for cut in [false, true] {
-                let (mut ledger, owners, _) = forensic_relay_five_capture("relay-word-five");
+                let (mut ledger, owners, pcm) = forensic_relay_five_capture("relay-word-five");
                 for (index, owner) in owners.iter().enumerate() {
                     let apple =
                         ObservationIdentity::new(ObservationProducer::Apple, 201, 0, owner.clone());
                     assert!(
                         ledger
-                            .admit_word_slots(&apple, &[forensic_relay_word(owner, "Iwo")])
+                            .admit_word_slots(
+                                &apple,
+                                &[forensic_relay_word_with_actual_quiet_margin(
+                                    owner, "Iwo", &pcm
+                                )]
+                            )
                             .grants_mutation()
                     );
                     let source = ledger.slots_of(owner).unwrap().to_vec();
@@ -2290,8 +2529,12 @@ mod slot_ops_tests {
                         assert!(ledger.note_frontier_return(owner, producer));
                         assert_eq!(ledger.seal(owner), Err(SealRefusal::TextRecoveryPending));
                     } else {
-                        let decision =
-                            ledger.admit_word_slots(&next, &[forensic_relay_word(owner, "Iwo")]);
+                        let decision = ledger.admit_word_slots(
+                            &next,
+                            &[forensic_relay_word_with_actual_quiet_margin(
+                                owner, "Iwo", &pcm,
+                            )],
+                        );
                         assert!(
                             decision.grants_mutation()
                                 || matches!(decision, MutationReceipt::Preserve { .. })
@@ -2318,7 +2561,12 @@ mod slot_ops_tests {
                 let last = owners.last().unwrap();
                 let original = ledger.slots_of(last).unwrap().to_vec();
                 let recovery = ledger.next_word_observation(producer, 203, last);
-                ledger.admit_word_slots(&recovery, &[forensic_relay_word(last, "Iwo")]);
+                ledger.admit_word_slots(
+                    &recovery,
+                    &[forensic_relay_word_with_actual_quiet_margin(
+                        last, "Iwo", &pcm,
+                    )],
+                );
                 assert!(!ledger.text_recovery_pending(last));
                 assert!(
                     ledger
