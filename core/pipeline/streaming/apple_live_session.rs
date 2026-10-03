@@ -17522,6 +17522,245 @@ mod live_refinement_admission_tests {
         completion
     }
 
+    // Root-owned transport controls: real fixture energy, supplied decoder words.
+    fn forensic_live_transport_capture(state: &mut AppleSealState) {
+        let pcm = vec![0.25; 400];
+        state.audio = LiveAudioBuffer::new(RATE, 20.0);
+        state.audio.push(&pcm);
+        let mut writer = CaptureLevelAccumulator::bound_to(&state.capture_energy);
+        writer.push_samples(&pcm);
+        let speech = coverage_speech_evidence(state);
+        assert_eq!(
+            speech.producer(),
+            crate::audio::capture_receipt::CAPTURE_ENERGY_PRODUCER
+        );
+        assert!(speech.observed_speech());
+        assert_eq!(speech.availability().observed_samples(), Some(400));
+        assert_eq!(state.audio.session_sample_end(), 400);
+    }
+
+    fn forensic_live_transport_word_completion(request: &TailPatchRequest) -> TailPatchCompletion {
+        let mut completion = labelled_completion(request);
+        let payload = completion.payload.as_mut().unwrap();
+        payload.segments[0].grain = crate::stt::tail_provider::TailSegmentGrain::Word;
+        payload.segments[0].range.sample_start = 50;
+        payload.segments[0].range.sample_end = 350;
+        payload.evidence.segment_grain = crate::stt::tail_provider::TailSegmentGrain::Word;
+        completion
+    }
+
+    #[test]
+    fn forensic_live_transport_foreign_envelope_waits_for_exact_word_completion() {
+        for context in [
+            FusionContextMode::UtteranceOnly,
+            FusionContextMode::SymmetricPad,
+        ] {
+            let (mut state, events, mut receiver, mut requests) = fixture(1);
+            state.fusion_context = context;
+            forensic_live_transport_capture(&mut state);
+            reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
+            let request = requests.try_recv().expect("real submitted job");
+            request
+                .provider_request
+                .validate_pcm(&request.audio)
+                .unwrap();
+            assert_eq!(request.audio, vec![0.25; 400]);
+            let owner = &request.member_occurrences[0].1;
+            assert_eq!(owner, &OccurrenceIdentity::new("live-admission", 7, 0, 400));
+            while receiver.try_recv().is_ok() {}
+            for defect in [
+                "sequence",
+                "request",
+                "session",
+                "epoch",
+                "start",
+                "end",
+                "member",
+                "member_span",
+                "members",
+                "utterance",
+                "missing",
+            ] {
+                let mut completion = forensic_live_transport_word_completion(&request);
+                let identity = completion.request_identity.as_mut().unwrap();
+                match defect {
+                    "sequence" => completion.submission_sequence += 1,
+                    "request" => identity.request_id += 1,
+                    "session" => identity.range.session = "foreign".into(),
+                    "epoch" => identity.range.capture_epoch += 1,
+                    "start" => identity.range.sample_start += 1,
+                    "end" => identity.range.sample_end += 1,
+                    "member" => completion.member_occurrences[0].0 += 1,
+                    "member_span" => completion.member_occurrences[0].1.sample_end += 1,
+                    "members" => completion.member_occurrences.clear(),
+                    "utterance" => completion.utterance_id += 1,
+                    "missing" => completion.request_identity = None,
+                    _ => unreachable!(),
+                }
+                state.complete_whisper_window(&events, completion, 20.0);
+                state.close_admission_horizon(&events, owner.sample_end);
+                assert_eq!(
+                    state.tail_patch_awaiting_completion(),
+                    1,
+                    "{context:?}/{defect}"
+                );
+                assert_eq!(state.refinement_submitted.len(), 1);
+                assert!(state.pending_events.contains_key(&request.utterance_id));
+                let mut ledger = state.acoustic_ledger.lock().unwrap();
+                assert_eq!(ledger.text_of(owner), None);
+                assert!(ledger.text_recovery_pending(owner));
+                assert!(!ledger.is_sealed(owner));
+                assert_eq!(
+                    ledger.seal_terminal("live-admission", 7),
+                    Err(SealRefusal::TextRecoveryPending)
+                );
+                assert!(
+                    ledger
+                        .frontier_of(owner)
+                        .unwrap()
+                        .open_producers()
+                        .contains(&LedgerObservationProducer::Whisper)
+                );
+                drop(ledger);
+                assert!(receiver.try_recv().is_err());
+            }
+            state.complete_whisper_window(
+                &events,
+                forensic_live_transport_word_completion(&request),
+                20.0,
+            );
+            state.close_admission_horizon(&events, owner.sample_end);
+            assert_eq!(state.tail_patch_awaiting_completion(), 0);
+            assert!(state.refinement_submitted.is_empty());
+            let mut ledger = state.acoustic_ledger.lock().unwrap();
+            assert_eq!(ledger.text_of(owner), Some("hello"));
+            assert!(!ledger.text_recovery_pending(owner));
+            assert!(ledger.is_sealed(owner));
+            let slots = ledger.slots_of(owner).unwrap();
+            assert_eq!(slots.len(), 1);
+            assert_eq!((slots[0].sample_start, slots[0].sample_end), (50, 350));
+            assert_eq!(slots[0].producer, LedgerObservationProducer::Whisper);
+            let coverage = ledger.assess_seal_coverage(
+                "live-admission",
+                7,
+                &coverage_speech_evidence(&state),
+                250,
+            );
+            assert_eq!(coverage.status, SealCoverageStatus::Complete);
+            assert!(ledger.record_seal_coverage(coverage));
+            assert!(ledger.seal_terminal("live-admission", 7).is_ok());
+            assert_eq!(ledger.conservation().residue(), 0);
+            drop(ledger);
+            let emitted = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
+            assert_eq!(
+                emitted
+                    .iter()
+                    .filter(|event| matches!(event, EngineEvent::LedgerSeal { .. }))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                emitted
+                    .iter()
+                    .filter_map(|event| match event {
+                        EngineEvent::UtteranceFinal { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                vec!["hello"]
+            );
+            state.complete_whisper_window(
+                &events,
+                forensic_live_transport_word_completion(&request),
+                20.0,
+            );
+            assert!(receiver.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn forensic_live_transport_phrase_and_invalid_payload_cannot_seal_recovery() {
+        for context in [
+            FusionContextMode::UtteranceOnly,
+            FusionContextMode::SymmetricPad,
+        ] {
+            for defect in [
+                "phrase",
+                "segmentless",
+                "session",
+                "epoch",
+                "outside",
+                "empty",
+                "reversed",
+                "payload_identity",
+                "no_payload",
+            ] {
+                let (mut state, events, mut receiver, mut requests) = fixture(1);
+                state.fusion_context = context;
+                forensic_live_transport_capture(&mut state);
+                reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
+                let request = requests.try_recv().unwrap();
+                let owner = &request.member_occurrences[0].1;
+                let mut completion = labelled_completion(&request);
+                let payload = completion.payload.as_mut().unwrap();
+                match defect {
+                    "phrase" => {}
+                    "segmentless" => payload.segments.clear(),
+                    "session" => payload.segments[0].range.session = "foreign".into(),
+                    "epoch" => payload.segments[0].range.capture_epoch += 1,
+                    "outside" => payload.segments[0].range.sample_end += 1,
+                    "empty" => payload.segments[0].range.sample_end = 0,
+                    "reversed" => payload.segments[0].range.sample_start = 401,
+                    "payload_identity" => payload.identity.range.capture_epoch += 1,
+                    "no_payload" => completion.payload = None,
+                    _ => unreachable!(),
+                }
+                while receiver.try_recv().is_ok() {}
+                state.complete_whisper_window(&events, completion, 20.0);
+                state.close_admission_horizon(&events, owner.sample_end);
+                assert_eq!(state.tail_patch_awaiting_completion(), 0);
+                assert!(state.refinement_submitted.is_empty());
+                let expected = matches!(defect, "phrase" | "segmentless").then_some("hello");
+                let mut ledger = state.acoustic_ledger.lock().unwrap();
+                assert_eq!(ledger.text_of(owner), expected, "{context:?}/{defect}");
+                assert!(ledger.text_recovery_pending(owner), "{context:?}/{defect}");
+                assert!(!ledger.is_sealed(owner));
+                assert!(
+                    ledger
+                        .frontier_of(owner)
+                        .unwrap()
+                        .open_producers()
+                        .is_empty()
+                );
+                assert_eq!(ledger.seal(owner), Err(SealRefusal::TextRecoveryPending));
+                assert_eq!(
+                    ledger.seal_terminal("live-admission", 7),
+                    Err(SealRefusal::TextRecoveryPending)
+                );
+                assert_eq!(ledger.conservation().residue(), 0);
+                drop(ledger);
+                let emitted = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
+                assert!(!emitted.iter().any(|event| matches!(
+                    event,
+                    EngineEvent::LedgerSeal { .. } | EngineEvent::UtteranceFinal { .. }
+                )));
+                state.complete_whisper_window(
+                    &events,
+                    forensic_live_transport_word_completion(&request),
+                    20.0,
+                );
+                assert!(
+                    receiver.try_recv().is_err(),
+                    "a consumed request cannot admit a replay"
+                );
+                assert_eq!(
+                    state.acoustic_ledger.lock().unwrap().text_of(owner),
+                    expected
+                );
+            }
+        }
+    }
+
     fn dictation_reservation_fixture(
         state: &mut AppleSealState,
         events: &mpsc::UnboundedSender<EngineEvent>,
@@ -18256,9 +18495,12 @@ mod live_refinement_admission_tests {
             FusionContextMode::UtteranceOnly,
             FusionContextMode::SymmetricPad,
         ] {
-            for defect in ["none", "session", "epoch", "outside", "empty", "reversed"] {
+            for defect in [
+                "none", "word", "session", "epoch", "outside", "empty", "reversed",
+            ] {
                 let (mut state, events, mut receiver, mut requests) = fixture(1);
                 state.fusion_context = context;
+                forensic_live_transport_capture(&mut state);
                 reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
                 assert!(state.layer1_coalesce.is_empty());
                 let request = requests.try_recv().unwrap();
@@ -18271,6 +18513,14 @@ mod live_refinement_admission_tests {
                 let payload = completion.payload.as_mut().unwrap();
                 match defect {
                     "none" => payload.segments.clear(),
+                    "word" => {
+                        payload.segments[0].grain =
+                            crate::stt::tail_provider::TailSegmentGrain::Word;
+                        payload.segments[0].range.sample_start = 50;
+                        payload.segments[0].range.sample_end = 350;
+                        payload.evidence.segment_grain =
+                            crate::stt::tail_provider::TailSegmentGrain::Word;
+                    }
                     "session" => payload.segments[0].range.session = "foreign".into(),
                     "epoch" => payload.segments[0].range.capture_epoch += 1,
                     "outside" => payload.segments[0].range.sample_end += 1,
@@ -18281,7 +18531,8 @@ mod live_refinement_admission_tests {
                 while receiver.try_recv().is_ok() {}
                 state.complete_whisper_window(&events, completion, 20.0);
                 state.close_admission_horizon(&events, occurrence.sample_end);
-                let accepted = defect == "none";
+                let accepted = matches!(defect, "none" | "word");
+                let decoded_words = defect == "word";
                 assert_eq!(
                     OccurrenceIdentity::from(&request.provider_request.identity.range),
                     *occurrence
@@ -18292,7 +18543,9 @@ mod live_refinement_admission_tests {
                     accepted.then_some("hello"),
                     "{context:?}/{defect}"
                 );
-                assert_eq!(ledger.is_sealed(occurrence), accepted);
+                assert_eq!(ledger.is_sealed(occurrence), decoded_words);
+                assert_eq!(ledger.text_recovery_pending(occurrence), !decoded_words);
+                assert_eq!(ledger.conservation().residue(), 0);
                 assert!(
                     ledger
                         .frontier_of(occurrence)
@@ -18318,7 +18571,7 @@ mod live_refinement_admission_tests {
                         .iter()
                         .filter(|event| matches!(event, EngineEvent::LedgerSeal { .. }))
                         .count(),
-                    usize::from(accepted)
+                    usize::from(decoded_words)
                 );
                 // A corrected payload on a consumed request is still a replay.
                 state.complete_whisper_window(&events, labelled_completion(&request), 20.0);
@@ -18334,6 +18587,7 @@ mod live_refinement_admission_tests {
     #[test]
     fn whisper_foreign_envelopes_preserve_the_submitted_job_until_exact_completion() {
         let (mut state, events, mut receiver, mut requests) = fixture(1);
+        forensic_live_transport_capture(&mut state);
         reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
         assert!(state.layer1_coalesce.is_empty());
         let request = requests.try_recv().unwrap();
@@ -18383,13 +18637,33 @@ mod live_refinement_admission_tests {
             drop(ledger);
             assert!(receiver.try_recv().is_err());
         }
-        state.complete_whisper_window(&events, labelled_completion(&request), 20.0);
+        state.complete_whisper_window(
+            &events,
+            forensic_live_transport_word_completion(&request),
+            20.0,
+        );
         state.close_admission_horizon(&events, occurrence.sample_end);
         assert_eq!(
             state.acoustic_ledger.lock().unwrap().text_of(occurrence),
             Some("hello")
         );
         assert!(state.acoustic_ledger.lock().unwrap().is_sealed(occurrence));
+        assert!(
+            !state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .text_recovery_pending(occurrence)
+        );
+        assert_eq!(
+            state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .conservation()
+                .residue(),
+            0
+        );
         assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert!(state.refinement_submitted.is_empty());
         let emitted = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
