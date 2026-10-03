@@ -22170,66 +22170,184 @@ mod relay_l1_overlap_admission_tests {
         assert_eq!(ledger.conservation().residue(), 0);
     }
 
-    #[test]
-    fn forensic_resegment_coarse_slot_with_other_slots_and_full_speech() {
-        forensic_resegment(true);
-    }
-
-    #[test]
-    fn forensic_resegment_keeps_uncovered_held_speech() {
-        forensic_resegment(false);
-    }
-
-    fn forensic_resegment(covered: bool) {
-        let session = if covered {
-            "forensic-resegment-full"
-        } else {
-            "forensic-resegment-gap"
-        };
-        let (mut lane, owner, requests) = forensic_lane(
-            session,
-            &[
-                ("wierszu kiedyś", 10_000, 55_000),
-                ("dalej", 70_000, 80_000),
-            ],
-        );
+    fn measured_coarse_apple_hypothesis_yields_to_words(mode: BufferMode, leading_speech: bool) {
+        use crate::audio::chunker::{VadBoundaryEvidence, VadBoundaryKind};
+        use crate::pipeline::acoustic_ledger::WordPin;
+        let session = "physical-coarse-to-four";
+        let mut lane = open(session);
+        if mode == BufferMode::Adaptive {
+            lane.state.layer1_coalesce = Layer1Coalesce::adaptive();
+        }
+        let owner = OccurrenceIdentity::new(session, 1, 0, 200_000);
+        let mut input = piece(1, &owner, "");
+        input.audio.fill(0.0);
         let mut speech = vec![
             (13_000, 19_000),
             (23_000, 29_000),
             (33_000, 39_000),
             (43_000, 53_000),
+            (172_000, 178_000),
         ];
-        if !covered {
+        if leading_speech {
             speech.push((10_000, 12_000));
         }
-        record_voiced_spans(&lane, 200_000, &speech);
+        speech.sort_unstable();
+        for &(start, end) in &speech {
+            input.audio[start as usize..end as usize].fill(0.2);
+        }
+        record_energy(
+            &lane,
+            &input
+                .audio
+                .chunks(1_000)
+                .map(<[f32]>::to_vec)
+                .collect::<Vec<_>>(),
+        );
+        let mut fusion = SileroIngress::new(RATE, session.to_string(), 1);
+        assert!(fusion.vad_available());
+        fusion.note_observed_pcm(200_000, 200_000);
+        for &(start, end) in &speech {
+            fusion.observe_boundaries(&[
+                VadBoundaryEvidence {
+                    kind: VadBoundaryKind::SpeechStart,
+                    sample: start,
+                    speech_probability: 0.9,
+                },
+                VadBoundaryEvidence {
+                    kind: VadBoundaryKind::SpeechEnd,
+                    sample: end,
+                    speech_probability: 0.1,
+                },
+            ]);
+        }
+        lane.state.fusion = Some(fusion);
+        qualify_unlabelled(&mut lane, &owner);
+        let (source, unrelated) = {
+            let mut ledger = lane.state.acoustic_ledger.lock().unwrap();
+            let observation = ledger.next_word_observation(ObservationProducer::Apple, 1, &owner);
+            let receipt = ledger.admit_word_slots(
+                &observation,
+                &[
+                    WordPin::new(10_000, 55_000, "wierszu kiedyś"),
+                    WordPin::new(170_000, 180_000, "dalej"),
+                ],
+            );
+            assert!(receipt.grants_mutation());
+            let slots = ledger.slots_of(&owner).unwrap();
+            (slots[0].clone(), slots[1].clone())
+        };
+        let pcm = input.audio.clone();
+        assert!(lane.state.enqueue_layer1_piece(&lane.tx, input));
+        let requests = take_requests(&mut lane.tail_rx);
+        assert!(
+            requests.len() > 1,
+            "the unrelated later span must remain undecoded"
+        );
+        for request in &requests {
+            let range = &request.provider_request.identity.range;
+            assert_eq!(
+                request.audio,
+                pcm[range.sample_start as usize..range.sample_end as usize]
+            );
+        }
+        let range = &requests[0].provider_request.identity.range;
+        assert!(range.sample_start <= 10_000 && range.sample_end >= 55_000);
+        assert!(range.sample_end < unrelated.sample_start);
+        let expected = [
+            ("wierszyk", 12_000, 20_000),
+            ("był", 22_000, 30_000),
+            ("sobie", 32_000, 40_000),
+            ("kiedyś", 42_000, 54_000),
+        ];
         lane.state.complete_whisper_window(
             &lane.tx,
             completion(
                 &requests[0],
-                vec![
-                    word_pin(session, "wierszyk", 12_000, 20_000),
-                    word_pin(session, "był", 22_000, 30_000),
-                    word_pin(session, "sobie", 32_000, 40_000),
-                    word_pin(session, "kiedyś", 42_000, 54_000),
-                ],
+                expected
+                    .iter()
+                    .map(|&(label, start, end)| word_pin(session, label, start, end))
+                    .collect(),
             ),
             12.5,
         );
         let ledger = lane.state.acoustic_ledger.lock().unwrap();
         assert_eq!(
             ledger.text_of(&owner),
-            Some(if covered {
-                "wierszyk był sobie kiedyś dalej"
-            } else {
-                "wierszu kiedyś dalej"
-            })
+            Some("wierszyk był sobie kiedyś dalej")
         );
-        assert!(ledger.word_deletions().is_empty());
-        if !covered {
-            assert!(!ledger.slot_alternatives().is_empty());
+        let slots = ledger.slots_of(&owner).unwrap();
+        assert_eq!(slots.len(), 5);
+        assert_eq!(
+            slots[4], unrelated,
+            "unobserved later source is not rebuilt"
+        );
+        for (slot, &(label, start, end)) in slots[..4].iter().zip(&expected) {
+            assert_eq!(
+                (slot.text.as_str(), slot.sample_start, slot.sample_end),
+                (label, start, end)
+            );
+            assert_eq!(slot.producer, ObservationProducer::Whisper);
+            assert!(
+                ledger
+                    .slot_source_ranges(slot)
+                    .contains(&OccurrenceIdentity::new(session, 1, start, end))
+            );
         }
+        let operations = ledger
+            .slot_operations()
+            .iter()
+            .filter(|op| op.observation == slots[0].observation)
+            .collect::<Vec<_>>();
+        let accounting = operations
+            .iter()
+            .filter(|op| op.sources.contains(&source))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            accounting.len(),
+            1,
+            "the coarse source is accounted once, not preserved as a lexical floor"
+        );
+        assert!(
+            accounting[0]
+                .source_ranges
+                .iter()
+                .any(|r| r.same_capture(&owner)
+                    && r.sample_start == source.sample_start
+                    && r.sample_end == source.sample_end)
+        );
+        let outputs = operations
+            .iter()
+            .flat_map(|op| &op.outputs)
+            .collect::<Vec<_>>();
+        assert_eq!(outputs.len(), 4);
+        for slot in &slots[..4] {
+            assert_eq!(outputs.iter().filter(|output| **output == slot).count(), 1);
+        }
+        assert!(ledger.word_deletions().is_empty());
         assert_eq!(ledger.conservation().residue(), 0);
+        assert!(
+            !ledger.is_sealed(&owner),
+            "one successful window cannot seal the whole take"
+        );
+        drop(ledger);
+        assert!(!lane.state.stop_document_settled());
+    }
+
+    #[test]
+    fn forensic_measured_coarse_hypothesis_adaptive() {
+        for leading_speech in [false, true] {
+            measured_coarse_apple_hypothesis_yields_to_words(BufferMode::Adaptive, leading_speech);
+        }
+    }
+
+    #[test]
+    fn forensic_resegment_coarse_slot_with_other_slots_and_full_speech() {
+        measured_coarse_apple_hypothesis_yields_to_words(BufferMode::Windows, false);
+    }
+
+    #[test]
+    fn forensic_resegment_keeps_uncovered_held_speech() {
+        measured_coarse_apple_hypothesis_yields_to_words(BufferMode::Windows, true);
     }
 
     #[test]
