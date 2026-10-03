@@ -115,6 +115,16 @@ final class TrayPanelTests: XCTestCase {
     XCTAssertEqual(dismissals, 2)
   }
 
+  func testOpenMenuHighlightsTheStatusButtonUntilItCloses() {
+    let (button, _) = makeStatusButton()
+    let panel = TrayPanel()
+    panel.present(from: button) { Text("Menu") }
+    XCTAssertNotNil(button.layer?.backgroundColor)
+
+    panel.dismiss()
+    XCTAssertNil(button.layer?.backgroundColor)
+  }
+
   /// A button hosted in a window, like the status item's, and its screen-space centre.
   private func makeStatusButton() -> (NSButton, NSPoint) {
     let window = NSWindow(
