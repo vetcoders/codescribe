@@ -412,6 +412,9 @@ struct MockSettingsEngine: SettingsEngine {
   var teachSpanObserver: ((String, String, String) throws -> CsQualityCommitResult)?
   /// Controlled acquisition for previews and integrator ordering witnesses.
   var providerAccessSnapshotLoader: (() async throws -> CsProviderAccessSnapshot)?
+  var composerStampProvider: (() -> String?)?
+  var providersReader: (() -> [CsProviderOption])?
+  var discoveryLoader: ((String) -> CsModelDiscovery)?
   // Keep the long-standing config observer last so existing trailing-closure
   // call sites continue to bind to config writes, not Voice Lab edits.
   var updateConfigObserver: ((String, String) throws -> Void)?
@@ -524,6 +527,7 @@ struct MockSettingsEngine: SettingsEngine {
       providers: availableProviders(), accountErrors: [:], keyStatus: keyStatus(),
       sttLanes: sttLanes(), revision: 0)
   }
+  func composerModelCacheStamp() -> String? { composerStampProvider?() }
   func keyStatus() -> CsKeyStatus { status }
   func serviceKeyAccounts() -> [String] { ["GITHUB_TOKEN"] }
   /// Two sample lanes whose endpoint and key presence follow the mock's
@@ -545,7 +549,7 @@ struct MockSettingsEngine: SettingsEngine {
   }
 
   func availableProviders() -> [CsProviderOption] {
-    CsProviderOption.sampleProviders + providerStore.custom
+    providersReader?() ?? (CsProviderOption.sampleProviders + providerStore.custom)
   }
   func addCustomProvider(draft: CsCustomProviderDraft) throws -> CsProviderOption {
     try providerStore.add(draft)
@@ -560,7 +564,7 @@ struct MockSettingsEngine: SettingsEngine {
     try providerStore.setLane(lane, providerId: providerId, known: availableProviders())
   }
   func discoverModels(providerId: String) -> CsModelDiscovery {
-    CsModelDiscovery.sample(for: providerId)
+    discoveryLoader?(providerId) ?? CsModelDiscovery.sample(for: providerId)
   }
   func startAccountLogin(providerId: String) throws -> CsAccountLoginResult {
     CsAccountLoginResult(

@@ -423,6 +423,29 @@ MiniLM resolution: `CODESCRIBE_EMBEDDER_PATH`, then
 Hugging Face cache snapshot. `CODESCRIBE_EMBED_EMBEDDER=1` is the explicit
 binary-embed escape hatch.
 
+## Composer model filtering and Audio observation
+
+`RealComposerPaletteSource` checks a metadata-only stamp before settings, runtime
+lane, provider-registry and catalog reads. Its warm hit still performs one stat
+of the canonical settings file plus existing in-memory locks; it does not parse
+JSON or acquire credentials. The stamp uses that mtime, credential-bundle revision
+and the generation inside the existing last-good runtime snapshot cache. Missing
+metadata refuses palette reuse. A mutation during discovery cannot label earlier
+entries with a newer stamp, and a runtime loader begun before invalidation cannot
+repopulate the cleared cache. No separate settings owner or revision store is
+introduced. Mtime detection retains its existing limit: restoring the same file
+timestamp can conceal an external change.
+
+The Audio readiness consumer observes both existing owners: `OverlayState`
+through Observation and `TrayViewModel` through its published flags. A single
+injected tuple keeps them paired; fake and preview settings engines stay detached
+unless owners are supplied. The real provider resolves AppModel only when Audio
+appears. Start uses the tray's canonical admission callback before its existing
+controller start; final-pass work remains processing. The shared view action and
+consumer are internal seams for integrator tests, not another recording path.
+Unresolved credential status uses semantic secondary ink in Settings, preserving
+the native light/dark appearance contract until availability is established.
+
 ## Related Documentation
 
 - [`guide/README.md`](guide/README.md) — User documentation

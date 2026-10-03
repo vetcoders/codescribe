@@ -1284,6 +1284,16 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
     func cloudFileRetranscriptionAvailable()  -> Bool
 
     /**
+     * Opaque palette cache stamp over the runtime cache's canonical settings
+     * mtime, invalidation generation and the existing credential revision.
+     * One metadata lookup and cache-only locks, no
+     * settings parsing, lane projection, provider registry or credential I/O.
+     * Missing/unreadable metadata refuses cache reuse rather than certifying
+     * that a previous projection is still current.
+     */
+    func composerModelCacheStamp()  -> String?
+
+    /**
      * Absolute path to the config directory (`~/.codescribe`, or the
      * `CODESCRIBE_DATA_DIR` override).
      */
@@ -1741,6 +1751,22 @@ open func clearMcpConfiguration()throws   {try rustCallWithError(FfiConverterTyp
 open func cloudFileRetranscriptionAvailable() -> Bool  {
     return try!  FfiConverterBool.lift(try! rustCall() {
     uniffi_codescribe_ffi_fn_method_codescribeconfig_cloud_file_retranscription_available(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
+     * Opaque palette cache stamp over the runtime cache's canonical settings
+     * mtime, invalidation generation and the existing credential revision.
+     * One metadata lookup and cache-only locks, no
+     * settings parsing, lane projection, provider registry or credential I/O.
+     * Missing/unreadable metadata refuses cache reuse rather than certifying
+     * that a previous projection is still current.
+     */
+open func composerModelCacheStamp() -> String?  {
+    return try!  FfiConverterOptionString.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribeconfig_composer_model_cache_stamp(
             self.uniffiCloneHandle(),$0
     )
 })
@@ -18135,6 +18161,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_cloud_file_retranscription_available() != 7524) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_composer_model_cache_stamp() != 32005) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_config_dir() != 34462) {

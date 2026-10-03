@@ -220,3 +220,21 @@ explicit account cancellation. Malformed account metadata must preserve
 independent API/STT keys without exposing the stored payload. These tests
 prove ordering and lease boundaries; they do not reproduce SecurityServer
 latency or replace signed native acceptance.
+
+Review follow-up witnesses: `ComposerPaletteSourceTests` verifies that warm model
+queries skip every context reader and discovery, that unknown/changed stamps
+refuse reuse, and that a mutation during discovery cannot certify earlier entries
+with a newer stamp. Rust runtime-cache witnesses exercise the real metadata,
+credential revision and invalidator; a test-only one-shot hook places invalidation
+between the actual loader and cache publication. `ThreadRailNavigationTests`
+checks visible order, both boundaries, unknown/empty input and reordering.
+
+`AudioRecordingControlTests` exercises the actual view action/admission and hosts
+the real observation consumer. It covers late final-pass evidence, retry after a
+failed capture, busy-tray refusal, paired fake injection and rerender from tray-only
+or overlay-only changes. SwiftUI does not expose these Button nodes through the
+AppKit AX child graph under XCTest (the same boundary documented by
+`OverlayChromeFounderCutTests`). Those child-graph probes are not kept as product
+assertions. Real Audio button activation, stop/final-pass presentation, calibration
+blocking and accessibility still require a separate signed native acceptance;
+these unit witnesses do not claim that acceptance.

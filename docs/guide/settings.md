@@ -136,8 +136,10 @@ LLM lanes**. Adding an API key is optional for Assistive account requests.
 Fresh and cached catalogs offer selectable models. A provider returning no
 models or a discovery failure gives the corresponding explanation and next
 action. Check **Providers**, then **Refresh** models in **Agent → LLM lanes**.
-The palette briefly caches results while filtering and refreshes them after a
-provider/model/credential-presence change or after its cache expires.
+The palette reuses its model list while you filter it, and refreshes it after
+provider, model or credential changes, including settings edited outside the app.
+Its short cache also expires automatically. If freshness cannot be established,
+it reads the current context again instead of reusing an unverified list.
 
 Palette labels and grant actions follow the macOS interface language through
 the app's String Catalog. Model IDs, provider IDs and tool grant keys remain
@@ -179,9 +181,15 @@ recording lifecycle used by the overlay and tray:
   takes started outside this panel.
 - Finishing: shows processing and prevents another Start or Stop.
 
-Stopping through the tray or a shortcut updates this panel too. Calibration is
-disabled while a take is active or finishing. These controls use the existing
-RecordingController path; opening Audio does not create another recorder.
+Stopping through the tray or a shortcut updates this panel too. A final formatting
+pass still counts as finishing even before the overlay changes its visible phase.
+After a failed start, **Start recording** uses the same fresh-capture admission as
+the tray, so it can retry without a stale capture fence. It waits for the tray's
+previous start to settle and cannot turn that retry into a Stop.
+
+Calibration is disabled while a take is active or finishing. These controls use
+the existing RecordingController path; opening Audio does not create another
+recorder.
 
 ## Permissions and diagnostics
 

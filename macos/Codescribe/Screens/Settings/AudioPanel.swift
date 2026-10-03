@@ -641,9 +641,7 @@ struct AudioPanel: View {
         .accessibilityIdentifier("audio-readiness-stop-recording")
       } else {
         Button("Start recording") {
-          guard canStartRecording(recordingState, tray: tray) else { return }
-          // The tray admits the next capture before starting the shared controller.
-          tray?.toggleDictation()
+          startRecording(recordingState, tray: tray)
         }
         .buttonStyle(.borderedProminent)
         .controlSize(.small)
@@ -655,7 +653,14 @@ struct AudioPanel: View {
     }
   }
 
-  private func canStartRecording(
+  /// Same action for the real button and integrator interaction witnesses.
+  func startRecording(_ recordingState: OverlayState?, tray: TrayViewModel?) {
+    guard canStartRecording(recordingState, tray: tray) else { return }
+    // The tray admits the next capture before starting the shared controller.
+    tray?.toggleDictation()
+  }
+
+  func canStartRecording(
     _ recordingState: OverlayState?, tray: TrayViewModel?
   ) -> Bool {
     model.permissions.microphone == .granted && model.admission?.ready == true
@@ -665,7 +670,7 @@ struct AudioPanel: View {
       && !recordingProcessing(recordingState)
   }
 
-  private func recordingProcessing(_ recordingState: OverlayState?) -> Bool {
+  func recordingProcessing(_ recordingState: OverlayState?) -> Bool {
     recordingState?.transcribing == true
       || recordingState?.isFinalPass == true
       || (recordingState?.mode == .finalizing && recordingState?.terminal == false)
@@ -824,7 +829,7 @@ struct AudioPanel: View {
 
 /// Observe lifecycle and command admission in the same readiness consumer.
 /// The latch only suppresses repeated Stop clicks; both capture owners are borrowed.
-private struct AudioReadinessObserver<Content: View>: View {
+struct AudioReadinessObserver<Content: View>: View {
   @Bindable var recordingState: OverlayState
   @ObservedObject var tray: TrayViewModel
   @State private var stopRequested = false

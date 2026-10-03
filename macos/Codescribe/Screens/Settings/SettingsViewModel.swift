@@ -834,7 +834,7 @@ struct LLMLaneModel {
   }
 
   var availabilityTint: Color {
-    guard credentialAccessResolved, credentialAccessError == nil else { return CSColor.textFaint }
+    guard credentialAccessResolved, credentialAccessError == nil else { return Color.secondary }
     return runtime.available ? CSColor.oliveLight : CSColor.terracotta
   }
 

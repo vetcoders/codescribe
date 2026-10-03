@@ -577,6 +577,10 @@ fn last_good_runtime_snapshot() -> &'static Mutex<CachedRuntimeSnapshot> {
 static RUNTIME_SNAPSHOT_BUILDS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+#[cfg(test)]
+static INVALIDATE_AFTER_RUNTIME_LOAD: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Drop the last-good lane snapshot. Credential mutations (Keychain / OAuth)
 /// never touch `settings.json`, so mtime is not a sufficient cache key.
 pub(crate) fn invalidate_runtime_snapshot_cache() {
@@ -614,6 +618,10 @@ fn load_runtime_snapshot_for_lane() -> RuntimeSettingsSnapshot {
             .map(|(_, snapshot)| snapshot.clone())
             .unwrap_or_else(|| Config::load_startup_runtime_snapshot(false)),
     };
+    #[cfg(test)]
+    if INVALIDATE_AFTER_RUNTIME_LOAD.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        invalidate_runtime_snapshot_cache();
+    }
     let mut guard = last_good_runtime_snapshot()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -4288,6 +4296,93 @@ mod runtime_snapshot_cache_tests {
             mtime,
             fs::metadata(&path).unwrap().modified().unwrap(),
             "repeated lane projection must not rewrite settings.json"
+        );
+    }
+    #[test]
+    #[serial]
+    fn composer_cache_stamp_is_metadata_only_and_missing_metadata_refuses_reuse() {
+        let isolated = IsolatedSettings::new();
+        let config = CodescribeConfig::new();
+        let probe = codescribe_core::config::keychain::CredentialAcquisitionProbe::forbid();
+        assert!(config.composer_model_cache_stamp().is_none());
+        fs::write(isolated.path(), settled_settings_json().to_string()).unwrap();
+        let first = config.composer_model_cache_stamp().unwrap();
+        assert_eq!(
+            config.composer_model_cache_stamp().as_deref(),
+            Some(first.as_str())
+        );
+        assert!(
+            super::last_good_runtime_snapshot()
+                .lock()
+                .unwrap()
+                .value
+                .is_none()
+        );
+        fs::remove_file(isolated.path()).unwrap();
+        assert!(config.composer_model_cache_stamp().is_none());
+        assert!(probe.attempts().is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn composer_cache_stamp_changes_for_raw_metadata_credentials_and_runtime_invalidation() {
+        let isolated = IsolatedSettings::new();
+        fs::write(isolated.path(), settled_settings_json().to_string()).unwrap();
+        let config = CodescribeConfig::new();
+        let probe = codescribe_core::config::keychain::CredentialAcquisitionProbe::forbid();
+        let first = config.composer_model_cache_stamp().unwrap();
+        // An external writer can preserve bytes while publishing a new mtime.
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .open(isolated.path())
+            .unwrap();
+        let newer = fs::metadata(isolated.path()).unwrap().modified().unwrap()
+            + std::time::Duration::from_secs(1);
+        file.set_times(fs::FileTimes::new().set_modified(newer))
+            .unwrap();
+        let external = config.composer_model_cache_stamp().unwrap();
+        assert_ne!(external, first);
+        let _keys = codescribe_core::config::keychain::test_support::install_bundle(&[(
+            "LLM_OPENAI_API_KEY",
+            "synthetic-cache-stamp-key",
+        )]);
+        let credentials = config.composer_model_cache_stamp().unwrap();
+        assert_ne!(credentials, external);
+        super::invalidate_runtime_snapshot_cache();
+        assert_ne!(config.composer_model_cache_stamp().unwrap(), credentials);
+        assert!(probe.attempts().is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn runtime_invalidation_during_a_load_cannot_repopulate_earlier_generation() {
+        let isolated = IsolatedSettings::new();
+        fs::write(isolated.path(), settled_settings_json().to_string()).unwrap();
+        struct ResetHook;
+        impl Drop for ResetHook {
+            fn drop(&mut self) {
+                super::INVALIDATE_AFTER_RUNTIME_LOAD
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let _reset = ResetHook;
+        super::INVALIDATE_AFTER_RUNTIME_LOAD.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _first = super::load_runtime_snapshot_for_lane();
+        assert!(
+            super::last_good_runtime_snapshot()
+                .lock()
+                .unwrap()
+                .value
+                .is_none(),
+            "a loader begun before invalidation must not restore its old snapshot"
+        );
+        let _fresh = super::load_runtime_snapshot_for_lane();
+        assert!(
+            super::last_good_runtime_snapshot()
+                .lock()
+                .unwrap()
+                .value
+                .is_some()
         );
     }
 }
