@@ -2545,7 +2545,19 @@ impl AcousticLedger {
                     let single_source = held.slots.len() == 1
                         && held.slots[0].sample_start == observation.occurrence.sample_start
                         && held.slots[0].sample_end == observation.occurrence.sample_end;
-                    if single_source && observation.producer != ObservationProducer::ManualHuman {
+                    // Explicit recovery may replace an occurrence-only hypothesis.
+                    // It supplies no word targets and cannot settle decoder debt.
+                    let recovering_label = single_source
+                        && self.pending_text_recovery.contains(&observation.occurrence)
+                        && !self.word_pin_observations.contains(&held.slots[0].observation)
+                        && matches!(
+                            observation.producer,
+                            ObservationProducer::Whisper | ObservationProducer::CloudLive
+                        );
+                    if single_source
+                        && !recovering_label
+                        && observation.producer != ObservationProducer::ManualHuman
+                    {
                         let source = &held.slots[0];
                         let alignment = slot_ops::preserve_group_content(&source.text, text);
                         let (label, retained, reason) = match alignment {
