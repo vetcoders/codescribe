@@ -220,4 +220,47 @@ final class ProviderAccessOrderingTests: XCTestCase {
     XCTAssertTrue(model.selectedProviderKeySet)
   }
 
+  func testContinueWithDraftDuringColdProviderReadHasAnExplicitOutcome() async {
+    let engine = ControlledProviderEngine()
+    let model = makeModel(engine)
+    model.refreshProviderAccess()
+    await awaitCondition { engine.read != nil }
+    XCTAssertFalse(model.providerAccessResolved)
+    XCTAssertNil(model.selectedProvider)
+    model.apiKeyDraft = "synthetic-unresolved-draft"
+    model.saveApiKey()
+    XCTAssertEqual(engine.writes, 0, "explicit Save cannot target unresolved credentials")
+    model.advance()
+    XCTAssertEqual(engine.writes, 0, "unknown provider account cannot accept a key write")
+    XCTAssertEqual(model.apiKeyDraft, "synthetic-unresolved-draft")
+    XCTAssertNotEqual(model.step, .apiKey)
+    model.back()
+    XCTAssertEqual(model.step, .apiKey)
+    XCTAssertEqual(model.apiKeyDraft, "synthetic-unresolved-draft")
+    engine.resolveRead()
+    await awaitCondition { !model.providerAccessPending }
+  }
+
+  func testContinueWithDraftAfterFailedProviderReadHasAnExplicitOutcome() async {
+    let engine = ControlledProviderEngine()
+    let model = makeModel(engine)
+    model.refreshProviderAccess()
+    await awaitCondition { engine.read != nil }
+    let pending = engine.read
+    engine.read = nil
+    pending?.resume(throwing: ControlledProviderEngine.Failure.denied)
+    await awaitCondition { !model.providerAccessPending }
+    XCTAssertFalse(model.providerAccessResolved)
+    model.apiKeyDraft = "synthetic-denied-draft"
+    model.saveApiKey()
+    XCTAssertEqual(engine.writes, 0, "explicit Save cannot target unresolved credentials")
+    model.advance()
+    XCTAssertEqual(engine.writes, 0)
+    XCTAssertEqual(model.apiKeyDraft, "synthetic-denied-draft")
+    XCTAssertNotEqual(model.step, .apiKey)
+    model.back()
+    XCTAssertEqual(model.step, .apiKey)
+    XCTAssertEqual(model.apiKeyDraft, "synthetic-denied-draft")
+  }
+
 }

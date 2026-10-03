@@ -130,4 +130,46 @@ final class AudioRecordingControlTests: XCTestCase {
     await awaitCondition { reads.values.last == RenderRead(starting: false, recording: true, finalPass: true) }
     XCTAssertEqual(reads.values.last, RenderRead(starting: false, recording: true, finalPass: true))
   }
+  func testCalibrationIsRefusedForTrayOnlyStartOrRecording() {
+    let state = OverlayState(autoSendEnabled: { false }, micAccessProvider: { true })
+    let tray = TrayViewModel(engine: MockTrayEngine())
+    let model = model(state: state, tray: tray)
+    let panel = AudioPanel(model: model)
+    XCTAssertTrue(panel.canCalibrateMicrophone(state, tray: tray))
+    tray.isStartingDictation = true
+    XCTAssertFalse(panel.canCalibrateMicrophone(state, tray: tray))
+    tray.isStartingDictation = false
+    tray.isRecording = true
+    XCTAssertFalse(panel.canCalibrateMicrophone(state, tray: tray))
+    tray.isRecording = false
+    state.isFinalPass = true
+    XCTAssertFalse(panel.canCalibrateMicrophone(state, tray: tray))
+    XCTAssertFalse(panel.canCalibrateMicrophone(nil, tray: tray))
+    XCTAssertFalse(panel.canCalibrateMicrophone(state, tray: nil))
+  }
+
+  func testCalibrationActionRechecksTrayBusyBeforeCallingRecorder() async {
+    let state = OverlayState(autoSendEnabled: { false }, micAccessProvider: { true })
+    let tray = TrayViewModel(engine: MockTrayEngine())
+    var calls = 0
+    let engine = MockSettingsEngine(calibrateEnergyObserver: { _ in
+      calls += 1
+      return .sample
+    })
+    let model = SettingsViewModel(engine: engine,
+      permissionProbe: MockPermissionProbe(.allGranted),
+      audioRecordingControlProvider: { (state: state, tray: tray) })
+    let panel = AudioPanel(model: model)
+    tray.isStartingDictation = true
+    await panel.calibrateMicrophone(state, tray: tray)
+    XCTAssertEqual(calls, 0)
+    tray.isStartingDictation = false
+    tray.isRecording = true
+    await panel.calibrateMicrophone(state, tray: tray)
+    XCTAssertEqual(calls, 0)
+    tray.isRecording = false
+    await panel.calibrateMicrophone(state, tray: tray)
+    XCTAssertEqual(calls, 1, "idle calibration remains available through the same action")
+  }
+
 }

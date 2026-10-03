@@ -3999,6 +3999,9 @@
     "This connection is optional. You can continue and set it up later." : {
       "comment" : "Setup step footnote on the agent-readiness step"
     },
+    "This draft is unsaved. Continue with dictation, then go Back in this Setup session to save it once provider access is available." : {
+
+    },
     "This is retained text from an earlier take, including any unsaved edit. It is separate from the current take's audio." : {
 
     },

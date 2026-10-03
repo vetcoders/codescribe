@@ -232,7 +232,11 @@ checks visible order, both boundaries, unknown/empty input and reordering.
 `AudioRecordingControlTests` exercises the actual view action/admission and hosts
 the real observation consumer. It covers late final-pass evidence, retry after a
 failed capture, busy-tray refusal, paired fake injection and rerender from tray-only
-or overlay-only changes. SwiftUI does not expose these Button nodes through the
+or overlay-only changes. Calibration also checks tray-only starting/recording
+and rechecks admission at action time. `ProviderAccessOrderingTests` exercises
+Continue during cold or denied provider access, preservation of an unsaved draft
+when going Back, refusal of premature key writes, and durable resolved saves.
+SwiftUI does not expose these Button nodes through the
 AppKit AX child graph under XCTest (the same boundary documented by
 `OverlayChromeFounderCutTests`). Those child-graph probes are not kept as product
 assertions. Real Audio button activation, stop/final-pass presentation, calibration

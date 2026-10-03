@@ -179,10 +179,10 @@ mod tests {
     #[test]
     fn migrates_founder_wss_socket_into_both_lanes() {
         let mut settings = UserSettings::default();
-        let legacy = SttV2Legacy::from_json(
+        let imported = SttImportFields::from_json(
             &serde_json::json!({"speech":{"engine":{"cloud_transcription_endpoint":FOUNDER}}}),
         );
-        let (steps, targets) = migrate_legacy_stt_lanes(&legacy, &mut settings);
+        let (steps, targets) = migrate_stt_lanes(&imported, &mut settings);
         assert_eq!(settings.stt_live_endpoint.as_deref(), Some(FOUNDER));
         assert_eq!(
             settings.stt_file_endpoint.as_deref(),
@@ -195,9 +195,10 @@ mod tests {
     #[test]
     fn http_legacy_lands_in_file_lane_only() {
         let mut settings = UserSettings::default();
-        let legacy =
-            SttV2Legacy::from_json(&serde_json::json!({"stt_endpoint":"https://example.com/stt"}));
-        let (_, targets) = migrate_legacy_stt_lanes(&legacy, &mut settings);
+        let imported = SttImportFields::from_json(
+            &serde_json::json!({"stt_endpoint":"https://example.com/stt"}),
+        );
+        let (_, targets) = migrate_stt_lanes(&imported, &mut settings);
         assert_eq!(
             settings.stt_file_endpoint.as_deref(),
             Some("https://example.com/stt")
@@ -210,11 +211,11 @@ mod tests {
             "ws://127.0.0.1:8446/v1/audio/transcribe?q=x#f",
         ] {
             let mut settings = UserSettings::default();
-            let legacy = SttV2Legacy {
+            let imported = SttImportFields {
                 cloud_transcription_endpoint: Some(raw.into()),
-                ..SttV2Legacy::default()
+                ..SttImportFields::default()
             };
-            migrate_legacy_stt_lanes(&legacy, &mut settings);
+            migrate_stt_lanes(&imported, &mut settings);
             if raw.contains("8446") {
                 assert_eq!(
                     settings.stt_file_endpoint.as_deref(),
@@ -265,7 +266,8 @@ mod tests {
             );
             assert_eq!(bytes, std::fs::read(UserSettings::settings_path()).unwrap());
             assert!(
-                !SttV2Legacy::from_json(&serde_json::from_slice(&bytes).unwrap()).needs_migration()
+                !SttImportFields::from_json(&serde_json::from_slice(&bytes).unwrap())
+                    .needs_migration()
             );
         }
     }
@@ -421,20 +423,20 @@ mod tests {
 
     #[test]
     fn empty_legacy_key_does_not_need_migration() {
-        let blank = SttV2Legacy::from_json(&serde_json::json!({
+        let blank = SttImportFields::from_json(&serde_json::json!({
             "speech": {"engine": {"cloud_transcription_endpoint": ""}}
         }));
         assert!(!blank.needs_migration());
-        let already = SttV2Legacy::from_json(&storm_settings_json());
+        let already = SttImportFields::from_json(&storm_settings_json());
         assert!(
             !already.needs_migration(),
-            "legacy present AND targets present is already migrated"
+            "imported present AND targets present is already migrated"
         );
     }
 
     #[test]
     #[serial_test::serial]
-    fn migrate_legacy_stt_lanes_once_with_empty_steps_performs_no_write() {
+    fn migrate_stt_lanes_once_with_empty_steps_performs_no_write() {
         let isolated = IsolatedSettings::new();
         let path = isolated.path();
         std::fs::write(&path, storm_settings_json().to_string()).unwrap();
@@ -445,7 +447,7 @@ mod tests {
             stt_live_endpoint: Some(FOUNDER.into()),
             ..UserSettings::default()
         };
-        let (_, saves) = with_save_log_count(|| migrate_legacy_stt_lanes_once(&mut settings));
+        let (_, saves) = with_save_log_count(|| migrate_stt_lanes_once(&mut settings));
         assert_eq!(saves, 0);
         assert_eq!(bytes_before, std::fs::read(&path).unwrap());
         let after = std::fs::metadata(&path).unwrap();
@@ -462,7 +464,7 @@ mod tests {
         let bytes_after_first = std::fs::read(&path).unwrap();
         let mtime_after_first = std::fs::metadata(&path).unwrap().modified().unwrap();
         assert!(
-            !SttV2Legacy::from_json(&serde_json::from_slice(&bytes_after_first).unwrap())
+            !SttImportFields::from_json(&serde_json::from_slice(&bytes_after_first).unwrap())
                 .needs_migration()
         );
         assert_eq!(first.stt_live_endpoint.as_deref(), Some(FOUNDER));
