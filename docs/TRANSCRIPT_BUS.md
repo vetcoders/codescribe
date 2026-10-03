@@ -173,6 +173,144 @@ contains:
   lifecycle row remains `codescribe.transcript.v1` and does not carry these two
   fields. Reading that row is not proof of composer admission.
 
+### Shared durable revision encoding
+
+Live callbacks still return a complete evidence projection for each occurrence,
+with the same rendered document, availability, uncertainty spans and receipts.
+Persistence encodes the selected projections of one publication as one NDJSON
+row. Its top level is the first selected evidence projection, so document-history
+and document-snapshot readers still find the full `rendered_text` in the evidence
+family. A manual revision with no occurrence entries retains its standalone row.
+
+An occurrence-bearing persisted row adds
+`persistence_encoding: "shared-revision.v1"` and `occurrence_rows`. The array
+holds each subsequent selected projection in publication order, with its original
+`sequence`, `emitted_at`, `occurrence_session_id`, `capture_epoch`, PCM bounds,
+`document_index`, `label` and complete `acoustic_receipts`. All remaining fields
+come from the top-level projection. Expanding a row means copying those shared
+fields and replacing only the listed occurrence fields; text is never joined or
+used as identity. The first occurrence's receipts remain at the top level and are
+not repeated in the array. This preserves Word evidence, decisions, seals,
+presentation pins and manual receipts while storing the full document, coverage,
+comparison and consultation payloads once per persisted publication.
+
+`bus-demux.py` expands these observations before its existing normalization and
+delivery path. It admits a complete encoded row before expanding any occurrence,
+rejects unknown encoding versions or malformed occurrence members, and advances
+its durable byte cursor only after handling the row's envelopes. Existing pending
+delivery and ACK identities continue to use the original observation coordinates.
+Unencoded evidence rows remain readable. Snapshot readers that select one
+projection per reducer revision can consume the top-level projection directly;
+receipt inventories must also read `occurrence_rows`.
+
+A shared logical revision below 512 KiB is one physical NDJSON row. Larger
+revisions use consecutive `codescribe.bus-chunk.v1` transport rows with 32 KiB
+base64 blocks, ordinal/total counts, the complete byte length, common observation
+metadata, and the SHA-256 of the original JSON. All parts are one leased append
+batch. No physical row limit is raised. Readers verify ordering, length, checksum
+and metadata before expanding every occurrence; a durable cursor remains before
+an unfinished batch. Unknown encoding, broken linkage, incomplete batches or
+reconstruction above the current 256 MiB decoder budget refuse progress rather
+than grant delivery or idle. Stored bytes are preserved even beyond that decoder
+budget; support for such documents needs separate admission. This limit is not a
+retention policy. Capture callbacks remain the complete original projections.
+
+### Daily storage generations
+
+The active appendable journal remains `transcript-events.jsonl` at the configured
+data root. `transcript-events.jsonl.generations.json` is the sole ordered storage
+receipt; `transcript-events.jsonl.generation.lock` serializes all cooperating
+appenders and rollover. The first append on a new local calendar day pins the
+closed inode under `events/YYYY_MMDD/<generation-id>.jsonl`, prepares a fresh
+inode, durably records the pending swap, and atomically replaces the hot path.
+Logical offsets and original stream identity span the entire linked chain.
+Session end, channel close, seal, delivery and ACK still require their own rows;
+midnight never mints any of them. Same-process sessions and reopened descriptors
+refresh under the same lease. Pending swaps recover only matching original
+identities; incomplete trailing rows refuse rollover. Existing archive names
+are never implicitly overwritten.
+
+An existing nonempty journal without a generation receipt is **undated**.
+Admission pins all its original bytes under `events/undated/`; it neither scans
+nor compresses that mixed-day source, and never invents a day from mtime. A
+fragmented tail remains on its original authority. This source change does not
+inspect or migrate the Founder's historical file.
+
+Dated immutable generations are compressed off writer/capture/UI locks by the
+maintenance owner using direct `/usr/bin/ditto` structured arguments
+`--noclone --rsrc --extattr --hfsCompression`, with `DITTONORSRC` removed for that
+child. Before publishing a compressed path it verifies `UF_COMPRESSED`, logical
+byte length and SHA-256 equality, and unchanged source identity. These are
+ordinary JSONL files: normal open/read/seek uses transparent filesystem
+compression, with no container or manual decompression. Successful process exit
+or an APFS clone alone does not prove compression. After durable publication a
+recorded superseded-copy receipt allows safe removal of the ordinary daily copy;
+interruption retains recoverable original bytes. Unsupported filesystems or
+platforms retain an ordinary archive labelled `compressed: false`; failures
+retain the source and back off for one minute. Empty queues spawn no archive
+worker, and one worker per journal coalesces actual pending work.
+
+ACK folds, transcript projection/history, CLI publication/live following,
+Agent followers, orphan-tail discovery and the native delivery reader use the
+same generation receipt and ordinary reads. Archive compression does not change
+logical cursors. The installation reader keeps all existing recording, CLI,
+channel, unknown-row and oversized physical-row checks; unverified storage never
+certifies idle. Native observation rebuilding advances in 64 MiB passes across
+dated generations, retaining the existing 64 MiB cold-tail treatment of the
+undated prefix. It emits no delivery commands. History and orphan-tail lookups
+retain their existing 64 MiB windows over the linked stream. The optional age
+rewriter refuses managed generations; daily archiving does not expire evidence,
+Dictionary correction/proposed stores or independently retained audio.
+
+### Explicit historical migration preparation
+
+This CLI is opt-in and **does not admit a replacement journal**:
+
+```text
+codescribe bus prepare-migration --source /explicit/source.jsonl --out /new/private/staging
+codescribe bus prepare-migration --source /explicit/source.jsonl --out /new/private/staging --stage
+codescribe bus prepare-migration --source /explicit/source.jsonl --out /new/private/staging --stage --compress
+codescribe bus prepare-migration --source /explicit/source.jsonl --out /existing/completed/staging --stage --compress --resume
+```
+
+Without `--stage`, only source metadata is planned; no output is written and no
+payload is scanned. Staging streams the pinned source length in 64 KiB blocks,
+uses at most eight output descriptors, and keeps at most 1 MiB for record
+classification. Known-schema JSON records with valid source `emitted_at` are
+partitioned by that timestamp's **local** `YYYY_MMDD` day, preserving exact bytes
+and order within each day. Invalid, unknown-schema, undated, oversized and
+unterminated records are streamed intact to `events/unknown/`. The inventory is
+per calendar bucket, capped at 4096 buckets, never per historical row. Exceeding
+the preparation budget fails with source and owned partial staging preserved.
+
+`preparation.json` is atomically published only after all staged logical byte
+counts/checksums and source device/inode/length/mtime/ctime match. Diagnostics and
+receipts contain identities/counts/checksums rather than private payloads.
+Compression uses the same verified platform primitive; unsupported compression
+is honestly recorded as ordinary preserved output. The original source and
+ordinary staging copies remain intact as rollback. `--resume` re-verifies a
+**completed** preparation, including all checksums and unchanged source; it is
+idempotent reuse, not an interrupted-prefix checkpoint. An incomplete staging
+directory refuses resume and remains evidence; a fresh explicit output is needed.
+No preparation holds the append lease for a full scan or blocks capture locks.
+Concurrent source mutation invalidates the preparation instead of admitting a
+stale replacement.
+
+`--apply` deliberately refuses: proven idle writer/runtime ownership and a
+reviewed protocol for original cross-day ordering are still required. Calendar
+partitions alone cannot reconstruct the global order of interleaved dated and
+unknown rows; the intact source remains that authority. These outputs are not
+installed in the live generation chain and therefore do not change history or
+ACK state. Root must assess adversarial preparation, compression CPU/allocated
+bytes and ordinary read/seek behavior before deliberate admission. This worker
+has not executed any migration or compression against real or synthetic data.
+
+Removing duplicate durable document snapshots and bounding the active generation
+can reduce new growth. Complete archived history still grows over time; neither
+daily generations nor transparent compression impose a total disk-use cap.
+No claim is made that the previous 20 GB was reclaimed, that compression has a
+particular ratio, or that reads necessarily become slower.
+
 The projection contract is one snapshot, not a bag of Swift inputs:
 
 | Field                               | Source of truth                                                                                                                                                                                                                                                             |

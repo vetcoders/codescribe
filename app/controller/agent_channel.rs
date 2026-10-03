@@ -314,14 +314,15 @@ fn latest_channel_rows(
     use std::io::{BufRead, BufReader, Seek, SeekFrom};
 
     let schema = crate::presentation::agent_ack::CHANNEL_SESSION_SCHEMA;
-    let file = match std::fs::File::open(bus) {
+    let file = match crate::presentation::transcript_bus_maintenance::generation::Reader::open(bus)
+    {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(BTreeMap::new());
         }
         Err(error) => return Err(error),
     };
-    let start = file.metadata()?.len().saturating_sub(window);
+    let start = file.len().saturating_sub(window);
     let mut reader = BufReader::new(file);
     let mut line = Vec::new();
     if start > 0 {
@@ -1117,8 +1118,7 @@ mod tests {
     }
 
     fn bus_rows(bus: &Path) -> Vec<serde_json::Value> {
-        std::fs::read_to_string(bus)
-            .unwrap_or_default()
+        crate::durable_bus_oracle::logical_text(bus)
             .lines()
             .map(|line| serde_json::from_str(line).expect("json"))
             .collect()

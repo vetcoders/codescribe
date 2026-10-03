@@ -1314,6 +1314,7 @@ mod retranscribe_tests {
     /// Exercise button dispatch and both real file transports without credentials.
     /// Explicit languages must reach the provider; Auto must remain unspecified.
     #[tokio::test]
+    #[serial_test::serial]
     async fn file_button_pass_preserves_selected_language_in_provider_request() {
         use codescribe_core::config::{Config, Language};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

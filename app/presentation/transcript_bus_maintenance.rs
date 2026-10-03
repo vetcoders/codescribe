@@ -1,5 +1,9 @@
 //! Retention for the clean transcript bus.
 //!
+//! A managed daily generation preserves every byte. This module does not
+//! age-rewrite that journal, delete an archive, or replace its manifest.
+//! Age compaction is optional, and only for an unmanaged file.
+//!
 //! WHY THIS EXISTS. `transcript-events.jsonl` is append-only with no bound. On
 //! 2026-09-18 it held 464 MB spanning 33 days — about 14 MB a day, or 170 GB a
 //! year if nothing intervenes. The composition explains the rate: over the last
@@ -15,15 +19,16 @@
 //!   the quality loop within days of being written. Past that window it is
 //!   paying rent in gigabytes.
 //!
-//! So compaction is by schema and age, not by truncation: every delivery row
-//! survives regardless of age, evidence older than the retention window is
+//! Unmanaged compaction is by schema and age, not by truncation: every delivery
+//! row survives regardless of age, evidence older than the retention window is
 //! dropped, and any row this code cannot parse is kept — an unknown schema is
 //! not permission to discard someone's data.
 //!
-//! SAFETY. In-app compaction stages outside the descriptor lock, then copies
-//! the appended tail and replaces the descriptor under that lock. The separate CLI process
-//! cannot take that lock, so its command retains the quiet-period refusal and
-//! re-checks file identity before rename.
+//! SAFETY. In-app compaction of an unmanaged file stages outside the descriptor
+//! lock, then copies the appended tail and replaces the descriptor under the
+//! shared writer and the generation lease. A verified generation refuses that
+//! rewrite. The separate CLI process keeps the quiet-period refusal and
+//! re-checks generation linkage plus file identity before rename.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -32,6 +37,11 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result};
+
+/// Storage generation ownership and lossless durable decoding. No transcript
+/// or lifecycle decisions are made by this module.
+#[path = "bus_generation.rs"]
+pub mod generation;
 
 /// Size past which the bus is worth compacting. Below this the reclaim is not
 /// worth the risk of rewriting a file another process may be appending to.
@@ -195,7 +205,7 @@ fn bus_status_with_retention_limit(
     retention_days: Option<u32>,
     limit: Option<u64>,
 ) -> Result<BusStatus> {
-    let bytes = limit.unwrap_or_else(|| std::fs::metadata(path).map(|m| m.len()).unwrap_or(0));
+    let bytes = limit.unwrap_or(generation::Reader::open(path).map(|f| f.len()).unwrap_or(0));
     let mut status = BusStatus {
         path: path.to_path_buf(),
         bytes,
@@ -209,7 +219,7 @@ fn bus_status_with_retention_limit(
         retention_preview: Vec::new(),
     };
     // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- bus path comes from `transcript_bus_path()` or a test fixture, never from a request; this is a desktop CLI with no network input surface.
-    let file = match std::fs::File::open(path) {
+    let file = match generation::Reader::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(status),
         Err(error) => return Err(error).with_context(|| format!("open bus {}", path.display())),
@@ -273,13 +283,53 @@ fn cutoff_for(days: u32) -> String {
         .to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
 }
 
-/// Drop evidence rows older than `retention_days`, keeping everything else.
+/// Drop evidence rows older than `retention_days` on an unmanaged file.
 ///
-/// Returns `Ok` with `applied: false` under `dry_run`, and an error when the
-/// bus looks live — see the safety note in the module docs.
+/// A verified daily generation is refused. Its bytes stay in the generation
+/// chain. `dry_run` returns `applied: false`. A live bus or a broken generation
+/// linkage is an error — see the safety note in the module docs.
 pub fn compact_bus(path: &Path, retention_days: u32, dry_run: bool) -> Result<CompactionReport> {
     compact_bus_inner(path, retention_days, dry_run, false, None)
 }
+
+/// `Ok(true)` is a verified generation chain. Linkage and manifest errors stay
+/// errors; absence of a manifest is `Ok(false)`.
+fn journal_is_managed(path: &Path) -> Result<bool> {
+    match generation::view(path) {
+        Ok(manifest) => Ok(manifest.is_some()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// `Ok(None)` means the journal is unmanaged. `Ok(Some(true))` means the
+/// verified chain still holds `dev`/`ino`. `Ok(Some(false))` is a verified
+/// chain that does not hold that inode.
+fn generation_preserves_inode(path: &Path, dev: u64, ino: u64) -> Result<Option<bool>> {
+    let Some(manifest) = generation::view(path)? else {
+        return Ok(None);
+    };
+    let preserves = (manifest.active.dev == dev && manifest.active.ino == ino)
+        || manifest
+            .segments
+            .iter()
+            .any(|segment| segment.dev == dev && segment.ino == ino);
+    Ok(Some(preserves))
+}
+
+/// `Ok(true)` means a verified generation already holds the staged inode, so
+/// the owned swap must abandon its staging and claim nothing. A verified chain
+/// that lost that inode, or a broken manifest, stays an error.
+fn owned_generation_supersedes(path: &Path, dev: u64, ino: u64) -> Result<bool> {
+    match generation_preserves_inode(path, dev, ino)? {
+        None => Ok(false),
+        Some(true) => Ok(true),
+        Some(false) => anyhow::bail!("{OWNED_REPLACED_BUS}"),
+    }
+}
+
+const MANAGED_JOURNAL_REFUSAL: &str =
+    "daily journal generations are preserved; age rewriting requires separate admission";
+const OWNED_REPLACED_BUS: &str = "transcript bus shrank or was replaced during owned compaction";
 
 /// Compact through the app's shared writer. Appends wait only for tail copy
 /// and descriptor replacement.
@@ -288,6 +338,9 @@ pub fn compact_bus_owned(
     retention_days: u32,
     trigger: &str,
 ) -> Result<Option<CompactionReport>> {
+    if journal_is_managed(path)? {
+        return Ok(None);
+    }
     let active = ACTIVE_APP_COMPACTIONS.get_or_init(|| Mutex::new(HashSet::new()));
     {
         let mut active = active.lock().unwrap_or_else(|error| error.into_inner());
@@ -345,6 +398,9 @@ fn compact_bus_owned_once(
     minimum_bytes: u64,
     before_swap: impl FnOnce(),
 ) -> Result<Option<CompactionReport>> {
+    if journal_is_managed(path)? {
+        return Ok(None);
+    }
     let shared = super::transcript_bus::shared_bus_file(path)?;
     let initial = {
         let file = shared.lock().unwrap_or_else(|error| error.into_inner());
@@ -369,9 +425,15 @@ fn compact_bus_owned_once(
         return Ok(None);
     }
     before_swap();
-    let result = (|| -> Result<u64> {
+    let result = (|| -> Result<Option<u64>> {
         use std::os::unix::fs::MetadataExt;
         let mut writer = shared.lock().unwrap_or_else(|error| error.into_inner());
+        // Shared writer, then the OS generation lease. Manifest linkage only;
+        // the row scan already finished outside these locks.
+        let _lease = generation::Lease::acquire(path)?;
+        if owned_generation_supersedes(path, initial.dev(), initial.ino())? {
+            return Ok(None);
+        }
         let locked_at = Instant::now();
         let visible = std::fs::metadata(path)?;
         let descriptor = writer.metadata()?;
@@ -382,7 +444,7 @@ fn compact_bus_owned_once(
                 && descriptor.ino() == initial.ino()
                 && visible.len() >= initial.len()
                 && descriptor.len() == visible.len(),
-            "transcript bus shrank or was replaced during owned compaction"
+            "{OWNED_REPLACED_BUS}"
         );
         let tail_len = visible.len() - initial.len();
         // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- this is the app-owned Bus path already verified against its shared writer descriptor, or a test temporary path.
@@ -414,17 +476,22 @@ fn compact_bus_owned_once(
             std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o600))?;
         }
         let replacement = super::transcript_bus::open_bus_append_file(&staged)?;
+        if owned_generation_supersedes(path, initial.dev(), initial.ino())? {
+            return Ok(None);
+        }
         std::fs::rename(&staged, path)?;
         *writer = replacement;
         report.bytes_before = visible.len();
         report.bytes_after += tail_len;
         report.applied = true;
-        Ok(locked_at.elapsed().as_millis() as u64)
+        Ok(Some(locked_at.elapsed().as_millis() as u64))
     })();
-    if result.is_err() {
+    if !matches!(result, Ok(Some(_))) {
         std::fs::remove_file(&staged).ok();
     }
-    let locked_ms = result?;
+    let Some(locked_ms) = result? else {
+        return Ok(None);
+    };
     report.locked_ms = locked_ms;
     if report.applied {
         tracing::info!(
@@ -578,6 +645,9 @@ fn compact_bus_inner(
     owned: bool,
     mut writer: Option<&mut std::fs::File>,
 ) -> Result<CompactionReport> {
+    if journal_is_managed(path)? {
+        anyhow::bail!("{MANAGED_JOURNAL_REFUSAL}");
+    }
     let metadata = std::fs::metadata(path)
         .with_context(|| format!("stat transcript bus {}", path.display()))?;
     let bytes_before = metadata.len();
@@ -601,7 +671,22 @@ fn compact_bus_inner(
     if owned && report.evidence_rows_dropped == 0 {
         std::fs::remove_file(&staged).ok();
         report.bytes_after = report.bytes_before;
+        if journal_is_managed(path)? {
+            anyhow::bail!("{MANAGED_JOURNAL_REFUSAL}");
+        }
         return Ok(report);
+    }
+
+    match journal_is_managed(path) {
+        Ok(true) => {
+            std::fs::remove_file(&staged).ok();
+            anyhow::bail!("{MANAGED_JOURNAL_REFUSAL}");
+        }
+        Ok(false) => {}
+        Err(error) => {
+            std::fs::remove_file(&staged).ok();
+            return Err(error);
+        }
     }
 
     if dry_run {
@@ -609,40 +694,67 @@ fn compact_bus_inner(
         return Ok(report);
     }
 
-    // The file may have grown while we were reading it. Our staged copy does
-    // not contain those rows, so renaming over the original would delete them.
-    let metadata_now = std::fs::metadata(path)
-        .with_context(|| format!("re-stat transcript bus {}", path.display()))?;
-    let unchanged =
-        metadata_now.len() == bytes_before && metadata_now.modified().ok() == modified_before;
-    if !unchanged {
-        std::fs::remove_file(&staged).ok();
-        anyhow::bail!(
+    let applied = (|| -> Result<()> {
+        // Caller-held writer, or the shared writer when this process does not
+        // already hold it, then the OS generation lease. Recheck linkage here,
+        // after the row scan, and do not rename a managed journal.
+        let admission = if writer.is_none() {
+            Some(super::transcript_bus::shared_bus_file(path)?)
+        } else {
+            None
+        };
+        let mut admission_guard = admission
+            .as_ref()
+            .map(|shared| shared.lock().unwrap_or_else(|error| error.into_inner()));
+        let _lease = generation::Lease::acquire(path)?;
+        if journal_is_managed(path)? {
+            anyhow::bail!("{MANAGED_JOURNAL_REFUSAL}");
+        }
+        // The file may have grown while we were reading it. Our staged copy
+        // does not contain those rows, so renaming over the original would
+        // delete them.
+        let metadata_now = std::fs::metadata(path)
+            .with_context(|| format!("re-stat transcript bus {}", path.display()))?;
+        let unchanged =
+            metadata_now.len() == bytes_before && metadata_now.modified().ok() == modified_before;
+        anyhow::ensure!(
+            unchanged,
             "transcript bus changed during compaction ({} -> {} bytes); \
              staged copy discarded and the original left untouched",
             bytes_before,
             metadata_now.len()
         );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o600))?;
+        }
+        // Open before rename: if opening fails, the original file and descriptor
+        // still point to the same visible inode.
+        let replacement = if owned || admission_guard.is_some() {
+            Some(super::transcript_bus::open_bus_append_file(&staged)?)
+        } else {
+            None
+        };
+        if journal_is_managed(path)? {
+            anyhow::bail!("{MANAGED_JOURNAL_REFUSAL}");
+        }
+        std::fs::rename(&staged, path)
+            .with_context(|| format!("replace transcript bus {}", path.display()))?;
+        // `guard` is `&mut MutexGuard<File>`: one dereference names the guard,
+        // the second writes the opened descriptor into the guarded file.
+        match (admission_guard.as_mut(), writer.as_mut(), replacement) {
+            (Some(guard), _, Some(file)) => **guard = file,
+            (None, Some(slot), Some(file)) => **slot = file,
+            _ => {}
+        }
+        report.applied = true;
+        Ok(())
+    })();
+    if applied.is_err() {
+        std::fs::remove_file(&staged).ok();
     }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o600))?;
-    }
-    // Open before rename: if opening fails, the original file and descriptor
-    // still point to the same visible inode.
-    let replacement = if owned {
-        Some(super::transcript_bus::open_bus_append_file(&staged)?)
-    } else {
-        None
-    };
-    std::fs::rename(&staged, path)
-        .with_context(|| format!("replace transcript bus {}", path.display()))?;
-    if let (Some(writer), Some(replacement)) = (writer.as_mut(), replacement) {
-        **writer = replacement;
-    }
-    report.applied = true;
+    applied?;
     Ok(report)
 }
 
@@ -666,7 +778,7 @@ mod tests {
     }
 
     #[test]
-    fn app_append_survives_compaction_and_remains_on_visible_path() {
+    fn managed_app_append_survives_refused_age_compaction() {
         use crate::presentation::transcript_bus::TranscriptBus;
 
         let dir = temp("live-append");
@@ -680,24 +792,27 @@ mod tests {
         // the threshold check is separately tested with an ordinary tiny file.
         let shared = super::super::transcript_bus::shared_bus_file(&path).unwrap();
         let mut writer = shared.lock().unwrap();
-        let report = compact_bus_inner(&path, 14, false, true, Some(&mut writer))
-            .expect("app can compact its live bus");
+        let original = crate::durable_bus_oracle::logical_text(&path);
+        let refused = compact_bus_inner(&path, 14, false, true, Some(&mut writer));
         drop(writer);
-        assert!(report.applied);
-        assert_eq!(report.evidence_rows_dropped, 1);
+        assert!(
+            refused.is_err(),
+            "no entry point may rewrite a managed generation"
+        );
+        assert_eq!(crate::durable_bus_oracle::logical_text(&path), original);
         bus.publish_ended(
             crate::presentation::transcript_bus::TranscriptSessionEndReason::Completed,
             false,
             crate::presentation::transcript_bus::TranscriptDelivery::Unattempted,
         );
-        let after = std::fs::read_to_string(&path).expect("read after compact");
+        let after = crate::durable_bus_oracle::logical_text(&path);
         assert!(after.contains(&before));
         assert!(after.contains("session_ended"));
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
-    fn app_compaction_preserves_every_concurrent_session_append() {
+    fn refused_managed_compaction_preserves_every_concurrent_session_append() {
         use crate::presentation::transcript_bus::TranscriptBus;
         let dir = temp("concurrent-append");
         let path = dir.join("transcript-events.jsonl");
@@ -722,25 +837,35 @@ mod tests {
             }
         });
         ready_rx.recv().unwrap();
-        let report = compact_bus_inner(&path, 14, false, true, Some(&mut writer)).unwrap();
-        assert!(report.applied);
+        let original = crate::durable_bus_oracle::logical_text(&path);
+        let refused = compact_bus_inner(&path, 14, false, true, Some(&mut writer));
+        assert!(refused.is_err(), "managed generation rewrite refused");
         drop(writer);
         handle.join().unwrap();
-        let contents = std::fs::read_to_string(&path).unwrap();
+        let contents = crate::durable_bus_oracle::logical_text(&path);
+        assert!(
+            contents.starts_with(&original),
+            "original prefix survives exactly"
+        );
+        let rows = crate::durable_bus_oracle::rows(&contents).unwrap();
         for index in 0..100 {
-            assert!(
-                contents.contains(&format!("concurrent-{index}")),
-                "lost row {index}"
+            let id = format!("concurrent-{index}");
+            assert_eq!(
+                rows.iter()
+                    .filter(|row| row["session_id"].as_str() == Some(&id))
+                    .count(),
+                1,
+                "session append {index} must survive exactly once"
             );
         }
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
-    fn owned_compaction_locked_reads_depend_on_appended_tail_not_prefix() {
+    fn owned_compaction_superseded_by_rollover_preserves_prefix_and_every_tail() {
         use crate::presentation::transcript_bus::TranscriptBus;
         const TAIL_ROWS: usize = 10;
-        let mut locked_counts = Vec::new();
+
         for prefix_bytes in [1024 * 1024, 10 * 1024 * 1024] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("transcript-events.jsonl");
@@ -766,7 +891,7 @@ mod tests {
                 out.write_all(row.as_bytes()).unwrap();
             }
             drop(out);
-            let recorded_len = std::fs::metadata(&path).unwrap().len();
+            let original = std::fs::read(&path).unwrap();
             let report = compact_bus_owned_once(&path, 14, "test", 1, || {
                 std::thread::scope(|scope| {
                     scope
@@ -779,22 +904,30 @@ mod tests {
                         .unwrap();
                 });
             })
-            .unwrap()
             .unwrap();
-            assert!(report.applied);
-            assert_eq!(report.locked_rows_read, TAIL_ROWS as u64);
-            assert_eq!(
-                report.locked_bytes_read,
-                report.bytes_before - recorded_len,
-                "the locked reader copied exactly the appended tail"
+            assert!(
+                report.is_none(),
+                "verified rollover abandons stale age rewrite"
             );
-            let final_bus = std::fs::read_to_string(&path).unwrap();
+            let final_bus = crate::durable_bus_oracle::logical_text(&path);
+            assert!(
+                final_bus.as_bytes().starts_with(&original),
+                "all aged prefix bytes survive"
+            );
+            let rows = crate::durable_bus_oracle::rows(&final_bus).unwrap();
             for index in 0..TAIL_ROWS {
-                assert!(final_bus.contains(&format!("new-take-{index}")));
+                let id = format!("new-take-{index}");
+                assert_eq!(
+                    rows.iter()
+                        .filter(|row| row["session_id"].as_str() == Some(&id))
+                        .count(),
+                    1
+                );
             }
-            locked_counts.push(report.locked_rows_read);
+            let staged =
+                path.with_extension(format!("jsonl.compacting.owned-{}", std::process::id()));
+            assert!(!staged.exists(), "superseded staging is removed");
         }
-        assert_eq!(locked_counts, [TAIL_ROWS as u64; 2]);
     }
 
     #[test]
@@ -1152,5 +1285,99 @@ mod tests {
             .collect();
         assert!(staged.is_empty(), "staged copy must be cleaned up");
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod integrator_compaction_generation_acceptance {
+    use super::*;
+    use crate::presentation::transcript_bus::{TranscriptBus, TranscriptMode, TranscriptSession};
+    use std::fs::{self, OpenOptions};
+    fn session(id: &str) -> TranscriptSession {
+        TranscriptSession {
+            session_id: id.into(),
+            mode: TranscriptMode::Dictation,
+            has_latched_target: false,
+            latched_target_is_self: false,
+            audience: None,
+            badge_only: false,
+        }
+    }
+    fn aged() -> &'static [u8] {
+        b"{\"schema\":\"codescribe.transcript-evidence.v1\",\"emitted_at\":\"2020-01-01T00:00:00Z\",\"session_id\":\"preserve-aged\",\"rendered_text\":\"Keep every byte\"}\n"
+    }
+    fn logical(path: &Path) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        generation::Reader::open(path)
+            .unwrap()
+            .read_to_end(&mut bytes)
+            .unwrap();
+        bytes
+    }
+    #[test]
+    fn inner_compactor_cannot_replace_a_managed_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let bus = TranscriptBus::open_at(session("managed"), path.clone(), None).unwrap();
+        bus.publish_started();
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(aged())
+            .unwrap();
+        let before = logical(&path);
+        let manifest_before = fs::read(generation::manifest_path(&path)).unwrap();
+        let shared = crate::presentation::transcript_bus::shared_bus_file(&path).unwrap();
+        let mut writer = shared.lock().unwrap();
+        let result = compact_bus_inner(&path, 14, false, true, Some(&mut writer));
+        drop(writer);
+        assert!(
+            result.is_err(),
+            "all entry paths must reject age rewriting of a managed journal"
+        );
+        assert_eq!(
+            logical(&path),
+            before,
+            "managed logical bytes must remain exact"
+        );
+        assert_eq!(
+            fs::read(generation::manifest_path(&path)).unwrap(),
+            manifest_before
+        );
+    }
+    #[test]
+    fn rollover_during_unmanaged_compaction_abandons_staging_without_losing_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        fs::write(&path, aged()).unwrap();
+        let bus = TranscriptBus::open_at(session("racing-tail"), path.clone(), None).unwrap();
+        let result = compact_bus_owned_once(&path, 14, "private-generation-race", 1, || {
+            bus.publish_started();
+        });
+        assert!(
+            result.is_ok(),
+            "a verified generation rollover supersedes the old compaction, not a storage failure: {result:?}"
+        );
+        assert!(
+            result.unwrap().is_none(),
+            "stale compaction must not claim publication"
+        );
+        let bytes = logical(&path);
+        assert!(
+            bytes.starts_with(aged()),
+            "all original aged bytes remain reachable"
+        );
+        assert_eq!(
+            String::from_utf8(bytes)
+                .unwrap()
+                .matches("racing-tail")
+                .count(),
+            1,
+            "the racing append stays present exactly once"
+        );
+        assert!(generation::manifest_path(&path).exists());
+        let stale = path.with_extension(format!("jsonl.compacting.owned-{}", std::process::id()));
+        assert!(!stale.exists(), "abandoned staging must be cleaned up");
     }
 }

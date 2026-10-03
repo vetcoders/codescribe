@@ -23,6 +23,7 @@ notice. The original transcript is never rewritten.
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime
 import fcntl
 import hashlib
@@ -35,6 +36,7 @@ import time
 from pathlib import Path
 from stat import S_ISREG
 from typing import Any, Iterator
+from types import SimpleNamespace
 
 BUS_FILENAME = "transcript-events.jsonl"
 CLEAN_SCHEMA = "codescribe.transcript.v1"
@@ -167,6 +169,137 @@ def agent_turn_lease_path() -> Path:
     return install_interlock_path().with_name(AGENT_TURN_LEASE_FILENAME)
 
 
+def generation_sources(path: Path) -> tuple[list[dict[str, Any]], int, int, float | None]:
+    """Read the single generation owner's receipt; broken links never look idle."""
+    path = Path(os.path.abspath(path))
+    receipt = Path(str(path) + ".generations.json")
+    current = path.stat()
+    if not receipt.exists():
+        return ([{"path": str(path), "start": 0, "length": current.st_size,
+                  "dev": current.st_dev, "ino": current.st_ino}], current.st_dev, current.st_ino, getattr(current, "st_birthtime", None))
+    with receipt.open("rb") as handle:
+        raw = handle.read((4 << 20) + 1)
+    if len(raw) > 4 << 20:
+        raise ValueError("oversized generation receipt")
+    value = json.loads(raw)
+    if set(value) != {"schema", "root", "stream_id", "stream_inode", "stream_dev", "stream_birthtime", "segments", "active", "pending"} or value.get("schema") != "codescribe.bus-generations.v1" or value.get("root") != str(path):
+        raise ValueError("unknown generation receipt")
+    segments = list(value["segments"])
+    active = dict(value["active"])
+    pending = value.get("pending")
+    if pending is not None:
+        next_generation = pending["next"]
+        if (current.st_dev, current.st_ino) == (next_generation["dev"], next_generation["ino"]):
+            segments.append(pending["closed"])
+            active = dict(next_generation)
+        elif (current.st_dev, current.st_ino) != (active["dev"], active["ino"]):
+            raise ValueError("broken generation transaction")
+    expected = 0
+    events = path.parent / "events"
+    for segment in segments:
+        if set(segment) != {"id", "path", "start", "length", "dev", "ino", "day", "compressed", "sha256", "superseded"}:
+            raise ValueError("unknown generation segment")
+        physical = Path(segment["path"])
+        if not physical.is_relative_to(events) or ".." in physical.parts:
+            raise ValueError("generation outside selected storage")
+        meta = physical.stat()
+        if (segment["start"], segment["length"], segment["dev"], segment["ino"]) != (
+            expected, meta.st_size, meta.st_dev, meta.st_ino
+        ):
+            raise ValueError("changed closed generation")
+        expected += meta.st_size
+    if active["start"] != expected or (active["dev"], active["ino"]) != (current.st_dev, current.st_ino):
+        raise ValueError("broken active generation")
+    active.update(path=str(path), length=current.st_size)
+    segments.append(active)
+    return segments, value["stream_dev"], value["stream_inode"], value["stream_birthtime"]
+
+
+def generation_metadata(path: Path) -> Any:
+    segments, dev, ino, birth = generation_sources(path)
+    current = path.stat()
+    last = next((s for s in reversed(segments) if s["length"]), segments[-1])
+    modified = Path(last["path"]).stat()
+    return SimpleNamespace(st_dev=dev, st_ino=ino,
+        st_size=segments[-1]["start"] + segments[-1]["length"],
+        st_mode=current.st_mode, st_mtime_ns=modified.st_mtime_ns,
+        st_birthtime=birth)
+
+
+class GenerationFile:
+    """Bounded ordinary open/read/seek over verified, ordered journal files."""
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.segments, self.dev, self.ino, _ = generation_sources(path)
+        self.position = 0
+        self.size = self.segments[-1]["start"] + self.segments[-1]["length"]
+
+    def __enter__(self) -> GenerationFile:
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        pass
+
+    def metadata(self, refresh: bool = False) -> Any:
+        return generation_metadata(self.path)
+
+    def tell(self) -> int:
+        return self.position
+
+    def seek(self, position: int, whence: int = 0) -> int:
+        position = position if whence == 0 else (self.position if whence == 1 else self.size) + position
+        if position < 0:
+            raise ValueError("negative generation cursor")
+        self.position = position
+        return position
+
+    def read(self, width: int) -> bytes:
+        if width < 0:
+            raise ValueError("unbounded generation read refused")
+        out = bytearray()
+        for segment in self.segments:
+            end = segment["start"] + segment["length"]
+            if self.position >= end or not width:
+                continue
+            if self.position < segment["start"]:
+                raise ValueError("generation gap")
+            try:
+                descriptor = Path(segment["path"]).open("rb")
+            except FileNotFoundError:
+                refreshed, _, _, _ = generation_sources(self.path)
+                current = next((s for s in refreshed if s.get("id") == segment.get("id") and s["start"] == segment["start"] and s["length"] == segment["length"]), None)
+                if current is None:
+                    raise ValueError("lost generation")
+                segment = current
+                descriptor = Path(segment["path"]).open("rb")
+            with descriptor as handle:
+                meta = os.fstat(handle.fileno())
+                if (meta.st_dev, meta.st_ino) != (segment["dev"], segment["ino"]) or meta.st_size < segment["length"]:
+                    raise ValueError("changed generation descriptor")
+                handle.seek(self.position - segment["start"])
+                raw = handle.read(min(width, end - self.position))
+            if not raw:
+                raise ValueError("short generation")
+            out.extend(raw)
+            self.position += len(raw)
+            width -= len(raw)
+        return bytes(out)
+
+    def readline(self, limit: int = 1024 * 1024 + 1) -> bytes:
+        out = bytearray()
+        while len(out) < limit:
+            raw = self.read(min(4096, limit - len(out)))
+            if not raw:
+                break
+            newline = raw.find(b"\n")
+            if newline >= 0:
+                out.extend(raw[:newline + 1])
+                self.position -= len(raw) - newline - 1
+                break
+            out.extend(raw)
+        return bytes(out)
+
+
 def installation_idle(
     path: Path,
     *,
@@ -285,9 +418,8 @@ def installation_idle(
         open_channels: dict[str, tuple[str, str | None]] = {}
         live_app: str | None = None
         try:
-            descriptor = os.open(source, os.O_RDONLY | os.O_NONBLOCK)
-            with os.fdopen(descriptor, "rb") as handle:
-                stat = os.fstat(handle.fileno())
+            with GenerationFile(source) as handle:
+                stat = handle.metadata()
                 if not S_ISREG(stat.st_mode):
                     return False
                 identity = (
@@ -327,6 +459,8 @@ def installation_idle(
                 else:
                     handle.seek(0)
                 caught_up = False
+                storage = ChunkDecoder()
+                storage_start = handle.tell()
                 offset = handle.tell()
                 try:
                     # Byte and time bounds keep one malformed row or a cold
@@ -347,6 +481,11 @@ def installation_idle(
                         event = json.loads(raw)
                         if not isinstance(event, dict):
                             raise ValueError("bus row is not an object")
+                        if not storage.pending:
+                            storage_start = offset
+                        event = storage.feed(event)
+                        if event is None:
+                            continue
                         session_id = event.get("session_id")
                         if event.get("schema") == CHANNEL_SESSION_SCHEMA:
                             channel = str(event.get("channel") or "")
@@ -402,9 +541,12 @@ def installation_idle(
                         elif session_id == live_app:
                             live_app = None
                 finally:
+                    if storage.pending:
+                        offset = storage_start
+                        caught_up = False
                     # Only complete, successfully handled rows advance offset.
                     # Save progress on budget expiry and retry malformed tails.
-                    snapshot = os.fstat(handle.fileno())
+                    snapshot = handle.metadata(refresh=True)
                     current_head, _ = fingerprint(stat.st_size)
                     if (
                         snapshot.st_size < stat.st_size
@@ -472,7 +614,7 @@ def installation_idle(
                 return False
             state = cursors if source == path else channel_cursors[source]
             try:
-                metadata = source.stat()
+                metadata = generation_metadata(source)
             except FileNotFoundError:
                 if source in observed_sources:
                     return False
@@ -486,7 +628,7 @@ def installation_idle(
                 or state.get("mtime_ns") != metadata.st_mtime_ns
             ):
                 return False
-    except OSError:
+    except (OSError, ValueError, KeyError, TypeError, IndexError):
         return False
     return time.monotonic() < scan_deadline
 
@@ -681,6 +823,70 @@ def slim(
     return payload
 
 
+class ChunkDecoder:
+    """Hash bounded transport records; guards need metadata, never document bytes."""
+    def __init__(self, assemble: bool = True) -> None:
+        self.assemble = assemble
+        self.pending = False
+        self.identity = ""
+        self.next = 0
+        self.parts = 0
+        self.length = 0
+        self.count = 0
+        self.header: dict[str, Any] = {}
+        self.hasher = hashlib.sha256()
+        self.payload = bytearray()
+
+    def feed(self, row: dict[str, Any]) -> dict[str, Any] | None:
+        if row.get("schema") != "codescribe.bus-chunk.v1":
+            if self.pending:
+                raise ValueError("interrupted storage record")
+            return row
+        part, parts, length = row.get("part"), row.get("parts"), row.get("length")
+        if any(type(v) is not int or v < 0 for v in (part, parts, length)):
+            raise ValueError("unknown storage record")
+        if not parts or parts != (length + 32767) // 32768:
+            raise ValueError("invalid storage length")
+        if self.assemble and length > 256 << 20:
+            raise ValueError("storage document exceeds reconstruction budget")
+        header = row.get("event")
+        if not isinstance(header, dict):
+            raise ValueError("missing storage metadata")
+        if not self.assemble and header.get("schema") != EVIDENCE_SCHEMA:
+            raise ValueError("guard refuses chunked non-evidence control record")
+        if part == 0:
+            if self.pending:
+                raise ValueError("overlapping storage records")
+            self.pending = True
+            self.identity = str(row.get("id"))
+            self.parts, self.length, self.next, self.count = parts, length, 0, 0
+            self.header = header
+            self.hasher = hashlib.sha256()
+            self.payload = bytearray()
+        if (row.get("id"), part, parts, length, header) != (
+            self.identity, self.next, self.parts, self.length, self.header
+        ):
+            raise ValueError("broken storage ordering")
+        block = base64.b64decode(row.get("payload", ""), validate=True)
+        if len(block) > 32768 or self.count + len(block) > length:
+            raise ValueError("oversized storage part")
+        self.hasher.update(block)
+        self.count += len(block)
+        self.next += 1
+        if self.assemble:
+            self.payload.extend(block)
+        if self.next != parts:
+            return None
+        if self.count != length or self.hasher.hexdigest() != self.identity:
+            raise ValueError("unverified storage payload")
+        result = json.loads(self.payload) if self.assemble else dict(self.header)
+        if self.assemble and any(result.get(k) != v for k, v in self.header.items()):
+            raise ValueError("changed storage metadata")
+        self.pending = False
+        self.payload.clear()
+        return result
+
+
 def parse_line(raw: str) -> dict[str, Any] | None:
     raw = raw.strip()
     if not raw:
@@ -695,9 +901,82 @@ def parse_line(raw: str) -> dict[str, Any] | None:
         CLEAN_SCHEMA,
         EVIDENCE_SCHEMA,
         CHANNEL_SESSION_SCHEMA,
+        "codescribe.bus-chunk.v1",
     ):
         return None
+    if "persistence_encoding" in event:
+        if (
+            event.get("schema") != EVIDENCE_SCHEMA
+            or evidence_revision_rows(event) is None
+        ):
+            return None
     return event
+
+
+def evidence_revision_rows(event: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """Expand persisted occurrence metadata without deriving text or authority."""
+    if "persistence_encoding" not in event:
+        return [event]
+    if event.get("persistence_encoding") != "shared-revision.v1":
+        return None
+    occurrences = event.get("occurrence_rows")
+    if not isinstance(occurrences, list):
+        return None
+    coordinates = (
+        "sequence",
+        "capture_epoch",
+        "sample_start",
+        "sample_end",
+        "document_index",
+    )
+    labels = ("emitted_at", "occurrence_session_id", "label")
+    allowed = {*coordinates, *labels, "acoustic_receipts"}
+    if not isinstance(event.get("rendered_text"), str):
+        return None
+    first = dict(event)
+    first.pop("persistence_encoding", None)
+    first.pop("occurrence_rows", None)
+    rows = [first]
+    for occurrence in occurrences:
+        if not isinstance(occurrence, dict) or set(occurrence) != allowed:
+            return None
+        if any(
+            type(occurrence.get(key)) is not int or occurrence[key] < 0
+            for key in coordinates
+        ):
+            return None
+        if any(not isinstance(occurrence.get(key), str) for key in labels):
+            return None
+        if not isinstance(occurrence.get("acoustic_receipts"), list):
+            return None
+        row = dict(first)
+        row.update(occurrence)
+        rows.append(row)
+    return rows
+
+
+def normalized_revision_events(
+    raw: str, normalizer: EvidenceNormalizer
+) -> list[dict[str, Any]]:
+    """One durable row may observe several original publication coordinates."""
+    parsed = parse_line(raw)
+    if parsed is None:
+        if normalizer.storage.pending or "persistence_encoding" in raw or "codescribe.bus-chunk" in raw:
+            raise ValueError("unverified storage encoding")
+        return []
+    parsed = normalizer.storage.feed(parsed)
+    if parsed is None:
+        return []
+    rows = evidence_revision_rows(parsed)
+    if rows is None:
+        raise ValueError("unverified revision encoding")
+    events: list[dict[str, Any]] = []
+    for row in rows:
+        event = normalizer.normalize(row)
+        events.extend(normalizer.pop_flushes())
+        if event is not None:
+            events.append(event)
+    return events
 
 
 def _identity(parts: tuple[Any, ...]) -> str:
@@ -778,6 +1057,7 @@ class EvidenceNormalizer:
     MAX_TRACKED_SESSIONS = 16
 
     def __init__(self) -> None:
+        self.storage = ChunkDecoder()
         self._terminal_seals: set[str] = set()
         # Sessions whose delivery is settled: a terminal seal was reported or
         # the refused flush already carried their words. A late row for such
@@ -1037,7 +1317,7 @@ def consider(
 def iter_new_lines(path: Path, offset: int) -> tuple[list[tuple[str, int]], int]:
     """Return complete UTF-8 lines paired with their exclusive byte cursors."""
     try:
-        size = path.stat().st_size
+        size = generation_metadata(path).st_size
     except FileNotFoundError:
         return [], offset
     if size < offset:
@@ -1046,7 +1326,7 @@ def iter_new_lines(path: Path, offset: int) -> tuple[list[tuple[str, int]], int]
         # provider lease, so resume at the new EOF and wait for fresh events.
         return [], size
     entries: list[tuple[str, int]] = []
-    with path.open("rb") as handle:
+    with GenerationFile(path) as handle:
         handle.seek(offset)
         while True:
             raw = handle.readline()
@@ -1054,7 +1334,9 @@ def iter_new_lines(path: Path, offset: int) -> tuple[list[tuple[str, int]], int]
                 break
             if not raw.endswith(b"\n"):
                 break
-            entries.append((raw.decode("utf-8", errors="replace"), handle.tell()))
+            entries.append((raw.decode("utf-8", errors="strict"), handle.tell()))
+            if handle.tell() - offset >= 64 << 20:
+                break
     return entries, entries[-1][1] if entries else offset
 
 
@@ -1133,12 +1415,16 @@ class BusEventTrigger:
 
 def replay(path: Path) -> Iterator[str]:
     try:
-        raw = path.read_text(encoding="utf-8", errors="replace")
+        with GenerationFile(path) as handle:
+            while True:
+                raw = handle.readline()
+                if not raw:
+                    return
+                if not raw.endswith(b"\n"):
+                    raise ValueError("incomplete or oversized journal row")
+                yield raw.decode("utf-8", errors="strict")
     except FileNotFoundError:
         return
-        yield from ()  # pragma: no cover - keeps the generator type
-    for line in raw.splitlines():
-        yield line
 
 
 def utc_now() -> str:
@@ -1338,7 +1624,7 @@ class SessionLease:
                 self.resumed = True
             elif follow_from_end:
                 try:
-                    self.cursor = bus.stat().st_size
+                    self.cursor = generation_metadata(bus).st_size
                 except FileNotFoundError:
                     self.cursor = 0
             self.persist(active=True)
@@ -1702,12 +1988,11 @@ def run(args: argparse.Namespace) -> int:
 
     def handle(raw: str, next_cursor: int | None = None) -> None:
         nonlocal name, hear_all
-        event = normalizer.normalize(parse_line(raw))
         # Coverage-refused flushes precede the row that triggered them: they
         # carry utterances older than the channel receipt on this line.
-        events = normalizer.pop_flushes()
-        if event is not None:
-            events.append(event)
+        events = normalized_revision_events(raw, normalizer)
+        if normalizer.storage.pending:
+            return
         payloads: list[dict[str, Any]] = []
         for event in events:
             payload = consider(
@@ -1751,10 +2036,7 @@ def run(args: argparse.Namespace) -> int:
             last = None
             recipients = registered_recipients(args.bridge_home, path)
             for raw in replay(path):
-                event = normalizer.normalize(parse_line(raw))
-                events = normalizer.pop_flushes()
-                if event is not None:
-                    events.append(event)
+                events = normalized_revision_events(raw, normalizer)
                 for event in events:
                     payload = consider(
                         event,
@@ -1766,6 +2048,8 @@ def run(args: argparse.Namespace) -> int:
                     )
                     if payload is not None:
                         last = payload
+            if normalizer.storage.pending:
+                raise ValueError("incomplete storage record")
             if last is None:
                 return 1
             if lease:
@@ -1779,7 +2063,7 @@ def run(args: argparse.Namespace) -> int:
             offset = lease.cursor
         elif args.follow and not args.from_start:
             try:
-                offset = path.stat().st_size
+                offset = generation_metadata(path).st_size
             except FileNotFoundError:
                 offset = 0
         else:
@@ -1825,9 +2109,11 @@ def run(args: argparse.Namespace) -> int:
             else:
                 waiting_for_ack = False
             if not args.follow:
+                if normalizer.storage.pending:
+                    raise ValueError("incomplete storage record")
                 return 0
             if lease and time.monotonic() - last_heartbeat >= 1.0:
-                lease.persist(active=True, cursor=offset)
+                lease.persist(active=True, cursor=lease.cursor if normalizer.storage.pending else offset)
                 last_heartbeat = time.monotonic()
             assert event_trigger is not None
             event_trigger.wait(timeout=1.0)

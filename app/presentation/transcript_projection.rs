@@ -143,6 +143,7 @@ impl TranscriptProjection {
 pub enum ProjectionReadError {
     InvalidUtf8(std::str::Utf8Error),
     InvalidJson(serde_json::Error),
+    InvalidStorage(std::io::Error),
 }
 
 impl fmt::Display for ProjectionReadError {
@@ -150,6 +151,9 @@ impl fmt::Display for ProjectionReadError {
         match self {
             Self::InvalidUtf8(error) => write!(formatter, "Bus row is not UTF-8: {error}"),
             Self::InvalidJson(error) => write!(formatter, "Bus row is not valid JSON: {error}"),
+            Self::InvalidStorage(error) => {
+                write!(formatter, "Bus storage is not verified: {error}")
+            }
         }
     }
 }
@@ -167,6 +171,7 @@ struct SessionProjectionState {
 /// Stateful JSONL decoder and deterministic projection reducer.
 #[derive(Debug, Default)]
 pub struct TranscriptProjectionReader {
+    storage: super::transcript_bus_maintenance::generation::Decoder,
     pending: Vec<u8>,
     current_session: Option<String>,
     last_ended_session: Option<String>,
@@ -179,10 +184,11 @@ impl TranscriptProjectionReader {
         Self::default()
     }
 
-    /// Rotation or truncation starts a new authority domain. No session-local
-    /// ordering or deduplication state crosses that boundary.
+    /// An unlinked replacement or truncation starts a new authority domain.
+    /// Verified daily storage rollover retains ordering and deduplication.
     pub fn reset_authority(&mut self) {
         self.pending.clear();
+        self.storage = Default::default();
         self.current_session = None;
         self.last_ended_session = None;
         self.retired_sessions.clear();
@@ -204,9 +210,8 @@ impl TranscriptProjectionReader {
                 continue;
             }
             match std::str::from_utf8(line) {
-                Ok(line) => match self.push_line(line) {
-                    Ok(Some(projection)) => output.push(Ok(projection)),
-                    Ok(None) => {}
+                Ok(line) => match self.push_line_all(line) {
+                    Ok(projections) => output.extend(projections.into_iter().map(Ok)),
                     Err(error) => output.push(Err(error)),
                 },
                 Err(error) => output.push(Err(ProjectionReadError::InvalidUtf8(error))),
@@ -219,22 +224,39 @@ impl TranscriptProjectionReader {
         &mut self,
         line: &str,
     ) -> Result<Option<TranscriptProjection>, ProjectionReadError> {
+        Ok(self.push_line_all(line)?.pop())
+    }
+
+    fn push_line_all(
+        &mut self,
+        line: &str,
+    ) -> Result<Vec<TranscriptProjection>, ProjectionReadError> {
         let value: serde_json::Value =
             serde_json::from_str(line).map_err(ProjectionReadError::InvalidJson)?;
-        let schema = value
-            .get("schema")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default();
-        let row = match schema {
-            LIFECYCLE_SCHEMA => TranscriptBusRow::Lifecycle(
-                serde_json::from_value(value).map_err(ProjectionReadError::InvalidJson)?,
-            ),
-            EVIDENCE_SCHEMA => TranscriptBusRow::Evidence(
-                serde_json::from_value(value).map_err(ProjectionReadError::InvalidJson)?,
-            ),
-            _ => return Ok(None),
-        };
-        Ok(self.project(row))
+        let values = self
+            .storage
+            .push(value)
+            .map_err(ProjectionReadError::InvalidStorage)?;
+        let mut projections = Vec::new();
+        for document in values {
+            for value in super::transcript_bus_maintenance::generation::rows(document)
+                .map_err(ProjectionReadError::InvalidStorage)?
+            {
+                let row = match value["schema"].as_str().unwrap_or_default() {
+                    LIFECYCLE_SCHEMA => TranscriptBusRow::Lifecycle(
+                        serde_json::from_value(value).map_err(ProjectionReadError::InvalidJson)?,
+                    ),
+                    EVIDENCE_SCHEMA => TranscriptBusRow::Evidence(
+                        serde_json::from_value(value).map_err(ProjectionReadError::InvalidJson)?,
+                    ),
+                    _ => continue,
+                };
+                if let Some(projection) = self.project(row) {
+                    projections.push(projection);
+                }
+            }
+        }
+        Ok(projections)
     }
 
     pub fn project(&mut self, row: TranscriptBusRow) -> Option<TranscriptProjection> {

@@ -35,6 +35,10 @@ pub mod os;
 #[cfg(test)]
 pub(crate) mod test_env;
 
+#[cfg(all(test, target_os = "macos"))]
+#[path = "../tests/support/durable_bus_oracle.rs"]
+pub(crate) mod durable_bus_oracle;
+
 /// Recording lifecycle owner: start/stop paths, final pass, delivery.
 #[cfg(target_os = "macos")]
 pub mod controller;

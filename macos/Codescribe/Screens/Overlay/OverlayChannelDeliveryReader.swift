@@ -1,21 +1,11 @@
+import CryptoKit
 import Foundation
 import OSLog
 
-/// File I/O stays off the main actor. Tails complete JSONL rows, including after
-/// rotation/truncation; partial writes wait for the following refresh.
-///
-/// The shared bus grows without bound (the Founder's bus passed 21 GB, and reading
-/// it from byte zero once took 3m40s at a 63.7 GB memory peak). A cold reader
-/// therefore never starts at byte zero: the first read of a bus begins
-/// `Self.tailWindow` before EOF and drops the row the window cut in half.
-/// Projection semantics are unchanged — the latest channel session, seal and ack
-/// rows live in the tail, and an orphan or seal older than the window is
-/// invisible, the same contract the Rust readers already use
-/// (`ORPHAN_SCAN_WINDOW_BYTES` in app/controller/agent_channel.rs, the fold
-/// budget in app/presentation/agent_ack.rs). A durable cursor
-/// (`OverlayDeliveryCursorStore`) carries the position across restarts: a valid
-/// cursor resumes where the previous generation stopped, while a rotated,
-/// truncated or stale bus resets to the tail window — never to zero.
+/// File I/O stays off the main actor. Verified generations form one logical
+/// byte stream; storage rollover retains observation state and cursor identity.
+/// A cold monitor starts at the newest tail window of that whole stream.
+/// Inventory metadata is checked without reading historical segment bytes.
 actor OverlayChannelDeliveryReader {
   /// Bytes of bus history a cold or reset reader parses: the tail window.
   static let tailWindow: UInt64 = 64 << 20
@@ -39,6 +29,8 @@ actor OverlayChannelDeliveryReader {
     var dropsCutRow = false
     var partial = Data()
     var projection = OverlayChannelDelivery.Bus()
+    var storage = StorageDecoder()
+    var storageStart: UInt64?
   }
 
   init(root: URL) { self.root = root }
@@ -111,37 +103,48 @@ actor OverlayChannelDeliveryReader {
   }
 
   private func refresh(_ url: URL) throws {
-    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-    let inode = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0
-    let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
-    var cursor = buses[url] ?? persistedCursor(for: url) ?? Cursor()
-    let file = try FileHandle(forReadingFrom: url)
-    defer { try? file.close() }
+    let file = try GenerationStream(url)
+    let inode = file.inode
+    let size = file.size
+    // Explicit branches stay on this actor. Nil-coalescing would capture the
+    // non-Sendable stream in an autoclosure.
+    var cursor: Cursor
+    if let stored = buses[url] {
+      cursor = stored
+    } else if file.linked {
+      cursor = Cursor()
+    } else if let persisted = persistedCursor(for: url) {
+      cursor = persisted
+    } else {
+      cursor = Cursor()
+    }
     if cursor.offset > 0 {
-      let stale = size >= cursor.offset && size - cursor.offset > Self.tailWindow
-      let headHash = try OverlayDeliveryCursorStore.headHash(of: file)
+      let stale = !file.linked && size >= cursor.offset && size - cursor.offset > Self.tailWindow
+      let headHash = try file.headHash()
       if cursor.inode != inode || size < cursor.offset || stale || headHash != cursor.headHash {
-        // Rotated, truncated, or left behind by more than the window: replaying
-        // history is exactly the cost this reader exists to avoid, so reset to
-        // the tail window of the current file with a fresh projection.
+        // Unlinked rotation, truncation, or a gap larger than the window resets
+        // to a fresh tail. A linked cursor keeps its logical offset: the stream
+        // inode does not change when the hot file rolls over.
         cursor = Cursor()
       }
     }
     if cursor.headHash.isEmpty {
-      let start = size > Self.tailWindow ? size - Self.tailWindow : 0
+      let start = file.coldStart
       cursor.inode = inode
-      cursor.headHash = try OverlayDeliveryCursorStore.headHash(of: file)
+      cursor.headHash = try file.headHash()
       cursor.offset = start
       if start > 0 {
         // Skip only the row the window cut in half: when the byte before the
         // window is a newline, the window begins exactly on a row boundary.
         try file.seek(toOffset: start - 1)
-        cursor.dropsCutRow = try file.read(upToCount: 1)?.first != 10
+        cursor.dropsCutRow = try file.read(1)?.first != 10
       }
     }
     try file.seek(toOffset: cursor.offset)
-    while let chunk = try file.read(upToCount: Self.chunkSize), !chunk.isEmpty {
-      autoreleasepool {
+    var passBytes: UInt64 = 0
+    while passBytes < Self.tailWindow, let chunk = try file.read(Self.chunkSize), !chunk.isEmpty {
+      passBytes += UInt64(chunk.count)
+      try autoreleasepool {
         cursor.offset += UInt64(chunk.count)
         consumedBytes += UInt64(chunk.count)
         cursor.partial.append(chunk)
@@ -157,11 +160,17 @@ actor OverlayChannelDeliveryReader {
           }
           if line.isEmpty { continue }
           if let row = try? JSONSerialization.jsonObject(with: line) as? [String: Any] {
-            cursor.projection.consume(row)
+            if !cursor.storage.incomplete {
+              cursor.storageStart =
+                cursor.offset - UInt64(cursor.partial.count) + UInt64(start - line.count - 1)
+            }
+            for document in try cursor.storage.consume(row) {
+              try consumeDocument(document, cursor: &cursor)
+            }
+            if !cursor.storage.incomplete { cursor.storageStart = nil }
           } else {
-            // One corrupt row is skipped with a log and the cursor advances
-            // past it; it can never fail or rewind the read. Only corrupted
-            // bindings/lease files throw, in read().
+            // Ordinary malformed rows retain the existing skip policy.
+            // Broken storage transactions throw before advancing durable marks.
             Self.logger.debug(
               "overlay bus \(url.lastPathComponent, privacy: .public): skipped an unparseable \(line.count)-byte row"
             )
@@ -185,11 +194,247 @@ actor OverlayChannelDeliveryReader {
     // The durable offset points past the last consumed newline; an unfinished
     // trailing row is re-read by the next generation once it completes.
     let mark = OverlayDeliveryCursorMark(
-      offset: cursor.offset - UInt64(cursor.partial.count),
+      offset: cursor.storageStart ?? (cursor.offset - UInt64(cursor.partial.count)),
       inode: cursor.inode, length: size, headHash: cursor.headHash)
     guard marks[url.path] != mark else { return }
     marks[url.path] = mark
     try OverlayDeliveryCursorStore.save(root: root, marks: marks)
     persisted = marks
   }
+
+  /// Expand every persisted occurrence before the existing UI projection acts.
+  private func consumeDocument(_ value: [String: Any], cursor: inout Cursor) throws {
+    var common = value
+    guard let encoding = common.removeValue(forKey: "persistence_encoding") else {
+      cursor.projection.consume(common)
+      return
+    }
+    let keys: Set<String> = [
+      "sequence", "emitted_at", "occurrence_session_id", "capture_epoch",
+      "sample_start", "sample_end", "document_index", "label", "acoustic_receipts",
+    ]
+    guard encoding as? String == "shared-revision.v1",
+      common["schema"] as? String == "codescribe.transcript-evidence.v1",
+      let occurrences = common.removeValue(forKey: "occurrence_rows") as? [[String: Any]],
+      occurrences.allSatisfy({ Set($0.keys) == keys && $0["acoustic_receipts"] is [[String: Any]] })
+    else { throw CocoaError(.fileReadCorruptFile) }
+    // Validate the inventory before publishing even its first occurrence.
+    for occurrence in occurrences {
+      guard
+        ["emitted_at", "occurrence_session_id", "label"].allSatisfy({ occurrence[$0] is String }),
+        ["sequence", "capture_epoch", "sample_start", "sample_end", "document_index"].allSatisfy({
+          occurrence[$0] is NSNumber
+        })
+      else { throw CocoaError(.fileReadCorruptFile) }
+    }
+    cursor.projection.consume(common)
+    for occurrence in occurrences {
+      cursor.projection.consume(common.merging(occurrence) { _, receipt in receipt })
+    }
+  }
+
+  private struct StorageDecoder {
+    var payload = Data()
+    var id = ""
+    var part = 0
+    var parts = 0
+    var length = 0
+    var header: [String: Any] = [:]
+    var incomplete: Bool { parts != 0 }
+
+    mutating func consume(_ row: [String: Any]) throws -> [[String: Any]] {
+      guard row["schema"] as? String == "codescribe.bus-chunk.v1" else {
+        guard !incomplete else { throw CocoaError(.fileReadCorruptFile) }
+        return [row]
+      }
+      guard let next = row["part"] as? Int, let count = row["parts"] as? Int,
+        let bytes = row["length"] as? Int, bytes > 0, bytes <= 256 << 20,
+        count == (bytes + 32767) / 32768, next >= 0, next < count,
+        let identity = row["id"] as? String, let metadata = row["event"] as? [String: Any],
+        let encoded = row["payload"] as? String, let block = Data(base64Encoded: encoded),
+        block.count <= 32768
+      else { throw CocoaError(.fileReadCorruptFile) }
+      if next == 0 {
+        guard !incomplete else { throw CocoaError(.fileReadCorruptFile) }
+        id = identity
+        part = 0
+        parts = count
+        length = bytes
+        header = metadata
+        payload = Data()
+      }
+      guard identity == id, next == part, count == parts, bytes == length,
+        NSDictionary(dictionary: metadata).isEqual(to: header), payload.count + block.count <= bytes
+      else { throw CocoaError(.fileReadCorruptFile) }
+      payload.append(block)
+      part += 1
+      guard part == parts else { return [] }
+      let digest = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+      guard payload.count == length, digest == id,
+        let document = try JSONSerialization.jsonObject(with: payload) as? [String: Any],
+        header.allSatisfy({ key, value in
+          let actual = document[key] ?? NSNull()
+          return NSDictionary(dictionary: [key: actual]).isEqual(to: [key: value])
+        })
+      else { throw CocoaError(.fileReadCorruptFile) }
+      self = StorageDecoder()
+      return [document]
+    }
+  }
+
+  /// The maintenance owner's transaction is the sole storage linkage. Logical
+  /// offsets survive daily inode switches; unknown linkage throws before use.
+  private final class GenerationStream {
+    struct Segment {
+      let url: URL
+      let start: UInt64
+      let length: UInt64
+      let inode: UInt64
+      let dev: UInt64
+      let day: String?
+    }
+    let segments: [Segment]
+    let inode: UInt64
+    let size: UInt64
+    let linked: Bool
+    let coldStart: UInt64
+    var offset: UInt64 = 0
+
+    init(_ root: URL) throws {
+      func metadata(_ url: URL) throws -> (UInt64, UInt64, UInt64) {
+        let a = try FileManager.default.attributesOfItem(atPath: url.path)
+        guard let ino = a[.systemFileNumber] as? NSNumber, let dev = a[.systemNumber] as? NSNumber,
+          let length = a[.size] as? NSNumber, a[.type] as? FileAttributeType == .typeRegular
+        else { throw CocoaError(.fileReadCorruptFile) }
+        return (ino.uint64Value, dev.uint64Value, length.uint64Value)
+      }
+      let current = try metadata(root)
+      let receipt = URL(fileURLWithPath: root.path + ".generations.json")
+      if !FileManager.default.fileExists(atPath: receipt.path) {
+        segments = [
+          Segment(
+            url: root, start: 0, length: current.2, inode: current.0, dev: current.1, day: nil)
+        ]
+        inode = current.0
+        size = current.2
+        linked = false
+        coldStart =
+          current.2 > OverlayChannelDeliveryReader.tailWindow
+          ? current.2 - OverlayChannelDeliveryReader.tailWindow : 0
+        return
+      }
+      let handle = try FileHandle(forReadingFrom: receipt)
+      defer { try? handle.close() }
+      let bytes = try handle.read(upToCount: (4 << 20) + 1) ?? Data()
+      guard bytes.count <= 4 << 20,
+        let manifest = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+        Set(manifest.keys)
+          == Set([
+            "schema", "root", "stream_id", "stream_inode", "stream_dev", "stream_birthtime",
+            "segments", "active", "pending",
+          ]),
+        manifest["schema"] as? String == "codescribe.bus-generations.v1",
+        manifest["root"] as? String == root.path,
+        let stream = manifest["stream_inode"] as? NSNumber,
+        var active = manifest["active"] as? [String: Any],
+        var closed = manifest["segments"] as? [[String: Any]]
+      else { throw CocoaError(.fileReadCorruptFile) }
+      guard manifest["pending"] is NSNull || manifest["pending"] is [String: Any] else {
+        throw CocoaError(.fileReadCorruptFile)
+      }
+      if let pending = manifest["pending"] as? [String: Any] {
+        guard Set(pending.keys) == Set(["closed", "next"]),
+          let next = pending["next"] as? [String: Any],
+          let old = pending["closed"] as? [String: Any]
+        else { throw CocoaError(.fileReadCorruptFile) }
+        if (next["ino"] as? NSNumber)?.uint64Value == current.0
+          && (next["dev"] as? NSNumber)?.uint64Value == current.1
+        {
+          closed.append(old)
+          active = next
+        } else if (active["ino"] as? NSNumber)?.uint64Value != current.0
+          || (active["dev"] as? NSNumber)?.uint64Value != current.1
+        {
+          throw CocoaError(.fileReadCorruptFile)
+        }
+      }
+      let events = root.deletingLastPathComponent().appendingPathComponent("events").path + "/"
+      var expected: UInt64 = 0
+      var inventory: [Segment] = []
+      for entry in closed {
+        guard
+          Set(entry.keys)
+            == Set([
+              "id", "path", "start", "length", "dev", "ino", "day", "compressed", "sha256",
+              "superseded",
+            ]),
+          let path = entry["path"] as? String, path.hasPrefix(events),
+          URL(fileURLWithPath: path).standardizedFileURL.path == path,
+          let start = entry["start"] as? NSNumber, let length = entry["length"] as? NSNumber,
+          let ino = entry["ino"] as? NSNumber, let dev = entry["dev"] as? NSNumber,
+          start.uint64Value == expected
+        else { throw CocoaError(.fileReadCorruptFile) }
+        let url = URL(fileURLWithPath: path)
+        let actual = try metadata(url)
+        guard actual.0 == ino.uint64Value, actual.1 == dev.uint64Value,
+          actual.2 == length.uint64Value,
+          expected <= UInt64.max - actual.2
+        else { throw CocoaError(.fileReadCorruptFile) }
+        inventory.append(
+          Segment(
+            url: url, start: expected, length: actual.2, inode: actual.0, dev: actual.1,
+            day: entry["day"] as? String))
+        expected += actual.2
+      }
+      guard (active["start"] as? NSNumber)?.uint64Value == expected,
+        (active["ino"] as? NSNumber)?.uint64Value == current.0,
+        (active["dev"] as? NSNumber)?.uint64Value == current.1, expected <= UInt64.max - current.2
+      else { throw CocoaError(.fileReadCorruptFile) }
+      inventory.append(
+        Segment(
+          url: root, start: expected, length: current.2, inode: current.0, dev: current.1,
+          day: active["day"] as? String))
+      segments = inventory
+      inode = stream.uint64Value
+      size = expected + current.2
+      linked = true
+      // Cold observation is the newest tail of the whole logical stream, for
+      // dated chains and an undated prefix alike. Inventory metadata above is
+      // the check; historical segment bytes stay unread.
+      coldStart =
+        size > OverlayChannelDeliveryReader.tailWindow
+        ? size - OverlayChannelDeliveryReader.tailWindow : 0
+    }
+
+    func seek(toOffset position: UInt64) throws { offset = position }
+    func read(_ count: Int) throws -> Data? {
+      guard offset < size else { return nil }
+      var out = Data()
+      for segment in segments
+      where offset >= segment.start && offset < segment.start + segment.length {
+        let file = try FileHandle(forReadingFrom: segment.url)
+        defer { try? file.close() }
+        let attributes = try FileManager.default.attributesOfItem(atPath: segment.url.path)
+        guard (attributes[.systemFileNumber] as? NSNumber)?.uint64Value == segment.inode,
+          (attributes[.systemNumber] as? NSNumber)?.uint64Value == segment.dev,
+          ((attributes[.size] as? NSNumber)?.uint64Value ?? 0) >= segment.length
+        else { throw CocoaError(.fileReadCorruptFile) }
+        try file.seek(toOffset: offset - segment.start)
+        let width = min(count - out.count, Int(segment.start + segment.length - offset))
+        let block = try file.read(upToCount: width) ?? Data()
+        guard !block.isEmpty else { throw CocoaError(.fileReadCorruptFile) }
+        offset += UInt64(block.count)
+        out.append(block)
+        if out.count == count { break }
+      }
+      return out
+    }
+    func headHash() throws -> String {
+      guard let first = segments.first(where: { $0.length > 0 }) else { return "" }
+      let file = try FileHandle(forReadingFrom: first.url)
+      defer { try? file.close() }
+      return try OverlayDeliveryCursorStore.headHash(of: file)
+    }
+  }
+
 }

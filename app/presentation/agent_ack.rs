@@ -209,9 +209,7 @@ pub(crate) fn append_json_line(bus: &Path, value: &Value) -> io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let file = shared_bus_file(bus)?;
-    let mut guard = file.lock().unwrap_or_else(|error| error.into_inner());
-    guard.write_all(&encoded)?;
-    guard.flush()
+    super::transcript_bus_maintenance::generation::append(bus, &file, &encoded)
 }
 
 /// One channel-session lifecycle receipt, before serialization.
@@ -552,14 +550,17 @@ fn fold_bus_delta_budgeted(
     budget: u64,
     mut on_line: impl FnMut(&AckScanRow),
 ) -> io::Result<()> {
-    let mut file = match fs::File::open(path) {
+    let mut file = match super::transcript_bus_maintenance::generation::Reader::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
     };
-    let metadata = file.metadata()?;
-    let len = metadata.len();
-    let ino = file_ino(&metadata);
+    let len = file.len();
+    let ino = if file.manifest.is_some() {
+        file.identity().1
+    } else {
+        file_ino(&fs::metadata(path)?)
+    };
     if mark.offset > 0 {
         let rotated = len < mark.offset || ino != mark.ino || {
             let mut head = vec![0_u8; mark.head_len as usize];
@@ -580,6 +581,8 @@ fn fold_bus_delta_budgeted(
     let mut chunk = vec![0_u8; FOLD_CHUNK];
     let mut carry: Vec<u8> = Vec::new();
     let mut consumed: u64 = 0;
+    let mut committed: u64 = 0;
+    let mut storage = super::transcript_bus_maintenance::generation::Decoder::default();
     // Bytes of the current oversize row already dropped from `carry`. The
     // offset advances past them only once the row's newline lands, so a row
     // still being appended is never split.
@@ -614,12 +617,32 @@ fn fold_bus_delta_budgeted(
                 let line = &carry[..newline];
                 if let Ok(line) = std::str::from_utf8(line) {
                     let line = line.trim();
-                    // Every row the scan can act on names a delivery_id or is
-                    // an agent_reply. Our bus writers (serde_json, python
-                    // json.dumps) emit these keys as literal ASCII, so the
-                    // substring test is a sound prefilter and most transcript
-                    // rows skip deserialization entirely.
-                    if !line.is_empty()
+                    if line.contains("codescribe.bus-chunk.v1")
+                        || line.contains("persistence_encoding")
+                        || storage.incomplete()
+                    {
+                        let value: Value = serde_json::from_str(line).map_err(io::Error::other)?;
+                        for document in storage.push(value)? {
+                            for value in
+                                super::transcript_bus_maintenance::generation::rows(document)?
+                            {
+                                // Metadata borrows the expanded observation; never
+                                // serialize its full document again for ACK folding.
+                                let text = |key: &str| {
+                                    value.get(key).and_then(Value::as_str).map(Cow::Borrowed)
+                                };
+                                let row = AckScanRow {
+                                    kind: text("kind"),
+                                    status: text("status"),
+                                    delivery_id: text("delivery_id"),
+                                    spoken: value.get("spoken").and_then(Value::as_bool),
+                                    reply_id: text("reply_id"),
+                                    emitted_at: text("emitted_at"),
+                                };
+                                on_line(&row);
+                            }
+                        }
+                    } else if !line.is_empty()
                         && (line.contains("\"delivery_id\"") || line.contains("\"agent_reply\""))
                         && let Ok(row) = serde_json::from_str::<AckScanRow>(line)
                     {
@@ -630,14 +653,17 @@ fn fold_bus_delta_budgeted(
             carry.drain(..=newline);
             consumed += oversize_dropped + newline as u64 + 1;
             oversize_dropped = 0;
+            if !storage.incomplete() {
+                committed = consumed;
+            }
             // Budget bounds one pass, never a single line: with at least one
             // line consumed the mark advances and the next pass continues.
-            if consumed >= budget {
+            if consumed >= budget && !storage.incomplete() {
                 break 'passes;
             }
         }
     }
-    mark.offset += consumed;
+    mark.offset += committed;
     Ok(())
 }
 
@@ -820,8 +846,7 @@ mod tests {
     }
 
     fn ack_rows(bus: &Path) -> Vec<Value> {
-        fs::read_to_string(bus)
-            .unwrap_or_default()
+        crate::durable_bus_oracle::logical_text(bus)
             .lines()
             .filter_map(|line| serde_json::from_str(line).ok())
             .filter(|value: &Value| value.get("kind").and_then(Value::as_str) == Some("agent_ack"))
@@ -861,7 +886,7 @@ mod tests {
         let restarted = scan(&bridge, &other).unwrap();
         assert_eq!(restarted.appended, 0, "{restarted:?}");
 
-        let text = fs::read_to_string(&bus).unwrap();
+        let text = crate::durable_bus_oracle::logical_text(&bus);
         assert!(
             text.starts_with(&kept),
             "existing bus rows must stay put:\n{text}"
@@ -1076,10 +1101,17 @@ mod tests {
             second_line.len(),
             "witness must keep the byte length"
         );
-        let mut bytes = fs::read(&bus).unwrap();
+        // The already-consumed prefix is now the preserved undated generation.
+        // Mutate that same physical inode, not the new hot suffix.
+        let manifest: Value = serde_json::from_slice(
+            &fs::read(format!("{}.generations.json", bus.display())).unwrap(),
+        )
+        .unwrap();
+        let consumed = PathBuf::from(manifest["segments"][0]["path"].as_str().unwrap());
+        let mut bytes = fs::read(&consumed).unwrap();
         let start = first_line.len();
         bytes[start..start + hidden.len()].copy_from_slice(hidden.as_bytes());
-        fs::write(&bus, &bytes).unwrap();
+        fs::write(&consumed, &bytes).unwrap();
         marker_for(&bridge, HIDDEN_ID);
         assert_eq!(
             scan(&bridge, &bus).unwrap().appended,
