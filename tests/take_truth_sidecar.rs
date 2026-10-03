@@ -52,7 +52,7 @@ fn april_sidecar_roundtrips_through_core_contract() {
     assert_eq!(truth.mode, "raw");
     assert_eq!(truth.fallback_class, None);
     assert!(!truth.fallback_used);
-    assert!((truth.vad_speech_pct - 61.714287_f32).abs() < 1e-6);
+    assert!((truth.vad_speech_pct.expect("measured VAD") - 61.714287_f32).abs() < 1e-6);
     assert_eq!(truth.no_speech_reason, None);
     assert!((truth.avg_logprob.expect("avg_logprob") - (-0.26560482_f32)).abs() < 1e-6);
     assert!(truth.confidence_flags.is_empty());
@@ -83,4 +83,100 @@ fn april_sidecar_roundtrips_through_core_contract() {
     assert!(!rewritten.contains_key("text"));
     assert!(!rewritten.contains_key("schema_version"));
     assert_eq!(rewritten.len(), 12, "v1 shape survives the disk round-trip");
+}
+
+#[test]
+fn parallel_truth_producers_publish_complete_cards_without_shared_stage_loss() {
+    let directory = tempfile::tempdir().unwrap();
+    let audio = directory.path().join("same-take.wav");
+    std::fs::write(&audio, b"audio remains unchanged").unwrap();
+    let card: codescribe_core::pipeline::take_truth::TakeTruth =
+        serde_json::from_str(include_str!("fixtures/truth_sidecar_20260421.json")).unwrap();
+    let start = std::sync::Arc::new(std::sync::Barrier::new(8));
+    let handles: Vec<_> = (0..8)
+        .map(|i| {
+            let path = audio.clone();
+            let mut truth = card.clone();
+            let barrier = start.clone();
+            truth.engine = format!("synthetic-producer-{i}");
+            std::thread::spawn(move || {
+                barrier.wait();
+                (0..32)
+                    .map(|_| {
+                        codescribe_core::pipeline::take_truth::write_truth_sidecar(&path, &truth)
+                            .map_err(|e| e.to_string())
+                    })
+                    .collect::<Vec<_>>()
+            })
+        })
+        .collect();
+    let errors: Vec<_> = handles
+        .into_iter()
+        .flat_map(|h| h.join().unwrap())
+        .filter_map(Result::err)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "observer producers lost completed writes: {errors:?}"
+    );
+    let final_card = codescribe_core::pipeline::take_truth::read_truth_sidecar(&audio).unwrap();
+    assert!(final_card.engine.starts_with("synthetic-producer-"));
+    assert_eq!(std::fs::read(&audio).unwrap(), b"audio remains unchanged");
+    assert_eq!(
+        std::fs::read_dir(directory.path()).unwrap().count(),
+        2,
+        "no owned temporary files remain"
+    );
+}
+
+#[test]
+fn unbound_file_analysis_cannot_erase_capture_bound_live_card() {
+    let dir = tempfile::tempdir().unwrap();
+    let audio = dir.path().join("capture-owner.wav");
+    std::fs::write(&audio, b"full retained audio").unwrap();
+    let mut bound: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/truth_sidecar_20260421.json")).unwrap();
+    bound["schema_version"] = serde_json::json!(2);
+    bound["source"] = serde_json::json!("live_ledger");
+    bound["session_id"] = serde_json::json!("capture-owner");
+    bound["capture_epoch"] = serde_json::json!(7);
+    bound["ledger"] =
+        serde_json::json!({"occurrences":1,"sealed":false,"refusals":["terminal_receipt_missing"]});
+    let bytes = serde_json::to_vec_pretty(&bound).unwrap();
+    let sidecar = codescribe_core::pipeline::take_truth::truth_sidecar_path(&audio);
+    std::fs::write(&sidecar, &bytes).unwrap();
+    let unbound: codescribe_core::pipeline::take_truth::TakeTruth =
+        serde_json::from_str(include_str!("fixtures/truth_sidecar_20260421.json")).unwrap();
+    let result = codescribe_core::pipeline::take_truth::write_truth_sidecar(&audio, &unbound);
+    assert!(
+        result.is_err(),
+        "unbound file analysis must not claim canonical live replacement"
+    );
+    assert_eq!(
+        std::fs::read(sidecar).unwrap(),
+        bytes,
+        "all existing live evidence survives"
+    );
+    assert_eq!(std::fs::read(audio).unwrap(), b"full retained audio");
+}
+
+#[test]
+#[cfg(unix)]
+fn private_truth_stage_symlink_cannot_overwrite_unrelated_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let audio = dir.path().join("capture-owner.wav");
+    std::fs::write(&audio, b"full retained audio").unwrap();
+    let unrelated = dir.path().join("other-owned-file");
+    std::fs::write(&unrelated, b"unrelated bytes").unwrap();
+    let old_stage = dir.path().join(".capture-owner.wav.truth.json.tmp");
+    std::os::unix::fs::symlink(&unrelated, &old_stage).unwrap();
+    let truth: codescribe_core::pipeline::take_truth::TakeTruth =
+        serde_json::from_str(include_str!("fixtures/truth_sidecar_20260421.json")).unwrap();
+    let _ = codescribe_core::pipeline::take_truth::write_truth_sidecar(&audio, &truth);
+    assert_eq!(
+        std::fs::read(&unrelated).unwrap(),
+        b"unrelated bytes",
+        "observer must never follow another writer's stage"
+    );
+    assert_eq!(std::fs::read(audio).unwrap(), b"full retained audio");
 }

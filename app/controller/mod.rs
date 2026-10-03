@@ -321,16 +321,62 @@ fn finish_audio_capture(id: Option<&str>) {
     }
 }
 
+/// Copy this take's ledger before the recorder slot can move on.
+///
+/// The handle belongs to the recorder that just stopped. A missing handle, a
+/// zero epoch, or a session that disagrees with the retention id is reported
+/// as unavailable evidence. Nothing here mints a receipt.
+fn freeze_take_observer(
+    recorder: &StreamingRecorder,
+    retention_id: Option<&str>,
+) -> codescribe_core::pipeline::take_truth::TakeTruth {
+    use codescribe_core::pipeline::take_truth::TakeTruth;
+    let (recorder_session, raw_epoch) = recorder.capture_identity();
+    let epoch = (raw_epoch != 0).then_some(raw_epoch);
+    let session_id = match (recorder_session, retention_id) {
+        (Some(session), None) => Some(session.to_string()),
+        (Some(session), Some(_)) if retainable_session_id(retention_id) == Some(session) => {
+            Some(session.to_string())
+        }
+        (Some(session), Some(retention_id)) => {
+            warn!(
+                recorder_session = session,
+                retention_id,
+                "take observer session disagreed with retention id; evidence unavailable"
+            );
+            return TakeTruth::unavailable_evidence(None, None);
+        }
+        (None, _) => None,
+    };
+    let Some(handle) = recorder.acoustic_ledger_handle() else {
+        warn!(
+            session_id = session_id.as_deref().unwrap_or(""),
+            epoch = epoch.unwrap_or(0),
+            "take observer ledger handle missing; evidence unavailable"
+        );
+        return TakeTruth::unavailable_evidence(session_id, epoch);
+    };
+    let Some(session_id) = session_id else {
+        return TakeTruth::unavailable_evidence(None, epoch);
+    };
+    let Some(epoch) = epoch else {
+        return TakeTruth::unavailable_evidence(Some(session_id), None);
+    };
+    let ledger = handle.lock().unwrap_or_else(|error| error.into_inner());
+    TakeTruth::observe_ledger(&ledger, &session_id, epoch)
+}
+
 /// Keep full audio independently of transcript outcome on a blocking worker.
 async fn retain_session_audio(
     session_id: Option<&str>,
     path: &std::path::Path,
     transcript: codescribe_core::state::SessionTranscriptArchive<'_>,
+    observer: &codescribe_core::pipeline::take_truth::TakeTruth,
 ) {
     let lease = retainable_session_id(session_id).and_then(|id| {
         codescribe_core::state::history::audio_retention::capture(&Config::config_dir(), id)
     });
-    retain_session_audio_with_lease(session_id, path, transcript, lease).await;
+    retain_session_audio_with_lease(session_id, path, transcript, lease, observer).await;
 }
 
 async fn retain_session_audio_with_lease(
@@ -338,10 +384,12 @@ async fn retain_session_audio_with_lease(
     path: &std::path::Path,
     transcript: codescribe_core::state::SessionTranscriptArchive<'_>,
     lease: Option<Arc<codescribe_core::state::history::audio_retention::CaptureLease>>,
+    observer: &codescribe_core::pipeline::take_truth::TakeTruth,
 ) {
     use codescribe_core::state::SessionTranscriptArchive;
     let session_id = session_id.map(str::to_owned);
     let path = path.to_path_buf();
+    let observer = observer.clone();
     let (text, unavailable) = match transcript {
         SessionTranscriptArchive::Committed(text) => (Some(text.to_string()), false),
         SessionTranscriptArchive::NoSpeech => (None, false),
@@ -355,7 +403,13 @@ async fn retain_session_audio_with_lease(
         } else {
             SessionTranscriptArchive::NoSpeech
         };
-        retain_owned_session_audio(session_id.as_deref(), &path, transcript, lease.as_deref())
+        retain_owned_session_audio(
+            session_id.as_deref(),
+            &path,
+            transcript,
+            &observer,
+            lease.as_deref(),
+        )
     })
     .await;
     match result {
@@ -369,14 +423,33 @@ fn retain_owned_session_audio(
     session_id: Option<&str>,
     path: &std::path::Path,
     transcript: codescribe_core::state::SessionTranscriptArchive<'_>,
+    observer: &codescribe_core::pipeline::take_truth::TakeTruth,
     lease: Option<&codescribe_core::state::history::audio_retention::CaptureLease>,
 ) -> Result<()> {
     let root = Config::config_dir();
     let mut daily_audio = None;
-    let result = retain_session_audio_at(session_id, path, transcript, &root, |source, text| {
-        daily_audio = codescribe_core::state::archive_session_take_from_file(source, text);
-        daily_audio.clone()
-    });
+    let mut daily_card = None;
+    let mut stable_card = None;
+    let result = retain_session_audio_at(
+        session_id,
+        path,
+        transcript,
+        observer,
+        &root,
+        &mut stable_card,
+        |source, text| match codescribe_core::state::archive_session_take_from_file_with_truth(
+            source,
+            text,
+            Some(observer),
+        ) {
+            Some(take) => {
+                daily_card = take.observer;
+                daily_audio = Some(take.audio.clone());
+                Some(take.audio)
+            }
+            None => None,
+        },
+    );
     if let Some(lease) = lease {
         if result.is_err() {
             lease.protect_retry();
@@ -389,6 +462,12 @@ fn retain_owned_session_audio(
         }
         if let Some(daily) = daily_audio {
             owned.push(daily);
+        }
+        if let Some(card) = stable_card {
+            owned.push(card);
+        }
+        if let Some(card) = daily_card {
+            owned.push(card);
         }
         if let Err(error) = lease.record(&owned, false) {
             lease.protect_retry();
@@ -406,7 +485,9 @@ fn retain_session_audio_at(
     session_id: Option<&str>,
     path: &std::path::Path,
     transcript: codescribe_core::state::SessionTranscriptArchive<'_>,
+    observer: &codescribe_core::pipeline::take_truth::TakeTruth,
     root: &std::path::Path,
+    stable_card: &mut Option<std::path::PathBuf>,
     archive: impl FnOnce(
         &mut std::fs::File,
         codescribe_core::state::SessionTranscriptArchive<'_>,
@@ -466,12 +547,43 @@ fn retain_session_audio_at(
         ),
         Err(error) => failures.push(format!("{}: {error:#}", session_path.display())),
     }
+    let card_published = if session_retained {
+        match sessions_directory
+            .as_ref()
+            .map_err(|error| anyhow::anyhow!("{error:#}"))
+            .and_then(|directory| {
+                codescribe_core::pipeline::take_truth::write_truth_sidecar_at(
+                    directory,
+                    &session_path,
+                    observer,
+                )
+            }) {
+            Ok(card) => {
+                info!("session observer retained as {}", card.display());
+                *stable_card = Some(card);
+                true
+            }
+            Err(error) => {
+                warn!(
+                    "session observer was not written for {} (audio preserved): {error:#}",
+                    session_path.display()
+                );
+                false
+            }
+        }
+    } else {
+        warn!(
+            "session observer was not written for {} because session audio was not retained; source preserved",
+            session_path.display()
+        );
+        false
+    };
     if has_speech && session_retained {
         let alias = root.join("last_session.wav");
         match root_directory
             .as_ref()
             .map_err(|error| anyhow::anyhow!("{error:#}"))
-            .and_then(|directory| publish_session_alias(directory, id))
+            .and_then(|directory| publish_latest_capture_aliases(directory, id, card_published))
         {
             Ok(()) => info!("last spoken take alias updated for {}", alias.display()),
             Err(error) => failures.push(format!("{}: {error:#}", alias.display())),
@@ -509,6 +621,124 @@ fn publish_session_alias(directory: &std::fs::File, id: &str) -> Result<()> {
         unsafe { libc::unlinkat(directory.as_raw_fd(), temporary.as_ptr(), 0) };
         return Err(error.into());
     }
+    Ok(())
+}
+
+enum TruthAliasKind {
+    Absent,
+    Symlink,
+    Regular,
+    Special,
+}
+
+/// Publish the spoken WAV alias and its observer alias for one capture.
+///
+/// The mutex orders the two names. It does not make the two renames one
+/// transaction: a truth-alias failure leaves the WAV alias in place.
+fn publish_latest_capture_aliases(
+    directory: &std::fs::File,
+    id: &str,
+    card_published: bool,
+) -> Result<()> {
+    static ALIAS_PUBLICATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _publication = ALIAS_PUBLICATION
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    publish_session_alias(directory, id)?;
+    publish_truth_alias(directory, id, card_published).map_err(|error| {
+        error.context(
+            "latest truth alias was not published for this capture; wav alias already names it",
+        )
+    })
+}
+
+fn publish_truth_alias(directory: &std::fs::File, id: &str, card_published: bool) -> Result<()> {
+    use std::os::fd::AsRawFd;
+    let alias = c"last_session.wav.truth.json";
+    match truth_alias_kind(directory, alias)? {
+        TruthAliasKind::Special => {
+            anyhow::bail!("latest truth alias is not a regular file or symlink");
+        }
+        TruthAliasKind::Regular => preserve_regular_truth_alias(directory, alias)?,
+        TruthAliasKind::Symlink => {
+            if unsafe { libc::unlinkat(directory.as_raw_fd(), alias.as_ptr(), 0) } < 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+        }
+        TruthAliasKind::Absent => {}
+    }
+    if !card_published {
+        info!("latest truth alias cleared; this capture has no observer card");
+        return Ok(());
+    }
+    let target = std::ffi::CString::new(format!("sessions/{id}.wav.truth.json"))?;
+    let temporary = std::ffi::CString::new(format!(".retain-{}.tmp", Uuid::new_v4()))?;
+    if unsafe { libc::symlinkat(target.as_ptr(), directory.as_raw_fd(), temporary.as_ptr()) } < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    if unsafe {
+        libc::renameat(
+            directory.as_raw_fd(),
+            temporary.as_ptr(),
+            directory.as_raw_fd(),
+            alias.as_ptr(),
+        )
+    } < 0
+    {
+        let error = std::io::Error::last_os_error();
+        unsafe { libc::unlinkat(directory.as_raw_fd(), temporary.as_ptr(), 0) };
+        return Err(error.into());
+    }
+    Ok(())
+}
+
+fn truth_alias_kind(directory: &std::fs::File, name: &std::ffi::CStr) -> Result<TruthAliasKind> {
+    use std::os::fd::AsRawFd;
+    let mut info: libc::stat = unsafe { std::mem::zeroed() };
+    let rc = unsafe {
+        libc::fstatat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            &mut info,
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if rc < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::NotFound {
+            return Ok(TruthAliasKind::Absent);
+        }
+        return Err(error.into());
+    }
+    match info.st_mode & libc::S_IFMT {
+        libc::S_IFLNK => Ok(TruthAliasKind::Symlink),
+        libc::S_IFREG => Ok(TruthAliasKind::Regular),
+        _ => Ok(TruthAliasKind::Special),
+    }
+}
+
+/// Move a regular previous card aside. Expiry does not own that name.
+fn preserve_regular_truth_alias(directory: &std::fs::File, alias: &std::ffi::CStr) -> Result<()> {
+    use std::os::fd::AsRawFd;
+    let stale = std::ffi::CString::new(format!(
+        "last_session.wav.truth.{}.stale.json",
+        Uuid::new_v4()
+    ))?;
+    if unsafe {
+        libc::renameat(
+            directory.as_raw_fd(),
+            alias.as_ptr(),
+            directory.as_raw_fd(),
+            stale.as_ptr(),
+        )
+    } < 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    info!(
+        "preserved previous latest truth card as {}",
+        stale.to_string_lossy()
+    );
     Ok(())
 }
 
@@ -1123,7 +1353,14 @@ async fn stop_recorder_for_terminal(
                 );
                 match refusal.audio_path.as_deref() {
                     Some(path) => {
-                        retain_session_audio(session_id, path, refused_take_archive(&refusal)).await
+                        let observer = freeze_take_observer(recorder, session_id);
+                        retain_session_audio(
+                            session_id,
+                            path,
+                            refused_take_archive(&refusal),
+                            &observer,
+                        )
+                        .await
                     }
                     None => warn!("refused take has no audio path to retain"),
                 }
@@ -1131,6 +1368,7 @@ async fn stop_recorder_for_terminal(
             }
             Err(err) => {
                 if err.downcast_ref::<CaptureStopFailure>().is_some() {
+                    let observer = freeze_take_observer(recorder, session_id);
                     let session_id = session_id.map(str::to_owned);
                     let lease = retainable_session_id(session_id.as_deref()).and_then(|id| {
                         codescribe_core::state::history::audio_retention::capture(
@@ -1153,6 +1391,7 @@ async fn stop_recorder_for_terminal(
                                     codescribe_core::state::SessionTranscriptArchive::Unavailable(
                                         "capture processing failed; committed text unavailable",
                                     ),
+                                    &observer,
                                     lease.as_deref(),
                                 )
                             },
@@ -2945,12 +3184,14 @@ impl RecordingController {
             Self::clear_recorder_callbacks(&mut recorder);
             let reason = match &stopped {
                 Ok((text, path)) => {
+                    let observer = freeze_take_observer(&recorder, take_id.as_deref());
                     if let Some(path) = path.as_deref() {
                         retain_session_audio_with_lease(
                             take_id.as_deref(),
                             path,
                             codescribe_core::state::SessionTranscriptArchive::from_committed(text),
                             retained_capture.clone(),
+                            &observer,
                         )
                         .await;
                     }
@@ -3017,17 +3258,24 @@ impl RecordingController {
             Some(snapshot) if !snapshot.text.trim().is_empty() => {
                 let presentation = presentation
                     .ok_or_else(|| anyhow::anyhow!("stop canvas has no presentation owner"))?;
+                // Label only after this single call. An accepted stop revision
+                // replaces `revision` on the returned snapshot; the same snapshot
+                // comes back when Light+ commits nothing. Preview and literal
+                // stay the states the shaper already refused to rewrite.
+                let offered_revision = snapshot.revision;
+                let snapshot = presentation
+                    .shape_frozen_canvas_at_stop(snapshot)
+                    .map_err(|error| anyhow::anyhow!("Light+ stop revision refused: {error}"))?;
                 let light_plus =
                     if snapshot.preview_only_words > 0 || !snapshot.has_committed_document {
                         "skipped_preview"
                     } else if presentation.literal_delivery() {
                         "literal"
-                    } else {
+                    } else if snapshot.revision != offered_revision {
                         "applied"
+                    } else {
+                        "unchanged"
                     };
-                let snapshot = presentation
-                    .shape_frozen_canvas_at_stop(snapshot)
-                    .map_err(|error| anyhow::anyhow!("Light+ stop revision refused: {error}"))?;
                 (Some(snapshot), light_plus)
             }
             snapshot => {
@@ -5684,6 +5932,7 @@ impl RecordingController {
             // The recorder is the single owner of this fact; the stop path must
             // not re-derive it from the assistive flag or the active screen.
             Self::clear_recorder_callbacks(recorder);
+            let observer = freeze_take_observer(recorder, session_id_snapshot.as_deref());
             drop(recorder_guard);
             // The session is over whichever way `stop()` went; the engine that
             // served it is the same on a clean stop and on a refused seal.
@@ -5739,6 +5988,7 @@ impl RecordingController {
                     codescribe_core::state::SessionTranscriptArchive::from_committed(
                         streaming_text.as_str(),
                     ),
+                    &observer,
                 ).await;
             }
             let settled = initial_delivery?;
@@ -6307,6 +6557,7 @@ impl RecordingController {
         let stopped =
             stop_recorder_for_terminal(recorder, take_id.as_deref(), Some(was_active)).await;
         Self::clear_recorder_callbacks(recorder);
+        let observer = freeze_take_observer(recorder, take_id.as_deref());
         drop(recorder_guard); // Release lock
         Self::publish_live_serving_verdict(serving_engine);
         let (streaming_text, raw_audio_path_opt) = match stopped {
@@ -6349,6 +6600,7 @@ impl RecordingController {
                 codescribe_core::state::SessionTranscriptArchive::from_committed(
                     streaming_text.as_str(),
                 ),
+                &observer,
             )
             .await;
         }
@@ -7156,6 +7408,74 @@ mod terminal_delivery_target_falsifiers {
 /// test shortcut is evidence for these terminal decisions.
 #[cfg(test)]
 mod refusal_recovery_tests {
+    #[tokio::test]
+    async fn stop_light_plus_noop_is_not_reported_as_applied() {
+        let take = take(State::RecHold, false).await;
+        take.emitter.on_capture_opened(TAKE, 7);
+        take.emitter.set_literal_delivery(false);
+        let initial = stop_mutation(&mut take.ledger.lock().unwrap(), "Gotowy tekst.");
+        take.emitter.on_event(&initial);
+        let frozen = take.emitter.begin_stop_canvas().unwrap();
+        assert_eq!(frozen.preview_only_words, 0);
+        assert!(frozen.has_committed_document);
+        let revision = frozen.revision;
+        let before = take
+            .ledger
+            .lock()
+            .unwrap()
+            .manual_document_revisions()
+            .len();
+        let wait = StopCanvasWait {
+            snapshot: Some(frozen.clone()),
+            stop_final_wait_ms: 0,
+            stop_final_timeout: false,
+            live_finals_admitted: true,
+            painted_at_stop: Some(frozen),
+            preempted: false,
+            armed_order: true,
+        };
+        let receipts = StopReceiptLog::default();
+        let _trace = receipts.subscribe();
+        let settled = take
+            .controller
+            .settle_frozen_canvas_at_stop(
+                Some(TAKE),
+                Some(&take.emitter),
+                wait,
+                std::time::Instant::now(),
+                |text| async move {
+                    assert_eq!(text, "Gotowy tekst.");
+                    Ok(TranscriptDelivery::SinkAccepted)
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(settled, TranscriptDelivery::SinkAccepted);
+        assert_eq!(
+            take.ledger
+                .lock()
+                .unwrap()
+                .manual_document_revisions()
+                .len(),
+            before
+        );
+        assert_eq!(
+            take.emitter.visible_canvas_snapshot().unwrap().revision,
+            revision
+        );
+        let log = receipts.text();
+        let lines = log
+            .lines()
+            .filter(|line| line.contains("stop canvas delivery settled"))
+            .collect::<Vec<_>>();
+        assert_eq!(lines.len(), 1, "{log}");
+        assert!(
+            !lines[0].contains("light_plus=\"applied\""),
+            "A no-op did not mint a Light+ receipt: {}",
+            lines[0]
+        );
+    }
+
     use super::*;
     use crate::presentation::transcript_bus::{
         ProjectedSealCoverageReceipt, TranscriptBusEvidenceEvent, TranscriptProjectionPhase,
@@ -8996,7 +9316,9 @@ mod refusal_recovery_tests {
             Some("refusal-capture:stopping"),
             source,
             codescribe_core::state::SessionTranscriptArchive::Unavailable("incomplete coverage"),
+            &codescribe_core::pipeline::take_truth::TakeTruth::unavailable_evidence(None, None),
             &root,
+            &mut None,
             |_, _| None,
         );
         assert!(
@@ -10315,7 +10637,11 @@ mod capture_failure_recovery_tests {
                     Some(id),
                     path,
                     SessionTranscriptArchive::Unavailable("processing failed"),
+                    &codescribe_core::pipeline::take_truth::TakeTruth::unavailable_evidence(
+                        None, None,
+                    ),
                     &root,
+                    &mut None,
                     |file, transcript| {
                         use std::io::Read;
                         assert!(matches!(
@@ -10399,7 +10725,11 @@ mod capture_failure_recovery_tests {
                     Some(id),
                     path,
                     SessionTranscriptArchive::Unavailable("processing failed"),
+                    &codescribe_core::pipeline::take_truth::TakeTruth::unavailable_evidence(
+                        None, None,
+                    ),
                     &root,
+                    &mut None,
                     |_, _| None,
                 )
             },
@@ -10422,7 +10752,9 @@ mod capture_failure_recovery_tests {
             Some("capture-owner"),
             &source,
             SessionTranscriptArchive::Unavailable("failure"),
+            &codescribe_core::pipeline::take_truth::TakeTruth::unavailable_evidence(None, None),
             &root,
+            &mut None,
             |_, _| None,
         );
         assert!(result.is_err());
@@ -10437,7 +10769,9 @@ mod capture_failure_recovery_tests {
             Some("capture-owner"),
             source,
             SessionTranscriptArchive::Committed("fixture"),
+            &codescribe_core::pipeline::take_truth::TakeTruth::unavailable_evidence(None, None),
             root,
+            &mut None,
             |_, _| Some(source.to_path_buf()),
         )
     }
@@ -10456,7 +10790,9 @@ mod capture_failure_recovery_tests {
             Some("speech-take"),
             &speech,
             SessionTranscriptArchive::Committed("hello"),
+            &codescribe_core::pipeline::take_truth::TakeTruth::unavailable_evidence(None, None),
             &root,
+            &mut None,
             |_, _| Some(speech.clone()),
         )
         .unwrap();
@@ -10464,7 +10800,9 @@ mod capture_failure_recovery_tests {
             Some("quiet-take"),
             &quiet,
             SessionTranscriptArchive::NoSpeech,
+            &codescribe_core::pipeline::take_truth::TakeTruth::unavailable_evidence(None, None),
             &root,
+            &mut None,
             |_, _| Some(quiet.clone()),
         )
         .unwrap();
@@ -10600,8 +10938,12 @@ mod capture_failure_recovery_tests {
                     Some("capture-owner"),
                     source,
                     SessionTranscriptArchive::Unavailable("fixture"),
+                    &codescribe_core::pipeline::take_truth::TakeTruth::unavailable_evidence(
+                        None, None
+                    ),
                     &dir.path().join("archive"),
-                    |_, _| panic!("unsafe source reached archive"),
+                    &mut None,
+                    |_, _| panic!("unsafe source reached archive")
                 )
                 .is_err()
             );
@@ -10641,7 +10983,9 @@ mod capture_failure_recovery_tests {
             Some("capture-owner"),
             &source,
             SessionTranscriptArchive::Unavailable("fixture"),
+            &codescribe_core::pipeline::take_truth::TakeTruth::unavailable_evidence(None, None),
             &root,
+            &mut None,
             |file, _| {
                 use std::io::Read;
                 std::fs::rename(&source, &original).unwrap();
@@ -10682,7 +11026,9 @@ mod capture_failure_recovery_tests {
             Some("capture-owner"),
             &source,
             SessionTranscriptArchive::Unavailable("fixture"),
+            &codescribe_core::pipeline::take_truth::TakeTruth::unavailable_evidence(None, None),
             &root,
+            &mut None,
             |_, _| {
                 std::fs::rename(root.join("sessions"), root.join("pinned-sessions")).unwrap();
                 symlink(&external, root.join("sessions")).unwrap();
@@ -11067,5 +11413,268 @@ mod formatter_revision_request_tests {
             assert_eq!(receipt.source_revision, 4);
             assert_eq!(receipt.revision, 5);
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod truth_pair_regression_tests {
+    use super::*;
+    use codescribe_core::pipeline::take_truth::{
+        TakeTruth, truth_sidecar_path, write_truth_sidecar,
+    };
+    use codescribe_core::state::SessionTranscriptArchive;
+
+    fn card(id: &str) -> TakeTruth {
+        TakeTruth::unavailable_evidence(Some(id.to_string()), Some(7))
+    }
+
+    #[test]
+    fn truth_pair_latest_alias_reads_current_card_not_old_regular_file() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("data");
+        std::fs::create_dir_all(root.join("sessions")).unwrap();
+        let old = br#"{"take":"old"}"#;
+        std::fs::write(root.join("last_session.wav.truth.json"), old).unwrap();
+        let current = card("current-take");
+        let bytes = serde_json::to_vec_pretty(&current).unwrap();
+        let stable = root.join("sessions/current-take.wav.truth.json");
+        std::fs::write(&stable, &bytes).unwrap();
+        let source = d.path().join("audio.wav");
+        std::fs::write(&source, b"full current audio").unwrap();
+        let mut owned_card = None;
+        retain_session_audio_at(
+            Some("current-take"),
+            &source,
+            SessionTranscriptArchive::Committed("current"),
+            &current,
+            &root,
+            &mut owned_card,
+            |_, _| Some(source.clone()),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read(root.join("last_session.wav")).unwrap(),
+            b"full current audio"
+        );
+        assert_eq!(
+            std::fs::read(root.join("last_session.wav.truth.json")).unwrap(),
+            bytes
+        );
+        assert_eq!(owned_card, Some(stable));
+        let stale: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|p| {
+                let p = p.unwrap().path();
+                p.file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .ends_with(".stale.json")
+                    .then_some(p)
+            })
+            .collect();
+        assert_eq!(stale.len(), 1);
+        assert_eq!(
+            std::fs::read(&stale[0]).unwrap(),
+            old,
+            "historical evidence must survive byte-for-byte"
+        );
+    }
+
+    #[test]
+    fn truth_pair_late_old_stable_writer_cannot_poison_latest_card() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        std::fs::create_dir(root.join("sessions")).unwrap();
+        let directory = std::fs::File::open(root).unwrap();
+        let mut newest = None;
+        for id in ["older-take", "newer-take"] {
+            let audio = root.join(format!("sessions/{id}.wav"));
+            std::fs::write(&audio, id).unwrap();
+            let truth = card(id);
+            let bytes = serde_json::to_vec_pretty(&truth).unwrap();
+            std::fs::write(truth_sidecar_path(&audio), &bytes).unwrap();
+            newest = Some(bytes);
+            publish_latest_capture_aliases(&directory, id, true).unwrap();
+        }
+        std::fs::write(
+            root.join("sessions/older-take.wav.truth.json"),
+            b"late CLI result for old capture",
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read(root.join("last_session.wav")).unwrap(),
+            b"newer-take"
+        );
+        assert_eq!(
+            std::fs::read(root.join("last_session.wav.truth.json")).unwrap(),
+            newest.unwrap()
+        );
+        let current = root.join("sessions/newer-take.wav");
+        let before = std::fs::read(truth_sidecar_path(&current)).unwrap();
+        assert!(
+            write_truth_sidecar(&current, &TakeTruth::unavailable_evidence(None, None)).is_err()
+        );
+        assert_eq!(
+            std::fs::read(root.join("last_session.wav.truth.json")).unwrap(),
+            before,
+            "file analysis cannot erase current live receipts"
+        );
+    }
+
+    #[test]
+    fn truth_pair_quiet_take_keeps_last_spoken_pair_and_full_audio() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("data");
+        std::fs::create_dir_all(root.join("sessions")).unwrap();
+        let speech = d.path().join("speech.wav");
+        let quiet = d.path().join("quiet.wav");
+        std::fs::write(&speech, b"full speech").unwrap();
+        std::fs::write(&quiet, b"full quiet").unwrap();
+        let spoken_card = card("spoken-take");
+        let quiet_card = card("silent-take");
+        for (id, path, text, observer) in [
+            (
+                "spoken-take",
+                &speech,
+                SessionTranscriptArchive::Committed("spoken"),
+                &spoken_card,
+            ),
+            (
+                "silent-take",
+                &quiet,
+                SessionTranscriptArchive::NoSpeech,
+                &quiet_card,
+            ),
+        ] {
+            let mut owned_card = None;
+            retain_session_audio_at(
+                Some(id),
+                path,
+                text,
+                observer,
+                &root,
+                &mut owned_card,
+                |_, _| Some(path.clone()),
+            )
+            .unwrap();
+            assert_eq!(
+                owned_card,
+                Some(root.join(format!("sessions/{id}.wav.truth.json")))
+            );
+        }
+        assert_eq!(
+            std::fs::read(root.join("sessions/silent-take.wav")).unwrap(),
+            b"full quiet"
+        );
+        assert_eq!(
+            std::fs::read(root.join("last_session.wav")).unwrap(),
+            b"full speech"
+        );
+        assert_eq!(
+            std::fs::read(root.join("last_session.wav.truth.json")).unwrap(),
+            serde_json::to_vec_pretty(&spoken_card).unwrap()
+        );
+    }
+
+    #[test]
+    fn truth_pair_failed_export_preserves_full_audio_and_does_not_publish_old_card() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("data");
+        std::fs::create_dir_all(root.join("sessions")).unwrap();
+        let old = br#"{"take":"old"}"#;
+        std::fs::write(root.join("last_session.wav.truth.json"), old).unwrap();
+        let blocker = root.join("sessions/current-take.wav.truth.json");
+        std::fs::create_dir(&blocker).unwrap();
+        std::fs::write(blocker.join("owned-file"), b"preserve special destination").unwrap();
+        let source = d.path().join("source.wav");
+        std::fs::write(&source, b"entire failed-export capture").unwrap();
+        let mut exported = None;
+        retain_session_audio_at(
+            Some("current-take"),
+            &source,
+            SessionTranscriptArchive::Committed("current"),
+            &card("current-take"),
+            &root,
+            &mut exported,
+            |_, _| Some(source.clone()),
+        )
+        .unwrap();
+        assert_eq!(exported, None);
+        assert!(
+            !root.join("last_session.wav.truth.json").exists(),
+            "old card cannot masquerade as current"
+        );
+        assert_eq!(
+            std::fs::read(&source).unwrap(),
+            b"entire failed-export capture"
+        );
+        assert_eq!(
+            std::fs::read(root.join("last_session.wav")).unwrap(),
+            b"entire failed-export capture"
+        );
+        assert_eq!(
+            std::fs::read(blocker.join("owned-file")).unwrap(),
+            b"preserve special destination"
+        );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod truth_retention_parent_binding_tests {
+    use super::*;
+    use codescribe_core::pipeline::take_truth::{TakeTruth, truth_sidecar_path};
+    use codescribe_core::state::SessionTranscriptArchive;
+    #[test]
+    fn take_observer_stays_beside_the_audio_after_retention_parent_rebind() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("data");
+        let detached = d.path().join("detached");
+        let outside = d.path().join("unrelated");
+        for path in [&root, &outside] {
+            std::fs::create_dir_all(path.join("sessions")).unwrap();
+        }
+        let source = d.path().join("source.wav");
+        std::fs::write(&source, b"complete capture audio").unwrap();
+        let unrelated_card = outside.join("sessions/current-take.wav.truth.json");
+        let old = TakeTruth::unavailable_evidence(None, None);
+        let old_bytes = serde_json::to_vec_pretty(&old).unwrap();
+        std::fs::write(&unrelated_card, &old_bytes).unwrap();
+        let card = TakeTruth::unavailable_evidence(Some("current-take".into()), Some(7));
+        let mut stable_card = None;
+        retain_session_audio_at(
+            Some("current-take"),
+            &source,
+            SessionTranscriptArchive::Committed("current"),
+            &card,
+            &root,
+            &mut stable_card,
+            |_, _| {
+                std::fs::rename(&root, &detached).unwrap();
+                std::os::unix::fs::symlink(&outside, &root).unwrap();
+                Some(source.clone())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read(&unrelated_card).unwrap(),
+            old_bytes,
+            "retention observer must use the audio parent's admitted descriptor"
+        );
+        assert_eq!(
+            std::fs::read(detached.join("sessions/current-take.wav")).unwrap(),
+            b"complete capture audio"
+        );
+        assert_eq!(
+            std::fs::read(truth_sidecar_path(
+                &detached.join("sessions/current-take.wav")
+            ))
+            .unwrap(),
+            serde_json::to_vec_pretty(&card).unwrap()
+        );
+        assert_eq!(
+            std::fs::read(detached.join("last_session.wav.truth.json")).unwrap(),
+            serde_json::to_vec_pretty(&card).unwrap()
+        );
     }
 }

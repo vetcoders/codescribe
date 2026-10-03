@@ -886,7 +886,13 @@ pub fn archive_session_take_from_file(
     source: &mut fs::File,
     transcript: SessionTranscriptArchive<'_>,
 ) -> Option<PathBuf> {
-    archive_session_take_from_file_with_truth(source, transcript, None)
+    archive_session_take_from_file_with_truth(source, transcript, None).map(|take| take.audio)
+}
+
+/// Daily audio plus the observer card when that write landed beside the text.
+pub struct ArchivedTake {
+    pub audio: PathBuf,
+    pub observer: Option<PathBuf>,
 }
 
 /// Archive the already admitted WAV and, when a take truth is supplied and the
@@ -902,7 +908,7 @@ pub fn archive_session_take_from_file_with_truth(
     source: &mut fs::File,
     transcript: SessionTranscriptArchive<'_>,
     truth: Option<&TakeTruth>,
-) -> Option<PathBuf> {
+) -> Option<ArchivedTake> {
     let now = Local::now();
     let (slug, kind, text) = archive_classification(transcript);
     let base = build_base_name(&now.format("%H%M%S").to_string(), &make_slug(slug, 3), kind);
@@ -914,16 +920,20 @@ pub fn archive_session_take_from_file_with_truth(
         text,
         crate::audio::archive::encode_wav_to_m4a,
     ));
+    let mut observer = None;
     if let (Some(audio), Some(truth), Some(_)) = (archived.as_ref(), truth, text) {
         let transcript_path = audio.with_extension("txt");
-        if let Err(error) = write_truth_sidecar(&transcript_path, truth) {
-            warn!(
-                "truth sidecar write failed for {}: {error:#}",
-                transcript_path.display()
-            );
+        match write_truth_sidecar(&transcript_path, truth) {
+            Ok(path) => observer = Some(path),
+            Err(error) => {
+                warn!(
+                    "truth sidecar write failed for {}: {error:#}",
+                    transcript_path.display()
+                );
+            }
         }
     }
-    archived
+    archived.map(|audio| ArchivedTake { audio, observer })
 }
 
 fn archive_classification(
@@ -1338,7 +1348,7 @@ mod tests {
             Some(&truth),
         )
         .expect("archive");
-        let transcript_path = audio.with_extension("txt");
+        let transcript_path = audio.audio.with_extension("txt");
         assert_eq!(
             fs::read_to_string(&transcript_path).expect("txt persisted"),
             "zdanie"
@@ -1353,7 +1363,7 @@ mod tests {
             Some(&truth),
         )
         .expect("archive unavailable");
-        let unavailable_txt = unavailable_audio.with_extension("txt");
+        let unavailable_txt = unavailable_audio.audio.with_extension("txt");
         assert!(
             !unavailable_txt.exists(),
             "Unavailable persists no transcript text"

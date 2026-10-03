@@ -316,13 +316,17 @@ fn admitted(relative: &str, id: &str) -> bool {
             .is_some_and(|value| {
                 !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
             }),
-        ["sessions", name] => *name == format!("{id}.wav"),
+        ["sessions", name] => {
+            *name == format!("{id}.wav") || *name == format!("{id}.wav.truth.json")
+        }
         ["transcriptions", date, name] => {
             chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").is_ok()
                 && name.len() > 7
                 && name.as_bytes()[..6].iter().all(u8::is_ascii_digit)
                 && name.as_bytes()[6] == b'_'
-                && (name.ends_with(".m4a") || name.ends_with(".wav"))
+                && (name.ends_with(".m4a")
+                    || name.ends_with(".wav")
+                    || name.ends_with(".txt.truth.json"))
         }
         _ => false,
     }
