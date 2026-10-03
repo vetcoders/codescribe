@@ -2214,16 +2214,9 @@ impl AcousticLedger {
                     .any(|source| self.word_pin_observations.contains(&source.observation))
             });
         let whole_owner_recovery = slots.is_none() && !slot_revision;
-        let authorized_recovery = (slots.is_some()
-            || !has_pinned_sources
-            || (self.text_of(&observation.occurrence) == Some(text)
-                && self
-                    .slots_of(&observation.occurrence)
-                    .is_some_and(|sources| {
-                        sources.len() == 1
-                            && sources[0].sample_start == observation.occurrence.sample_start
-                            && sources[0].sample_end == observation.occurrence.sample_end
-                    })))
+        // A source extent is not a returned Word target. A whole-label
+        // observation cannot acquire pinned authority or settle its debt.
+        let authorized_recovery = (slots.is_some() || !has_pinned_sources)
             && !text.trim().is_empty()
             && matches!(
                 observation.producer,
@@ -2486,6 +2479,18 @@ impl AcousticLedger {
         // qualification, producer rank or seal state. Keep its proposal in the
         // decision trail without inserting or replacing acoustic content.
         if observation.producer == ObservationProducer::Formatter {
+            if !has_word_pins
+                && let Some(held) = self.committed.get(&observation.occurrence).cloned()
+                && held.slots.len() == 1
+                && held.label != text
+            {
+                self.retain_slot_alternative(
+                    observation,
+                    text,
+                    held.slots,
+                    "whole_label_has_no_word_targets",
+                );
+            }
             return MutationReceipt::Refuse {
                 occurrence: observation.occurrence.clone(),
                 reason: RefuseReason::AuthorityConflict,
@@ -2618,16 +2623,85 @@ impl AcousticLedger {
                     current.producer = observation.producer;
                     current.generation = observation.generation;
                 } else {
-                    self.committed.insert(
-                        observation.occurrence.clone(),
-                        CommittedObservation::from_label(observation, text),
-                    );
+                    let single_source = held.slots.len() == 1
+                        && held.slots[0].sample_start == observation.occurrence.sample_start
+                        && held.slots[0].sample_end == observation.occurrence.sample_end;
+                    // Explicit recovery may replace an occurrence-only hypothesis.
+                    // It supplies no word targets and cannot settle decoder debt.
+                    let recovering_label = single_source
+                        && self.pending_text_recovery.contains(&observation.occurrence)
+                        && !self
+                            .word_pin_observations
+                            .contains(&held.slots[0].observation)
+                        && matches!(
+                            observation.producer,
+                            ObservationProducer::Whisper | ObservationProducer::CloudLive
+                        );
+                    if single_source
+                        && !recovering_label
+                        && observation.producer != ObservationProducer::ManualHuman
+                    {
+                        let source = &held.slots[0];
+                        let alignment = slot_ops::preserve_group_content(&source.text, text);
+                        let (label, retained, reason) = match alignment {
+                            Ok((label, retained)) => (label, retained, "held_token_retained"),
+                            Err(reason) => (source.text.clone(), true, reason),
+                        };
+                        if retained {
+                            self.retain_slot_alternative(
+                                observation,
+                                text,
+                                held.slots.clone(),
+                                reason,
+                            );
+                            self.slot_operations.push(SlotOperationReceipt {
+                                observation: observation.clone(),
+                                kind: SlotOperationKind::Correct,
+                                sources: held.slots.clone(),
+                                outputs: held.slots.clone(),
+                                source_ranges: self.slot_source_ranges(source),
+                                rule_id: format!("{reason}/held_token_retained/v1"),
+                            });
+                            return MutationReceipt::Preserve {
+                                occurrence: observation.occurrence.clone(),
+                                held_by: held.producer,
+                            };
+                        }
+                        let mut output = source.clone();
+                        output.text = label;
+                        output.producer = observation.producer;
+                        output.observation = observation.clone();
+                        let source_ranges = self.slot_source_ranges(source);
+                        let mut current = held.clone();
+                        current.producer = observation.producer;
+                        current.generation = observation.generation;
+                        current.slots = vec![output.clone()];
+                        current.recompose();
+                        self.committed
+                            .insert(observation.occurrence.clone(), current);
+                        self.slot_operations.push(SlotOperationReceipt {
+                            observation: observation.clone(),
+                            kind: SlotOperationKind::Correct,
+                            sources: held.slots.clone(),
+                            outputs: vec![output],
+                            source_ranges,
+                            rule_id: "group_alignment/v1".into(),
+                        });
+                    } else {
+                        self.committed.insert(
+                            observation.occurrence.clone(),
+                            CommittedObservation::from_label(observation, text),
+                        );
+                    }
                 }
                 return MutationReceipt::Correct {
                     occurrence: observation.occurrence.clone(),
                     from: held.producer,
                     to: observation.producer,
                 };
+            }
+            if !has_word_pins && held.slots.len() == 1 {
+                self.retain_slot_alternative(observation, text, held.slots, "protected_source");
             }
             return MutationReceipt::Refuse {
                 occurrence: observation.occurrence.clone(),

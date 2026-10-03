@@ -247,7 +247,24 @@ fn admitted_occurrence_revision(
         ObservationIdentity::new(ObservationProducer::Whisper, occurrence_id, 1, occurrence);
     let mut ledger = AcousticLedger::new();
     let apple_receipt = ledger.admit(&apple, apple_label);
-    let whisper_receipt = ledger.admit(&whisper, whisper_label);
+    // This observer owns decoded Words in the same bounded PCM window;
+    // a whole-label proposal alone cannot demonstrate an acoustic repair.
+    let tokens = whisper_label.split_whitespace().collect::<Vec<_>>();
+    assert!(!tokens.is_empty());
+    let pins = tokens
+        .iter()
+        .enumerate()
+        .map(|(index, token)| {
+            codescribe_core::pipeline::acoustic_ledger::WordPin::new(
+                sample_start + index as u64 * 8_000 / tokens.len() as u64,
+                sample_start + (index as u64 + 1) * 8_000 / tokens.len() as u64,
+                *token,
+            )
+            .with_decode_window(sample_start.saturating_sub(1_000), sample_start + 9_000)
+        })
+        .collect::<Vec<_>>();
+    let whisper_receipt = ledger.admit_word_slots_for_tests(&whisper, &pins);
+    assert!(whisper_receipt.grants_mutation(), "{whisper_receipt:?}");
     vec![
         EngineEvent::LedgerMutation {
             observation: apple,
