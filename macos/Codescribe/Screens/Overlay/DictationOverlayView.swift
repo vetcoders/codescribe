@@ -88,7 +88,9 @@ struct OverlayRecordingControls: View {
     case nil: canFinish || isFinalizing ? palette.errorStatus.color : palette.listeningStatus.color
     }
   }
-  var recordingStatusValue: String { recordingLight?.name ?? (isFinalizing ? "Transcribing" : "Ready") }
+  var recordingStatusValue: String {
+    recordingLight?.name ?? (isFinalizing ? "Transcribing" : "Ready")
+  }
   var showsStop: Bool { canFinish }
   var recordingSymbol: String { canFinish || isFinalizing ? "stop.fill" : "mic.fill" }
   var recordingLabel: String { canFinish || isFinalizing ? "Stop recording" : "Start dictation" }
@@ -799,7 +801,8 @@ struct DictationOverlayView: View {
   /// It never changes the committed text or the human revision draft. Session,
   /// epoch and sequence admission remain in OverlayState's existing consumer.
   private var livePaint: CsCompactProjection? {
-    guard !state.terminal, state.mode == .listening || state.mode == .finalizing,
+    guard !state.finalized, !state.terminal,
+      state.mode == .listening || state.mode == .finalizing,
       !state.isEditingTranscript, !state.isRevisionDraftDirty,
       let paint = state.compactProjection
     else { return nil }
@@ -857,8 +860,8 @@ struct DictationOverlayView: View {
         livePaint != nil
           ? "Live preview. Uncommitted words may change."
           : state.isTranscriptEditable
-          ? "Click to edit. Edits stay local until committed to the transcript ledger."
-          : ""
+            ? "Click to edit. Edits stay local until committed to the transcript ledger."
+            : ""
       )
     }
     .frame(maxWidth: .infinity, alignment: .leading)

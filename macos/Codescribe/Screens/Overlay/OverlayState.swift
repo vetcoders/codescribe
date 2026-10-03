@@ -620,8 +620,8 @@ final class OverlayState {
   private var pendingRevisionDraft: String?
   private var revisionRequestGeneration: UInt64 = 0
   private var revisionFocusCommitTask: Task<Void, Never>?
-  /// Last reducer-owned projection painted by Swift. The reducer owns ordering
-  /// and finality within a session; retired sessions cannot repaint the current one.
+  /// Completion of the admitted capture, independent of document finality.
+  /// Only a new capture/session clears it; later document observations cannot.
   private(set) var finalized = false
   /// Latest immutable projection event only; Rust `TranscriptRevision` remains
   /// the document owner and Rust `AcousticSerial` remains evidence authority.
@@ -897,7 +897,7 @@ final class OverlayState {
   /// Human review depends on capture completion, not the engine's seal,
   /// warning, phase label or a revision request in flight. Typing stays local.
   var isTranscriptEditable: Bool {
-    (finalized || terminal) && latestTranscriptProjection != nil
+    finalized && latestTranscriptProjection != nil
       && !recording && !warmingUp && !transcribing
   }
 
@@ -1129,6 +1129,7 @@ final class OverlayState {
 
   private func runStop() async {
     guard let engine else { return }
+    let generation = captureGeneration
     // Prevent duplicate stops while Rust emits authoritative finalizing and
     // terminal projections. This flag never paints a phase.
     transcribing = true
@@ -1138,9 +1139,10 @@ final class OverlayState {
     do {
       // Stop acknowledges lifecycle; transcript projections own the text.
       _ = try await engine.stopRecording()
-      recording = false
-      isFinalPass = false
+      guard generation == captureGeneration else { return }
+      finishControllerRecording()
     } catch {
+      guard generation == captureGeneration else { return }
       presentTerminalError(
         message: "Couldn't finalize transcript: \(error)",
         toast: "Couldn't finalize transcript"
@@ -2205,7 +2207,9 @@ final class OverlayState {
     case .currentCapture:
       break
     }
-    abortRecordingSession(resetTranscript: true)
+    // A sibling status must keep the retained document's draft and capture
+    // completion. Reset transient presentation only when no document is held.
+    abortRecordingSession(resetTranscript: latestTranscriptProjection == nil)
     let status = OverlayPresentationStatus(
       schema: event.schema,
       emittedAt: event.emittedAt,
@@ -2230,7 +2234,7 @@ final class OverlayState {
     canSendToAgent = false
     mode = event.isError ? .error : .formatted
     terminal = event.terminal
-    finalized = event.terminal
+    if event.terminal { finalized = true }
     errorMessage = event.isError ? event.message : nil
     onPresentationStatus?()
     showToast(event.headline)
@@ -2394,6 +2398,9 @@ final class OverlayState {
       documentHistory = []
       historyReadSessionId = nil
       if let priorProjection {
+        // An unannounced different session cannot inherit the outgoing
+        // capture's completion. Its own lifecycle must prove it ended.
+        finalized = false
         retiredProjectionSessions.insert(priorProjection.sessionId)
         retainSupersededTake(priorProjection, draftWasDirty: draftWasDirty)
       }
@@ -2446,7 +2453,7 @@ final class OverlayState {
     coverageRefusalNotice =
       projection.terminal && projection.phase == OverlayMode.coverageRefused.rawValue
       ? coverageRefusalCopy.notice : nil
-    if !projection.terminal {
+    if !projection.terminal, !finalized {
       markTranscriptActivity()
     }
     transcriptMode = projection.mode
@@ -2459,11 +2466,8 @@ final class OverlayState {
     canFormat = projection.canFormat
     canSendToAgent = projection.canSendToAgent
     terminal = projection.terminal
-    // A document revision cannot consume the capture's pending stopped callback.
-    // Preserve an already-finalized lifecycle when revising its document later.
-    if !projection.terminal || isLifecycleTerminal {
-      finalized = projection.terminal
-    }
+    // A document observation cannot consume a stopped callback or reopen capture.
+    if isLifecycleTerminal { finalized = true }
 
     userRevisionProvenance = revisionReceipt
     if completesPendingRevision {
