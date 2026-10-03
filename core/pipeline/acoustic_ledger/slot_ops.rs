@@ -3390,10 +3390,31 @@ mod slot_ops_tests {
                             ledger
                         };
                         let next = observation(producer, 1);
+                        let source_slots = ledger.slots_of(&owner()).unwrap().to_vec();
+                        assert_eq!(
+                            preserve_group_content(held, candidate),
+                            Ok((expected.to_owned(), retained))
+                        );
                         if via_label {
                             ledger.admit_pinned_label(&next, candidate, &[]);
                         } else {
                             ledger.admit_word_slots(&next, &[WordPin::new(0, 16_000, candidate)]);
+                        }
+                        // A label without word targets cannot revise pinned sources.
+                        // Lexical alignment does not supply mutation authority.
+                        if has_pin && via_label {
+                            assert_eq!(ledger.text_of(&owner()), Some(held));
+                            assert_eq!(ledger.slots_of(&owner()).unwrap(), source_slots);
+                            assert!(
+                                ledger
+                                    .slot_alternatives()
+                                    .iter()
+                                    .any(|alternative| alternative.candidate == candidate
+                                        && alternative.reason == "whole_label_has_no_word_targets")
+                            );
+                            assert!(ledger.word_deletions().is_empty());
+                            assert_eq!(ledger.conservation().residue(), 0);
+                            continue;
                         }
                         assert_eq!(
                             ledger.text_of(&owner()),
@@ -3403,11 +3424,10 @@ mod slot_ops_tests {
                         assert_eq!(ledger.slots_of(&owner()).unwrap().len(), 1);
                         assert_eq!(
                             ledger
-                                .slot_operations()
-                                .last()
-                                .unwrap()
-                                .rule_id
-                                .contains("held_token_retained"),
+                                .slot_alternatives()
+                                .iter()
+                                .any(|alternative| alternative.candidate == candidate
+                                    && alternative.reason == "held_token_retained"),
                             retained
                         );
                         assert_eq!(ledger.conservation().residue(), 0);
@@ -5110,6 +5130,67 @@ mod slot_ops_tests {
             assert!(ledger.slot_descends_from(output, &sources[0]));
             assert!(ledger.word_deletions().is_empty());
             assert_eq!(ledger.conservation().residue(), 0);
+        }
+    }
+    #[test]
+    fn forensic_timed_words_correct_coarse_hypothesis_with_lineage() {
+        for producer in [ObservationProducer::Whisper, ObservationProducer::CloudLive] {
+            for replacement in ["zweryfikowałeś.", "weryfikowałeś"] {
+                let (mut ledger, owner, pcm) =
+                    forensic_split_empty_capture("forensic-qualified-group");
+                assert_eq!(pcm.len(), 16_000);
+                let source_obs =
+                    ledger.next_word_observation(ObservationProducer::Apple, 1, &owner);
+                assert!(
+                    ledger
+                        .admit_word_slots(
+                            &source_obs,
+                            &[WordPin::new(3_200, 9_600, "czy plan weryfikowałeś")]
+                        )
+                        .grants_mutation()
+                );
+                let source = ledger.slots_of(&owner).unwrap()[0].clone();
+                let next = ledger.next_word_observation(producer, 2, &owner);
+                let middle = if replacement == "weryfikowałeś" {
+                    "klan"
+                } else {
+                    "PLAN,"
+                };
+                let pins = [
+                    WordPin::new(3_200, 5_200, "Czy"),
+                    WordPin::new(5_200, 7_200, middle),
+                    WordPin::new(7_200, 9_600, replacement),
+                ]
+                .map(|p| p.with_decode_window(0, 16_000));
+                let receipt = ledger.admit_word_slots(&next, &pins);
+                assert!(receipt.grants_mutation(), "{receipt:?}");
+                assert_eq!(
+                    ledger.text_of(&owner),
+                    Some(format!("Czy {middle} {replacement}").as_str())
+                );
+                let slots = ledger.slots_of(&owner).unwrap();
+                assert_eq!(slots.len(), 3);
+                for (s, p) in slots.iter().zip(&pins) {
+                    assert_eq!(
+                        (s.sample_start, s.sample_end),
+                        (p.sample_start, p.sample_end)
+                    );
+                    assert_eq!(s.producer, producer);
+                }
+                assert_eq!(
+                    ledger
+                        .slot_operations()
+                        .iter()
+                        .filter(|op| op.sources.contains(&source))
+                        .count(),
+                    1
+                );
+                assert!(ledger.slot_alternatives().iter().any(
+                    |a| a.candidate == source.text && a.reason == "resegmentation_source_label"
+                ));
+                assert!(ledger.word_deletions().is_empty());
+                assert_eq!(ledger.conservation().residue(), 0);
+            }
         }
     }
 }

@@ -23228,8 +23228,38 @@ mod relay_l1_overlap_admission_tests {
             ledger
                 .slot_alternatives()
                 .iter()
-                .any(|alternative| alternative.candidate == "prośbę")
+                .any(|alternative| alternative.candidate == "albo prośbę o"
+                    && alternative.reason == "resegmentation_source_label")
         );
+        let sources = ledger
+            .slot_alternatives()
+            .iter()
+            .find(|alternative| {
+                alternative.candidate == "albo prośbę o"
+                    && alternative.reason == "resegmentation_source_label"
+            })
+            .unwrap()
+            .sources
+            .clone();
+        assert!(
+            ledger
+                .slot_operations()
+                .iter()
+                .any(|operation| operation.sources == sources
+                    && operation.outputs.iter().any(|slot| slot.text == "prośbę"
+                        && slot.sample_start == 31_000
+                        && slot.sample_end == 50_000))
+        );
+        assert!(
+            ledger
+                .slots_of(&owner)
+                .unwrap()
+                .iter()
+                .any(|slot| slot.text == "wierszyk"
+                    && slot.sample_start == 50_000
+                    && slot.sample_end == 60_000)
+        );
+        assert!(ledger.word_deletions().is_empty());
         assert_eq!(ledger.conservation().residue(), 0);
     }
 
@@ -23463,56 +23493,124 @@ mod relay_l1_overlap_admission_tests {
     /// wróciła". Neither description may lose a word.
     fn unpaired_held_tokens_do_not_veto_new_whisper_words(mode: BufferMode) {
         let session = &mode.session("integrator-unpaired-held");
-        let (mut lane, owner, requests) = forensic_lane_in(
-            mode,
-            session,
-            &[(
-                "powiedzieć tak albo nie żaden człowiek tak po polsku nie mówi",
-                4_000,
-                40_000,
-            )],
-        );
-        let range = &requests[0].provider_request.identity.range;
-        assert!(
-            range.sample_start <= 4_000 && range.sample_end >= 60_000,
-            "{mode:?}: window {}..{}",
-            range.sample_start,
-            range.sample_end
-        );
-        lane.state.complete_whisper_window(
-            &lane.tx,
-            completion(
-                &requests[0],
-                vec![
-                    word_pin(session, "człowiek", 22_000, 25_000),
-                    word_pin(session, "tak", 25_000, 26_500),
-                    word_pin(session, "po", 26_500, 28_000),
-                    word_pin(session, "polsku", 28_000, 32_000),
-                    word_pin(session, "nie", 32_000, 34_000),
-                    word_pin(session, "mówi.", 34_000, 38_000),
-                    word_pin(session, "I", 42_000, 43_000),
-                    word_pin(session, "właśnie", 43_000, 46_000),
-                    word_pin(session, "tam", 46_000, 48_000),
-                    word_pin(session, "bym", 48_000, 50_000),
-                    word_pin(session, "teraz", 50_000, 53_000),
-                    word_pin(session, "wróciła.", 53_000, 57_000),
-                ],
-            ),
-            12.5,
-        );
-        lane.state
-            .return_outstanding_whisper_without_label(&lane.tx);
-        let text = held_text(&lane, &owner).unwrap_or_default();
-        assert!(
-            text.contains("I właśnie tam bym teraz wróciła"),
-            "{mode:?}: Whisper words outside the held tokens were vetoed: {text:?}"
-        );
-        assert!(
-            text.contains("powiedzieć tak albo nie żaden"),
-            "{mode:?}: a held token without a Whisper description was lost: {text:?}"
-        );
-        assert_eq!(text.matches("polsku").count(), 1, "{mode:?}: {text:?}");
-        assert_eq!(lane.state.session_conservation().residue(), 0, "{mode:?}");
+        for physical in [false, true] {
+            let label = "powiedzieć tak albo nie żaden człowiek tak po polsku nie mówi";
+            let (mut lane, owner, requests, _) =
+                forensic_boundary_capture(mode, session, 0, 200_000, 0, &[(0, 200_000)]);
+            let prefix = [
+                ("powiedzieć", 4_000, 8_000),
+                ("tak", 8_000, 11_000),
+                ("albo", 11_000, 15_000),
+                ("nie", 15_000, 18_000),
+                ("żaden", 18_000, 22_000),
+            ];
+            let source = {
+                let mut ledger = lane.state.acoustic_ledger.lock().unwrap();
+                let observation =
+                    ledger.next_word_observation(ObservationProducer::Apple, 1, &owner);
+                let pins = if physical {
+                    let mut pins = prefix
+                        .iter()
+                        .map(|&(word, start, end)| {
+                            crate::pipeline::acoustic_ledger::WordPin::new(start, end, word)
+                        })
+                        .collect::<Vec<_>>();
+                    pins.push(crate::pipeline::acoustic_ledger::WordPin::new(
+                        22_000,
+                        40_000,
+                        "człowiek tak po polsku nie mówi",
+                    ));
+                    pins
+                } else {
+                    vec![crate::pipeline::acoustic_ledger::WordPin::new(
+                        4_000, 40_000, label,
+                    )]
+                };
+                assert!(
+                    ledger
+                        .admit_word_slots(&observation, &pins)
+                        .grants_mutation()
+                );
+                ledger.slots_of(&owner).unwrap()[0].clone()
+            };
+            let range = &requests[0].provider_request.identity.range;
+            assert!(
+                range.sample_start <= 4_000 && range.sample_end >= 60_000,
+                "{mode:?}: window {}..{}",
+                range.sample_start,
+                range.sample_end
+            );
+            lane.state.complete_whisper_window(
+                &lane.tx,
+                completion(
+                    &requests[0],
+                    vec![
+                        word_pin(session, "człowiek", 22_000, 25_000),
+                        word_pin(session, "tak", 25_000, 26_500),
+                        word_pin(session, "po", 26_500, 28_000),
+                        word_pin(session, "polsku", 28_000, 32_000),
+                        word_pin(session, "nie", 32_000, 34_000),
+                        word_pin(session, "mówi.", 34_000, 38_000),
+                        word_pin(session, "I", 42_000, 43_000),
+                        word_pin(session, "właśnie", 43_000, 46_000),
+                        word_pin(session, "tam", 46_000, 48_000),
+                        word_pin(session, "bym", 48_000, 50_000),
+                        word_pin(session, "teraz", 50_000, 53_000),
+                        word_pin(session, "wróciła.", 53_000, 57_000),
+                    ],
+                ),
+                12.5,
+            );
+            lane.state
+                .return_outstanding_whisper_without_label(&lane.tx);
+            let text = held_text(&lane, &owner).unwrap_or_default();
+            assert!(
+                text.contains("I właśnie tam bym teraz wróciła"),
+                "{mode:?}: Whisper words outside the held tokens were vetoed: {text:?}"
+            );
+            let ledger = lane.state.acoustic_ledger.lock().unwrap();
+            if physical {
+                assert!(
+                    text.starts_with("powiedzieć tak albo nie żaden człowiek"),
+                    "{mode:?}: individually admitted Words must survive an omission: {text:?}"
+                );
+                let kept = ledger
+                    .slots_of(&owner)
+                    .unwrap()
+                    .iter()
+                    .filter(|pin| pin.sample_end <= 22_000)
+                    .map(|pin| (pin.text.as_str(), pin.sample_start, pin.sample_end))
+                    .collect::<Vec<_>>();
+                assert_eq!(kept, prefix);
+            } else {
+                // The original coarse Apple hypothesis is a source label, not five
+                // independently proved Words. Its exact lineage remains available.
+                assert!(
+                    ledger
+                        .slot_alternatives()
+                        .iter()
+                        .any(|alternative| alternative.candidate == label
+                            && alternative.reason == "resegmentation_source_label"
+                            && alternative.sources.contains(&source))
+                );
+                assert_eq!(
+                    ledger
+                        .slot_operations()
+                        .iter()
+                        .filter(|operation| operation.sources.contains(&source))
+                        .count(),
+                    1
+                );
+            }
+            assert!(ledger.word_deletions().is_empty());
+            assert!(
+                !ledger.is_sealed(&owner),
+                "cancelled decode work cannot certify completion"
+            );
+            drop(ledger);
+            assert_eq!(text.matches("polsku").count(), 1, "{mode:?}: {text:?}");
+            assert_eq!(lane.state.session_conservation().residue(), 0, "{mode:?}");
+        }
     }
 
     // A real clock lie (held text far faster than speech) still cannot
@@ -26630,9 +26728,9 @@ mod relay_l1_overlap_admission_tests {
             whisper_mutations(&events),
             vec![(
                 "lexikon trzyma".to_string(),
-                MutationReceipt::Preserve {
+                MutationReceipt::Refuse {
                     occurrence: occurrence.clone(),
-                    held_by: ObservationProducer::Lexicon,
+                    reason: RefuseReason::SlotAdmissionRejected,
                 },
             )],
             "{events:#?}"
@@ -26651,7 +26749,7 @@ mod relay_l1_overlap_admission_tests {
                 slots_before.as_slice()
             );
             // The routed event preserves the held label; the rejected candidate's
-            // receipt lives in the ledger trail. SealedReplay also names rank refusal.
+            // receipt lives in the ledger trail. This open owner was not sealed.
             let refused = ledger
                 .layer_trail_for(&occurrence)
                 .filter(|entry| {
@@ -26665,13 +26763,142 @@ mod relay_l1_overlap_admission_tests {
                 refused[0].decision,
                 MutationReceipt::Refuse {
                     occurrence: occurrence.clone(),
-                    reason: RefuseReason::SealedReplay,
+                    reason: RefuseReason::SlotAdmissionRejected,
                 },
                 "{events:#?}"
             );
             ledger.assert_slot_labels();
         }
-        assert_conserved(&lane, Some("sealed_replay"));
+        assert_conserved(&lane, Some("slot_admission_rejected"));
+    }
+    #[test]
+    fn forensic_measured_group_edge_has_no_duplicate_and_retains_candidate() {
+        for mode in BufferMode::BOTH {
+            let session = mode.session("forensic-group-edge");
+            let (mut lane, owner, requests, _) =
+                forensic_boundary_capture(mode, &session, 0, 200_000, 0, &[(10_000, 60_000)]);
+            {
+                let mut ledger = lane.state.acoustic_ledger.lock().unwrap();
+                let obs = ledger.next_word_observation(ObservationProducer::Apple, 1, &owner);
+                assert!(
+                    ledger
+                        .admit_word_slots(
+                            &obs,
+                            &[
+                                crate::pipeline::acoustic_ledger::WordPin::new(
+                                    10_000,
+                                    40_000,
+                                    "albo prośbę o"
+                                ),
+                                crate::pipeline::acoustic_ledger::WordPin::new(
+                                    50_000, 60_000, "wierszyk"
+                                )
+                            ]
+                        )
+                        .grants_mutation()
+                );
+            }
+            lane.state.complete_whisper_window(
+                &lane.tx,
+                completion(
+                    &requests[0],
+                    vec![
+                        word_pin(&session, "albo", 12_000, 30_000),
+                        word_pin(&session, "prośbę", 31_000, 50_000),
+                    ],
+                ),
+                12.5,
+            );
+            let ledger = lane.state.acoustic_ledger.lock().unwrap();
+            assert_eq!(
+                ledger
+                    .text_of(&owner)
+                    .unwrap()
+                    .split_whitespace()
+                    .filter(|w| *w == "prośbę")
+                    .count(),
+                1
+            );
+            assert!(
+                ledger
+                    .slot_alternatives()
+                    .iter()
+                    .any(|a| a.candidate.split_whitespace().any(|w| w == "prośbę")),
+                "coarse source label remains in the lineage"
+            );
+            assert!(!ledger.is_sealed(&owner));
+            assert!(ledger.word_deletions().is_empty());
+            assert_eq!(ledger.conservation().residue(), 0);
+        }
+    }
+
+    #[test]
+    fn forensic_late_measured_recovery_cannot_cross_lexicon_authority() {
+        for mode in BufferMode::BOTH {
+            let session = mode.session("forensic-rank-recovery");
+            let (mut lane, owner, requests, _) =
+                forensic_boundary_capture(mode, &session, 0, 32_000, 0, &[(0, 32_000)]);
+            for (producer, label) in [
+                (ObservationProducer::Apple, "lexikon trzymac"),
+                (ObservationProducer::Lexicon, "lexikon trzyma"),
+            ] {
+                let observation = lane
+                    .state
+                    .acoustic_ledger
+                    .lock()
+                    .unwrap()
+                    .next_word_observation(producer, 1, &owner);
+                assert!(
+                    admit_ledger_label(
+                        &mut lane.state,
+                        &lane.tx,
+                        LabelAdmission {
+                            observation,
+                            label,
+                            energy: EnergyAdmission::RequireExistingQualification
+                        }
+                    )
+                    .unwrap()
+                    .grants_mutation()
+                );
+            }
+            let before = {
+                let mut l = lane.state.acoustic_ledger.lock().unwrap();
+                assert!(l.require_text_recovery(&owner));
+                l.slots_of(&owner).unwrap().to_vec()
+            };
+            let _ = drain(&mut lane.rx);
+            let result = completion(
+                &requests[0],
+                vec![
+                    word_pin(&session, "whisper", 4_000, 8_000),
+                    word_pin(&session, "inny", 8_000, 12_000),
+                ],
+            );
+            let payload = result.payload.unwrap();
+            payload.validate().unwrap();
+            assert!(!admit_debt_occurrence_recovery(
+                &mut lane.state,
+                &lane.tx,
+                &owner,
+                &payload
+            ));
+            let events = drain(&mut lane.rx);
+            assert_eq!(mutation_count(&events), 0);
+            let ledger = lane.state.acoustic_ledger.lock().unwrap();
+            assert_eq!(ledger.slots_of(&owner).unwrap(), before.as_slice());
+            assert_eq!(ledger.text_of(&owner), Some("lexikon trzyma"));
+            assert!(ledger.text_recovery_pending(&owner));
+            assert!(!ledger.is_sealed(&owner));
+            let trail = ledger
+                .layer_trail_for(&owner)
+                .filter(|e| e.observation.producer == ObservationProducer::Whisper)
+                .collect::<Vec<_>>();
+            assert!(!trail.is_empty());
+            assert!(trail.iter().all(|e| !e.decision.grants_mutation()));
+            assert!(ledger.word_deletions().is_empty());
+            assert_eq!(ledger.conservation().residue(), 0);
+        }
     }
 }
 
