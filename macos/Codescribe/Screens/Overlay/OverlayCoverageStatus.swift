@@ -102,8 +102,11 @@ struct OverlayWarningCopy: Equatable, Sendable {
     }
     let rate = UInt64(sampleRateHz)
     let seconds = ranges.reduce(0.0) { $0 + Double($1.sampleEnd - $1.sampleStart) / Double(rate) }
-    let duration = seconds < 0.1 ? "under 0.1" : String(
-      format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), seconds)
+    let duration =
+      seconds < 0.1
+      ? "under 0.1"
+      : String(
+        format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), seconds)
     let positions = ranges.map { timestamp($0.sampleStart / rate) }.joined(separator: ", ")
     let intervals = ranges.map { range in
       let end = range.sampleEnd / rate + (range.sampleEnd % rate == 0 ? 0 : 1)
@@ -136,49 +139,49 @@ struct OverlayCoverageStatus: View {
 
   var body: some View {
     HStack(spacing: 8) {
-    OverlayHoverControl(
-      id: "overlay-coverage-status", title: warning.sentence, palette: palette,
-      presented: $presented
-    ) {
-      Label(warning.chip, systemImage: warning.owner == .microphone ? "mic" : "info.circle")
-        .font(CSFont.ui(11, .medium))
-        .lineLimit(1)
-        .truncationMode(.tail)
-        .foregroundStyle(palette.processingStatus.color)
-    } detail: { close in
-      VStack(alignment: .leading, spacing: 10) {
-        Text(warning.sentence)
-          .fixedSize(horizontal: false, vertical: true)
-        if warning.owner == .microphone {
-          Button("Mic calibration in Settings…") {
-            close()
-            SettingsDeepLink.shared.present(.audio, anchor: .audioReadiness)
-            openWindow(id: SettingsView.windowID)
-            NSApp.activate(ignoringOtherApps: true)
+      OverlayHoverControl(
+        id: "overlay-coverage-status", title: warning.sentence, palette: palette,
+        presented: $presented
+      ) {
+        Label(warning.chip, systemImage: warning.owner == .microphone ? "mic" : "info.circle")
+          .font(CSFont.ui(11, .medium))
+          .lineLimit(1)
+          .truncationMode(.tail)
+          .foregroundStyle(palette.processingStatus.color)
+      } detail: { close in
+        VStack(alignment: .leading, spacing: 10) {
+          Text(warning.sentence)
+            .fixedSize(horizontal: false, vertical: true)
+          if warning.owner == .microphone {
+            Button("Mic calibration in Settings…") {
+              close()
+              SettingsDeepLink.shared.present(.audio, anchor: .audioReadiness)
+              openWindow(id: SettingsView.windowID)
+              NSApp.activate(ignoringOtherApps: true)
+            }
+            .controlSize(.small)
+            .accessibilityIdentifier("overlay-open-mic-calibration-settings")
           }
-          .controlSize(.small)
-          .accessibilityIdentifier("overlay-open-mic-calibration-settings")
+          if let diagnosticDetail {
+            Divider()
+            Text(diagnosticDetail).font(CSFont.mono(10, .medium))
+          }
         }
-        if let diagnosticDetail {
-          Divider()
-          Text(diagnosticDetail).font(CSFont.mono(10, .medium))
-        }
+        .frame(width: 250)
       }
-      .frame(width: 250)
-    }
-    if canRetranscribe {
-      HStack(spacing: 6) {
-        Text("Transcribe again")
-        Button("Local") { onRetranscribe(.fullHq) }
-        if cloudConfigured {
-          Button("Cloud") { onRetranscribe(.cloud) }
+      if canRetranscribe {
+        HStack(spacing: 6) {
+          Text("Transcribe again")
+          Button("Local") { onRetranscribe(.fullHq) }
+          if cloudConfigured {
+            Button("Cloud") { onRetranscribe(.cloud) }
+          }
         }
+        .buttonStyle(.borderless)
+        .controlSize(.small)
+        .font(CSFont.ui(11, .medium))
+        .accessibilityIdentifier("overlay-retranscribe-offer")
       }
-      .buttonStyle(.borderless)
-      .controlSize(.small)
-      .font(CSFont.ui(11, .medium))
-      .accessibilityIdentifier("overlay-retranscribe-offer")
-    }
     }
   }
 }

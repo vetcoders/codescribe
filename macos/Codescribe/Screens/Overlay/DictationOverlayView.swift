@@ -88,7 +88,9 @@ struct OverlayRecordingControls: View {
     case nil: canFinish || isFinalizing ? palette.errorStatus.color : palette.listeningStatus.color
     }
   }
-  var recordingStatusValue: String { recordingLight?.name ?? (isFinalizing ? "Transcribing" : "Ready") }
+  var recordingStatusValue: String {
+    recordingLight?.name ?? (isFinalizing ? "Transcribing" : "Ready")
+  }
   var showsStop: Bool { canFinish }
   var recordingSymbol: String { canFinish || isFinalizing ? "stop.fill" : "mic.fill" }
   var recordingLabel: String { canFinish || isFinalizing ? "Stop recording" : "Start dictation" }
@@ -860,8 +862,8 @@ struct DictationOverlayView: View {
         livePaint != nil
           ? "Live preview. Uncommitted words may change."
           : state.isTranscriptEditable
-          ? "Click to edit. Edits stay local until committed to the transcript ledger."
-          : ""
+            ? "Click to edit. Edits stay local until committed to the transcript ledger."
+            : ""
       )
     }
     .frame(maxWidth: .infinity, alignment: .leading)
