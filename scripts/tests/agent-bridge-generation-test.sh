@@ -66,6 +66,12 @@ struct Checks {
       let installer = RealAgentBridgeInstaller(
         resourceRoot: current, homeDirectory: home, environment: [:])
       _ = try installer.installRuntime()
+      for command in ["cs-bus", "cs-say"] {
+        let file = home.appendingPathComponent(".local/bin/" + command)
+        let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        try require(values.isRegularFile == true && values.isSymbolicLink != true,
+          "installed command must be a direct ordinary file: \(command)")
+      }
       let receipt = home.appendingPathComponent(".codescribe/agent-bridge/receipt.json")
       let before = try Data(contentsOf: receipt)
       let log = home.appendingPathComponent(".codescribe/agent-bridge/runtime/followers/live.log")
@@ -109,7 +115,51 @@ struct Checks {
     try require(receipt?["helper_version"] as? String == "0.10.0", "receipt lacks helper version")
     try require(receipt?["source_commit"] as? String == "next-source", "receipt lacks source identity")
     print("versioned-upgrade: ok")
-    print("agent-bridge-generation: 5 checks passed")
+    let migrationHome = root.appendingPathComponent("migration-home")
+    let migrationInstaller = RealAgentBridgeInstaller(
+      resourceRoot: current, homeDirectory: migrationHome, environment: [:])
+    _ = try migrationInstaller.installRuntime()
+    for command in ["cs-bus", "cs-say"] {
+      let file = migrationHome.appendingPathComponent(".local/bin/" + command)
+      try FileManager.default.removeItem(at: file)
+      let target = migrationHome.appendingPathComponent(
+        ".codescribe/agent-bridge/runtime/bin/" + command)
+      try FileManager.default.createSymbolicLink(at: file, withDestinationURL: target)
+    }
+    try require(try migrationInstaller.installBundledRuntime().contains("unchanged"),
+      "same-generation startup must publish direct files")
+    let bin = migrationHome.appendingPathComponent(".local/bin")
+    try require(try FileManager.default.contentsOfDirectory(atPath: bin.path)
+      .allSatisfy { !$0.contains(".backup-") }, "successful publication leaked link backups")
+    let sayFile = bin.appendingPathComponent("cs-say")
+    try FileManager.default.removeItem(at: sayFile)
+    try FileManager.default.createSymbolicLink(at: sayFile, withDestinationURL:
+      migrationHome.appendingPathComponent(".codescribe/agent-bridge/runtime/bin/cs-say"))
+    // Include the real reported state: the cs-say link is already dangling.
+    try FileManager.default.removeItem(at: migrationHome.appendingPathComponent(
+      ".codescribe/agent-bridge/runtime/bin/cs-say"))
+    _ = try migrationInstaller.installRuntime()
+    for command in ["cs-bus", "cs-say"] {
+      let file = migrationHome.appendingPathComponent(".local/bin/" + command)
+      let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+      try require(values.isRegularFile == true && values.isSymbolicLink != true,
+        "owned links must migrate to direct files: \(command)")
+    }
+    print("owned-and-dangling-link-migration: ok")
+    let command = migrationHome.appendingPathComponent(".local/bin/cs-say")
+    let receiptFile = migrationHome.appendingPathComponent(".codescribe/agent-bridge/receipt.json")
+    let receiptBefore = try Data(contentsOf: receiptFile)
+    try Data("foreign command".utf8).write(to: command)
+    do {
+      _ = try migrationInstaller.installRuntime()
+      throw CheckFailure.failed("foreign command accepted")
+    } catch is AgentBridgeInstallationError {
+      try require(try Data(contentsOf: receiptFile) == receiptBefore, "foreign conflict changed receipt")
+      try require(try String(contentsOf: command, encoding: .utf8) == "foreign command",
+        "foreign command overwritten")
+    }
+    print("foreign-command-preserved: ok")
+    print("agent-bridge-generation: 7 checks passed")
   }
 }
 SWIFT

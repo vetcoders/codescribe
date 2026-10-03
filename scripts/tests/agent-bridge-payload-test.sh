@@ -108,13 +108,60 @@ with open(sys.argv[1], "w", encoding="utf-8") as handle:
         "text": "James, payload działa.",
     }, ensure_ascii=False) + "\n")
 PY
-mkdir -p "$WORKDIR/local-bin"
-ln -s "$PAYLOAD/bin/cs-bus" "$WORKDIR/local-bin/cs-bus"
-ln -s "$PAYLOAD/bin/cs-say" "$WORKDIR/local-bin/cs-say"
-OUTPUT="$(cd "$WORKDIR" && "$WORKDIR/local-bin/cs-bus" --bus "$BUS" --name james --once)"
-"$WORKDIR/local-bin/cs-say" --help | grep -q -- '--provider'
-"$WORKDIR/local-bin/cs-bus" --version | grep -q '^cs-bus 0.9.0+g'
-"$WORKDIR/local-bin/cs-say" --version | grep -q '^cs-say 0.9.0+g'
+cat >"$WORKDIR/install.swift" <<'SWIFT'
+import Foundation
+@main
+struct Install {
+  static func main() throws {
+    _ = try RealAgentBridgeInstaller(
+      resourceRoot: URL(fileURLWithPath: CommandLine.arguments[1]),
+      homeDirectory: URL(fileURLWithPath: CommandLine.arguments[2]),
+      environment: [:]).installRuntime()
+  }
+}
+SWIFT
+xcrun swiftc -swift-version 6 -warnings-as-errors \
+  "$ROOT/macos/Codescribe/Services/AgentBridgeInstaller.swift" \
+  "$WORKDIR/install.swift" -o "$WORKDIR/install"
+"$WORKDIR/install" "$PAYLOAD" "$WORKDIR/home"
+LOCAL_BIN="$WORKDIR/home/.local/bin"
+test ! -L "$LOCAL_BIN/cs-bus"
+test ! -L "$LOCAL_BIN/cs-say"
+BEFORE_BUS_VERSION="$("$LOCAL_BIN/cs-bus" --version)"
+BEFORE_SAY_VERSION="$("$LOCAL_BIN/cs-say" --version)"
+# Reproduce the older app's explicit replacement with a valid old-style payload.
+# It ships only bus-demux.py, replacing runtime/bin and the generation receipt.
+# Direct commands must survive, report their own generation and remain updatable.
+cp -R "$PAYLOAD" "$WORKDIR/old-payload"
+python3 - "$WORKDIR/old-payload" <<'PY'
+import hashlib,json,sys
+from pathlib import Path
+p = Path(sys.argv[1])
+for name in ('cs-bus', 'cs-say'):
+    (p/'bin'/name).unlink()
+helper = p/'bin/bus-demux.py'
+helper.write_text('#!/usr/bin/env python3\nprint("old app helper")\n')
+m = json.loads((p/'manifest.json').read_text())
+m.pop('helper_version', None)
+m.pop('source_commit', None)
+m['files'] = [f for f in m['files'] if f['path'] not in ('bin/cs-bus', 'bin/cs-say')]
+for f in m['files']:
+    if f['path'] == 'bin/bus-demux.py':
+        f['bytes'] = helper.stat().st_size
+        f['sha256'] = hashlib.sha256(helper.read_bytes()).hexdigest()
+(p/'manifest.json').write_text(json.dumps(m))
+PY
+"$WORKDIR/install" "$WORKDIR/old-payload" "$WORKDIR/home"
+test ! -e "$WORKDIR/home/.codescribe/agent-bridge/runtime/bin/cs-bus"
+test ! -e "$WORKDIR/home/.codescribe/agent-bridge/runtime/bin/cs-say"
+OUTPUT="$(cd "$WORKDIR" && "$LOCAL_BIN/cs-bus" --bus "$BUS" --name james --once)"
+"$LOCAL_BIN/cs-say" --help | grep -q -- '--provider'
+"$LOCAL_BIN/cs-bus" --version | grep -q '^cs-bus 0.9.0+g'
+"$LOCAL_BIN/cs-say" --version | grep -q '^cs-say 0.9.0+g'
+test "$("$LOCAL_BIN/cs-bus" --version)" = "$BEFORE_BUS_VERSION"
+test "$("$LOCAL_BIN/cs-say" --version)" = "$BEFORE_SAY_VERSION"
+"$WORKDIR/install" "$PAYLOAD" "$WORKDIR/home"
+test "$("$LOCAL_BIN/cs-bus" --version)" = "$BEFORE_BUS_VERSION"
 python3 - "$OUTPUT" <<'PY'
 import json, sys
 value = json.loads(sys.argv[1])

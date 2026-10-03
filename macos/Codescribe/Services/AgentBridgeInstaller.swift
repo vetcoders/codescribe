@@ -672,7 +672,8 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
         preservedManualBackups: (previousReceipt?.preservedManualBackups ?? []) + preservedBackups,
         preservedEntries: preservedEntries
       )
-      try stageCommands(manifest: manifest, transactionID: transactionID, records: &records)
+      try stageCommands(
+        manifest: manifest, managedID: managedID, transactionID: transactionID, records: &records)
       try writeJSON(receipt, to: receiptURL)
       for follower in oldHelperFollowers where follower.isAlive {
         Self.logger.warning(
@@ -1067,6 +1068,20 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     homeDirectory.appendingPathComponent(".local/bin/" + name)
   }
 
+  private static let commandMarker = "# codescribe-managed-command: "
+
+  private func managedCommandID(_ file: URL) -> String? {
+    guard let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+      values.isRegularFile == true, values.isSymbolicLink != true,
+      let text = try? String(contentsOf: file, encoding: .utf8),
+      let line = text.split(separator: "\n", maxSplits: 2).dropFirst().first,
+      line.hasPrefix(Self.commandMarker),
+      let metadata = try? JSONSerialization.jsonObject(
+        with: Data(line.dropFirst(Self.commandMarker.count).utf8)) as? [String: Any]
+    else { return nil }
+    return metadata["managed_id"] as? String
+  }
+
   private func requireCommandOwnership(manifest: AgentBridgeBundleManifest) throws {
     let directory = homeDirectory.appendingPathComponent(".local/bin")
     let expected = homeDirectory.resolvingSymlinksInPath().appendingPathComponent(".local/bin")
@@ -1079,7 +1094,13 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       let destination = commandURL(name)
       let link = try? fileManager.destinationOfSymbolicLink(atPath: destination.path)
       if fileManager.fileExists(atPath: destination.path) || link != nil {
-        guard link == runtimeDirectory.appendingPathComponent("bin/" + name).path else {
+        let ownedLink = link == runtimeDirectory.appendingPathComponent("bin/" + name).path
+        let ownedFile =
+          link == nil
+          && validReceipt().map {
+            managedCommandID(destination) == $0.managedID
+          } == true
+        guard ownedLink || ownedFile else {
           throw AgentBridgeInstallationError.conflict(
             path: destination.path, reason: "the command belongs to another installation")
         }
@@ -1088,14 +1109,33 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
   }
 
   private func stageCommands(
-    manifest: AgentBridgeBundleManifest, transactionID: String,
+    manifest: AgentBridgeBundleManifest, managedID: String, transactionID: String,
     records: inout [ReplacementRecord]
   ) throws {
     try requireCommandOwnership(manifest: manifest)
     for name in commandNames(manifest: manifest) {
       let destination = commandURL(name)
-      let target = runtimeDirectory.appendingPathComponent("bin/" + name).path
-      if (try? fileManager.destinationOfSymbolicLink(atPath: destination.path)) == target {
+      // cs-bus receives the complete verified helper, so neither entrypoint
+      // depends on the replaceable runtime/bin payload after publication.
+      let source = runtimeDirectory.appendingPathComponent(
+        name == "cs-bus" ? manifest.helper : "bin/" + name)
+      let script = try String(contentsOf: source, encoding: .utf8)
+      let body = script.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+        .dropFirst().joined(separator: "\n")
+      var metadata: [String: Any] = [
+        "managed_id": managedID, "bundle_version": manifest.bundleVersion,
+        "helper_version": manifest.helperVersion ?? manifest.bundleVersion,
+      ]
+      if let commit = manifest.sourceCommit { metadata["source_commit"] = commit }
+      let generation = try JSONSerialization.data(withJSONObject: metadata, options: [.sortedKeys])
+      let header =
+        "#!/usr/bin/env python3\n" + Self.commandMarker
+        + String(decoding: generation, as: UTF8.self) + "\n"
+      let data = Data((header + body).utf8)
+      if (try? fileManager.destinationOfSymbolicLink(atPath: destination.path)) == nil,
+        (try? Data(contentsOf: destination)) == data
+      {
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: destination.path)
         continue
       }
       try fileManager.createDirectory(
@@ -1103,7 +1143,8 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       let stage = destination.deletingLastPathComponent()
         .appendingPathComponent(".\(name).stage-\(transactionID)")
       defer { try? fileManager.removeItem(at: stage) }
-      try fileManager.createSymbolicLink(atPath: stage.path, withDestinationPath: target)
+      try data.write(to: stage)
+      try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stage.path)
       try replace(
         destination: destination, with: stage, transactionID: transactionID, records: &records)
     }
@@ -1123,7 +1164,12 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
           path: receiptURL.path, reason: "the runtime generation changed while publishing commands")
       }
       try requireSynchronizationOwnership(receipt)
-      try stageCommands(manifest: manifest, transactionID: UUID().uuidString, records: &records)
+      try stageCommands(
+        manifest: manifest, managedID: receipt.managedID,
+        transactionID: UUID().uuidString, records: &records)
+      for record in records {
+        if let backup = record.backup { try? fileManager.removeItem(at: backup) }
+      }
     } catch {
       let failures = rollback(records: records)
       if !failures.isEmpty {
@@ -1142,7 +1188,9 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     let parent = destination.deletingLastPathComponent()
     try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
     var backup: URL?
-    if fileManager.fileExists(atPath: destination.path) {
+    if fileManager.fileExists(atPath: destination.path)
+      || (try? fileManager.destinationOfSymbolicLink(atPath: destination.path)) != nil
+    {
       let candidate = parent.appendingPathComponent(
         ".\(destination.lastPathComponent).backup-\(transactionID)",
         isDirectory: true
@@ -1174,7 +1222,10 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
   private func rollback(records: [ReplacementRecord]) -> [String] {
     var failures: [String] = []
     for record in records.reversed() {
-      if record.installedReplacement, fileManager.fileExists(atPath: record.destination.path) {
+      if record.installedReplacement,
+        fileManager.fileExists(atPath: record.destination.path)
+          || (try? fileManager.destinationOfSymbolicLink(atPath: record.destination.path)) != nil
+      {
         do {
           try fileManager.removeItem(at: record.destination)
         } catch {

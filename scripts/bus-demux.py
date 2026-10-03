@@ -3595,7 +3595,22 @@ def main() -> int:
     )
     args = parser.parse_args()
     if args.version:
-        manifest = read_json(Path(__file__).resolve().parent.parent / "manifest.json") or {}
+        manifest = {}
+        # Direct installs carry their generation with the executable, independent
+        # of any older app replacing the runtime receipt or payload directory.
+        with Path(__file__).open(encoding="utf-8") as helper:
+            helper.readline()
+            generation = helper.readline().rstrip("\n")
+        marker = "# codescribe-managed-command: "
+        if generation.startswith(marker):
+            try:
+                value = json.loads(generation[len(marker):])
+                if isinstance(value, dict):
+                    manifest = value
+            except json.JSONDecodeError:
+                pass
+        if not manifest:
+            manifest = read_json(Path(__file__).resolve().parent.parent / "manifest.json") or {}
         version = manifest.get("helper_version") or manifest.get("bundle_version") or "source"
         commit = manifest.get("source_commit")
         slug = f"+g{commit[:8]}" if isinstance(commit, str) and re.fullmatch(r"[0-9a-f]{40,64}", commit) else ""

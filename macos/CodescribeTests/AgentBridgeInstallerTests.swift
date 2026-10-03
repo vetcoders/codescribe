@@ -587,9 +587,9 @@ final class AgentBridgeInstallerTests: XCTestCase {
     for command in ["cs-bus", "cs-say"] {
       let path = home.appendingPathComponent(".local/bin/" + command).path
       XCTAssertTrue(FileManager.default.isExecutableFile(atPath: path))
-      XCTAssertEqual(
-        try FileManager.default.destinationOfSymbolicLink(atPath: path),
-        home.appendingPathComponent(".codescribe/agent-bridge/runtime/bin/" + command).path)
+      let values = try URL(fileURLWithPath: path).resourceValues(
+        forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+      XCTAssertTrue(values.isRegularFile == true && values.isSymbolicLink != true)
     }
     XCTAssertTrue(installer.synchronizeManagedPayload().contains("unchanged"))
     try FileManager.default.removeItem(at: home.appendingPathComponent(".local/bin/cs-bus"))

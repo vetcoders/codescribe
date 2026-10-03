@@ -69,7 +69,7 @@ if sys.argv[1:] == ["--version"]:
         sys.executable,
         [
             sys.executable,
-            str(Path(__file__).resolve().with_name("bus-demux.py")),
+            str(Path(__file__).resolve().with_name("cs-bus")),
             "--version",
             "--entrypoint",
             "cs-say",
@@ -82,7 +82,7 @@ os.execv(
     sys.executable,
     [
         sys.executable,
-        str(Path(__file__).resolve().with_name("bus-demux.py")),
+        str(Path(__file__).resolve().with_name("cs-bus")),
         "--say",
         *sys.argv[1:],
     ],
