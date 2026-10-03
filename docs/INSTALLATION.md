@@ -77,6 +77,15 @@ the bundle has the required usage description. See
 [Speech Recognition TCC](./SPEECH_RECOGNITION_TCC.md#supported-native-launch-context)
 for attribution, the dated #93 observation and acceptance evidence.
 
+Normal daily startup uses the existing defaults: runtime `.env`, Transcript Bus
+and agent-bridge state under `~/.codescribe`, with `settings.json` under
+`~/Library/Application Support/Codescribe`. `CODESCRIBE_DATA_DIR` redirects both
+owners to one supplied root. Do not infer the runtime root from the location of
+`settings.json` or pass that directory as a daily-launch override: existing
+followers may remain attached to the default bus. A deliberate disposable root
+must be named as such in its acceptance receipt; a default-profile result needs
+startup without the override and verification of the actual runtime log/bus path.
+
 For a disposable manual dev/test profile, pass variables with `open --env`.
 Use this only when the intended Debug app is not already running:
 
