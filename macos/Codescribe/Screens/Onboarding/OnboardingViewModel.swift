@@ -315,6 +315,8 @@ final class OnboardingViewModel: ObservableObject {
   private func refreshProviders() {
     if providerMutationPending { providerRefreshRequested = true; return }
     guard !providerAccessPending else { return }
+    // This read consumes the queued request; later mutations may queue another.
+    providerRefreshRequested = false
     providerAccessPending = true
     let generation = providerAccessGeneration
     Task { @MainActor [self] in
