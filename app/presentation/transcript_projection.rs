@@ -10,6 +10,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use codescribe_core::pipeline::acoustic_ledger::ManualDocumentRevisionReceipt;
 use serde::{Deserialize, Serialize};
 
 use super::transcript_bus::TranscriptProjectionPhase;
@@ -31,6 +32,10 @@ pub struct LifecycleRow {
     pub sequence: u64,
     pub session_id: String,
     pub status: String,
+    #[serde(default)]
+    pub reducer_revision: Option<u64>,
+    #[serde(default)]
+    pub capture_epoch: Option<u64>,
     #[serde(default)]
     pub source: Option<String>,
     #[serde(default)]
@@ -68,6 +73,8 @@ pub struct EvidenceRow {
     pub sample_end: u64,
     pub document_index: u64,
     pub rendered_text: String,
+    #[serde(default)]
+    pub document_revision_receipt: Option<ManualDocumentRevisionReceipt>,
     #[serde(default)]
     pub phase: TranscriptProjectionPhase,
     #[serde(default)]
@@ -114,6 +121,8 @@ pub struct TranscriptProjection {
     pub sample_end: u64,
     pub document_index: u64,
     pub rendered_text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub document_revision_receipt: Option<ManualDocumentRevisionReceipt>,
     pub phase: TranscriptProjectionPhase,
     pub can_paste: bool,
     pub can_insert: bool,
@@ -270,6 +279,7 @@ impl TranscriptProjectionReader {
                 sample_end: 0,
                 document_index: 0,
                 rendered_text,
+                document_revision_receipt: None,
                 phase: row.phase.unwrap_or_default(),
                 can_paste: row.can_paste,
                 can_insert: row.can_insert,
@@ -324,7 +334,7 @@ impl TranscriptProjectionReader {
             kind: TranscriptProjectionKind::TerminalSeal,
             session_id: row.session_id,
             sequence: row.sequence,
-            reducer_revision: 0,
+            reducer_revision: row.reducer_revision.unwrap_or(0),
             reducer_action: String::new(),
             occurrence_session_id: String::new(),
             capture_epoch: 0,
@@ -332,6 +342,7 @@ impl TranscriptProjectionReader {
             sample_end: 0,
             document_index: 0,
             rendered_text: String::new(),
+            document_revision_receipt: None,
             phase,
             can_paste: false,
             can_insert: false,
@@ -342,6 +353,13 @@ impl TranscriptProjectionReader {
             terminal: true,
         });
         projection.kind = TranscriptProjectionKind::TerminalSeal;
+        if let Some(epoch) = row.capture_epoch {
+            projection.capture_epoch = epoch;
+        }
+        if let Some(revision) = row.reducer_revision {
+            projection.reducer_revision = revision;
+            state.last_reducer_revision = Some(revision);
+        }
         if let Some(document) = row.rendered_text {
             projection.rendered_text = document;
         }
@@ -355,10 +373,61 @@ impl TranscriptProjectionReader {
         projection.can_format = can_format;
         projection.can_send_to_agent = row.can_send_to_agent;
         projection.terminal = true;
+        state.last_projection = Some(projection.clone());
         Some(projection)
     }
 
     fn project_evidence(&mut self, row: EvidenceRow) -> Option<TranscriptProjection> {
+        // A document without occurrences must retain its exact explicit receipt.
+        // The reader copies persisted provenance; it never invents PCM entries.
+        let manual_only =
+            row.reducer_action == "apply_manual_edit" && row.occurrence_session_id.is_empty();
+        if manual_only {
+            let receipt = row.document_revision_receipt.as_ref()?;
+            if !row.terminal
+                || receipt.session_id != row.session_id
+                || receipt.revision != row.reducer_revision
+                || receipt.source_revision.checked_add(1) != Some(receipt.revision)
+                || receipt.rendered_text != row.rendered_text
+                || receipt.capture_epoch != Some(row.capture_epoch)
+                || row.capture_epoch == 0
+                || receipt
+                    .capture_receipt_id
+                    .as_ref()
+                    .is_none_or(|id| id.is_empty())
+                || !receipt.source_occurrences.is_empty()
+                || !receipt.source_seal_receipts.is_empty()
+                || !matches!(receipt.provenance.as_str(), "user-edit" | "retranscribe")
+                || row.sample_start != 0
+                || row.sample_end != 0
+            {
+                return None;
+            }
+            if self
+                .sessions
+                .get(&row.session_id)
+                .and_then(|state| state.last_reducer_revision)
+                .is_some_and(|revision| revision != receipt.source_revision)
+            {
+                return None;
+            }
+            if self
+                .sessions
+                .get(&row.session_id)
+                .and_then(|state| state.last_projection.as_ref())
+                .is_some_and(|previous| {
+                    (previous.capture_epoch != 0 && previous.capture_epoch != row.capture_epoch)
+                        || previous
+                            .document_revision_receipt
+                            .as_ref()
+                            .is_some_and(|prior| {
+                                prior.capture_receipt_id != receipt.capture_receipt_id
+                            })
+                })
+            {
+                return None;
+            }
+        }
         let is_terminal_manual_revision = row.reducer_action == "apply_manual_edit" && row.terminal;
         let selected = if is_terminal_manual_revision {
             self.select_terminal_manual_revision(&row.session_id)
@@ -397,6 +466,7 @@ impl TranscriptProjectionReader {
             sample_end: row.sample_end,
             document_index: row.document_index,
             rendered_text: row.rendered_text,
+            document_revision_receipt: row.document_revision_receipt,
             phase: row.phase,
             can_paste: row.can_paste,
             can_insert: row.can_insert,

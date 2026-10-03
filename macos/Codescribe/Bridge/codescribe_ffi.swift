@@ -9921,6 +9921,85 @@ public func FfiConverterTypeCsLicenseStatus_lower(_ value: CsLicenseStatus) -> R
 
 
 /**
+ * Document provenance travels beside acoustic receipts, never inside a fake serial.
+ */
+public struct CsManualDocumentRevisionReceipt: Equatable, Hashable {
+    public var receiptId: String
+    public var provenance: CsDocumentRevisionProvenance
+    public var sessionId: String
+    public var sourceRevision: UInt64
+    public var revision: UInt64
+    public var renderedText: String
+    public var captureEpoch: UInt64?
+    public var captureReceiptId: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(receiptId: String, provenance: CsDocumentRevisionProvenance, sessionId: String, sourceRevision: UInt64, revision: UInt64, renderedText: String, captureEpoch: UInt64?, captureReceiptId: String?) {
+        self.receiptId = receiptId
+        self.provenance = provenance
+        self.sessionId = sessionId
+        self.sourceRevision = sourceRevision
+        self.revision = revision
+        self.renderedText = renderedText
+        self.captureEpoch = captureEpoch
+        self.captureReceiptId = captureReceiptId
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsManualDocumentRevisionReceipt: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsManualDocumentRevisionReceipt: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsManualDocumentRevisionReceipt {
+        return
+            try CsManualDocumentRevisionReceipt(
+                receiptId: FfiConverterString.read(from: &buf),
+                provenance: FfiConverterTypeCsDocumentRevisionProvenance.read(from: &buf),
+                sessionId: FfiConverterString.read(from: &buf),
+                sourceRevision: FfiConverterUInt64.read(from: &buf),
+                revision: FfiConverterUInt64.read(from: &buf),
+                renderedText: FfiConverterString.read(from: &buf),
+                captureEpoch: FfiConverterOptionUInt64.read(from: &buf),
+                captureReceiptId: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsManualDocumentRevisionReceipt, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.receiptId, into: &buf)
+        FfiConverterTypeCsDocumentRevisionProvenance.write(value.provenance, into: &buf)
+        FfiConverterString.write(value.sessionId, into: &buf)
+        FfiConverterUInt64.write(value.sourceRevision, into: &buf)
+        FfiConverterUInt64.write(value.revision, into: &buf)
+        FfiConverterString.write(value.renderedText, into: &buf)
+        FfiConverterOptionUInt64.write(value.captureEpoch, into: &buf)
+        FfiConverterOptionString.write(value.captureReceiptId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsManualDocumentRevisionReceipt_lift(_ buf: RustBuffer) throws -> CsManualDocumentRevisionReceipt {
+    return try FfiConverterTypeCsManualDocumentRevisionReceipt.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsManualDocumentRevisionReceipt_lower(_ value: CsManualDocumentRevisionReceipt) -> RustBuffer {
+    return FfiConverterTypeCsManualDocumentRevisionReceipt.lower(value)
+}
+
+
+/**
  * Pending identifies potentially executed work, not a running process.
  */
 public struct CsMaxConsultationSnapshot: Equatable, Hashable {
@@ -13540,6 +13619,7 @@ public struct CsTranscriptProjectionEvent: Equatable, Hashable {
      */
     public var delivery: CsTranscriptDelivery
     public var acousticReceipts: [CsProjectedAcousticReceipt]
+    public var documentRevisionReceipt: CsManualDocumentRevisionReceipt?
     public var sealCoverage: CsProjectedSealCoverageReceipt?
     public var consultationPresentations: [CsProjectedConsultationPresentation]
     /**
@@ -13565,7 +13645,7 @@ public struct CsTranscriptProjectionEvent: Equatable, Hashable {
          * Controller-owned delivery disposition, forwarded verbatim. Swift branches
          * on this typed state; the human-facing `label` above stays presentation and
          * never carries control meaning.
-         */delivery: CsTranscriptDelivery, acousticReceipts: [CsProjectedAcousticReceipt], sealCoverage: CsProjectedSealCoverageReceipt?, consultationPresentations: [CsProjectedConsultationPresentation],
+         */delivery: CsTranscriptDelivery, acousticReceipts: [CsProjectedAcousticReceipt], documentRevisionReceipt: CsManualDocumentRevisionReceipt? = nil, sealCoverage: CsProjectedSealCoverageReceipt?, consultationPresentations: [CsProjectedConsultationPresentation],
         /**
          * A6 uncertain-word spans over `rendered_text` (UTF-16 ranges), computed
          * by the reducer from ledger-pinned per-word confidence. Empty until the
@@ -13597,6 +13677,7 @@ public struct CsTranscriptProjectionEvent: Equatable, Hashable {
         self.lifecycleTerminal = lifecycleTerminal
         self.delivery = delivery
         self.acousticReceipts = acousticReceipts
+        self.documentRevisionReceipt = documentRevisionReceipt
         self.sealCoverage = sealCoverage
         self.consultationPresentations = consultationPresentations
         self.uncertainSpans = uncertainSpans
@@ -13642,6 +13723,7 @@ public struct FfiConverterTypeCsTranscriptProjectionEvent: FfiConverterRustBuffe
                 lifecycleTerminal: FfiConverterBool.read(from: &buf),
                 delivery: FfiConverterTypeCsTranscriptDelivery.read(from: &buf),
                 acousticReceipts: FfiConverterSequenceTypeCsProjectedAcousticReceipt.read(from: &buf),
+                documentRevisionReceipt: FfiConverterOptionTypeCsManualDocumentRevisionReceipt.read(from: &buf),
                 sealCoverage: FfiConverterOptionTypeCsProjectedSealCoverageReceipt.read(from: &buf),
                 consultationPresentations: FfiConverterSequenceTypeCsProjectedConsultationPresentation.read(from: &buf),
                 uncertainSpans: FfiConverterSequenceTypeCsUncertainSpan.read(from: &buf)
@@ -13675,6 +13757,7 @@ public struct FfiConverterTypeCsTranscriptProjectionEvent: FfiConverterRustBuffe
         FfiConverterBool.write(value.lifecycleTerminal, into: &buf)
         FfiConverterTypeCsTranscriptDelivery.write(value.delivery, into: &buf)
         FfiConverterSequenceTypeCsProjectedAcousticReceipt.write(value.acousticReceipts, into: &buf)
+        FfiConverterOptionTypeCsManualDocumentRevisionReceipt.write(value.documentRevisionReceipt, into: &buf)
         FfiConverterOptionTypeCsProjectedSealCoverageReceipt.write(value.sealCoverage, into: &buf)
         FfiConverterSequenceTypeCsProjectedConsultationPresentation.write(value.consultationPresentations, into: &buf)
         FfiConverterSequenceTypeCsUncertainSpan.write(value.uncertainSpans, into: &buf)
@@ -14771,6 +14854,88 @@ public func FfiConverterTypeCsDiffTier_lift(_ buf: RustBuffer) throws -> CsDiffT
 #endif
 public func FfiConverterTypeCsDiffTier_lower(_ value: CsDiffTier) -> RustBuffer {
     return FfiConverterTypeCsDiffTier.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * Origin of an authenticated whole-document revision, without acoustic alignment.
+ */
+
+public enum CsDocumentRevisionProvenance: Equatable, Hashable {
+
+    case userEdit
+    case retranscribe
+    case formatter
+    case lightPlus
+
+
+
+}
+
+#if compiler(>=6)
+extension CsDocumentRevisionProvenance: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsDocumentRevisionProvenance: FfiConverterRustBuffer {
+    typealias SwiftType = CsDocumentRevisionProvenance
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsDocumentRevisionProvenance {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .userEdit
+
+        case 2: return .retranscribe
+
+        case 3: return .formatter
+
+        case 4: return .lightPlus
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CsDocumentRevisionProvenance, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .userEdit:
+            writeInt(&buf, Int32(1))
+
+
+        case .retranscribe:
+            writeInt(&buf, Int32(2))
+
+
+        case .formatter:
+            writeInt(&buf, Int32(3))
+
+
+        case .lightPlus:
+            writeInt(&buf, Int32(4))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDocumentRevisionProvenance_lift(_ buf: RustBuffer) throws -> CsDocumentRevisionProvenance {
+    return try FfiConverterTypeCsDocumentRevisionProvenance.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDocumentRevisionProvenance_lower(_ value: CsDocumentRevisionProvenance) -> RustBuffer {
+    return FfiConverterTypeCsDocumentRevisionProvenance.lower(value)
 }
 
 
@@ -16689,6 +16854,30 @@ fileprivate struct FfiConverterOptionTypeCsLastServingVerdict: FfiConverterRustB
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypeCsLastServingVerdict.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeCsManualDocumentRevisionReceipt: FfiConverterRustBuffer {
+    typealias SwiftType = CsManualDocumentRevisionReceipt?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCsManualDocumentRevisionReceipt.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCsManualDocumentRevisionReceipt.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }

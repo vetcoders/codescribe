@@ -2341,9 +2341,30 @@ final class OverlayState {
       }
       compactProjection = nil
     }
-    let revisionReceipt = projection.acousticReceipts
-      .compactMap(\.manualEditReceipt)
-      .first(where: { $0.hasPrefix("user-edit-") })
+    let revisionReceipt: String?
+    if let receipt = projection.documentRevisionReceipt {
+      let matchesCapture: Bool
+      if let epoch = receipt.captureEpoch {
+        matchesCapture =
+          epoch > 0 && epoch == projection.captureEpoch
+          && receipt.captureReceiptId?.isEmpty == false
+      } else {
+        matchesCapture = !projection.acousticReceipts.isEmpty
+      }
+      revisionReceipt =
+        receipt.provenance == .userEdit
+          && receipt.sessionId == projection.sessionId
+          && receipt.sourceRevision < UInt64.max
+          && receipt.sourceRevision + 1 == receipt.revision
+          && receipt.revision == projection.reducerRevision
+          && receipt.renderedText.utf8.elementsEqual(projection.renderedText.utf8)
+          && !receipt.receiptId.isEmpty && matchesCapture
+        ? receipt.receiptId : nil
+    } else {
+      revisionReceipt = projection.acousticReceipts
+        .compactMap(\.manualEditReceipt)
+        .first(where: { $0.hasPrefix("user-edit-") })
+    }
     let formatterReceipt =
       projection.reducerAction == "derived_projection"
         && projection.label.hasPrefix("formatter-") ? projection.label : nil
@@ -2353,6 +2374,8 @@ final class OverlayState {
       && projection.terminal
       && projection.sessionId == pendingRevisionSessionId
       && projection.reducerRevision > (pendingRevisionSource ?? UInt64.max)
+      && (projection.documentRevisionReceipt == nil
+        || projection.documentRevisionReceipt?.sourceRevision == pendingRevisionSource)
       && revisionReceipt != nil
     let completesPendingFormatter =
       formatterCommitPending

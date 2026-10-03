@@ -12,6 +12,7 @@ use codescribe::presentation::transcript_bus::{
     ProjectedAcousticReceipt, ProjectedConsultationPresentation, ProjectedPresentationReceipt,
     ProjectedSealCoverageReceipt, TranscriptBusEvidenceEvent, TranscriptDelivery,
 };
+use codescribe_core::pipeline::acoustic_ledger::ManualDocumentRevisionReceipt;
 use codescribe_core::pipeline::contracts::{AnnotationKind, LayerSource, LayerSummary};
 use cpal::traits::{DeviceTrait, HostTrait};
 
@@ -220,6 +221,50 @@ impl CsProjectedConsultationPresentation {
     }
 }
 
+/// Origin of an authenticated whole-document revision, without acoustic alignment.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsDocumentRevisionProvenance {
+    UserEdit,
+    Retranscribe,
+    Formatter,
+    LightPlus,
+}
+
+/// Document provenance travels beside acoustic receipts, never inside a fake serial.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsManualDocumentRevisionReceipt {
+    pub receipt_id: String,
+    pub provenance: CsDocumentRevisionProvenance,
+    pub session_id: String,
+    pub source_revision: u64,
+    pub revision: u64,
+    pub rendered_text: String,
+    pub capture_epoch: Option<u64>,
+    pub capture_receipt_id: Option<String>,
+}
+
+impl CsManualDocumentRevisionReceipt {
+    fn from_bus_receipt(receipt: &ManualDocumentRevisionReceipt) -> Option<Self> {
+        let provenance = match receipt.provenance.as_str() {
+            "user-edit" => CsDocumentRevisionProvenance::UserEdit,
+            "retranscribe" => CsDocumentRevisionProvenance::Retranscribe,
+            "formatter" => CsDocumentRevisionProvenance::Formatter,
+            "light-plus" => CsDocumentRevisionProvenance::LightPlus,
+            _ => return None,
+        };
+        Some(Self {
+            receipt_id: receipt.receipt_id.clone(),
+            provenance,
+            session_id: receipt.session_id.clone(),
+            source_revision: receipt.source_revision,
+            revision: receipt.revision,
+            rendered_text: receipt.rendered_text.clone(),
+            capture_epoch: receipt.capture_epoch,
+            capture_receipt_id: receipt.capture_receipt_id.clone(),
+        })
+    }
+}
+
 /// Bridge event schema for the one reducer-owned transcript projection. It
 /// carries the full render, phase, availability, terminal state, and evidence,
 /// but exposes no document mutation method.
@@ -262,6 +307,8 @@ pub struct CsTranscriptProjectionEvent {
     /// never carries control meaning.
     pub delivery: CsTranscriptDelivery,
     pub acoustic_receipts: Vec<CsProjectedAcousticReceipt>,
+    #[uniffi(default = None)]
+    pub document_revision_receipt: Option<CsManualDocumentRevisionReceipt>,
     pub seal_coverage: Option<CsProjectedSealCoverageReceipt>,
     pub consultation_presentations: Vec<CsProjectedConsultationPresentation>,
     /// A6 uncertain-word spans over `rendered_text` (UTF-16 ranges), computed
@@ -493,6 +540,10 @@ impl CsTranscriptProjectionEvent {
                 .iter()
                 .map(CsProjectedAcousticReceipt::from_bus_receipt)
                 .collect(),
+            document_revision_receipt: event
+                .document_revision_receipt
+                .as_ref()
+                .and_then(CsManualDocumentRevisionReceipt::from_bus_receipt),
             uncertain_spans: event
                 .uncertain_spans
                 .iter()
@@ -1722,7 +1773,8 @@ mod tests {
                 manual_edit_receipt: Some("manual-edit-receipt".to_string()),
                 presentation_receipt: None,
             }],
-            seal_coverage: None,
+            document_revision_receipt: None,
+                seal_coverage: None,
             comparison: None,
             uncertain_spans: vec![
                 codescribe_core::pipeline::word_confidence::UncertainSpan {
@@ -1790,6 +1842,7 @@ mod tests {
                         seal_receipt: "seal-receipt".into(),
                     }],
                 }],
+                document_revision_receipt: None,
                 seal_coverage: None,
                 acoustic_receipts: vec![CsProjectedAcousticReceipt {
                     acoustic_serial_version: 2,
@@ -1825,6 +1878,58 @@ mod tests {
                 }],
             }
         );
+        // Exercise a ledger-minted capture-only receipt through the real JSON
+        // and bridge conversion, independently of the native projection fixtures.
+        for (provenance, expected) in [
+            (
+                codescribe_core::pipeline::acoustic_ledger::DocumentRevisionProvenance::UserEdit,
+                CsDocumentRevisionProvenance::UserEdit,
+            ),
+            (
+                codescribe_core::pipeline::acoustic_ledger::DocumentRevisionProvenance::Retranscribe,
+                CsDocumentRevisionProvenance::Retranscribe,
+            ),
+        ] {
+            let mut ledger = codescribe_core::pipeline::acoustic_ledger::AcousticLedger::new();
+            let owner = ledger.bind_manual_document_capture("bus-session", 13).unwrap();
+            ledger.complete_manual_document_capture(&owner, 0).unwrap();
+            let text = "  Odzyskany tekst\nraz raz  ";
+            let receipt = ledger.record_manual_document_revision(
+                "bus-session", 0, 1, text, &[], provenance,
+            ).unwrap();
+            assert!(ledger.authenticates_manual_document_revision(&receipt));
+            let mut human = event.clone();
+            human.reducer_revision = 1;
+            human.reducer_action = "apply_manual_edit".into();
+            human.rendered_text = text.into();
+            human.occurrence_session_id.clear();
+            human.sample_start = 0;
+            human.sample_end = 0;
+            human.label.clear();
+            human.acoustic_receipts.clear();
+            human.seal_coverage = None;
+            human.consultation_presentations.clear();
+            human.uncertain_spans.clear();
+            human.document_revision_receipt = Some(receipt.clone());
+            human.lifecycle_terminal = false;
+            let decoded: TranscriptBusEvidenceEvent = serde_json::from_value(
+                serde_json::to_value(&human).unwrap(),
+            ).unwrap();
+            let projected = CsTranscriptProjectionEvent::from_bus_event(&decoded);
+            let typed = projected.document_revision_receipt.expect("document receipt reaches Swift");
+            assert_eq!(typed.provenance, expected);
+            assert_eq!(typed.receipt_id, receipt.receipt_id);
+            assert_eq!(typed.session_id, "bus-session");
+            assert_eq!(typed.source_revision, 0);
+            assert_eq!(typed.revision, 1);
+            assert_eq!(typed.rendered_text.as_bytes(), text.as_bytes());
+            assert_eq!(typed.capture_epoch, Some(13));
+            assert_eq!(typed.capture_receipt_id, receipt.capture_receipt_id);
+            assert!(projected.acoustic_receipts.is_empty());
+            assert!(projected.seal_coverage.is_none());
+            assert!(projected.terminal && !projected.lifecycle_terminal);
+        }
+
         for (delivery, expected, wire_value) in [
             (
                 TranscriptDelivery::SinkAccepted,

@@ -1649,6 +1649,7 @@ mod tests {
             sample_end: 900,
             document_index: 0,
             rendered_text: text.to_string(),
+            document_revision_receipt: None,
             phase: Default::default(),
             can_paste: false,
             can_insert: false,

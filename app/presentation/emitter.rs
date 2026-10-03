@@ -16,9 +16,10 @@ use codescribe_core::llm::inline_format::{LabelProposalDisposition, OccurrenceLa
 use codescribe_core::pipeline::acoustic_ledger::{
     AcousticLedger, AcousticSerial, ConsultationPresentationInput, ConsultationPresentationReceipt,
     DocumentRevisionProvenance, IncrementalShapingInput, IncrementalShapingReceipt,
-    LedgerSealReceipt, ManualDocumentRevisionReceipt, MutationReceipt, NoAuthorityReason,
-    ObservationIdentity, ObservationProducer, OccurrenceIdentity, RefuseReason,
-    SealCoverageReceipt, SlotAlternative, TranscriptComparisonReceipt,
+    LedgerSealReceipt, ManualDocumentCaptureReceipt, ManualDocumentRevisionReceipt,
+    MutationReceipt, NoAuthorityReason, ObservationIdentity, ObservationProducer,
+    OccurrenceIdentity, RefuseReason, SealCoverageReceipt, SlotAlternative,
+    TranscriptComparisonReceipt,
 };
 use codescribe_core::pipeline::contracts::{
     ClosedApplePhrase, DeltaSink, EngineEvent, EventSink, SpeechIntegrity, SpeechIntegrityPhase,
@@ -262,12 +263,29 @@ impl TranscriptRevision {
     /// Validate the complete reducer-minted snapshot before any observer or
     /// delivery side effect. The Bus calls this; it never reconstructs text.
     pub(crate) fn authenticates_publication(&self, ledger: &AcousticLedger, session: &str) -> bool {
-        if self.publication_digest != self.digest()
-            || self.entries.is_empty()
-            || self
-                .entries
-                .windows(2)
-                .any(|pair| pair[0].occurrence >= pair[1].occurrence)
+        if self.publication_digest != self.digest() {
+            return false;
+        }
+        if self.entries.is_empty() {
+            return match &self.action {
+                ReducerAction::ApplyUserRevision { receipt } => {
+                    ledger.authenticates_manual_document_revision(receipt)
+                        && receipt.source_occurrences.is_empty()
+                        && receipt.session_id == session
+                        && receipt.revision == self.revision
+                        && receipt.source_revision.checked_add(1) == Some(self.revision)
+                        && receipt.rendered_text == self.rendered_text
+                        && self.consultation_presentations.is_empty()
+                        && self.uncertain_spans.is_empty()
+                        && self.seal_coverage.as_ref() == ledger.latest_seal_coverage()
+                }
+                _ => false,
+            };
+        }
+        if self
+            .entries
+            .windows(2)
+            .any(|pair| pair[0].occurrence >= pair[1].occurrence)
         {
             return false;
         }
@@ -368,7 +386,7 @@ impl TranscriptRevision {
                     && self.consultation_presentations.contains(receipt)
             }
             ReducerAction::ApplyUserRevision { receipt } => {
-                ledger.manual_document_revisions().contains(receipt)
+                ledger.authenticates_manual_document_revision(receipt)
                     && receipt.session_id == session
                     && receipt.revision == self.revision
                     && receipt.source_revision.checked_add(1) == Some(self.revision)
@@ -382,6 +400,24 @@ impl TranscriptRevision {
             }
             _ => true,
         }
+    }
+
+    /// Empty coverage updates carry source CAS and diagnostics, never a document.
+    pub(crate) fn authenticates_capture_revision(
+        &self,
+        ledger: &AcousticLedger,
+        session: &str,
+    ) -> bool {
+        let ReducerAction::RecordSealCoverage { receipt, .. } = &self.action else {
+            return false;
+        };
+        self.publication_digest == self.digest()
+            && self.entries.is_empty()
+            && self.rendered_text.is_empty()
+            && receipt.session_id == session
+            && ledger.has_manual_document_capture(session, receipt.capture_epoch)
+            && ledger.latest_seal_coverage() == Some(receipt)
+            && self.seal_coverage.as_ref() == Some(receipt)
     }
 }
 
@@ -671,6 +707,8 @@ pub struct TranscriptReducer {
     context_markers: Vec<DocumentContextMarker>,
     manual_rendered_text: Option<String>,
     manual_document_revision_receipt: Option<String>,
+    /// Capability retained from this emitter's actual capture-open callback.
+    manual_document_capture: Option<ManualDocumentCaptureReceipt>,
     /// Lifecycle ended; independent of whether the ledger issued a terminal seal.
     terminal: bool,
     terminal_sealed: bool,
@@ -866,6 +904,22 @@ impl TranscriptReducer {
 
     /// The same ordered fragments feed the main paint and its STOP receipt.
     fn visible_paint_fragments(&self) -> Vec<(u64, String, VisibleWordSource, bool)> {
+        if self.document_by_occurrence.is_empty()
+            && let Some(text) = &self.manual_rendered_text
+        {
+            // An accepted human document supersedes preview paint, without
+            // deleting refused evidence or claiming acoustic coverage for it.
+            return vec![(
+                0,
+                text.clone(),
+                VisibleWordSource::DocumentRevision {
+                    receipt: self.manual_document_revision_receipt.clone(),
+                    members: Vec::new(),
+                    markers: 0,
+                },
+                false,
+            )];
+        }
         let mut fragments = self
             .unanchored_evidence
             .iter()
@@ -1007,7 +1061,9 @@ impl TranscriptReducer {
             })
             .collect::<std::collections::BTreeSet<_>>();
         let mut seen = BTreeMap::new();
-        for word in &self.unadmitted_apple_words {
+        for word in self.unadmitted_apple_words.iter().filter(|_| {
+            self.manual_rendered_text.is_none() || !self.document_by_occurrence.is_empty()
+        }) {
             // Formatted finals rewrite the label. Retire pending and unmatched
             // raw preview by the committed capture extent, not by string
             // equality. Open partials stay: a stuck pin does not locate them.
@@ -1303,6 +1359,11 @@ impl TranscriptReducer {
             return None;
         }
         self.project_unanchored(ledger, observation, receipt);
+        if self.document_by_occurrence.is_empty() && self.manual_rendered_text.is_some() {
+            // Late recognizer evidence cannot replace an explicitly recovered
+            // human document or move its source CAS. Evidence stays inspectable.
+            return None;
+        }
         if matches!(receipt, MutationReceipt::KeepVisibleUnanchored { .. }) {
             return None;
         }
@@ -1492,7 +1553,31 @@ impl TranscriptReducer {
         if intent.rendered_text.trim().is_empty() {
             return Err(UserRevisionRefusal::EmptyText);
         }
-        let source_occurrences = if intent.provenance == DocumentRevisionProvenance::LightPlus {
+        let source_occurrences = if self.document_by_occurrence.is_empty() {
+            if !matches!(
+                intent.provenance,
+                DocumentRevisionProvenance::UserEdit | DocumentRevisionProvenance::Retranscribe
+            ) {
+                return Err(UserRevisionRefusal::NoCommittedDocument);
+            }
+            let owner = self
+                .manual_document_capture
+                .as_ref()
+                .filter(|owner| {
+                    owner.completed() && ledger.authenticates_manual_document_capture(owner)
+                })
+                .ok_or(UserRevisionRefusal::NoCommittedDocument)?;
+            if owner.session_id() != intent.session_id {
+                return Err(UserRevisionRefusal::SessionMismatch);
+            }
+            if intent.source_revision != self.revision {
+                return Err(UserRevisionRefusal::StaleRevision {
+                    expected: self.revision,
+                    actual: intent.source_revision,
+                });
+            }
+            Vec::new()
+        } else if intent.provenance == DocumentRevisionProvenance::LightPlus {
             self.authenticated_presentation_occurrences(&intent.session_id, intent.source_revision)?
         } else {
             self.authenticated_revision_occurrences(&intent.session_id, intent.source_revision)?
@@ -1619,7 +1704,17 @@ impl TranscriptReducer {
         source_revision: u64,
     ) -> Result<Vec<OccurrenceIdentity>, UserRevisionRefusal> {
         if self.document_by_occurrence.is_empty() {
-            return Err(UserRevisionRefusal::NoCommittedDocument);
+            if self.manual_rendered_text.is_none() {
+                return Err(UserRevisionRefusal::NoCommittedDocument);
+            }
+            let owner = self
+                .manual_document_capture
+                .as_ref()
+                .filter(|owner| owner.completed())
+                .ok_or(UserRevisionRefusal::NoCommittedDocument)?;
+            if owner.session_id() != session_id {
+                return Err(UserRevisionRefusal::SessionMismatch);
+            }
         }
         if source_revision != self.revision {
             return Err(UserRevisionRefusal::StaleRevision {
@@ -1934,6 +2029,11 @@ impl TranscriptReducer {
         position: usize,
         label: &str,
     ) -> Option<TranscriptRevision> {
+        if self.document_by_occurrence.is_empty() && self.manual_document_capture.is_some() {
+            // A marker cannot create or automatically revise a capture-only
+            // human document. Explicit whole-document intents own that CAS.
+            return None;
+        }
         let label = label.trim();
         if label.is_empty() {
             return None;
@@ -2901,14 +3001,24 @@ impl PresentationEmitter {
         revision: &TranscriptRevision,
         ledger: &AcousticLedger,
     ) -> bool {
-        let Some(first) = revision.entries.first() else {
-            return false;
-        };
         let session = self
             .transcript_bus
             .as_ref()
             .map(|bus| bus.session_id())
-            .unwrap_or(&first.occurrence.session);
+            .or_else(|| {
+                self.cursor_capture
+                    .get()
+                    .map(|(session, _)| session.as_str())
+            })
+            .or_else(|| {
+                revision
+                    .entries
+                    .first()
+                    .map(|entry| entry.occurrence.session.as_str())
+            });
+        let Some(session) = session else {
+            return false;
+        };
         revision.authenticates_publication(ledger, session)
     }
 
@@ -3040,11 +3150,71 @@ impl PresentationEmitter {
         ledger: &mut AcousticLedger,
         intent: UserRevisionIntent,
     ) -> Result<UserRevisionCommit, UserRevisionRefusal> {
-        let revision = self
+        let mut state = self
             .session_state
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .apply_user_revision(ledger, &intent)?;
+            .unwrap_or_else(|error| error.into_inner());
+        if state.document_by_occurrence.is_empty() {
+            if !matches!(
+                intent.provenance,
+                DocumentRevisionProvenance::UserEdit | DocumentRevisionProvenance::Retranscribe
+            ) {
+                return Err(UserRevisionRefusal::NoCommittedDocument);
+            }
+            let (session, epoch) = self
+                .cursor_capture
+                .get()
+                .ok_or(UserRevisionRefusal::AuthorityUnavailable)?;
+            if session != &intent.session_id {
+                return Err(UserRevisionRefusal::SessionMismatch);
+            }
+            if state.revision != intent.source_revision {
+                return Err(UserRevisionRefusal::StaleRevision {
+                    expected: state.revision,
+                    actual: intent.source_revision,
+                });
+            }
+            state
+                .revision
+                .checked_add(1)
+                .ok_or(UserRevisionRefusal::RevisionExhausted)?;
+            if intent.rendered_text.trim().is_empty() {
+                return Err(UserRevisionRefusal::EmptyText);
+            }
+            if self
+                .cmd_tx
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_ref()
+                .is_none_or(|sender| sender.is_closed())
+            {
+                return Err(UserRevisionRefusal::AuthorityUnavailable);
+            }
+            if !self.transcript_bus.as_ref().is_some_and(|bus| {
+                bus.completed_capture_revision(session, *epoch, intent.source_revision)
+            }) {
+                return Err(UserRevisionRefusal::NotTerminal);
+            }
+            let owner = state
+                .manual_document_capture
+                .as_ref()
+                .filter(|owner| {
+                    owner.matches(session, *epoch)
+                        && ledger.authenticates_manual_document_capture(owner)
+                })
+                .cloned()
+                .ok_or(UserRevisionRefusal::AuthorityUnavailable)?;
+            if !owner.completed() {
+                state.manual_document_capture = Some(
+                    ledger
+                        .complete_manual_document_capture(&owner, state.revision)
+                        .map_err(UserRevisionRefusal::LedgerRefusal)?,
+                );
+            }
+            state.mark_terminal_lifecycle();
+        }
+        let revision = state.apply_user_revision(ledger, &intent)?;
+        drop(state);
         if !self.authenticates_revision(&revision, ledger) {
             return Err(UserRevisionRefusal::LedgerRefusal(
                 "publication_authentication_failed",
@@ -3540,6 +3710,23 @@ impl EventSink for PresentationEmitter {
             .set((session_id.to_owned(), capture_epoch))
             .is_ok()
         {
+            if let Some(bus) = &self.transcript_bus {
+                bus.observe_capture_opened(session_id, capture_epoch);
+            }
+            if let Some(ledger) = &self.acoustic_ledger {
+                let mut ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
+                match ledger.bind_manual_document_capture(session_id, capture_epoch) {
+                    Ok(owner) => {
+                        self.session_state
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .manual_document_capture = Some(owner);
+                    }
+                    Err(reason) => {
+                        tracing::warn!(reason, "manual document capture ownership refused")
+                    }
+                }
+            }
             self.repaint_cursor();
         }
     }

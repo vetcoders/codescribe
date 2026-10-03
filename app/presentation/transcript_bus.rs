@@ -13,7 +13,8 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use chrono::{SecondsFormat, Utc};
 use codescribe_core::pipeline::acoustic_ledger::{
     AcousticLedger, AcousticSerial, ConsultationPresentationReceipt, IncrementalShapingReceipt,
-    SealCoverageReceipt, TerminalFinalityRefusal, TranscriptComparisonReceipt,
+    ManualDocumentRevisionReceipt, SealCoverageReceipt, TerminalFinalityRefusal,
+    TranscriptComparisonReceipt,
 };
 use codescribe_core::pipeline::contracts::TranscriptSegment;
 use serde::{Deserialize, Serialize};
@@ -368,6 +369,9 @@ pub struct TranscriptBusEvidenceEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audience: Option<String>,
     pub acoustic_receipts: Vec<ProjectedAcousticReceipt>,
+    /// Whole-document provenance, independent of word-to-PCM alignment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document_revision_receipt: Option<ManualDocumentRevisionReceipt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seal_coverage: Option<ProjectedSealCoverageReceipt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -403,10 +407,12 @@ struct CompactHistoryRow {
     rendered_text: String,
     provenance: String,
     emitted_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    document_revision_receipt: Option<ManualDocumentRevisionReceipt>,
 }
 
 /// A compact copy of a reducer revision whose large acoustic row may expire.
-/// It preserves the existing Bus-derived history without retaining receipts.
+/// It retains document provenance; large per-word acoustic rows may expire.
 pub(crate) fn compact_history_row(line: &str) -> Option<(String, u64, String)> {
     let event = serde_json::from_str::<TranscriptBusEvidenceEvent>(line).ok()?;
     let entry = history_entry_from_event(&event)?;
@@ -417,6 +423,7 @@ pub(crate) fn compact_history_row(line: &str) -> Option<(String, u64, String)> {
         rendered_text: entry.rendered_text,
         provenance: entry.provenance,
         emitted_at: entry.emitted_at,
+        document_revision_receipt: event.document_revision_receipt.clone(),
     };
     let encoded = serde_json::to_string(&row).ok()?;
     Some((row.session_id, row.revision, encoded))
@@ -430,14 +437,20 @@ fn history_entry_from_event(event: &TranscriptBusEvidenceEvent) -> Option<Docume
     {
         return None;
     }
-    let receipt = (event.reducer_action == "apply_manual_edit")
-        .then(|| {
-            event
-                .acoustic_receipts
-                .first()
-                .and_then(|acoustic| acoustic.manual_edit_receipt.as_deref())
-        })
-        .flatten();
+    let receipt = event
+        .document_revision_receipt
+        .as_ref()
+        .map(|receipt| receipt.receipt_id.as_str())
+        .or_else(|| {
+            (event.reducer_action == "apply_manual_edit")
+                .then(|| {
+                    event
+                        .acoustic_receipts
+                        .first()
+                        .and_then(|acoustic| acoustic.manual_edit_receipt.as_deref())
+                })
+                .flatten()
+        });
     let provenance = ["user-edit", "retranscribe", "formatter", "light-plus"]
         .into_iter()
         .find(|kind| receipt.is_some_and(|id| id.starts_with(&format!("{kind}-"))))
@@ -819,6 +832,12 @@ struct TranscriptBusWriter {
     sealed: bool,
     /// The controller left this session; nothing lifecycle-wise follows.
     ended: bool,
+    end_reason: Option<TranscriptSessionEndReason>,
+    capture_epoch: Option<u64>,
+    /// Source CAS and refused diagnostics when capture produced no document.
+    capture_revision: u64,
+    capture_coverage: Option<ProjectedSealCoverageReceipt>,
+    capture_comparison: Option<ProjectedTranscriptComparisonReceipt>,
     /// Last occurrence-authenticated book projection. `session_ended` may copy
     /// its complete rendered value but can never mutate it.
     last_projection: Option<TranscriptBusEvidenceEvent>,
@@ -913,6 +932,53 @@ impl Write for SharedBusWriter {
 }
 
 impl TranscriptBus {
+    /// Copy ownership from the recorder's physical capture-open callback.
+    pub(crate) fn observe_capture_opened(&self, session_id: &str, capture_epoch: u64) {
+        if self.session.session_id != session_id || capture_epoch == 0 {
+            return;
+        }
+        let mut writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !writer.ended && writer.capture_epoch.is_none() {
+            writer.capture_epoch = Some(capture_epoch);
+        }
+    }
+
+    /// The actual controller lifecycle must have completed this opened take.
+    /// Start failures and superseded starts never authorize a human document.
+    pub(crate) fn completed_capture_revision(
+        &self,
+        session_id: &str,
+        capture_epoch: u64,
+        source_revision: u64,
+    ) -> bool {
+        let writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        self.session.session_id == session_id
+            && writer.started
+            && writer.ended
+            && writer.capture_epoch == Some(capture_epoch)
+            && matches!(
+                writer.end_reason,
+                Some(
+                    TranscriptSessionEndReason::Completed
+                        | TranscriptSessionEndReason::CoverageRefused
+                        | TranscriptSessionEndReason::CoverageRefusedEmpty
+                        | TranscriptSessionEndReason::DeliveryFailed
+                        | TranscriptSessionEndReason::TranscriptionFailed
+                )
+            )
+            && writer
+                .last_projection
+                .as_ref()
+                .map_or(writer.capture_revision, |last| last.reducer_revision)
+                == source_revision
+    }
+
     fn projection_availability(
         &self,
         has_text: bool,
@@ -1003,6 +1069,26 @@ impl TranscriptBus {
         revision: &TranscriptRevision,
         ledger: &AcousticLedger,
     ) -> Vec<TranscriptBusEvidenceEvent> {
+        // A refused empty capture has no lexical document to publish. Retain
+        // only its authenticated source CAS and diagnostics for lifecycle end.
+        if revision.authenticates_capture_revision(ledger, &self.session.session_id) {
+            let mut writer = self
+                .writer
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if !writer.ended && revision.revision > writer.capture_revision {
+                writer.capture_revision = revision.revision;
+                writer.capture_coverage = revision
+                    .seal_coverage
+                    .as_ref()
+                    .map(ProjectedSealCoverageReceipt::from);
+                writer.capture_comparison = revision
+                    .comparison
+                    .as_ref()
+                    .map(ProjectedTranscriptComparisonReceipt::from);
+            }
+            return Vec::new();
+        }
         // Atomic refusal: no partial rows, sequence changes or last-render update.
         // The validator is owned by the reducer, not a second Bus text reducer.
         if !revision.authenticates_publication(ledger, &self.session.session_id) {
@@ -1056,6 +1142,22 @@ impl TranscriptBus {
         } else {
             phase
         };
+        let phase = if is_user_revision {
+            writer
+                .last_projection
+                .as_ref()
+                .map(|last| last.phase)
+                .filter(|phase| {
+                    matches!(
+                        phase,
+                        TranscriptProjectionPhase::Error
+                            | TranscriptProjectionPhase::CoverageRefused
+                    )
+                })
+                .unwrap_or(phase)
+        } else {
+            phase
+        };
         if writer
             .last_projection
             .as_ref()
@@ -1073,7 +1175,16 @@ impl TranscriptBus {
         if writer.ended && !is_user_revision {
             return Vec::new();
         }
-        let availability = if is_user_revision {
+        let availability = if is_user_revision && revision.entries.is_empty() {
+            self.projection_availability(
+                !revision.rendered_text.trim().is_empty(),
+                false,
+                writer
+                    .last_projection
+                    .as_ref()
+                    .is_some_and(|last| last.can_retranscribe),
+            )
+        } else if is_user_revision {
             writer
                 .last_projection
                 .as_ref()
@@ -1107,6 +1218,72 @@ impl TranscriptBus {
         let is_coverage_verdict =
             matches!(&revision.action, ReducerAction::RecordSealCoverage { .. });
         let mut emitted = Vec::new();
+        if revision.entries.is_empty() {
+            let ReducerAction::ApplyUserRevision { receipt } = &revision.action else {
+                return Vec::new();
+            };
+            if !writer.started
+                || !writer.ended
+                || writer.capture_epoch != receipt.capture_epoch
+                || !matches!(
+                    writer.end_reason,
+                    Some(
+                        TranscriptSessionEndReason::Completed
+                            | TranscriptSessionEndReason::CoverageRefused
+                            | TranscriptSessionEndReason::CoverageRefusedEmpty
+                            | TranscriptSessionEndReason::DeliveryFailed
+                            | TranscriptSessionEndReason::TranscriptionFailed
+                    )
+                )
+            {
+                return Vec::new();
+            }
+            let event = TranscriptBusEvidenceEvent {
+                schema: "codescribe.transcript-evidence.v1".to_string(),
+                sequence: writer.sequence.saturating_add(1),
+                emitted_at: Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true),
+                session_id: self.session.session_id.clone(),
+                mode: self.session.mode,
+                reducer_revision: revision.revision,
+                reducer_action: reducer_action.to_string(),
+                occurrence_session_id: String::new(),
+                capture_epoch: receipt.capture_epoch.unwrap_or(0),
+                sample_start: 0,
+                sample_end: 0,
+                document_index: 0,
+                label: String::new(),
+                rendered_text: revision.rendered_text.clone(),
+                delivery_text: None,
+                phase,
+                can_paste: availability.can_paste,
+                can_insert: availability.can_insert,
+                can_copy: availability.can_copy,
+                can_retranscribe: availability.can_retranscribe,
+                can_format: availability.can_format,
+                can_send_to_agent: availability.can_send_to_agent,
+                terminal: true,
+                lifecycle_terminal: false,
+                delivery: TranscriptDelivery::Unattempted,
+                audience: self.session.audience.clone(),
+                acoustic_receipts: Vec::new(),
+                document_revision_receipt: Some(receipt.clone()),
+                seal_coverage: revision
+                    .seal_coverage
+                    .as_ref()
+                    .map(ProjectedSealCoverageReceipt::from),
+                comparison: revision
+                    .comparison
+                    .as_ref()
+                    .map(ProjectedTranscriptComparisonReceipt::from),
+                consultation_presentations: Vec::new(),
+                uncertain_spans: Vec::new(),
+            };
+            if let Err(error) = self.write_evidence_event_locked(&mut writer, &event) {
+                self.log_write_error(error);
+            }
+            writer.last_projection = Some(event.clone());
+            return vec![event];
+        }
         for (document_index, entry) in revision.entries.iter().enumerate() {
             let Some(serial) = ledger.serial_of(&entry.occurrence) else {
                 continue;
@@ -1149,6 +1326,10 @@ impl TranscriptBus {
                     entry.manual_edit_receipt.clone(),
                     entry.presentation_receipt.as_ref(),
                 )],
+                document_revision_receipt: match &revision.action {
+                    ReducerAction::ApplyUserRevision { receipt } => Some(receipt.clone()),
+                    _ => None,
+                },
                 seal_coverage: revision
                     .seal_coverage
                     .as_ref()
@@ -1275,6 +1456,11 @@ impl TranscriptBus {
                 started: false,
                 sealed: false,
                 ended: false,
+                end_reason: None,
+                capture_epoch: None,
+                capture_revision: 0,
+                capture_coverage: None,
+                capture_comparison: None,
                 last_projection: None,
                 announced_documents: HashSet::new(),
             }),
@@ -1545,6 +1731,7 @@ impl TranscriptBus {
             self.log_write_error(error);
         }
         writer.ended = true;
+        writer.end_reason = Some(reason);
         tracing::info!(path = %self.path.display(), session_id = %self.session.session_id, sealed = writer.sealed, ?reason, "clean transcript bus session ended");
         let mut terminal =
             writer
@@ -1556,10 +1743,10 @@ impl TranscriptBus {
                     emitted_at: String::new(),
                     session_id: self.session.session_id.clone(),
                     mode: self.session.mode,
-                    reducer_revision: 0,
+                    reducer_revision: writer.capture_revision,
                     reducer_action: "session_ended".to_string(),
                     occurrence_session_id: String::new(),
-                    capture_epoch: 0,
+                    capture_epoch: writer.capture_epoch.unwrap_or(0),
                     sample_start: 0,
                     sample_end: 0,
                     document_index: 0,
@@ -1578,9 +1765,10 @@ impl TranscriptBus {
                     delivery,
                     audience: self.session.audience.clone(),
                     acoustic_receipts: Vec::new(),
+                    document_revision_receipt: None,
                     consultation_presentations: Vec::new(),
-                    seal_coverage: None,
-                    comparison: None,
+                    seal_coverage: writer.capture_coverage.clone(),
+                    comparison: writer.capture_comparison.clone(),
                     uncertain_spans: Vec::new(),
                 });
         terminal.sequence = writer.sequence;
@@ -1664,7 +1852,27 @@ impl TranscriptBus {
         event.emitted_at = Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true);
 
         writer.sequence = next_sequence;
-        Self::append_projection_locked(writer, &event)
+        if event.status == "session_ended" {
+            // Preserve the reducer's actual source revision even without a
+            // prior lexical entry. This metadata does not create a document.
+            let mut row = serde_json::to_value(&event).map_err(io::Error::other)?;
+            row["reducer_revision"] = serde_json::json!(
+                writer
+                    .last_projection
+                    .as_ref()
+                    .map_or(writer.capture_revision, |last| last.reducer_revision)
+            );
+            row["capture_epoch"] = serde_json::json!(writer.capture_epoch);
+            if writer.last_projection.is_none() {
+                row["seal_coverage"] =
+                    serde_json::to_value(&writer.capture_coverage).map_err(io::Error::other)?;
+                row["comparison"] =
+                    serde_json::to_value(&writer.capture_comparison).map_err(io::Error::other)?;
+            }
+            Self::append_projection_locked(writer, &row)
+        } else {
+            Self::append_projection_locked(writer, &event)
+        }
     }
 
     fn write_evidence_event_locked(

@@ -775,6 +775,8 @@ pub struct AcousticLedger {
     trail: Vec<LayerDecisionReceipt>,
     manual_edits: Vec<ManualEditReceipt>,
     manual_document_revisions: Vec<ManualDocumentRevisionReceipt>,
+    /// One opened capture capability; no acoustic evidence is minted here.
+    manual_document_capture: Option<ManualDocumentCaptureReceipt>,
     incremental_shapings: Vec<IncrementalShapingReceipt>,
     consultation_presentations: Vec<ConsultationPresentationReceipt>,
     derivations: Vec<OccurrenceDerivation>,
@@ -3307,6 +3309,110 @@ impl AcousticLedger {
         &self.manual_edits
     }
 
+    /// Called by the retained presentation's physical capture-open callback.
+    /// The private capability cannot be constructed from a UI session string.
+    pub fn bind_manual_document_capture(
+        &mut self,
+        session_id: &str,
+        capture_epoch: u64,
+    ) -> Result<ManualDocumentCaptureReceipt, &'static str> {
+        if session_id.is_empty() || capture_epoch == 0 {
+            return Err("manual_capture_identity_missing");
+        }
+        if let Some(owner) = &self.manual_document_capture {
+            return if owner.session_id == session_id && owner.capture_epoch == capture_epoch {
+                Ok(owner.clone())
+            } else {
+                Err("manual_capture_owner_mismatch")
+            };
+        }
+        if self
+            .evidence
+            .keys()
+            .chain(self.committed.keys())
+            .chain(self.frontiers.keys())
+            .chain(self.pending_text_recovery.iter())
+            .any(|occurrence| {
+                occurrence.session != session_id || occurrence.capture_epoch != capture_epoch
+            })
+            || self.latest_seal_coverage.as_ref().is_some_and(|coverage| {
+                coverage.session_id != session_id || coverage.capture_epoch != capture_epoch
+            })
+        {
+            return Err("manual_capture_owner_mismatch");
+        }
+        let owner = ManualDocumentCaptureReceipt {
+            receipt_id: format!("manual-capture-{}", uuid::Uuid::new_v4()),
+            session_id: session_id.to_owned(),
+            capture_epoch,
+            source_revision: None,
+        };
+        self.manual_document_capture = Some(owner.clone());
+        Ok(owner)
+    }
+
+    /// The emitter calls this only after its same-session Bus lifecycle ended.
+    /// Neither a terminal reducer Boolean nor deserialized text is a capability.
+    pub fn complete_manual_document_capture(
+        &mut self,
+        owner: &ManualDocumentCaptureReceipt,
+        source_revision: u64,
+    ) -> Result<ManualDocumentCaptureReceipt, &'static str> {
+        let Some(bound) = self.manual_document_capture.as_mut() else {
+            return Err("manual_capture_not_opened");
+        };
+        if bound != owner || bound.source_revision.is_some() {
+            return Err("manual_capture_completion_replayed");
+        }
+        bound.source_revision = Some(source_revision);
+        Ok(bound.clone())
+    }
+
+    pub fn authenticates_manual_document_capture(
+        &self,
+        owner: &ManualDocumentCaptureReceipt,
+    ) -> bool {
+        self.manual_document_capture.as_ref() == Some(owner)
+    }
+
+    pub fn has_manual_document_capture(&self, session_id: &str, capture_epoch: u64) -> bool {
+        self.manual_document_capture
+            .as_ref()
+            .is_some_and(|owner| owner.matches(session_id, capture_epoch))
+            && self
+                .evidence
+                .keys()
+                .chain(self.frontiers.keys())
+                .chain(self.pending_text_recovery.iter())
+                .all(|occurrence| {
+                    occurrence.session == session_id && occurrence.capture_epoch == capture_epoch
+                })
+            && self.latest_seal_coverage.as_ref().is_none_or(|coverage| {
+                coverage.session_id == session_id && coverage.capture_epoch == capture_epoch
+            })
+    }
+
+    /// Authenticate stored document provenance, including the capture-only form.
+    pub fn authenticates_manual_document_revision(
+        &self,
+        receipt: &ManualDocumentRevisionReceipt,
+    ) -> bool {
+        if !self.manual_document_revisions.contains(receipt) {
+            return false;
+        }
+        if !receipt.source_occurrences.is_empty() {
+            return receipt.capture_receipt_id.is_none() && receipt.capture_epoch.is_none();
+        }
+        self.manual_document_capture.as_ref().is_some_and(|owner| {
+            owner.source_revision.is_some()
+                && owner.session_id == receipt.session_id
+                && Some(owner.capture_epoch) == receipt.capture_epoch
+                && Some(&owner.receipt_id) == receipt.capture_receipt_id.as_ref()
+                && receipt.source_seal_receipts.is_empty()
+                && matches!(receipt.provenance.as_str(), "user-edit" | "retranscribe")
+        })
+    }
+
     /// Authenticate one provenance-bearing rewrite of the complete document.
     ///
     /// A whole-document edit cannot honestly be divided back into occurrence
@@ -3332,9 +3438,35 @@ impl AcousticLedger {
         if source_revision.checked_add(1) != Some(revision) {
             return Err("manual_document_revision_nonconsecutive");
         }
-        if source_occurrences.is_empty() {
-            return Err("manual_document_occurrences_missing");
-        }
+        let capture = if source_occurrences.is_empty() {
+            if !matches!(
+                provenance,
+                DocumentRevisionProvenance::UserEdit | DocumentRevisionProvenance::Retranscribe
+            ) {
+                return Err("manual_document_explicit_intent_required");
+            }
+            let owner = self
+                .manual_document_capture
+                .as_ref()
+                .filter(|owner| owner.session_id == session_id && owner.source_revision.is_some())
+                .ok_or("manual_document_completed_capture_missing")?;
+            if !self.has_manual_document_capture(session_id, owner.capture_epoch) {
+                return Err("manual_document_capture_epoch_mismatch");
+            }
+            if !self.committed.is_empty() && self.manual_document_revisions.is_empty() {
+                return Err("manual_document_committed_source_missing");
+            }
+            let expected = self
+                .manual_document_revisions
+                .last()
+                .map_or(owner.source_revision, |previous| Some(previous.revision));
+            if expected != Some(source_revision) {
+                return Err("manual_document_source_revision_stale");
+            }
+            Some(owner)
+        } else {
+            None
+        };
         if source_occurrences.iter().any(|occurrence| {
             occurrence.session != session_id
                 || !self.is_qualified(occurrence)
@@ -3361,6 +3493,8 @@ impl AcousticLedger {
             source_occurrences: source_occurrences.to_vec(),
             source_seal_receipts,
             rendered_text: rendered_text.to_string(),
+            capture_epoch: capture.map(|owner| owner.capture_epoch),
+            capture_receipt_id: capture.map(|owner| owner.receipt_id.clone()),
         };
         self.manual_document_revisions.push(receipt.clone());
         Ok(receipt)
@@ -4457,7 +4591,7 @@ impl DocumentRevisionProvenance {
 /// The receipt names every source occurrence and any issued seal but carries
 /// no fabricated per-word alignment for the replacement text. It is append-only
 /// evidence consumed by the Rust transcript reducer and its Bus projection.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ManualDocumentRevisionReceipt {
     /// Stable identifier copied into each projected acoustic receipt.
     pub receipt_id: String,
@@ -4475,6 +4609,35 @@ pub struct ManualDocumentRevisionReceipt {
     pub source_seal_receipts: Vec<String>,
     /// Complete user-authored replacement bytes.
     pub rendered_text: String,
+    /// Capture ownership for a human document with no acoustic source entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_epoch: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_receipt_id: Option<String>,
+}
+
+/// Ledger-minted ownership of one physical capture, held only in process.
+/// Deliberately has no deserializer or public fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManualDocumentCaptureReceipt {
+    receipt_id: String,
+    session_id: String,
+    capture_epoch: u64,
+    source_revision: Option<u64>,
+}
+
+impl ManualDocumentCaptureReceipt {
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    pub fn matches(&self, session_id: &str, capture_epoch: u64) -> bool {
+        self.session_id == session_id && self.capture_epoch == capture_epoch
+    }
+
+    pub fn completed(&self) -> bool {
+        self.source_revision.is_some()
+    }
 }
 
 /// One immutable acoustic source member claimed by a grouped Agent answer.

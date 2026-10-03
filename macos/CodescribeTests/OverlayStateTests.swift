@@ -404,7 +404,8 @@ final class OverlayStateTests: XCTestCase {
     projectText("Zapisane słowa", to: state, terminal: true, sessionId: "unresolved-review")
     XCTAssertTrue(state.terminal)
     XCTAssertEqual(state.liveEvidence, [unresolved], "Rust retained unresolved evidence for review")
-    XCTAssertEqual(state.canvasText, "Zapisane słowa", "evidence does not acquire document authority")
+    XCTAssertEqual(
+      state.canvasText, "Zapisane słowa", "evidence does not acquire document authority")
     XCTAssertEqual(state.activeText, "Zapisane słowa", "evidence remains outside delivery")
   }
 
@@ -1980,6 +1981,107 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(OverlayIntentRail.projectedIntents(for: state), [.copy, .sendToAgent, .close])
   }
 
+  private func emptyRecoveryProjection(
+    sequence: UInt64, text: String = "", revision: UInt64 = 0,
+    receipt: CsManualDocumentRevisionReceipt? = nil
+  ) -> CsTranscriptProjectionEvent {
+    transcriptProjection(
+      sequence: sequence, emittedAt: "2026-10-03T00:00:00Z",
+      sessionId: "empty-native-recovery", renderedText: text,
+      phase: "coverage_refused", terminal: true,
+      reducerAction: receipt == nil ? "session_ended" : "apply_manual_edit",
+      reducerRevision: revision, captureEpoch: 7,
+      sampleStart: 0, sampleEnd: 0, documentIndex: 0, label: "",
+      canCopy: !text.isEmpty, canRetranscribe: true,
+      lifecycleTerminal: receipt == nil, acousticReceipts: [],
+      documentRevisionReceipt: receipt
+    )
+  }
+
+  private func emptyRecoveryReceipt(
+    text: String, provenance: CsDocumentRevisionProvenance = .userEdit,
+    sessionId: String = "empty-native-recovery", source: UInt64 = 0,
+    revision: UInt64 = 1, epoch: UInt64? = 7, captureReceipt: String? = "owned-capture"
+  ) -> CsManualDocumentRevisionReceipt {
+    CsManualDocumentRevisionReceipt(
+      receiptId: "user-edit-empty-native-0-1", provenance: provenance,
+      sessionId: sessionId, sourceRevision: source, revision: revision,
+      renderedText: text, captureEpoch: epoch, captureReceiptId: captureReceipt
+    )
+  }
+
+  func testFirstHumanDocumentFinishesPendingOnlyThroughDocumentProjection() async {
+    for newerDraft in [false, true] {
+      let state = OverlayState()
+      let engine = OverlayStateTestEngine()
+      state.engine = engine
+      var captureEnds: [String] = []
+      state.onCaptureEnded = { captureEnds.append($0) }
+      state.applyTranscriptProjection(emptyRecoveryProjection(sequence: 1))
+      XCTAssertTrue(state.isTranscriptEditable)
+      state.beginTranscriptEdit()
+      let text = "  Odzyskany tekst\nraz raz  "
+      state.updateRevisionDraft(text)
+      let requested = expectation(description: "first human document sent to Rust")
+      engine.onRevision = { requested.fulfill() }
+      state.commitRevisionDraft()
+      await fulfillment(of: [requested], timeout: 1)
+      XCTAssertTrue(state.revisionCommitPending)
+      XCTAssertEqual(state.activeText, "", "ACK cannot commit or paint the human document")
+      XCTAssertEqual(engine.revisionRequests.first?.sourceRevision, 0)
+      if newerDraft { state.updateRevisionDraft(text + " późniejszy szkic") }
+      let endedBeforeRevision = captureEnds
+      let receipt = emptyRecoveryReceipt(text: text)
+      state.applyTranscriptProjection(
+        emptyRecoveryProjection(sequence: 2, text: text, revision: 1, receipt: receipt))
+      XCTAssertFalse(state.revisionCommitPending)
+      XCTAssertEqual(Array(state.activeText.utf8), Array(text.utf8))
+      XCTAssertEqual(state.revision, 1)
+      XCTAssertEqual(state.userRevisionProvenance, receipt.receiptId)
+      XCTAssertEqual(state.revisionDraft, newerDraft ? text + " późniejszy szkic" : text)
+      XCTAssertEqual(state.isRevisionDraftDirty, newerDraft)
+      XCTAssertTrue(state.isTranscriptEditable)
+      XCTAssertEqual(state.mode, .coverageRefused, "human recovery cannot certify capture")
+      XCTAssertEqual(
+        captureEnds, endedBeforeRevision, "a document receipt cannot end capture again")
+      XCTAssertTrue(state.latestTranscriptProjection?.acousticReceipts.isEmpty == true)
+      XCTAssertNil(state.latestTranscriptProjection?.sealCoverage)
+    }
+  }
+
+  func testMalformedFirstDocumentReceiptCannotCompletePendingDraft() async {
+    let text = "Odzyskany tekst"
+    let receipts = [
+      emptyRecoveryReceipt(text: text, provenance: .formatter),
+      emptyRecoveryReceipt(text: text, sessionId: "other-capture"),
+      emptyRecoveryReceipt(text: text, source: 1),
+      emptyRecoveryReceipt(text: text, revision: 2),
+      emptyRecoveryReceipt(text: text + " altered"),
+      emptyRecoveryReceipt(text: text, epoch: 8),
+      emptyRecoveryReceipt(text: text, epoch: nil),
+      emptyRecoveryReceipt(text: text, captureReceipt: ""),
+    ]
+    for receipt in receipts {
+      let state = OverlayState()
+      let engine = OverlayStateTestEngine()
+      state.engine = engine
+      state.applyTranscriptProjection(emptyRecoveryProjection(sequence: 1))
+      state.beginTranscriptEdit()
+      state.updateRevisionDraft(text)
+      let requested = expectation(description: "pending draft before malformed receipt")
+      engine.onRevision = { requested.fulfill() }
+      state.commitRevisionDraft()
+      await fulfillment(of: [requested], timeout: 1)
+      XCTAssertTrue(state.revisionCommitPending)
+      state.updateRevisionDraft(text + " local")
+      state.applyTranscriptProjection(
+        emptyRecoveryProjection(sequence: 2, text: text, revision: 1, receipt: receipt))
+      XCTAssertTrue(state.revisionCommitPending, "invalid receipt cannot acknowledge the draft")
+      XCTAssertNil(state.userRevisionProvenance)
+      XCTAssertEqual(state.revisionDraft, text + " local")
+    }
+  }
+
   func testUserEditCommitsOnlyThroughReturnedRustProjection() async {
     let state = OverlayState()
     let engine = OverlayStateTestEngine()
@@ -2029,7 +2131,8 @@ final class OverlayStateTests: XCTestCase {
       state.canvasText, "Tekst poprawiony", "draft stays visible until the ledger answers")
     XCTAssertEqual(state.revision, 7)
     XCTAssertTrue(state.revisionCommitPending)
-    XCTAssertTrue(state.isTranscriptEditable, "typing remains available while a revision is in flight")
+    XCTAssertTrue(
+      state.isTranscriptEditable, "typing remains available while a revision is in flight")
     XCTAssertEqual(OverlayIntentRail.projectedIntents(for: state), [])
 
     projectText(
@@ -4382,7 +4485,8 @@ final class OverlayStateTests: XCTestCase {
     reason: CsCoverageUnavailableReason? = nil
   ) -> CsProjectedSealCoverageReceipt {
     CsProjectedSealCoverageReceipt(
-      status: status, sampleRateHz: nil, unavailableReason: reason, speechSamples: status == .incomplete ? 32_000 : 0,
+      status: status, sampleRateHz: nil, unavailableReason: reason,
+      speechSamples: status == .incomplete ? 32_000 : 0,
       coveredSamples: status == .incomplete ? 16_000 : 0, uncoveredSpeechRanges: [],
       maxUncoveredSamples: status == .incomplete ? 16_000 : 0, incompleteThresholdSamples: 4_000,
       speechProducer: "capture_energy",
@@ -4582,7 +4686,6 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.activeText, "first epoch second epoch second epoch")
   }
 
-
   func testLive1656CoverageDebtDoesNotClaimRecognizersFoundNoWords() {
     let receipt = CsProjectedSealCoverageReceipt(
       status: .incomplete, sampleRateHz: 16_000, unavailableReason: nil,
@@ -4615,13 +4718,13 @@ final class OverlayStateTests: XCTestCase {
     }
   }
 
-
   func testLive1656AcceptedPreviewNotifiesLayoutWithoutAdmittingAWord() {
     let state = OverlayState()
     state.handleRecordingPreparing()
-    state.applyCompactProjection(CsCompactProjection(
-      sessionId: "layout-only", captureEpoch: 1, sequence: 1,
-      text: "", degraded: false, evidence: []))
+    state.applyCompactProjection(
+      CsCompactProjection(
+        sessionId: "layout-only", captureEpoch: 1, sequence: 1,
+        text: "", degraded: false, evidence: []))
     var changes = 0
     state.onTranscriptPresentationChanged = { changes += 1 }
     let paint = CsCompactProjection(
@@ -4630,9 +4733,10 @@ final class OverlayStateTests: XCTestCase {
     state.applyCompactProjection(paint)
     XCTAssertEqual(changes, 1)
     state.applyCompactProjection(paint)
-    state.applyCompactProjection(CsCompactProjection(
-      sessionId: "foreign", captureEpoch: 1, sequence: 99,
-      text: "wrong take", degraded: false, evidence: []))
+    state.applyCompactProjection(
+      CsCompactProjection(
+        sessionId: "foreign", captureEpoch: 1, sequence: 99,
+        text: "wrong take", degraded: false, evidence: []))
     XCTAssertEqual(changes, 1, "rejected paint must not trigger layout")
     XCTAssertEqual(state.compactProjection, paint)
     XCTAssertNil(state.latestTranscriptProjection)

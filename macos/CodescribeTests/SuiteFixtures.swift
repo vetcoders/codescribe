@@ -182,6 +182,7 @@ func transcriptProjection(
   lifecycleTerminal: Bool? = nil,
   delivery: CsTranscriptDelivery = .unattempted,
   acousticReceipts: [CsProjectedAcousticReceipt] = [],
+  documentRevisionReceipt: CsManualDocumentRevisionReceipt? = nil,
   sealCoverage: CsProjectedSealCoverageReceipt? = nil,
   consultationPresentations: [CsProjectedConsultationPresentation] = [],
   uncertainSpans: [CsUncertainSpan] = []
@@ -213,6 +214,7 @@ func transcriptProjection(
     lifecycleTerminal: lifecycleTerminal ?? terminal,
     delivery: delivery,
     acousticReceipts: acousticReceipts,
+    documentRevisionReceipt: documentRevisionReceipt,
     sealCoverage: sealCoverage,
     consultationPresentations: consultationPresentations,
     uncertainSpans: uncertainSpans
