@@ -18245,6 +18245,34 @@ mod live_refinement_admission_tests {
         completion
     }
 
+    fn forensic_live_transport_words_completion(
+        request: &TailPatchRequest,
+        text: &str,
+    ) -> TailPatchCompletion {
+        request
+            .provider_request
+            .validate_pcm(&request.audio)
+            .unwrap();
+        assert_eq!(request.audio, vec![0.25; 400]);
+        let mut completion = forensic_live_transport_word_completion(request);
+        let payload = completion.payload.as_mut().unwrap();
+        payload.text = text.into();
+        let template = payload.segments[0].clone();
+        let words = text.split_whitespace().collect::<Vec<_>>();
+        payload.segments = words
+            .iter()
+            .enumerate()
+            .map(|(i, word)| {
+                let mut segment = template.clone();
+                segment.text = (*word).into();
+                segment.range.sample_start = 50 + (300 * i / words.len()) as u64;
+                segment.range.sample_end = 50 + (300 * (i + 1) / words.len()) as u64;
+                segment
+            })
+            .collect();
+        completion
+    }
+
     #[test]
     fn forensic_live_transport_foreign_envelope_waits_for_exact_word_completion() {
         for context in [
@@ -18841,6 +18869,7 @@ mod live_refinement_admission_tests {
     fn relay_acceptance_formatter_receives_corrected_whisper_source() {
         for policy in [FormattingPolicy::Correction, FormattingPolicy::Smart] {
             let (mut state, events, mut receiver, mut requests) = fixture(1);
+            forensic_live_transport_capture(&mut state);
             state.capture_turn = CaptureTurnIntent::HandsFree;
             let (formatter, mut formatted) = mpsc::channel(FORMATTER_QUEUE_CAP);
             assert!(live_formatter_lane_is_armed(
@@ -18886,10 +18915,8 @@ mod live_refinement_admission_tests {
             // release precisely one request with corrected, enriched input.
             state.flush_layer1_coalesce(&events);
             let request = requests.try_recv().expect("Whisper remains enabled");
-            let mut completion = labelled_completion(&request);
-            let payload = completion.payload.as_mut().unwrap();
-            payload.text = "czy plan zweryfikowałeś".into();
-            payload.segments[0].text = payload.text.clone();
+            let completion =
+                forensic_live_transport_words_completion(&request, "czy plan zweryfikowałeś");
             state.complete_whisper_window(&events, completion, 20.0);
             state.close_admission_horizon(&events, u64::MAX);
             let derived = formatted
@@ -18945,6 +18972,7 @@ mod live_refinement_admission_tests {
             ("czy weryfikowałeś", "czy plan weryfikowałeś"),
         ] {
             let (mut state, events, mut receiver, mut requests) = fixture(1);
+            forensic_live_transport_capture(&mut state);
             state.capture_turn = CaptureTurnIntent::AgentChannel;
             reconcile_silero_ledger(
                 &mut state,
@@ -18982,10 +19010,7 @@ mod live_refinement_admission_tests {
             );
             state.flush_layer1_coalesce(&events);
             let request = requests.try_recv().unwrap();
-            let mut completion = labelled_completion(&request);
-            let payload = completion.payload.as_mut().unwrap();
-            payload.text = whisper.into();
-            payload.segments[0].text = whisper.into();
+            let completion = forensic_live_transport_words_completion(&request, whisper);
             state.complete_whisper_window(&events, completion, 20.0);
             state.close_admission_horizon(&events, u64::MAX);
             let ledger = state.acoustic_ledger.lock().unwrap();
