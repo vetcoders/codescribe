@@ -1258,7 +1258,7 @@ final class SettingsViewModel: ObservableObject {
   private let hotkeys: HotkeysEngine?
   private let licenseService: LicenseService
   private let runtimeLlmLaneProvider: (CsLlmLane) -> CsRuntimeLlmLane
-  private let audioRecordingStateProvider: () -> OverlayState?
+  private let audioRecordingControlProvider: () -> (state: OverlayState, tray: TrayViewModel)?
   /// Sealed runtime lane projections for this refresh. `llmLane` is read from
   /// SwiftUI `body` (once per menu item); the FFI load is not.
   private var runtimeLaneCache: [LLMLane: CsRuntimeLlmLane] = [:]
@@ -1276,9 +1276,7 @@ final class SettingsViewModel: ObservableObject {
     runtimeLlmLaneProvider: @escaping (CsLlmLane) -> CsRuntimeLlmLane = { lane in
       runtimeLlmLane(lane: lane)
     },
-    audioRecordingStateProvider: @escaping () -> OverlayState? = {
-      AppModel.shared.overlay.state
-    },
+    audioRecordingControlProvider: (() -> (state: OverlayState, tray: TrayViewModel)?)? = nil,
     servingStatusProvider: @escaping () -> LastServingVerdict? = {
       guard let verdict = currentServingVerdict() else { return nil }
       return LastServingVerdict(
@@ -1298,7 +1296,8 @@ final class SettingsViewModel: ObservableObject {
     self.licenseService = licenseService ?? .preview
     self.buildInfo = buildInfo
     self.runtimeLlmLaneProvider = runtimeLlmLaneProvider
-    self.audioRecordingStateProvider = audioRecordingStateProvider
+    self.audioRecordingControlProvider =
+      audioRecordingControlProvider ?? Self.liveAudioRecordingControlProvider(for: engine)
     self.servingStatusProvider = servingStatusProvider
 
     // Reading the settings snapshot is passive: it does not write config
@@ -2153,11 +2152,22 @@ final class SettingsViewModel: ObservableObject {
 
   // MARK: - Audio (live hardware + existing settings contract)
 
-  /// Borrow the existing observable lifecycle only when Audio appears. Settings
-  /// never attaches a listener or opens a separate recorder; previews stay passive.
-  func audioRecordingState() -> OverlayState? {
-    guard engine != nil else { return nil }
-    return audioRecordingStateProvider()
+  /// Borrow both existing owners together only when Audio appears. Settings
+  /// never attaches a listener or opens a separate recorder.
+  func audioRecordingControls() -> (state: OverlayState, tray: TrayViewModel)? {
+    audioRecordingControlProvider()
+  }
+
+  /// Fake engines stay detached unless their matching owners are injected.
+  /// Resolving live owners is deferred until Audio appears, never model init.
+  private static func liveAudioRecordingControlProvider(
+    for engine: SettingsEngine?
+  ) -> () -> (state: OverlayState, tray: TrayViewModel)? {
+    guard engine is RealSettingsEngine else { return { nil } }
+    return {
+      let app = AppModel.shared
+      return (state: app.overlay.state, tray: app.tray)
+    }
   }
 
   func refreshAudioInput() {
