@@ -71,7 +71,7 @@ final class VoiceLabTests: XCTestCase {
       qualityRecords: [record],
       lexiconEntries: [entry]
     )
-    let model = SettingsViewModel(engine: engine)
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
 
     model.refreshVoiceLab()
 
@@ -357,7 +357,7 @@ final class VoiceLabTests: XCTestCase {
         return CsVoiceLabSaveResult(record: revised, pairsLearned: 1, lexiconError: nil)
       }
     )
-    let model = SettingsViewModel(engine: engine)
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
     model.refreshVoiceLab()
 
     XCTAssertTrue(model.finalizeVoiceLabCorrection(id: original.id, canonical: " Junie Prime "))
@@ -423,7 +423,7 @@ final class VoiceLabTests: XCTestCase {
         throw NSError(domain: "VoiceLabWrite", code: 1)
       }
     )
-    let model = SettingsViewModel(engine: engine)
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
     model.refreshVoiceLab()
 
     XCTAssertFalse(model.finalizeVoiceLabCorrection(id: original.id, canonical: "Broken"))
@@ -501,7 +501,7 @@ final class VoiceLabTests: XCTestCase {
         CsLexiconEntry(variant: "luks tri", canonical: "Loctree", source: "correction")
       ]
     )
-    let model = SettingsViewModel(engine: engine)
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
     model.teachDictionaryFromStore()
     // Teach hops global -> main queues; pump the main run loop until the
     // completion lands (synchronous unwrap can never observe it).
@@ -525,7 +525,7 @@ final class VoiceLabTests: XCTestCase {
       lexiconEntries: [],
       ruleCandidates: [candidate]
     )
-    let model = SettingsViewModel(engine: engine)
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
 
     model.refreshVoiceLab()
 
@@ -544,7 +544,7 @@ final class VoiceLabTests: XCTestCase {
     XCTAssertTrue(ruleCandidatesSectionVisible([candidate]))
 
     let engine = MockSettingsEngine(qualityRecords: [], lexiconEntries: [])
-    let model = SettingsViewModel(engine: engine)
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
     model.refreshVoiceLab()
     XCTAssertTrue(model.ruleCandidates.isEmpty)
     XCTAssertFalse(ruleCandidatesSectionVisible(model.ruleCandidates))
@@ -572,7 +572,7 @@ final class VoiceLabTests: XCTestCase {
         )
       }
     )
-    let model = SettingsViewModel(engine: engine)
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
     model.refreshVoiceLab()
 
     model.teachRuleCandidate(target: candidate.target, variant: candidate.variants[0])

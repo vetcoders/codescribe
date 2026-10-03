@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- Agent history rows are accessible buttons with a selected state, keyboard focus and Return / Space / arrow-key navigation. Deleting a thread from the toolbar menu asks for the same confirmation as the history rail. Markdown export names its Transcripts-folder destination in the menu and reports the saved file (with Reveal in Finder / Open) or a visible failure instead of opening Finder on its own.
+- Restored conversation tool cards retain saved call IDs and explicit success or failure for the existing inspector. Missing outcomes remain unknown; summaries and timing that were never saved stay absent.
+- Settings and Setup distinguish provider account sign-in from API keys, explain model discovery requirements, and scope readiness to speech, Assistive and enabled Formatting. Audio observes the shared recorder and offers Stop during an active take.
+- Overlay errors retain confirmed recording-start history after Stop, preserve projected text, and separate readable failure feedback from expandable diagnostics. Recovery actions distinguish the current take's audio from previous text and saved history.
+- Custom-provider endpoint validation identifies the field to correct without displaying the Rust/FFI error representation. Launch configuration warnings name environment keys needing review and mention backups only when they exist.
+- Native startup instructions use explicit app-bundle launch through LaunchServices and document the different Debug and Release privacy identities.
 - Add the localization foundation for the macOS app: String Catalogs with English as the source language, catalog sync and lint tooling, and interface copy prepared for further languages (`docs/LOCALIZATION.md`). No translation ships yet. Tray status wording is now authored in the app; the Rust tray payload carries state only.
 - Turning the transcription overlay off closes an overlay already on screen (a take being corrected stays until its draft is committed or discarded), and a status card shown with the overlay off no longer stays up when "Keep visible between takes" is pinned.
 - A second click on the menu bar icon closes the menu; it no longer closes and reopens it within the same click.

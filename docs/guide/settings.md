@@ -1,12 +1,9 @@
 # Settings & Configuration
 
-Codescribe now has one native Settings window with five tabs:
-
-1. **Transcription**
-2. **Modes & Shortcuts**
-3. **AI & Prompts**
-4. **Audio & Input**
-5. **Diagnostics**
+Codescribe has one native Settings window. Its sidebar separates **Creator**,
+**Hotkeys**, **Audio**, **Providers**, **Agent**, **Dictation**, **Dictionary**,
+**License**, and **User**. Each section with several concerns has its own tabs;
+the experimental **Lab** section is visible only on the developer surface.
 
 Configuration still lives in three layers:
 
@@ -21,11 +18,13 @@ For the product semantics behind preview, verdict, fallback, and AI categories, 
 ## Open Settings
 
 - Menu bar icon → **Settings**
-- Chat Overlay → **Settings** tab
+- Agent window → **Settings**
 
-## Transcription
+## Dictation
 
-Open **Settings → Transcription**.
+Open **Settings → Dictation** for the speech engine, Whisper model, preview
+timing, hands-free capture, cloud privacy and permissions. **Creator** carries
+the setup controls, including language and automatic formatting.
 
 This tab owns the transcript pipeline itself:
 
@@ -58,9 +57,9 @@ This tab owns the transcript pipeline itself:
 - `USE_LOCAL_STT=0` changes the **committed transcript path after capture**; it does not move live preview to the cloud.
 - In the current build, **cloud STT is still post-capture**, not live cloud preview. The Settings UI states this explicitly.
 
-## Modes & Shortcuts
+## Hotkeys
 
-Open **Settings → Modes & Shortcuts**.
+Open **Settings → Hotkeys**.
 
 This tab owns the global shortcut model:
 
@@ -76,40 +75,89 @@ The same tab also owns:
 - `Double-tap interval`
 - hotkey conflict detection / details
 
-## AI & Prompts
+## Providers and Agent
 
-Open **Settings → AI & Prompts**.
+Open **Settings → Providers** to manage accounts, API keys and provider
+endpoints. Vendor endpoints are factory-defined; custom hosts have editable
+endpoints. Secrets are stored separately from account sign-in.
 
-This tab owns the LLM side of the product:
+Open **Settings → Agent → LLM lanes** to select a provider and model separately
+for **Assistive** (Agent and voice-assistant requests) and **Formatting**
+(transcript cleanup). **Agent → Prompts** edits their prompts.
 
-- Formatting provider
-- Assistive provider
-- model + endpoint fields
-- API keys in Keychain
-- prompt editor for:
-  - `formatting`
-  - `assistive`
+### Account access and API keys
+
+Setup, its completion summary and the provider cards distinguish these states:
+
+| Configuration     | Account       | API key        | Enabled access                                                                           |
+| ----------------- | ------------- | -------------- | ---------------------------------------------------------------------------------------- |
+| Account only      | Connected     | Not configured | Supported Assistive requests; no provider model discovery or cloud Formatting credential |
+| API key only      | Not connected | Configured     | Supported API requests, including Formatting and model discovery                         |
+| Both              | Connected     | Configured     | Account access for supported Assistive requests plus the provider API-key paths          |
+| Key-optional host | Not required  | Optional       | Requests supported by that host, after selecting a model                                 |
+
+A connected ChatGPT account is not an OpenAI API key. It does not authorize the
+Formatting lane. Setup can continue with account-only access; use **Manage
+provider access…** to open Providers when another credential is needed. A lane
+is usable only when its resolved runtime snapshot reports it available.
+
+### Model discovery
+
+Model discovery queries the provider's model API with its provider API key.
+Account sign-in alone does not supply that key. With account-only Assistive
+access, `/model` shows the currently resolved model and explains the missing
+catalog access. Keep that model, or enter a supported **Model ID** in **Agent →
+LLM lanes**. Adding an API key is optional for Assistive account requests.
+
+Fresh and cached catalogs offer selectable models. A provider returning no
+models or a discovery failure gives the corresponding explanation and next
+action. Check **Providers**, then **Refresh** models in **Agent → LLM lanes**.
+The palette briefly caches results while filtering and refreshes them after a
+provider/model/credential-presence change or after its cache expires.
+
+Palette labels and grant actions follow the macOS interface language through
+the app's String Catalog. Model IDs, provider IDs and tool grant keys remain
+unchanged.
+
+### Readiness scope
+
+The Settings footer describes setup for speech capture, Assistive and enabled
+automatic cloud Formatting. An unavailable required Formatting lane prevents a
+green ready claim and links to Agent settings. When formatting is disabled, its
+cloud lane is not required. Selecting Apple on-device formatting does not
+authorize cloud requests: the user-triggered cloud path still checks this lane,
+so enabled Formatting remains part of setup readiness. The footer does not
+certify on-device execution.
+
+Agent capabilities readiness in Setup covers Assistive access and native tools.
+MCP status is separate and optional. The wizard presents account/key presence
+separately from that capability verdict; it does not label an account as a key.
 
 Prompt files live in `~/.codescribe/prompts/`.
 
-## Audio & Input
+## Audio
 
-Open **Settings → Audio & Input**.
+Open **Settings → Audio**.
 
-This tab owns capture defaults and app-shell behavior:
+This section owns microphone selection, calibration, the seal-lane prerequisite
+and recording sound feedback. Its recording row observes the existing shared
+recording lifecycle used by the overlay and tray:
 
-- `Whisper language`
-- `Beep on recording start`
-- `Enter to send`
-- `Transcription overlay`
-- `Show Dock icon`
-- `Sound volume`
+- Idle: **Start recording** is enabled only with microphone permission and a
+  successful admission verdict.
+- Starting: shows preparation and prevents another Start.
+- Recording: shows **Recording in progress** and **Stop recording**, including
+  takes started outside this panel.
+- Finishing: shows processing and prevents another Start or Stop.
 
-This is where you decide whether the floating transcription overlay exists at all.
+Stopping through the tray or a shortcut updates this panel too. Calibration is
+disabled while a take is active or finishing. These controls use the existing
+RecordingController path; opening Audio does not create another recorder.
 
-## Diagnostics
+## Permissions and diagnostics
 
-Open **Settings → Diagnostics**.
+Open **Settings → Dictation → Permissions** for the permission matrix, and
+**Agent → Status** for agent capability diagnostics.
 
 This tab is for environment truth, not onboarding copy:
 
@@ -119,7 +167,7 @@ This tab is for environment truth, not onboarding copy:
 - `Open System Settings`
 - `Copy diagnostics`
 
-Use this tab when the app lies about permissions, focus, shortcuts, or runtime availability.
+Use these surfaces to investigate permissions and runtime availability.
 
 ## Power-user `.env` Overrides
 
@@ -144,6 +192,6 @@ Common overrides:
 ## Reset / Fresh Start
 
 - **New agent context**: Chat Overlay → **New thread**
-- **Reset prompts**: Settings → **AI & Prompts** → **Reset**
+- **Reset prompts**: Settings → **Agent → Prompts** → **Reset**
 
 _Created by Vetcoders (c)2026_

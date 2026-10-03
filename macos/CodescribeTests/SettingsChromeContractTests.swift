@@ -71,7 +71,9 @@ final class SettingsChromeContractTests: XCTestCase {
     let model = try XCTUnwrap(settingsSources()["SettingsViewModel.swift"])
     XCTAssertEqual(
       model.components(separatedBy: "? CSColor.oliveLight : CSColor.terracotta").count, 3)
-    XCTAssertTrue(model.contains("static func availabilityTint(for provider: CsProviderOption)"))
+    XCTAssertTrue(
+      model.contains(
+        "static func availabilityTint(for provider: CsProviderOption, lane: LLMLane = .assistive)"))
     XCTAssertFalse(model.contains("terracottaLight"))
   }
 

@@ -21,7 +21,9 @@ make install-app
 
 **Result**: App bundle installed at `/Applications/Codescribe.app`, with model/cache checks handled by `scripts/build-app.sh`.
 
-**How it runs**: Launch from Finder, Spotlight, or `make start`.
+**How it runs**: Launch the app bundle through LaunchServices using Finder,
+Spotlight, or `make start`. For a specific build or per-launch environment,
+use the explicit bundle commands below.
 
 ### Method 2: Qube CLI Tools (Batch Quality Work)
 
@@ -55,6 +57,44 @@ source path. A machine that already has `settings.json` keeps it.
 Production DMGs do not bake the developer surface.
 
 The single-instance flag (`LSMultipleInstancesProhibited`) is stamped at install time — by `make install-app` (and so `make install-if-idle`) and every DMG lane, before codesign — never in `macos/project.yml`, so the XCTest host and dev builds still launch while the installed app runs.
+
+### Supported native launch context
+
+From the repository root, launch the intended bundle through LaunchServices:
+
+```bash
+# Installed app
+/usr/bin/open "/Applications/Codescribe.app"
+
+# Already-built Debug app (separate dev identity)
+/usr/bin/open "$PWD/macos/build/Build/Products/Debug/Codescribe.app"
+```
+
+Direct execution of `Codescribe.app/Contents/MacOS/Codescribe` from a shell or
+agent host is **unsupported** for native app startup and speech acceptance.
+The launching host can remain responsible for the privacy request even when
+the bundle has the required usage description. See
+[Speech Recognition TCC](./SPEECH_RECOGNITION_TCC.md#supported-native-launch-context)
+for attribution, the dated #93 observation and acceptance evidence.
+
+For a disposable manual dev/test profile, pass variables with `open --env`.
+Use this only when the intended Debug app is not already running:
+
+```bash
+codescribe_test_data="$(mktemp -d /private/tmp/codescribe-launch.XXXXXX)" || exit 1
+/usr/bin/open "$PWD/macos/build/Build/Products/Debug/Codescribe.app" \
+  --env "CODESCRIBE_DATA_DIR=$codescribe_test_data" \
+  --env "RUST_LOG=info"
+```
+
+Shell exports alone are not a reliable way to supply a LaunchServices app's
+environment. `--env` applies to a newly launched process; opening an already
+running app activates it without replacing its environment. Do not use `-n`
+to bypass instance ownership or quit/restart the Founder's installed app for
+this test. Verify the actual PID/path and loaded data directory before using
+the disposable profile. The data directory does not isolate TCC grants,
+Keychain services or every application resource; Debug and Release permission
+identities are described below. Retain the profile for evidence as needed.
 
 ### Agent launch and test-host identity
 
@@ -282,13 +322,14 @@ later from the existing **Setup Wizard…** tray action.
 
 ### Info.plist Keys
 
-| Key                          | Value                    | Purpose                      |
-| ---------------------------- | ------------------------ | ---------------------------- |
-| CFBundleIdentifier           | com.vetcoders.codescribe | Unique app identifier        |
-| CFBundleIconFile             | AppIcon                  | Points to AppIcon.icns       |
-| CFBundleExecutable           | Codescribe               | Main binary name             |
-| LSMinimumSystemVersion       | 14.0                     | Requires macOS Sonoma+       |
-| NSMicrophoneUsageDescription | ...                      | Microphone permission prompt |
+| Key                                 | Value                    | Purpose                              |
+| ----------------------------------- | ------------------------ | ------------------------------------ |
+| CFBundleIdentifier                  | com.vetcoders.codescribe | Unique app identifier                |
+| CFBundleIconFile                    | AppIcon                  | Points to AppIcon.icns               |
+| CFBundleExecutable                  | Codescribe               | Main binary name                     |
+| LSMinimumSystemVersion              | 14.0                     | Requires macOS Sonoma+               |
+| NSMicrophoneUsageDescription        | ...                      | Microphone permission prompt         |
+| NSSpeechRecognitionUsageDescription | ...                      | Speech Recognition permission prompt |
 
 ## Icons
 
@@ -331,11 +372,12 @@ flowchart LR
 
 Grant in **System Settings > Privacy & Security**:
 
-| Permission       | Purpose                | When Prompted           |
-| ---------------- | ---------------------- | ----------------------- |
-| Microphone       | Audio recording        | First recording attempt |
-| Accessibility    | Global hotkeys, paste  | First hotkey press      |
-| Input Monitoring | Keyboard event capture | First hotkey press      |
+| Permission         | Purpose                 | When Prompted                         |
+| ------------------ | ----------------------- | ------------------------------------- |
+| Microphone         | Audio recording         | First recording attempt               |
+| Speech Recognition | SFSpeechRecognizer path | Setup / app launch while undetermined |
+| Accessibility      | Global hotkeys, paste   | First hotkey press                    |
+| Input Monitoring   | Keyboard event capture  | First hotkey press                    |
 
 ## Troubleshooting
 

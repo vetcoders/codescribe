@@ -294,7 +294,17 @@ struct AgenticReadinessStepView: View {
           }
           if let readiness = model.readiness {
             readinessPill(ready: readiness.ready)
-            statusCard(rows: readiness.rows)
+            Text(
+              "Agent readiness covers Assistive access and native tools. Cloud Formatting is configured separately in Settings › Agent › LLM lanes."
+            )
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            Text(model.providerAccessDescription)
+              .font(.callout)
+              .foregroundStyle(.secondary)
+          }
+          if let mcpStatus = model.mcpStatus {
+            statusCard(rows: mcpStatus.rows)
           }
           Button("Refresh") { model.refreshReadiness() }.csAction()
         }.padding(.top, 8)
@@ -374,20 +384,24 @@ struct AgenticReadinessStepView: View {
   private func readinessPill(ready: Bool) -> some View {
     let accent = ready ? CSColor.olive : CSColor.terracotta
     let accentLight = ready ? CSColor.oliveLight : CSColor.terracottaLight
-    return Text(ready ? "Ready" : "Not ready")
-      .textCase(.uppercase)
-      .font(CSFont.mono(9, .semibold))
-      .tracking(0.4)
-      .foregroundStyle(accentLight)
-      .padding(.horizontal, 8)
-      .padding(.vertical, 2)
-      .background(
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .fill(accent.opacity(0.12))
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .strokeBorder(accent.opacity(0.24), lineWidth: 1))
+    return Text(
+      ready
+        ? String(localized: "Agent capabilities ready")
+        : String(localized: "Agent capabilities not ready")
+    )
+    .textCase(.uppercase)
+    .font(CSFont.mono(9, .semibold))
+    .tracking(0.4)
+    .foregroundStyle(accentLight)
+    .padding(.horizontal, 8)
+    .padding(.vertical, 2)
+    .background(
+      RoundedRectangle(cornerRadius: 6, style: .continuous)
+        .fill(accent.opacity(0.12))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 6, style: .continuous)
+        .strokeBorder(accent.opacity(0.24), lineWidth: 1))
   }
 
   @ViewBuilder
@@ -511,6 +525,7 @@ struct PermissionStepView: View {
 struct ApiKeyStepView: View {
   @ObservedObject var model: OnboardingViewModel
   @FocusState private var keyFocused: Bool
+  @Environment(\.openWindow) private var openWindow
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
@@ -519,7 +534,7 @@ struct ApiKeyStepView: View {
         .font(.title2.weight(.semibold))
         .foregroundStyle(.primary)
       Text(
-        "Powers AI formatting and the agent lane. Stored in the macOS Keychain — write-only, never shown back. Optional: skip and add it later in Settings › Keys."
+        "Account sign-in and API keys are separate ways to connect. Account sign-in supports Assistive; cloud Formatting and model discovery use an API key. Keys are stored in the macOS Keychain and never shown back. You can skip this step and configure access later in Settings › Providers."
       )
       .font(.body)
       .lineSpacing(3)
@@ -528,6 +543,26 @@ struct ApiKeyStepView: View {
 
       providerPicker
         .padding(.top, 4)
+
+      Text(model.providerAccessDescription)
+        .font(.callout)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      if model.selectedProviderHasAccountAccess {
+        HStack {
+          Text("Provider account")
+          Spacer(minLength: 0)
+          Text(
+            model.selectedProviderAccountConnected
+              ? String(localized: "connected") : String(localized: "not connected")
+          )
+        }
+        .font(.callout)
+      }
+      Button("Manage provider access…") {
+        model.prepareProviderSettingsDeepLink()
+        openWindow(id: SettingsView.windowID)
+      }.csAction()
 
       keyField
     }
@@ -568,10 +603,17 @@ struct ApiKeyStepView: View {
   private var keyField: some View {
     let account = model.selectedProvider?.apiKeyAccount ?? "LLM_OPENAI_API_KEY"
     let isSet = model.selectedProviderKeySet
+    let isOptional =
+      model.selectedProviderAccountConnected
+      || model.selectedProvider?.keyRequired == false
+    let statusColor =
+      isSet
+      ? CSColor.oliveLight
+      : (isOptional ? CSColor.textFaint : CSColor.terracottaLight)
     return VStack(alignment: .leading, spacing: 10) {
       HStack(spacing: 10) {
         Circle()
-          .fill((isSet ? CSColor.olive : CSColor.terracotta).opacity(0.85))
+          .fill(statusColor.opacity(0.85))
           .frame(width: 7, height: 7)
         Text(SettingsViewModel.keyLabel(for: account))
           .font(CSFont.ui(13.5, .semibold))
@@ -580,15 +622,18 @@ struct ApiKeyStepView: View {
           .font(CSFont.mono(10, .medium))
           .foregroundStyle(CSColor.textFaint)
         Spacer(minLength: 0)
-        Text(isSet ? "set" : "not set")
+        Text(isSet ? String(localized: "set") : String(localized: "not set"))
           .font(CSFont.mono(10, .semibold))
-          .foregroundStyle(isSet ? CSColor.oliveLight : CSColor.terracottaLight)
+          .foregroundStyle(statusColor)
       }
       HStack(spacing: 8) {
-        SecureField(isSet ? "Replace key…" : "Paste key…", text: $model.apiKeyDraft)
-          .focused($keyFocused)
-          .settingsInputChrome(isFocused: keyFocused)
-          .onSubmit { model.saveApiKey() }
+        SecureField(
+          isSet ? String(localized: "Replace key…") : String(localized: "Paste key…"),
+          text: $model.apiKeyDraft
+        )
+        .focused($keyFocused)
+        .settingsInputChrome(isFocused: keyFocused)
+        .onSubmit { model.saveApiKey() }
         Button("Save key") { model.saveApiKey() }.csAction(prominent: true)
       }
     }
@@ -633,16 +678,30 @@ struct DoneStepView: View {
         }
         summaryRow(
           String(
-            localized: "AI provider key",
+            localized: "Provider API key",
             comment: "Summary row: whether an API key is stored for the chosen AI provider"),
           done: model.selectedProviderKeySet,
           doneLabel: String(localized: "set", comment: "Status chip: a value is stored"))
+        if model.selectedProviderHasAccountAccess {
+          summaryRow(
+            String(localized: "Provider account"),
+            done: model.selectedProviderAccountConnected,
+            doneLabel: String(localized: "connected"),
+            missingLabel: String(localized: "not connected"))
+        }
       }
       .padding(.top, 6)
+      Text(model.providerAccessDescription)
+        .font(.callout)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
     }
   }
 
-  private func summaryRow(_ label: String, done: Bool, doneLabel: String) -> some View {
+  private func summaryRow(
+    _ label: String, done: Bool, doneLabel: String,
+    missingLabel: String = String(localized: "optional")
+  ) -> some View {
     HStack(spacing: 10) {
       CSIconView(
         icon: done ? .checkCircleFill : .circleEmpty,
@@ -654,7 +713,7 @@ struct DoneStepView: View {
         .font(CSFont.ui(13))
         .foregroundStyle(CSColor.textBody)
       Spacer(minLength: 0)
-      Text(done ? doneLabel : String(localized: "optional"))
+      Text(done ? doneLabel : missingLabel)
         .font(CSFont.mono(10, .semibold))
         .foregroundStyle(done ? CSColor.oliveLight : CSColor.textFaint)
     }

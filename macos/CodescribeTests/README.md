@@ -1,7 +1,6 @@
 # CodescribeTests — what runs, and how
 
-Swift unit tests for the SwiftUI front-end. **893 tests, executed by
-`make test-swift`.**
+Swift unit tests for the SwiftUI front-end, executed by `make test-swift`.
 
 ```bash
 make test-swift                                    # whole suite
@@ -134,6 +133,18 @@ or 5 (one or more tests over the per-test ceiling), which
 appears in `make: *** [test-swift] Error N`. GNU make itself exits **2** for any
 recipe failure, so a caller reading `$?` sees 2 in every failing case. Scripts
 should branch on non-zero, not on the specific code.
+
+## Permission isolation in unit fixtures
+
+A mocked settings engine does not replace the native permission dependency.
+Pass the existing `MockPermissionProbe` explicitly when constructing
+`SettingsViewModel` in settings and provider unit fixtures. The native probe
+enumerates TCC-protected user directories for its Full Disk Access heuristic;
+that filesystem operation can block even when the test never requests a grant.
+The settings, provider, Cloud privacy, tray and Voice Lab unit fixtures use
+deterministic permission snapshots. Tests for denied or undetermined permissions
+must pass those explicit states rather than depend on the host. Real OS permission
+behavior belongs to native acceptance, with the normal time budgets retained.
 
 ## Coverage this actually buys
 

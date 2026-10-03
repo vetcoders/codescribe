@@ -83,7 +83,7 @@ final class OverlayRefusalLayoutHangTests: XCTestCase {
 
     state.handleError(message: refusal)
     XCTAssertEqual(state.mode, .listening, "a refusal with a draft keeps the transcript on screen")
-    XCTAssertEqual(state.toast, "Dictation failed — transcript kept")
+    XCTAssertEqual(state.toast, "Transcription incomplete")
     XCTAssertEqual(stoppedBeats, 1)
 
     let refusalElapsed = measureLayout(root)

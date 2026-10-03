@@ -183,6 +183,10 @@ private struct ThreadDetail: View {
   @Environment(\.openWindow) private var openWindow
   @State private var isRenaming = false
   @State private var renameText = ""
+  /// Toolbar deletion goes through the same confirmation as the rail.
+  @State private var deleteCandidate: ChatThread?
+  /// The last Markdown export, shown until the user dismisses the alert.
+  @State private var exportOutcome: ThreadExportOutcome?
   /// Shared with `MessageList` via `ChatLayoutPolicy.defaultsKey`.
   @AppStorage(ChatLayoutPolicy.defaultsKey) private var widthModeRaw = ChatLayoutPolicy.defaultMode
     .rawValue
@@ -250,6 +254,28 @@ private struct ThreadDetail: View {
         if let thread = store.currentThread { store.rename(thread, to: renameText) }
       }
       Button("Cancel", role: .cancel) {}
+    }
+    .threadDeleteConfirmation(candidate: $deleteCandidate) { store.delete($0) }
+    .alert(
+      exportOutcome?.title ?? Text(verbatim: ""),
+      isPresented: Binding(
+        get: { exportOutcome != nil },
+        set: { if !$0 { exportOutcome = nil } }
+      ),
+      presenting: exportOutcome
+    ) { outcome in
+      if case .saved(let path, _) = outcome {
+        let url = URL(fileURLWithPath: path)
+        Button("Reveal in Finder") {
+          NSWorkspace.shared.activateFileViewerSelecting([url])
+        }
+        Button("Open") {
+          NSWorkspace.shared.open(url)
+        }
+      }
+      Button("OK", role: .cancel) {}
+    } message: { outcome in
+      outcome.message
     }
   }
 
@@ -368,7 +394,9 @@ private struct ThreadDetail: View {
   }
 
   // Current-thread actions. Export entries appear only for persisted threads
-  // (a not-yet-saved local thread has no backend id to export from).
+  // (a not-yet-saved local thread has no backend id to export from). The
+  // export section names its fixed destination up front: there is no file
+  // chooser, the file always lands in the Transcripts folder.
   private var threadMenu: some View {
     Menu {
       if let thread = store.currentThread {
@@ -380,11 +408,17 @@ private struct ThreadDetail: View {
           store.toggleFavorite(thread)
         }
         if thread.backendId != nil {
-          Button("Export to Markdown") { export(thread, assistantOnly: false) }
-          Button("Export assistant replies only") { export(thread, assistantOnly: true) }
+          Section {
+            Button("Export to Markdown") { export(thread, assistantOnly: false) }
+            Button("Export assistant replies only") { export(thread, assistantOnly: true) }
+          } header: {
+            Text(
+              "Exports save to the Transcripts folder",
+              comment: "Menu section header above the Markdown export actions")
+          }
         }
         Divider()
-        Button("Delete Thread", role: .destructive) { store.delete(thread) }
+        Button("Delete Thread", role: .destructive) { deleteCandidate = thread }
       }
     } label: {
       CSIconView(icon: .more, size: 14, weight: .bold)
@@ -400,11 +434,17 @@ private struct ThreadDetail: View {
     isRenaming = true
   }
 
-  /// Export the thread and reveal the written file in Finder (no permission
-  /// prompt — the path lives under the app's own `~/.codescribe` data dir).
+  /// Export the thread, then report where the file went — or that nothing was
+  /// written. Finder is opened only from the alert's own button, never as a
+  /// side effect of the menu action. The path lives under the app's own data
+  /// directory, so no permission prompt is involved.
   private func export(_ thread: ChatThread, assistantOnly: Bool) {
-    guard let path = store.exportMarkdown(thread, assistantOnly: assistantOnly) else { return }
-    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    let title = ThreadRowTitle.displayTitle(for: thread)
+    if let path = store.exportMarkdown(thread, assistantOnly: assistantOnly) {
+      exportOutcome = .saved(path: path, assistantOnly: assistantOnly)
+    } else {
+      exportOutcome = .failed(threadTitle: title, assistantOnly: assistantOnly)
+    }
   }
 
   /// Live status only. Idle is silent chrome — the always-on olive pill was
@@ -577,6 +617,55 @@ struct ToolApprovalCard: View {
         .strokeBorder(CSColor.amber.opacity(0.35), lineWidth: 1)
     )
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
+  }
+}
+
+// MARK: - Markdown export outcome (pure, unit-testable)
+
+/// What one Markdown export did. Success names the file and the folder it
+/// landed in; failure names the thread and the one place to look. Nothing
+/// about the export is left to a Finder window appearing on its own.
+enum ThreadExportOutcome: Equatable {
+  case saved(path: String, assistantOnly: Bool)
+  case failed(threadTitle: String, assistantOnly: Bool)
+
+  var title: Text {
+    switch self {
+    case .saved:
+      Text("Exported to Markdown", comment: "Alert title after a successful thread export")
+    case .failed:
+      Text("Export failed", comment: "Alert title when a thread export wrote nothing")
+    }
+  }
+
+  var message: Text {
+    switch self {
+    case .saved(let path, let assistantOnly):
+      let file = Self.fileName(of: path)
+      let folder = Self.folderLabel(of: path)
+      return assistantOnly
+        ? Text(
+          "Saved the assistant replies as \(file) in \(folder).",
+          comment: "Placeholders: file name, then folder path")
+        : Text(
+          "Saved the whole thread as \(file) in \(folder).",
+          comment: "Placeholders: file name, then folder path")
+    case .failed(let threadTitle, _):
+      return Text(
+        "Codescribe couldn't write the Markdown file for “\(threadTitle)”. Check the Transcripts folder shown under Settings › User › Local data, then try again.",
+        comment: "The placeholder is the thread title")
+    }
+  }
+
+  /// `…/2026-10-03/142501_chat.md` → `142501_chat.md`.
+  static func fileName(of path: String) -> String {
+    (path as NSString).lastPathComponent
+  }
+
+  /// `/Users/me/.codescribe/transcriptions/2026-10-03/x.md` →
+  /// `~/.codescribe/transcriptions/2026-10-03`.
+  static func folderLabel(of path: String) -> String {
+    ((path as NSString).deletingLastPathComponent as NSString).abbreviatingWithTildeInPath
   }
 }
 
