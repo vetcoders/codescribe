@@ -1,8 +1,9 @@
 //! Last serving-verdict owner for runtime STT truth.
 //!
 //! Settings "Active STT" consumes this owner independently of the configured
-//! ASR product mode. The controller publishes after each
-//! adjudication so the UI can show Apple→Whisper fallback honestly.
+//! ASR product mode. The controller publishes after each stop so the UI can
+//! show a path-loaded Whisper (`RuntimeFallback`) instead of a clean embedded
+//! primary. This bit is not an Apple-to-Whisper switch.
 
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -17,7 +18,8 @@ pub struct LastServingVerdict {
     pub routing_mode: String,
     /// Final-pass disposition when one ran (`skipped`, `changed`, …).
     pub disposition: Option<String>,
-    /// True when the serving engine was a runtime fallback (e.g. Apple→Whisper).
+    /// True when the serving engine is Whisper and that load used a filesystem
+    /// path because the embedded payload was absent.
     pub fallback_used: bool,
 }
 
@@ -28,23 +30,36 @@ impl LastServingVerdict {
     /// Verdict for a take served by the live streaming session.
     ///
     /// `streaming_engine_label` is the recorder's own route label
-    /// (`StreamingRecorder::streaming_engine_label`, e.g. `live_apple`). The
-    /// live route has one engine and no runtime switch, so `fallback_used` is
-    /// false and there is no final-pass disposition. The recorder's `live_*`
-    /// vocabulary is folded into the `local_*` engine vocabulary this owner and
-    /// the Swift formatter share; any other label passes through verbatim so an
-    /// unknown route renders as itself instead of as a guess.
+    /// (`StreamingRecorder::streaming_engine_label`, e.g. `live_apple`).
+    /// This constructor does not observe Whisper load provenance, so
+    /// `fallback_used` stays false. Stop publishing uses
+    /// [`Self::from_live_session_observing_whisper_path`].
     pub fn from_live_session(streaming_engine_label: &str) -> Self {
+        Self::from_live_session_observing_whisper_path(streaming_engine_label, false)
+    }
+
+    /// Fold the recorder label and honor a path load only for Whisper.
+    ///
+    /// `whisper_loaded_from_path` is the singleton's last `load_engine` choice.
+    /// It stamps `fallback_used` only when the folded engine is `local_whisper`.
+    /// Apple and any other label stay false: a previous Whisper path load must
+    /// not relabel an Apple take, and an embedded Whisper load must not be
+    /// presented as a fallback.
+    pub fn from_live_session_observing_whisper_path(
+        streaming_engine_label: &str,
+        whisper_loaded_from_path: bool,
+    ) -> Self {
         let engine = match streaming_engine_label {
             "live_apple" => "local_apple".to_string(),
             "live_whisper" => "local_whisper".to_string(),
             other => other.to_string(),
         };
+        let fallback_used = engine == "local_whisper" && whisper_loaded_from_path;
         Self {
             engine,
             routing_mode: LIVE_ROUTING_MODE.to_string(),
             disposition: None,
-            fallback_used: false,
+            fallback_used,
         }
     }
 }

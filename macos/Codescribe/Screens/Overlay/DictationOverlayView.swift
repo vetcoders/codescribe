@@ -29,8 +29,8 @@ struct OverlayBottomChromeSlots: Equatable {
   ) {
     if isCollapsed {
       ordered = []
-    } else if !hasPresentationStatus
-      && (mode == .coverageRefused || (mode == .listening && hasLowInputSignal))
+    } else if mode == .coverageRefused
+      || (!hasPresentationStatus && mode == .listening && hasLowInputSignal)
     {
       ordered = [.rail, .coverageWarning]
     } else {
@@ -731,6 +731,9 @@ struct DictationOverlayView: View {
     if state.formatterCommitPending { return "Formatting revision…" }
     if state.revisionCommitPending { return "Committing revision…" }
     if state.isRevisionDraftDirty { return "Draft · not committed" }
+    if state.mode == .coverageRefused, state.footerWarning != nil {
+      return nil
+    }
     if let notice = state.toast { return notice }
     if let status = state.presentationStatus { return status.headline }
     if state.mode == .error {

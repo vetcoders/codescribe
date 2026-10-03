@@ -861,9 +861,10 @@ final class OverlayState {
       indicatorMode: indicatorMode, silent: levelMeter.isSilent)
   }
 
-  private static func displayEngineChip(_ engine: String) -> String {
+  private static func displayEngineChip(_ engine: String, fallbackUsed: Bool) -> String {
     let e = engine.lowercased()
     if e.contains("apple") { return "local apple" }
+    if e.contains("whisper"), fallbackUsed { return "fallback: whisper" }
     if e.contains("merged") && e.contains("whisper") { return "merged · whisper fill" }
     if e.contains("streaming") { return "streaming whisper" }
     if e.contains("whisper") { return "local whisper" }
@@ -1470,7 +1471,7 @@ final class OverlayState {
     if let serving = currentServingVerdict() {
       let engine = serving.engine.trimmingCharacters(in: .whitespacesAndNewlines)
       if !engine.isEmpty {
-        engineChip = Self.displayEngineChip(engine)
+        engineChip = Self.displayEngineChip(engine, fallbackUsed: serving.fallbackUsed)
         return
       }
     }
@@ -2501,6 +2502,7 @@ final class OverlayState {
         deliveredTextSessionId = projection.sessionId
       }
       if isLifecycleTerminal {
+        refreshEngineChip(reset: true)
         agentFinalTranscriptAppeared =
           !projection.renderedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         if projection.delivery == .copiedToClipboard {

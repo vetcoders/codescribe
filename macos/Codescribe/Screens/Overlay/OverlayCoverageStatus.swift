@@ -135,6 +135,7 @@ struct OverlayCoverageStatus: View {
   @State private var presented: String?
 
   var body: some View {
+    HStack(spacing: 8) {
     OverlayHoverControl(
       id: "overlay-coverage-status", title: warning.sentence, palette: palette,
       presented: $presented
@@ -162,26 +163,22 @@ struct OverlayCoverageStatus: View {
           Divider()
           Text(diagnosticDetail).font(CSFont.mono(10, .medium))
         }
-        if canRetranscribe {
-          Text("Transcribe again")
-          HStack {
-            Button("Local") {
-              close()
-              onRetranscribe(.fullHq)
-            }
-            if cloudConfigured {
-              Button("Cloud") {
-                close()
-                onRetranscribe(.cloud)
-              }
-            }
-          }
-          .buttonStyle(.borderless)
-          .controlSize(.small)
-          .font(CSFont.ui(11, .medium))
-        }
       }
       .frame(width: 250)
+    }
+    if canRetranscribe {
+      HStack(spacing: 6) {
+        Text("Transcribe again")
+        Button("Local") { onRetranscribe(.fullHq) }
+        if cloudConfigured {
+          Button("Cloud") { onRetranscribe(.cloud) }
+        }
+      }
+      .buttonStyle(.borderless)
+      .controlSize(.small)
+      .font(CSFont.ui(11, .medium))
+      .accessibilityIdentifier("overlay-retranscribe-offer")
+    }
     }
   }
 }

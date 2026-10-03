@@ -31,7 +31,7 @@
 // This entire module is a public API for library consumers
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -79,6 +79,12 @@ static MODEL_PATH: OnceLock<PathBuf> = OnceLock::new();
 
 /// Guard so the idle reaper thread is spawned at most once.
 static REAPER_STARTED: OnceLock<()> = OnceLock::new();
+
+/// Last `load_engine` choice. `true` means the embedded payload was absent and
+/// weights came from a filesystem path (`TranscriptionEngineMode::RuntimeFallback`).
+/// An embedded load clears it. Idle unload does not: the take's provenance is
+/// the load that served it, not whether the weights are still resident.
+static LAST_WHISPER_LOAD_FROM_PATH: AtomicBool = AtomicBool::new(false);
 
 /// Process-lifetime residency transition counters. These deliberately record
 /// lifecycle only: no audio, transcript, or model-path content enters them.
@@ -186,6 +192,14 @@ pub fn get_model_path() -> Result<&'static PathBuf> {
         .ok_or_else(|| anyhow!("Failed to store model path"))
 }
 
+/// True when the most recent Whisper load in this process used a filesystem
+/// path because `get_embedded_data()` was empty. Callers must apply this only
+/// to a Whisper engine. An Apple session does not become a fallback because
+/// some earlier Whisper load took the path.
+pub fn whisper_loaded_from_path() -> bool {
+    LAST_WHISPER_LOAD_FROM_PATH.load(Ordering::Acquire)
+}
+
 /// Build a fresh engine, embedded-first with a runtime-path fallback.
 fn load_engine() -> Result<LocalWhisperEngine> {
     #[cfg(test)]
@@ -195,15 +209,25 @@ fn load_engine() -> Result<LocalWhisperEngine> {
     if let Some(embedded) = super::embedded::get_embedded_data() {
         let engine = LocalWhisperEngine::from_embedded(&embedded)
             .context("Failed to initialize from embedded model")?;
-        info!("Whisper engine loaded from embedded model (zero I/O)");
+        LAST_WHISPER_LOAD_FROM_PATH.store(false, Ordering::Release);
+        info!(
+            reason = "embedded_whisper_payload_present",
+            "Whisper engine loaded from embedded model (zero I/O)"
+        );
         return Ok(engine);
     }
 
-    // 2. Fallback path: resolve Whisper model at runtime.
+    // 2. Path load: embedded bytes were absent (`is_embedded_available` is
+    // weights length > 0). `LocalWhisperEngine::new` stamps RuntimeFallback.
     let path = get_model_path()?;
     let engine = LocalWhisperEngine::new_with_params(path, DecodingParams::default())
         .context("Failed to initialize Whisper engine from path")?;
-    info!("Whisper engine loaded from path: {}", path.display());
+    LAST_WHISPER_LOAD_FROM_PATH.store(true, Ordering::Release);
+    info!(
+        reason = "embedded_whisper_payload_absent",
+        path = %path.display(),
+        "Whisper engine loaded from path"
+    );
     Ok(engine)
 }
 

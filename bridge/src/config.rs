@@ -620,7 +620,8 @@ pub struct CsLastServingVerdict {
     pub routing_mode: String,
     /// Final-pass disposition when one ran (`skipped`, `changed`, …).
     pub disposition: Option<String>,
-    /// True when the serving engine was a runtime fallback (e.g. Apple→Whisper).
+    /// True when Whisper served the take from a filesystem path because the
+    /// embedded payload was absent. Not an Apple-to-Whisper switch.
     pub fallback_used: bool,
 }
 

@@ -5664,6 +5664,10 @@ impl RecordingController {
             // The live slot is `{uuid}:stopping` here. File-lane identity is
             // the Bus uuid snapped before that rewrite.
             let was_active = recorder.close_capture().await;
+            // The streaming label is already known. Publish before the frozen
+            // canvas paints the overlay, so the chip reads this take. A
+            // preempted stop still names the engine that held the capture.
+            Self::publish_live_serving_verdict(serving_engine);
             let StopCanvasDelivery { delivery: initial_delivery, preempted } = self
                 .deliver_frozen_canvas_at_stop(
                     recorder,
@@ -5685,9 +5689,6 @@ impl RecordingController {
             // not re-derive it from the assistive flag or the active screen.
             Self::clear_recorder_callbacks(recorder);
             drop(recorder_guard);
-            // The session is over whichever way `stop()` went; the engine that
-            // served it is the same on a clean stop and on a refused seal.
-            Self::publish_live_serving_verdict(serving_engine);
             let (streaming_text, raw_audio_path_opt) = match stopped {
                 Ok(stopped) => stopped,
                 Err(err) => {
@@ -5794,10 +5795,14 @@ impl RecordingController {
     /// stop and a refused seal report the same fact: the engine the live
     /// session actually ran on. Never derived from the configured `stt_engine`.
     fn publish_live_serving_verdict(streaming_engine_label: &str) {
-        let verdict = serving_status::LastServingVerdict::from_live_session(streaming_engine_label);
+        let verdict = serving_status::LastServingVerdict::from_live_session_observing_whisper_path(
+            streaming_engine_label,
+            codescribe_core::stt::whisper::singleton::whisper_loaded_from_path(),
+        );
         info!(
             engine = %verdict.engine,
             routing_mode = %verdict.routing_mode,
+            fallback_used = verdict.fallback_used,
             "serving verdict published"
         );
         serving_status::publish_last_serving(verdict);
@@ -6287,6 +6292,9 @@ impl RecordingController {
         let recorder = Self::recorder_from_guard_mut(&mut recorder_guard, "Process-recording")?;
         let serving_engine = recorder.streaming_engine_label();
         let was_active = recorder.close_capture().await;
+        // Same order as the toggle stop: the overlay paint must see the
+        // verdict this take already earned.
+        Self::publish_live_serving_verdict(serving_engine);
         let StopCanvasDelivery {
             delivery: initial_delivery,
             preempted,
@@ -6308,7 +6316,6 @@ impl RecordingController {
             stop_recorder_for_terminal(recorder, take_id.as_deref(), Some(was_active)).await;
         Self::clear_recorder_callbacks(recorder);
         drop(recorder_guard); // Release lock
-        Self::publish_live_serving_verdict(serving_engine);
         let (streaming_text, raw_audio_path_opt) = match stopped {
             Ok(stopped) => stopped,
             Err(err) => {

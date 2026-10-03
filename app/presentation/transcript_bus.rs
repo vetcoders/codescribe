@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use chrono::{SecondsFormat, Utc};
@@ -28,6 +29,13 @@ use crate::controller::{
 pub const TRANSCRIPT_BUS_PATH_ENV: &str = "CODESCRIBE_TRANSCRIPT_BUS_PATH";
 /// Stable filename under the configured state/data root.
 pub const TRANSCRIPT_BUS_FILENAME: &str = "transcript-events.jsonl";
+
+/// Evidence rows (`codescribe.transcript-evidence.v1`) stop appending once the
+/// bus file reaches this size. Delivery rows still append. The file is not
+/// rewritten, so a follower byte cursor stays valid. This is not the 128 MiB
+/// reader ceiling and not the opt-in age compactor: an already oversized file
+/// keeps its bytes, and reclaim stays on that compactor.
+const EVIDENCE_APPEND_CEILING_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Product mode attached to every committed transcript event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1881,7 +1889,35 @@ impl TranscriptBus {
         event: &TranscriptBusEvidenceEvent,
     ) -> io::Result<()> {
         writer.sequence = event.sequence;
+        if Self::evidence_append_refused(&self.path) {
+            return Ok(());
+        }
         Self::append_projection_locked(writer, event)
+    }
+
+    /// Refuse a new evidence row when the bus file is already at the ceiling.
+    /// The sequence number is consumed by the caller so it is not reused.
+    /// A metadata failure leaves the write allowed.
+    fn evidence_append_refused(path: &Path) -> bool {
+        let Ok(len) = std::fs::metadata(path).map(|meta| meta.len()) else {
+            return false;
+        };
+        if len < EVIDENCE_APPEND_CEILING_BYTES {
+            return false;
+        }
+        static LOGGED: AtomicBool = AtomicBool::new(false);
+        if LOGGED
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            tracing::warn!(
+                len,
+                ceiling = EVIDENCE_APPEND_CEILING_BYTES,
+                path = %path.display(),
+                "transcript evidence append refused at byte ceiling; delivery rows still append"
+            );
+        }
+        true
     }
 
     fn append_projection_locked(
