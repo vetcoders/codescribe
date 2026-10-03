@@ -23,8 +23,14 @@ final class RealThreadsEngine: BackgroundThreadListing {
 
   func loadMessages(backendId: String) -> [ChatMessage] {
     guard let thread = try? threads.loadThread(id: backendId) else { return [] }
+    return Self.restoredMessages(from: thread.messages)
+  }
+
+  /// Projects bridge records without opening storage; the restoration contract
+  /// can be checked with persisted-block fixtures by the integrator.
+  static func restoredMessages(from messages: [CsThreadMessage]) -> [ChatMessage] {
     var toolNamesById: [String: String] = [:]
-    return thread.messages.compactMap { message -> ChatMessage? in
+    return messages.compactMap { message -> ChatMessage? in
       let content = StoredMessageContent(rawJson: message.rawJson)
       for toolUse in content.toolUses { toolNamesById[toolUse.id] = toolUse.name }
 
@@ -107,9 +113,24 @@ final class RealThreadsEngine: BackgroundThreadListing {
     timestampMs: Int64
   ) -> ChatMessage {
     let lines = results.map { result in
-      ToolLine(
-        verb: result.isError ? "failed" : "ran",
-        detail: toolNamesById[result.toolUseId] ?? "tool result"
+      let state: ToolLineState
+      let verb: String
+      switch result.isError {
+      case true?:
+        state = .failed
+        verb = "failed"
+      case false?:
+        state = .succeeded
+        verb = "ran"
+      case nil:
+        state = .unknown
+        verb = "ended"
+      }
+      return ToolLine(
+        callID: result.toolUseId,
+        verb: verb,
+        detail: result.toolUseId.flatMap { toolNamesById[$0] } ?? "tool result",
+        state: state
       )
     }
     var message = ChatMessage(
@@ -153,15 +174,18 @@ private struct StoredMessageContent {
     toolUses = blocks.compactMap { block in
       guard block.type == "tool_use",
         let id = block.id,
-        let name = block.name
+        !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+        let name = block.name,
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       else { return nil }
       return StoredToolUse(id: id, name: name)
     }
     toolResults = blocks.compactMap { block in
-      guard block.type == "tool_result",
-        let toolUseId = block.toolUseId
-      else { return nil }
-      return StoredToolResult(toolUseId: toolUseId, isError: block.isError ?? false)
+      guard block.type == "tool_result" else { return nil }
+      let toolUseId = block.toolUseId.flatMap {
+        $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0
+      }
+      return StoredToolResult(toolUseId: toolUseId, isError: block.isError)
     }
   }
 }
@@ -172,6 +196,17 @@ private struct StoredContentBlock: Decodable {
   let name: String?
   let toolUseId: String?
   let isError: Bool?
+
+  init(from decoder: Decoder) throws {
+    // A malformed optional field must not erase readable sibling blocks or
+    // turn missing outcome evidence into a successful tool call.
+    let container = try? decoder.container(keyedBy: CodingKeys.self)
+    type = try? container?.decode(String.self, forKey: .type)
+    id = try? container?.decode(String.self, forKey: .id)
+    name = try? container?.decode(String.self, forKey: .name)
+    toolUseId = try? container?.decode(String.self, forKey: .toolUseId)
+    isError = try? container?.decode(Bool.self, forKey: .isError)
+  }
 
   enum CodingKeys: String, CodingKey {
     case type
@@ -188,6 +223,6 @@ private struct StoredToolUse {
 }
 
 private struct StoredToolResult {
-  let toolUseId: String
-  let isError: Bool
+  let toolUseId: String?
+  let isError: Bool?
 }

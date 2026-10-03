@@ -276,6 +276,35 @@ The Rust AppKit `ui/voice_chat/` module (`mod.rs` / `api.rs` / `handlers.rs` / `
 | `ComposerTextView.swift`            | 370  | NSTextView bridge for the composer              |
 | `AssistivePromptPresentation.swift` | 346  | Assistive-lane prompt presentation              |
 
+### Restored tool inspector metadata
+
+`RealThreadsEngine` projects persisted messages from `CodescribeThreads` into
+the existing `ToolLine` presentation. `ThreadStore` saves `tool_use` blocks with
+`id`, `name` and `input`, and `tool_result` blocks with `tool_use_id`, nested
+`content` and `is_error`. The bridge serializes these stored content blocks
+unchanged into `CsThreadMessage.rawJson`; this is the storage block format,
+not the runtime `ContentBlock` serialization with its `payload` envelope.
+
+Restoration retains a nonblank `tool_use_id` as `ToolLine.callID`, making the
+existing inspector available even without a summary or timing. The name comes
+only from a preceding or same-message `tool_use` with that exact ID; an
+uncorrelated result keeps the existing generic `tool result` detail. Explicit
+`is_error: true` maps to `failed` / `.failed`, and `false` to `ran` /
+`.succeeded`. Missing, null or incorrectly typed outcome evidence maps to
+`ended` / `.unknown`. A result with a missing, blank or incorrectly typed ID
+remains a tool row without a call ID. Incorrectly typed optional fields and
+non-object blocks do not discard readable sibling blocks. Undecodable JSON
+retains the existing flattened-message path.
+
+`reason` stays absent: live UI summaries are redacted and truncated by
+`summarize_tool_result` in `core/agent/session.rs` before being sent as UI
+events, and that summary field is not persisted. Nested result `content` is
+stored, but is not promoted to an inspector summary. `startedAt` and
+`durationMs` are UI-only and remain absent after restoration; message
+timestamps do not establish tool duration. No storage schema or persistence
+authority changes. The internal `restoredMessages(from:)` seam runs the same
+projection over bridge records for integrator-owned hermetic fixtures.
+
 ### Whisper Engine
 
 - **Singleton pattern**: One global instance, lazy initialized
