@@ -21509,7 +21509,43 @@ mod relay_l1_overlap_admission_tests {
     fn three_windows_admit_words_independently() {
         let mut lane = open("relay-three-exclusive");
         // One provisional lexical position can be corrected by one timed word.
-        let (occurrence, requests) = launch_long(&mut lane, "cale");
+        let pcm = vec![0.2_f32; 160_000];
+        lane.state.audio.push(&pcm);
+        record_energy(
+            &lane,
+            &pcm.chunks(320).map(<[f32]>::to_vec).collect::<Vec<_>>(),
+        );
+        let occurrence = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, 160_000);
+        stage(&mut lane, 1, occurrence.clone(), "cale");
+        assert!(
+            lane.state
+                .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, "cale"))
+        );
+        close_lexicon(&mut lane, 1, &occurrence, "cale");
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 3);
+        let speech = coverage_speech_evidence(&lane.state);
+        assert_eq!(
+            speech.availability().observed_samples(),
+            Some(pcm.len() as u64)
+        );
+        lane.state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .record_speech_evidence(&speech);
+        for request in &requests {
+            let frame = &request.provider_request.identity.range;
+            assert_eq!(
+                request.audio,
+                pcm[frame.sample_start as usize..frame.sample_end as usize]
+            );
+            request
+                .provider_request
+                .validate_pcm(&request.audio)
+                .unwrap();
+        }
         let session = "relay-three-exclusive";
         let windows = [
             vec![word_pin(session, "raz", 8_000, 40_000)],
@@ -21534,7 +21570,6 @@ mod relay_l1_overlap_admission_tests {
         assert_eq!(held_count(&lane), 1);
         assert_conserved(&lane, None);
     }
-
     /// Long occurrence, overlapping windows, word pins.
     ///
     /// Contract step 4: a word whose range lies wholly outside this window's
