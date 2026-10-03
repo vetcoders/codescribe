@@ -74,25 +74,35 @@ impl RepairReceipt {
             })
             .count();
         let notes = self.actions.len() - changes;
-        if notes > 0 {
-            return Some(format!(
-                "Config: {changes} repairs at launch; {notes} env key(s) need review (backup {})",
-                self.backups
-                    .iter()
-                    .map(|p| p.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
-        Some(format!(
-            "Config repaired at launch: {} changes (backup {})",
-            self.actions.len(),
-            self.backups
+        let mut summary = if notes > 0 {
+            // Environment diagnostics carry key names only, never their values.
+            let keys = self
+                .actions
+                .iter()
+                .filter_map(|action| match action {
+                    RepairAction::UnknownEnvKey { key } | RepairAction::PrecedenceNote { key } => {
+                        Some(key.as_str())
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "Config: {changes} repairs at launch; {notes} env key(s) need review: {keys}"
+            )
+        } else {
+            format!("Config repaired at launch: {changes} changes")
+        };
+        if !self.backups.is_empty() {
+            let backups = self
+                .backups
                 .iter()
                 .map(|p| p.display().to_string())
                 .collect::<Vec<_>>()
-                .join(", ")
-        ))
+                .join(", ");
+            summary.push_str(&format!(" (backup {backups})"));
+        }
+        Some(summary)
     }
 }
 

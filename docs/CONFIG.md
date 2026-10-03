@@ -14,6 +14,13 @@ reported as `ConfigUnrepairable`, leaving the original file untouched.
 
 The launch snapshot carries a `repair_receipt()` and Settings → User displays
 its summary. The bridge also exposes the full structured receipt as JSON.
+An unresolved repair refusal takes priority in the summary. Otherwise, the
+repair summary lists the environment key names needing review, never their
+values. It appends `(backup <paths>)` only when the receipt contains backups,
+listing every recorded path. A report-only environment warning or creation of
+a new settings file may legitimately have no backup; the summary then omits
+that suffix entirely. Repair counts include file changes only, not environment
+notes.
 These reads do not reload settings or run repair. A process logs one
 `config_repair actions=<n> backup=<path|none>` line. Unresolved launch errors
 keep the mandatory capture lane disarmed, so Settings remains accessible for
@@ -35,6 +42,13 @@ whole file without a backup) has been removed. The app preserves every byte;
 receipts name keys only, never their values. Persistent diagnostic notes recur
 on later launches until the file is corrected. These notes are not counted as
 successful file changes in Settings.
+
+Use the names in the warning to locate the entries in the optional `.env` file
+and consult `docs/ENV_REGISTRY.toml` for supported keys and deprecation notes.
+Correct unknown names or remove unused entries deliberately; the warning itself
+does not modify the file. A `FORMATTING_LEVEL` precedence note can also mean an
+explicit process override differs from the saved setting: review the launch
+environment as well as `.env`, then restart after correcting the source.
 
 ## Operator pack
 
