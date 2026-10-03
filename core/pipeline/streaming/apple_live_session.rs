@@ -24804,9 +24804,9 @@ mod relay_l1_overlap_admission_tests {
         assert_conserved(&lane, Some("replayed_range_identity"));
     }
 
-    /// The live Whisper path hands the capture's own speech ranges to the
-    /// ledger: measured words replace an unpaired Apple group only when they
-    /// cover all of its speech; an uncovered voiced span keeps the group.
+    /// Measured Words replace a coarse Apple hypothesis while preserving its
+    /// actual source lineage. Complete speech coverage has its own receipt;
+    /// partial decoder scope keeps explicit source debt and cannot publish a seal.
     #[test]
     fn measured_whisper_words_replace_a_coarse_group_only_over_covered_speech() {
         for covered in [true, false] {
@@ -24821,15 +24821,45 @@ mod relay_l1_overlap_admission_tests {
             if !covered {
                 voiced.push((160_000, 188_000));
             }
-            record_voiced_spans(&lane, 192_768, &voiced);
-            stage(&mut lane, 1, occurrence.clone(), "apple floor");
-            assert!(
-                lane.state
-                    .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, "apple floor"))
+            let mut pcm = vec![0.0_f32; 192_768];
+            for &(start, end) in &voiced {
+                pcm[start as usize..end as usize].fill(0.2);
+            }
+            lane.state.audio.push(&pcm);
+            record_energy(
+                &lane,
+                &pcm.chunks(1_000).map(<[f32]>::to_vec).collect::<Vec<_>>(),
             );
+            stage(&mut lane, 1, occurrence.clone(), "apple floor");
+            let mut input = piece(1, &occurrence, "apple floor");
+            input.audio =
+                pcm[occurrence.sample_start as usize..occurrence.sample_end as usize].to_vec();
+            assert!(lane.state.enqueue_layer1_piece(&lane.tx, input));
             close_lexicon(&mut lane, 1, &occurrence, "apple floor");
+            let sources_before = lane
+                .state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .slots_of(&occurrence)
+                .unwrap()
+                .to_vec();
             let _ = drain(&mut lane.rx);
             let requests = take_requests(&mut lane.tail_rx);
+            assert!(!requests.is_empty());
+            for request in &requests {
+                request
+                    .provider_request
+                    .validate_pcm(&request.audio)
+                    .unwrap();
+                let range = &request.provider_request.identity.range;
+                assert_eq!(
+                    request.audio,
+                    pcm[range.sample_start as usize..range.sample_end as usize]
+                );
+            }
+            assert!(requests[0].provider_request.identity.range.sample_start <= 96_000);
+            assert!(requests[0].provider_request.identity.range.sample_end >= 152_000);
             lane.state.complete_whisper_window(
                 &lane.tx,
                 completion(
@@ -24841,25 +24871,77 @@ mod relay_l1_overlap_admission_tests {
                 ),
                 9.0,
             );
-            let warnings = warning_lines(&drain(&mut lane.rx));
+            let received_events = drain(&mut lane.rx);
+            let warnings = warning_lines(&received_events);
             let ledger = lane.state.acoustic_ledger.lock().unwrap();
             if covered {
                 assert_eq!(ledger.text_of(&occurrence), Some("tak poza"), "{warnings}");
                 assert_eq!(ledger.group_speech_coverages().len(), 1, "{warnings}");
             } else {
-                assert_eq!(
-                    ledger.text_of(&occurrence),
-                    Some("apple floor"),
-                    "{warnings}"
-                );
+                // Apple is a coarse hypothesis, never a lexical floor. A
+                // complete Word decode may account for its entire source scope;
+                // a partial decode must carry the same source as explicit debt.
+                assert_eq!(ledger.text_of(&occurrence), Some("tak poza"), "{warnings}");
                 assert!(ledger.group_speech_coverages().is_empty());
-                assert!(
-                    ledger
-                        .slot_alternatives()
-                        .iter()
-                        .any(|alternative| alternative.candidate == "tak poza"),
-                    "{warnings}"
+                let range = &requests[0].provider_request.identity.range;
+                let full_source_decoded = range.sample_start <= occurrence.sample_start
+                    && range.sample_end >= occurrence.sample_end;
+                eprintln!(
+                    "L41_SOURCE_SCOPE window={}..{} owner={}..{} full={full_source_decoded} pending={} sealed={}",
+                    range.sample_start,
+                    range.sample_end,
+                    occurrence.sample_start,
+                    occurrence.sample_end,
+                    ledger.text_recovery_pending(&occurrence),
+                    ledger.is_sealed(&occurrence)
                 );
+                assert_eq!(
+                    ledger.text_recovery_pending(&occurrence),
+                    !full_source_decoded
+                );
+                // Later deterministic word receipts may follow the acoustic
+                // split. Find the actual source-accounting operation and check
+                // each final word's physical provenance rather than requiring
+                // the last operation to have the original group as parent.
+                let operation = ledger
+                    .slot_operations()
+                    .iter()
+                    .find(|operation| operation.sources == sources_before)
+                    .expect("original source accounting");
+                assert!(operation.source_ranges.contains(&occurrence));
+                assert!(operation.outputs.iter().any(|output| output.text == "tak"));
+                let slots = ledger.slots_of(&occurrence).unwrap();
+                assert_eq!(
+                    slots
+                        .iter()
+                        .map(|slot| slot.text.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["tak", "poza"]
+                );
+                for output in slots {
+                    let provenance = ledger.slot_source_ranges(output);
+                    assert!(
+                        provenance
+                            .iter()
+                            .any(|source| source.same_capture(&occurrence)
+                                && range.sample_start <= source.sample_start
+                                && source.sample_end <= range.sample_end
+                                && source.sample_start <= output.sample_start
+                                && source.sample_end >= output.sample_end),
+                        "{output:?}: {provenance:?}"
+                    );
+                }
+                if !full_source_decoded {
+                    assert!(ledger.slot_alternatives().iter().any(
+                        |alternative| alternative.reason == "partial_group_speech_pending"
+                            && alternative.sources == sources_before
+                    ));
+                    assert!(!ledger.is_sealed(&occurrence));
+                    assert!(!received_events.iter().any(|event| matches!(
+                        event,
+                        EngineEvent::LedgerSeal { .. } | EngineEvent::UtteranceFinal { .. }
+                    )));
+                }
             }
             assert!(ledger.word_deletions().is_empty());
             assert_eq!(ledger.conservation().residue(), 0);
