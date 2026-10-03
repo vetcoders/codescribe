@@ -321,17 +321,10 @@ fn complete_oracle_trace(manifest: &FixtureManifest) -> PublishedBusTrace {
 fn parse_bus_evidence(raw: &str) -> Result<Vec<TranscriptBusEvidenceEvent>, Vec<String>> {
     let mut failures = Vec::new();
     let mut events = Vec::new();
-    for (index, line) in raw.lines().enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let value = match serde_json::from_str::<Value>(line) {
-            Ok(value) => value,
-            Err(error) => {
-                failures.push(format!("Bus JSONL line {} is invalid: {error}", index + 1));
-                continue;
-            }
-        };
+    // Expand storage envelopes independently; the five-word, PCM, seal,
+    // receipt and every adversarial acceptance assertion below stay unchanged.
+    let rows = crate::durable_bus_oracle::rows(raw).map_err(|error| vec![error])?;
+    for (index, value) in rows.into_iter().enumerate() {
         if value.get("schema").and_then(Value::as_str) != Some(BUS_EVIDENCE_SCHEMA) {
             continue;
         }

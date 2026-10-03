@@ -592,6 +592,133 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     }
   }
 
+  func testManagedRolloverKeepsOpenReceiptAndConsumesOnlyTheNewSuffix() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    try fixture.append(fixture.open())
+    try fixture.append(fixture.seal(1))
+    let before = try await reader.read()
+    XCTAssertEqual(before.first?.stage, .sent)
+    XCTAssertEqual(before.first?.isOpen, true)
+    let consumedBefore = await reader.consumedBytes
+    try pinSyntheticGeneration(fixture)
+    try fixture.append(fixture.ack(Fixture.firstID))
+    let suffix = try fixture.busSize()
+    let after = try await reader.read()
+    XCTAssertEqual(after.first?.stage, .received)
+    XCTAssertEqual(after.first?.isOpen, true, "storage rollover cannot close a microphone")
+    let consumedAfter = await reader.consumedBytes
+    XCTAssertEqual(
+      consumedAfter - consumedBefore, suffix, "active observer must not replay archived bytes")
+    let restarted = try await OverlayChannelDeliveryReader(root: fixture.root).read()
+    XCTAssertEqual(restarted.first?.stage, .received)
+    XCTAssertEqual(restarted.first?.isOpen, true)
+  }
+
+  func testManagedColdMonitorSeesNewestSpeechWithinTheExistingTailBudget() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    try fixture.fillBusWithEvidence(bytes: Int(OverlayChannelDeliveryReader.tailWindow) + 6_000_000)
+    try pinSyntheticGeneration(fixture)
+    try fixture.append(fixture.open())
+    try fixture.append(fixture.seal(1))
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let statuses = try await reader.read()
+    XCTAssertEqual(
+      statuses.first?.isOpen, true, "first monitor observation must include the newest capture")
+    XCTAssertEqual(
+      statuses.first?.stage, .sent, "cold archived prefix cannot delay the current utterance")
+    let consumed = await reader.consumedBytes
+    XCTAssertLessThanOrEqual(
+      consumed, OverlayChannelDeliveryReader.tailWindow,
+      "archive admission does not remove the established cold-monitor scan budget")
+  }
+
+  func testMalformedSharedInventoryCannotPublishItsFirstTerminalOccurrence() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    try fixture.append([
+      "schema": "codescribe.transcript-evidence.v1", "session_id": "take-a",
+      "audience": "james", "sequence": 10, "document_index": 0,
+      "reducer_revision": 7, "reducer_action": "record_ledger_terminal_seal",
+      "rendered_text": "Iwo Iwo", "persistence_encoding": "shared-revision.v1",
+      "occurrence_rows": [["sequence": 11, "label": "Iwo"]],
+    ])
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    do {
+      _ = try await reader.read()
+      XCTFail("an invalid shared inventory must be refused before publishing any occurrence")
+    } catch {
+      XCTAssertFalse(
+        FileManager.default.fileExists(
+          atPath: OverlayDeliveryCursorStore.url(root: fixture.root).path),
+        "invalid storage cannot advance a durable cursor")
+    }
+  }
+
+  private func pinSyntheticGeneration(_ fixture: Fixture, day: String? = "2026_1002") throws {
+    let attributes = try FileManager.default.attributesOfItem(atPath: fixture.bus.path)
+    let inode = try XCTUnwrap(attributes[.systemFileNumber] as? NSNumber)
+    let dev = try XCTUnwrap(attributes[.systemNumber] as? NSNumber)
+    let bytes = try fixture.busSize()
+    let archive = fixture.root.appendingPathComponent("events/2026_1002/closed.jsonl")
+    try FileManager.default.createDirectory(
+      at: archive.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try FileManager.default.moveItem(at: fixture.bus, to: archive)
+    try Data().write(to: fixture.bus, options: .atomic)
+    let current = try FileManager.default.attributesOfItem(atPath: fixture.bus.path)
+    let closed: [String: Any] = [
+      "id": "closed", "path": archive.path, "start": 0, "length": bytes,
+      "dev": dev, "ino": inode, "day": day.map { $0 as Any } ?? NSNull(), "compressed": false,
+      "sha256": NSNull(), "superseded": NSNull(),
+    ]
+    let active: [String: Any] = [
+      "id": "active", "path": fixture.bus.path, "start": bytes, "length": 0,
+      "dev": try XCTUnwrap(current[.systemNumber] as? NSNumber),
+      "ino": try XCTUnwrap(current[.systemFileNumber] as? NSNumber), "day": "2026_1003",
+      "compressed": false, "sha256": NSNull(), "superseded": NSNull(),
+    ]
+    try fixture.write(
+      [
+        "schema": "codescribe.bus-generations.v1", "root": fixture.bus.path,
+        "stream_id": "synthetic-stream", "stream_inode": inode, "stream_dev": dev,
+        "stream_birthtime": NSNull(), "segments": [closed], "active": active, "pending": NSNull(),
+      ],
+      to: URL(fileURLWithPath: fixture.bus.path + ".generations.json"))
+  }
+
+  func testManagedColdMonitorSeesNewestSpeechAfterAnUndatedPrefix() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    try fixture.fillBusWithEvidence(bytes: Int(OverlayChannelDeliveryReader.tailWindow) + 6_000_000)
+    try pinSyntheticGeneration(fixture, day: nil)
+    try fixture.append(fixture.open())
+    try fixture.append(fixture.seal(1))
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let first = try await reader.read()
+    XCTAssertEqual(first.first?.stage, .sent)
+    XCTAssertEqual(first.first?.isOpen, true)
+    let bytes = await reader.consumedBytes
+    XCTAssertLessThanOrEqual(bytes, OverlayChannelDeliveryReader.tailWindow)
+  }
+
+  func testManagedColdMonitorFindsTheNewestTakeInAClosedGenerationWithEmptyHotFile() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    try fixture.fillBusWithEvidence(bytes: Int(OverlayChannelDeliveryReader.tailWindow) + 6_000_000)
+    try fixture.append(fixture.open())
+    try fixture.append(fixture.seal(1))
+    try pinSyntheticGeneration(fixture)
+    XCTAssertEqual(try fixture.busSize(), 0)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let first = try await reader.read()
+    XCTAssertEqual(first.first?.stage, .sent)
+    XCTAssertEqual(first.first?.isOpen, true)
+    let bytes = await reader.consumedBytes
+    XCTAssertLessThanOrEqual(bytes, OverlayChannelDeliveryReader.tailWindow)
+  }
+
   private struct Fixture {
     static let leaseID = "0123456789abcdef0123456789abcdef"
     static let firstID = "b67e9660afb01eb53ab2de50"

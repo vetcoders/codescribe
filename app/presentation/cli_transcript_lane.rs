@@ -4,8 +4,8 @@
 //! utterance consumers and a complete `rendered_text` for passive canvases.
 //! `source=cli_file_verdict` identifies file output without claiming ledger receipts.
 
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use chrono::{SecondsFormat, Utc};
@@ -22,8 +22,8 @@ pub const CLI_FILE_VERDICT_SOURCE: &str = "cli_file_verdict";
 
 /// Append-only publisher for one `codescribe transcribe <file>` run.
 ///
-/// One instance owns one session. It holds no lock beyond the file's O_APPEND
-/// semantics: the app may be writing the same bus concurrently, and NDJSON
+/// One instance owns one session. The shared generation lease serializes
+/// append and rollover with the app, while NDJSON
 /// lines under the append flag do not interleave at these sizes.
 pub struct CliTranscriptLane {
     session_id: String,
@@ -239,14 +239,7 @@ impl CliTranscriptLane {
         event.sequence = next;
         event.emitted_at = Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true);
 
-        let mut options = OpenOptions::new();
-        options.create(true).append(true).write(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&self.path)?;
+        let file = super::transcript_bus::shared_bus_file(&self.path)?;
 
         #[derive(serde::Serialize)]
         struct DocumentRow<'a> {
@@ -260,14 +253,11 @@ impl CliTranscriptLane {
             "utterance_draft" | "transcript_sealed"
         )
         .then_some(self.document.as_str());
-        let mut encoded = serde_json::to_vec(&DocumentRow {
+        let encoded = super::transcript_bus_maintenance::generation::encode(&DocumentRow {
             event: &event,
             rendered_text,
-        })
-        .map_err(io::Error::other)?;
-        encoded.push(b'\n');
-        file.write_all(&encoded)?;
-        file.flush()?;
+        })?;
+        super::transcript_bus_maintenance::generation::append(&self.path, &file, &encoded)?;
         self.sequence = next;
         Ok(())
     }

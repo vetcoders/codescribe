@@ -397,6 +397,48 @@ pub struct DocumentHistoryEntry {
     pub emitted_at: String,
 }
 
+/// Durable encoding shares the document once, while live callbacks retain one
+/// complete projection per occurrence. The first occurrence remains at the
+/// top level for readers that select one document snapshot per revision.
+#[derive(Serialize)]
+struct DurableRevision<'a> {
+    #[serde(flatten)]
+    document: &'a TranscriptBusEvidenceEvent,
+    persistence_encoding: &'static str,
+    occurrence_rows: Vec<DurableOccurrence<'a>>,
+}
+
+/// Fields that differ between projections of the same reducer revision.
+/// All other fields are copied from the top-level document when expanding.
+#[derive(Serialize)]
+struct DurableOccurrence<'a> {
+    sequence: u64,
+    emitted_at: &'a str,
+    occurrence_session_id: &'a str,
+    capture_epoch: u64,
+    sample_start: u64,
+    sample_end: u64,
+    document_index: u64,
+    label: &'a str,
+    acoustic_receipts: &'a [ProjectedAcousticReceipt],
+}
+
+impl<'a> From<&'a TranscriptBusEvidenceEvent> for DurableOccurrence<'a> {
+    fn from(event: &'a TranscriptBusEvidenceEvent) -> Self {
+        Self {
+            sequence: event.sequence,
+            emitted_at: &event.emitted_at,
+            occurrence_session_id: &event.occurrence_session_id,
+            capture_epoch: event.capture_epoch,
+            sample_start: event.sample_start,
+            sample_end: event.sample_end,
+            document_index: event.document_index,
+            label: &event.label,
+            acoustic_receipts: &event.acoustic_receipts,
+        }
+    }
+}
+
 pub(crate) const HISTORY_SCHEMA: &str = "codescribe.transcript-history.v1";
 
 #[derive(Serialize, Deserialize)]
@@ -518,7 +560,7 @@ fn document_history_at_counted(
     bytes_read: &mut u64,
 ) -> io::Result<Vec<DocumentHistoryEntry>> {
     // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- path is the app-owned transcript_bus_path() or an explicit test temporary Bus path, never request input.
-    let mut file = match std::fs::File::open(path) {
+    let mut file = match super::transcript_bus_maintenance::generation::Reader::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error),
@@ -527,7 +569,7 @@ fn document_history_at_counted(
     // session's started row; other sessions may be interleaved, so merely
     // seeing another session is not a safe stopping condition.
     let session_bytes = session_id.as_bytes();
-    let mut position = file.metadata()?.len();
+    let mut position = file.len();
     let mut prefix = Vec::new();
     let mut rows = Vec::new();
     let mut found_start = false;
@@ -553,7 +595,12 @@ fn document_history_at_counted(
             let Ok(row) = serde_json::from_slice::<serde_json::Value>(line) else {
                 continue;
             };
-            if row.get("session_id").and_then(|value| value.as_str()) != Some(session_id) {
+            if row
+                .get("session_id")
+                .or_else(|| row.get("event").and_then(|event| event.get("session_id")))
+                .and_then(|value| value.as_str())
+                != Some(session_id)
+            {
                 continue;
             }
             if row.get("status").and_then(|value| value.as_str()) == Some("session_started") {
@@ -579,8 +626,29 @@ fn document_history_at_counted(
         );
     }
     rows.reverse();
-    let mut revisions = std::collections::BTreeMap::new();
+    let mut storage = super::transcript_bus_maintenance::generation::Decoder::default();
+    let mut decoded = Vec::new();
     for line in rows {
+        let Ok(value) = serde_json::from_slice(&line) else {
+            continue;
+        };
+        for value in storage.push(value)? {
+            // History selects one shared document; validate every occurrence
+            // without duplicating its document bytes in this observation.
+            let mut rows = super::transcript_bus_maintenance::generation::rows(value)?;
+            if let Some(document) = rows.next() {
+                decoded.push(serde_json::to_vec(&document).map_err(io::Error::other)?);
+            }
+        }
+    }
+    if storage.incomplete() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "incomplete document storage",
+        ));
+    }
+    let mut revisions = std::collections::BTreeMap::new();
+    for line in decoded {
         if let Ok(row) = serde_json::from_slice::<CompactHistoryRow>(&line)
             && row.schema == HISTORY_SCHEMA
             && row.session_id == session_id
@@ -883,7 +951,7 @@ pub(crate) fn open_bus_append_file(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
-struct SharedBusWriter(Arc<Mutex<File>>);
+struct SharedBusWriter(Arc<Mutex<File>>, PathBuf);
 
 /// One session publishes the same encoded row to every destination. An
 /// uncertain append retires only that destination, without retrying its prefix.
@@ -919,10 +987,7 @@ impl Write for BusFanout {
 
 impl Write for SharedBusWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.0
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .write_all(bytes)?;
+        super::transcript_bus_maintenance::generation::append(&self.1, &self.0, bytes)?;
         Ok(bytes.len())
     }
 
@@ -1218,6 +1283,7 @@ impl TranscriptBus {
         let is_coverage_verdict =
             matches!(&revision.action, ReducerAction::RecordSealCoverage { .. });
         let mut emitted = Vec::new();
+        let mut persisted = Vec::new();
         if revision.entries.is_empty() {
             let ReducerAction::ApplyUserRevision { receipt } = &revision.action else {
                 return Vec::new();
@@ -1359,12 +1425,25 @@ impl TranscriptBus {
                 if starts_document {
                     writer.announced_documents.insert(document_index as u64);
                 }
-                if let Err(error) = self.write_evidence_event_locked(&mut writer, &event) {
-                    self.log_write_error(error);
-                }
+                writer.sequence = event.sequence;
+                persisted.push(emitted.len());
             }
             writer.last_projection = Some(event.clone());
             emitted.push(event);
+        }
+        if let Some(&first) = persisted.first() {
+            let durable = DurableRevision {
+                document: &emitted[first],
+                persistence_encoding: "shared-revision.v1",
+                occurrence_rows: persisted
+                    .iter()
+                    .skip(1)
+                    .map(|&index| DurableOccurrence::from(&emitted[index]))
+                    .collect(),
+            };
+            if let Err(error) = Self::append_projection_locked(&mut writer, &durable) {
+                self.log_write_error(error);
+            }
         }
         if matches!(
             &revision.action,
@@ -1508,7 +1587,7 @@ impl TranscriptBus {
             }
         }
         drop(file);
-        Ok(Box::new(SharedBusWriter(shared)))
+        Ok(Box::new(SharedBusWriter(shared, path.to_path_buf())))
     }
 
     /// Announce the recording start exactly once, even if persistence fails.
@@ -1892,8 +1971,7 @@ impl TranscriptBus {
             return Ok(());
         };
         let result = (|| {
-            let mut encoded = serde_json::to_vec(event).map_err(io::Error::other)?;
-            encoded.push(b'\n');
+            let encoded = super::transcript_bus_maintenance::generation::encode(event)?;
             file.write_all(&encoded)?;
             file.flush()
         })();
@@ -2045,7 +2123,8 @@ mod tests {
         bus.publish_started();
         let (ledger, _, base) = committed_fixture("recent-take");
         assert!(!bus.publish_revision(&base, &ledger).is_empty());
-        let recent_bytes = std::fs::metadata(&path).unwrap().len() - older_bytes;
+        let recent_bytes =
+            crate::durable_bus_oracle::logical_text(&path).len() as u64 - older_bytes;
         let mut bytes_read = 0;
         let history = document_history_at_counted(&path, "recent-take", &mut bytes_read).unwrap();
         assert!(!history.is_empty());
@@ -2219,7 +2298,7 @@ mod tests {
     }
 
     #[test]
-    fn compaction_preserves_revision_history_for_expired_evidence() {
+    fn managed_journal_refuses_age_rewrite_and_preserves_revision_history() {
         use std::time::{Duration, SystemTime};
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("history-retention.jsonl");
@@ -2238,9 +2317,13 @@ mod tests {
             std::fs::FileTimes::new().set_modified(SystemTime::now() - Duration::from_secs(120)),
         )
         .unwrap();
-        let report =
-            super::super::transcript_bus_maintenance::compact_bus(&path, 14, false).unwrap();
-        assert_eq!(report.evidence_rows_dropped, 1);
+        let original = crate::durable_bus_oracle::logical_text(&path);
+        let refused = super::super::transcript_bus_maintenance::compact_bus(&path, 14, false);
+        assert!(
+            refused.is_err(),
+            "managed daily generations never age-drop evidence"
+        );
+        assert_eq!(crate::durable_bus_oracle::logical_text(&path), original);
         assert_eq!(document_history_at(&path, "old-take").unwrap(), before);
     }
 
@@ -2478,10 +2561,7 @@ mod tests {
         assert!(!bus.publish_revision(&sealed, &ledger).is_empty());
 
         let raw = std::fs::read_to_string(&path).unwrap();
-        let rows: Vec<serde_json::Value> = raw
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
+        let rows = crate::durable_bus_oracle::rows(&raw).unwrap();
         let action_counts = rows.iter().fold(
             std::collections::HashMap::<String, usize>::new(),
             |mut counts, row| {
@@ -2538,9 +2618,10 @@ mod tests {
             assert!(!plain.publish_revision(&revision, &ledger).is_empty());
         }
         let raw = std::fs::read_to_string(&plain_path).unwrap();
-        let decisions = raw
-            .lines()
-            .filter(|line| line.contains("\"apply_ledger_decision\""))
+        let decisions = crate::durable_bus_oracle::rows(&raw)
+            .unwrap()
+            .iter()
+            .filter(|row| row["reducer_action"] == "apply_ledger_decision")
             .count();
         assert_eq!(decisions, 3, "dictation keeps every revision row: {raw}");
     }
@@ -3092,7 +3173,9 @@ mod tests {
             assert_eq!(terminal.acoustic_receipts, events[1].acoustic_receipts);
             assert!(bus.writer.lock().unwrap().file.is_none());
             assert_eq!(
-                std::fs::read_to_string(path).unwrap().lines().count(),
+                crate::durable_bus_oracle::rows(&crate::durable_bus_oracle::logical_text(&path))
+                    .unwrap()
+                    .len(),
                 if flush { 4 } else { 3 }
             );
         }
@@ -3137,10 +3220,10 @@ mod tests {
         assert_eq!(empty.phase, TranscriptProjectionPhase::NoSpeech);
         assert_eq!(std::fs::read(&path).unwrap(), partial);
 
-        // Explicit fixture rotation restores persistence for a future session;
-        // production does not rotate, truncate, or replay unknown bytes itself.
-        std::fs::rename(&path, temp.path().join("incomplete.jsonl")).unwrap();
-        let recovered = TranscriptBus::open_with_path(session("recovered"), path.clone());
+        // A separate explicit journal restores persistence; a stale generation
+        // manifest is never silently rewritten to bless a replacement inode.
+        let recovered_path = temp.path().join("recovered.jsonl");
+        let recovered = TranscriptBus::open_with_path(session("recovered"), recovered_path.clone());
         recovered.publish_started();
         let (ledger, _, revision) = committed_fixture("recovered");
         assert_committed(
@@ -3149,10 +3232,17 @@ mod tests {
             "recovered",
         );
         end_once(&recovered, &revision.rendered_text);
-        let rows = std::fs::read_to_string(path).unwrap();
-        assert_eq!(rows.lines().count(), 4);
-        for line in rows.lines() {
-            let row: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            partial,
+            "failed original journal remains exact"
+        );
+        let rows = crate::durable_bus_oracle::rows(&crate::durable_bus_oracle::logical_text(
+            &recovered_path,
+        ))
+        .unwrap();
+        assert_eq!(rows.len(), 4);
+        for row in rows {
             assert_eq!(row["session_id"], "recovered");
         }
     }
@@ -3251,7 +3341,9 @@ mod tests {
                 events.last()
             );
             assert_eq!(
-                std::fs::read_to_string(path).unwrap().lines().count(),
+                crate::durable_bus_oracle::rows(&crate::durable_bus_oracle::logical_text(&path))
+                    .unwrap()
+                    .len(),
                 if failing { 6 } else { 8 }
             );
         }
@@ -3869,5 +3961,77 @@ mod tests {
             "a containing seal leaves the alternative reviewable outside the Bus"
         );
         assert!(!std::fs::read_to_string(&path).unwrap().contains("Whisper"));
+    }
+
+    #[test]
+    fn forensic_l77_shared_document_conserves_all_durable_receipts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("synthetic-bus.jsonl");
+        let bus =
+            TranscriptBus::open_at(session("synthetic-byte-budget"), path.clone(), None).unwrap();
+        bus.publish_started();
+        let before = std::fs::metadata(&path).unwrap().len() as usize;
+        let label = "x".repeat(4096);
+        let (ledger, _, revision) =
+            committed_fixture_with_first_label("synthetic-byte-budget", &label);
+        let events = bus.publish_revision(&revision, &ledger);
+        // In-process HUD and receipt projections retain their existing contract.
+        assert_eq!(events.len(), 2);
+        assert_committed(&events, &revision, "synthetic-byte-budget");
+        let bytes = std::fs::read(&path).unwrap();
+        let tail = std::str::from_utf8(&bytes[before..]).unwrap();
+        let rows: Vec<serde_json::Value> = tail
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert!(!rows.is_empty());
+        let projected: Vec<&serde_json::Value> = rows
+            .iter()
+            .filter(|row| {
+                row.get("rendered_text").and_then(|v| v.as_str())
+                    == Some(revision.rendered_text.as_str())
+            })
+            .collect();
+        assert!(
+            !projected.is_empty(),
+            "durable revision must retain the exact full document"
+        );
+        fn visit_receipts(value: &serde_json::Value, out: &mut Vec<serde_json::Value>) {
+            if let serde_json::Value::Object(object) = value {
+                if let Some(array) = object.get("acoustic_receipts").and_then(|v| v.as_array()) {
+                    out.extend(array.iter().cloned());
+                }
+                // One full document; every occurrence retains its own receipt.
+                if let Some(array) = object.get("occurrence_rows").and_then(|v| v.as_array()) {
+                    for row in array {
+                        visit_receipts(row, out);
+                    }
+                }
+            }
+        }
+
+        let mut persisted_receipts = Vec::new();
+        for row in &rows {
+            visit_receipts(row, &mut persisted_receipts);
+        }
+        let expected_receipts: Vec<serde_json::Value> = events
+            .iter()
+            .flat_map(|event| event.acoustic_receipts.iter())
+            .map(|receipt| serde_json::to_value(receipt).unwrap())
+            .collect();
+        assert_eq!(
+            persisted_receipts, expected_receipts,
+            "byte reduction must conserve every original occurrence receipt in order"
+        );
+        let document_bytes: usize = rows
+            .iter()
+            .filter_map(|row| row.get("rendered_text").and_then(|v| v.as_str()))
+            .map(str::len)
+            .sum();
+        assert!(
+            document_bytes <= revision.rendered_text.len() + 64,
+            "one durable revision repeated its full document per occurrence: actual {document_bytes}, document {}",
+            revision.rendered_text.len()
+        );
     }
 }

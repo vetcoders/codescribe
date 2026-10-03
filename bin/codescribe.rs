@@ -128,6 +128,25 @@ enum Command {
 enum BusAction {
     /// Size, composition and span of the bus
     Status,
+    /// Plan an explicit historical source; --stage prepares isolated daily files.
+    PrepareMigration {
+        #[arg(long)]
+        source: std::path::PathBuf,
+        #[arg(long)]
+        out: std::path::PathBuf,
+        /// Explicitly read the chosen source and stage bounded calendar partitions
+        #[arg(long)]
+        stage: bool,
+        /// Request verified ordinary filesystem-compressed copies during staging
+        #[arg(long)]
+        compress: bool,
+        /// Verify and reuse a completed preparation; incomplete receipts refuse
+        #[arg(long)]
+        resume: bool,
+        /// Reserved admission switch; refuses until runtime ownership is implemented
+        #[arg(long)]
+        apply: bool,
+    },
     /// Drop evidence rows older than the retention window
     ///
     /// Refuses while a session may be open, and discards its own work rather
@@ -346,6 +365,18 @@ fn run_bus(action: BusAction) -> anyhow::Result<()> {
 
     let path = codescribe::presentation::transcript_bus::transcript_bus_path();
     match action {
+        BusAction::PrepareMigration {
+            source,
+            out,
+            stage,
+            compress,
+            resume,
+            apply,
+        } => {
+            let report = codescribe::presentation::transcript_bus_maintenance::generation::prepare_migration(&source, &out, stage, compress, resume, apply)?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            Ok(())
+        }
         BusAction::Status => {
             let status = bus_status(&path)?;
             println!("bus: {}", status.path.display());
@@ -654,24 +685,19 @@ impl LiveHumanView {
 
 fn transcribe_live(language: Option<String>, json: bool) -> anyhow::Result<()> {
     use codescribe::presentation::transcript_bus::transcript_bus_path;
+    use codescribe::presentation::transcript_bus_maintenance::generation::Reader as GenerationReader;
     use codescribe::presentation::transcript_projection::{
         TranscriptBusFileWake, TranscriptProjectionReader,
     };
     use std::io::{Read, Seek, SeekFrom, Write as _};
-    #[cfg(unix)]
-    use std::os::unix::fs::MetadataExt as _;
 
     let path = transcript_bus_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut offset = std::fs::metadata(&path)
-        .map(|metadata| metadata.len())
-        .unwrap_or(0);
-    #[cfg(unix)]
-    let mut file_identity = std::fs::metadata(&path)
-        .ok()
-        .map(|metadata| (metadata.dev(), metadata.ino()));
+    let initial = GenerationReader::open(&path).ok();
+    let mut offset = initial.as_ref().map_or(0, GenerationReader::len);
+    let mut file_identity = initial.as_ref().map(GenerationReader::identity);
     let mut reader = TranscriptProjectionReader::new();
     let mut wake = TranscriptBusFileWake::new(&path)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -712,30 +738,22 @@ fn transcribe_live(language: Option<String>, json: bool) -> anyhow::Result<()> {
                 }
             }
 
-            let mut file = match std::fs::File::open(&path) {
+            let mut file = match GenerationReader::open(&path) {
                 Ok(file) => file,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error.into()),
             };
-            let metadata = file.metadata()?;
-            let file_len = metadata.len();
-            #[cfg(unix)]
-            let identity_changed =
-                file_identity.is_some_and(|identity| identity != (metadata.dev(), metadata.ino()));
-            #[cfg(not(unix))]
-            let identity_changed = false;
+            let file_len = file.len();
+            let identity_changed = file_identity.is_some_and(|identity| identity != file.identity());
             if identity_changed || file_len < offset {
                 offset = 0;
                 reader.reset_authority();
                 eprintln!("codescribe live: Bus rotation/truncation opened a new authority domain");
             }
-            #[cfg(unix)]
-            {
-                file_identity = Some((metadata.dev(), metadata.ino()));
-            }
+            file_identity = Some(file.identity());
             file.seek(SeekFrom::Start(offset))?;
             let mut chunk = Vec::new();
-            file.read_to_end(&mut chunk)?;
+            file.take(4 << 20).read_to_end(&mut chunk)?;
             offset = offset.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
             if !chunk.is_empty() {
                 let (projections, errors) = live_projections(&mut reader, &chunk);
