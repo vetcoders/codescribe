@@ -85,6 +85,22 @@ Open **Settings → Agent → LLM lanes** to select a provider and model separat
 for **Assistive** (Agent and voice-assistant requests) and **Formatting**
 (transcript cleanup). **Agent → Prompts** edits their prompts.
 
+### Credential access while refreshing
+
+Settings and Setup read provider credentials in the background. The initial
+read shows **Checking provider access…** rather than claiming an account or
+key is missing. An access error remains visible with **Retry provider access**;
+a previous successful snapshot is labeled as the last checked state. Settings
+also offers **Refresh provider access**. Returning focus refreshes only the
+owning Settings or Setup window, and repeated requests share the pending read.
+Permission checklist changes refresh permissions and hotkeys separately.
+
+Saving or removing credentials and custom providers shows pending work. A
+successful storage operation precedes publication of the new credential state;
+an error does not become a false “not configured” result. Setup waits for a
+pasted key to save before Continue leaves that step. Basic dictation remains
+available while credential access is unresolved.
+
 ### Account access and API keys
 
 Setup, its completion summary and the provider cards distinguish these states:
@@ -195,3 +211,18 @@ Common overrides:
 - **Reset prompts**: Settings → **Agent → Prompts** → **Reset**
 
 _Created by Vetcoders (c)2026_
+
+## License access
+
+Open **Settings → License** to activate, restore or remove a CSK1 license.
+License storage runs in the background, and **Checking license…** or an access
+error remains visible while Settings stays interactive. **Retry license access**
+starts another read when the current operation has returned. Activation and
+removal stay pending until storage succeeds; a failed replacement or removal
+preserves the previously verified license.
+
+An unreadable store does not grant Agentic access on a cold start. If a signed
+license was already verified in this process, an access error preserves that
+payload while its original validity and offline-grace bounds continue to be
+evaluated against the current clock. Refreshing storage does not extend those
+bounds. Basic dictation remains free.

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 let defaultTranscriptTagTemplate =
@@ -800,6 +801,8 @@ struct LLMLaneModel {
   let provider: CsProviderOption?
   let configuredModel: String
   let discovery: CsModelDiscovery
+  var credentialAccessResolved = true
+  var credentialAccessError: String?
 
   var providerId: String { runtime.providerId }
   var providerDisplayName: String { provider?.displayName ?? runtime.providerDisplayName }
@@ -815,6 +818,8 @@ struct LLMLaneModel {
 
   /// `unavailableReason` arrives from the core and cannot be localized here.
   var availabilityDescription: String {
+    guard credentialAccessResolved else { return String(localized: "Checking provider access…") }
+    if credentialAccessError != nil { return String(localized: "Provider access unavailable") }
     if !runtime.available {
       return runtime.unavailableReason
         ?? String(localized: "unavailable", comment: "Lane availability, lower case")
@@ -829,10 +834,13 @@ struct LLMLaneModel {
   }
 
   var availabilityTint: Color {
-    runtime.available ? CSColor.oliveLight : CSColor.terracotta
+    guard credentialAccessResolved, credentialAccessError == nil else { return CSColor.textFaint }
+    return runtime.available ? CSColor.oliveLight : CSColor.terracotta
   }
 
   var discoveryDescription: String {
+    guard credentialAccessResolved else { return String(localized: "Checking provider access…") }
+    if credentialAccessError != nil { return String(localized: "Provider access unavailable") }
     switch discovery.status {
     case "fresh":
       let count = modelOptions.count
@@ -1192,7 +1200,10 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var calibrationNotice: String?
   @Published private(set) var resetPreview: CsResetPreview
   @Published private(set) var agentResetPreview: CsAgentResetPreview
-  @Published private(set) var licenseStatus: CsLicenseStatus
+  var licenseStatus: CsLicenseStatus { licenseService.status }
+  var licenseReadState: LicenseService.ReadState { licenseService.readState }
+  var licenseBusy: Bool { licenseService.isBusy }
+  private var licenseChangeSink: AnyCancellable?
   /// Provider ids with a "Sign in with ChatGPT" flow in flight (browser open,
   /// local callback server listening). Guards double-clicks.
   @Published private(set) var accountLoginPending: Set<String> = []
@@ -1200,6 +1211,13 @@ final class SettingsViewModel: ObservableObject {
   /// "failed" …) — honest status for the row without raising a modal error.
   @Published private(set) var accountLoginNotices: [String: String] = [:]
   @Published var lastError: String?
+
+  @Published private(set) var providerAccessPending = false
+  @Published private(set) var providerMutationPending = false
+  @Published private(set) var providerAccessResolved = false
+  @Published private(set) var providerAccessError: String?
+  private var providerAccessGeneration: UInt64 = 0
+  private var providerRefreshRequested = false
 
   // MARK: - Local Whisper download (Settings → Dictation)
 
@@ -1292,12 +1310,13 @@ final class SettingsViewModel: ObservableObject {
     self.deferredInsertShortcut = DeferredInsertShortcutOption(
       wireId: initialSettings.deferredInsertShortcut
     )
-    self.keyStatus = .sampleAllSet
-    self.providers = CsProviderOption.sampleProviders
+    self.keyStatus = engine?.keyStatus() ?? .sampleAllSet
+    self.providers = engine == nil ? CsProviderOption.sampleProviders : []
+    self.providerAccessResolved = engine == nil
     self.sttLanes = engine?.sttLanes() ?? [.sampleFile, .sampleLive]
     self.configDir = ""
     self.needsOnboarding = false
-    self.agentReadiness = .sample
+    self.agentReadiness = engine == nil ? .sample : CsAgenticReadiness(configPathDisplay: "", ready: false, rows: [])
     self.mcpStatus = .sample
     self.capabilityMatrix = CsCapabilityRow.sampleMatrix
     self.voiceLabReadError = nil
@@ -1307,7 +1326,9 @@ final class SettingsViewModel: ObservableObject {
     self.admissionReadError = nil
     self.resetPreview = .sample
     self.agentResetPreview = .sample
-    self.licenseStatus = self.licenseService.status
+    licenseChangeSink = self.licenseService.objectWillChange.sink { [weak self] _ in
+      self?.objectWillChange.send()
+    }
     lastServingVerdict = servingStatusProvider()
   }
 
@@ -1366,20 +1387,13 @@ final class SettingsViewModel: ObservableObject {
 
   /// Re-read live state (permissions can change while the window is open).
   func refresh() {
-    permissions = permissionProbe.snapshot()
+    refreshPermissions()
     refreshServingStatus()
-    // A permission granted while Settings is open (e.g. via the checklist's
-    // "Open System Settings") should bring hotkeys live without an app
-    // restart. Idempotent bridge call — a no-op once the tap is already armed.
-    hotkeys?.rearmAfterPermissionGrant()
     if let engine {
       applyLoadedSettings(engine.loadSettings())
-      keyStatus = engine.keyStatus()
-      providers = engine.availableProviders()
-      sttLanes = engine.sttLanes()
+      refreshProviderAccess()
       configDir = engine.configDir()
       needsOnboarding = engine.shouldShowOnboarding()
-      refreshModelDiscoveries(providerIds: LLMLane.allCases.map { llmLane($0).providerId })
       refreshVoiceLab()
       refreshAudioInput()
     }
@@ -1388,21 +1402,27 @@ final class SettingsViewModel: ObservableObject {
     reloadMcpServers()
     loadHotkeys()
     licenseService.refresh()
-    licenseStatus = licenseService.status
   }
+
+  func refreshPermissions() {
+    permissions = permissionProbe.snapshot()
+    // A permission granted while Settings is open (e.g. via the checklist's
+    // "Open System Settings") should bring hotkeys live without an app
+    // restart. Idempotent bridge call — a no-op once the tap is already armed.
+    hotkeys?.rearmAfterPermissionGrant()
+  }
+
+  func refreshLicense() { licenseService.refresh() }
 
   var licenseError: String? { licenseService.lastError }
 
   @discardableResult
-  func activateLicense(_ key: String) -> Bool {
-    let activated = licenseService.activate(key)
-    licenseStatus = licenseService.status
-    return activated
+  func activateLicense(_ key: String) async -> Bool {
+    await licenseService.activate(key)
   }
 
-  func removeLicense() {
-    licenseService.removeLicense()
-    licenseStatus = licenseService.status
+  func removeLicense() async {
+    await licenseService.removeLicense()
   }
 
   /// Re-probe Whisper install state (embedded / on-disk / missing).
@@ -1482,6 +1502,7 @@ final class SettingsViewModel: ObservableObject {
   func refreshAgentStatus() {
     runtimeLaneCache.removeAll()
     guard let agentStatus else { return }
+    guard providerAccessResolved else { return }
     agentReadiness = agentStatus.agenticReadiness()
     mcpStatus = agentStatus.mcpStatus()
     capabilityMatrix = agentStatus.capabilityMatrix()
@@ -1899,6 +1920,7 @@ final class SettingsViewModel: ObservableObject {
   }
 
   private var assistiveKeyState: SettingsKeyState {
+    guard providerAccessResolved, providerAccessError == nil else { return .unknown }
     guard let provider = llmLane(.assistive).provider else { return .unknown }
     let runtime = llmLane(.assistive).runtime
     let keyAvailable = runtime.accountAuth || runtime.keyPresent || !provider.keyRequired
@@ -1910,8 +1932,10 @@ final class SettingsViewModel: ObservableObject {
       stt: sttHealthy,
       recording: admissionReadError == nil ? admission?.ready : nil,
       keys: assistiveKeyState,
-      agent: agentReadiness.ready && llmLane(.assistive).runtime.available,
-      formatting: llmLane(.formatting).runtime.available,
+      agent: providerAccessResolved && providerAccessError == nil
+        ? agentReadiness.ready && llmLane(.assistive).runtime.available : nil,
+      formatting: providerAccessResolved && providerAccessError == nil
+        ? llmLane(.formatting).runtime.available : nil,
       formattingRequired: cloudFormattingRequired
     )
   }
@@ -1958,7 +1982,9 @@ final class SettingsViewModel: ObservableObject {
       provider: providers.first { $0.id == runtime.providerId },
       configuredModel: configuredModel,
       discovery: modelDiscoveries[runtime.providerId]
-        ?? CsModelDiscovery.sample(for: runtime.providerId)
+        ?? CsModelDiscovery.sample(for: runtime.providerId),
+      credentialAccessResolved: providerAccessResolved,
+      credentialAccessError: providerAccessError
     )
   }
 
@@ -2756,85 +2782,144 @@ final class SettingsViewModel: ObservableObject {
     providerId.hasPrefix("custom:") ? String(providerId.dropFirst("custom:".count)) : providerId
   }
 
-  /// Validation is the bridge's; the thrown error is the form's message, not a modal.
-  func addCustomProvider(_ draft: CsCustomProviderDraft) throws {
+  /// One UI read in flight; repeated focus/appear requests join it. A mutation
+  /// invalidates its generation and requests one follow-up after completion.
+  func refreshProviderAccess() {
     guard let engine else { return }
-    _ = try engine.addCustomProvider(draft: draft)
+    if providerMutationPending { providerRefreshRequested = true; return }
+    guard !providerAccessPending else { return }
+    providerAccessPending = true
+    let generation = providerAccessGeneration
+    Task { @MainActor [self] in
+      defer {
+        providerAccessPending = false
+        if providerRefreshRequested {
+          providerRefreshRequested = false
+          refreshProviderAccess()
+        }
+      }
+      do {
+        let snapshot = try await engine.providerAccessSnapshot()
+        guard generation == providerAccessGeneration,
+          snapshot.revision == engine.providerAccessRevision()
+        else { providerRefreshRequested = true; return }
+        providers = snapshot.providers
+        keyStatus = snapshot.keyStatus
+        sttLanes = snapshot.sttLanes
+        providerAccessResolved = true
+        providerAccessError = nil
+        refreshAgentStatus()
+        refreshModelDiscoveries(providerIds: LLMLane.allCases.map { llmLane($0).providerId })
+      } catch {
+        guard generation == providerAccessGeneration else {
+          providerRefreshRequested = true
+          return
+        }
+        providerAccessError = error.userFacingMessage
+      }
+    }
+  }
+
+  private func beginProviderMutation() throws {
+    guard !providerMutationPending else { throw ProviderMutationError.busy }
+    providerMutationPending = true
+    providerAccessGeneration &+= 1
+  }
+
+  private func finishProviderMutation(_ engine: SettingsEngine) {
+    providerMutationPending = false
     reloadProviders(engine)
   }
 
-  func updateCustomProvider(id: String, _ draft: CsCustomProviderDraft) throws {
+  private enum ProviderMutationError: LocalizedError {
+    case busy
+    var errorDescription: String? { String(localized: "Provider access is still being updated.") }
+  }
+
+  /// Validation is the bridge's; the thrown error is the form's message, not a modal.
+  func addCustomProvider(_ draft: CsCustomProviderDraft) async throws {
     guard let engine else { return }
-    _ = try engine.updateCustomProvider(id: Self.customRowId(id), draft: draft)
-    reloadProviders(engine)
-    refreshModelDiscovery(providerId: id)
+    try beginProviderMutation()
+    defer { finishProviderMutation(engine) }
+    _ = try await engine.addCustomProviderAsync(draft: draft)
+  }
+
+  func updateCustomProvider(id: String, _ draft: CsCustomProviderDraft) async throws {
+    guard let engine else { return }
+    try beginProviderMutation()
+    defer { finishProviderMutation(engine) }
+    _ = try await engine.updateCustomProviderAsync(id: Self.customRowId(id), draft: draft)
   }
 
   /// Removes the row and its key; lanes that pointed at it come back as `lanesReset`.
   func removeCustomProvider(id: String) {
-    guard let engine else { return }
-    do {
-      let removal = try engine.removeCustomProvider(id: Self.customRowId(id))
-      reloadProviders(engine)
-      let lanes = removal.lanesReset.map { lane in
-        LLMLane.allCases.first { $0.bridgeLane == lane }?.title ?? "\(lane)"
+    guard let engine, !providerMutationPending else { return }
+    Task { @MainActor [self] in
+      do {
+        try beginProviderMutation()
+        defer { finishProviderMutation(engine) }
+        let removal = try await engine.removeCustomProviderAsync(id: Self.customRowId(id))
+        let lanes = removal.lanesReset.map { lane in
+          LLMLane.allCases.first { $0.bridgeLane == lane }?.title ?? "\(lane)"
+        }
+        if lanes.isEmpty {
+          laneResetNotice = nil
+        } else {
+          let joined = lanes.formatted(.list(type: .and))
+          laneResetNotice =
+            lanes.count == 1
+            ? String(
+              localized:
+                "\(joined) lane reset to the default vendor — the custom provider was removed",
+              comment: "The placeholder is one lane name"
+            )
+            : String(
+              localized:
+                "\(joined) lanes reset to the default vendor — the custom provider was removed",
+              comment: "The placeholder is a localized list of lane names"
+            )
+        }
+      } catch {
+        lastError = error.userFacingMessage
       }
-      if lanes.isEmpty {
-        laneResetNotice = nil
-      } else {
-        let joined = lanes.formatted(.list(type: .and))
-        laneResetNotice =
-          lanes.count == 1
-          ? String(
-            localized:
-              "\(joined) lane reset to the default vendor — the custom provider was removed",
-            comment: "The placeholder is one lane name"
-          )
-          : String(
-            localized:
-              "\(joined) lanes reset to the default vendor — the custom provider was removed",
-            comment: "The placeholder is a localized list of lane names"
-          )
-      }
-      refreshModelDiscoveries(providerIds: LLMLane.allCases.map { llmLane($0).providerId })
-    } catch {
-      lastError = String(describing: error)
     }
   }
 
   /// Settings + presence + registry after any provider/key mutation.
   private func reloadProviders(_ engine: SettingsEngine) {
     applyLoadedSettings(engine.loadSettings())
-    keyStatus = engine.keyStatus()
-    providers = engine.availableProviders()
-    sttLanes = engine.sttLanes()
-    refreshAgentStatus()
+    if providerAccessPending { providerRefreshRequested = true }
+    else { refreshProviderAccess() }
   }
 
   // MARK: - Keys (Keychain-backed; secrets never read back)
 
-  func saveKey(account: String, secret: String) {
+  func saveKey(account: String, secret: String) async throws {
     let trimmed = secret.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty, let engine else { return }
+    try beginProviderMutation()
+    defer { finishProviderMutation(engine) }
     do {
-      try engine.setApiKey(account: account, secret: trimmed)
+      try await engine.setApiKeyAsync(account: account, secret: trimmed)
       keyProbeResults[account] = nil
-      reloadProviders(engine)
-      refreshDiscovery(forAccount: account)
+      lastError = nil
     } catch {
-      lastError = String(describing: error)
+      lastError = error.userFacingMessage
+      throw error
     }
   }
 
-  func clearKey(account: String) {
+  func clearKey(account: String) async throws {
     guard let engine else { return }
+    try beginProviderMutation()
+    defer { finishProviderMutation(engine) }
     do {
-      try engine.clearApiKey(account: account)
+      try await engine.clearApiKeyAsync(account: account)
       keyProbeResults[account] = nil
-      reloadProviders(engine)
-      refreshDiscovery(forAccount: account)
+      lastError = nil
     } catch {
-      lastError = String(describing: error)
+      lastError = error.userFacingMessage
+      throw error
     }
   }
 
@@ -2906,24 +2991,22 @@ final class SettingsViewModel: ObservableObject {
         self.accountLoginPending.remove(providerId)
         self.accountLoginNotices[providerId] = String(describing: error)
       }
-      if let currentEngine = self.engine {
-        self.providers = currentEngine.availableProviders()
-      }
-      self.refreshAgentStatus()
+      self.providerAccessGeneration &+= 1
+      if let currentEngine = self.engine { self.reloadProviders(currentEngine) }
     }
   }
 
   /// Sign out of the provider account (clears the stored tokens). API keys
   /// are untouched.
   func signOutAccount(providerId: String) {
-    guard let engine else { return }
-    do {
-      try engine.signOutAccount(providerId: providerId)
-      accountLoginNotices[providerId] = nil
-      providers = engine.availableProviders()
-      refreshAgentStatus()
-    } catch {
-      lastError = String(describing: error)
+    guard let engine, !providerMutationPending else { return }
+    Task { @MainActor [self] in
+      do {
+        try beginProviderMutation()
+        defer { finishProviderMutation(engine) }
+        try await engine.signOutAccountAsync(providerId: providerId)
+        accountLoginNotices[providerId] = nil
+      } catch { lastError = error.userFacingMessage }
     }
   }
 
@@ -2948,10 +3031,8 @@ final class SettingsViewModel: ObservableObject {
     }
     persist(settingKey, value.trimmingCharacters(in: .whitespacesAndNewlines))
     accountLoginNotices[providerId] = nil
-    if let engine {
-      providers = engine.availableProviders()
-    }
-    refreshAgentStatus()
+    providerAccessGeneration &+= 1
+    if let engine { reloadProviders(engine) }
   }
 
   /// Re-run discovery for one provider (vendor or custom).

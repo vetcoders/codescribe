@@ -226,6 +226,26 @@ Codescribe/
 
 ## Key Components
 
+### Native credential I/O ownership
+
+`LicenseService` remains the license authority on MainActor; its serial storage
+queue performs SecItem reads/writes/deletes. It publishes a verified signed
+payload only after a successful read or durable activation. A storage failure
+retains an already verified payload, while every entitlement read reevaluates
+its original timestamps at the current clock. Cold pending/unavailable access
+never grants Agentic. Malformed signed data fails closed.
+
+`ProviderCredentialIO` serializes Settings and Setup credential operations off
+MainActor. `provider_access_snapshot` acquires through the existing Rust bundle
+cache and I/O mutex; passive settings, provider, lane and readiness projections
+use files/env/cache. The returned revision and each view model's generation
+prevent an earlier read from overwriting a later mutation. Refresh requests
+coalesce per model and share a five-second physical-read window across models.
+Permission refreshes do not start credential acquisition. See
+[Provider registry](providers/README.md#credential-acquisition-and-ui-projections)
+for cache states and retry ownership, and [Settings](guide/settings.md) for the
+pending/error UI contract.
+
 ### Controller State Machine
 
 ```rust

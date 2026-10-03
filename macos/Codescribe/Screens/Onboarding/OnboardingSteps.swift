@@ -292,17 +292,17 @@ struct AgenticReadinessStepView: View {
               .font(.caption.monospaced())
               .textSelection(.enabled)
           }
-          if let readiness = model.readiness {
+          if model.providerAccessResolved, model.providerAccessError == nil, let readiness = model.readiness {
             readinessPill(ready: readiness.ready)
             Text(
               "Agent readiness covers Assistive access and native tools. Cloud Formatting is configured separately in Settings › Agent › LLM lanes."
             )
             .font(.callout)
             .foregroundStyle(.secondary)
-            Text(model.providerAccessDescription)
-              .font(.callout)
-              .foregroundStyle(.secondary)
           }
+          Text(model.providerAccessDescription)
+            .font(.callout)
+            .foregroundStyle(.secondary)
           if let mcpStatus = model.mcpStatus {
             statusCard(rows: mcpStatus.rows)
           }
@@ -544,11 +544,15 @@ struct ApiKeyStepView: View {
       providerPicker
         .padding(.top, 4)
 
+      if model.providerAccessError != nil {
+        Button("Retry provider access") { model.refreshProviderAccess() }
+          .disabled(model.providerAccessPending || model.providerMutationPending)
+      }
       Text(model.providerAccessDescription)
         .font(.callout)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
-      if model.selectedProviderHasAccountAccess {
+      if model.providerAccessResolved, model.providerAccessError == nil, model.selectedProviderHasAccountAccess {
         HStack {
           Text("Provider account")
           Spacer(minLength: 0)
@@ -607,7 +611,9 @@ struct ApiKeyStepView: View {
       model.selectedProviderAccountConnected
       || model.selectedProvider?.keyRequired == false
     let statusColor =
-      isSet
+      !model.providerAccessResolved || model.providerAccessError != nil
+      ? CSColor.textFaint
+      : isSet
       ? CSColor.oliveLight
       : (isOptional ? CSColor.textFaint : CSColor.terracottaLight)
     return VStack(alignment: .leading, spacing: 10) {
@@ -622,7 +628,11 @@ struct ApiKeyStepView: View {
           .font(CSFont.mono(10, .medium))
           .foregroundStyle(CSColor.textFaint)
         Spacer(minLength: 0)
-        Text(isSet ? String(localized: "set") : String(localized: "not set"))
+        Text(!model.providerAccessResolved
+          ? String(localized: "Checking provider access…")
+          : model.providerAccessError != nil
+            ? String(localized: "Provider access unavailable")
+            : isSet ? String(localized: "set") : String(localized: "not set"))
           .font(CSFont.mono(10, .semibold))
           .foregroundStyle(statusColor)
       }
@@ -635,6 +645,8 @@ struct ApiKeyStepView: View {
         .settingsInputChrome(isFocused: keyFocused)
         .onSubmit { model.saveApiKey() }
         Button("Save key") { model.saveApiKey() }.csAction(prominent: true)
+          .disabled(model.providerMutationPending || !model.providerAccessResolved)
+        if model.providerMutationPending { ProgressView().controlSize(.small) }
       }
     }
     .padding(.vertical, 13)
@@ -676,21 +688,27 @@ struct DoneStepView: View {
             doneLabel: String(
               localized: "granted", comment: "Permission status: this permission is granted"))
         }
-        summaryRow(
-          String(
-            localized: "Provider API key",
-            comment: "Summary row: whether an API key is stored for the chosen AI provider"),
-          done: model.selectedProviderKeySet,
-          doneLabel: String(localized: "set", comment: "Status chip: a value is stored"))
-        if model.selectedProviderHasAccountAccess {
+        if model.providerAccessResolved, model.providerAccessError == nil {
           summaryRow(
-            String(localized: "Provider account"),
-            done: model.selectedProviderAccountConnected,
-            doneLabel: String(localized: "connected"),
-            missingLabel: String(localized: "not connected"))
+            String(
+              localized: "Provider API key",
+              comment: "Summary row: whether an API key is stored for the chosen AI provider"),
+            done: model.selectedProviderKeySet,
+            doneLabel: String(localized: "set", comment: "Status chip: a value is stored"))
+          if model.selectedProviderHasAccountAccess {
+            summaryRow(
+              String(localized: "Provider account"),
+              done: model.selectedProviderAccountConnected,
+              doneLabel: String(localized: "connected"),
+              missingLabel: String(localized: "not connected"))
+          }
         }
       }
       .padding(.top, 6)
+      if model.providerAccessError != nil {
+        Button("Retry provider access") { model.refreshProviderAccess() }
+          .disabled(model.providerAccessPending || model.providerMutationPending)
+      }
       Text(model.providerAccessDescription)
         .font(.callout)
         .foregroundStyle(.secondary)

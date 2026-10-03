@@ -458,6 +458,15 @@ pub struct CsProviderOption {
     pub oauth_client_id: Option<String>,
 }
 
+/// Secret-free credential projection captured at one cache revision.
+#[derive(uniffi::Record)]
+pub struct CsProviderAccessSnapshot {
+    pub providers: Vec<CsProviderOption>,
+    pub key_status: CsKeyStatus,
+    pub stt_lanes: Vec<CsSttLane>,
+    pub revision: u64,
+}
+
 /// One STT endpoint and its credential presence; secrets never leave Keychain.
 #[derive(uniffi::Record)]
 pub struct CsSttLane {
@@ -582,7 +591,7 @@ fn load_runtime_snapshot_for_lane() -> RuntimeSettingsSnapshot {
     }
     #[cfg(test)]
     RUNTIME_SNAPSHOT_BUILDS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let snapshot = match Config::load_runtime_snapshot() {
+    let snapshot = match Config::load_runtime_snapshot_without_keychain() {
         Ok(snapshot) => snapshot,
         Err(_) => last_good_runtime_snapshot()
             .lock()
@@ -737,7 +746,7 @@ impl CodescribeConfig {
     /// that instance — never a second `Config::load` + `UserSettings::load` +
     /// env-file reconstruct.
     pub fn load_settings(&self) -> CsSettings {
-        let runtime = Config::load_runtime_snapshot()
+        let runtime = Config::load_runtime_snapshot_without_keychain()
             .expect("canonical runtime settings must load for Settings UI projection");
         CsSettings::from_runtime_snapshot(&runtime)
     }
@@ -847,8 +856,8 @@ impl CodescribeConfig {
         Ok(self.tray_toggles())
     }
 
-    /// Lightweight tray-only settings read. Unlike `load_settings`, this never
-    /// populates the Keychain, so it never prompts just because the user opened
+    /// Lightweight tray-only settings read uses files, env and cached credentials.
+    /// It never prompts just because the user opened
     /// the menu. Projects from one keychain-free runtime snapshot.
     pub fn tray_toggles(&self) -> CsTrayToggles {
         let runtime = Config::load_runtime_snapshot_without_keychain()
@@ -876,7 +885,7 @@ impl CodescribeConfig {
     /// instead of mutating the process env.
     pub fn update_config(&self, key: String, value: String) -> Result<(), CsError> {
         validate_provider_setting(&key, &value)?;
-        Config::load()
+        Config::load_without_keychain()
             .save_to_env(&key, &value)
             .map_err(|error| CsError::Config {
                 msg: error.to_string(),
@@ -929,7 +938,7 @@ impl CodescribeConfig {
             .iter()
             .map(|entry| (entry.key.as_str(), entry.value.as_str()))
             .collect();
-        Config::load()
+        Config::load_without_keychain()
             .save_to_env_many(&pairs)
             .map_err(|error| CsError::Config {
                 msg: error.to_string(),
@@ -970,6 +979,36 @@ impl CodescribeConfig {
             .into_iter()
             .find(|provider| provider.key_account == account);
         Ok(probe_api_key_liveness(&account, provider.as_ref()).into())
+    }
+
+    /// Explicit credential acquisition. Swift executes this off MainActor.
+    pub fn provider_access_snapshot(&self) -> Result<CsProviderAccessSnapshot, CsError> {
+        let previous_revision = keychain::bundle_revision();
+        keychain::refresh_bundle().map_err(provider_error)?;
+        // Authorized background refresh also completes pending credential imports
+        // through the existing loader; passive UI projections leave them pending.
+        let _ = Config::load_runtime_snapshot().map_err(provider_error)?;
+        let revision = keychain::bundle_revision();
+        if revision != previous_revision { invalidate_runtime_snapshot_cache(); }
+        let registry = ProviderRegistry::from_settings(&UserSettings::load());
+        let mut providers = Vec::new();
+        for provider in registry.all() {
+            if let Some(vendor) = provider.oauth_vendor {
+                account_auth::account_status_snapshot(vendor).map_err(provider_error)?;
+            }
+            providers.push(provider_option(provider));
+        }
+        Ok(CsProviderAccessSnapshot {
+            providers,
+            key_status: self.key_status(),
+            stt_lanes: self.stt_lanes(),
+            revision,
+        })
+    }
+
+    /// Cache-only revision check; it never waits for credential I/O.
+    pub fn provider_access_revision(&self) -> u64 {
+        keychain::bundle_revision()
     }
 
     pub fn available_providers(&self) -> Vec<CsProviderOption> {
@@ -1018,6 +1057,7 @@ impl CodescribeConfig {
             Ok(removed)
         })
         .map_err(provider_error)?;
+        keychain::advance_bundle_revision();
         crate::hotkeys::refresh_live_controller_config();
         Ok(CsCustomProviderRemoval {
             id: removed.provider.id,
@@ -2467,7 +2507,7 @@ fn resolve_catalog_provider(
 }
 
 fn provider_option(provider: ResolvedProvider) -> CsProviderOption {
-    let status = provider.oauth_vendor.map(account_auth::account_status);
+    let status = provider.oauth_vendor.map(account_auth::cached_account_status);
     CsProviderOption {
         id: provider.reference.as_string(),
         kind: if provider.reference.custom_id().is_some() {
@@ -2500,6 +2540,7 @@ fn persist_custom_provider(
 ) -> Result<CsProviderOption, CsError> {
     // Persist the addressable row first; failed key writes can be retried through set_api_key.
     settings.save().map_err(provider_error)?;
+    keychain::advance_bundle_revision();
     let result = secret
         .map(|secret| {
             UserSettings::with_credential_edit(&row.key_account(), |_| {

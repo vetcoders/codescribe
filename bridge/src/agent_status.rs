@@ -153,13 +153,13 @@ impl CodescribeAgentStatus {
 
     /// Agentic-lane readiness. `ready` is the core capability gate (assistive
     /// provider + its API key + native tools); the MCP rows are informational.
-    /// Loads `Config` first so Keychain-backed keys are populated into env and the
-    /// core gate sees real key presence (mirrors `available_providers`).
+    /// Projects files, env and the existing credential cache. The explicit
+    /// background provider-access refresh acquires credentials before publication.
     pub fn agentic_readiness(&self) -> CsAgenticReadiness {
         // Settings and onboarding call this synchronously; an unreadable
         // settings store is a not-ready verdict for the card, never a crash
         // of the host process.
-        match codescribe_core::config::Config::load_runtime_snapshot() {
+        match codescribe_core::config::Config::load_runtime_snapshot_without_keychain() {
             Ok(runtime_settings) => probe_agentic_readiness(&runtime_settings).into(),
             Err(error) => CsAgenticReadiness {
                 config_path_display: format!("runtime settings unavailable: {error}"),
@@ -172,7 +172,7 @@ impl CodescribeAgentStatus {
     /// Provider-neutral capability matrix: native / enhanced / unavailable + reason.
     /// IntelliJ wrong-project or stale sessions are detected and bypassed.
     pub fn capability_matrix(&self) -> Vec<CsCapabilityRow> {
-        let _ = codescribe_core::config::Config::load();
+        let _ = codescribe_core::config::Config::load_without_keychain();
         let health = live_connector_health();
         capability_matrix(&health)
             .into_iter()

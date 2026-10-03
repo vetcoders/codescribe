@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::config::UserSettings;
-use crate::config::keychain::{delete_key, load_key, save_key};
+use crate::config::keychain::{cached_runtime_key, delete_key, ensure_bundle_loaded, save_key};
 use crate::llm::provider::ProviderKind;
 
 /// Device-code OAuth grant for providers that cannot do loopback redirects.
@@ -406,8 +406,27 @@ pub struct AccountAuthStatus {
 /// "not signed in" as the message. Never fails — an unsupported provider simply
 /// reads as not configured, not signed in.
 pub fn account_status(provider: ProviderKind) -> AccountAuthStatus {
+    project_account_status(provider, load_account_tokens(provider).ok())
+}
+
+/// Passive UI metadata: this never opens the credential store.
+pub fn cached_account_status(provider: ProviderKind) -> AccountAuthStatus {
+    let tokens = cached_account_tokens(provider).ok();
+    project_account_status(provider, tokens)
+}
+
+/// Strict UI refresh preserves storage/corruption errors rather than sign-out.
+pub fn account_status_snapshot(provider: ProviderKind) -> Result<AccountAuthStatus, AccountAuthError> {
+    let tokens = match cached_account_tokens(provider) {
+        Ok(tokens) => Some(tokens),
+        Err(AccountAuthError::NotSignedIn(_)) => None,
+        Err(error) => return Err(error),
+    };
+    Ok(project_account_status(provider, tokens))
+}
+
+fn project_account_status(provider: ProviderKind, tokens: Option<AccountTokens>) -> AccountAuthStatus {
     let client_id_configured = client_id_for_provider(provider).is_ok();
-    let tokens = load_account_tokens(provider).ok();
     let signed_in = tokens.is_some();
     let message = if !client_id_configured {
         NO_CLIENT_ID_MESSAGE.to_string()
@@ -646,10 +665,16 @@ async fn verify_responses_write_access_at(
 pub fn load_account_tokens(provider: ProviderKind) -> Result<AccountTokens, AccountAuthError> {
     ensure_provider_supported(provider)?;
     let account = token_account(provider)?;
-    let payload = std::env::var(account)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| load_key(account))
+    if std::env::var(account).ok().filter(|value| !value.trim().is_empty()).is_none() {
+        ensure_bundle_loaded()
+            .map_err(|error| AccountAuthError::Storage(format!("{error:#}")))?;
+    }
+    cached_account_tokens(provider)
+}
+
+fn cached_account_tokens(provider: ProviderKind) -> Result<AccountTokens, AccountAuthError> {
+    ensure_provider_supported(provider)?;
+    let payload = cached_runtime_key(token_account(provider)?)
         .ok_or_else(|| AccountAuthError::NotSignedIn(provider.as_str().to_string()))?;
     serde_json::from_str(&payload).map_err(|error| AccountAuthError::Storage(error.to_string()))
 }
@@ -667,6 +692,7 @@ pub fn clear_account_tokens(provider: ProviderKind) -> Result<(), AccountAuthErr
     // undone by a stale override. Sign-out is a single user-driven action,
     // not a hot concurrent path.
     unsafe { std::env::remove_var(account) };
+    crate::config::keychain::advance_bundle_revision();
     Ok(())
 }
 

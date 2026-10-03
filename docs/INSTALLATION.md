@@ -111,6 +111,15 @@ registered URL schemes, or bundle-ID-based LaunchAgents in this app target.
 The explicit Keychain service names (`com.vetcoders.codescribe` for core secrets,
 `com.vetcoders.codescribe.license` for licenses) remain shared; existing item
 access controls still apply and may prompt for a manually launched Debug build.
+Settings and Setup acquire provider and license credentials in the background.
+A manually launched Debug build can still wait for item authorization; pending
+and retry UI must stay interactive during that wait. This scheduling does not
+bypass Keychain protection. Native acceptance must exercise the real signed
+application with actual Keychain access; a harness that disables Keychain cannot
+prove responsiveness or authorization behavior. Check cold access, denied access,
+focus changes during a pending call, and save/remove completion without changing
+existing item ACLs or services as part of that check.
+
 Filesystem configuration is also shared by ordinary app launches; the test
 runner supplies an isolated data directory. A distinct bundle ID does not
 isolate every application resource.

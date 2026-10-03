@@ -13,6 +13,7 @@ import Foundation
 // is duplicated, only the wizard chrome differs.
 
 /// Subset of the codescribe config surface the onboarding wizard consumes.
+@MainActor
 protocol OnboardingEngine {
   // First-run gate + resume/completion markers.
   func shouldShowOnboarding() -> Bool
@@ -36,8 +37,19 @@ protocol OnboardingEngine {
   func assistiveProvider() -> String?
   func keyStatus() -> CsKeyStatus
   func availableProviders() -> [CsProviderOption]
+  func providerAccessSnapshot() async throws -> CsProviderAccessSnapshot
+  func providerAccessRevision() -> UInt64
+  func setApiKeyAsync(account: String, secret: String) async throws
   func setApiKey(account: String, secret: String) throws
   func updateConfig(key: String, value: String) throws
+}
+
+extension OnboardingEngine {
+  func providerAccessSnapshot() async throws -> CsProviderAccessSnapshot {
+    CsProviderAccessSnapshot(providers: availableProviders(), keyStatus: keyStatus(), sttLanes: [], revision: 0)
+  }
+  func providerAccessRevision() -> UInt64 { 0 }
+  func setApiKeyAsync(account: String, secret: String) async throws { try setApiKey(account: account, secret: secret) }
 }
 
 // MARK: - Real engine (UniFFI bridge adapter)
@@ -59,6 +71,13 @@ final class RealOnboardingEngine: OnboardingEngine {
 
   func assistiveProvider() -> String? { config.loadSettings().llmAssistiveProvider }
   func keyStatus() -> CsKeyStatus { config.keyStatus() }
+  func providerAccessSnapshot() async throws -> CsProviderAccessSnapshot {
+    try await ProviderCredentialIO.perform { try CodescribeConfig().providerAccessSnapshot() }
+  }
+  func providerAccessRevision() -> UInt64 { config.providerAccessRevision() }
+  func setApiKeyAsync(account: String, secret: String) async throws {
+    try await ProviderCredentialIO.perform { try CodescribeConfig().setApiKey(account: account, secret: secret) }
+  }
   func availableProviders() -> [CsProviderOption] { config.availableProviders() }
   func setApiKey(account: String, secret: String) throws {
     try config.setApiKey(account: account, secret: secret)
