@@ -5538,8 +5538,139 @@ mod tests {
     }
 
     #[test]
+    fn forensic_pinned_label_unproven_retiming_then_stronger_word() {
+        let (mut ledger, owner, _) = forensic_recovery_measured_ledger();
+        let first = obs(ObservationProducer::Apple, 0, owner.clone());
+        assert!(
+            ledger
+                .admit_pinned_label(&first, "Iwo", &[WordPin::new(0, 8_000, "inne")])
+                .is_insert()
+        );
+        assert_eq!(ledger.text_of(&owner), Some("Iwo"));
+        assert_eq!(ledger.slots_of(&owner).unwrap()[0].sample_end, 16_000);
+        let serial = ledger.serial_of(&owner).unwrap().clone();
+        let next = ledger.next_word_observation(ObservationProducer::Apple, 7, &owner);
+        let retimed = ledger.admit_pinned_label(&next, "Iwo", &[WordPin::new(2_000, 8_000, "Iwo")]);
+        assert!(
+            matches!(
+                retimed,
+                MutationReceipt::Refuse {
+                    reason: RefuseReason::SlotAdmissionRejected,
+                    ..
+                }
+            ),
+            "unproven Apple geometry must not retime the coarse source: {retimed:?}"
+        );
+        assert_eq!(ledger.text_of(&owner), Some("Iwo"));
+        let apple = ledger.slots_of(&owner).unwrap().to_vec();
+        assert_eq!(apple.len(), 1);
+        assert_eq!((apple[0].sample_start, apple[0].sample_end), (0, 16_000));
+        assert_eq!(apple[0].producer, ObservationProducer::Apple);
+        let word = ledger.next_word_observation(ObservationProducer::Whisper, 42, &owner);
+        let corrected = ledger.admit_word_slots(
+            &word,
+            &forensic_recovery_word_pins("wraca", Some((0, 16_000))),
+        );
+        assert!(
+            corrected.grants_mutation(),
+            "stronger same-span wording: {corrected:?}"
+        );
+        assert_eq!(ledger.text_of(&owner), Some("wraca"));
+        let slots = ledger.slots_of(&owner).unwrap();
+        assert_eq!(slots.len(), 1);
+        assert_eq!((slots[0].sample_start, slots[0].sample_end), (2_000, 8_000));
+        assert_eq!(slots[0].producer, ObservationProducer::Whisper);
+        assert!(
+            ledger
+                .slot_operations()
+                .iter()
+                .any(|operation| operation.observation == word
+                    && operation.sources.contains(&apple[0])
+                    && operation.outputs.contains(&slots[0]))
+        );
+        assert_eq!(ledger.serial_of(&owner), Some(&serial));
+        assert!(!ledger.is_sealed(&owner));
+        ledger.assert_slot_labels();
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    #[test]
+    fn forensic_pinned_label_seal_fences_automatic_but_allows_document_edit() {
+        let (mut ledger, owner, _) = forensic_recovery_measured_ledger();
+        let first = ledger.next_word_observation(ObservationProducer::Whisper, 42, &owner);
+        assert!(
+            ledger
+                .admit_word_slots(
+                    &first,
+                    &forensic_recovery_word_pins("Iwo wraca", Some((0, 16_000)))
+                )
+                .is_insert()
+        );
+        assert!(ledger.note_frontier_return(&owner, ObservationProducer::Whisper));
+        let seal = ledger.seal(&owner).unwrap().clone();
+        let serial = ledger.serial_of(&owner).unwrap().clone();
+        let before = ledger.slots_of(&owner).unwrap().to_vec();
+        let late_apple = ledger.next_word_observation(ObservationProducer::Apple, 7, &owner);
+        assert!(matches!(
+            ledger.admit_pinned_label(
+                &late_apple,
+                "zmiana",
+                &[WordPin::new(2_000, 8_000, "zmiana")]
+            ),
+            MutationReceipt::Refuse {
+                reason: RefuseReason::SealedReplay,
+                ..
+            }
+        ));
+        let late_word = ledger.next_word_observation(ObservationProducer::Whisper, 42, &owner);
+        let refused = ledger.admit_word_slots(
+            &late_word,
+            &forensic_recovery_word_pins("późne słowa", Some((0, 16_000))),
+        );
+        assert!(
+            matches!(
+                refused,
+                MutationReceipt::KeepVisibleUnanchored {
+                    reason: NoAuthorityReason::LateWhisperWordSealedOwner,
+                    ..
+                }
+            ),
+            "{refused:?}"
+        );
+        assert!(!refused.grants_mutation());
+        assert_eq!(ledger.slots_of(&owner).unwrap(), before.as_slice());
+        assert_eq!(ledger.text_of(&owner), Some("Iwo wraca"));
+        assert_eq!(ledger.seal_of(&owner), Some(&seal));
+        assert_eq!(ledger.serial_of(&owner), Some(&serial));
+        assert_eq!(ledger.post_seal_decisions(&owner).len(), 2);
+        assert!(!ledger.text_recovery_pending(&owner));
+        let edited = ledger
+            .record_manual_document_revision(
+                "s1",
+                0,
+                1,
+                "cały zmieniony akapit",
+                std::slice::from_ref(&owner),
+                DocumentRevisionProvenance::UserEdit,
+            )
+            .expect("human document edit");
+        assert!(ledger.authenticates_manual_document_revision(&edited));
+        assert_eq!(edited.source_occurrences, vec![owner.clone()]);
+        assert_eq!(edited.source_seal_receipts, vec![seal.receipt_id.clone()]);
+        assert_eq!(edited.rendered_text, "cały zmieniony akapit");
+        assert_eq!(ledger.manual_document_revisions().len(), 1);
+        assert_eq!(ledger.slots_of(&owner).unwrap(), before.as_slice());
+        assert_eq!(ledger.text_of(&owner), Some("Iwo wraca"));
+        assert_eq!(ledger.seal_of(&owner), Some(&seal));
+        assert_eq!(ledger.serial_of(&owner), Some(&serial));
+        assert!(!ledger.text_recovery_pending(&owner));
+        ledger.assert_slot_labels();
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    #[test]
     fn word_ranges_cannot_rewrite_a_label_or_a_sealed_occurrence() {
-        let (mut ledger, occurrence) = whisper_only_qualified_ledger();
+        let (mut ledger, occurrence, _) = forensic_recovery_measured_ledger();
         let observation = obs(ObservationProducer::Apple, 0, occurrence.clone());
         assert!(
             ledger
@@ -5563,8 +5694,30 @@ mod tests {
                     1_000, 8_000, "Iwo"
                 )]
             ),
+            MutationReceipt::Refuse {
+                reason: RefuseReason::SlotAdmissionRejected,
+                ..
+            }
+        ));
+        assert_eq!(ledger.text_of(&occurrence), Some("Iwo"));
+        assert_eq!(ledger.slots_of(&occurrence).unwrap()[0].sample_end, 16_000);
+        let whisper = ledger.next_word_observation(ObservationProducer::Whisper, 42, &occurrence);
+        assert!(matches!(
+            ledger.admit_word_slots(
+                &whisper,
+                &forensic_recovery_word_pins("Iwo", Some((0, 16_000)))
+            ),
             MutationReceipt::Preserve { .. }
         ));
+        assert_eq!(ledger.text_of(&occurrence), Some("Iwo"));
+        assert_eq!(
+            (
+                ledger.slots_of(&occurrence).unwrap()[0].sample_start,
+                ledger.slots_of(&occurrence).unwrap()[0].sample_end
+            ),
+            (2_000, 8_000)
+        );
+        assert!(!ledger.text_recovery_pending(&occurrence));
         let before = ledger.slots_of(&occurrence).unwrap().to_vec();
         ledger.assert_slot_labels();
         ledger.note_frontier_return(&occurrence, ObservationProducer::Whisper);
