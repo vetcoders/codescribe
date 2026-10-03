@@ -254,6 +254,80 @@ fn live_connector_health() -> ConnectorHealth {
 mod tests {
     #[test]
     #[serial_test::serial]
+    fn credential_projection_dependency_mode_keeps_late_stt_cache_out_of_process_env() {
+        use codescribe_core::config::{Config, UserSettings};
+        struct RestoreEnv(Vec<(&'static str, Option<std::ffi::OsString>)>);
+        impl Drop for RestoreEnv {
+            fn drop(&mut self) {
+                // SAFETY: the serial fixture has no background worker.
+                unsafe {
+                    for (key, value) in self.0.drain(..) {
+                        match value {
+                            Some(value) => std::env::set_var(key, value),
+                            None => std::env::remove_var(key),
+                        }
+                    }
+                }
+            }
+        }
+        let root = tempfile::TempDir::new().unwrap();
+        let keys = [
+            "CODESCRIBE_DATA_DIR",
+            "CODESCRIBE_ENV_PATH",
+            "CODESCRIBE_VOICE_LAB_SRC",
+            "STT_FILE_API_KEY",
+            "STT_LIVE_API_KEY",
+            "STT_API_KEY",
+        ];
+        let _restore = RestoreEnv(
+            keys.iter()
+                .map(|key| (*key, std::env::var_os(key)))
+                .collect(),
+        );
+        // SAFETY: this serial fixture controls its own temp root and has no workers.
+        unsafe {
+            for key in keys {
+                std::env::remove_var(key);
+            }
+            std::env::set_var("CODESCRIBE_DATA_DIR", root.path());
+        }
+        UserSettings::default().save().unwrap();
+        let _empty = codescribe_core::config::keychain::test_support::install_bundle(&[]);
+        let first = Config::load_without_keychain();
+        assert!(first.stt_file_api_key.is_none());
+        let _acquired = codescribe_core::config::keychain::test_support::install_bundle(&[
+            ("STT_FILE_API_KEY", "synthetic-file-after-bootstrap"),
+            ("STT_LIVE_API_KEY", "synthetic-live-after-bootstrap"),
+        ]);
+        let acquired = Config::load();
+        assert_eq!(
+            acquired.stt_file_api_key.as_deref(),
+            Some("synthetic-file-after-bootstrap")
+        );
+        assert_eq!(
+            acquired.stt_live_api_key.as_deref(),
+            Some("synthetic-live-after-bootstrap")
+        );
+        assert!(std::env::var_os("STT_FILE_API_KEY").is_none());
+        assert!(std::env::var_os("STT_LIVE_API_KEY").is_none());
+        // SAFETY: still the same serial fixture without background workers.
+        unsafe {
+            std::env::set_var("STT_FILE_API_KEY", "synthetic-explicit-override");
+        }
+        let probe = codescribe_core::config::keychain::CredentialAcquisitionProbe::forbid();
+        let passive = Config::load_without_keychain();
+        assert_eq!(
+            passive.stt_file_api_key.as_deref(),
+            Some("synthetic-explicit-override")
+        );
+        assert_eq!(
+            passive.stt_live_api_key.as_deref(),
+            Some("synthetic-live-after-bootstrap")
+        );
+        assert!(probe.attempts().is_empty());
+    }
+    #[test]
+    #[serial_test::serial]
     fn credential_projection_capability_matrix_finishes_while_secret_edit_owns_settings() {
         use codescribe_core::config::UserSettings;
         use std::sync::mpsc;

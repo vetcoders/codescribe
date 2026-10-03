@@ -2386,14 +2386,11 @@ impl UserSettings {
                 }
             },
             Err(e) => {
-                debug!(
-                    "Settings document unavailable at {} ({e})",
-                    path.display()
-                );
+                debug!("Settings document unavailable at {} ({e})", path.display());
                 let mut settings = Self::default();
                 if e.kind() == std::io::ErrorKind::NotFound {
                     if persist_migrations {
-                    super::stt_migration::migrate_legacy_stt_lanes_once(&mut settings);
+                        super::stt_migration::migrate_legacy_stt_lanes_once(&mut settings);
                     } else {
                         // Project the same first-import values without admitting a writer.
                         // Pending rows in this value remain uncommitted until a writer load.

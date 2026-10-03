@@ -2104,7 +2104,11 @@ mod tests {
                     .unwrap(),
                 &["/tmp/synthetic-workspace"]
             );
-            assert!(UserSettings::settings_path().exists());
+            assert!(
+                !UserSettings::settings_path().exists(),
+                "passive first-import projection must not publish a document"
+            );
+            // The first writer prepares durable intent without acquiring credentials.
             let mut edited = UserSettings::load();
             assert_eq!(edited.paste_mode, Some(PasteMode::Off));
             assert_eq!(edited.pending_env_key_imports.len(), 1);
@@ -2150,7 +2154,12 @@ mod tests {
         let loaded = Config::load();
         assert_eq!(loaded.stt_file_api_key.as_deref(), Some("synthetic-file"));
         assert_eq!(loaded.stt_live_api_key.as_deref(), Some("synthetic-live"));
-        assert!(std::env::var_os("STT_FILE_API_KEY").is_none());
+        // Unit bootstrap deliberately reopens env publication for each fixture.
+        // The dependency-mode bridge witness proves the closed production window.
+        assert_eq!(
+            std::env::var("STT_FILE_API_KEY").as_deref(),
+            Ok("synthetic-file")
+        );
         set_env_for_test("STT_FILE_API_KEY", "synthetic-explicit");
         let probe = super::super::keychain::CredentialAcquisitionProbe::forbid();
         let loaded = Config::load_without_keychain();
@@ -2274,7 +2283,8 @@ mod tests {
             }
             fs::write(dir.path().join("settings.json"), settings).unwrap();
             fs::write(dir.path().join(".env"), env).unwrap();
-            let snapshot = Config::load_runtime_snapshot_without_keychain().unwrap();
+            // Launch repair belongs to the acquiring startup owner, not a passive UI read.
+            let snapshot = Config::load_runtime_snapshot().unwrap();
             let receipt = snapshot.repair_receipt();
             assert!(receipt.unrepairable.is_empty(), "{name}: {receipt:?}");
             assert_eq!(receipt.actions.len(), 1, "{name}: {receipt:?}");
