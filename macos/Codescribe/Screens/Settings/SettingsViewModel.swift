@@ -2923,12 +2923,6 @@ final class SettingsViewModel: ObservableObject {
     }
   }
 
-  /// A key changed hands: the provider owning that account may list differently now.
-  private func refreshDiscovery(forAccount account: String) {
-    guard let provider = providers.first(where: { $0.apiKeyAccount == account }) else { return }
-    refreshModelDiscovery(providerId: provider.id)
-  }
-
   func testKey(account: String) {
     guard let engine else { return }
     guard !keyProbePending.contains(account) else { return }
