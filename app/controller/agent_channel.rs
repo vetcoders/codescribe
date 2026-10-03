@@ -141,6 +141,11 @@ pub(crate) struct OpenAgentChannel {
     /// The same bus session used by the reducer, including its fanout and
     /// per-destination persistence state, retained through the closing receipt.
     pub transcript_bus: Option<Arc<TranscriptBus>>,
+    /// Live channel's own acoustic ledger. The same `Arc` is passed into
+    /// `begin_channel_session` and held here until close, so the observer
+    /// freezes this ledger after that task has joined. `AttachedOnly` stores
+    /// nothing: that mode claims no live capture.
+    pub capture_ledger: Option<Arc<StdMutex<AcousticLedger>>>,
 }
 
 /// Open-channel fact for the overlay. W2 exposes it; the overlay paint is separate.
@@ -570,6 +575,7 @@ impl RecordingController {
         let refinement_warnings = Arc::new(StdMutex::new(Vec::new()));
         let mut session_id = None;
         let mut transcript_bus = None;
+        let mut capture_ledger = None;
         let mut recorder_guard = self.recorder.lock().await;
         let recorder = recorder_guard.as_mut().ok_or_else(|| {
             anyhow!("agent channel refused: recording controller has no recorder")
@@ -586,6 +592,7 @@ impl RecordingController {
                 .await?;
                 session_id = Some(session_label.clone());
                 let ledger = Arc::new(std::sync::Mutex::new(AcousticLedger::new()));
+                capture_ledger = Some(Arc::clone(&ledger));
                 let sentence_pause = runtime_settings.values().light_plus_sentence_pause_sec;
                 let language = runtime_settings
                     .values()
@@ -700,6 +707,7 @@ impl RecordingController {
                 last_text,
                 refinement_warnings,
                 transcript_bus,
+                capture_ledger,
             },
         );
         drop(recorder_guard);
@@ -724,6 +732,35 @@ impl RecordingController {
             }
         }
         Ok(())
+    }
+
+    /// Epoch `begin_channel_session` stamps on every live channel capture.
+    const CHANNEL_CAPTURE_EPOCH: u64 = 1;
+
+    /// Observer for the channel ledger this session already owns.
+    ///
+    /// Called only after `end_channel_session` has joined, while `open` still
+    /// holds that ledger. `AttachedOnly` and a missing ledger stay explicitly
+    /// unavailable: identity that was not proven on this channel is omitted,
+    /// and engine, seal, and metrics are not invented.
+    fn channel_take_observer(
+        open: &OpenAgentChannel,
+    ) -> codescribe_core::pipeline::take_truth::TakeTruth {
+        use codescribe_core::pipeline::take_truth::TakeTruth;
+        if !matches!(open.mode, ChannelOpenMode::Live) {
+            return TakeTruth::unavailable_evidence(None, None);
+        }
+        let Some(session_id) = open.session_id.clone() else {
+            return TakeTruth::unavailable_evidence(None, Some(Self::CHANNEL_CAPTURE_EPOCH));
+        };
+        let Some(ledger) = open.capture_ledger.as_ref() else {
+            return TakeTruth::unavailable_evidence(
+                Some(session_id),
+                Some(Self::CHANNEL_CAPTURE_EPOCH),
+            );
+        };
+        let ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
+        TakeTruth::observe_ledger(&ledger, &session_id, Self::CHANNEL_CAPTURE_EPOCH)
     }
 
     /// The one closing throne of a live channel session, for silence and
@@ -754,6 +791,9 @@ impl RecordingController {
                 None => None,
             }
         };
+        // The channel task has joined. Freeze its ledger before `open` drops
+        // that handle. This is not the dictation recorder's ledger.
+        let observer = Self::channel_take_observer(&open);
         if let Some(path) = retained_audio.as_deref() {
             // W5 retention parity: a capture the channel owned joins the same
             // take store and retention rules as dictation. The slug carries
@@ -767,6 +807,7 @@ impl RecordingController {
                 open.session_id.as_deref(),
                 path,
                 codescribe_core::state::SessionTranscriptArchive::Committed(&heard),
+                &observer,
             )
             .await;
         }
@@ -2118,5 +2159,106 @@ mod tests {
                 .expect("missing bus")
                 .is_empty()
         );
+    }
+}
+
+#[cfg(test)]
+mod capture_observer_channel_ownership_tests {
+    use super::*;
+    use codescribe_core::pipeline::acoustic_ledger::{
+        AcousticEvidence, EnergyCalibration, ObservationIdentity, ObservationProducer,
+        OccurrenceIdentity, WordPin,
+    };
+    async fn fixture() -> (RecordingController, tempfile::TempDir, OpenAgentChannel) {
+        let controller = RecordingController::new_without_keychain();
+        let dir = tempfile::tempdir().unwrap();
+        let binding = dir.path().join("agent-channel-binding.json");
+        std::fs::write(&binding,r#"{"schema":"vc.agent-audience-binding.v1","bindings":{"3":{"audience":"fixture-agent","provider":"codex","provider_session_id":"fixture-session"}}}"#).unwrap();
+        controller
+            .dispatch_agent_channel(
+                3,
+                &binding,
+                &dir.path().join("bus.jsonl"),
+                ChannelOpenMode::AttachedOnly,
+            )
+            .await
+            .unwrap();
+        let open = controller.agent_channel_snapshot(3).await.unwrap();
+        (controller, dir, open)
+    }
+    fn ledger() -> AcousticLedger {
+        let mut ledger = AcousticLedger::new();
+        let calibration = EnergyCalibration::new("observer-channel-fixture", 1.0, 1);
+        for session in ["owned-channel", "unrelated-dictation"] {
+            let occurrence = OccurrenceIdentity::new(session, 1, 0, 16_000);
+            let evidence = AcousticEvidence {
+                occurrence: occurrence.clone(),
+                duration_ms: 1_000.0,
+                energy_integral: 100.0,
+                mean_rms_dbfs: -20.0,
+                peak_dbfs: -10.0,
+                vad_open_sample: Some(0),
+                vad_close_sample: Some(16_000),
+                evidence_calibration_version: calibration.version.clone(),
+            };
+            assert!(ledger.qualify(&evidence, &calibration).is_qualified());
+            let observation =
+                ObservationIdentity::new(ObservationProducer::Whisper, 47, 2, occurrence);
+            assert!(
+                ledger
+                    .admit_word_slots_for_tests(
+                        &observation,
+                        &[WordPin::new(1_000, 14_000, session)]
+                    )
+                    .grants_mutation()
+            );
+        }
+        ledger
+    }
+    #[tokio::test]
+    #[serial_test::serial(agent_ack_duck)]
+    async fn live_channel_observer_uses_its_own_ledger_and_keeps_receipt_identity() {
+        let (_controller, _dir, mut open) = fixture().await;
+        open.mode = ChannelOpenMode::Live;
+        open.session_id = Some("owned-channel".into());
+        let ledger = Arc::new(StdMutex::new(ledger()));
+        let original = ledger.lock().unwrap().layer_trail().to_vec();
+        open.capture_ledger = Some(Arc::clone(&ledger));
+        let card = RecordingController::channel_take_observer(&open);
+        assert_eq!(card.session_id.as_deref(), Some("owned-channel"));
+        assert_eq!(card.capture_epoch, Some(1));
+        assert_eq!(card.words.len(), 1);
+        assert_eq!(card.words[0].word, "owned-channel");
+        let facts = card.ledger.unwrap();
+        assert!(
+            facts
+                .decisions
+                .iter()
+                .all(|d| d.session_id == "owned-channel")
+        );
+        let original = original
+            .into_iter()
+            .filter(|d| d.observation.occurrence.session == "owned-channel")
+            .collect::<Vec<_>>();
+        assert_eq!(facts.decisions.len(), original.len());
+        for (d, o) in facts.decisions.iter().zip(&original) {
+            assert_eq!(d.receipt_id, o.receipt_id);
+            assert_eq!(d.request, Some(o.observation.request));
+            assert_eq!(d.generation, Some(o.observation.generation));
+        }
+        assert_eq!(ledger.lock().unwrap().layer_trail().len(), 2);
+    }
+    #[tokio::test]
+    #[serial_test::serial(agent_ack_duck)]
+    async fn attached_channel_cannot_claim_live_evidence_even_if_a_handle_is_present() {
+        let (_controller, _dir, mut open) = fixture().await;
+        open.session_id = Some("owned-channel".into());
+        open.capture_ledger = Some(Arc::new(StdMutex::new(ledger())));
+        let card = RecordingController::channel_take_observer(&open);
+        assert_eq!(card.session_id, None);
+        assert_eq!(card.capture_epoch, None);
+        assert_eq!(card.ledger, None);
+        assert!(card.words.is_empty());
+        assert_eq!(card.vad_speech_pct, None);
     }
 }
