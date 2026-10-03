@@ -1,3 +1,4 @@
+import OSLog
 import SwiftUI
 
 // Settings › Providers. "URLs live where the API keys are; models live where
@@ -238,8 +239,8 @@ struct CustomProvidersSection: View {
   }
 }
 
-/// Add / edit sheet. Validation is the bridge's job (`CsError` → message under
-/// the fields); the form only keeps the obviously blank draft unsaveable.
+/// Add / edit sheet. The bridge owns validation; the form presents endpoint
+/// failures at the field and other failures through the shared error-message seam.
 struct CustomProviderForm: View {
   @ObservedObject var model: SettingsViewModel
   let target: CustomProviderFormTarget
@@ -250,6 +251,7 @@ struct CustomProviderForm: View {
   @State private var endpoint = ""
   @State private var apiKey = ""
   @State private var error: String?
+  @State private var endpointError: String?
   @FocusState private var focus: Field?
 
   private enum Field { case name, endpoint, key }
@@ -257,6 +259,10 @@ struct CustomProviderForm: View {
   /// Sample values, not copy: they must read the same in every language.
   private static let namePlaceholder = "e.g. Libraxis"
   private static let endpointPlaceholder = "https://api.example.com/v1/responses"
+  private static let log = Logger(
+    subsystem: Bundle.main.bundleIdentifier ?? "com.vetcoders.codescribe",
+    category: "custom-provider-form"
+  )
 
   private var isEdit: Bool {
     if case .edit = target { return true }
@@ -299,7 +305,16 @@ struct CustomProviderForm: View {
           .settingsInputChrome(isFocused: focus == .endpoint)
           .focused($focus, equals: .endpoint)
           .onSubmit { focus = .key }
+          .onChange(of: endpoint) { _, _ in endpointError = nil }
           .accessibilityLabel("Custom provider endpoint")
+          .accessibilityHint(endpointError ?? "")
+        if let endpointError {
+          Text(endpointError)
+            .font(CSFont.mono(11, .medium))
+            .foregroundStyle(CSColor.terracotta)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("custom-provider-endpoint-error")
+        }
       }
       field("API key (optional)") {
         SecureField(isEdit ? "Leave empty to keep the stored key" : "Paste key…", text: $apiKey)
@@ -354,6 +369,8 @@ struct CustomProviderForm: View {
 
   private func save() {
     guard canSave else { return }
+    error = nil
+    endpointError = nil
     let draft = CsCustomProviderDraft(
       name: name.trimmingCharacters(in: .whitespacesAndNewlines),
       wire: wire,
@@ -369,7 +386,21 @@ struct CustomProviderForm: View {
       }
       dismiss()
     } catch {
-      self.error = String(describing: error)
+      Self.log.error("Custom provider save failed: \(String(reflecting: error), privacy: .private)")
+      // The bridge currently carries ProviderError's Display sentence in Config.
+      // Match its endpoint reason, never revalidate the URL with a second parser.
+      if let bridgeError = error as? CsError,
+        case .Config(let message) = bridgeError,
+        message.hasPrefix("endpoint '"),
+        message.hasSuffix("' needs an http(s) scheme and a host")
+      {
+        endpointError = String(
+          localized: "Enter an HTTP or HTTPS URL with a host, such as https://api.example.com."
+        )
+        focus = .endpoint
+      } else {
+        self.error = error.userFacingMessage
+      }
     }
   }
 }
