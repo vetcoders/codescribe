@@ -603,6 +603,94 @@ impl std::error::Error for IncrementalShapingRefusal {}
 /// the committed words, and the reducer drops it instead of rendering a lie.
 type ShapedPresentation = IncrementalShapingReceipt;
 
+/// One remembered Light+ evaluation.
+///
+/// The key is the occurrence itself plus every shaping input stored beside it:
+/// source label, exact left-context digest, sentence break, and pause bits.
+/// `shaped_text` is the computational result. Nothing here is authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ShapingEvaluation {
+    occurrence: OccurrenceIdentity,
+    source_label: String,
+    left_context_sha256: [u8; 32],
+    sentence_break_before: bool,
+    sentence_pause_bits: u32,
+    shaped_text: String,
+}
+
+fn shaping_context_sha256(left_context: &str) -> [u8; 32] {
+    let digest = Sha256::digest(left_context.as_bytes());
+    let mut bytes = [0_u8; 32];
+    bytes.copy_from_slice(&digest);
+    bytes
+}
+
+/// Shared document fields of one reducer revision's occurrence fanout.
+/// Per-occurrence identity stays out of this comparison so every receipt can
+/// be carried on one snapshot. A lifecycle, delivery, or derived difference
+/// refuses the snapshot and keeps each event.
+fn same_overlay_document_fanout(
+    anchor: &TranscriptBusEvidenceEvent,
+    event: &TranscriptBusEvidenceEvent,
+) -> bool {
+    !event.lifecycle_terminal
+        && event.schema == anchor.schema
+        && event.session_id == anchor.session_id
+        && event.mode == anchor.mode
+        && event.reducer_revision == anchor.reducer_revision
+        && event.reducer_action == anchor.reducer_action
+        && event.rendered_text == anchor.rendered_text
+        && event.delivery_text == anchor.delivery_text
+        && event.phase == anchor.phase
+        && event.can_paste == anchor.can_paste
+        && event.can_insert == anchor.can_insert
+        && event.can_copy == anchor.can_copy
+        && event.can_retranscribe == anchor.can_retranscribe
+        && event.can_format == anchor.can_format
+        && event.can_send_to_agent == anchor.can_send_to_agent
+        && event.terminal == anchor.terminal
+        && event.lifecycle_terminal == anchor.lifecycle_terminal
+        && event.delivery == anchor.delivery
+        && event.audience == anchor.audience
+        && event.document_revision_receipt == anchor.document_revision_receipt
+        && event.seal_coverage == anchor.seal_coverage
+        && event.comparison == anchor.comparison
+        && event.consultation_presentations == anchor.consultation_presentations
+        && event.uncertain_spans == anchor.uncertain_spans
+}
+
+/// One overlay snapshot for a same-revision occurrence fanout.
+///
+/// The last row keeps the capture epoch and sequence the overlay already
+/// accepts. Every row's acoustic receipt is concatenated in document order,
+/// so no occurrence's capture, session, or receipt chain is dropped.
+/// Rows whose sequence does not strictly advance, or whose capture epoch
+/// moves backward, stay individual events.
+fn coalesced_overlay_document(
+    events: &[TranscriptBusEvidenceEvent],
+) -> Option<TranscriptBusEvidenceEvent> {
+    let first = events.first()?;
+    if events.len() < 2 || first.lifecycle_terminal {
+        return None;
+    }
+    let mut previous = first;
+    for event in events.iter().skip(1) {
+        if !same_overlay_document_fanout(first, event)
+            || event.sequence <= previous.sequence
+            || event.capture_epoch < previous.capture_epoch
+        {
+            return None;
+        }
+        previous = event;
+    }
+    let mut snapshot = events.last()?.clone();
+    snapshot.acoustic_receipts = events
+        .iter()
+        .flat_map(|event| event.acoustic_receipts.iter().cloned())
+        .collect();
+    Some(snapshot)
+}
+
 /// Complete visible paint: main canvas and separately painted preview evidence.
 #[derive(Debug, Default)]
 struct PaintedCanvas {
@@ -694,6 +782,17 @@ pub struct TranscriptReducer {
     /// these shapes instead of replacing the document the way a single global
     /// override would.
     shaped_by_occurrence: BTreeMap<OccurrenceIdentity, ShapedPresentation>,
+    /// Remembered Light+ evaluations, including unchanged results. An entry is
+    /// computational memory keyed by the occurrence and its shaping inputs.
+    /// It does not mint a revision, a seal, or a ledger receipt.
+    shaping_evaluations: BTreeMap<OccurrenceIdentity, ShapingEvaluation>,
+    /// First owner whose memo or committed shape may no longer match the
+    /// document. Owners strictly before it stay valid. `None` means every
+    /// current owner is settled. The cursor grants no mutation or seal authority.
+    shaping_affected_from: Option<OccurrenceIdentity>,
+    /// Pause bits used for the settled memos. A different tick pause starts at
+    /// the earliest memo instead of trusting [`Self::shaping_affected_from`].
+    shaping_pause_bits: Option<u32>,
     consultation_presentations: Vec<ConsultationPresentationReceipt>,
     revision: u64,
     /// The worker publishes complete replacements. Revision orders snapshots,
@@ -1466,10 +1565,13 @@ impl TranscriptReducer {
                 .map(|edit| edit.receipt_id.clone()),
         };
         let _serial_receipt = Self::encode_serial(serial);
-        // A later observer that changes this occurrence's words invalidates the
-        // shape taken from the old ones. Only this occurrence loses its shape:
-        // its neighbours keep theirs, which is the whole difference between
-        // incremental presentation and a global override.
+        // A changed label drops this owner and every later owner. Their left
+        // context includes this presentation. A same-label edit keeps the
+        // settled prefix and the suffix unless the next sentence break moved.
+        let previous_label = self
+            .document_by_occurrence
+            .get(&observation.occurrence)
+            .map(|existing| existing.label.clone());
         if self
             .shaped_by_occurrence
             .get(&observation.occurrence)
@@ -1477,13 +1579,14 @@ impl TranscriptReducer {
         {
             self.shaped_by_occurrence.remove(&observation.occurrence);
         }
+        let label_changed = previous_label.as_deref() != Some(entry.label.as_str());
         self.document_by_occurrence
             .insert(observation.occurrence.clone(), entry.clone());
         self.committed_slot_ranges.insert(
             observation.occurrence.clone(),
             ledger.committed_word_pin_ranges(&observation.occurrence),
         );
-        self.invalidate_stale_shapes();
+        self.invalidate_for_document_edit(&observation.occurrence, label_changed, ledger);
         let action = if observation.producer == ObservationProducer::ManualHuman {
             ReducerAction::ApplyManualEdit { entry }
         } else {
@@ -1605,6 +1708,11 @@ impl TranscriptReducer {
             self.consultation_presentations.clear();
         }
         self.shaped_by_occurrence.clear();
+        self.shaping_evaluations.clear();
+        self.shaping_pause_bits = None;
+        // The manual document owns presentation until a later ledger edit
+        // clears it. The cursor then starts at the first physical owner.
+        self.shaping_affected_from = self.document_by_occurrence.keys().next().cloned();
         self.manual_document_revision_receipt = Some(receipt.receipt_id.clone());
         Ok(self.revision_for_action(ReducerAction::ApplyUserRevision { receipt }))
     }
@@ -1736,6 +1844,219 @@ impl TranscriptReducer {
         Ok(source_occurrences)
     }
 
+    /// Sentence break for one occurrence. The previous same-epoch owner is the
+    /// ordered predecessor, not a walk of the prefix. It does not build
+    /// left-context text.
+    fn sentence_break_before(
+        &self,
+        occurrence: &OccurrenceIdentity,
+        ledger: &AcousticLedger,
+        sentence_pause_sec: f32,
+    ) -> bool {
+        let Some((previous, _)) = self.document_by_occurrence.range(..occurrence).next_back()
+        else {
+            return false;
+        };
+        if previous.capture_epoch != occurrence.capture_epoch {
+            return false;
+        }
+        let Some(serial) = ledger.serial_of(previous) else {
+            return false;
+        };
+        let Some(samples) = previous.sample_end.checked_sub(previous.sample_start) else {
+            return false;
+        };
+        let Some(gap) = occurrence.sample_start.checked_sub(previous.sample_end) else {
+            return false;
+        };
+        samples > 0
+            && gap as f64 * serial.duration_ms / samples as f64
+                >= f64::from(sentence_pause_sec) * 1000.0
+    }
+
+    /// Exact computational hit. A hit is an unchanged evaluation only. A stored
+    /// string that differs from the source label is not a receipt and is ignored.
+    fn unchanged_evaluation_hit(
+        &self,
+        occurrence: &OccurrenceIdentity,
+        source_label: &str,
+        left_context_sha256: [u8; 32],
+        sentence_break_before: bool,
+        sentence_pause_bits: u32,
+    ) -> bool {
+        self.shaping_evaluations.get(occurrence).is_some_and(|memo| {
+            memo.occurrence == *occurrence
+                && memo.source_label == source_label
+                && memo.left_context_sha256 == left_context_sha256
+                && memo.sentence_break_before == sentence_break_before
+                && memo.sentence_pause_bits == sentence_pause_bits
+                && memo.shaped_text == source_label
+        })
+    }
+
+    /// Whether this owner can be skipped without rebuilding its left context.
+    ///
+    /// A committed shape with the same source label is the existing
+    /// already-shaped guard. A computational memo is stable only while its
+    /// label, pause, and predecessor sentence break still match. Left context
+    /// is trusted here because a document edit drops memos from the edited
+    /// owner forward, so a settled prefix is not hashed again.
+    fn owner_shaping_stable(
+        &self,
+        occurrence: &OccurrenceIdentity,
+        sentence_pause_sec: f32,
+        ledger: &AcousticLedger,
+    ) -> bool {
+        let Some(entry) = self.document_by_occurrence.get(occurrence) else {
+            return false;
+        };
+        if self
+            .shaped_by_occurrence
+            .get(occurrence)
+            .is_some_and(|shaped| shaped.source_label == entry.label)
+        {
+            return true;
+        }
+        let Some(memo) = self.shaping_evaluations.get(occurrence) else {
+            return false;
+        };
+        memo.occurrence == *occurrence
+            && memo.source_label == entry.label
+            && memo.shaped_text == entry.label
+            && memo.sentence_pause_bits == sentence_pause_sec.to_bits()
+            && memo.sentence_break_before
+                == self.sentence_break_before(occurrence, ledger, sentence_pause_sec)
+    }
+
+    /// First owner a non-terminal tick must evaluate.
+    ///
+    /// Empty `named` does not mean "shape nothing": a new admission still
+    /// starts at the affected cursor. A named seal checks that bounded set
+    /// and the cursor. A stable named owner with no invalidated suffix is
+    /// not a start, so the tick does not walk the document.
+    fn first_incremental_shaping_owner(
+        &self,
+        named: &[OccurrenceIdentity],
+        sentence_pause_sec: f32,
+        ledger: &AcousticLedger,
+    ) -> Option<OccurrenceIdentity> {
+        if self.manual_rendered_text.is_some() || self.document_by_occurrence.is_empty() {
+            return None;
+        }
+        let pause_bits = sentence_pause_sec.to_bits();
+        let pause_drift = self
+            .shaping_pause_bits
+            .is_some_and(|bits| bits != pause_bits);
+        let earliest_unstable = if pause_drift {
+            self.shaping_evaluations
+                .keys()
+                .next()
+                .cloned()
+                .or_else(|| self.affected_shaping_owner())
+        } else {
+            self.affected_shaping_owner()
+        };
+        let mut named_needs_work: Option<OccurrenceIdentity> = None;
+        for occurrence in named
+            .iter()
+            .filter(|occurrence| self.document_by_occurrence.contains_key(*occurrence))
+        {
+            let needs_work =
+                !self.owner_shaping_stable(occurrence, sentence_pause_sec, ledger);
+            if !needs_work {
+                continue;
+            }
+            named_needs_work = Some(match named_needs_work {
+                Some(existing) if &existing < occurrence => existing,
+                _ => occurrence.clone(),
+            });
+        }
+        match (named_needs_work, earliest_unstable) {
+            (Some(named), Some(unstable)) => Some(if named < unstable { named } else { unstable }),
+            (Some(named), None) => Some(named),
+            (None, Some(unstable)) => Some(unstable),
+            (None, None) => None,
+        }
+    }
+
+    /// First document owner at or after the affected cursor.
+    fn affected_shaping_owner(&self) -> Option<OccurrenceIdentity> {
+        let from = self.shaping_affected_from.as_ref()?;
+        self.document_by_occurrence
+            .range(from.clone()..)
+            .next()
+            .map(|(key, _)| key.clone())
+    }
+
+    fn next_owner_after(&self, occurrence: &OccurrenceIdentity) -> Option<OccurrenceIdentity> {
+        self.document_by_occurrence
+            .range((
+                std::ops::Bound::Excluded(occurrence),
+                std::ops::Bound::Unbounded,
+            ))
+            .next()
+            .map(|(key, _)| key.clone())
+    }
+
+    /// Drop computational memory and committed shapes from `from` forward.
+    /// `BTreeMap::split_off` is the ordered boundary. It does not hash prefixes.
+    fn drop_shaping_from(&mut self, from: &OccurrenceIdentity) {
+        let _ = self.shaping_evaluations.split_off(from);
+        let _ = self.shaped_by_occurrence.split_off(from);
+    }
+
+    fn mark_shaping_affected(&mut self, from: &OccurrenceIdentity) {
+        self.shaping_affected_from = Some(match self.shaping_affected_from.take() {
+            Some(existing) if &existing < from => existing,
+            _ => from.clone(),
+        });
+    }
+
+    /// A same-label edit can still change the successor's sentence break when
+    /// the predecessor serial duration moves. One successor, one predecessor.
+    fn successor_break_drifted(
+        &self,
+        occurrence: &OccurrenceIdentity,
+        ledger: &AcousticLedger,
+    ) -> bool {
+        let Some(successor) = self.next_owner_after(occurrence) else {
+            return false;
+        };
+        let (pause, stored_break) = {
+            let Some(memo) = self.shaping_evaluations.get(&successor) else {
+                return false;
+            };
+            (
+                f32::from_bits(memo.sentence_pause_bits),
+                memo.sentence_break_before,
+            )
+        };
+        self.sentence_break_before(&successor, ledger, pause) != stored_break
+    }
+
+    fn remember_unchanged_shaping(
+        &mut self,
+        occurrence: &OccurrenceIdentity,
+        source_label: String,
+        left_context_sha256: [u8; 32],
+        sentence_break_before: bool,
+        sentence_pause_bits: u32,
+        shaped_text: String,
+    ) {
+        self.shaping_pause_bits = Some(sentence_pause_bits);
+        self.shaping_evaluations.insert(
+            occurrence.clone(),
+            ShapingEvaluation {
+                occurrence: occurrence.clone(),
+                source_label,
+                left_context_sha256,
+                sentence_break_before,
+                sentence_pause_bits,
+                shaped_text,
+            },
+        );
+    }
+
     /// Shape one committed occurrence's presentation while the session lifecycle
     /// is still open.
     ///
@@ -1792,23 +2113,20 @@ impl TranscriptReducer {
         {
             return Err(IncrementalShapingRefusal::AlreadyShaped);
         }
-        let sentence_break_before = self
-            .document_by_occurrence
-            .keys()
-            .take_while(|key| *key < occurrence)
-            .last()
-            .filter(|previous| previous.capture_epoch == occurrence.capture_epoch)
-            .and_then(|previous| {
-                let serial = ledger.serial_of(previous)?;
-                let samples = previous.sample_end.checked_sub(previous.sample_start)?;
-                let gap = occurrence.sample_start.checked_sub(previous.sample_end)?;
-                (samples > 0).then_some(
-                    gap as f64 * serial.duration_ms / samples as f64
-                        >= f64::from(sentence_pause_sec) * 1000.0,
-                )
-            })
-            .unwrap_or(false);
+        let sentence_break_before =
+            self.sentence_break_before(occurrence, ledger, sentence_pause_sec);
         let left_context = self.rendered_occurrence_span(Some(occurrence));
+        let left_context_sha256 = shaping_context_sha256(&left_context);
+        let sentence_pause_bits = sentence_pause_sec.to_bits();
+        if self.unchanged_evaluation_hit(
+            occurrence,
+            &source_label,
+            left_context_sha256,
+            sentence_break_before,
+            sentence_pause_bits,
+        ) {
+            return Err(IncrementalShapingRefusal::Unchanged);
+        }
         let shaped = codescribe_core::pipeline::light_plus::apply_live_span(
             &left_context,
             &source_label,
@@ -1821,8 +2139,17 @@ impl TranscriptReducer {
             return Err(IncrementalShapingRefusal::EmptyShape);
         }
         if shaped == source_label {
+            self.remember_unchanged_shaping(
+                occurrence,
+                source_label,
+                left_context_sha256,
+                sentence_break_before,
+                sentence_pause_bits,
+                shaped,
+            );
             return Err(IncrementalShapingRefusal::Unchanged);
         }
+        self.shaping_evaluations.remove(occurrence);
         let revision = self
             .revision
             .checked_add(1)
@@ -1841,7 +2168,7 @@ impl TranscriptReducer {
             .map_err(IncrementalShapingRefusal::LedgerRefusal)?;
         self.shaped_by_occurrence
             .insert(occurrence.clone(), receipt.clone());
-        self.invalidate_stale_shapes();
+        self.invalidate_shaped_suffix(occurrence);
         Ok(self.revision_for_action(ReducerAction::ApplyIncrementalShaping { receipt }))
     }
 
@@ -2081,29 +2408,41 @@ impl TranscriptReducer {
         rendered
     }
 
-    /// Drop dependent shapes when insertion/relabel changes their exact left
-    /// context. Historical ledger receipts remain immutable and inspectable.
-    fn invalidate_stale_shapes(&mut self) {
+    /// Record the ordered invalidation boundary for one document edit.
+    ///
+    /// A new or relabelled owner drops computational memory and committed
+    /// shapes from that owner forward. A same-label edit drops the successor
+    /// only when its stored sentence break no longer matches the predecessor.
+    /// Settled owners before the boundary are not hashed. Historical ledger
+    /// receipts stay immutable.
+    fn invalidate_for_document_edit(
+        &mut self,
+        occurrence: &OccurrenceIdentity,
+        label_changed: bool,
+        ledger: &AcousticLedger,
+    ) {
         self.consultation_presentations
             .retain(|receipt| group_matches_entries(receipt, self.document_by_occurrence.values()));
-        let mut left = String::new();
-        for (occurrence, entry) in &self.document_by_occurrence {
-            if self
-                .shaped_by_occurrence
-                .get(occurrence)
-                .is_some_and(|shape| {
-                    shape.source_label != entry.label || shape.left_context != left
-                })
-            {
-                self.shaped_by_occurrence.remove(occurrence);
-            }
-            let text = self
-                .shaped_by_occurrence
-                .get(occurrence)
-                .map(|shape| shape.shaped_text.as_str())
-                .unwrap_or(&entry.label);
-            append_exact_fragment(&mut left, text);
+        if label_changed {
+            self.drop_shaping_from(occurrence);
+            self.mark_shaping_affected(occurrence);
+            return;
         }
+        if self.successor_break_drifted(occurrence, ledger)
+            && let Some(successor) = self.next_owner_after(occurrence)
+        {
+            self.drop_shaping_from(&successor);
+            self.mark_shaping_affected(&successor);
+        }
+    }
+
+    /// A committed shape changes the left context of every later owner.
+    fn invalidate_shaped_suffix(&mut self, occurrence: &OccurrenceIdentity) {
+        let Some(successor) = self.next_owner_after(occurrence) else {
+            return;
+        };
+        self.drop_shaping_from(&successor);
+        self.mark_shaping_affected(&successor);
     }
 
     /// The presentation bytes for one entry: its committed shape while that
@@ -3022,6 +3361,24 @@ impl PresentationEmitter {
         revision.authenticates_publication(ledger, session)
     }
 
+    /// Forward reducer observations to the overlay callback.
+    ///
+    /// A same-revision document fanout becomes one snapshot. Every other
+    /// event, including lifecycle, delivery, and single-row updates, is
+    /// forwarded unchanged. The Bus journal is not involved here.
+    fn emit_overlay_events(&self, events: &[TranscriptBusEvidenceEvent]) {
+        let Some(callback) = &self.projection_callback else {
+            return;
+        };
+        if let Some(snapshot) = coalesced_overlay_document(events) {
+            self.with_active_presentation(|| callback(&snapshot));
+            return;
+        }
+        for event in events {
+            self.with_active_presentation(|| callback(event));
+        }
+    }
+
     fn publish_revision(&self, revision: TranscriptRevision) {
         if let Some(ledger) = &self.acoustic_ledger {
             let ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
@@ -3033,11 +3390,7 @@ impl PresentationEmitter {
                 if events.is_empty() {
                     return;
                 }
-                if let Some(callback) = &self.projection_callback {
-                    for event in &events {
-                        self.with_active_presentation(|| callback(event));
-                    }
-                }
+                self.emit_overlay_events(&events);
             }
         } else {
             return;
@@ -3227,11 +3580,7 @@ impl PresentationEmitter {
                     "bus_publication_refused",
                 ));
             }
-            if let Some(callback) = &self.projection_callback {
-                for event in &events {
-                    self.with_active_presentation(|| callback(event));
-                }
-            }
+            self.emit_overlay_events(&events);
         }
         self.send_committed_paint(revision.rendered_text.clone());
         let ReducerAction::ApplyUserRevision { receipt } = &revision.action else {
@@ -3285,6 +3634,16 @@ impl PresentationEmitter {
         budget: &codescribe_core::pipeline::light_plus::TickBudget,
         terminal: bool,
     ) -> Option<UserRevisionCommit> {
+        self.run_light_plus_tick_for(ledger, budget, terminal, &[])
+    }
+
+    fn run_light_plus_tick_for(
+        &self,
+        ledger: &mut AcousticLedger,
+        budget: &codescribe_core::pipeline::light_plus::TickBudget,
+        terminal: bool,
+        named_occurrences: &[OccurrenceIdentity],
+    ) -> Option<UserRevisionCommit> {
         if self.literal_delivery() {
             return None;
         }
@@ -3300,13 +3659,24 @@ impl PresentationEmitter {
         if state.delivery_selection.is_some() {
             return None;
         }
+        let pause = self.sentence_pause_sec;
+        // A bounded seal with no invalidated suffix has nothing to compute.
+        // Proving that before the clone skips the reducer, the ledger, and
+        // the preparation thread. A terminal pass still shapes the document.
+        if !terminal
+            && state
+                .first_incremental_shaping_owner(named_occurrences, pause, ledger)
+                .is_none()
+        {
+            return None;
+        }
         let source_revision = state.revision;
         let source_derived_count = state.derived_projections.len();
         let mut candidate = state.clone();
         candidate.preparing_light_plus = true;
         drop(state);
         let mut candidate_ledger = ledger.clone();
-        let pause = self.sentence_pause_sec;
+        let named_occurrences = named_occurrences.to_vec();
         let prepared = budget.prepare(move |worker_budget| {
             let mut revisions = Vec::new();
             if terminal {
@@ -3319,23 +3689,53 @@ impl PresentationEmitter {
                         Err(_) => return None,
                     }
                 }
-            } else {
-                let occurrences = candidate
+            } else if let Some(start) = candidate.first_incremental_shaping_owner(
+                &named_occurrences,
+                pause,
+                &candidate_ledger,
+            ) {
+                let mut presentation_changed = false;
+                let mut unresolved = None;
+                let owners = candidate
                     .document_by_occurrence
-                    .keys()
-                    .cloned()
+                    .range(start.clone()..)
+                    .map(|(key, _)| key.clone())
                     .collect::<Vec<_>>();
-                for occurrence in occurrences {
+                for occurrence in owners {
                     if worker_budget.expired() {
                         return None;
                     }
-                    if let Ok(revision) = candidate.apply_incremental_shaping_with_pause(
+                    if !presentation_changed
+                        && occurrence != start
+                        && candidate.owner_shaping_stable(&occurrence, pause, &candidate_ledger)
+                    {
+                        continue;
+                    }
+                    match candidate.apply_incremental_shaping_with_pause(
                         &mut candidate_ledger,
                         &occurrence,
                         pause,
                     ) {
-                        revisions.push(revision);
+                        Ok(revision) => {
+                            revisions.push(revision);
+                            presentation_changed = true;
+                        }
+                        Err(
+                            IncrementalShapingRefusal::Unchanged
+                            | IncrementalShapingRefusal::AlreadyShaped,
+                        ) => {}
+                        Err(_) => {
+                            if unresolved.is_none() {
+                                unresolved = Some(occurrence);
+                            }
+                        }
                     }
+                }
+                if unresolved.is_none() {
+                    candidate.shaping_affected_from = None;
+                    candidate.shaping_pause_bits = Some(pause.to_bits());
+                } else {
+                    candidate.shaping_affected_from = unresolved;
                 }
             }
             if worker_budget.expired() {
@@ -3358,6 +3758,27 @@ impl PresentationEmitter {
             return None;
         };
         if revisions.is_empty() {
+            if budget.expired() {
+                self.light_plus_deadline_receipt(budget);
+                return None;
+            }
+            let mut state = self
+                .session_state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if state.revision != source_revision
+                || state.derived_projections.len() != source_derived_count
+                || state.delivery_selection.is_some()
+            {
+                return None;
+            }
+            state
+                .shaping_evaluations
+                .clone_from(&candidate.shaping_evaluations);
+            state
+                .shaping_affected_from
+                .clone_from(&candidate.shaping_affected_from);
+            state.shaping_pause_bits = candidate.shaping_pause_bits;
             return None;
         }
         let mut state = self
@@ -3405,11 +3826,7 @@ impl PresentationEmitter {
             revision.record_trail();
             if let Some(bus) = &self.transcript_bus {
                 let events = bus.publish_revision(&revision, ledger);
-                if let Some(callback) = &self.projection_callback {
-                    for event in &events {
-                        self.with_active_presentation(|| callback(event));
-                    }
-                }
+                self.emit_overlay_events(&events);
             }
             self.send_committed_paint(revision.rendered_text);
         }
@@ -3427,10 +3844,10 @@ impl PresentationEmitter {
     fn mint_incremental_light_plus(
         &self,
         ledger: &mut AcousticLedger,
-        _occurrences: &[OccurrenceIdentity],
+        occurrences: &[OccurrenceIdentity],
         budget: &codescribe_core::pipeline::light_plus::TickBudget,
     ) {
-        self.run_light_plus_tick(ledger, budget, false);
+        self.run_light_plus_tick_for(ledger, budget, false, occurrences);
     }
 
     /// Authenticate formatter input without mutating reducer, ledger, Bus, or
@@ -3811,11 +4228,7 @@ impl EventSink for PresentationEmitter {
                         if events.is_empty() {
                             return;
                         }
-                        if let Some(callback) = &self.projection_callback {
-                            for event in &events {
-                                self.with_active_presentation(|| callback(event));
-                            }
-                        }
+                        self.emit_overlay_events(&events);
                     }
                     self.send_cmd(EmitterCmd::PublishCommittedRevision {
                         paint: visible,
@@ -3884,11 +4297,7 @@ impl EventSink for PresentationEmitter {
                     if events.is_empty() {
                         return;
                     }
-                    if let Some(callback) = &self.projection_callback {
-                        for event in &events {
-                            self.with_active_presentation(|| callback(event));
-                        }
-                    }
+                    self.emit_overlay_events(&events);
                 }
                 // The terminal seal closes the ledger's word authority; the
                 // Light+ document revision follows immediately, before the controller
@@ -3927,11 +4336,7 @@ impl EventSink for PresentationEmitter {
                     .apply_seal_coverage(receipt, comparison.as_ref());
                 if let Some(bus) = &self.transcript_bus {
                     let events = bus.publish_revision(&revision, &ledger);
-                    if let Some(callback) = &self.projection_callback {
-                        for event in &events {
-                            self.with_active_presentation(|| callback(event));
-                        }
-                    }
+                    self.emit_overlay_events(&events);
                 }
             }
             EngineEvent::OccurrenceLabelProposal { proposal } => {
@@ -3985,11 +4390,7 @@ impl EventSink for PresentationEmitter {
                         if events.is_empty() {
                             continue;
                         }
-                        if let Some(callback) = &self.projection_callback {
-                            for event in &events {
-                                self.with_active_presentation(|| callback(event));
-                            }
-                        }
+                        self.emit_overlay_events(&events);
                     }
                     if is_label_revision {
                         self.send_committed_paint(revision.rendered_text);
